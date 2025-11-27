@@ -30,8 +30,6 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     <!-- Header with settings -->
     <header class="header">
       <div class="header-left">
-        <img src="${logoUri}" alt="Mysti" class="header-logo" />
-        <h1 class="title">Mysti</h1>
         <span id="session-indicator" class="session-indicator" style="display: none;">
           <span class="session-dot"></span>
           Session
@@ -256,18 +254,6 @@ function getStyles(): string {
       display: flex;
       align-items: center;
       gap: 8px;
-    }
-
-    .title {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--vscode-foreground);
-    }
-
-    .header-logo {
-      width: 24px;
-      height: 24px;
-      object-fit: contain;
     }
 
     .session-indicator {
