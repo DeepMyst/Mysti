@@ -209,6 +209,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'openInNewTab':
         vscode.commands.executeCommand('mysti.openInNewTab');
         break;
+
+      case 'getConversationHistory':
+        this.postMessage({
+          type: 'conversationHistory',
+          payload: {
+            conversations: this._conversationManager.getAllConversations(),
+            currentId: this._conversationManager.getCurrentConversation()?.id
+          }
+        });
+        break;
+
+      case 'switchConversation':
+        const switchId = (message.payload as { id: string }).id;
+        this._conversationManager.switchConversation(switchId);
+        const switchedConv = this._conversationManager.getCurrentConversation();
+        if (switchedConv) {
+          this.postMessage({
+            type: 'conversationChanged',
+            payload: switchedConv
+          });
+        }
+        break;
+
+      case 'deleteConversation':
+        const deleteId = (message.payload as { id: string }).id;
+        this._conversationManager.deleteConversation(deleteId);
+        // Refresh history
+        this.postMessage({
+          type: 'conversationHistory',
+          payload: {
+            conversations: this._conversationManager.getAllConversations(),
+            currentId: this._conversationManager.getCurrentConversation()?.id
+          }
+        });
+        // If current was deleted, load the new current
+        const currentAfterDelete = this._conversationManager.getCurrentConversation();
+        if (currentAfterDelete) {
+          this.postMessage({
+            type: 'conversationChanged',
+            payload: currentAfterDelete
+          });
+        }
+        break;
     }
   }
 
@@ -282,6 +325,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: 'messageAdded',
       payload: userMessage
     });
+
+    // Generate AI title for first user message
+    const currentConv = this._conversationManager.getCurrentConversation();
+    if (currentConv && this._conversationManager.isFirstUserMessage(currentConv.id)) {
+      this._generateTitleAsync(currentConv.id, content);
+    }
 
     // Stream response from provider
     try {
@@ -368,6 +417,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Generate conversation title asynchronously using AI
+   */
+  private async _generateTitleAsync(conversationId: string, userMessage: string) {
+    try {
+      const title = await this._suggestionManager.generateTitle(userMessage);
+      this._conversationManager.updateConversationTitle(conversationId, title);
+      this.postMessage({
+        type: 'titleUpdated',
+        payload: { conversationId, title }
+      });
+    } catch (error) {
+      console.error('[Mysti] Failed to generate title:', error);
+    }
+  }
+
+  /**
    * Handle brainstorm mode messages
    */
   private async _handleBrainstormMessage(payload: {
@@ -384,6 +449,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: 'messageAdded',
       payload: userMessage
     });
+
+    // Generate AI title for first user message
+    const currentConv = this._conversationManager.getCurrentConversation();
+    if (currentConv && this._conversationManager.isFirstUserMessage(currentConv.id)) {
+      this._generateTitleAsync(currentConv.id, content);
+    }
 
     // Start brainstorm session
     this.postMessage({

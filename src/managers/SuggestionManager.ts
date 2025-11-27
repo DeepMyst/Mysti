@@ -92,6 +92,82 @@ export class SuggestionManager {
     return this._getFallbackSuggestions();
   }
 
+  /**
+   * Generate a concise title for a conversation based on the first user message
+   * Uses Claude Haiku 4.5 for fast, intelligent title generation
+   */
+  public async generateTitle(userMessage: string): Promise<string> {
+    try {
+      const title = await this._generateTitleWithClaude(userMessage);
+      return title || this._fallbackTitle(userMessage);
+    } catch (error) {
+      console.error('[Mysti] Title generation failed:', error);
+      return this._fallbackTitle(userMessage);
+    }
+  }
+
+  private async _generateTitleWithClaude(userMessage: string): Promise<string | null> {
+    const prompt = `Generate a short, concise title (3-6 words max) for this chat conversation based on the user's first message. Return ONLY the title, no quotes, no explanation.
+
+User message: "${userMessage.substring(0, 500)}"
+
+Title:`;
+
+    return new Promise((resolve) => {
+      let proc: ChildProcess | null = null;
+
+      if (this._warmProcess) {
+        proc = this._warmProcess;
+        this._warmProcess = null;
+        console.log('[Mysti] Using warm process for title generation');
+      } else {
+        console.log('[Mysti] Spawning new process for title generation');
+        proc = spawn(this._claudePath, [
+          '--print',
+          '--output-format', 'text',
+          '--model', 'claude-haiku-4-5-20251001'
+        ], { stdio: ['pipe', 'pipe', 'pipe'] });
+      }
+
+      let output = '';
+      proc.stdin?.write(prompt);
+      proc.stdin?.end();
+
+      proc.stdout?.on('data', (data) => {
+        output += data.toString();
+      });
+
+      const timeout = setTimeout(() => {
+        proc?.kill('SIGTERM');
+        resolve(null);
+      }, 5000);
+
+      proc.on('close', (code) => {
+        clearTimeout(timeout);
+        this._spawnWarmProcess();
+
+        if (code === 0 && output.trim()) {
+          const title = output.trim().substring(0, 50);
+          console.log('[Mysti] Generated title:', title);
+          resolve(title);
+        } else {
+          resolve(null);
+        }
+      });
+
+      proc.on('error', () => {
+        clearTimeout(timeout);
+        this._spawnWarmProcess();
+        resolve(null);
+      });
+    });
+  }
+
+  private _fallbackTitle(content: string): string {
+    const title = content.trim().substring(0, 50);
+    return title.length < content.length ? `${title}...` : title;
+  }
+
   private async _callClaude(responseContent: string): Promise<QuickActionSuggestion[]> {
     // Shorter, more focused prompt for faster response
     const prompt = `Given this AI response, suggest 6 follow-up actions as JSON array.

@@ -36,6 +36,16 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <span class="session-dot"></span>
           Session
         </span>
+        <div class="history-dropdown">
+          <button id="history-btn" class="icon-btn" title="Chat history">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8.515 1.019A7 7 0 0 0 8 1V0a8 8 0 0 1 .589.022l-.074.997zm2.004.45a7 7 0 0 0-.985-.299l.219-.976c.383.086.76.2 1.126.342l-.36.933zm1.37.71a7 7 0 0 0-.439-.27l.493-.87a8 8 0 0 1 .979.654l-.615.789a7 7 0 0 0-.418-.302zm1.834 1.79a7 7 0 0 0-.653-.796l.724-.69c.27.285.52.59.747.91l-.818.576zm.744 1.352a7 7 0 0 0-.214-.468l.893-.45a8 8 0 0 1 .45 1.088l-.95.313a7 7 0 0 0-.179-.483zm.53 2.507a7 7 0 0 0-.1-1.025l.985-.17c.067.386.106.778.116 1.17l-1 .025zm-.131 1.538c.033-.17.06-.339.081-.51l.993.123a8 8 0 0 1-.23 1.155l-.964-.267c.046-.165.086-.332.12-.501zm-.952 2.379c.184-.29.346-.594.486-.908l.914.405c-.16.36-.345.706-.555 1.038l-.845-.535zm-.964 1.205c.122-.122.239-.248.35-.378l.758.653a8 8 0 0 1-.723.834l-.707-.707c.12-.12.235-.243.344-.37l-.022-.032zm-1.791 1.189c.306-.166.605-.349.89-.551l.605.79a8 8 0 0 1-1.054.652l-.44-.891zm-1.899.559a7 7 0 0 0 .99-.378l.445.887a8 8 0 0 1-1.18.454l-.255-.963zm-3.511.106A8 8 0 0 1 8 16v-1a7 7 0 0 0 .111-.998l.995.063A8 8 0 0 1 8 16zM.93 10.243l.976-.218c.066.297.16.586.28.867l-.924.381a8 8 0 0 1-.332-1.03zm1.122-3.996l-.98-.2a8 8 0 0 1 .634-1.528l.879.446a7 7 0 0 0-.533 1.282zm1.062-2.13l-.798-.6a8 8 0 0 1 .918-.934l.654.78a7 7 0 0 0-.774.754zm1.614-1.411L3.96 2.03a8 8 0 0 1 1.255-.568l.323.947a7 7 0 0 0-1.052.478zm6.058 9.222l-2.379-1.96a1 1 0 0 1-.362-.79V4.498a1 1 0 0 1 2 0v5.357l2.153 1.777a1 1 0 0 1-1.275 1.545l-.137-.112z"/>
+            </svg>
+          </button>
+          <div id="history-menu" class="history-menu hidden">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
         <button id="new-chat-btn" class="icon-btn" title="New conversation">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M8 1a.5.5 0 0 1 .5.5v6h6a.5.5 0 0 1 0 1h-6v6a.5.5 0 0 1-1 0v-6h-6a.5.5 0 0 1 0-1h6v-6A.5.5 0 0 1 8 1z"/>
@@ -91,31 +101,6 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <option value="ask-permission">Ask permission</option>
           <option value="full-access">Full access</option>
         </select>
-      </div>
-    </div>
-
-    <!-- Context section -->
-    <div class="context-section">
-      <div class="context-header">
-        <span class="context-title">Context</span>
-        <div class="context-controls">
-          <button id="context-mode-btn" class="pill-btn" title="Toggle context mode">
-            <span id="context-mode-label">Auto</span>
-          </button>
-          <button id="add-context-btn" class="icon-btn small" title="Add files to context">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M8 1a.5.5 0 0 1 .5.5v6h6a.5.5 0 0 1 0 1h-6v6a.5.5 0 0 1-1 0v-6h-6a.5.5 0 0 1 0-1h6v-6A.5.5 0 0 1 8 1z"/>
-            </svg>
-          </button>
-          <button id="clear-context-btn" class="icon-btn small" title="Clear context">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M2.5 1a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1H3v9a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V4h.5a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1H2.5zm3 4a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5zM8 5a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7A.5.5 0 0 1 8 5zm3 .5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 1 0z"/>
-            </svg>
-          </button>
-        </div>
-      </div>
-      <div id="context-items" class="context-items">
-        <div class="context-empty">Drop files here or click + to add context</div>
       </div>
     </div>
 
@@ -256,6 +241,8 @@ function getStyles(): string {
       padding: 8px 12px;
       border-bottom: 1px solid var(--vscode-panel-border);
       background: var(--vscode-sideBar-background);
+      position: relative;
+      z-index: 10000;
     }
 
     .header-left, .header-right {
@@ -300,6 +287,105 @@ function getStyles(): string {
       50% { opacity: 0.5; }
     }
 
+    /* History dropdown */
+    .history-dropdown {
+      position: relative;
+    }
+
+    .history-menu {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      min-width: 280px;
+      max-height: 400px;
+      overflow-y: auto;
+      background: var(--vscode-dropdown-background);
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      z-index: 1000;
+    }
+
+    .history-menu.hidden {
+      display: none;
+    }
+
+    .history-empty {
+      padding: 16px;
+      text-align: center;
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+    }
+
+    .history-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 12px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--vscode-widget-border);
+    }
+
+    .history-item:last-child {
+      border-bottom: none;
+    }
+
+    .history-item:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .history-item.active {
+      background: var(--vscode-list-activeSelectionBackground);
+      color: var(--vscode-list-activeSelectionForeground);
+    }
+
+    .history-item-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .history-item-title {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .history-item-date {
+      display: block;
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      margin-top: 2px;
+    }
+
+    .history-item.active .history-item-date {
+      color: var(--vscode-list-activeSelectionForeground);
+      opacity: 0.8;
+    }
+
+    .history-item-delete {
+      opacity: 0;
+      padding: 4px 6px;
+      margin-left: 8px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--vscode-errorForeground);
+      font-size: 14px;
+      line-height: 1;
+      border-radius: 4px;
+    }
+
+    .history-item-delete:hover {
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+
+    .history-item:hover .history-item-delete {
+      opacity: 1;
+    }
+
     .icon-btn {
       background: transparent;
       border: none;
@@ -324,6 +410,8 @@ function getStyles(): string {
       padding: 12px;
       border-bottom: 1px solid var(--vscode-panel-border);
       background: var(--vscode-editor-background);
+      position: relative;
+      z-index: 50;
     }
 
     .settings-panel.hidden {
@@ -448,6 +536,8 @@ function getStyles(): string {
       flex: 1;
       overflow-y: auto;
       padding: 12px;
+      position: relative;
+      z-index: 1;
     }
 
     /* Welcome screen container */
@@ -3014,6 +3104,8 @@ function getScript(mermaidUri: string, logoUri: string): string {
       const sessionIndicator = document.getElementById('session-indicator');
       const agentSelectBtn = document.getElementById('agent-select-btn');
       const agentMenu = document.getElementById('agent-menu');
+      const historyBtn = document.getElementById('history-btn');
+      const historyMenu = document.getElementById('history-menu');
 
       // Welcome screen suggestions
       var WELCOME_SUGGESTIONS = [
@@ -3175,6 +3267,66 @@ function getScript(mermaidUri: string, logoUri: string): string {
         clearMessages();
       });
 
+      // History menu toggle
+      if (historyBtn && historyMenu) {
+        historyBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          historyMenu.classList.toggle('hidden');
+          if (!historyMenu.classList.contains('hidden')) {
+            vscode.postMessage({ type: 'getConversationHistory' });
+          }
+        });
+      }
+
+      // Close history menu on outside click
+      document.addEventListener('click', function(e) {
+        if (historyMenu && !historyMenu.contains(e.target) && e.target !== historyBtn) {
+          historyMenu.classList.add('hidden');
+        }
+      });
+
+      // Render history menu items
+      function renderHistoryMenu(conversations, currentId) {
+        if (!historyMenu) return;
+        historyMenu.innerHTML = '';
+
+        if (conversations.length === 0) {
+          historyMenu.innerHTML = '<div class="history-empty">No previous chats</div>';
+          return;
+        }
+
+        conversations.forEach(function(conv) {
+          var item = document.createElement('div');
+          item.className = 'history-item' + (conv.id === currentId ? ' active' : '');
+
+          var date = new Date(conv.updatedAt);
+          var dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+          item.innerHTML =
+            '<div class="history-item-info">' +
+              '<span class="history-item-title">' + escapeHtml(conv.title || 'New Conversation') + '</span>' +
+              '<span class="history-item-date">' + dateStr + '</span>' +
+            '</div>' +
+            '<button class="history-item-delete" title="Delete">×</button>';
+
+          // Click to switch conversation
+          item.addEventListener('click', function(e) {
+            if (!e.target.classList.contains('history-item-delete')) {
+              vscode.postMessage({ type: 'switchConversation', payload: { id: conv.id } });
+              historyMenu.classList.add('hidden');
+            }
+          });
+
+          // Delete button
+          item.querySelector('.history-item-delete').addEventListener('click', function(e) {
+            e.stopPropagation();
+            vscode.postMessage({ type: 'deleteConversation', payload: { id: conv.id } });
+          });
+
+          historyMenu.appendChild(item);
+        });
+      }
+
       modeSelect.addEventListener('change', function() {
         state.settings.mode = modeSelect.value;
         updateModeIndicator();
@@ -3211,19 +3363,25 @@ function getScript(mermaidUri: string, logoUri: string): string {
         vscode.postMessage({ type: 'updateSettings', payload: { provider: newProvider } });
       });
 
-      contextModeBtn.addEventListener('click', function() {
-        state.settings.contextMode = state.settings.contextMode === 'auto' ? 'manual' : 'auto';
-        contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
-        vscode.postMessage({ type: 'updateSettings', payload: { contextMode: state.settings.contextMode } });
-      });
+      if (contextModeBtn && contextModeLabel) {
+        contextModeBtn.addEventListener('click', function() {
+          state.settings.contextMode = state.settings.contextMode === 'auto' ? 'manual' : 'auto';
+          contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
+          vscode.postMessage({ type: 'updateSettings', payload: { contextMode: state.settings.contextMode } });
+        });
+      }
 
-      addContextBtn.addEventListener('click', function() {
-        vscode.postMessage({ type: 'getWorkspaceFiles' });
-      });
+      if (addContextBtn) {
+        addContextBtn.addEventListener('click', function() {
+          vscode.postMessage({ type: 'getWorkspaceFiles' });
+        });
+      }
 
-      clearContextBtn.addEventListener('click', function() {
-        vscode.postMessage({ type: 'clearContext' });
-      });
+      if (clearContextBtn) {
+        clearContextBtn.addEventListener('click', function() {
+          vscode.postMessage({ type: 'clearContext' });
+        });
+      }
 
       slashCmdBtn.addEventListener('click', function() {
         slashMenu.classList.toggle('hidden');
@@ -3346,19 +3504,21 @@ function getScript(mermaidUri: string, logoUri: string): string {
         }
       });
 
-      contextItems.addEventListener('dragover', function(e) {
-        e.preventDefault();
-        contextItems.style.background = 'var(--vscode-list-hoverBackground)';
-      });
+      if (contextItems) {
+        contextItems.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          contextItems.style.background = 'var(--vscode-list-hoverBackground)';
+        });
 
-      contextItems.addEventListener('dragleave', function() {
-        contextItems.style.background = '';
-      });
+        contextItems.addEventListener('dragleave', function() {
+          contextItems.style.background = '';
+        });
 
-      contextItems.addEventListener('drop', function(e) {
-        e.preventDefault();
-        contextItems.style.background = '';
-      });
+        contextItems.addEventListener('drop', function(e) {
+          e.preventDefault();
+          contextItems.style.background = '';
+        });
+      }
 
       window.addEventListener('message', function(event) {
         handleMessage(event.data);
@@ -3430,6 +3590,15 @@ function getScript(mermaidUri: string, logoUri: string): string {
             clearMessages();
             if (message.payload && message.payload.messages) {
               message.payload.messages.forEach(function(msg) { addMessage(msg); });
+            }
+            break;
+          case 'conversationHistory':
+            renderHistoryMenu(message.payload.conversations, message.payload.currentId);
+            break;
+          case 'titleUpdated':
+            // Title was updated by AI, refresh history if open
+            if (historyMenu && !historyMenu.classList.contains('hidden')) {
+              vscode.postMessage({ type: 'getConversationHistory' });
             }
             break;
           case 'insertPrompt':
@@ -3727,7 +3896,9 @@ function getScript(mermaidUri: string, logoUri: string): string {
         modeSelect.value = state.settings.mode;
         thinkingSelect.value = state.settings.thinkingLevel;
         accessSelect.value = state.settings.accessLevel;
-        contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
+        if (contextModeLabel) {
+          contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
+        }
         updateModeIndicator();
 
         // Set provider dropdown
@@ -4237,6 +4408,8 @@ function getScript(mermaidUri: string, logoUri: string): string {
 
       function updateContext(context) {
         state.context = context;
+        if (!contextItems) return;
+
         if (context.length === 0) {
           contextItems.innerHTML = '<div class="context-empty">Drop files here or click + to add context</div>';
           return;

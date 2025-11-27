@@ -5,6 +5,7 @@ export class ConversationManager {
   private _conversations: Map<string, Conversation> = new Map();
   private _currentConversationId: string | null = null;
   private _extensionContext: vscode.ExtensionContext;
+  private _onTitleGenerated?: (conversationId: string, title: string) => void;
 
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
@@ -80,6 +81,38 @@ export class ConversationManager {
     return false;
   }
 
+  /**
+   * Set callback for when a conversation title is generated
+   */
+  public setTitleCallback(callback: (conversationId: string, title: string) => void) {
+    this._onTitleGenerated = callback;
+  }
+
+  /**
+   * Update conversation title (used for AI-generated titles)
+   */
+  public updateConversationTitle(conversationId: string, title: string): boolean {
+    const conversation = this._conversations.get(conversationId);
+    if (conversation) {
+      conversation.title = title;
+      conversation.updatedAt = Date.now();
+      this._saveConversations();
+      this._onTitleGenerated?.(conversationId, title);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Check if this is the first user message in a conversation
+   */
+  public isFirstUserMessage(conversationId: string): boolean {
+    const conversation = this._conversations.get(conversationId);
+    if (!conversation) return false;
+    const userMessages = conversation.messages.filter(m => m.role === 'user');
+    return userMessages.length === 1;
+  }
+
   public addMessage(
     role: 'user' | 'assistant' | 'system',
     content: string,
@@ -103,10 +136,8 @@ export class ConversationManager {
     conversation.messages.push(message);
     conversation.updatedAt = Date.now();
 
-    // Auto-generate title from first user message
-    if (role === 'user' && conversation.messages.filter(m => m.role === 'user').length === 1) {
-      conversation.title = this._generateTitle(content);
-    }
+    // Note: Title generation is now handled externally via AI
+    // The title will be updated via updateConversationTitle() after AI generates it
 
     this._saveConversations();
     return message;
@@ -159,12 +190,6 @@ export class ConversationManager {
 
   private _generateId(): string {
     return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  }
-
-  private _generateTitle(content: string): string {
-    // Take first 50 characters of the message as title
-    const title = content.trim().substring(0, 50);
-    return title.length < content.length ? `${title}...` : title;
   }
 
   private _loadConversations() {
