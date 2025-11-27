@@ -118,11 +118,19 @@ export interface ModelInfo {
   contextWindow?: number;
 }
 
+export interface UsageStats {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 export interface StreamChunk {
   type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'done' | 'session_active';
   content?: string;
   toolCall?: ToolCall;
   sessionId?: string;
+  usage?: UsageStats;
 }
 
 // Brainstorm mode configuration

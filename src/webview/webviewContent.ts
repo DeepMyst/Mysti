@@ -143,6 +143,13 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
             <path d="M4 6l4 4 4-4"/>
           </svg>
         </button>
+        <div id="context-usage" class="context-usage" title="Context usage: 0%">
+          <svg viewBox="0 0 36 36" class="context-pie">
+            <circle class="context-pie-bg" cx="18" cy="18" r="15.91549430918954"/>
+            <circle id="context-pie-fill" class="context-pie-fill" cx="18" cy="18" r="15.91549430918954" stroke-dasharray="0 100" stroke-dashoffset="25"/>
+          </svg>
+          <span id="context-usage-text" class="context-usage-text">0%</span>
+        </div>
         <span id="mode-indicator" class="mode-indicator">Ask before edit</span>
       </div>
       <div class="input-container">
@@ -1117,6 +1124,52 @@ function getStyles(): string {
 
     .agent-icon {
       font-size: 12px;
+    }
+
+    /* Context usage pie chart */
+    .context-usage {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      background: var(--vscode-input-background);
+      border-radius: 6px;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .context-pie {
+      width: 18px;
+      height: 18px;
+      transform: rotate(-90deg);
+    }
+
+    .context-pie-bg {
+      fill: none;
+      stroke: var(--vscode-input-border);
+      stroke-width: 3;
+    }
+
+    .context-pie-fill {
+      fill: none;
+      stroke: var(--vscode-progressBar-background);
+      stroke-width: 3;
+      stroke-linecap: round;
+      transition: stroke-dasharray 0.3s ease;
+    }
+
+    .context-usage.warning .context-pie-fill {
+      stroke: var(--vscode-editorWarning-foreground, #cca700);
+    }
+
+    .context-usage.danger .context-pie-fill {
+      stroke: var(--vscode-errorForeground, #f14c4c);
+    }
+
+    .context-usage-text {
+      min-width: 24px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }
 
     /* Agent menu */
@@ -3107,6 +3160,12 @@ function getScript(mermaidUri: string, logoUri: string): string {
         providers: [],
         slashCommands: [],
         quickActions: [],
+        // Context usage tracking
+        contextUsage: {
+          usedTokens: 0,
+          contextWindow: 200000,
+          percentage: 0
+        },
         // Brainstorm mode state
         activeAgent: 'claude-code',
         brainstormSession: null,
@@ -3610,7 +3669,19 @@ function getScript(mermaidUri: string, logoUri: string): string {
             break;
           case 'responseComplete':
             hideLoading();
-            finalizeStreamingMessage(message.payload);
+            // Payload is { message, usage } - extract message for finalization
+            var responsePayload = message.payload || {};
+            finalizeStreamingMessage(responsePayload.message || responsePayload);
+            // Update context usage from response
+            if (responsePayload.usage) {
+              updateContextUsage(responsePayload.usage.input_tokens, null);
+            }
+            break;
+          case 'contextWindowInfo':
+            // Update context window size for the current model
+            if (message.payload && message.payload.contextWindow) {
+              updateContextUsage(state.contextUsage.usedTokens, message.payload.contextWindow);
+            }
             break;
           case 'requestCancelled':
             hideLoading();
@@ -3628,7 +3699,12 @@ function getScript(mermaidUri: string, logoUri: string): string {
             renderSuggestions(message.payload.suggestions);
             break;
           case 'suggestionsError':
-            renderFallbackSuggestions();
+            // Clear suggestions on error - don't show fallbacks
+            var suggestionsContainer = document.getElementById('quick-actions');
+            if (suggestionsContainer) {
+              suggestionsContainer.classList.remove('loading');
+              suggestionsContainer.innerHTML = '';
+            }
             break;
           case 'autocompleteSuggestion':
             if (message.payload && message.payload.suggestion) {
@@ -3658,6 +3734,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
             break;
           case 'conversationChanged':
             clearMessages();
+            resetContextUsage();
             if (message.payload && message.payload.messages) {
               message.payload.messages.forEach(function(msg) { addMessage(msg); });
             }
@@ -4465,17 +4542,6 @@ function getScript(mermaidUri: string, logoUri: string): string {
         });
       }
 
-      function renderFallbackSuggestions() {
-        renderSuggestions([
-          { id: 'continue', title: 'Continue', description: 'Continue with more details', message: 'Please continue', icon: '➡️', color: 'blue' },
-          { id: 'elaborate', title: 'Elaborate', description: 'Expand on this explanation', message: 'Can you elaborate on this?', icon: '📖', color: 'purple' },
-          { id: 'example', title: 'Show Example', description: 'See a practical code example', message: 'Can you show me an example?', icon: '💻', color: 'green' },
-          { id: 'alternative', title: 'Alternatives', description: 'Explore other approaches', message: 'What are alternative approaches?', icon: '🔄', color: 'orange' },
-          { id: 'optimize', title: 'Optimize', description: 'Improve performance or code quality', message: 'How can I optimize this?', icon: '⚡', color: 'amber' },
-          { id: 'tests', title: 'Add Tests', description: 'Write tests for this code', message: 'Can you write tests for this?', icon: '🧪', color: 'teal' }
-        ]);
-      }
-
       function finalizeStreamingMessage(msg) {
         var streamingEl = messagesEl.querySelector('.message.streaming');
         if (streamingEl) {
@@ -4536,6 +4602,55 @@ function getScript(mermaidUri: string, logoUri: string): string {
           'brainstorm': 'Brainstorm'
         };
         modeIndicator.textContent = modeLabels[state.settings.mode] || state.settings.mode;
+      }
+
+      /**
+       * Update the context usage pie chart
+       * @param usedTokens - Number of tokens used (input_tokens from response)
+       * @param contextWindow - Context window size (null to keep existing)
+       */
+      function updateContextUsage(usedTokens, contextWindow) {
+        if (contextWindow !== null && contextWindow !== undefined) {
+          state.contextUsage.contextWindow = contextWindow;
+        }
+        state.contextUsage.usedTokens = usedTokens || 0;
+
+        var percentage = Math.min(100, Math.round((state.contextUsage.usedTokens / state.contextUsage.contextWindow) * 100));
+        state.contextUsage.percentage = percentage;
+
+        var pieFill = document.getElementById('context-pie-fill');
+        var usageText = document.getElementById('context-usage-text');
+        var usageContainer = document.getElementById('context-usage');
+
+        if (pieFill && usageText && usageContainer) {
+          // Update pie chart fill (stroke-dasharray: filled empty)
+          pieFill.setAttribute('stroke-dasharray', percentage + ' ' + (100 - percentage));
+
+          // Update percentage text
+          usageText.textContent = percentage + '%';
+
+          // Update tooltip
+          var usedK = Math.round(state.contextUsage.usedTokens / 1000);
+          var totalK = Math.round(state.contextUsage.contextWindow / 1000);
+          usageContainer.title = 'Context usage: ' + usedK + 'k / ' + totalK + 'k tokens (' + percentage + '%)';
+
+          // Update color based on usage level
+          usageContainer.classList.remove('warning', 'danger');
+          if (percentage >= 90) {
+            usageContainer.classList.add('danger');
+          } else if (percentage >= 70) {
+            usageContainer.classList.add('warning');
+          }
+        }
+      }
+
+      /**
+       * Reset context usage (for new conversations)
+       */
+      function resetContextUsage() {
+        state.contextUsage.usedTokens = 0;
+        state.contextUsage.percentage = 0;
+        updateContextUsage(0, null);
       }
 
       function showSlashMenu() {

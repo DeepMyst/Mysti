@@ -280,8 +280,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'getFileLineNumber':
+        // Support both message.payload and direct properties on message
+        const fileLinePayload = message.payload || message;
         await this._handleGetFileLineNumber(
-          message.payload as { filePath: string; searchText: string },
+          {
+            filePath: (fileLinePayload as any).filePath,
+            searchText: (fileLinePayload as any).searchText
+          },
           (message as any).panelId
         );
         break;
@@ -361,6 +366,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     payload: { filePath: string; searchText: string },
     panelId?: string
   ) {
+    // Guard against missing filePath
+    if (!payload?.filePath) {
+      console.warn('[Mysti] getFileLineNumber called without filePath');
+      return;
+    }
+
     try {
       const content = await fs.promises.readFile(payload.filePath, 'utf-8');
       let lineNumber = 1;
@@ -476,6 +487,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       let assistantContent = '';
       let thinkingContent = '';
+      let lastUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined;
+
+      // Send context window info when starting
+      this._postToPanel(panelId, {
+        type: 'contextWindowInfo',
+        payload: {
+          contextWindow: this._providerManager.getModelContextWindow(settings.provider, settings.model)
+        }
+      });
 
       for await (const chunk of stream) {
         // Check if THIS panel's request was cancelled
@@ -527,6 +547,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
 
           case 'done':
+            // Capture usage stats if present in this chunk
+            if (chunk.usage) {
+              lastUsage = chunk.usage;
+            }
             const assistantMessage = this._conversationManager.addMessageToConversation(
               conversationId,
               'assistant',
@@ -536,7 +560,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             );
             this._postToPanel(panelId, {
               type: 'responseComplete',
-              payload: assistantMessage
+              payload: {
+                message: assistantMessage,
+                usage: lastUsage
+              }
             });
             // Trigger async suggestion generation
             this._generateSuggestionsAsync(assistantMessage, panelId);

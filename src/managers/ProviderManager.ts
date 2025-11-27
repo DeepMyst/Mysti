@@ -101,6 +101,22 @@ export class ProviderManager {
   }
 
   /**
+   * Get the context window size for a specific model
+   * Used for displaying context usage in the UI
+   */
+  public getModelContextWindow(providerId: string, modelId: string): number {
+    const provider = this._registry.get(providerId);
+    if (provider) {
+      const model = provider.config.models.find(m => m.id === modelId);
+      if (model?.contextWindow) {
+        return model.contextWindow;
+      }
+    }
+    // Default to 200k tokens
+    return 200000;
+  }
+
+  /**
    * Get the provider registry (for advanced use cases like brainstorm)
    */
   public getRegistry(): ProviderRegistry {

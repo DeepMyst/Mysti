@@ -80,16 +80,14 @@ export class SuggestionManager {
   ): Promise<QuickActionSuggestion[]> {
     this.cancelGeneration();
 
-    try {
-      const suggestions = await this._callClaude(lastMessage.content);
-      if (suggestions.length > 0) {
-        return suggestions;
-      }
-    } catch (error) {
-      console.error('[Mysti] Suggestion generation failed:', error);
+    // Let errors propagate - caller will handle by showing loading state or clearing
+    const suggestions = await this._callClaude(lastMessage.content);
+    if (suggestions.length > 0) {
+      return suggestions;
     }
 
-    return this._getFallbackSuggestions();
+    // If AI returned empty, throw to let caller handle it
+    throw new Error('No suggestions generated');
   }
 
   /**
@@ -272,14 +270,6 @@ Return ONLY JSON array, no other text.`;
         reject(err);
       });
     });
-  }
-
-  private _getFallbackSuggestions(): QuickActionSuggestion[] {
-    return [
-      { id: '1', title: 'Show example', description: 'See a practical example', message: 'Can you show me an example?', icon: '💻', color: 'blue' },
-      { id: '2', title: 'Explain more', description: 'Get more details', message: 'Can you explain this in more detail?', icon: '📖', color: 'green' },
-      { id: '3', title: 'Continue', description: 'Keep going', message: 'Please continue', icon: '➡️', color: 'purple' }
-    ];
   }
 
   public cancelGeneration(): void {

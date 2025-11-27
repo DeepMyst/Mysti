@@ -400,7 +400,17 @@ export class CodexProvider extends BaseCliProvider {
           return null;
 
         case 'turn.completed':
-          // Turn completed - could signal end of response
+          // Turn completed - extract usage stats if available
+          const usage = event.usage || event.turn?.usage;
+          if (usage) {
+            return {
+              type: 'done',
+              usage: {
+                input_tokens: usage.input_tokens || usage.prompt_tokens || 0,
+                output_tokens: usage.output_tokens || usage.completion_tokens || 0
+              }
+            };
+          }
           return null;
 
         case 'turn.failed':

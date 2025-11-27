@@ -201,7 +201,31 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         }
 
         // Handle message lifecycle events
-        if (nestedType === 'message_start' || nestedType === 'message_delta' || nestedType === 'message_stop') {
+        if (nestedType === 'message_start') {
+          return null;
+        }
+
+        // Handle message_delta - intermediate event, ignore
+        // Only message_stop should trigger completion
+        if (nestedType === 'message_delta') {
+          return null;
+        }
+
+        // Handle message_stop - contains final usage stats
+        if (nestedType === 'message_stop') {
+          const message = nestedEvent.message || {};
+          const usage = message.usage || nestedEvent.usage;
+          if (usage) {
+            return {
+              type: 'done',
+              usage: {
+                input_tokens: usage.input_tokens || 0,
+                output_tokens: usage.output_tokens || 0,
+                cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                cache_read_input_tokens: usage.cache_read_input_tokens
+              }
+            };
+          }
           return null;
         }
 
