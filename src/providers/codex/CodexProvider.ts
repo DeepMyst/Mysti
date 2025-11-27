@@ -407,7 +407,9 @@ export class CodexProvider extends BaseCliProvider {
               type: 'done',
               usage: {
                 input_tokens: usage.input_tokens || usage.prompt_tokens || 0,
-                output_tokens: usage.output_tokens || usage.completion_tokens || 0
+                output_tokens: usage.output_tokens || usage.completion_tokens || 0,
+                // Codex uses cached_input_tokens, map to cache_read_input_tokens
+                cache_read_input_tokens: usage.cached_input_tokens
               }
             };
           }
