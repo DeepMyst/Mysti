@@ -793,6 +793,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
     }
+    // Handle brainstorm enabled toggle (from agent dropdown)
+    if ((settings as any).brainstormEnabled !== undefined) {
+      await config.update('brainstorm.enabled', (settings as any).brainstormEnabled, vscode.ConfigurationTarget.Global);
+      this.postMessage({
+        type: 'brainstormToggled',
+        payload: { enabled: (settings as any).brainstormEnabled }
+      });
+    }
   }
 
   private async _handleAddToContext(
@@ -1053,9 +1061,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             '/clear - Clear conversation and session\n' +
             '/help - Show this help message\n' +
             '/context - Show current context items\n' +
-            '/mode [mode] - Show/change mode (ask-before-edit, edit-automatically, plan, brainstorm)\n' +
+            '/mode [mode] - Show/change mode (ask-before-edit, edit-automatically, plan)\n' +
             '/model [model] - Show/change AI model\n' +
-            '/agent [agent] - Switch agent (claude-code, openai-codex)\n' +
+            '/agent [agent] - Switch agent (claude-code, openai-codex, brainstorm)\n' +
             '/brainstorm [on|off|status] - Toggle brainstorm mode';
         }
       },

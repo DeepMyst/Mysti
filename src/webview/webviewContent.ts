@@ -68,7 +68,6 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <option value="ask-before-edit">Ask before edit</option>
           <option value="edit-automatically">Edit automatically</option>
           <option value="plan">Plan</option>
-          <option value="brainstorm">Brainstorm</option>
         </select>
       </div>
       <div class="settings-section">
@@ -85,6 +84,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <select id="provider-select" class="select">
           <option value="claude-code">Claude Code</option>
           <option value="openai-codex">OpenAI Codex</option>
+          <option value="brainstorm">Brainstorm</option>
         </select>
       </div>
       <div class="settings-section">
@@ -968,6 +968,13 @@ function getStyles(): string {
       padding: 2px 8px;
       background: var(--vscode-badge-background);
       border-radius: 10px;
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+    }
+
+    .mode-indicator:hover {
+      background: var(--vscode-button-secondaryHoverBackground, var(--vscode-badge-background));
+      color: var(--vscode-button-secondaryForeground, var(--vscode-descriptionForeground));
     }
 
     .input-container {
@@ -3463,17 +3470,27 @@ function getScript(mermaidUri: string, logoUri: string): string {
 
       providerSelect.addEventListener('change', function() {
         var newProvider = providerSelect.value;
-        state.settings.provider = newProvider;
-        state.activeAgent = newProvider;
 
-        // Update model dropdown with provider-specific models
-        updateModelsForProvider(newProvider);
+        if (newProvider === 'brainstorm') {
+          // Enable brainstorm mode (same as agent menu brainstorm click)
+          state.activeAgent = 'brainstorm';
+          updateAgentMenuSelection();
+          // Notify backend - brainstorm is enabled via brainstorm.enabled setting
+          postMessageWithPanelId({ type: 'updateSettings', payload: { brainstormEnabled: true } });
+        } else {
+          // Regular provider selection
+          state.settings.provider = newProvider;
+          state.activeAgent = newProvider;
 
-        // Sync with agent menu selection
-        updateAgentMenuSelection();
+          // Update model dropdown with provider-specific models
+          updateModelsForProvider(newProvider);
 
-        // Notify backend of provider change
-        postMessageWithPanelId({ type: 'updateSettings', payload: { provider: newProvider } });
+          // Sync with agent menu selection
+          updateAgentMenuSelection();
+
+          // Notify backend of provider change (also disables brainstorm)
+          postMessageWithPanelId({ type: 'updateSettings', payload: { provider: newProvider, brainstormEnabled: false } });
+        }
       });
 
       if (contextModeBtn && contextModeLabel) {
@@ -3482,6 +3499,28 @@ function getScript(mermaidUri: string, logoUri: string): string {
           contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
           postMessageWithPanelId({ type: 'updateSettings', payload: { contextMode: state.settings.contextMode } });
         });
+      }
+
+      // Mode indicator click to cycle through modes
+      if (modeIndicator) {
+        modeIndicator.addEventListener('click', function() {
+          var modes = ['ask-before-edit', 'edit-automatically', 'plan'];
+          var currentIndex = modes.indexOf(state.settings.mode);
+          var nextIndex = (currentIndex + 1) % modes.length;
+          var newMode = modes[nextIndex];
+
+          state.settings.mode = newMode;
+          updateModeIndicator();
+
+          // Also update the mode dropdown if it exists
+          if (modeSelect) {
+            modeSelect.value = newMode;
+          }
+
+          postMessageWithPanelId({ type: 'updateSettings', payload: { mode: newMode } });
+        });
+
+        modeIndicator.title = 'Click to cycle through modes';
       }
 
       if (addContextBtn) {
@@ -3524,28 +3563,28 @@ function getScript(mermaidUri: string, logoUri: string): string {
             if (agent) {
               if (agent === 'brainstorm') {
                 // Enable brainstorm mode
-                state.settings.mode = 'brainstorm';
                 state.activeAgent = 'brainstorm';
                 updateAgentMenuSelection();
                 agentMenu.classList.add('hidden');
-                // Notify backend of mode change
-                postMessageWithPanelId({ type: 'updateSettings', payload: { mode: 'brainstorm' } });
+                // Sync settings dropdown
+                if (providerSelect) providerSelect.value = 'brainstorm';
+                // Notify backend
+                postMessageWithPanelId({ type: 'updateSettings', payload: { brainstormEnabled: true } });
               } else {
                 // Select single agent, disable brainstorm
                 state.activeAgent = agent;
                 state.settings.provider = agent;
-                state.settings.mode = 'ask'; // Reset to normal mode
 
                 // Sync settings dropdown
-                providerSelect.value = agent;
+                if (providerSelect) providerSelect.value = agent;
 
                 // Update models for the new provider
                 updateModelsForProvider(agent);
 
                 updateAgentMenuSelection();
                 agentMenu.classList.add('hidden');
-                // Notify backend of provider change
-                postMessageWithPanelId({ type: 'updateSettings', payload: { provider: agent, mode: 'ask' } });
+                // Notify backend of provider change (also disables brainstorm)
+                postMessageWithPanelId({ type: 'updateSettings', payload: { provider: agent, brainstormEnabled: false } });
               }
             }
           });
@@ -4624,8 +4663,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
         var modeLabels = {
           'ask-before-edit': 'Ask before edit',
           'edit-automatically': 'Auto edit',
-          'plan': 'Plan mode',
-          'brainstorm': 'Brainstorm'
+          'plan': 'Plan mode'
         };
         modeIndicator.textContent = modeLabels[state.settings.mode] || state.settings.mode;
       }

@@ -334,8 +334,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     const modeInstructions: Record<string, string> = {
       'ask-before-edit': '\n\n[Mode: Ask before making any edits. Explain what changes you want to make and wait for approval before modifying any files.]',
       'edit-automatically': '\n\n[Mode: You may edit files directly without asking for permission.]',
-      'plan': '\n\n[Mode: Planning mode. Create a detailed plan for the task without making any actual changes. Break down the work into steps.]',
-      'brainstorm': '\n\n[Mode: Brainstorming mode. Explore ideas and possibilities without committing to any specific implementation.]'
+      'plan': '\n\n[Mode: Planning mode. Create a detailed plan for the task without making any actual changes. Break down the work into steps.]'
     };
 
     return prompt + (modeInstructions[mode] || '');

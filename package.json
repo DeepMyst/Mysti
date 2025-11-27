@@ -132,8 +132,7 @@
           "enum": [
             "ask-before-edit",
             "edit-automatically",
-            "plan",
-            "brainstorm"
+            "plan"
           ],
           "description": "Default operation mode"
         },
