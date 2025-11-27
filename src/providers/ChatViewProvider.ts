@@ -26,7 +26,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _providerManager: ProviderManager;
   private _suggestionManager: SuggestionManager;
   private _brainstormManager: BrainstormManager;
-  private _requestCancelled: boolean = false;
+  // Per-panel cancel tracking for isolated cancellation
+  private _cancelledPanels: Set<string> = new Set();
 
   constructor(
     extensionUri: vscode.Uri,
@@ -120,20 +121,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'cancelRequest':
-        this._requestCancelled = true;
-        this._providerManager.cancelCurrentRequest();
-        this._brainstormManager.cancelSession();
-        this._suggestionManager.cancelGeneration();
-        // Notify webview to reset UI state
-        this.postMessage({ type: 'requestCancelled' });
+        {
+          const panelId = (message as any).panelId;
+          if (panelId) {
+            // Add to cancelled panels set for per-panel tracking
+            this._cancelledPanels.add(panelId);
+            // Cancel only this panel's request
+            this._providerManager.cancelRequest(panelId);
+            this._brainstormManager.cancelSession(panelId);
+            // Notify webview to reset UI state
+            this._postToPanel(panelId, { type: 'requestCancelled' });
+          }
+        }
         break;
 
       case 'sendBrainstormMessage':
-        await this._handleBrainstormMessage(message.payload as {
-          content: string;
-          context: ContextItem[];
-          settings: Settings;
-        });
+        await this._handleBrainstormMessage(
+          message.payload as {
+            content: string;
+            context: ContextItem[];
+            settings: Settings;
+          },
+          (message as any).panelId
+        );
         break;
 
       case 'updateSettings':
@@ -141,39 +151,58 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'addToContext':
-        await this._handleAddToContext(message.payload as { path: string; type: string });
+        await this._handleAddToContext(
+          message.payload as { path: string; type: string },
+          (message as any).panelId
+        );
         break;
 
       case 'removeFromContext':
-        this._contextManager.removeFromContext(message.payload as string);
-        this.postMessage({
-          type: 'contextUpdated',
-          payload: this._contextManager.getContext()
-        });
+        {
+          const panelId = (message as any).panelId;
+          this._contextManager.removeFromContext(message.payload as string);
+          if (panelId) {
+            this._postToPanel(panelId, {
+              type: 'contextUpdated',
+              payload: this._contextManager.getContext()
+            });
+          }
+        }
         break;
 
       case 'clearContext':
-        this._contextManager.clearContext();
-        this.postMessage({
-          type: 'contextUpdated',
-          payload: []
-        });
+        {
+          const panelId = (message as any).panelId;
+          this._contextManager.clearContext();
+          if (panelId) {
+            this._postToPanel(panelId, {
+              type: 'contextUpdated',
+              payload: []
+            });
+          }
+        }
         break;
 
       case 'executeSlashCommand':
-        await this._handleSlashCommand(message.payload as { command: string; args: string });
+        await this._handleSlashCommand(
+          message.payload as { command: string; args: string },
+          (message as any).panelId
+        );
         break;
 
       case 'executeQuickAction':
-        await this._handleQuickAction(message.payload as string);
+        await this._handleQuickAction(message.payload as string, (message as any).panelId);
         break;
 
       case 'executeSuggestion':
-        await this._handleExecuteSuggestion(message.payload as QuickActionSuggestion);
+        await this._handleExecuteSuggestion(
+          message.payload as QuickActionSuggestion,
+          (message as any).panelId
+        );
         break;
 
       case 'enhancePrompt':
-        await this._handleEnhancePrompt(message.payload as string);
+        await this._handleEnhancePrompt(message.payload as string, (message as any).panelId);
         break;
 
       case 'newConversation':
@@ -200,18 +229,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'clearSession':
-        this._providerManager.clearSession();
-        this.postMessage({
-          type: 'sessionCleared',
-          payload: { message: 'Session cleared' }
-        });
+        {
+          const panelId = (message as any).panelId;
+          this._providerManager.clearSession();
+          if (panelId) {
+            this._postToPanel(panelId, {
+              type: 'sessionCleared',
+              payload: { message: 'Session cleared' }
+            });
+          }
+        }
         break;
 
       case 'requestPermission':
-        await this._handlePermissionRequest(message.payload as {
-          action: string;
-          details: string;
-        });
+        await this._handlePermissionRequest(
+          message.payload as { action: string; details: string },
+          (message as any).panelId
+        );
         break;
 
       case 'openFile':
@@ -219,16 +253,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'applyEdit':
-        await this._handleApplyEdit(message.payload as {
-          path: string;
-          content: string;
-          startLine?: number;
-          endLine?: number;
-        });
+        await this._handleApplyEdit(
+          message.payload as {
+            path: string;
+            content: string;
+            startLine?: number;
+            endLine?: number;
+          },
+          (message as any).panelId
+        );
         break;
 
       case 'getWorkspaceFiles':
-        await this._handleGetWorkspaceFiles();
+        await this._handleGetWorkspaceFiles((message as any).panelId);
         break;
 
       case 'copyToClipboard':
@@ -236,11 +273,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'revertFileEdit':
-        await this._handleRevertFileEdit(message.payload as { path: string });
+        await this._handleRevertFileEdit(
+          message.payload as { path: string },
+          (message as any).panelId
+        );
         break;
 
       case 'getFileLineNumber':
-        await this._handleGetFileLineNumber(message.payload as { filePath: string; searchText: string });
+        await this._handleGetFileLineNumber(
+          message.payload as { filePath: string; searchText: string },
+          (message as any).panelId
+        );
         break;
 
       case 'openInNewTab':
@@ -251,13 +294,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         {
           const panelId = (message as any).panelId;
           const panelState = this._panelStates.get(panelId);
-          this.postMessage({
-            type: 'conversationHistory',
-            payload: {
-              conversations: this._conversationManager.getAllConversations(),
-              currentId: panelState?.currentConversationId
-            }
-          }, panelId);
+          if (panelId) {
+            this._postToPanel(panelId, {
+              type: 'conversationHistory',
+              payload: {
+                conversations: this._conversationManager.getAllConversations(),
+                currentId: panelState?.currentConversationId
+              }
+            });
+          }
         }
         break;
 
@@ -312,7 +357,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async _handleGetFileLineNumber(payload: { filePath: string; searchText: string }) {
+  private async _handleGetFileLineNumber(
+    payload: { filePath: string; searchText: string },
+    panelId?: string
+  ) {
     try {
       const content = await fs.promises.readFile(payload.filePath, 'utf-8');
       let lineNumber = 1;
@@ -323,20 +371,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (content[i] === '\n') lineNumber++;
         }
       }
-      this.postMessage({
-        type: 'fileLineNumber',
-        payload: { filePath: payload.filePath, lineNumber }
-      });
+      if (panelId) {
+        this._postToPanel(panelId, {
+          type: 'fileLineNumber',
+          payload: { filePath: payload.filePath, lineNumber }
+        });
+      }
     } catch {
       // If file can't be read, return line 1 as default
-      this.postMessage({
-        type: 'fileLineNumber',
-        payload: { filePath: payload.filePath, lineNumber: 1 }
-      });
+      if (panelId) {
+        this._postToPanel(panelId, {
+          type: 'fileLineNumber',
+          payload: { filePath: payload.filePath, lineNumber: 1 }
+        });
+      }
     }
   }
 
-  private async _handleRevertFileEdit(payload: { path: string }) {
+  private async _handleRevertFileEdit(payload: { path: string }, panelId?: string) {
     try {
       const uri = vscode.Uri.file(payload.path);
 
@@ -348,21 +400,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await vscode.commands.executeCommand('git.checkout', uri);
       }
 
-      this.postMessage({
-        type: 'fileReverted',
-        payload: { path: payload.path, success: true }
-      });
+      if (panelId) {
+        this._postToPanel(panelId, {
+          type: 'fileReverted',
+          payload: { path: payload.path, success: true }
+        });
+      }
 
       vscode.window.showInformationMessage(`Reverted changes to ${payload.path}`);
     } catch (error) {
-      this.postMessage({
-        type: 'fileReverted',
-        payload: {
-          path: payload.path,
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to revert'
-        }
-      });
+      if (panelId) {
+        this._postToPanel(panelId, {
+          type: 'fileReverted',
+          payload: {
+            path: payload.path,
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to revert'
+          }
+        });
+      }
 
       vscode.window.showErrorMessage(`Failed to revert ${payload.path}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
@@ -376,7 +432,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     },
     panelId: string
   ) {
-    this._requestCancelled = false;
+    // Clear cancel flag for this panel
+    this._cancelledPanels.delete(panelId);
     const { content, context, settings } = payload;
 
     // Get the panel's conversation
@@ -407,19 +464,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       this._postToPanel(panelId, { type: 'responseStarted' });
 
+      // Pass panelId for per-panel process tracking
       const stream = this._providerManager.sendMessage(
         content,
         context,
         settings,
-        conversation
+        conversation,
+        undefined,
+        panelId
       );
 
       let assistantContent = '';
       let thinkingContent = '';
 
       for await (const chunk of stream) {
-        // Check if request was cancelled
-        if (this._requestCancelled) break;
+        // Check if THIS panel's request was cancelled
+        if (this._cancelledPanels.has(panelId)) break;
 
         switch (chunk.type) {
           case 'text':
@@ -517,103 +577,121 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Handle brainstorm mode messages
    */
-  private async _handleBrainstormMessage(payload: {
-    content: string;
-    context: ContextItem[];
-    settings: Settings;
-  }) {
-    this._requestCancelled = false;
+  private async _handleBrainstormMessage(
+    payload: {
+      content: string;
+      context: ContextItem[];
+      settings: Settings;
+    },
+    panelId: string
+  ) {
+    // Clear cancel flag for this panel
+    this._cancelledPanels.delete(panelId);
     const { content, context, settings } = payload;
 
-    // Add user message to conversation
-    const userMessage = this._conversationManager.addMessage('user', content, context);
-    this.postMessage({
+    // Get the panel's conversation
+    const panelState = this._panelStates.get(panelId);
+    const conversationId = panelState?.currentConversationId;
+
+    // Add user message to this panel's conversation
+    const userMessage = this._conversationManager.addMessageToConversation(
+      conversationId,
+      'user',
+      content,
+      context
+    );
+    this._postToPanel(panelId, {
       type: 'messageAdded',
       payload: userMessage
     });
 
     // Generate AI title for first user message
-    const currentConv = this._conversationManager.getCurrentConversation();
-    if (currentConv && this._conversationManager.isFirstUserMessage(currentConv.id)) {
-      this._generateTitleAsync(currentConv.id, content);
+    if (conversationId && this._conversationManager.isFirstUserMessage(conversationId)) {
+      this._generateTitleAsync(conversationId, content, panelId);
     }
 
     // Start brainstorm session
-    this.postMessage({
+    this._postToPanel(panelId, {
       type: 'brainstormStarted',
       payload: {
         query: content,
-        agents: this._brainstormManager.getCurrentSession()?.agents || []
+        agents: this._brainstormManager.getCurrentSession(panelId)?.agents || []
       }
     });
 
     try {
+      // Pass panelId for per-panel session tracking
       const stream = this._brainstormManager.startBrainstormSession(
         content,
         context,
-        settings
+        settings,
+        panelId
       );
 
       for await (const chunk of stream) {
+        // Check if THIS panel's request was cancelled
+        if (this._cancelledPanels.has(panelId)) break;
+
         switch (chunk.type) {
           case 'phase_change':
-            this.postMessage({
+            this._postToPanel(panelId, {
               type: 'brainstormPhaseChange',
               payload: { phase: chunk.phase }
             });
             break;
 
           case 'agent_text':
-            this.postMessage({
+            this._postToPanel(panelId, {
               type: 'brainstormAgentChunk',
               payload: { agentId: chunk.agentId, content: chunk.content, type: 'text' }
             });
             break;
 
           case 'agent_thinking':
-            this.postMessage({
+            this._postToPanel(panelId, {
               type: 'brainstormAgentChunk',
               payload: { agentId: chunk.agentId, content: chunk.content, type: 'thinking' }
             });
             break;
 
           case 'agent_complete':
-            this.postMessage({
+            this._postToPanel(panelId, {
               type: 'brainstormAgentComplete',
               payload: { agentId: chunk.agentId }
             });
             break;
 
           case 'agent_error':
-            this.postMessage({
+            this._postToPanel(panelId, {
               type: 'brainstormAgentError',
               payload: { agentId: chunk.agentId, error: chunk.content }
             });
             break;
 
           case 'discussion_text':
-            this.postMessage({
+            this._postToPanel(panelId, {
               type: 'brainstormDiscussionChunk',
               payload: { agentId: chunk.agentId, content: chunk.content }
             });
             break;
 
           case 'synthesis_text':
-            this.postMessage({
+            this._postToPanel(panelId, {
               type: 'brainstormSynthesisChunk',
               payload: { content: chunk.content }
             });
             break;
 
           case 'done':
-            const session = this._brainstormManager.getCurrentSession();
+            const session = this._brainstormManager.getCurrentSession(panelId);
             // Add unified solution as assistant message
             if (session?.unifiedSolution) {
-              const assistantMessage = this._conversationManager.addMessage(
+              const assistantMessage = this._conversationManager.addMessageToConversation(
+                conversationId,
                 'assistant',
                 session.unifiedSolution
               );
-              this.postMessage({
+              this._postToPanel(panelId, {
                 type: 'brainstormComplete',
                 payload: {
                   unifiedSolution: session.unifiedSolution,
@@ -621,15 +699,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 }
               });
               // Generate quick action suggestions for brainstorm result
-              this._generateSuggestionsAsync(assistantMessage);
+              this._generateSuggestionsAsync(assistantMessage, panelId);
             } else {
-              this.postMessage({ type: 'brainstormComplete', payload: {} });
+              this._postToPanel(panelId, { type: 'brainstormComplete', payload: {} });
             }
             break;
         }
       }
     } catch (error) {
-      this.postMessage({
+      this._postToPanel(panelId, {
         type: 'brainstormError',
         payload: { error: error instanceof Error ? error.message : 'An unknown error occurred' }
       });
@@ -680,51 +758,66 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async _handleAddToContext(payload: { path: string; type: string }) {
+  private async _handleAddToContext(
+    payload: { path: string; type: string },
+    panelId?: string
+  ) {
     if (payload.type === 'file') {
       await this._contextManager.addFileToContext(payload.path);
     } else if (payload.type === 'folder') {
       await this._contextManager.addFolderToContext(payload.path);
     }
-    this.postMessage({
-      type: 'contextUpdated',
-      payload: this._contextManager.getContext()
-    });
-  }
-
-  private async _handleSlashCommand(payload: { command: string; args: string }) {
-    const commands = this._getSlashCommands();
-    const cmd = commands.find(c => c.name === payload.command);
-    if (cmd) {
-      const result = cmd.handler(payload.args);
-      this.postMessage({
-        type: 'slashCommandResult',
-        payload: { command: payload.command, result }
+    if (panelId) {
+      this._postToPanel(panelId, {
+        type: 'contextUpdated',
+        payload: this._contextManager.getContext()
       });
     }
   }
 
-  private async _handleQuickAction(actionId: string) {
+  private async _handleSlashCommand(
+    payload: { command: string; args: string },
+    panelId?: string
+  ) {
+    const commands = this._getSlashCommands(panelId);
+    const cmd = commands.find(c => c.name === payload.command);
+    if (cmd) {
+      const result = cmd.handler(payload.args);
+      if (panelId) {
+        this._postToPanel(panelId, {
+          type: 'slashCommandResult',
+          payload: { command: payload.command, result }
+        });
+      }
+    }
+  }
+
+  private async _handleQuickAction(actionId: string, panelId?: string) {
     const actions = this._getQuickActions();
     const action = actions.find(a => a.id === actionId);
-    if (action) {
-      this.postMessage({
+    if (action && panelId) {
+      this._postToPanel(panelId, {
         type: 'insertPrompt',
         payload: action.prompt
       });
     }
   }
 
-  private async _handleExecuteSuggestion(suggestion: QuickActionSuggestion) {
-    this.postMessage({
-      type: 'insertPrompt',
-      payload: suggestion.message
-    });
+  private async _handleExecuteSuggestion(
+    suggestion: QuickActionSuggestion,
+    panelId?: string
+  ) {
+    if (panelId) {
+      this._postToPanel(panelId, {
+        type: 'insertPrompt',
+        payload: suggestion.message
+      });
+    }
   }
 
   private async _generateSuggestionsAsync(lastMessage: Message, panelId?: string) {
-    // Don't generate suggestions if request was cancelled
-    if (this._requestCancelled) return;
+    // Don't generate suggestions if this panel's request was cancelled
+    if (panelId && this._cancelledPanels.has(panelId)) return;
 
     // Get conversation for this panel or fallback to current
     let conversation;
@@ -773,26 +866,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async _handleEnhancePrompt(prompt: string) {
-    // Send to AI to enhance the prompt
-    const enhancedPrompt = await this._providerManager.enhancePrompt(prompt);
-    this.postMessage({
-      type: 'promptEnhanced',
-      payload: enhancedPrompt
-    });
+  private async _handleEnhancePrompt(prompt: string, panelId?: string) {
+    try {
+      // Send to AI to enhance the prompt
+      const enhancedPrompt = await this._providerManager.enhancePrompt(prompt);
+      if (panelId) {
+        this._postToPanel(panelId, {
+          type: 'promptEnhanced',
+          payload: enhancedPrompt
+        });
+      }
+    } catch (error) {
+      console.error('[Mysti] Error enhancing prompt:', error);
+      // Send error message to reset the UI
+      if (panelId) {
+        this._postToPanel(panelId, {
+          type: 'promptEnhanceError',
+          payload: error instanceof Error ? error.message : 'Failed to enhance prompt'
+        });
+      }
+    }
   }
 
-  private async _handlePermissionRequest(payload: { action: string; details: string }) {
+  private async _handlePermissionRequest(
+    payload: { action: string; details: string },
+    panelId?: string
+  ) {
     const result = await vscode.window.showInformationMessage(
       `Mysti wants to ${payload.action}: ${payload.details}`,
       { modal: true },
       'Allow',
       'Deny'
     );
-    this.postMessage({
-      type: 'permissionResult',
-      payload: { action: payload.action, allowed: result === 'Allow' }
-    });
+    if (panelId) {
+      this._postToPanel(panelId, {
+        type: 'permissionResult',
+        payload: { action: payload.action, allowed: result === 'Allow' }
+      });
+    }
   }
 
   private async _handleOpenFile(payload: { path: string; line?: number }) {
@@ -806,12 +917,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async _handleApplyEdit(payload: {
-    path: string;
-    content: string;
-    startLine?: number;
-    endLine?: number;
-  }) {
+  private async _handleApplyEdit(
+    payload: {
+      path: string;
+      content: string;
+      startLine?: number;
+      endLine?: number;
+    },
+    panelId?: string
+  ) {
     const uri = vscode.Uri.file(payload.path);
     const document = await vscode.workspace.openTextDocument(uri);
     const editor = await vscode.window.showTextDocument(document);
@@ -832,30 +946,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     await vscode.workspace.applyEdit(edit);
-    this.postMessage({
-      type: 'editApplied',
-      payload: { path: payload.path, success: true }
-    });
+    if (panelId) {
+      this._postToPanel(panelId, {
+        type: 'editApplied',
+        payload: { path: payload.path, success: true }
+      });
+    }
   }
 
-  private async _handleGetWorkspaceFiles() {
+  private async _handleGetWorkspaceFiles(panelId?: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders) {
-      this.postMessage({
-        type: 'workspaceFiles',
-        payload: []
-      });
+      if (panelId) {
+        this._postToPanel(panelId, {
+          type: 'workspaceFiles',
+          payload: []
+        });
+      }
       return;
     }
 
     const files = await vscode.workspace.findFiles('**/*', '**/node_modules/**', 1000);
-    this.postMessage({
-      type: 'workspaceFiles',
-      payload: files.map(f => f.fsPath)
-    });
+    if (panelId) {
+      this._postToPanel(panelId, {
+        type: 'workspaceFiles',
+        payload: files.map(f => f.fsPath)
+      });
+    }
   }
 
-  private _getSlashCommands() {
+  private _getSlashCommands(panelId?: string) {
     return [
       {
         name: 'clear',
@@ -863,10 +983,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         handler: () => {
           this._providerManager.clearSession();
           this._conversationManager.createNewConversation();
-          this.postMessage({
-            type: 'sessionCleared',
-            payload: { message: 'Session cleared' }
-          });
+          if (panelId) {
+            this._postToPanel(panelId, {
+              type: 'sessionCleared',
+              payload: { message: 'Session cleared' }
+            });
+          }
           return 'Conversation and session cleared';
         }
       },
@@ -938,10 +1060,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               const newModel = newProviderConfig?.defaultModel || currentModel;
 
               this._handleUpdateSettings({ provider: args as any });
-              this.postMessage({
-                type: 'agentChanged',
-                payload: { agent: args }
-              });
+              if (panelId) {
+                this._postToPanel(panelId, {
+                  type: 'agentChanged',
+                  payload: { agent: args }
+                });
+              }
 
               const agentName = args === 'claude-code' ? 'Claude Code' : 'OpenAI Codex';
               if (willSwitchModel && newProviderConfig) {
@@ -965,17 +1089,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           if (args === 'on' || args === 'enable') {
             config.update('brainstorm.enabled', true, true);
-            this.postMessage({
-              type: 'brainstormToggled',
-              payload: { enabled: true }
-            });
+            if (panelId) {
+              this._postToPanel(panelId, {
+                type: 'brainstormToggled',
+                payload: { enabled: true }
+              });
+            }
             return 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.';
           } else if (args === 'off' || args === 'disable') {
             config.update('brainstorm.enabled', false, true);
-            this.postMessage({
-              type: 'brainstormToggled',
-              payload: { enabled: false }
-            });
+            if (panelId) {
+              this._postToPanel(panelId, {
+                type: 'brainstormToggled',
+                payload: { enabled: false }
+              });
+            }
             return 'Brainstorm mode disabled. Using single agent.';
           } else if (args === 'status') {
             return currentEnabled
@@ -986,10 +1114,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Toggle if no args
           const newState = !currentEnabled;
           config.update('brainstorm.enabled', newState, true);
-          this.postMessage({
-            type: 'brainstormToggled',
-            payload: { enabled: newState }
-          });
+          if (panelId) {
+            this._postToPanel(panelId, {
+              type: 'brainstormToggled',
+              payload: { enabled: newState }
+            });
+          }
           return newState
             ? 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.'
             : 'Brainstorm mode disabled. Using single agent.';

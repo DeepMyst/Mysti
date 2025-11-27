@@ -192,13 +192,17 @@ export class CodexProvider extends BaseCliProvider {
   /**
    * Override sendMessage to use codex exec with proper argument passing
    * Codex exec expects: codex exec [flags] "prompt"
+   * @param panelId Optional panel ID for per-panel process tracking
+   * @param providerManager Optional ProviderManager for registering process
    */
   async *sendMessage(
     content: string,
     context: ContextItem[],
     settings: Settings,
     conversation: Conversation | null,
-    persona?: PersonaConfig
+    persona?: PersonaConfig,
+    panelId?: string,
+    providerManager?: unknown
   ): AsyncGenerator<StreamChunk> {
     const cliPath = this.getCliPath();
 
@@ -228,6 +232,11 @@ export class CodexProvider extends BaseCliProvider {
         stdio: ['pipe', 'pipe', 'pipe']
       });
 
+      // Register process with ProviderManager for per-panel cancellation
+      if (panelId && providerManager && typeof (providerManager as any).registerProcess === 'function') {
+        (providerManager as any).registerProcess(panelId, this._currentProcess);
+      }
+
       // Collect stderr for error reporting
       let stderrOutput = '';
       if (this._currentProcess.stderr) {
@@ -254,6 +263,10 @@ export class CodexProvider extends BaseCliProvider {
       yield this.handleError(error);
     } finally {
       this._currentProcess = null;
+      // Clear process tracking when done
+      if (panelId && providerManager && typeof (providerManager as any).clearProcess === 'function') {
+        (providerManager as any).clearProcess(panelId);
+      }
     }
   }
 

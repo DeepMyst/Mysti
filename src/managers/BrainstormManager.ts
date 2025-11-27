@@ -37,7 +37,8 @@ const AGENT_STYLES: Record<AgentType, { color: string; icon: string; displayName
 export class BrainstormManager {
   private _extensionContext: vscode.ExtensionContext;
   private _providerManager: ProviderManager;
-  private _currentSession: BrainstormSession | null = null;
+  // Per-panel session tracking for isolated brainstorm sessions
+  private _panelSessions: Map<string, BrainstormSession> = new Map();
 
   constructor(context: vscode.ExtensionContext, providerManager: ProviderManager) {
     this._extensionContext = context;
@@ -92,33 +93,38 @@ export class BrainstormManager {
   }
 
   /**
-   * Get the current brainstorm session
+   * Get the current brainstorm session for a panel
+   * @param panelId Optional panel ID (defaults to 'default')
    */
-  public getCurrentSession(): BrainstormSession | null {
-    return this._currentSession;
+  public getCurrentSession(panelId?: string): BrainstormSession | null {
+    const sessionId = panelId || 'default';
+    return this._panelSessions.get(sessionId) || null;
   }
 
   /**
-   * Check if a brainstorm session is active
+   * Check if a brainstorm session is active for a panel
    */
-  public isSessionActive(): boolean {
-    return this._currentSession !== null &&
-           this._currentSession.phase !== 'complete';
+  public isSessionActive(panelId?: string): boolean {
+    const session = this.getCurrentSession(panelId);
+    return session !== null && session.phase !== 'complete';
   }
 
   /**
    * Start a new brainstorm session
+   * @param panelId Optional panel ID for per-panel session tracking
    */
   public async *startBrainstormSession(
     query: string,
     context: ContextItem[],
-    settings: Settings
+    settings: Settings,
+    panelId?: string
   ): AsyncGenerator<BrainstormStreamChunk> {
+    const sessionId = panelId || 'default';
     const brainstormConfig = this._getConfig();
     const agentConfigs = this._buildAgentConfigs(brainstormConfig.agents);
 
-    // Create new session
-    this._currentSession = {
+    // Create new session for this panel
+    const session: BrainstormSession = {
       id: uuidv4(),
       query,
       phase: 'initial',
@@ -130,29 +136,31 @@ export class BrainstormManager {
       updatedAt: Date.now()
     };
 
-    console.log('[Mysti] Brainstorm: Starting session', this._currentSession.id);
+    this._panelSessions.set(sessionId, session);
+
+    console.log('[Mysti] Brainstorm: Starting session', session.id, 'for panel', sessionId);
 
     try {
       // Phase 1: Individual Analysis (parallel)
       yield { type: 'phase_change', phase: 'individual' };
-      this._currentSession.phase = 'individual';
-      yield* this._runIndividualPhase(query, context, settings);
+      session.phase = 'individual';
+      yield* this._runIndividualPhase(query, context, settings, sessionId);
 
       // Phase 2: Discussion (only in full mode)
       if (brainstormConfig.discussionMode === 'full') {
         yield { type: 'phase_change', phase: 'discussion' };
-        this._currentSession.phase = 'discussion';
-        yield* this._runDiscussionPhase(context, settings, brainstormConfig.discussionRounds);
+        session.phase = 'discussion';
+        yield* this._runDiscussionPhase(context, settings, brainstormConfig.discussionRounds, sessionId);
       }
 
       // Phase 3: Synthesis
       yield { type: 'phase_change', phase: 'synthesis' };
-      this._currentSession.phase = 'synthesis';
-      yield* this._runSynthesisPhase(context, settings, brainstormConfig.synthesisAgent);
+      session.phase = 'synthesis';
+      yield* this._runSynthesisPhase(context, settings, brainstormConfig.synthesisAgent, sessionId);
 
       // Complete
       yield { type: 'phase_change', phase: 'complete' };
-      this._currentSession.phase = 'complete';
+      session.phase = 'complete';
       yield { type: 'done' };
 
     } catch (error) {
@@ -170,13 +178,15 @@ export class BrainstormManager {
   private async *_runIndividualPhase(
     query: string,
     context: ContextItem[],
-    settings: Settings
+    settings: Settings,
+    sessionId: string
   ): AsyncGenerator<BrainstormStreamChunk> {
-    const agents = this._currentSession!.agents;
+    const session = this._panelSessions.get(sessionId)!;
+    const agents = session.agents;
 
     // Create response tracking for each agent
     for (const agent of agents) {
-      this._currentSession!.agentResponses.set(agent.id, {
+      session.agentResponses.set(agent.id, {
         agentId: agent.id,
         content: '',
         status: 'pending',
@@ -186,7 +196,7 @@ export class BrainstormManager {
 
     // Run agents in parallel using interleaved streaming
     const generators = agents.map(agent =>
-      this._streamAgentResponse(agent, query, context, settings)
+      this._streamAgentResponse(agent, query, context, settings, sessionId)
     );
 
     // Interleave responses from all agents
@@ -200,19 +210,23 @@ export class BrainstormManager {
     agent: AgentConfig,
     query: string,
     context: ContextItem[],
-    settings: Settings
+    settings: Settings,
+    sessionId: string
   ): AsyncGenerator<BrainstormStreamChunk> {
-    const agentResponse = this._currentSession!.agentResponses.get(agent.id)!;
+    const session = this._panelSessions.get(sessionId)!;
+    const agentResponse = session.agentResponses.get(agent.id)!;
     agentResponse.status = 'streaming';
 
     try {
+      // Pass sessionId for per-panel process tracking
       const stream = this._providerManager.sendMessageToProvider(
         agent.id,
         query,
         context,
         { ...settings, provider: agent.id, model: this._providerManager.getProviderDefaultModel(agent.id) },
         null,
-        agent.persona
+        agent.persona,
+        sessionId
       );
 
       for await (const chunk of stream) {
@@ -263,9 +277,11 @@ export class BrainstormManager {
   private async *_runDiscussionPhase(
     context: ContextItem[],
     settings: Settings,
-    rounds: number
+    rounds: number,
+    sessionId: string
   ): AsyncGenerator<BrainstormStreamChunk> {
-    const agents = this._currentSession!.agents;
+    const session = this._panelSessions.get(sessionId)!;
+    const agents = session.agents;
 
     for (let round = 1; round <= rounds; round++) {
       console.log(`[Mysti] Brainstorm: Discussion round ${round}`);
@@ -274,7 +290,7 @@ export class BrainstormManager {
 
       for (const agent of agents) {
         // Build review prompt with other agents' responses
-        const reviewPrompt = this._buildReviewPrompt(agent.id, round);
+        const reviewPrompt = this._buildReviewPrompt(agent.id, round, sessionId);
 
         const stream = this._providerManager.sendMessageToProvider(
           agent.id,
@@ -282,7 +298,8 @@ export class BrainstormManager {
           context,
           { ...settings, provider: agent.id, model: this._providerManager.getProviderDefaultModel(agent.id) },
           null,
-          agent.persona
+          agent.persona,
+          sessionId
         );
 
         let contribution = '';
@@ -300,7 +317,7 @@ export class BrainstormManager {
         contributions.set(agent.id, contribution);
       }
 
-      this._currentSession!.discussionRounds.push({
+      session.discussionRounds.push({
         roundNumber: round,
         contributions
       });
@@ -310,21 +327,22 @@ export class BrainstormManager {
   /**
    * Build a review prompt for an agent to review others' responses
    */
-  private _buildReviewPrompt(agentId: AgentType, round: number): string {
-    const otherResponses = Array.from(this._currentSession!.agentResponses.entries())
+  private _buildReviewPrompt(agentId: AgentType, round: number, sessionId: string): string {
+    const session = this._panelSessions.get(sessionId)!;
+    const otherResponses = Array.from(session.agentResponses.entries())
       .filter(([id]) => id !== agentId)
       .map(([id, response]) => {
-        const agent = this._currentSession!.agents.find(a => a.id === id);
+        const agent = session.agents.find(a => a.id === id);
         return `## ${agent?.displayName || id}'s Analysis\n\n${response.content}`;
       })
       .join('\n\n---\n\n');
 
-    const previousRounds = this._currentSession!.discussionRounds
+    const previousRounds = session.discussionRounds
       .filter(r => r.roundNumber < round)
       .map(r => {
         const contributions = Array.from(r.contributions.entries())
           .map(([id, content]) => {
-            const agent = this._currentSession!.agents.find(a => a.id === id);
+            const agent = session.agents.find(a => a.id === id);
             return `**${agent?.displayName || id}:** ${content}`;
           })
           .join('\n\n');
@@ -335,7 +353,7 @@ export class BrainstormManager {
     let prompt = `# Discussion Round ${round}\n\n`;
     prompt += `You are participating in a collaborative brainstorm session. `;
     prompt += `Review the following analyses from other agents and provide your thoughts, agreements, disagreements, or additional insights.\n\n`;
-    prompt += `## Original Query\n\n${this._currentSession!.query}\n\n`;
+    prompt += `## Original Query\n\n${session.query}\n\n`;
     prompt += `## Other Agents' Analyses\n\n${otherResponses}\n\n`;
 
     if (previousRounds) {
@@ -353,9 +371,11 @@ export class BrainstormManager {
   private async *_runSynthesisPhase(
     context: ContextItem[],
     settings: Settings,
-    synthesisAgentId: AgentType
+    synthesisAgentId: AgentType,
+    sessionId: string
   ): AsyncGenerator<BrainstormStreamChunk> {
-    const synthesisPrompt = this._buildSynthesisPrompt();
+    const session = this._panelSessions.get(sessionId)!;
+    const synthesisPrompt = this._buildSynthesisPrompt(sessionId);
 
     console.log(`[Mysti] Brainstorm: Synthesis by ${synthesisAgentId}`);
 
@@ -364,7 +384,9 @@ export class BrainstormManager {
       synthesisPrompt,
       context,
       { ...settings, provider: synthesisAgentId, model: this._providerManager.getProviderDefaultModel(synthesisAgentId) },
-      null
+      null,
+      undefined,
+      sessionId
     );
 
     let synthesis = '';
@@ -378,25 +400,26 @@ export class BrainstormManager {
       }
     }
 
-    this._currentSession!.unifiedSolution = synthesis;
+    session.unifiedSolution = synthesis;
   }
 
   /**
    * Build the synthesis prompt from all agent responses and discussions
    */
-  private _buildSynthesisPrompt(): string {
-    const agentAnalyses = Array.from(this._currentSession!.agentResponses.entries())
+  private _buildSynthesisPrompt(sessionId: string): string {
+    const session = this._panelSessions.get(sessionId)!;
+    const agentAnalyses = Array.from(session.agentResponses.entries())
       .map(([id, response]) => {
-        const agent = this._currentSession!.agents.find(a => a.id === id);
+        const agent = session.agents.find(a => a.id === id);
         return `## ${agent?.displayName || id}'s Analysis\n\n${response.content}`;
       })
       .join('\n\n---\n\n');
 
-    const discussions = this._currentSession!.discussionRounds
+    const discussions = session.discussionRounds
       .map(round => {
         const contributions = Array.from(round.contributions.entries())
           .map(([id, content]) => {
-            const agent = this._currentSession!.agents.find(a => a.id === id);
+            const agent = session.agents.find(a => a.id === id);
             return `**${agent?.displayName || id}:** ${content}`;
           })
           .join('\n\n');
@@ -407,7 +430,7 @@ export class BrainstormManager {
     let prompt = `# Synthesis Task\n\n`;
     prompt += `You are synthesizing the results of a multi-agent brainstorm session. `;
     prompt += `Create a unified solution that incorporates the best ideas from all agents.\n\n`;
-    prompt += `## Original Query\n\n${this._currentSession!.query}\n\n`;
+    prompt += `## Original Query\n\n${session.query}\n\n`;
     prompt += `## Agent Analyses\n\n${agentAnalyses}\n\n`;
 
     if (discussions) {
@@ -467,20 +490,26 @@ export class BrainstormManager {
   }
 
   /**
-   * Cancel the current brainstorm session
+   * Cancel the brainstorm session for a specific panel
+   * @param panelId Optional panel ID (defaults to 'default')
    */
-  public cancelSession(): void {
-    if (this._currentSession) {
-      console.log('[Mysti] Brainstorm: Cancelling session', this._currentSession.id);
-      this._providerManager.cancelCurrentRequest();
-      this._currentSession.phase = 'complete';
+  public cancelSession(panelId?: string): void {
+    const sessionId = panelId || 'default';
+    const session = this._panelSessions.get(sessionId);
+    if (session) {
+      console.log('[Mysti] Brainstorm: Cancelling session for panel', sessionId);
+      // Cancel the request for this specific panel
+      this._providerManager.cancelRequest(sessionId);
+      session.phase = 'complete';
     }
   }
 
   /**
-   * Clear the current session
+   * Clear the session for a specific panel
+   * @param panelId Optional panel ID (defaults to 'default')
    */
-  public clearSession(): void {
-    this._currentSession = null;
+  public clearSession(panelId?: string): void {
+    const sessionId = panelId || 'default';
+    this._panelSessions.delete(sessionId);
   }
 }

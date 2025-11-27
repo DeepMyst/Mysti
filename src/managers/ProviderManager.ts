@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { ChildProcess } from 'child_process';
 import { ProviderRegistry } from '../providers/ProviderRegistry';
 import type { ICliProvider, PersonaConfig } from '../providers/base/IProvider';
 import type {
@@ -17,6 +18,9 @@ import type {
 export class ProviderManager {
   private _registry: ProviderRegistry;
   private _extensionContext: vscode.ExtensionContext;
+
+  // Per-panel process tracking for isolated cancellation
+  private _activePanelProcesses: Map<string, ChildProcess> = new Map();
 
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
@@ -111,10 +115,11 @@ export class ProviderManager {
     context: ContextItem[],
     settings: Settings,
     conversation: Conversation | null,
-    persona?: PersonaConfig
+    persona?: PersonaConfig,
+    panelId?: string
   ): AsyncGenerator<StreamChunk> {
     const provider = this._getActiveProvider(settings.provider);
-    yield* provider.sendMessage(content, context, settings, conversation, persona);
+    yield* provider.sendMessage(content, context, settings, conversation, persona, panelId, this);
   }
 
   /**
@@ -127,19 +132,51 @@ export class ProviderManager {
     context: ContextItem[],
     settings: Settings,
     conversation: Conversation | null,
-    persona?: PersonaConfig
+    persona?: PersonaConfig,
+    panelId?: string
   ): AsyncGenerator<StreamChunk> {
     const provider = this._getActiveProvider(providerId);
-    yield* provider.sendMessage(content, context, settings, conversation, persona);
+    yield* provider.sendMessage(content, context, settings, conversation, persona, panelId, this);
   }
 
   /**
-   * Cancel the current request on all providers
+   * Register a process for a specific panel (for per-panel cancellation)
+   */
+  public registerProcess(panelId: string, process: ChildProcess): void {
+    this._activePanelProcesses.set(panelId, process);
+  }
+
+  /**
+   * Cancel request for a specific panel only
+   */
+  public cancelRequest(panelId: string): void {
+    const process = this._activePanelProcesses.get(panelId);
+    if (process) {
+      console.log(`[Mysti] Cancelling request for panel: ${panelId}`);
+      process.kill('SIGTERM');
+      this._activePanelProcesses.delete(panelId);
+    }
+  }
+
+  /**
+   * Clear process tracking for a panel (called when process completes naturally)
+   */
+  public clearProcess(panelId: string): void {
+    this._activePanelProcesses.delete(panelId);
+  }
+
+  /**
+   * Cancel the current request on all providers (legacy - still needed for global cancel)
    */
   public cancelCurrentRequest(): void {
     for (const provider of this._registry.getAll()) {
       provider.cancelCurrentRequest();
     }
+    // Also clear all tracked panel processes
+    for (const [panelId, process] of this._activePanelProcesses) {
+      process.kill('SIGTERM');
+    }
+    this._activePanelProcesses.clear();
   }
 
   /**

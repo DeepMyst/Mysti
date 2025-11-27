@@ -923,6 +923,48 @@ function getStyles(): string {
       color: var(--vscode-foreground);
     }
 
+    .toolbar-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .toolbar-btn:disabled:hover {
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    /* Enhance button loading state */
+    .toolbar-btn.enhancing {
+      color: var(--vscode-progressBar-background);
+      pointer-events: none;
+    }
+
+    .toolbar-btn.enhancing svg {
+      animation: sparkle 0.8s ease-in-out infinite;
+    }
+
+    @keyframes sparkle {
+      0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+      50% {
+        opacity: 0.5;
+        transform: scale(1.15);
+      }
+    }
+
+    /* Input area disabled state during enhancement */
+    .input-area.enhancing textarea {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    .input-area.enhancing .send-btn {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+
     .toolbar-spacer {
       flex: 1;
     }
@@ -976,10 +1018,11 @@ function getStyles(): string {
       color: var(--vscode-input-foreground);
       border-radius: 8px;
       font-size: 13px;
+      line-height: 1.5;
       font-family: var(--vscode-font-family);
       resize: none;
       min-height: 36px;
-      max-height: 150px;
+      max-height: 240px;
     }
 
     #message-input:focus {
@@ -3166,7 +3209,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
 
       sendBtn.addEventListener('click', sendMessage);
       stopBtn.addEventListener('click', function() {
-        vscode.postMessage({ type: 'cancelRequest' });
+        postMessageWithPanelId({ type: 'cancelRequest' });
       });
       inputEl.addEventListener('keydown', function(e) {
         // Tab key handling for autocomplete (hold-duration based)
@@ -3188,7 +3231,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
               if (holdDuration > 600 && currentCompletionLevel !== 'message') {
                 // After 600ms, upgrade to message completion
                 currentCompletionLevel = 'message';
-                vscode.postMessage({
+                postMessageWithPanelId({
                   type: 'requestAutocomplete',
                   payload: { text: inputEl.value, type: 'message' }
                 });
@@ -3200,7 +3243,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
               } else if (holdDuration > 300 && currentCompletionLevel === 'sentence') {
                 // After 300ms, upgrade to paragraph completion
                 currentCompletionLevel = 'paragraph';
-                vscode.postMessage({
+                postMessageWithPanelId({
                   type: 'requestAutocomplete',
                   payload: { text: inputEl.value, type: 'paragraph' }
                 });
@@ -3240,8 +3283,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
       });
 
       inputEl.addEventListener('input', function() {
-        inputEl.style.height = 'auto';
-        inputEl.style.height = Math.min(inputEl.scrollHeight, 150) + 'px';
+        autoResizeTextarea();
         if (!inputEl.value.startsWith('/')) {
           hideSlashMenu();
         }
@@ -3257,7 +3299,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
           var text = inputEl.value.trim();
           if (text && text.length > 3 && !text.startsWith('/') && !state.isLoading) {
             // Request precompute for instant response when Tab is held
-            vscode.postMessage({
+            postMessageWithPanelId({
               type: 'requestAutocomplete',
               payload: { text: inputEl.value, type: 'sentence', precompute: true }
             });
@@ -3337,22 +3379,22 @@ function getScript(mermaidUri: string, logoUri: string): string {
       modeSelect.addEventListener('change', function() {
         state.settings.mode = modeSelect.value;
         updateModeIndicator();
-        vscode.postMessage({ type: 'updateSettings', payload: { mode: modeSelect.value } });
+        postMessageWithPanelId({ type: 'updateSettings', payload: { mode: modeSelect.value } });
       });
 
       thinkingSelect.addEventListener('change', function() {
         state.settings.thinkingLevel = thinkingSelect.value;
-        vscode.postMessage({ type: 'updateSettings', payload: { thinkingLevel: thinkingSelect.value } });
+        postMessageWithPanelId({ type: 'updateSettings', payload: { thinkingLevel: thinkingSelect.value } });
       });
 
       modelSelect.addEventListener('change', function() {
         state.settings.model = modelSelect.value;
-        vscode.postMessage({ type: 'updateSettings', payload: { model: modelSelect.value } });
+        postMessageWithPanelId({ type: 'updateSettings', payload: { model: modelSelect.value } });
       });
 
       accessSelect.addEventListener('change', function() {
         state.settings.accessLevel = accessSelect.value;
-        vscode.postMessage({ type: 'updateSettings', payload: { accessLevel: accessSelect.value } });
+        postMessageWithPanelId({ type: 'updateSettings', payload: { accessLevel: accessSelect.value } });
       });
 
       providerSelect.addEventListener('change', function() {
@@ -3367,26 +3409,26 @@ function getScript(mermaidUri: string, logoUri: string): string {
         updateAgentMenuSelection();
 
         // Notify backend of provider change
-        vscode.postMessage({ type: 'updateSettings', payload: { provider: newProvider } });
+        postMessageWithPanelId({ type: 'updateSettings', payload: { provider: newProvider } });
       });
 
       if (contextModeBtn && contextModeLabel) {
         contextModeBtn.addEventListener('click', function() {
           state.settings.contextMode = state.settings.contextMode === 'auto' ? 'manual' : 'auto';
           contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
-          vscode.postMessage({ type: 'updateSettings', payload: { contextMode: state.settings.contextMode } });
+          postMessageWithPanelId({ type: 'updateSettings', payload: { contextMode: state.settings.contextMode } });
         });
       }
 
       if (addContextBtn) {
         addContextBtn.addEventListener('click', function() {
-          vscode.postMessage({ type: 'getWorkspaceFiles' });
+          postMessageWithPanelId({ type: 'getWorkspaceFiles' });
         });
       }
 
       if (clearContextBtn) {
         clearContextBtn.addEventListener('click', function() {
-          vscode.postMessage({ type: 'clearContext' });
+          postMessageWithPanelId({ type: 'clearContext' });
         });
       }
 
@@ -3423,7 +3465,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
                 updateAgentMenuSelection();
                 agentMenu.classList.add('hidden');
                 // Notify backend of mode change
-                vscode.postMessage({ type: 'updateSettings', payload: { mode: 'brainstorm' } });
+                postMessageWithPanelId({ type: 'updateSettings', payload: { mode: 'brainstorm' } });
               } else {
                 // Select single agent, disable brainstorm
                 state.activeAgent = agent;
@@ -3439,7 +3481,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
                 updateAgentMenuSelection();
                 agentMenu.classList.add('hidden');
                 // Notify backend of provider change
-                vscode.postMessage({ type: 'updateSettings', payload: { provider: agent, mode: 'ask' } });
+                postMessageWithPanelId({ type: 'updateSettings', payload: { provider: agent, mode: 'ask' } });
               }
             }
           });
@@ -3462,7 +3504,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
               state.settings.model = provider.models[0].id;
               modelSelect.value = state.settings.model;
               // Notify backend of model change
-              vscode.postMessage({ type: 'updateSettings', payload: { model: state.settings.model } });
+              postMessageWithPanelId({ type: 'updateSettings', payload: { model: state.settings.model } });
             }
           }
         }
@@ -3505,9 +3547,30 @@ function getScript(mermaidUri: string, logoUri: string): string {
         }
       }
 
+      var enhanceTimeout = null;
       enhanceBtn.addEventListener('click', function() {
-        if (inputEl.value.trim()) {
-          vscode.postMessage({ type: 'enhancePrompt', payload: inputEl.value });
+        if (inputEl.value.trim() && !enhanceBtn.classList.contains('enhancing')) {
+          // Add enhancing state - show loader and disable inputs
+          enhanceBtn.classList.add('enhancing');
+          enhanceBtn.title = 'Enhancing prompt...';
+          var inputArea = document.querySelector('.input-area');
+          if (inputArea) inputArea.classList.add('enhancing');
+
+          // Safety timeout - reset UI if no response after 30 seconds
+          enhanceTimeout = setTimeout(function() {
+            if (enhanceBtn.classList.contains('enhancing')) {
+              enhanceBtn.classList.remove('enhancing');
+              enhanceBtn.title = 'Enhance prompt';
+              var ia = document.querySelector('.input-area');
+              if (ia) ia.classList.remove('enhancing');
+              inputEl.placeholder = 'Enhancement timed out. Try again.';
+              setTimeout(function() {
+                inputEl.placeholder = 'Ask Mysti...';
+              }, 3000);
+            }
+          }, 30000);
+
+          postMessageWithPanelId({ type: 'enhancePrompt', payload: inputEl.value });
         }
       });
 
@@ -3613,7 +3676,39 @@ function getScript(mermaidUri: string, logoUri: string): string {
             inputEl.focus();
             break;
           case 'promptEnhanced':
+            // Clear safety timeout
+            if (enhanceTimeout) {
+              clearTimeout(enhanceTimeout);
+              enhanceTimeout = null;
+            }
+            // Reset enhancing state
+            enhanceBtn.classList.remove('enhancing');
+            enhanceBtn.title = 'Enhance prompt';
+            var inputAreaReset = document.querySelector('.input-area');
+            if (inputAreaReset) inputAreaReset.classList.remove('enhancing');
+
             inputEl.value = message.payload;
+            inputEl.focus();
+            autoResizeTextarea();
+            break;
+          case 'promptEnhanceError':
+            // Clear safety timeout
+            if (enhanceTimeout) {
+              clearTimeout(enhanceTimeout);
+              enhanceTimeout = null;
+            }
+            // Reset enhancing state on error
+            enhanceBtn.classList.remove('enhancing');
+            enhanceBtn.title = 'Enhance prompt';
+            var inputAreaError = document.querySelector('.input-area');
+            if (inputAreaError) inputAreaError.classList.remove('enhancing');
+
+            // Show error briefly in the input area
+            var originalPlaceholder = inputEl.placeholder;
+            inputEl.placeholder = 'Enhancement failed: ' + (message.payload || 'Try again');
+            setTimeout(function() {
+              inputEl.placeholder = originalPlaceholder;
+            }, 3000);
             inputEl.focus();
             break;
           case 'slashCommandResult':
@@ -3948,7 +4043,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
           var parts = content.slice(1).split(' ');
           var command = parts[0];
           var args = parts.slice(1).join(' ');
-          vscode.postMessage({
+          postMessageWithPanelId({
             type: 'executeSlashCommand',
             payload: { command: command, args: args }
           });
@@ -4267,7 +4362,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
               // Request actual file line number from extension
               var searchText = toolInput.old_string || toolInput.content || '';
               if (searchText && editInfo.filePath) {
-                vscode.postMessage({
+                postMessageWithPanelId({
                   type: 'getFileLineNumber',
                   filePath: editInfo.filePath,
                   searchText: searchText
@@ -4363,7 +4458,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
             '</div>';
 
           card.onclick = function() {
-            vscode.postMessage({ type: 'executeSuggestion', payload: s });
+            postMessageWithPanelId({ type: 'executeSuggestion', payload: s });
           };
 
           container.appendChild(card);
@@ -4428,7 +4523,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
 
         contextItems.querySelectorAll('.context-item-remove').forEach(function(btn) {
           btn.addEventListener('click', function() {
-            vscode.postMessage({ type: 'removeFromContext', payload: btn.dataset.id });
+            postMessageWithPanelId({ type: 'removeFromContext', payload: btn.dataset.id });
           });
         });
       }
@@ -4473,7 +4568,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
         state.autocompleteSuggestion = null;
         state.autocompleteType = null;
         // Cancel any pending autocomplete request
-        vscode.postMessage({ type: 'cancelAutocomplete' });
+        postMessageWithPanelId({ type: 'cancelAutocomplete' });
       }
 
       function acceptAutocomplete() {
@@ -4481,14 +4576,19 @@ function getScript(mermaidUri: string, logoUri: string): string {
           // Append the suggestion to the input
           inputEl.value = inputEl.value + state.autocompleteSuggestion;
           // Update textarea height
-          inputEl.style.height = 'auto';
-          inputEl.style.height = Math.min(inputEl.scrollHeight, 150) + 'px';
+          autoResizeTextarea();
           // Clear the ghost text
           clearAutocomplete();
           // Focus at the end
           inputEl.focus();
           inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
         }
+      }
+
+      // Auto-resize textarea to fit content up to 10 lines (240px max)
+      function autoResizeTextarea() {
+        inputEl.style.height = 'auto';
+        inputEl.style.height = Math.min(inputEl.scrollHeight, 240) + 'px';
       }
 
       function getFileName(path) {
@@ -4883,7 +4983,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
           e.stopPropagation();
           var toolCall = copyBtn.closest('.tool-call');
           if (toolCall && toolCall.dataset.summary) {
-            vscode.postMessage({
+            postMessageWithPanelId({
               type: 'copyToClipboard',
               payload: toolCall.dataset.summary
             });
@@ -4965,7 +5065,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
         if (editReportCopyBtn) {
           var editCard = editReportCopyBtn.closest('.edit-report-card');
           if (editCard && editCard.dataset.filePath) {
-            vscode.postMessage({
+            postMessageWithPanelId({
               type: 'copyToClipboard',
               payload: editCard.dataset.filePath
             });
@@ -4986,7 +5086,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
           if (editCard && editCard.dataset.filePath) {
             // Use stored line number to open at the changed location (convert to 0-based)
             var lineNum = editCard.dataset.lineNumber ? parseInt(editCard.dataset.lineNumber, 10) - 1 : undefined;
-            vscode.postMessage({
+            postMessageWithPanelId({
               type: 'openFile',
               payload: { path: editCard.dataset.filePath, line: lineNum }
             });
@@ -5001,7 +5101,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
           if (editCard && editCard.dataset.filePath) {
             editReportRevertBtn.textContent = 'Reverting...';
             editReportRevertBtn.disabled = true;
-            vscode.postMessage({
+            postMessageWithPanelId({
               type: 'revertFileEdit',
               payload: { path: editCard.dataset.filePath }
             });
@@ -5050,7 +5150,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
         if (!card) return;
 
         var filePath = card.dataset.filePath;
-        vscode.postMessage({
+        postMessageWithPanelId({
           type: 'revertFileEdit',
           payload: { path: filePath }
         });
@@ -5066,7 +5166,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
         if (!card) return;
 
         var filePath = card.dataset.filePath;
-        vscode.postMessage({
+        postMessageWithPanelId({
           type: 'openFile',
           payload: { path: filePath }
         });

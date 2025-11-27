@@ -93,13 +93,17 @@ export abstract class BaseCliProvider implements ICliProvider {
 
   /**
    * Send a message to the AI provider
+   * @param panelId Optional panel ID for per-panel process tracking
+   * @param providerManager Optional ProviderManager for registering process
    */
   async *sendMessage(
     content: string,
     context: ContextItem[],
     settings: Settings,
     conversation: Conversation | null,
-    persona?: PersonaConfig
+    persona?: PersonaConfig,
+    panelId?: string,
+    providerManager?: unknown
   ): AsyncGenerator<StreamChunk> {
     const cliPath = this.getCliPath();
     const args = this.buildCliArgs(settings, this.hasSession());
@@ -121,6 +125,11 @@ export abstract class BaseCliProvider implements ICliProvider {
         env: { ...process.env },
         stdio: ['pipe', 'pipe', 'pipe']
       });
+
+      // Register process with ProviderManager for per-panel cancellation
+      if (panelId && providerManager && typeof (providerManager as any).registerProcess === 'function') {
+        (providerManager as any).registerProcess(panelId, this._currentProcess);
+      }
 
       // Collect stderr for error reporting
       let stderrOutput = '';
@@ -146,6 +155,10 @@ export abstract class BaseCliProvider implements ICliProvider {
       yield this.handleError(error);
     } finally {
       this._currentProcess = null;
+      // Clear process tracking when done
+      if (panelId && providerManager && typeof (providerManager as any).clearProcess === 'function') {
+        (providerManager as any).clearProcess(panelId);
+      }
     }
   }
 

@@ -87,7 +87,9 @@ export interface ICliProvider {
     context: ContextItem[],
     settings: Settings,
     conversation: Conversation | null,
-    persona?: PersonaConfig
+    persona?: PersonaConfig,
+    panelId?: string,
+    providerManager?: unknown  // ProviderManager for process registration
   ): AsyncGenerator<StreamChunk>;
 
   // Request Management
