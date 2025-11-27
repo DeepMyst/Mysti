@@ -10,12 +10,14 @@ import type { WebviewMessage, Settings, ContextItem, QuickActionSuggestion, Mess
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
+  private _detachedPanels: vscode.WebviewPanel[] = [];
   private _extensionUri: vscode.Uri;
   private _contextManager: ContextManager;
   private _conversationManager: ConversationManager;
   private _providerManager: ProviderManager;
   private _suggestionManager: SuggestionManager;
   private _brainstormManager: BrainstormManager;
+  private _requestCancelled: boolean = false;
 
   constructor(
     extensionUri: vscode.Uri,
@@ -91,8 +93,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'cancelRequest':
+        this._requestCancelled = true;
         this._providerManager.cancelCurrentRequest();
         this._brainstormManager.cancelSession();
+        this._suggestionManager.cancelGeneration();
+        // Notify webview to reset UI state
+        this.postMessage({ type: 'requestCancelled' });
         break;
 
       case 'sendBrainstormMessage':
@@ -199,6 +205,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'getFileLineNumber':
         await this._handleGetFileLineNumber(message.payload as { filePath: string; searchText: string });
         break;
+
+      case 'openInNewTab':
+        vscode.commands.executeCommand('mysti.openInNewTab');
+        break;
     }
   }
 
@@ -263,6 +273,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     context: ContextItem[];
     settings: Settings;
   }) {
+    this._requestCancelled = false;
     const { content, context, settings } = payload;
 
     // Add user message to conversation
@@ -364,6 +375,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     context: ContextItem[];
     settings: Settings;
   }) {
+    this._requestCancelled = false;
     const { content, context, settings } = payload;
 
     // Add user message to conversation
@@ -455,6 +467,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   message: assistantMessage
                 }
               });
+              // Generate quick action suggestions for brainstorm result
+              this._generateSuggestionsAsync(assistantMessage);
             } else {
               this.postMessage({ type: 'brainstormComplete', payload: {} });
             }
@@ -556,6 +570,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _generateSuggestionsAsync(lastMessage: Message) {
+    // Don't generate suggestions if request was cancelled
+    if (this._requestCancelled) return;
+
     const conversation = this._conversationManager.getCurrentConversation();
     if (!conversation) return;
 
@@ -844,7 +861,72 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     ];
   }
 
+  /**
+   * Open Mysti in a new editor tab (detached panel)
+   */
+  public openInNewTab(): void {
+    const panel = vscode.window.createWebviewPanel(
+      'mysti.detachedChat',
+      'Mysti',
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        localResourceRoots: [this._extensionUri],
+        retainContextWhenHidden: true
+      }
+    );
+
+    panel.webview.html = getWebviewContent(panel.webview, this._extensionUri);
+
+    // Handle messages from detached panel
+    panel.webview.onDidReceiveMessage(
+      async (message: WebviewMessage) => {
+        await this._handleMessage(message);
+      }
+    );
+
+    // Track panel for cleanup
+    this._detachedPanels.push(panel);
+    panel.onDidDispose(() => {
+      this._detachedPanels = this._detachedPanels.filter(p => p !== panel);
+    });
+
+    // Sync initial state to the new panel
+    this._syncStateToPanel(panel.webview);
+  }
+
+  /**
+   * Sync current state to a specific webview (for newly opened panels)
+   */
+  private async _syncStateToPanel(webview: vscode.Webview) {
+    const config = vscode.workspace.getConfiguration('mysti');
+    const settings: Settings = {
+      mode: config.get('defaultMode', 'ask-before-edit'),
+      thinkingLevel: config.get('defaultThinkingLevel', 'medium'),
+      accessLevel: config.get('accessLevel', 'ask-permission'),
+      contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
+      model: config.get('defaultModel', 'claude-sonnet-4-5-20250929'),
+      provider: config.get('defaultProvider', 'claude-code')
+    };
+
+    webview.postMessage({
+      type: 'initialState',
+      payload: {
+        settings,
+        context: this._contextManager.getContext(),
+        conversation: this._conversationManager.getCurrentConversation(),
+        providers: this._providerManager.getProviders(),
+        slashCommands: this._getSlashCommands(),
+        quickActions: this._getQuickActions()
+      }
+    });
+  }
+
   public postMessage(message: WebviewMessage) {
     this._view?.webview.postMessage(message);
+    // Broadcast to all detached panels
+    this._detachedPanels.forEach(panel => {
+      panel.webview.postMessage(message);
+    });
   }
 }

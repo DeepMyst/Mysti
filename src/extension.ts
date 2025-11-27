@@ -103,6 +103,12 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.openInNewTab', () => {
+      chatViewProvider.openInNewTab();
+    })
+  );
+
   // Listen for active editor changes for auto-context
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((editor) => {

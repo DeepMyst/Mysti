@@ -29,7 +29,7 @@
         {
           "id": "mysti-sidebar",
           "title": "Mysti",
-          "icon": "resources/icon.svg"
+          "icon": "resources/Mysti-Logo.png"
         }
       ]
     },
@@ -62,6 +62,15 @@
         "command": "mysti.clearContext",
         "title": "Clear Context",
         "category": "Mysti"
+      },
+      {
+        "command": "mysti.openInNewTab",
+        "title": "Open Mysti in New Tab",
+        "category": "Mysti",
+        "icon": {
+          "light": "resources/Mysti-Logo.png",
+          "dark": "resources/Mysti-Logo.png"
+        }
       }
     ],
     "menus": {
@@ -75,6 +84,19 @@
         {
           "command": "mysti.addToContext",
           "group": "mysti"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "mysti.openInNewTab",
+          "when": "view == mysti.chatView",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "mysti.openInNewTab",
+          "group": "navigation"
         }
       ]
     },
@@ -243,6 +265,11 @@
         "command": "mysti.openChat",
         "key": "ctrl+shift+m",
         "mac": "cmd+shift+m"
+      },
+      {
+        "command": "mysti.openInNewTab",
+        "key": "ctrl+shift+n",
+        "mac": "cmd+shift+n"
       }
     ]
   },

@@ -8,8 +8,9 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   const markedUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'marked.min.js'));
   const prismUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'prism-bundle.js'));
   const mermaidUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'mermaid.min.js'));
+  const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'Mysti-Logo.png'));
 
-  const script = getScript(mermaidUri.toString());
+  const script = getScript(mermaidUri.toString(), logoUri.toString());
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -29,6 +30,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     <!-- Header with settings -->
     <header class="header">
       <div class="header-left">
+        <img src="${logoUri}" alt="Mysti" class="header-logo" />
         <h1 class="title">Mysti</h1>
         <span id="session-indicator" class="session-indicator" style="display: none;">
           <span class="session-dot"></span>
@@ -121,6 +123,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     <div id="messages" class="messages">
       <div class="welcome-container">
         <div class="welcome-header">
+          <img src="${logoUri}" alt="Mysti" class="welcome-logo" />
           <h2>Welcome to Mysti</h2>
           <p>Your AI coding assistant. Choose an action or ask anything!</p>
         </div>
@@ -165,6 +168,11 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <button id="send-btn" class="send-btn" title="Send message">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M15.854.146a.5.5 0 0 1 .11.54l-5.819 14.547a.75.75 0 0 1-1.329.124l-3.178-4.995L.643 7.184a.75.75 0 0 1 .124-1.33L15.314.037a.5.5 0 0 1 .54.11zM6.636 10.07l2.761 4.338L14.13 2.576 6.636 10.07zm6.787-8.201L1.591 6.602l4.339 2.76 7.494-7.493z"/>
+          </svg>
+        </button>
+        <button id="stop-btn" class="stop-btn" title="Stop generating" style="display: none;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <rect x="3" y="3" width="10" height="10" rx="1"/>
           </svg>
         </button>
       </div>
@@ -260,6 +268,12 @@ function getStyles(): string {
       font-size: 14px;
       font-weight: 600;
       color: var(--vscode-foreground);
+    }
+
+    .header-logo {
+      width: 24px;
+      height: 24px;
+      object-fit: contain;
     }
 
     .session-indicator {
@@ -457,6 +471,13 @@ function getStyles(): string {
     .welcome-header p {
       color: var(--vscode-descriptionForeground);
       font-size: 12px;
+    }
+
+    .welcome-logo {
+      width: 80px;
+      height: 80px;
+      object-fit: contain;
+      margin-bottom: 12px;
     }
 
     .welcome-suggestions {
@@ -890,6 +911,22 @@ function getStyles(): string {
 
     .send-btn:hover {
       background: var(--vscode-button-hoverBackground);
+    }
+
+    .stop-btn {
+      background: var(--vscode-errorForeground, #f14c4c);
+      color: var(--vscode-button-foreground, white);
+      border: none;
+      padding: 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .stop-btn:hover {
+      opacity: 0.85;
     }
 
     .send-btn:disabled {
@@ -2694,11 +2731,12 @@ function getStyles(): string {
   `;
 }
 
-function getScript(mermaidUri: string): string {
+function getScript(mermaidUri: string, logoUri: string): string {
   return `
     (function() {
       const vscode = acquireVsCodeApi();
       const MERMAID_URI = '${mermaidUri}';
+      const LOGO_URI = '${logoUri}';
 
       // Mermaid lazy loading
       var mermaidLoaded = false;
@@ -2955,6 +2993,7 @@ function getScript(mermaidUri: string): string {
       const inputEl = document.getElementById('message-input');
       const autocompleteGhostEl = document.getElementById('autocomplete-ghost');
       const sendBtn = document.getElementById('send-btn');
+      const stopBtn = document.getElementById('stop-btn');
       const settingsBtn = document.getElementById('settings-btn');
       const settingsPanel = document.getElementById('settings-panel');
       const newChatBtn = document.getElementById('new-chat-btn');
@@ -3027,6 +3066,9 @@ function getScript(mermaidUri: string): string {
       renderWelcomeSuggestions();
 
       sendBtn.addEventListener('click', sendMessage);
+      stopBtn.addEventListener('click', function() {
+        vscode.postMessage({ type: 'cancelRequest' });
+      });
       inputEl.addEventListener('keydown', function(e) {
         // Tab key handling for autocomplete (hold-duration based)
         if (e.key === 'Tab' && state.autocompleteSuggestion) {
@@ -3339,6 +3381,15 @@ function getScript(mermaidUri: string): string {
           case 'responseComplete':
             hideLoading();
             finalizeStreamingMessage(message.payload);
+            break;
+          case 'requestCancelled':
+            hideLoading();
+            // Hide suggestion skeleton if showing
+            var quickActionsContainer = document.getElementById('quick-actions');
+            if (quickActionsContainer) {
+              quickActionsContainer.classList.remove('loading');
+              quickActionsContainer.innerHTML = '';
+            }
             break;
           case 'suggestionsLoading':
             showSuggestionSkeleton();
@@ -4073,7 +4124,8 @@ function getScript(mermaidUri: string): string {
 
       function showLoading() {
         state.isLoading = true;
-        sendBtn.disabled = true;
+        sendBtn.style.display = 'none';
+        stopBtn.style.display = 'flex';
         var loading = document.createElement('div');
         loading.className = 'loading';
         loading.innerHTML = '<div class="loading-dot"></div><div class="loading-dot"></div><div class="loading-dot"></div>';
@@ -4083,7 +4135,9 @@ function getScript(mermaidUri: string): string {
 
       function hideLoading() {
         state.isLoading = false;
+        sendBtn.style.display = 'flex';
         sendBtn.disabled = false;
+        stopBtn.style.display = 'none';
         currentResponse = '';
         currentThinking = '';
         contentSegmentIndex = 0;
@@ -4177,7 +4231,7 @@ function getScript(mermaidUri: string): string {
       }
 
       function clearMessages() {
-        messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><h2>Welcome to Mysti</h2><p>Your AI coding assistant. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div></div>';
+        messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Mysti" class="welcome-logo" /><h2>Welcome to Mysti</h2><p>Your AI coding assistant. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div></div>';
         renderWelcomeSuggestions();
       }
 
