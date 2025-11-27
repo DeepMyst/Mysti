@@ -4,6 +4,7 @@ import { ContextManager } from '../managers/ContextManager';
 import { ConversationManager } from '../managers/ConversationManager';
 import { ProviderManager } from '../managers/ProviderManager';
 import { SuggestionManager } from '../managers/SuggestionManager';
+import { BrainstormManager } from '../managers/BrainstormManager';
 import { getWebviewContent } from '../webview/webviewContent';
 import type { WebviewMessage, Settings, ContextItem, QuickActionSuggestion, Message } from '../types';
 
@@ -14,19 +15,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _conversationManager: ConversationManager;
   private _providerManager: ProviderManager;
   private _suggestionManager: SuggestionManager;
+  private _brainstormManager: BrainstormManager;
 
   constructor(
     extensionUri: vscode.Uri,
     contextManager: ContextManager,
     conversationManager: ConversationManager,
     providerManager: ProviderManager,
-    suggestionManager: SuggestionManager
+    suggestionManager: SuggestionManager,
+    brainstormManager: BrainstormManager
   ) {
     this._extensionUri = extensionUri;
     this._contextManager = contextManager;
     this._conversationManager = conversationManager;
     this._providerManager = providerManager;
     this._suggestionManager = suggestionManager;
+    this._brainstormManager = brainstormManager;
   }
 
   public resolveWebviewView(
@@ -88,6 +92,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'cancelRequest':
         this._providerManager.cancelCurrentRequest();
+        this._brainstormManager.cancelSession();
+        break;
+
+      case 'sendBrainstormMessage':
+        await this._handleBrainstormMessage(message.payload as {
+          content: string;
+          context: ContextItem[];
+          settings: Settings;
+        });
         break;
 
       case 'updateSettings':
@@ -343,6 +356,119 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Handle brainstorm mode messages
+   */
+  private async _handleBrainstormMessage(payload: {
+    content: string;
+    context: ContextItem[];
+    settings: Settings;
+  }) {
+    const { content, context, settings } = payload;
+
+    // Add user message to conversation
+    const userMessage = this._conversationManager.addMessage('user', content, context);
+    this.postMessage({
+      type: 'messageAdded',
+      payload: userMessage
+    });
+
+    // Start brainstorm session
+    this.postMessage({
+      type: 'brainstormStarted',
+      payload: {
+        query: content,
+        agents: this._brainstormManager.getCurrentSession()?.agents || []
+      }
+    });
+
+    try {
+      const stream = this._brainstormManager.startBrainstormSession(
+        content,
+        context,
+        settings
+      );
+
+      for await (const chunk of stream) {
+        switch (chunk.type) {
+          case 'phase_change':
+            this.postMessage({
+              type: 'brainstormPhaseChange',
+              payload: { phase: chunk.phase }
+            });
+            break;
+
+          case 'agent_text':
+            this.postMessage({
+              type: 'brainstormAgentChunk',
+              payload: { agentId: chunk.agentId, content: chunk.content, type: 'text' }
+            });
+            break;
+
+          case 'agent_thinking':
+            this.postMessage({
+              type: 'brainstormAgentChunk',
+              payload: { agentId: chunk.agentId, content: chunk.content, type: 'thinking' }
+            });
+            break;
+
+          case 'agent_complete':
+            this.postMessage({
+              type: 'brainstormAgentComplete',
+              payload: { agentId: chunk.agentId }
+            });
+            break;
+
+          case 'agent_error':
+            this.postMessage({
+              type: 'brainstormAgentError',
+              payload: { agentId: chunk.agentId, error: chunk.content }
+            });
+            break;
+
+          case 'discussion_text':
+            this.postMessage({
+              type: 'brainstormDiscussionChunk',
+              payload: { agentId: chunk.agentId, content: chunk.content }
+            });
+            break;
+
+          case 'synthesis_text':
+            this.postMessage({
+              type: 'brainstormSynthesisChunk',
+              payload: { content: chunk.content }
+            });
+            break;
+
+          case 'done':
+            const session = this._brainstormManager.getCurrentSession();
+            // Add unified solution as assistant message
+            if (session?.unifiedSolution) {
+              const assistantMessage = this._conversationManager.addMessage(
+                'assistant',
+                session.unifiedSolution
+              );
+              this.postMessage({
+                type: 'brainstormComplete',
+                payload: {
+                  unifiedSolution: session.unifiedSolution,
+                  message: assistantMessage
+                }
+              });
+            } else {
+              this.postMessage({ type: 'brainstormComplete', payload: {} });
+            }
+            break;
+        }
+      }
+    } catch (error) {
+      this.postMessage({
+        type: 'brainstormError',
+        payload: { error: error instanceof Error ? error.message : 'An unknown error occurred' }
+      });
+    }
+  }
+
   private async _handleUpdateSettings(settings: Partial<Settings>) {
     const config = vscode.workspace.getConfiguration('mysti');
 
@@ -364,6 +490,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     if (settings.provider !== undefined) {
       await config.update('defaultProvider', settings.provider, vscode.ConfigurationTarget.Global);
+
+      // Auto-switch to a compatible model for the new provider
+      const newProviderConfig = this._providerManager.getProvider(settings.provider);
+      if (newProviderConfig) {
+        const currentModel = config.get<string>('defaultModel', '');
+        const validModels = newProviderConfig.models.map(m => m.id);
+
+        // If current model is not valid for the new provider, switch to the provider's default
+        if (!validModels.includes(currentModel)) {
+          const newModel = newProviderConfig.defaultModel;
+          await config.update('defaultModel', newModel, vscode.ConfigurationTarget.Global);
+          console.log(`[Mysti] Auto-switched model to ${newModel} for ${settings.provider}`);
+
+          // Notify the webview of the model change
+          this.postMessage({
+            type: 'modelChanged',
+            payload: { model: newModel, provider: settings.provider }
+          });
+        }
+      }
     }
   }
 
@@ -533,7 +679,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         name: 'help',
         description: 'Show available commands',
         handler: () => {
-          return 'Available commands: /clear, /help, /context, /mode, /model';
+          return 'Available commands:\n' +
+            '/clear - Clear conversation and session\n' +
+            '/help - Show this help message\n' +
+            '/context - Show current context items\n' +
+            '/mode [mode] - Show/change mode (ask-before-edit, edit-automatically, plan, brainstorm)\n' +
+            '/model [model] - Show/change AI model\n' +
+            '/agent [agent] - Switch agent (claude-code, openai-codex)\n' +
+            '/brainstorm [on|off|status] - Toggle brainstorm mode';
         }
       },
       {
@@ -572,6 +725,79 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           const config = vscode.workspace.getConfiguration('mysti');
           return `Current model: ${config.get('defaultModel')}`;
+        }
+      },
+      {
+        name: 'agent',
+        description: 'Switch AI agent (claude-code, openai-codex)',
+        handler: (args: string) => {
+          if (args) {
+            const agents = ['claude-code', 'openai-codex'];
+            if (agents.includes(args)) {
+              // Get the new provider's default model for feedback
+              const newProviderConfig = this._providerManager.getProvider(args);
+              const config = vscode.workspace.getConfiguration('mysti');
+              const currentModel = config.get<string>('defaultModel', '');
+              const validModels = newProviderConfig?.models.map(m => m.id) || [];
+              const willSwitchModel = !validModels.includes(currentModel);
+              const newModel = newProviderConfig?.defaultModel || currentModel;
+
+              this._handleUpdateSettings({ provider: args as any });
+              this.postMessage({
+                type: 'agentChanged',
+                payload: { agent: args }
+              });
+
+              const agentName = args === 'claude-code' ? 'Claude Code' : 'OpenAI Codex';
+              if (willSwitchModel && newProviderConfig) {
+                return `Switched to ${agentName} (model auto-switched to ${newModel})`;
+              }
+              return `Switched to ${agentName}`;
+            }
+            return `Invalid agent. Available agents: ${agents.join(', ')}`;
+          }
+          const config = vscode.workspace.getConfiguration('mysti');
+          const current = config.get('defaultProvider') || 'claude-code';
+          return `Current agent: ${current}`;
+        }
+      },
+      {
+        name: 'brainstorm',
+        description: 'Toggle brainstorm mode (multi-agent collaboration)',
+        handler: (args: string) => {
+          const config = vscode.workspace.getConfiguration('mysti');
+          const currentEnabled = config.get<boolean>('brainstorm.enabled', false);
+
+          if (args === 'on' || args === 'enable') {
+            config.update('brainstorm.enabled', true, true);
+            this.postMessage({
+              type: 'brainstormToggled',
+              payload: { enabled: true }
+            });
+            return 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.';
+          } else if (args === 'off' || args === 'disable') {
+            config.update('brainstorm.enabled', false, true);
+            this.postMessage({
+              type: 'brainstormToggled',
+              payload: { enabled: false }
+            });
+            return 'Brainstorm mode disabled. Using single agent.';
+          } else if (args === 'status') {
+            return currentEnabled
+              ? 'Brainstorm mode is ON. Multiple agents will collaborate.'
+              : 'Brainstorm mode is OFF. Using single agent.';
+          }
+
+          // Toggle if no args
+          const newState = !currentEnabled;
+          config.update('brainstorm.enabled', newState, true);
+          this.postMessage({
+            type: 'brainstormToggled',
+            payload: { enabled: newState }
+          });
+          return newState
+            ? 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.'
+            : 'Brainstorm mode disabled. Using single agent.';
         }
       }
     ];

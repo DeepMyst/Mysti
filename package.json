@@ -85,10 +85,12 @@
           "type": "string",
           "default": "claude-code",
           "enum": [
-            "claude-code"
+            "claude-code",
+            "openai-codex"
           ],
           "enumDescriptions": [
-            "Claude Code CLI"
+            "Claude Code CLI (Anthropic)",
+            "OpenAI Codex CLI"
           ],
           "description": "Default AI provider to use"
         },
@@ -96,6 +98,11 @@
           "type": "string",
           "default": "claude",
           "description": "Path to Claude Code CLI executable"
+        },
+        "mysti.codexPath": {
+          "type": "string",
+          "default": "codex",
+          "description": "Path to OpenAI Codex CLI executable"
         },
         "mysti.defaultMode": {
           "type": "string",
@@ -138,6 +145,96 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically include relevant context"
+        },
+        "mysti.brainstorm.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable brainstorm mode for multi-agent collaboration"
+        },
+        "mysti.brainstorm.discussionMode": {
+          "type": "string",
+          "default": "quick",
+          "enum": [
+            "quick",
+            "full"
+          ],
+          "enumDescriptions": [
+            "Direct synthesis - faster, agents don't explicitly discuss",
+            "Full discussion - agents review and comment on each other's responses"
+          ],
+          "description": "How agents interact before synthesis in brainstorm mode"
+        },
+        "mysti.brainstorm.discussionRounds": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Number of discussion rounds in full mode"
+        },
+        "mysti.brainstorm.synthesisAgent": {
+          "type": "string",
+          "default": "claude-code",
+          "enum": [
+            "claude-code",
+            "openai-codex"
+          ],
+          "description": "Agent to use for synthesis in brainstorm mode"
+        },
+        "mysti.agents.claudePersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "No additional framing",
+            "Focus on system design and patterns",
+            "Focus on practical implementation",
+            "Focus on technical correctness and performance",
+            "Focus on code quality and issues",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for Claude agent in brainstorm mode"
+        },
+        "mysti.agents.claudeCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Claude (when persona is 'custom')"
+        },
+        "mysti.agents.codexPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "No additional framing",
+            "Focus on system design and patterns",
+            "Focus on practical implementation",
+            "Focus on technical correctness and performance",
+            "Focus on code quality and issues",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for Codex agent in brainstorm mode"
+        },
+        "mysti.agents.codexCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Codex (when persona is 'custom')"
         }
       }
     },
@@ -158,6 +255,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
+    "@types/uuid": "^10.0.0",
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",

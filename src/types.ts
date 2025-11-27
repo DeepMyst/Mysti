@@ -2,7 +2,13 @@ export type OperationMode = 'ask-before-edit' | 'edit-automatically' | 'plan' | 
 export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
 export type AccessLevel = 'read-only' | 'ask-permission' | 'full-access';
 export type ContextMode = 'auto' | 'manual';
-export type ProviderType = 'claude-code';
+export type ProviderType = 'claude-code' | 'openai-codex';
+
+// Agent and Brainstorm types
+export type AgentType = 'claude-code' | 'openai-codex';
+export type PersonaType = 'neutral' | 'architect' | 'pragmatist' | 'engineer' | 'reviewer' | 'designer' | 'custom';
+export type BrainstormPhase = 'initial' | 'individual' | 'discussion' | 'synthesis' | 'complete';
+export type DiscussionMode = 'quick' | 'full';
 
 export interface ContextItem {
   id: string;
@@ -116,4 +122,66 @@ export interface StreamChunk {
   content?: string;
   toolCall?: ToolCall;
   sessionId?: string;
+}
+
+// Brainstorm mode configuration
+export interface BrainstormConfig {
+  enabled: boolean;
+  agents: AgentType[];
+  discussionMode: DiscussionMode;
+  discussionRounds: 1 | 2 | 3;
+  synthesisAgent: AgentType;
+}
+
+// Agent persona configuration
+export interface AgentPersonaConfig {
+  type: PersonaType;
+  customPrompt?: string;
+}
+
+// Agent configuration for brainstorm
+export interface AgentConfig {
+  id: AgentType;
+  displayName: string;
+  color: string;
+  icon: string;
+  persona: AgentPersonaConfig;
+}
+
+// Individual agent response in brainstorm
+export interface AgentResponse {
+  agentId: AgentType;
+  content: string;
+  thinking?: string;
+  toolCalls?: ToolCall[];
+  status: 'pending' | 'streaming' | 'complete' | 'error';
+  timestamp: number;
+}
+
+// Discussion round in brainstorm
+export interface DiscussionRound {
+  roundNumber: number;
+  contributions: Map<AgentType, string>;
+}
+
+// Brainstorm session state
+export interface BrainstormSession {
+  id: string;
+  query: string;
+  phase: BrainstormPhase;
+  agents: AgentConfig[];
+  agentResponses: Map<AgentType, AgentResponse>;
+  discussionRounds: DiscussionRound[];
+  unifiedSolution: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Streaming chunk for brainstorm mode
+export interface BrainstormStreamChunk {
+  type: 'agent_text' | 'agent_thinking' | 'agent_complete' | 'agent_error' |
+        'discussion_text' | 'synthesis_text' | 'phase_change' | 'done';
+  agentId?: AgentType;
+  content?: string;
+  phase?: BrainstormPhase;
 }

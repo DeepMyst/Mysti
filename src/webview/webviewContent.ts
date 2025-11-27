@@ -71,6 +71,13 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         </select>
       </div>
       <div class="settings-section">
+        <label class="settings-label">Agent</label>
+        <select id="provider-select" class="select">
+          <option value="claude-code">Claude Code</option>
+          <option value="openai-codex">OpenAI Codex</option>
+        </select>
+      </div>
+      <div class="settings-section">
         <label class="settings-label">Model</label>
         <select id="model-select" class="select">
         </select>
@@ -141,6 +148,13 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           </svg>
         </button>
         <div class="toolbar-spacer"></div>
+        <button id="agent-select-btn" class="toolbar-btn agent-btn" title="Select AI agent">
+          <span id="agent-icon" class="agent-icon">🟣</span>
+          <span id="agent-name">Claude</span>
+          <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4 6l4 4 4-4"/>
+          </svg>
+        </button>
         <span id="mode-indicator" class="mode-indicator">Ask before edit</span>
       </div>
       <div class="input-container">
@@ -160,6 +174,28 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
       <div class="slash-menu-item" data-command="context">/context - Show current context</div>
       <div class="slash-menu-item" data-command="mode">/mode - Show or change mode</div>
       <div class="slash-menu-item" data-command="model">/model - Show or change model</div>
+      <div class="slash-menu-item" data-command="agent">/agent - Switch AI agent</div>
+      <div class="slash-menu-item" data-command="brainstorm">/brainstorm - Toggle brainstorm mode</div>
+    </div>
+
+    <!-- Agent selection menu -->
+    <div id="agent-menu" class="agent-menu hidden">
+      <div class="agent-menu-header">Select Agent</div>
+      <div class="agent-menu-item selected" data-agent="claude-code">
+        <span class="agent-item-dot" style="background: #8B5CF6;"></span>
+        <span class="agent-item-name">Claude Code</span>
+        <span class="agent-item-badge">Active</span>
+      </div>
+      <div class="agent-menu-item" data-agent="openai-codex">
+        <span class="agent-item-dot" style="background: #10B981;"></span>
+        <span class="agent-item-name">OpenAI Codex</span>
+      </div>
+      <div class="agent-menu-divider"></div>
+      <div class="agent-menu-item brainstorm-toggle" data-action="brainstorm">
+        <span class="agent-item-icon">🧠</span>
+        <span class="agent-item-name">Brainstorm Mode</span>
+        <span id="brainstorm-status" class="agent-item-status">Off</span>
+      </div>
     </div>
   </div>
 
@@ -562,20 +598,26 @@ function getStyles(): string {
     }
 
     .thinking-block {
-      padding: 8px;
-      background: var(--vscode-textBlockQuote-background);
-      border-radius: 4px;
-      margin-bottom: 8px;
+      padding: 4px 0;
+      margin-bottom: 4px;
       font-size: 12px;
       color: var(--vscode-descriptionForeground);
     }
 
-    .thinking-header {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 4px;
-      color: var(--vscode-charts-purple);
+    .thinking-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      vertical-align: middle;
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .thinking-content {
+      display: inline;
+      vertical-align: middle;
     }
 
     /* Suggestions container - grid layout for cards */
@@ -859,6 +901,441 @@ function getStyles(): string {
       border-radius: 0 0 7px 7px;
     }
 
+    /* Agent selector styles */
+    .agent-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: var(--vscode-button-secondaryBackground);
+    }
+
+    .agent-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+
+    .agent-icon {
+      font-size: 12px;
+    }
+
+    /* Agent menu */
+    .agent-menu {
+      position: absolute;
+      bottom: 80px;
+      right: 12px;
+      min-width: 200px;
+      background: var(--vscode-quickInput-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      z-index: 100;
+      overflow: hidden;
+    }
+
+    .agent-menu.hidden {
+      display: none;
+    }
+
+    .agent-menu-header {
+      padding: 8px 12px;
+      font-size: 10px;
+      text-transform: uppercase;
+      color: var(--vscode-descriptionForeground);
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
+    .agent-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .agent-menu-item:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .agent-menu-item.selected {
+      background: var(--vscode-list-activeSelectionBackground);
+    }
+
+    .agent-item-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .agent-item-icon {
+      font-size: 14px;
+    }
+
+    .agent-item-name {
+      flex: 1;
+    }
+
+    .agent-item-badge {
+      font-size: 9px;
+      padding: 2px 6px;
+      border-radius: 8px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+    }
+
+    .agent-item-status {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .agent-item-status.active {
+      color: #22c55e;
+    }
+
+    .agent-menu-divider {
+      height: 1px;
+      background: var(--vscode-panel-border);
+      margin: 4px 0;
+    }
+
+    /* Brainstorm UI styles */
+    .brainstorm-container {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 12px;
+    }
+
+    .brainstorm-phases {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px;
+      background: var(--vscode-editor-background);
+      border-radius: 8px;
+      border: 1px solid var(--vscode-panel-border);
+    }
+
+    .phase-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 16px;
+      font-size: 11px;
+      font-weight: 500;
+      transition: all 0.3s ease;
+    }
+
+    .phase-indicator.pending {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .phase-indicator.active {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      animation: pulse 2s infinite;
+    }
+
+    .phase-indicator.complete {
+      background: rgba(34, 197, 94, 0.2);
+      color: #22c55e;
+    }
+
+    .phase-connector {
+      width: 24px;
+      height: 2px;
+      background: var(--vscode-panel-border);
+    }
+
+    .phase-connector.complete {
+      background: #22c55e;
+    }
+
+    .agent-responses {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+
+    .agent-response-card {
+      display: flex;
+      flex-direction: column;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      overflow: hidden;
+      transition: border-color 0.2s ease;
+    }
+
+    .agent-response-card.streaming {
+      border-color: var(--agent-color, var(--vscode-focusBorder));
+    }
+
+    .agent-response-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: var(--vscode-sideBarSectionHeader-background);
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
+    .agent-response-icon {
+      font-size: 14px;
+    }
+
+    .agent-response-name {
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .agent-response-status {
+      margin-left: auto;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+
+    .agent-response-status.streaming {
+      background: var(--vscode-charts-blue);
+      color: white;
+      animation: pulse 1.5s infinite;
+    }
+
+    .agent-response-status.complete {
+      background: rgba(34, 197, 94, 0.2);
+      color: #22c55e;
+    }
+
+    .agent-response-content {
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .synthesis-container {
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(16, 185, 129, 0.1) 100%);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .synthesis-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: rgba(0, 0, 0, 0.1);
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .synthesis-content {
+      padding: 16px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+
+    /* Brainstorm session UI */
+    .brainstorm-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.15) 0%, rgba(16, 185, 129, 0.15) 100%);
+      border-radius: 8px 8px 0 0;
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
+    .brainstorm-icon {
+      font-size: 18px;
+    }
+
+    .brainstorm-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--vscode-foreground);
+    }
+
+    .brainstorm-phase-indicator {
+      margin-left: auto;
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+
+    .brainstorm-phase-indicator.individual {
+      background: rgba(59, 130, 246, 0.2);
+      color: #3b82f6;
+    }
+
+    .brainstorm-phase-indicator.discussion {
+      background: rgba(245, 158, 11, 0.2);
+      color: #f59e0b;
+    }
+
+    .brainstorm-phase-indicator.synthesis {
+      background: rgba(139, 92, 246, 0.2);
+      color: #8b5cf6;
+    }
+
+    .brainstorm-phase-indicator.complete {
+      background: rgba(34, 197, 94, 0.2);
+      color: #22c55e;
+    }
+
+    .brainstorm-agents {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      padding: 12px;
+      background: var(--vscode-editor-background);
+    }
+
+    .brainstorm-agent-card {
+      display: flex;
+      flex-direction: column;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .brainstorm-agent-card[data-agent="claude-code"] {
+      border-color: rgba(139, 92, 246, 0.3);
+    }
+
+    .brainstorm-agent-card[data-agent="openai-codex"] {
+      border-color: rgba(16, 185, 129, 0.3);
+    }
+
+    .brainstorm-agent-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: var(--vscode-sideBarSectionHeader-background);
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
+    .brainstorm-agent-icon {
+      font-size: 14px;
+    }
+
+    .brainstorm-agent-name {
+      font-weight: 600;
+      font-size: 12px;
+      color: var(--vscode-foreground);
+    }
+
+    .brainstorm-agent-status {
+      margin-left: auto;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+    }
+
+    .brainstorm-agent-status.streaming {
+      background: rgba(59, 130, 246, 0.2);
+      color: #3b82f6;
+      animation: pulse 1.5s infinite;
+    }
+
+    .brainstorm-agent-status.complete {
+      background: rgba(34, 197, 94, 0.2);
+      color: #22c55e;
+    }
+
+    .brainstorm-agent-content {
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.6;
+      max-height: 350px;
+      overflow-y: auto;
+    }
+
+    .brainstorm-agent-content:empty::before {
+      content: "Waiting for response...";
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+    }
+
+    .brainstorm-synthesis {
+      margin: 0 12px 12px;
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(16, 185, 129, 0.1) 100%);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .brainstorm-synthesis.hidden {
+      display: none;
+    }
+
+    .brainstorm-synthesis-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: rgba(0, 0, 0, 0.1);
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
+    .brainstorm-synthesis-icon {
+      font-size: 16px;
+    }
+
+    .brainstorm-synthesis-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--vscode-foreground);
+    }
+
+    .brainstorm-synthesis-content {
+      padding: 16px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .brainstorm-error {
+      padding: 12px 16px;
+      margin: 12px;
+      background: rgba(248, 81, 73, 0.1);
+      border: 1px solid var(--vscode-charts-red);
+      border-radius: 8px;
+      color: var(--vscode-charts-red);
+      font-size: 13px;
+    }
+
+    .brainstorm-error .error-icon {
+      margin-right: 8px;
+    }
+
+    /* Agent button active state */
+    .agent-btn.brainstorm-active {
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.2) 0%, rgba(16, 185, 129, 0.2) 100%);
+      border-color: rgba(139, 92, 246, 0.5);
+    }
+
+    .brainstorm-toggle.active {
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.2) 0%, rgba(16, 185, 129, 0.2) 100%);
+    }
+
     .loading {
       display: flex;
       gap: 4px;
@@ -922,6 +1399,28 @@ function getStyles(): string {
 
     .tool-call.expanded .tool-call-chevron {
       transform: rotate(90deg);
+    }
+
+    /* Hide chevron and show spinner when running */
+    .tool-call.running .tool-call-chevron {
+      display: none;
+    }
+
+    .tool-call-spinner {
+      display: none;
+      width: 12px;
+      height: 12px;
+      flex-shrink: 0;
+    }
+
+    .tool-call.running .tool-call-spinner {
+      display: block;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
     }
 
     .tool-call-name {
@@ -996,6 +1495,61 @@ function getStyles(): string {
     .tool-call-status.failed {
       background: var(--vscode-charts-red);
       color: white;
+    }
+
+    /* Todo List Styles */
+    .todo-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px;
+      margin-top: 8px;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+
+    .todo-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      background: var(--vscode-editor-background);
+      font-size: 12px;
+    }
+
+    .todo-item.completed {
+      opacity: 0.7;
+    }
+
+    .todo-item.completed .todo-content {
+      text-decoration: line-through;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .todo-status {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .todo-status.completed {
+      color: var(--vscode-charts-green);
+    }
+
+    .todo-status.in_progress {
+      color: var(--vscode-charts-blue);
+      animation: spin 1s linear infinite;
+    }
+
+    .todo-status.pending {
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .todo-content {
+      flex: 1;
     }
 
     .tool-call-details {
@@ -2353,7 +2907,13 @@ function getScript(mermaidUri: string): string {
         isLoading: false,
         providers: [],
         slashCommands: [],
-        quickActions: []
+        quickActions: [],
+        // Brainstorm mode state
+        activeAgent: 'claude-code',
+        brainstormEnabled: false,
+        brainstormSession: null,
+        brainstormPhase: null,
+        agentResponses: {}
       };
 
       const messagesEl = document.getElementById('messages');
@@ -2365,6 +2925,7 @@ function getScript(mermaidUri: string): string {
       const modeSelect = document.getElementById('mode-select');
       const thinkingSelect = document.getElementById('thinking-select');
       const modelSelect = document.getElementById('model-select');
+      const providerSelect = document.getElementById('provider-select');
       const accessSelect = document.getElementById('access-select');
       const contextModeBtn = document.getElementById('context-mode-btn');
       const contextModeLabel = document.getElementById('context-mode-label');
@@ -2376,6 +2937,8 @@ function getScript(mermaidUri: string): string {
       const enhanceBtn = document.getElementById('enhance-btn');
       const modeIndicator = document.getElementById('mode-indicator');
       const sessionIndicator = document.getElementById('session-indicator');
+      const agentSelectBtn = document.getElementById('agent-select-btn');
+      const agentMenu = document.getElementById('agent-menu');
 
       // Welcome screen suggestions
       var WELCOME_SUGGESTIONS = [
@@ -2477,6 +3040,21 @@ function getScript(mermaidUri: string): string {
         vscode.postMessage({ type: 'updateSettings', payload: { accessLevel: accessSelect.value } });
       });
 
+      providerSelect.addEventListener('change', function() {
+        var newProvider = providerSelect.value;
+        state.settings.provider = newProvider;
+        state.activeAgent = newProvider;
+
+        // Update model dropdown with provider-specific models
+        updateModelsForProvider(newProvider);
+
+        // Sync with agent menu selection
+        updateAgentMenuSelection();
+
+        // Notify backend of provider change
+        vscode.postMessage({ type: 'updateSettings', payload: { provider: newProvider } });
+      });
+
       contextModeBtn.addEventListener('click', function() {
         state.settings.contextMode = state.settings.contextMode === 'auto' ? 'manual' : 'auto';
         contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
@@ -2503,6 +3081,129 @@ function getScript(mermaidUri: string): string {
           hideSlashMenu();
         });
       });
+
+      // Agent menu toggle
+      if (agentSelectBtn && agentMenu) {
+        agentSelectBtn.addEventListener('click', function() {
+          agentMenu.classList.toggle('hidden');
+          // Close slash menu if open
+          if (slashMenu) slashMenu.classList.add('hidden');
+        });
+
+        // Agent menu item clicks
+        document.querySelectorAll('.agent-menu-item').forEach(function(item) {
+          item.addEventListener('click', function() {
+            var agent = item.dataset.agent;
+            var action = item.dataset.action;
+
+            if (action === 'brainstorm') {
+              // Toggle brainstorm mode
+              state.brainstormEnabled = !state.brainstormEnabled;
+              updateBrainstormUI();
+              agentMenu.classList.add('hidden');
+            } else if (agent) {
+              // Select single agent
+              state.activeAgent = agent;
+              state.settings.provider = agent;
+              state.brainstormEnabled = false;
+
+              // Sync settings dropdown
+              providerSelect.value = agent;
+
+              // Update models for the new provider
+              updateModelsForProvider(agent);
+
+              updateAgentMenuSelection();
+              updateBrainstormUI();
+              agentMenu.classList.add('hidden');
+              // Notify backend of provider change
+              vscode.postMessage({ type: 'updateSettings', payload: { provider: agent } });
+            }
+          });
+        });
+      }
+
+      function updateModelsForProvider(providerId) {
+        if (!state.providers || state.providers.length === 0) return;
+
+        var provider = state.providers.find(function(p) { return p.name === providerId; });
+        if (provider && provider.models) {
+          modelSelect.innerHTML = provider.models.map(function(m) {
+            return '<option value="' + m.id + '">' + m.name + '</option>';
+          }).join('');
+
+          // Select first model as default or keep current if it exists in the new provider
+          if (provider.models.length > 0) {
+            var currentModelExists = provider.models.some(function(m) { return m.id === state.settings.model; });
+            if (!currentModelExists) {
+              state.settings.model = provider.models[0].id;
+              modelSelect.value = state.settings.model;
+              // Notify backend of model change
+              vscode.postMessage({ type: 'updateSettings', payload: { model: state.settings.model } });
+            }
+          }
+        }
+      }
+
+      function updateAgentMenuSelection() {
+        document.querySelectorAll('.agent-menu-item[data-agent]').forEach(function(item) {
+          if (item.dataset.agent === state.activeAgent) {
+            item.classList.add('selected');
+            // Show "Active" badge
+            var badge = item.querySelector('.agent-item-badge');
+            if (!badge) {
+              badge = document.createElement('span');
+              badge.className = 'agent-item-badge';
+              badge.textContent = 'Active';
+              item.appendChild(badge);
+            }
+          } else {
+            item.classList.remove('selected');
+            // Remove "Active" badge
+            var badge = item.querySelector('.agent-item-badge');
+            if (badge) badge.remove();
+          }
+        });
+        // Update agent button label and icon
+        var agentNameEl = document.getElementById('agent-name');
+        var agentIconEl = document.getElementById('agent-icon');
+        if (agentNameEl) {
+          var agentName = state.activeAgent === 'claude-code' ? 'Claude' : 'Codex';
+          agentNameEl.textContent = agentName;
+        }
+        if (agentIconEl) {
+          agentIconEl.textContent = state.activeAgent === 'claude-code' ? '🟣' : '🟢';
+        }
+        // Sync settings provider dropdown
+        if (providerSelect && providerSelect.value !== state.activeAgent) {
+          providerSelect.value = state.activeAgent;
+        }
+      }
+
+      function updateBrainstormUI() {
+        var brainstormToggle = document.querySelector('.brainstorm-toggle');
+        if (brainstormToggle) {
+          var nameEl = brainstormToggle.querySelector('.agent-item-name');
+          if (state.brainstormEnabled) {
+            brainstormToggle.classList.add('active');
+            if (nameEl) nameEl.textContent = 'Brainstorm (Active)';
+          } else {
+            brainstormToggle.classList.remove('active');
+            if (nameEl) nameEl.textContent = 'Brainstorm Mode';
+          }
+        }
+        // Update agent button to show brainstorm status
+        var agentNameEl = document.getElementById('agent-name');
+        var agentIconEl = document.getElementById('agent-icon');
+        if (state.brainstormEnabled) {
+          if (agentNameEl) agentNameEl.textContent = 'Brainstorm';
+          if (agentIconEl) agentIconEl.textContent = '🧠';
+          if (agentSelectBtn) agentSelectBtn.classList.add('brainstorm-active');
+        } else {
+          if (agentSelectBtn) agentSelectBtn.classList.remove('brainstorm-active');
+          updateAgentMenuSelection();
+        }
+      }
 
       enhanceBtn.addEventListener('click', function() {
         if (inputEl.value.trim()) {
@@ -2597,6 +3298,185 @@ function getScript(mermaidUri: string): string {
           case 'fileLineNumber':
             handleFileLineNumber(message.payload);
             break;
+          // Brainstorm mode message handlers
+          case 'brainstormStarted':
+            handleBrainstormStarted(message.payload);
+            break;
+          case 'brainstormAgentChunk':
+            handleBrainstormAgentChunk(message.payload);
+            break;
+          case 'brainstormPhaseChange':
+            handleBrainstormPhaseChange(message.payload);
+            break;
+          case 'brainstormSynthesisChunk':
+            handleBrainstormSynthesisChunk(message.payload);
+            break;
+          case 'brainstormComplete':
+            handleBrainstormComplete(message.payload);
+            break;
+          case 'brainstormError':
+            handleBrainstormError(message.payload);
+            break;
+          case 'agentChanged':
+            state.activeAgent = message.payload.agent;
+            state.settings.provider = message.payload.agent;
+            state.brainstormEnabled = false;
+            updateAgentMenuSelection();
+            updateBrainstormUI();
+            break;
+          case 'brainstormToggled':
+            state.brainstormEnabled = message.payload.enabled;
+            updateBrainstormUI();
+            break;
+        }
+      }
+
+      // ========================================
+      // Brainstorm Mode Handlers
+      // ========================================
+
+      function handleBrainstormStarted(payload) {
+        state.brainstormSession = payload.sessionId;
+        state.brainstormPhase = 'individual';
+        state.agentResponses = {};
+        showLoading();
+
+        // Create brainstorm container in messages area
+        var brainstormContainer = document.createElement('div');
+        brainstormContainer.className = 'brainstorm-container';
+        brainstormContainer.id = 'brainstorm-' + payload.sessionId;
+
+        brainstormContainer.innerHTML =
+          '<div class="brainstorm-header">' +
+            '<span class="brainstorm-icon">🧠</span>' +
+            '<span class="brainstorm-title">Brainstorm Session</span>' +
+            '<span class="brainstorm-phase-indicator" id="brainstorm-phase">Individual Analysis</span>' +
+          '</div>' +
+          '<div class="brainstorm-agents">' +
+            '<div class="brainstorm-agent-card" data-agent="claude-code">' +
+              '<div class="brainstorm-agent-header">' +
+                '<span class="brainstorm-agent-icon">🟠</span>' +
+                '<span class="brainstorm-agent-name">Claude</span>' +
+                '<span class="brainstorm-agent-status streaming">Thinking...</span>' +
+              '</div>' +
+              '<div class="brainstorm-agent-content" id="brainstorm-claude-content"></div>' +
+            '</div>' +
+            '<div class="brainstorm-agent-card" data-agent="openai-codex">' +
+              '<div class="brainstorm-agent-header">' +
+                '<span class="brainstorm-agent-icon">🟢</span>' +
+                '<span class="brainstorm-agent-name">Codex</span>' +
+                '<span class="brainstorm-agent-status streaming">Thinking...</span>' +
+              '</div>' +
+              '<div class="brainstorm-agent-content" id="brainstorm-codex-content"></div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="brainstorm-synthesis hidden" id="brainstorm-synthesis">' +
+            '<div class="brainstorm-synthesis-header">' +
+              '<span class="brainstorm-synthesis-icon">✨</span>' +
+              '<span class="brainstorm-synthesis-title">Unified Solution</span>' +
+            '</div>' +
+            '<div class="brainstorm-synthesis-content" id="brainstorm-synthesis-content"></div>' +
+          '</div>';
+
+        messagesEl.appendChild(brainstormContainer);
+        scrollToBottom();
+      }
+
+      function handleBrainstormAgentChunk(payload) {
+        var agentId = payload.agentId;
+        var content = payload.content || '';
+
+        // Accumulate content
+        if (!state.agentResponses[agentId]) {
+          state.agentResponses[agentId] = '';
+        }
+        state.agentResponses[agentId] += content;
+
+        // Update UI
+        var contentEl = document.getElementById('brainstorm-' + (agentId === 'claude-code' ? 'claude' : 'codex') + '-content');
+        if (contentEl) {
+          contentEl.innerHTML = formatContent(state.agentResponses[agentId]);
+        }
+        scrollToBottom();
+      }
+
+      function handleBrainstormPhaseChange(payload) {
+        state.brainstormPhase = payload.phase;
+
+        var phaseIndicator = document.getElementById('brainstorm-phase');
+        if (phaseIndicator) {
+          var phaseNames = {
+            'individual': 'Individual Analysis',
+            'discussion': 'Discussion',
+            'synthesis': 'Synthesizing Solution',
+            'complete': 'Complete'
+          };
+          phaseIndicator.textContent = phaseNames[payload.phase] || payload.phase;
+          phaseIndicator.className = 'brainstorm-phase-indicator ' + payload.phase;
+        }
+
+        // Update agent card statuses when individual phase completes
+        if (payload.phase === 'synthesis' || payload.phase === 'discussion') {
+          document.querySelectorAll('.brainstorm-agent-status').forEach(function(el) {
+            el.textContent = 'Complete';
+            el.classList.remove('streaming');
+            el.classList.add('complete');
+          });
+
+          // Show synthesis section
+          var synthesisSection = document.getElementById('brainstorm-synthesis');
+          if (synthesisSection) {
+            synthesisSection.classList.remove('hidden');
+          }
+        }
+      }
+
+      function handleBrainstormSynthesisChunk(payload) {
+        var content = payload.content || '';
+
+        if (!state.synthesisContent) {
+          state.synthesisContent = '';
+        }
+        state.synthesisContent += content;
+
+        var synthesisContentEl = document.getElementById('brainstorm-synthesis-content');
+        if (synthesisContentEl) {
+          synthesisContentEl.innerHTML = formatContent(state.synthesisContent);
+        }
+        scrollToBottom();
+      }
+
+      function handleBrainstormComplete(payload) {
+        hideLoading();
+        state.brainstormPhase = 'complete';
+        state.synthesisContent = '';
+
+        var phaseIndicator = document.getElementById('brainstorm-phase');
+        if (phaseIndicator) {
+          phaseIndicator.textContent = 'Complete';
+          phaseIndicator.classList.add('complete');
+        }
+
+        // Update all status indicators
+        document.querySelectorAll('.brainstorm-agent-status').forEach(function(el) {
+          el.textContent = 'Complete';
+          el.classList.remove('streaming');
+          el.classList.add('complete');
+        });
+      }
+
+      function handleBrainstormError(payload) {
+        hideLoading();
+        var errorMsg = payload.error || 'Brainstorm session failed';
+
+        var container = document.getElementById('brainstorm-' + state.brainstormSession);
+        if (container) {
+          var errorEl = document.createElement('div');
+          errorEl.className = 'brainstorm-error';
+          errorEl.innerHTML = '<span class="error-icon">⚠️</span> ' + escapeHtml(errorMsg);
+          container.appendChild(errorEl);
+        } else {
+          showError(errorMsg);
         }
       }
 
@@ -2667,6 +3547,13 @@ function getScript(mermaidUri: string): string {
         contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
         updateModeIndicator();
 
+        // Set provider dropdown
+        if (state.settings.provider) {
+          providerSelect.value = state.settings.provider;
+          state.activeAgent = state.settings.provider;
+        }
+
+        // Populate model dropdown based on selected provider
         if (state.providers && state.providers.length > 0) {
           var provider = state.providers.find(function(p) { return p.name === state.settings.provider; });
           if (provider) {
@@ -2675,6 +3562,9 @@ function getScript(mermaidUri: string): string {
             }).join('');
           }
         }
+
+        // Update agent menu to match settings
+        updateAgentMenuSelection();
 
         updateContext(state.context);
 
@@ -2686,6 +3576,12 @@ function getScript(mermaidUri: string): string {
       function sendMessage() {
         var content = inputEl.value.trim();
         if (!content || state.isLoading) return;
+
+        // Hide quick actions when sending a message
+        var quickActions = document.getElementById('quick-actions');
+        if (quickActions) {
+          quickActions.innerHTML = '';
+        }
 
         if (content.startsWith('/')) {
           var parts = content.slice(1).split(' ');
@@ -2700,14 +3596,26 @@ function getScript(mermaidUri: string): string {
           return;
         }
 
-        vscode.postMessage({
-          type: 'sendMessage',
-          payload: {
-            content: content,
-            context: state.context,
-            settings: state.settings
-          }
-        });
+        // Check if brainstorm mode is enabled
+        if (state.brainstormEnabled) {
+          vscode.postMessage({
+            type: 'sendBrainstormMessage',
+            payload: {
+              content: content,
+              context: state.context,
+              settings: state.settings
+            }
+          });
+        } else {
+          vscode.postMessage({
+            type: 'sendMessage',
+            payload: {
+              content: content,
+              context: state.context,
+              settings: state.settings
+            }
+          });
+        }
 
         inputEl.value = '';
         inputEl.style.height = 'auto';
@@ -2733,7 +3641,8 @@ function getScript(mermaidUri: string): string {
         html += '</div></div>';
 
         if (msg.thinking) {
-          html += '<div class="thinking-block"><div class="thinking-header">Thinking</div>' + escapeHtml(msg.thinking) + '</div>';
+          var thinkingIcon = '<span class="thinking-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg></span>';
+          html += '<div class="thinking-block">' + thinkingIcon + '<span class="thinking-content">' + escapeHtml(msg.thinking) + '</span></div>';
         }
 
         html += '<div class="message-content">' + formatContent(msg.content) + '</div>';
@@ -2757,12 +3666,14 @@ function getScript(mermaidUri: string): string {
       var pendingToolData = new Map(); // toolId -> { name, input } for edit report cards
 
       function handleResponseChunk(chunk) {
+        console.log('[Mysti Webview] Received chunk:', JSON.stringify(chunk));
         if (chunk.type === 'text') {
           currentResponse += chunk.content;
           updateCurrentContentSegment(currentResponse);
         } else if (chunk.type === 'thinking') {
-          currentThinking += chunk.content;
-          updateThinkingBlock(currentThinking);
+          console.log('[Mysti Webview] Thinking content:', JSON.stringify(chunk.content));
+          currentThinking += chunk.content;  // Still accumulate for storage
+          appendThinkingBlock(chunk.content);  // But display each chunk separately
         }
       }
 
@@ -2772,21 +3683,26 @@ function getScript(mermaidUri: string): string {
         if (!streamingEl) {
           streamingEl = document.createElement('div');
           streamingEl.className = 'message assistant streaming';
-          streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Mysti</span><span class="message-model-info">' + getModelDisplayName(state.settings.model) + '</span></div></div><div class="thinking-block" style="display: none;"><div class="thinking-header">Thinking</div><span class="thinking-content"></span></div><div class="message-body"></div>';
+          // Removed static thinking-block - now created dynamically for each thought
+          streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Mysti</span><span class="message-model-info">' + getModelDisplayName(state.settings.model) + '</span></div></div><div class="message-body"></div>';
           messagesEl.appendChild(streamingEl);
         }
 
         return streamingEl;
       }
 
-      function updateThinkingBlock(thinking) {
+      function appendThinkingBlock(thinking) {
         var streamingEl = getOrCreateStreamingMessage();
-        var thinkingEl = streamingEl.querySelector('.thinking-block');
-        var thinkingContentEl = streamingEl.querySelector('.thinking-content');
+        var messageBody = streamingEl.querySelector('.message-body');
 
         if (thinking) {
-          thinkingEl.style.display = 'block';
-          thinkingContentEl.textContent = thinking;
+          // Create a new thinking block for each thought
+          var thinkingEl = document.createElement('div');
+          thinkingEl.className = 'thinking-block';
+          // Use a thought bubble icon instead of text
+          var thinkingIcon = '<span class="thinking-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg></span>';
+          thinkingEl.innerHTML = thinkingIcon + '<span class="thinking-content">' + escapeHtml(thinking) + '</span>';
+          messageBody.appendChild(thinkingEl);
         }
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
@@ -2896,7 +3812,7 @@ function getScript(mermaidUri: string): string {
         }
 
         var div = document.createElement('div');
-        div.className = 'tool-call';
+        div.className = 'tool-call running';
         div.dataset.id = toolCall.id;
 
         // Format input for display
@@ -2908,12 +3824,17 @@ function getScript(mermaidUri: string): string {
         var chevronSvg = '<svg class="tool-call-chevron" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">' +
           '<path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
 
+        // Spinner SVG for running state
+        var spinnerSvg = '<svg class="tool-call-spinner" viewBox="0 0 16 16" width="12" height="12">' +
+          '<circle cx="8" cy="8" r="6" stroke="var(--vscode-charts-blue)" stroke-width="2" fill="none" stroke-dasharray="28" stroke-dashoffset="8" stroke-linecap="round"/></svg>';
+
         // Copy icon SVG
         var copySvg = '<svg class="tool-call-copy-icon" viewBox="0 0 16 16" fill="currentColor" width="14" height="14">' +
           '<path d="M4 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6zM2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1H2z"/></svg>';
 
         div.innerHTML =
           '<div class="tool-call-header">' +
+            spinnerSvg +
             chevronSvg +
             '<span class="tool-call-name">' + escapeHtml(toolCall.name) + '</span>' +
             '<span class="tool-call-summary">' + escapeHtml(summary) + '</span>' +
@@ -2993,6 +3914,23 @@ function getScript(mermaidUri: string): string {
               }
 
               messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+          }
+
+          // For TodoWrite, render a nice todo list
+          if (toolName && toolName.toLowerCase() === 'todowrite') {
+            var todoInput = toolInput;
+            if (todoInput && todoInput.todos && todoInput.todos.length > 0) {
+              // Remove any existing todo list for this tool
+              var existingTodoList = toolEl.querySelector('.todo-list');
+              if (existingTodoList) {
+                existingTodoList.remove();
+              }
+
+              var todoListHtml = renderTodoList(todoInput.todos);
+              var todoContainer = document.createElement('div');
+              todoContainer.innerHTML = todoListHtml;
+              toolEl.appendChild(todoContainer.firstChild);
             }
           }
 
@@ -3348,6 +4286,29 @@ function getScript(mermaidUri: string): string {
         return info;
       }
 
+      function renderTodoList(todos) {
+        if (!todos || !todos.length) return '';
+
+        var html = '<div class="todo-list">';
+        todos.forEach(function(todo) {
+          var statusIcon = '';
+          if (todo.status === 'completed') {
+            statusIcon = '<svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>';
+          } else if (todo.status === 'in_progress') {
+            statusIcon = '<svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2" fill="none" stroke-dasharray="28" stroke-dashoffset="8"/></svg>';
+          } else {
+            statusIcon = '<svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
+          }
+
+          html += '<div class="todo-item ' + todo.status + '">' +
+            '<span class="todo-status ' + todo.status + '">' + statusIcon + '</span>' +
+            '<span class="todo-content">' + escapeHtml(todo.content) + '</span>' +
+          '</div>';
+        });
+        html += '</div>';
+        return html;
+      }
+
       function renderEditReportCard(editInfo, thinkingContent) {
         var actionClass = editInfo.action;
         var actionLabel = editInfo.action.charAt(0).toUpperCase() + editInfo.action.slice(1);
@@ -3502,6 +4463,11 @@ function getScript(mermaidUri: string): string {
       document.addEventListener('click', function(e) {
         if (!slashCmdBtn.contains(e.target) && !slashMenu.contains(e.target)) {
           hideSlashMenu();
+        }
+
+        // Close agent menu when clicking outside
+        if (agentSelectBtn && agentMenu && !agentSelectBtn.contains(e.target) && !agentMenu.contains(e.target)) {
+          agentMenu.classList.add('hidden');
         }
 
         // Handle copy button click

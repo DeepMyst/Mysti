@@ -4,14 +4,16 @@ import { ContextManager } from './managers/ContextManager';
 import { ConversationManager } from './managers/ConversationManager';
 import { ProviderManager } from './managers/ProviderManager';
 import { SuggestionManager } from './managers/SuggestionManager';
+import { BrainstormManager } from './managers/BrainstormManager';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
 let conversationManager: ConversationManager;
 let providerManager: ProviderManager;
 let suggestionManager: SuggestionManager;
+let brainstormManager: BrainstormManager;
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
   console.log('Mysti extension is now active');
 
   // Initialize managers
@@ -20,13 +22,20 @@ export function activate(context: vscode.ExtensionContext) {
   providerManager = new ProviderManager(context);
   suggestionManager = new SuggestionManager(context);
 
+  // Initialize providers (async)
+  await providerManager.initialize();
+
+  // Initialize brainstorm manager
+  brainstormManager = new BrainstormManager(context, providerManager);
+
   // Initialize the chat view provider
   chatViewProvider = new ChatViewProvider(
     context.extensionUri,
     contextManager,
     conversationManager,
     providerManager,
-    suggestionManager
+    suggestionManager,
+    brainstormManager
   );
 
   // Register the webview provider
