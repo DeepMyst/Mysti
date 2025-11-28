@@ -326,16 +326,33 @@ export class CodexProvider extends BaseCliProvider {
   }
 
   /**
+   * Get thinking tokens based on thinking level
+   * Codex doesn't use MAX_THINKING_TOKENS - reasoning is controlled by config
+   */
+  protected getThinkingTokens(thinkingLevel: string): number | undefined {
+    // Codex doesn't use MAX_THINKING_TOKENS env var
+    // Reasoning is controlled by model_reasoning_effort in config.toml
+    return undefined;
+  }
+
+  /**
    * Add sandbox flags based on mode and access level
    * Maps Mysti settings to Codex CLI sandbox modes
    */
   private _addSandboxFlags(args: string[], settings: Settings): void {
     const { mode, accessLevel } = settings;
 
-    // Plan and brainstorm modes are always read-only (no file modifications)
-    if (mode === 'plan' || mode === 'brainstorm') {
+    // Quick Plan - read-only sandbox
+    if (mode === 'quick-plan') {
       args.push('--sandbox', 'read-only');
-      console.log('[Mysti] Codex: Using read-only sandbox (plan/brainstorm mode)');
+      console.log('[Mysti] Codex: Using quick plan mode (read-only)');
+      return;
+    }
+
+    // Detailed Plan - read-only sandbox
+    if (mode === 'detailed-plan') {
+      args.push('--sandbox', 'read-only');
+      console.log('[Mysti] Codex: Using detailed plan mode (read-only)');
       return;
     }
 
@@ -367,9 +384,9 @@ export class CodexProvider extends BaseCliProvider {
       return;
     }
 
-    // Fallback: read-only sandbox (safest option)
-    args.push('--sandbox', 'read-only');
-    console.log('[Mysti] Codex: Using read-only sandbox (fallback)');
+    // Default mode or fallback - workspace write with prompts
+    args.push('--sandbox', 'workspace-write');
+    console.log('[Mysti] Codex: Using default mode (workspace-write)');
   }
 
   /**

@@ -1,4 +1,4 @@
-export type OperationMode = 'ask-before-edit' | 'edit-automatically' | 'plan' | 'brainstorm';
+export type OperationMode = 'default' | 'ask-before-edit' | 'edit-automatically' | 'quick-plan' | 'detailed-plan';
 export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
 export type AccessLevel = 'read-only' | 'ask-permission' | 'full-access';
 export type ContextMode = 'auto' | 'manual';
@@ -64,6 +64,7 @@ export interface Conversation {
   mode: OperationMode;
   model: string;
   provider: ProviderType;
+  agentConfig?: AgentConfiguration;
 }
 
 export interface Settings {
@@ -285,7 +286,7 @@ export interface PlanSelectionResult {
   selectedPlan: PlanOption;
   originalQuery: string;
   messageId: string;          // Reference to assistant message containing options
-  executionMode: 'edit-automatically' | 'ask-before-edit' | 'plan';
+  executionMode: OperationMode;
   customInstructions?: string;
 }
 
@@ -330,4 +331,75 @@ export interface QuestionAnswer {
 export interface QuestionSubmission {
   messageId: string;
   answers: QuestionAnswer[];
+}
+
+// ============================================================================
+// Agent Configuration Types (Personas + Skills)
+// ============================================================================
+
+/**
+ * 16 Developer Personas - specialized agent behavior profiles
+ */
+export type DeveloperPersonaId =
+  | 'architect'
+  | 'prototyper'
+  | 'product-centric'
+  | 'refactorer'
+  | 'devops'
+  | 'domain-expert'
+  | 'researcher'
+  | 'builder'
+  | 'debugger'
+  | 'integrator'
+  | 'mentor'
+  | 'process-engineer'
+  | 'fullstack'
+  | 'security'
+  | 'performance'
+  | 'toolsmith';
+
+/**
+ * 12 Toggleable Skills - behavioral modifiers
+ */
+export type SkillId =
+  | 'concise'
+  | 'repo-hygiene'
+  | 'organized'
+  | 'auto-commit'
+  | 'first-principles'
+  | 'auto-compact'
+  | 'dependency-aware'
+  | 'graceful-degradation'
+  | 'scope-discipline'
+  | 'doc-reflexes'
+  | 'test-driven'
+  | 'rollback-ready';
+
+/**
+ * Developer persona definition with instructions
+ */
+export interface DeveloperPersona {
+  id: DeveloperPersonaId;
+  name: string;
+  description: string;
+  keyCharacteristics: string;
+  icon: string;
+}
+
+/**
+ * Skill definition with instructions
+ */
+export interface Skill {
+  id: SkillId;
+  name: string;
+  description: string;
+  instructions: string;
+}
+
+/**
+ * Agent configuration for a conversation (persisted per-conversation)
+ */
+export interface AgentConfiguration {
+  personaId: DeveloperPersonaId | null;
+  enabledSkills: SkillId[];
 }

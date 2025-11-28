@@ -8,7 +8,8 @@ import type {
   Conversation,
   StreamChunk,
   ProviderConfig,
-  ModelInfo
+  ModelInfo,
+  AgentConfiguration
 } from '../types';
 
 /**
@@ -132,10 +133,11 @@ export class ProviderManager {
     settings: Settings,
     conversation: Conversation | null,
     persona?: PersonaConfig,
-    panelId?: string
+    panelId?: string,
+    agentConfig?: AgentConfiguration
   ): AsyncGenerator<StreamChunk> {
     const provider = this._getActiveProvider(settings.provider);
-    yield* provider.sendMessage(content, context, settings, conversation, persona, panelId, this);
+    yield* provider.sendMessage(content, context, settings, conversation, persona, panelId, this, agentConfig);
   }
 
   /**

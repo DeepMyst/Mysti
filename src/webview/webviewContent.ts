@@ -51,6 +51,12 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         </button>
       </div>
       <div class="header-right">
+        <button id="agent-config-btn" class="icon-btn" title="Agent Configuration">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M11 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>
+            <path fill-rule="evenodd" d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm8-7a7 7 0 0 0-5.468 11.37C3.242 11.226 4.805 10 8 10s4.757 1.225 5.468 2.37A7 7 0 0 0 8 1z"/>
+          </svg>
+        </button>
         <button id="settings-btn" class="icon-btn" title="Settings">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
@@ -101,6 +107,38 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <option value="ask-permission">Ask permission</option>
           <option value="full-access">Full access</option>
         </select>
+      </div>
+    </div>
+
+    <!-- Agent Configuration panel (hidden by default) -->
+    <div id="agent-config-panel" class="agent-config-panel hidden">
+      <div class="config-summary">
+        <span class="config-summary-label">Active:</span>
+        <span class="config-summary-value" id="config-summary-text">Default (no customization)</span>
+        <button class="config-reset-btn" id="config-reset-btn" title="Reset to default">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+            <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+          </svg>
+        </button>
+      </div>
+      <div class="config-section">
+        <div class="config-section-header">
+          <span class="config-section-title">Persona</span>
+          <span class="config-section-hint">Select one (optional)</span>
+        </div>
+        <div class="persona-grid" id="persona-grid">
+          <!-- Dynamically populated with persona cards -->
+        </div>
+      </div>
+      <div class="config-section">
+        <div class="config-section-header">
+          <span class="config-section-title">Skills</span>
+          <span class="config-section-hint">Toggle multiple</span>
+        </div>
+        <div class="skills-list" id="skills-list">
+          <!-- Dynamically populated with skill toggles -->
+        </div>
       </div>
     </div>
 
@@ -443,6 +481,220 @@ function getStyles(): string {
     .select:focus {
       outline: none;
       border-color: var(--vscode-focusBorder);
+    }
+
+    /* Agent Configuration Panel */
+    .agent-config-panel {
+      padding: 12px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-editor-background);
+      position: relative;
+      z-index: 50;
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+
+    .agent-config-panel.hidden {
+      display: none;
+    }
+
+    .config-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      background: var(--vscode-textBlockQuote-background);
+      border-radius: 6px;
+      margin-bottom: 12px;
+      font-size: 11px;
+    }
+
+    .config-summary-label {
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .config-summary-value {
+      flex: 1;
+      color: var(--vscode-foreground);
+      font-weight: 500;
+    }
+
+    .config-reset-btn {
+      background: transparent;
+      border: none;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      opacity: 0.7;
+    }
+
+    .config-reset-btn:hover {
+      background: var(--vscode-toolbar-hoverBackground);
+      opacity: 1;
+    }
+
+    .config-section {
+      margin-bottom: 16px;
+    }
+
+    .config-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .config-section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .config-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--vscode-foreground);
+    }
+
+    .config-section-hint {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    /* Persona Grid */
+    .persona-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+
+    .persona-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 8px 4px;
+      background: var(--vscode-button-secondaryBackground);
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      text-align: center;
+    }
+
+    .persona-card:hover {
+      background: var(--vscode-list-hoverBackground);
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .persona-card.selected {
+      background: rgba(59, 130, 246, 0.15);
+      border-color: #3b82f6;
+    }
+
+    .persona-card-icon {
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+
+    .persona-card-name {
+      font-size: 9px;
+      font-weight: 500;
+      color: var(--vscode-foreground);
+      line-height: 1.2;
+      word-break: break-word;
+    }
+
+    .persona-card.selected .persona-card-name {
+      color: #3b82f6;
+    }
+
+    /* Skills List */
+    .skills-list {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 4px;
+    }
+
+    .skill-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      background: var(--vscode-button-secondaryBackground);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .skill-item:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .skill-item.active {
+      background: rgba(34, 197, 94, 0.12);
+    }
+
+    .skill-toggle {
+      position: relative;
+      width: 28px;
+      height: 16px;
+      background: var(--vscode-input-background);
+      border-radius: 8px;
+      border: 1px solid var(--vscode-input-border);
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .skill-toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 10px;
+      height: 10px;
+      background: var(--vscode-descriptionForeground);
+      border-radius: 50%;
+      transition: all 0.2s ease;
+    }
+
+    .skill-item.active .skill-toggle {
+      background: #22c55e;
+      border-color: #22c55e;
+    }
+
+    .skill-item.active .skill-toggle::after {
+      left: 14px;
+      background: white;
+    }
+
+    .skill-name {
+      flex: 1;
+      font-size: 11px;
+      color: var(--vscode-foreground);
+    }
+
+    .skill-item.active .skill-name {
+      color: #22c55e;
+      font-weight: 500;
+    }
+
+    /* Active indicator on config button */
+    #agent-config-btn {
+      position: relative;
+    }
+
+    #agent-config-btn.has-config::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      width: 6px;
+      height: 6px;
+      background: #3b82f6;
+      border-radius: 50%;
     }
 
     .context-section {
@@ -4021,7 +4273,14 @@ function getScript(mermaidUri: string, logoUri: string): string {
         autocompleteType: null,
         // Permission state
         pendingPermissions: new Map(),
-        focusedPermissionId: null
+        focusedPermissionId: null,
+        // Agent configuration state (per-conversation)
+        agentConfig: {
+          personaId: null,
+          enabledSkills: []
+        },
+        availablePersonas: [],
+        availableSkills: []
       };
 
       // Helper to send messages with panelId
@@ -4266,7 +4525,154 @@ function getScript(mermaidUri: string, logoUri: string): string {
 
       settingsBtn.addEventListener('click', function() {
         settingsPanel.classList.toggle('hidden');
+        // Close agent config panel when settings opens
+        var agentConfigPanel = document.getElementById('agent-config-panel');
+        if (agentConfigPanel && !settingsPanel.classList.contains('hidden')) {
+          agentConfigPanel.classList.add('hidden');
+        }
       });
+
+      // Agent config panel toggle
+      var agentConfigBtn = document.getElementById('agent-config-btn');
+      var agentConfigPanel = document.getElementById('agent-config-panel');
+      var configResetBtn = document.getElementById('config-reset-btn');
+
+      if (agentConfigBtn && agentConfigPanel) {
+        agentConfigBtn.addEventListener('click', function() {
+          agentConfigPanel.classList.toggle('hidden');
+          // Close settings panel when config opens
+          if (!agentConfigPanel.classList.contains('hidden')) {
+            settingsPanel.classList.add('hidden');
+          }
+        });
+      }
+
+      // Reset agent config
+      if (configResetBtn) {
+        configResetBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          state.agentConfig = { personaId: null, enabledSkills: [] };
+          renderAgentConfigPanel();
+          saveAgentConfig();
+        });
+      }
+
+      // Render agent config panel
+      function renderAgentConfigPanel() {
+        var personaGrid = document.getElementById('persona-grid');
+        var skillsList = document.getElementById('skills-list');
+
+        if (!personaGrid || !skillsList) return;
+
+        // Render personas
+        personaGrid.innerHTML = '';
+        state.availablePersonas.forEach(function(p) {
+          var card = document.createElement('div');
+          card.className = 'persona-card' + (state.agentConfig.personaId === p.id ? ' selected' : '');
+          card.dataset.persona = p.id;
+          card.title = p.description;
+          card.innerHTML =
+            '<span class="persona-card-icon">' + p.icon + '</span>' +
+            '<span class="persona-card-name">' + escapeHtml(p.name) + '</span>';
+
+          card.onclick = function() {
+            togglePersona(p.id);
+          };
+
+          personaGrid.appendChild(card);
+        });
+
+        // Render skills
+        skillsList.innerHTML = '';
+        state.availableSkills.forEach(function(s) {
+          var isActive = state.agentConfig.enabledSkills.indexOf(s.id) !== -1;
+          var item = document.createElement('div');
+          item.className = 'skill-item' + (isActive ? ' active' : '');
+          item.dataset.skill = s.id;
+          item.title = s.description;
+          item.innerHTML =
+            '<div class="skill-toggle"></div>' +
+            '<span class="skill-name">' + escapeHtml(s.name) + '</span>';
+
+          item.onclick = function() {
+            toggleSkill(s.id);
+          };
+
+          skillsList.appendChild(item);
+        });
+
+        updateConfigSummary();
+      }
+
+      function togglePersona(personaId) {
+        if (state.agentConfig.personaId === personaId) {
+          // Deselect if clicking same persona
+          state.agentConfig.personaId = null;
+        } else {
+          state.agentConfig.personaId = personaId;
+        }
+
+        // Update UI
+        document.querySelectorAll('.persona-card').forEach(function(card) {
+          card.classList.toggle('selected', card.dataset.persona === state.agentConfig.personaId);
+        });
+
+        updateConfigSummary();
+        saveAgentConfig();
+      }
+
+      function toggleSkill(skillId) {
+        var index = state.agentConfig.enabledSkills.indexOf(skillId);
+        if (index === -1) {
+          state.agentConfig.enabledSkills.push(skillId);
+        } else {
+          state.agentConfig.enabledSkills.splice(index, 1);
+        }
+
+        // Update UI
+        document.querySelectorAll('.skill-item').forEach(function(item) {
+          var isActive = state.agentConfig.enabledSkills.indexOf(item.dataset.skill) !== -1;
+          item.classList.toggle('active', isActive);
+        });
+
+        updateConfigSummary();
+        saveAgentConfig();
+      }
+
+      function updateConfigSummary() {
+        var summaryText = document.getElementById('config-summary-text');
+        var configBtn = document.getElementById('agent-config-btn');
+
+        if (!summaryText) return;
+
+        var parts = [];
+
+        if (state.agentConfig.personaId) {
+          var persona = state.availablePersonas.find(function(p) { return p.id === state.agentConfig.personaId; });
+          if (persona) parts.push(persona.icon + ' ' + persona.name);
+        }
+
+        if (state.agentConfig.enabledSkills.length > 0) {
+          parts.push(state.agentConfig.enabledSkills.length + ' skill' +
+                     (state.agentConfig.enabledSkills.length > 1 ? 's' : ''));
+        }
+
+        if (parts.length === 0) {
+          summaryText.textContent = 'Default (no customization)';
+          if (configBtn) configBtn.classList.remove('has-config');
+        } else {
+          summaryText.textContent = parts.join(' + ');
+          if (configBtn) configBtn.classList.add('has-config');
+        }
+      }
+
+      function saveAgentConfig() {
+        // Send to extension for per-conversation persistence
+        postMessageWithPanelId({
+          type: 'updateAgentConfig',
+          payload: state.agentConfig
+        });
+      }
 
       newChatBtn.addEventListener('click', function() {
         postMessageWithPanelId({ type: 'openInNewTab' });
@@ -4669,6 +5075,16 @@ function getScript(mermaidUri: string, logoUri: string): string {
             if (message.payload && message.payload.messages) {
               message.payload.messages.forEach(function(msg) { addMessage(msg); });
             }
+            // Update agent config when switching conversations
+            if (message.payload && message.payload.agentConfig) {
+              state.agentConfig = message.payload.agentConfig;
+            } else {
+              state.agentConfig = { personaId: null, enabledSkills: [] };
+            }
+            renderAgentConfigPanel();
+            break;
+          case 'agentConfigUpdated':
+            // Confirmation that config was saved
             break;
           case 'conversationHistory':
             renderHistoryMenu(message.payload.conversations, message.payload.currentId);
@@ -5106,6 +5522,17 @@ function getScript(mermaidUri: string, logoUri: string): string {
         updateAgentMenuSelection();
 
         updateContext(state.context);
+
+        // Initialize agent configuration
+        if (state.availablePersonas && state.availableSkills) {
+          // Set agentConfig from conversation or use default
+          if (state.agentConfig) {
+            state.agentConfig = state.agentConfig;
+          } else {
+            state.agentConfig = { personaId: null, enabledSkills: [] };
+          }
+          renderAgentConfigPanel();
+        }
 
         if (state.conversation && state.conversation.messages) {
           state.conversation.messages.forEach(function(msg) { addMessage(msg); });

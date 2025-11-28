@@ -8,7 +8,8 @@ import { BrainstormManager } from '../managers/BrainstormManager';
 import { PermissionManager } from '../managers/PermissionManager';
 import { PlanOptionManager } from '../managers/PlanOptionManager';
 import { getWebviewContent } from '../webview/webviewContent';
-import type { WebviewMessage, Settings, ContextItem, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion } from '../types';
+import type { WebviewMessage, Settings, ContextItem, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration } from '../types';
+import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
 
 interface PanelState {
   id: string;
@@ -116,7 +117,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         providers: this._providerManager.getProviders(),
         slashCommands: this._getSlashCommands(),
         quickActions: this._getQuickActions(),
-        workspacePath
+        workspacePath,
+        agentConfig: conversation?.agentConfig,
+        availablePersonas: Object.values(DEVELOPER_PERSONAS),
+        availableSkills: Object.values(DEVELOPER_SKILLS)
       }
     });
   }
@@ -365,6 +369,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
 
+      case 'updateAgentConfig':
+        {
+          const panelId = (message as any).panelId;
+          const config = message.payload as AgentConfiguration;
+          const panelState = this._panelStates.get(panelId);
+
+          if (panelState?.currentConversationId) {
+            this._conversationManager.updateAgentConfig(
+              panelState.currentConversationId,
+              config
+            );
+            this._postToPanel(panelId, {
+              type: 'agentConfigUpdated',
+              payload: config
+            });
+          }
+        }
+        break;
+
       case 'deleteConversation':
         {
           const panelId = (message as any).panelId;
@@ -513,6 +536,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       this._postToPanel(panelId, { type: 'responseStarted' });
 
+      // Get agent configuration for this conversation
+      const agentConfig = conversationId
+        ? this._conversationManager.getAgentConfig(conversationId)
+        : undefined;
+
       // Pass panelId for per-panel process tracking
       const stream = this._providerManager.sendMessage(
         content,
@@ -520,7 +548,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         settings,
         conversation,
         undefined,
-        panelId
+        panelId,
+        agentConfig
       );
 
       let assistantContent = '';
@@ -608,10 +637,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
             });
 
-            // Detect plan options in Plan mode
-            if (settings.mode === 'plan') {
-              this._detectAndSendPlanOptions(assistantMessage, panelId);
-            }
+            // Always run classification to show visual questions and plan options
+            // (brainstorm has its own handler via _handleBrainstormMessage)
+            this._detectAndSendPlanOptions(assistantMessage, panelId);
 
             // Trigger async suggestion generation
             this._generateSuggestionsAsync(assistantMessage, panelId);
@@ -831,14 +859,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
     }
-    // Handle brainstorm enabled toggle (from agent dropdown)
-    if ((settings as any).brainstormEnabled !== undefined) {
-      await config.update('brainstorm.enabled', (settings as any).brainstormEnabled, vscode.ConfigurationTarget.Global);
-      this.postMessage({
-        type: 'brainstormToggled',
-        payload: { enabled: (settings as any).brainstormEnabled }
-      });
-    }
   }
 
   private async _handleAddToContext(
@@ -1049,8 +1069,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
 
-      // Send plan options if detected (need at least 2 distinct options)
-      if (result.planOptions.length >= 2) {
+      // Send plan options if detected (allow 1+ options)
+      if (result.planOptions.length >= 1) {
         console.log('[Mysti] Detected plan options:', result.planOptions.length);
         this._postToPanel(panelId, {
           type: 'planOptions',
@@ -1086,7 +1106,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     // Handle "Keep Planning" mode differently - just insert the prompt
-    if (executionMode === 'plan') {
+    if (executionMode === 'quick-plan' || executionMode === 'detailed-plan') {
       this._postToPanel(panelId, {
         type: 'setInputValue',
         payload: { value: followUpPrompt }
@@ -1291,7 +1311,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         description: 'Show or change operation mode',
         handler: (args: string) => {
           if (args) {
-            const modes = ['ask-before-edit', 'edit-automatically', 'plan', 'brainstorm'];
+            // Note: brainstorm is an agent type, not a mode - use /brainstorm or /agent
+            const modes = ['ask-before-edit', 'edit-automatically', 'plan'];
             if (modes.includes(args)) {
               this._handleUpdateSettings({ mode: args as any });
               return `Mode changed to: ${args}`;
@@ -1355,44 +1376,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         description: 'Toggle brainstorm mode (multi-agent collaboration)',
         handler: (args: string) => {
           const config = vscode.workspace.getConfiguration('mysti');
-          const currentEnabled = config.get<boolean>('brainstorm.enabled', false);
+          const currentProvider = config.get<string>('defaultProvider', 'claude-code');
+          const isBrainstormActive = currentProvider === 'brainstorm';
 
           if (args === 'on' || args === 'enable') {
-            config.update('brainstorm.enabled', true, true);
+            config.update('defaultProvider', 'brainstorm', true);
             if (panelId) {
               this._postToPanel(panelId, {
-                type: 'brainstormToggled',
-                payload: { enabled: true }
+                type: 'agentChanged',
+                payload: { agent: 'brainstorm' }
               });
             }
             return 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.';
           } else if (args === 'off' || args === 'disable') {
-            config.update('brainstorm.enabled', false, true);
+            config.update('defaultProvider', 'claude-code', true);
             if (panelId) {
               this._postToPanel(panelId, {
-                type: 'brainstormToggled',
-                payload: { enabled: false }
+                type: 'agentChanged',
+                payload: { agent: 'claude-code' }
               });
             }
-            return 'Brainstorm mode disabled. Using single agent.';
+            return 'Brainstorm mode disabled. Using Claude Code.';
           } else if (args === 'status') {
-            return currentEnabled
+            return isBrainstormActive
               ? 'Brainstorm mode is ON. Multiple agents will collaborate.'
               : 'Brainstorm mode is OFF. Using single agent.';
           }
 
           // Toggle if no args
-          const newState = !currentEnabled;
-          config.update('brainstorm.enabled', newState, true);
+          const newProvider = isBrainstormActive ? 'claude-code' : 'brainstorm';
+          config.update('defaultProvider', newProvider, true);
           if (panelId) {
             this._postToPanel(panelId, {
-              type: 'brainstormToggled',
-              payload: { enabled: newState }
+              type: 'agentChanged',
+              payload: { agent: newProvider }
             });
           }
-          return newState
+          return newProvider === 'brainstorm'
             ? 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.'
-            : 'Brainstorm mode disabled. Using single agent.';
+            : 'Brainstorm mode disabled. Using Claude Code.';
         }
       }
     ];

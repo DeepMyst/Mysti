@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { Conversation, Message, ContextItem, OperationMode, ProviderType } from '../types';
+import type { Conversation, Message, ContextItem, OperationMode, ProviderType, AgentConfiguration } from '../types';
 
 export class ConversationManager {
   private _conversations: Map<string, Conversation> = new Map();
@@ -225,6 +225,42 @@ export class ConversationManager {
       conversation.updatedAt = Date.now();
       this._saveConversations();
     }
+  }
+
+  /**
+   * Update agent configuration for a conversation
+   */
+  public updateAgentConfig(conversationId: string, config: AgentConfiguration): boolean {
+    const conversation = this._conversations.get(conversationId);
+    if (conversation) {
+      conversation.agentConfig = config;
+      conversation.updatedAt = Date.now();
+      this._saveConversations();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get agent configuration for a conversation
+   * Returns undefined if not configured (default behavior)
+   */
+  public getAgentConfig(conversationId: string): AgentConfiguration | undefined {
+    return this._conversations.get(conversationId)?.agentConfig;
+  }
+
+  /**
+   * Clear agent configuration for a conversation (reset to defaults)
+   */
+  public clearAgentConfig(conversationId: string): boolean {
+    const conversation = this._conversations.get(conversationId);
+    if (conversation) {
+      delete conversation.agentConfig;
+      conversation.updatedAt = Date.now();
+      this._saveConversations();
+      return true;
+    }
+    return false;
   }
 
   private _generateId(): string {

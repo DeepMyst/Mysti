@@ -124,16 +124,36 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   /**
+   * Get thinking tokens based on thinking level
+   */
+  protected getThinkingTokens(thinkingLevel: string): number | undefined {
+    const tokenMap: Record<string, number> = {
+      'none': 0,
+      'low': 4000,
+      'medium': 8000,
+      'high': 16000
+    };
+    return tokenMap[thinkingLevel];
+  }
+
+  /**
    * Add permission flags based on mode and access level
    * Maps Mysti settings to Claude Code CLI permission modes
    */
   private _addPermissionFlags(args: string[], settings: Settings): void {
     const { mode, accessLevel } = settings;
 
-    // Plan and brainstorm modes are always read-only (no file modifications)
-    if (mode === 'plan' || mode === 'brainstorm') {
+    // Quick Plan - read-only, Mysti adds quick plan instruction via prompt
+    if (mode === 'quick-plan') {
       args.push('--permission-mode', 'plan');
-      console.log('[Mysti] Claude: Using plan mode (read-only)');
+      console.log('[Mysti] Claude: Using quick plan mode (read-only)');
+      return;
+    }
+
+    // Detailed Plan - read-only, uses CLI's native multi-plan behavior
+    if (mode === 'detailed-plan') {
+      args.push('--permission-mode', 'plan');
+      console.log('[Mysti] Claude: Using detailed plan mode (read-only)');
       return;
     }
 
@@ -173,9 +193,9 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       return;
     }
 
-    // Fallback: default mode (safest option)
+    // Default mode or fallback - normal operation
     args.push('--permission-mode', 'default');
-    console.log('[Mysti] Claude: Using default mode (fallback)');
+    console.log('[Mysti] Claude: Using default mode');
   }
 
   protected parseStreamLine(line: string): StreamChunk | null {

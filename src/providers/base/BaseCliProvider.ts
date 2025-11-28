@@ -8,13 +8,14 @@ import type {
   PersonaConfig,
   PersonaType
 } from './IProvider';
-import { PERSONA_PROMPTS } from './IProvider';
+import { PERSONA_PROMPTS, DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './IProvider';
 import type {
   ContextItem,
   Settings,
   Conversation,
   StreamChunk,
-  ProviderConfig
+  ProviderConfig,
+  AgentConfiguration
 } from '../../types';
 
 /**
@@ -54,6 +55,13 @@ export abstract class BaseCliProvider implements ICliProvider {
    * @param line Raw line from CLI output
    */
   protected abstract parseStreamLine(line: string): StreamChunk | null;
+
+  /**
+   * Get thinking tokens based on thinking level
+   * @param thinkingLevel The thinking level setting
+   * @returns Token count or undefined if not supported
+   */
+  protected abstract getThinkingTokens(thinkingLevel: string): number | undefined;
 
   // Common implementations
 
@@ -103,6 +111,7 @@ export abstract class BaseCliProvider implements ICliProvider {
    * Send a message to the AI provider
    * @param panelId Optional panel ID for per-panel process tracking
    * @param providerManager Optional ProviderManager for registering process
+   * @param agentConfig Optional agent configuration (personas + skills)
    */
   async *sendMessage(
     content: string,
@@ -111,13 +120,14 @@ export abstract class BaseCliProvider implements ICliProvider {
     conversation: Conversation | null,
     persona?: PersonaConfig,
     panelId?: string,
-    providerManager?: unknown
+    providerManager?: unknown,
+    agentConfig?: AgentConfiguration
   ): AsyncGenerator<StreamChunk> {
     const cliPath = this.getCliPath();
     const args = this.buildCliArgs(settings, this.hasSession());
 
-    // Build prompt with context and persona
-    const fullPrompt = this.buildPrompt(content, context, conversation, settings, persona);
+    // Build prompt with context, persona, and agent config
+    const fullPrompt = this.buildPrompt(content, context, conversation, settings, persona, agentConfig);
 
     try {
       // Get workspace folder for CWD
@@ -127,10 +137,18 @@ export abstract class BaseCliProvider implements ICliProvider {
       console.log(`[Mysti] ${this.displayName}: Starting CLI with args:`, args);
       console.log(`[Mysti] ${this.displayName}: Working directory:`, cwd);
 
+      // Build environment with thinking tokens if applicable
+      const thinkingTokens = this.getThinkingTokens(settings.thinkingLevel);
+      const env: Record<string, string | undefined> = { ...process.env };
+      if (thinkingTokens && thinkingTokens > 0) {
+        env.MAX_THINKING_TOKENS = String(thinkingTokens);
+        console.log(`[Mysti] ${this.displayName}: Setting MAX_THINKING_TOKENS:`, thinkingTokens);
+      }
+
       // Spawn the process
       this._currentProcess = spawn(cliPath, args, {
         cwd,
-        env: { ...process.env },
+        env,
         stdio: ['pipe', 'pipe', 'pipe']
       });
 
@@ -243,19 +261,58 @@ export abstract class BaseCliProvider implements ICliProvider {
   }
 
   /**
-   * Build the full prompt with context, history, and persona
+   * Build agent instructions from persona + skills configuration
+   * Returns empty string if nothing configured (default CLI behavior)
+   */
+  protected buildAgentInstructions(agentConfig?: AgentConfiguration): string {
+    if (!agentConfig || (!agentConfig.personaId && agentConfig.enabledSkills.length === 0)) {
+      return '';
+    }
+
+    const parts: string[] = [];
+
+    // Add persona instructions if selected
+    if (agentConfig.personaId) {
+      const persona = DEVELOPER_PERSONAS[agentConfig.personaId];
+      if (persona) {
+        parts.push(`[Persona: ${persona.name}]\n${persona.keyCharacteristics}`);
+      }
+    }
+
+    // Add skill instructions if any enabled
+    if (agentConfig.enabledSkills.length > 0) {
+      const skillInstructions = agentConfig.enabledSkills
+        .map(skillId => DEVELOPER_SKILLS[skillId]?.instructions)
+        .filter(Boolean)
+        .join(' ');
+      if (skillInstructions) {
+        parts.push(`[Active Skills]\n${skillInstructions}`);
+      }
+    }
+
+    return parts.join('\n\n');
+  }
+
+  /**
+   * Build the full prompt with context, history, persona, and agent config
    */
   protected buildPrompt(
     content: string,
     context: ContextItem[],
     conversation: Conversation | null,
     settings: Settings,
-    persona?: PersonaConfig
+    persona?: PersonaConfig,
+    agentConfig?: AgentConfiguration
   ): string {
     let fullPrompt = '';
 
-    // Add persona instructions if provided
-    if (persona) {
+    // PRIORITY 1: Agent configuration (new system) takes precedence
+    const agentInstructions = this.buildAgentInstructions(agentConfig);
+    if (agentInstructions) {
+      fullPrompt += agentInstructions + '\n\n';
+    }
+    // PRIORITY 2: Legacy persona (for brainstorm compatibility)
+    else if (persona) {
       const personaPrompt = this.getPersonaPrompt(persona);
       if (personaPrompt) {
         fullPrompt += personaPrompt + '\n\n';
@@ -277,8 +334,10 @@ export abstract class BaseCliProvider implements ICliProvider {
     // Add the current message
     fullPrompt += content;
 
-    // Add mode-specific instructions
-    fullPrompt = this.addModeInstructions(fullPrompt, settings.mode);
+    // Add quick plan instruction for quick-plan mode
+    if (settings.mode === 'quick-plan') {
+      fullPrompt += '\n\n[Planning Mode] Create ONE concise implementation plan. Focus on the most practical approach without exploring multiple alternatives. Be brief and actionable.';
+    }
 
     return fullPrompt;
   }
