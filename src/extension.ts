@@ -5,6 +5,7 @@ import { ConversationManager } from './managers/ConversationManager';
 import { ProviderManager } from './managers/ProviderManager';
 import { SuggestionManager } from './managers/SuggestionManager';
 import { BrainstormManager } from './managers/BrainstormManager';
+import { PermissionManager } from './managers/PermissionManager';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -12,6 +13,7 @@ let conversationManager: ConversationManager;
 let providerManager: ProviderManager;
 let suggestionManager: SuggestionManager;
 let brainstormManager: BrainstormManager;
+let permissionManager: PermissionManager;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('Mysti extension is now active');
@@ -21,6 +23,11 @@ export async function activate(context: vscode.ExtensionContext) {
   conversationManager = new ConversationManager(context);
   providerManager = new ProviderManager(context);
   suggestionManager = new SuggestionManager(context);
+
+  // Get initial access level from configuration
+  const config = vscode.workspace.getConfiguration('mysti');
+  const initialAccessLevel = config.get<'read-only' | 'ask-permission' | 'full-access'>('accessLevel', 'ask-permission');
+  permissionManager = new PermissionManager(initialAccessLevel);
 
   // Initialize providers (async)
   await providerManager.initialize();
@@ -35,7 +42,8 @@ export async function activate(context: vscode.ExtensionContext) {
     conversationManager,
     providerManager,
     suggestionManager,
-    brainstormManager
+    brainstormManager,
+    permissionManager
   );
 
   // Register the webview provider

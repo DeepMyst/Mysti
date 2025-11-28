@@ -302,20 +302,8 @@ export class CodexProvider extends BaseCliProvider {
     args.push('--json');
 
     // Map Mysti settings to Codex sandbox flags
-    // Sandbox modes: read-only (default), workspace-write, danger-full-access
-    if (settings.accessLevel === 'full-access') {
-      // Full access - bypass all approvals and sandboxing (DANGEROUS)
-      args.push('--dangerously-bypass-approvals-and-sandbox');
-    } else if (settings.mode === 'edit-automatically') {
-      // Auto-edit mode - workspace-write with auto-approve
-      args.push('--full-auto');
-    } else if (settings.accessLevel === 'ask-permission' || settings.mode === 'ask-before-edit') {
-      // Ask permission / ask before edit - allow writes to workspace
-      args.push('--sandbox', 'workspace-write');
-    } else {
-      // Default for read-only, plan, or brainstorm modes
-      args.push('--sandbox', 'read-only');
-    }
+    // Priority: mode restrictions first, then access level
+    this._addSandboxFlags(args, settings);
 
     // Only set model if it's a valid Codex model (not a Claude model)
     // This prevents passing Claude model names like 'claude-sonnet-4-5-20250929' to Codex
@@ -335,6 +323,53 @@ export class CodexProvider extends BaseCliProvider {
     args.push('--skip-git-repo-check');
 
     return args;
+  }
+
+  /**
+   * Add sandbox flags based on mode and access level
+   * Maps Mysti settings to Codex CLI sandbox modes
+   */
+  private _addSandboxFlags(args: string[], settings: Settings): void {
+    const { mode, accessLevel } = settings;
+
+    // Plan and brainstorm modes are always read-only (no file modifications)
+    if (mode === 'plan' || mode === 'brainstorm') {
+      args.push('--sandbox', 'read-only');
+      console.log('[Mysti] Codex: Using read-only sandbox (plan/brainstorm mode)');
+      return;
+    }
+
+    // Read-only access level enforces read-only sandbox regardless of operation mode
+    if (accessLevel === 'read-only') {
+      args.push('--sandbox', 'read-only');
+      console.log('[Mysti] Codex: Using read-only sandbox (read-only access level)');
+      return;
+    }
+
+    // Full access - bypass all approvals and sandboxing (DANGEROUS)
+    if (accessLevel === 'full-access') {
+      args.push('--dangerously-bypass-approvals-and-sandbox');
+      console.log('[Mysti] Codex: Bypassing all approvals and sandbox (full-access)');
+      return;
+    }
+
+    // edit-automatically + ask-permission = workspace-write with auto-approve
+    if (mode === 'edit-automatically') {
+      args.push('--full-auto');
+      console.log('[Mysti] Codex: Using full-auto mode (edit-automatically)');
+      return;
+    }
+
+    // ask-before-edit + ask-permission = workspace-write (CLI prompts)
+    if (mode === 'ask-before-edit' && accessLevel === 'ask-permission') {
+      args.push('--sandbox', 'workspace-write');
+      console.log('[Mysti] Codex: Using workspace-write sandbox (ask-before-edit)');
+      return;
+    }
+
+    // Fallback: read-only sandbox (safest option)
+    args.push('--sandbox', 'read-only');
+    console.log('[Mysti] Codex: Using read-only sandbox (fallback)');
   }
 
   /**

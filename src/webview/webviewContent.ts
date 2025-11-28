@@ -1858,6 +1858,825 @@ function getStyles(): string {
       margin-bottom: 0;
     }
 
+    /* ========================================
+       Permission Approval Card
+       ======================================== */
+    .permission-card {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      margin: 12px 0;
+      overflow: hidden;
+      animation: fadeSlideIn 0.3s ease forwards;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    }
+
+    .permission-card.pending {
+      border-left: 4px solid var(--vscode-charts-orange, #f59e0b);
+      background: rgba(245, 158, 11, 0.03);
+    }
+
+    .permission-card.approved {
+      border-left: 4px solid var(--vscode-charts-green, #22c55e);
+      animation: approvedFade 0.5s ease forwards;
+    }
+
+    .permission-card.denied {
+      border-left: 4px solid var(--vscode-charts-red, #ef4444);
+      animation: deniedShake 0.3s ease, fadeOut 0.3s 0.3s ease forwards;
+    }
+
+    .permission-card.expired {
+      border-left: 4px solid var(--vscode-descriptionForeground);
+      opacity: 0.6;
+    }
+
+    @keyframes approvedFade {
+      0% { opacity: 1; transform: scale(1); }
+      50% { background: rgba(34, 197, 94, 0.1); }
+      100% { opacity: 0; height: 0; padding: 0; margin: 0; overflow: hidden; }
+    }
+
+    @keyframes deniedShake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-4px); }
+      75% { transform: translateX(4px); }
+    }
+
+    @keyframes fadeOut {
+      to { opacity: 0; height: 0; padding: 0; margin: 0; overflow: hidden; }
+    }
+
+    .permission-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      background: var(--vscode-titleBar-activeBackground, var(--vscode-sideBar-background));
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
+    .permission-header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .permission-icon {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--vscode-charts-orange);
+      font-size: 12px;
+    }
+
+    .permission-card.pending .permission-icon {
+      animation: pulse 2s infinite;
+    }
+
+    .permission-title {
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--vscode-foreground);
+    }
+
+    .permission-risk {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      margin-left: 8px;
+    }
+
+    .permission-risk.low {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+    }
+
+    .permission-risk.medium {
+      background: rgba(245, 158, 11, 0.15);
+      color: #f59e0b;
+    }
+
+    .permission-risk.high {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+    }
+
+    .permission-timer {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      font-variant-numeric: tabular-nums;
+      padding: 2px 8px;
+      background: var(--vscode-badge-background);
+      border-radius: 10px;
+    }
+
+    .permission-timer.warning {
+      color: var(--vscode-charts-orange);
+      background: rgba(245, 158, 11, 0.15);
+    }
+
+    .permission-timer.critical {
+      color: var(--vscode-charts-red);
+      background: rgba(239, 68, 68, 0.15);
+      animation: pulse 0.5s infinite;
+    }
+
+    .permission-body {
+      padding: 12px 14px;
+    }
+
+    .permission-description {
+      font-size: 13px;
+      color: var(--vscode-foreground);
+      margin-bottom: 10px;
+    }
+
+    .permission-details {
+      background: var(--vscode-textCodeBlock-background);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      font-family: var(--vscode-editor-font-family);
+    }
+
+    .permission-detail-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .permission-detail-row:last-child {
+      margin-bottom: 0;
+    }
+
+    .permission-detail-label {
+      color: var(--vscode-descriptionForeground);
+      min-width: 60px;
+    }
+
+    .permission-detail-value {
+      color: var(--vscode-foreground);
+      word-break: break-all;
+    }
+
+    .permission-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      background: var(--vscode-sideBarSectionHeader-background, rgba(0,0,0,0.1));
+      border-top: 1px solid var(--vscode-panel-border);
+      flex-wrap: wrap;
+    }
+
+    .permission-btn {
+      padding: 6px 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+
+    .permission-btn.approve {
+      background: var(--vscode-charts-green, #22c55e);
+      color: white;
+    }
+
+    .permission-btn.approve:hover {
+      background: #16a34a;
+    }
+
+    .permission-btn.deny {
+      background: transparent;
+      border: 1px solid var(--vscode-charts-red, #ef4444);
+      color: var(--vscode-charts-red);
+    }
+
+    .permission-btn.deny:hover {
+      background: rgba(239, 68, 68, 0.1);
+    }
+
+    .permission-btn.always-allow {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+
+    .permission-btn.always-allow:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+
+    .permission-shortcuts {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      margin-left: auto;
+    }
+
+    .permission-shortcuts kbd {
+      background: var(--vscode-keybindingLabel-background, rgba(128,128,128,0.2));
+      border: 1px solid var(--vscode-keybindingLabel-border, rgba(128,128,128,0.3));
+      border-radius: 3px;
+      padding: 1px 4px;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 10px;
+    }
+
+    /* Permission queue banner */
+    .permission-queue-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid var(--vscode-charts-orange);
+      border-radius: 6px;
+      margin: 8px 12px;
+      font-size: 12px;
+    }
+
+    .permission-queue-count {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--vscode-charts-orange);
+      font-weight: 500;
+    }
+
+    /* ========================================
+       Plan Option Selection Cards
+       ======================================== */
+    .plan-options-container {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin: 16px 0;
+      padding: 0 4px;
+    }
+
+    .plan-options-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .plan-options-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+
+    .plan-options-hint {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .plan-option-card {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 10px;
+      padding: 14px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .plan-option-card:hover {
+      border-color: var(--vscode-focusBorder);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+
+    .plan-option-card:focus {
+      outline: none;
+      border-color: var(--vscode-focusBorder);
+      box-shadow: 0 0 0 2px var(--vscode-focusBorder);
+    }
+
+    .plan-option-card.selected {
+      border-color: var(--vscode-charts-green, #22c55e);
+      background: rgba(34, 197, 94, 0.05);
+    }
+
+    .plan-option-card.selected::after {
+      content: '\\2713';
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 24px;
+      height: 24px;
+      background: var(--vscode-charts-green, #22c55e);
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: bold;
+    }
+
+    .plan-option-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .plan-option-icon {
+      font-size: 20px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .plan-option-title-area {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .plan-option-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .plan-option-complexity {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 500;
+    }
+
+    .plan-option-complexity.low {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+    }
+
+    .plan-option-complexity.medium {
+      background: rgba(245, 158, 11, 0.15);
+      color: #f59e0b;
+    }
+
+    .plan-option-complexity.high {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+    }
+
+    .plan-option-summary {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      line-height: 1.5;
+    }
+
+    .plan-option-proscons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+
+    .plan-option-pros, .plan-option-cons {
+      font-size: 11px;
+    }
+
+    .plan-option-pros-title, .plan-option-cons-title {
+      font-weight: 600;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .plan-option-pros-title {
+      color: var(--vscode-charts-green, #22c55e);
+    }
+
+    .plan-option-cons-title {
+      color: var(--vscode-charts-red, #ef4444);
+    }
+
+    .plan-option-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .plan-option-list li {
+      padding: 2px 0;
+      padding-left: 12px;
+      position: relative;
+    }
+
+    .plan-option-list li::before {
+      content: '•';
+      position: absolute;
+      left: 0;
+    }
+
+    .plan-option-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+
+    .plan-option-btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .plan-option-btn.select {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+
+    .plan-option-btn.select:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    .plan-option-btn.details {
+      background: transparent;
+      color: var(--vscode-textLink-foreground);
+      padding: 8px 12px;
+    }
+
+    .plan-option-btn.details:hover {
+      text-decoration: underline;
+    }
+
+    /* Plan option expand/collapse */
+    .plan-option-expanded {
+      max-height: 500px;
+      overflow: hidden;
+      transition: max-height 0.3s ease;
+    }
+
+    .plan-option-collapsed .plan-option-proscons,
+    .plan-option-collapsed .plan-option-actions,
+    .plan-option-collapsed .plan-custom-instructions {
+      display: none;
+    }
+
+    /* Plan execution buttons */
+    .plan-execute-btn {
+      flex: 1;
+      min-width: 100px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--vscode-button-border, transparent);
+      transition: all 0.15s ease;
+    }
+
+    .plan-execute-btn.edit-auto {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+
+    .plan-execute-btn.edit-auto:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    .plan-execute-btn.ask-first {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+
+    .plan-execute-btn.ask-first:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+
+    .plan-execute-btn.keep-planning {
+      background: transparent;
+      color: var(--vscode-foreground);
+      border: 1px solid var(--vscode-input-border);
+    }
+
+    .plan-execute-btn.keep-planning:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    /* Custom instructions section */
+    .plan-custom-instructions {
+      margin-top: 12px;
+    }
+
+    .custom-instructions-toggle {
+      background: none;
+      border: none;
+      color: var(--vscode-textLink-foreground);
+      cursor: pointer;
+      font-size: 12px;
+      padding: 0;
+    }
+
+    .custom-instructions-toggle:hover {
+      text-decoration: underline;
+    }
+
+    .custom-instructions-input {
+      margin-top: 8px;
+    }
+
+    .custom-instructions-input.hidden {
+      display: none;
+    }
+
+    .custom-instructions-textarea {
+      width: 100%;
+      min-height: 60px;
+      padding: 8px;
+      border: 1px solid var(--vscode-input-border);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: inherit;
+      resize: vertical;
+      box-sizing: border-box;
+    }
+
+    .custom-instructions-textarea:focus {
+      outline: none;
+      border-color: var(--vscode-focusBorder);
+    }
+
+    /* Color variations for plan cards */
+    .plan-option-card[data-color="blue"] { border-left: 4px solid #3b82f6; }
+    .plan-option-card[data-color="green"] { border-left: 4px solid #22c55e; }
+    .plan-option-card[data-color="purple"] { border-left: 4px solid #a855f7; }
+    .plan-option-card[data-color="orange"] { border-left: 4px solid #f59e0b; }
+    .plan-option-card[data-color="indigo"] { border-left: 4px solid #6366f1; }
+    .plan-option-card[data-color="teal"] { border-left: 4px solid #14b8a6; }
+    .plan-option-card[data-color="red"] { border-left: 4px solid #ef4444; }
+    .plan-option-card[data-color="pink"] { border-left: 4px solid #ec4899; }
+    .plan-option-card[data-color="amber"] { border-left: 4px solid #f59e0b; }
+
+    /* ========================================
+       Clarifying Question Input Cards
+       ======================================== */
+    .questions-container {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      margin: 16px 0;
+      padding: 0 4px;
+    }
+
+    .questions-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .questions-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+
+    .questions-hint {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .question-card {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-left: 4px solid var(--vscode-textLink-foreground);
+      border-radius: 10px;
+      padding: 16px;
+      transition: all 0.2s ease;
+    }
+
+    .question-card:hover {
+      border-color: var(--vscode-focusBorder);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    .question-card.answered {
+      border-left-color: var(--vscode-charts-green, #22c55e);
+      background: rgba(34, 197, 94, 0.03);
+    }
+
+    .question-icon {
+      font-size: 18px;
+      margin-right: 8px;
+    }
+
+    .question-text {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--vscode-foreground);
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+
+    .question-options {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .question-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .question-option:hover {
+      background: var(--vscode-list-hoverBackground);
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .question-option.selected {
+      background: rgba(59, 130, 246, 0.1);
+      border-color: var(--vscode-textLink-foreground);
+    }
+
+    .question-option input[type="radio"],
+    .question-option input[type="checkbox"] {
+      margin: 0;
+      margin-top: 2px;
+      accent-color: var(--vscode-textLink-foreground);
+      cursor: pointer;
+    }
+
+    .question-option-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .question-option-label {
+      font-size: 12px;
+      color: var(--vscode-foreground);
+      font-weight: 500;
+    }
+
+    .question-option-description {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      margin-top: 2px;
+    }
+
+    .question-text-input {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+      border-radius: 6px;
+      color: var(--vscode-input-foreground);
+      font-size: 12px;
+      font-family: inherit;
+      resize: vertical;
+      min-height: 60px;
+    }
+
+    .question-text-input:focus {
+      outline: none;
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .question-text-input::placeholder {
+      color: var(--vscode-input-placeholderForeground);
+    }
+
+    .questions-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+
+    .questions-submit-btn {
+      padding: 10px 20px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .questions-submit-btn:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    .questions-submit-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .questions-skip-btn {
+      padding: 10px 16px;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .questions-skip-btn:hover {
+      background: var(--vscode-list-hoverBackground);
+      color: var(--vscode-foreground);
+    }
+
+    /* Required indicator */
+    .question-required {
+      color: var(--vscode-charts-red, #ef4444);
+      font-size: 11px;
+      margin-left: 4px;
+    }
+
+    /* "Other" option styling */
+    .question-option-other .question-other-content {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+    }
+
+    .question-other-input {
+      width: 100%;
+      padding: 8px 10px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+      border-radius: 4px;
+      color: var(--vscode-input-foreground);
+      font-size: 12px;
+      font-family: inherit;
+    }
+
+    .question-other-input:focus {
+      outline: none;
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .question-other-input::placeholder {
+      color: var(--vscode-input-placeholderForeground);
+    }
+
+    .question-option-other.selected .question-other-input {
+      border-color: var(--vscode-textLink-foreground);
+    }
+
+    /* Submitted state */
+    .questions-container.submitted {
+      opacity: 0.7;
+      pointer-events: none;
+    }
+
+    .questions-submitted {
+      text-align: center;
+      padding: 16px;
+      color: var(--vscode-charts-green, #22c55e);
+      font-weight: 500;
+      font-size: 13px;
+    }
+
     /* Professional File Diff Component */
     .file-diff {
       background: var(--vscode-editor-background);
@@ -3161,7 +3980,10 @@ function getScript(mermaidUri: string, logoUri: string): string {
         agentResponses: {},
         // Autocomplete state
         autocompleteSuggestion: null,
-        autocompleteType: null
+        autocompleteType: null,
+        // Permission state
+        pendingPermissions: new Map(),
+        focusedPermissionId: null
       };
 
       // Helper to send messages with panelId
@@ -3278,11 +4100,23 @@ function getScript(mermaidUri: string, logoUri: string): string {
       // Render welcome suggestions on load
       renderWelcomeSuggestions();
 
-      sendBtn.addEventListener('click', sendMessage);
-      stopBtn.addEventListener('click', function() {
-        postMessageWithPanelId({ type: 'cancelRequest' });
-      });
-      inputEl.addEventListener('keydown', function(e) {
+      // Debug logging
+      console.log('[Mysti Webview] Setting up event listeners...');
+      console.log('[Mysti Webview] sendBtn:', sendBtn);
+      console.log('[Mysti Webview] inputEl:', inputEl);
+
+      if (sendBtn) {
+        sendBtn.addEventListener('click', sendMessage);
+      } else {
+        console.error('[Mysti Webview] sendBtn not found!');
+      }
+      if (stopBtn) {
+        stopBtn.addEventListener('click', function() {
+          postMessageWithPanelId({ type: 'cancelRequest' });
+        });
+      }
+      if (inputEl) {
+        inputEl.addEventListener('keydown', function(e) {
         // Tab key handling for autocomplete (hold-duration based)
         if (e.key === 'Tab' && state.autocompleteSuggestion) {
           e.preventDefault();
@@ -3339,21 +4173,21 @@ function getScript(mermaidUri: string, logoUri: string): string {
           e.preventDefault();
           showSlashMenu();
         }
-      });
+        });
 
-      // Tab key release handler
-      inputEl.addEventListener('keyup', function(e) {
-        if (e.key === 'Tab') {
-          tabHoldStart = 0;
-          if (tabHoldTimer) {
-            clearInterval(tabHoldTimer);
-            tabHoldTimer = null;
+        // Tab key release handler
+        inputEl.addEventListener('keyup', function(e) {
+          if (e.key === 'Tab') {
+            tabHoldStart = 0;
+            if (tabHoldTimer) {
+              clearInterval(tabHoldTimer);
+              tabHoldTimer = null;
+            }
+            currentCompletionLevel = 'sentence';
           }
-          currentCompletionLevel = 'sentence';
-        }
-      });
+        });
 
-      inputEl.addEventListener('input', function() {
+        inputEl.addEventListener('input', function() {
         autoResizeTextarea();
         if (!inputEl.value.startsWith('/')) {
           hideSlashMenu();
@@ -3376,6 +4210,20 @@ function getScript(mermaidUri: string, logoUri: string): string {
             });
           }
         }, 300);
+        });
+      } else {
+        console.error('[Mysti Webview] inputEl not found!');
+      }
+
+      // Global keydown handler for permission cards
+      document.addEventListener('keydown', function(e) {
+        // Only handle when a permission card is focused
+        var focusedCard = document.activeElement;
+        if (focusedCard && focusedCard.classList.contains('permission-card')) {
+          if (handlePermissionKeyboard(e)) {
+            return;
+          }
+        }
       });
 
       settingsBtn.addEventListener('click', function() {
@@ -3775,6 +4623,18 @@ function getScript(mermaidUri: string, logoUri: string): string {
           case 'toolResult':
             handleToolResult(message.payload);
             break;
+          case 'permissionRequest':
+            handlePermissionRequest(message.payload);
+            break;
+          case 'permissionExpired':
+            handlePermissionExpired(message.payload);
+            break;
+          case 'planOptions':
+            handlePlanOptionsMessage(message.payload);
+            break;
+          case 'clarifyingQuestions':
+            handleClarifyingQuestionsMessage(message.payload);
+            break;
           case 'error':
             hideLoading();
             showError(message.payload);
@@ -3879,6 +4739,20 @@ function getScript(mermaidUri: string, logoUri: string): string {
             state.activeAgent = message.payload.agent;
             state.settings.provider = message.payload.agent;
             updateAgentMenuSelection();
+            break;
+          case 'modeChanged':
+            // Update mode when plan is executed
+            var newMode = message.payload.mode;
+            state.settings.mode = newMode;
+            var modeSelect = document.getElementById('mode-select');
+            if (modeSelect) modeSelect.value = newMode;
+            updateModeIndicator();
+            break;
+          case 'setInputValue':
+            // For "Keep Planning" - insert prompt into input field
+            inputEl.value = message.payload.value;
+            autoResizeTextarea();
+            inputEl.focus();
             break;
         }
       }
@@ -4537,6 +5411,703 @@ function getScript(mermaidUri: string, logoUri: string): string {
         }
       }
 
+      // ========================================
+      // Permission Handling Functions
+      // ========================================
+
+      function handlePermissionRequest(request) {
+        // Store in state
+        state.pendingPermissions.set(request.id, request);
+
+        // Render permission card
+        var card = renderPermissionCard(request);
+        messagesEl.appendChild(card);
+
+        // Start timer countdown
+        if (request.expiresAt > 0) {
+          startPermissionTimer(request.id, request.expiresAt);
+        }
+
+        // Focus for keyboard navigation
+        card.focus();
+        state.focusedPermissionId = request.id;
+
+        scrollToBottom();
+      }
+
+      function renderPermissionCard(request) {
+        var card = document.createElement('div');
+        card.className = 'permission-card pending';
+        card.dataset.id = request.id;
+        card.tabIndex = 0;
+
+        var timeRemaining = request.expiresAt > 0 ? Math.max(0, request.expiresAt - Date.now()) : 0;
+        var timerClass = timeRemaining > 0 && timeRemaining < 10000 ? 'critical' :
+                         timeRemaining > 0 && timeRemaining < 20000 ? 'warning' : '';
+        var timerText = request.expiresAt > 0 ? formatTimeRemaining(timeRemaining) : 'No timeout';
+
+        var riskClass = request.details.riskLevel || 'medium';
+        var riskLabel = riskClass.charAt(0).toUpperCase() + riskClass.slice(1);
+
+        card.innerHTML =
+          '<div class="permission-header">' +
+            '<div class="permission-header-left">' +
+              '<div class="permission-icon">🛡️</div>' +
+              '<span class="permission-title">Permission Required</span>' +
+              '<span class="permission-risk ' + riskClass + '">' + riskLabel + '</span>' +
+            '</div>' +
+            '<span class="permission-timer ' + timerClass + '" data-expires="' + request.expiresAt + '">' + timerText + '</span>' +
+          '</div>' +
+          '<div class="permission-body">' +
+            '<div class="permission-description">' +
+              'Mysti wants to: <strong>' + escapeHtml(request.title) + '</strong>' +
+            '</div>' +
+            '<div class="permission-details">' +
+              renderPermissionDetails(request) +
+            '</div>' +
+          '</div>' +
+          '<div class="permission-actions">' +
+            '<button class="permission-btn approve" data-action="approve">Approve</button>' +
+            '<button class="permission-btn deny" data-action="deny">Deny</button>' +
+            '<button class="permission-btn always-allow" data-action="always-allow">Always Allow (Session)</button>' +
+            '<span class="permission-shortcuts">' +
+              '<kbd>Enter</kbd> Approve · <kbd>Esc</kbd> Deny · <kbd>Tab</kbd> Always' +
+            '</span>' +
+          '</div>';
+
+        // Add click handlers to buttons
+        card.querySelectorAll('.permission-btn').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var action = btn.dataset.action;
+            handlePermissionAction(request.id, action);
+          });
+        });
+
+        return card;
+      }
+
+      function renderPermissionDetails(request) {
+        var details = request.details;
+        var html = '';
+
+        if (details.filePath) {
+          html += '<div class="permission-detail-row">' +
+            '<span class="permission-detail-label">File:</span>' +
+            '<span class="permission-detail-value">' + makeRelativePath(details.filePath) + '</span>' +
+          '</div>';
+        }
+
+        if (details.command) {
+          html += '<div class="permission-detail-row">' +
+            '<span class="permission-detail-label">Command:</span>' +
+            '<span class="permission-detail-value">' + escapeHtml(details.command.substring(0, 100)) + (details.command.length > 100 ? '...' : '') + '</span>' +
+          '</div>';
+        }
+
+        if (details.linesAdded !== undefined || details.linesRemoved !== undefined) {
+          html += '<div class="permission-detail-row">' +
+            '<span class="permission-detail-label">Changes:</span>' +
+            '<span class="permission-detail-value">' +
+              (details.linesAdded ? '+' + details.linesAdded + ' lines ' : '') +
+              (details.linesRemoved ? '-' + details.linesRemoved + ' lines' : '') +
+            '</span>' +
+          '</div>';
+        }
+
+        if (details.files && details.files.length > 0) {
+          html += '<div class="permission-detail-row">' +
+            '<span class="permission-detail-label">Files:</span>' +
+            '<span class="permission-detail-value">' + details.files.length + ' files</span>' +
+          '</div>';
+        }
+
+        return html || '<div class="permission-detail-row"><span class="permission-detail-value">' + escapeHtml(request.description) + '</span></div>';
+      }
+
+      function formatTimeRemaining(ms) {
+        var seconds = Math.ceil(ms / 1000);
+        return seconds + 's';
+      }
+
+      function startPermissionTimer(requestId, expiresAt) {
+        var interval = setInterval(function() {
+          var card = document.querySelector('.permission-card[data-id="' + requestId + '"]');
+          if (!card || !state.pendingPermissions.has(requestId)) {
+            clearInterval(interval);
+            return;
+          }
+
+          var timerEl = card.querySelector('.permission-timer');
+          var remaining = expiresAt - Date.now();
+
+          if (remaining <= 0) {
+            clearInterval(interval);
+            return; // Backend will handle expiration
+          }
+
+          timerEl.textContent = formatTimeRemaining(remaining);
+          timerEl.className = 'permission-timer ' +
+            (remaining < 10000 ? 'critical' : remaining < 20000 ? 'warning' : '');
+        }, 1000);
+      }
+
+      function handlePermissionAction(requestId, action) {
+        var card = document.querySelector('.permission-card[data-id="' + requestId + '"]');
+        if (!card) return;
+
+        // Update visual state
+        card.classList.remove('pending');
+        card.classList.add(action === 'deny' ? 'denied' : 'approved');
+
+        // Send response to extension
+        postMessageWithPanelId({
+          type: 'permissionResponse',
+          payload: {
+            requestId: requestId,
+            decision: action,
+            scope: action === 'always-allow' ? 'session' : 'this-action'
+          }
+        });
+
+        // Remove from state
+        state.pendingPermissions.delete(requestId);
+
+        // Auto-remove card after animation
+        setTimeout(function() {
+          if (card.parentNode) {
+            card.remove();
+          }
+        }, action === 'deny' ? 600 : 500);
+      }
+
+      function handlePermissionExpired(payload) {
+        var card = document.querySelector('.permission-card[data-id="' + payload.requestId + '"]');
+        if (!card) return;
+
+        card.classList.remove('pending');
+        card.classList.add('expired');
+
+        // Update UI to show expired state
+        var timerEl = card.querySelector('.permission-timer');
+        if (timerEl) {
+          timerEl.textContent = payload.behavior === 'auto-accept' ? 'Auto-approved' : 'Expired';
+        }
+
+        var actionsEl = card.querySelector('.permission-actions');
+        if (actionsEl) {
+          actionsEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">Action was ' +
+            (payload.behavior === 'auto-accept' ? 'automatically approved' : 'automatically denied') +
+            ' due to timeout.</span>';
+        }
+
+        // Remove from state
+        state.pendingPermissions.delete(payload.requestId);
+
+        // Remove after delay
+        setTimeout(function() {
+          if (card.parentNode) card.remove();
+        }, 3000);
+      }
+
+      // Keyboard shortcuts for permission cards
+      function handlePermissionKeyboard(e) {
+        var focusedCard = document.querySelector('.permission-card:focus');
+        if (!focusedCard) return false;
+
+        var requestId = focusedCard.dataset.id;
+
+        switch(e.key) {
+          case 'Enter':
+            e.preventDefault();
+            handlePermissionAction(requestId, 'approve');
+            return true;
+          case 'Escape':
+            e.preventDefault();
+            handlePermissionAction(requestId, 'deny');
+            return true;
+          case 'Tab':
+            if (!e.shiftKey) {
+              e.preventDefault();
+              handlePermissionAction(requestId, 'always-allow');
+              return true;
+            }
+            break;
+        }
+        return false;
+      }
+
+      // ========================================
+      // Plan Option Selection Handlers
+      // ========================================
+
+      // Render plan options as interactive cards
+      function renderPlanOptions(options, messageId, originalQuery) {
+        if (!options || options.length === 0) return null;
+
+        var container = document.createElement('div');
+        container.className = 'plan-options-container';
+        container.setAttribute('data-message-id', messageId);
+        container.setAttribute('data-original-query', originalQuery || '');
+
+        var header = document.createElement('div');
+        header.className = 'plan-options-header';
+        header.innerHTML =
+          '<span class="plan-options-title">Select an approach:</span>' +
+          '<span class="plan-options-hint">Click to proceed with your preferred option</span>';
+        container.appendChild(header);
+
+        options.forEach(function(option, index) {
+          var card = createPlanOptionCard(option, messageId, index);
+          container.appendChild(card);
+        });
+
+        return container;
+      }
+
+      // Create a single plan option card
+      function createPlanOptionCard(option, messageId, index) {
+        var card = document.createElement('div');
+        card.className = 'plan-option-card';
+        card.setAttribute('data-id', option.id);
+        card.setAttribute('data-color', option.color || 'blue');
+        card.setAttribute('tabindex', '0');
+
+        // Build pros list
+        var prosHtml = '';
+        if (option.pros && option.pros.length > 0) {
+          prosHtml = '<div class="plan-option-pros">' +
+            '<div class="plan-option-pros-title">✓ Pros</div>' +
+            '<ul class="plan-option-list">' +
+            option.pros.map(function(p) { return '<li>' + escapeHtml(p) + '</li>'; }).join('') +
+            '</ul></div>';
+        }
+
+        // Build cons list
+        var consHtml = '';
+        if (option.cons && option.cons.length > 0) {
+          consHtml = '<div class="plan-option-cons">' +
+            '<div class="plan-option-cons-title">✗ Cons</div>' +
+            '<ul class="plan-option-list">' +
+            option.cons.map(function(p) { return '<li>' + escapeHtml(p) + '</li>'; }).join('') +
+            '</ul></div>';
+        }
+
+        // Build pros/cons section
+        var prosConsHtml = '';
+        if (prosHtml || consHtml) {
+          prosConsHtml = '<div class="plan-option-proscons">' + prosHtml + consHtml + '</div>';
+        }
+
+        card.innerHTML =
+          '<div class="plan-option-header">' +
+            '<div class="plan-option-icon">' + (option.icon || '📋') + '</div>' +
+            '<div class="plan-option-title-area">' +
+              '<div class="plan-option-title">' +
+                escapeHtml(option.title) +
+                '<span class="plan-option-complexity ' + (option.complexity || 'medium') + '">' +
+                  (option.complexity || 'medium') +
+                '</span>' +
+              '</div>' +
+              '<div class="plan-option-summary">' + escapeHtml(option.summary || '') + '</div>' +
+            '</div>' +
+          '</div>' +
+          prosConsHtml +
+          '<div class="plan-option-actions">' +
+            '<button class="plan-execute-btn edit-auto" data-mode="edit-automatically">Execute Automatically</button>' +
+            '<button class="plan-execute-btn ask-first" data-mode="ask-before-edit">Ask Before Each Edit</button>' +
+            '<button class="plan-execute-btn keep-planning" data-mode="plan">Keep Planning</button>' +
+          '</div>' +
+          '<div class="plan-custom-instructions">' +
+            '<button class="custom-instructions-toggle">Add custom instructions</button>' +
+            '<div class="custom-instructions-input hidden">' +
+              '<textarea class="custom-instructions-textarea" placeholder="Add any additional instructions or constraints..."></textarea>' +
+            '</div>' +
+          '</div>';
+
+        // Event handlers for execution buttons
+        card.querySelectorAll('.plan-execute-btn').forEach(function(btn) {
+          btn.onclick = function(e) {
+            e.stopPropagation();
+            var mode = btn.getAttribute('data-mode');
+            var textarea = card.querySelector('.custom-instructions-textarea');
+            var customInstructions = textarea ? textarea.value : '';
+            handlePlanOptionSelect(option, messageId, mode, customInstructions);
+          };
+        });
+
+        // Toggle custom instructions visibility
+        var toggleBtn = card.querySelector('.custom-instructions-toggle');
+        var inputDiv = card.querySelector('.custom-instructions-input');
+        if (toggleBtn && inputDiv) {
+          toggleBtn.onclick = function(e) {
+            e.stopPropagation();
+            inputDiv.classList.toggle('hidden');
+            toggleBtn.textContent = inputDiv.classList.contains('hidden')
+              ? 'Add custom instructions'
+              : 'Hide custom instructions';
+          };
+        }
+
+        card.onclick = function(e) {
+          if (e.target.classList.contains('plan-execute-btn') ||
+              e.target.classList.contains('custom-instructions-toggle') ||
+              e.target.classList.contains('custom-instructions-textarea')) return;
+          // Toggle expansion or select
+          card.classList.toggle('plan-option-collapsed');
+        };
+
+        // Keyboard support - default to 'edit-automatically' on Enter
+        card.onkeydown = function(e) {
+          if (e.key === 'Enter' && e.target === card) {
+            e.preventDefault();
+            var textarea = card.querySelector('.custom-instructions-textarea');
+            var customInstructions = textarea ? textarea.value : '';
+            handlePlanOptionSelect(option, messageId, 'edit-automatically', customInstructions);
+          }
+        };
+
+        return card;
+      }
+
+      // Handle plan option selection
+      function handlePlanOptionSelect(option, messageId, executionMode, customInstructions) {
+        var container = document.querySelector('.plan-options-container[data-message-id="' + messageId + '"]');
+        var originalQuery = container ? container.getAttribute('data-original-query') : '';
+
+        // Mark as selected
+        var cards = document.querySelectorAll('.plan-option-card');
+        cards.forEach(function(c) { c.classList.remove('selected'); });
+        var selectedCard = document.querySelector('.plan-option-card[data-id="' + option.id + '"]');
+        if (selectedCard) {
+          selectedCard.classList.add('selected');
+        }
+
+        // Send selection to backend with execution mode and custom instructions
+        postMessageWithPanelId({
+          type: 'planOptionSelected',
+          payload: {
+            selectedPlan: option,
+            originalQuery: originalQuery,
+            messageId: messageId,
+            executionMode: executionMode,
+            customInstructions: customInstructions || ''
+          }
+        });
+      }
+
+      // Handle planOptions message from backend
+      function handlePlanOptionsMessage(payload) {
+        if (!payload.options || payload.options.length === 0) return;
+
+        // Find the message to attach plan options to
+        var messageEl = document.querySelector('.message[data-id="' + payload.messageId + '"]');
+        if (!messageEl) {
+          // Find most recent assistant message
+          var messages = document.querySelectorAll('.message.assistant');
+          messageEl = messages[messages.length - 1];
+        }
+
+        if (messageEl) {
+          // Remove any existing plan options
+          var existing = messageEl.querySelector('.plan-options-container');
+          if (existing) existing.remove();
+
+          // Add new plan options
+          var planContainer = renderPlanOptions(payload.options, payload.messageId, payload.originalQuery);
+          if (planContainer) {
+            messageEl.appendChild(planContainer);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+        }
+      }
+
+      // ========================================
+      // Clarifying Question Input Handlers
+      // ========================================
+
+      // Render clarifying questions as interactive input cards
+      function renderClarifyingQuestions(questions, messageId) {
+        if (!questions || questions.length === 0) return null;
+
+        var container = document.createElement('div');
+        container.className = 'questions-container';
+        container.setAttribute('data-message-id', messageId);
+
+        var header = document.createElement('div');
+        header.className = 'questions-header';
+        header.innerHTML =
+          '<span class="questions-title">❓ Please answer the following:</span>' +
+          '<span class="questions-hint">Your answers will help guide the implementation</span>';
+        container.appendChild(header);
+
+        // Track answers for submission
+        container._answers = {};
+
+        questions.forEach(function(question) {
+          var card = createQuestionCard(question, container);
+          container.appendChild(card);
+        });
+
+        // Add action buttons
+        var actions = document.createElement('div');
+        actions.className = 'questions-actions';
+        actions.innerHTML =
+          '<button class="questions-skip-btn">Skip</button>' +
+          '<button class="questions-submit-btn" disabled>Submit Answers</button>';
+
+        var submitBtn = actions.querySelector('.questions-submit-btn');
+        var skipBtn = actions.querySelector('.questions-skip-btn');
+
+        submitBtn.onclick = function() {
+          handleQuestionsSubmit(questions, container, messageId);
+        };
+
+        skipBtn.onclick = function() {
+          container.remove();
+        };
+
+        container.appendChild(actions);
+        return container;
+      }
+
+      // Create a single question card
+      function createQuestionCard(question, container) {
+        var card = document.createElement('div');
+        card.className = 'question-card';
+        card.setAttribute('data-question-id', question.id);
+
+        var questionText = document.createElement('div');
+        questionText.className = 'question-text';
+        questionText.innerHTML = escapeHtml(question.question);
+        if (question.required) {
+          questionText.innerHTML += '<span class="question-required">*</span>';
+        }
+        card.appendChild(questionText);
+
+        var optionsDiv = document.createElement('div');
+        optionsDiv.className = 'question-options';
+
+        if (question.inputType === 'text') {
+          // Text input
+          var textarea = document.createElement('textarea');
+          textarea.className = 'question-text-input';
+          textarea.placeholder = question.placeholder || 'Enter your answer...';
+          textarea.oninput = function() {
+            container._answers[question.id] = textarea.value;
+            updateSubmitButton(container);
+            card.classList.toggle('answered', textarea.value.trim() !== '');
+          };
+          optionsDiv.appendChild(textarea);
+        } else if (question.options && question.options.length > 0) {
+          // Radio, checkbox, or select options
+          var inputType = question.inputType === 'checkbox' ? 'checkbox' : 'radio';
+          var inputName = 'question_' + question.id;
+
+          question.options.forEach(function(opt, optIndex) {
+            var optionDiv = document.createElement('label');
+            optionDiv.className = 'question-option';
+
+            var input = document.createElement('input');
+            input.type = inputType;
+            input.name = inputName;
+            input.value = opt.value;
+            input.id = inputName + '_' + optIndex;
+
+            input.onchange = function() {
+              // Clear "Other" text if selecting a predefined option
+              var otherInput = optionsDiv.querySelector('.question-other-input');
+              if (otherInput && inputType === 'radio') {
+                otherInput.value = '';
+              }
+
+              if (inputType === 'checkbox') {
+                // Handle multi-select
+                var checked = optionsDiv.querySelectorAll('input[type="checkbox"]:checked:not(.question-other-radio)');
+                container._answers[question.id] = Array.from(checked).map(function(c) { return c.value; });
+              } else {
+                container._answers[question.id] = input.value;
+              }
+              // Update visual state
+              optionsDiv.querySelectorAll('.question-option').forEach(function(o) {
+                o.classList.remove('selected');
+              });
+              if (inputType === 'checkbox') {
+                optionsDiv.querySelectorAll('input:checked').forEach(function(c) {
+                  c.closest('.question-option').classList.add('selected');
+                });
+              } else {
+                optionDiv.classList.add('selected');
+              }
+              card.classList.add('answered');
+              updateSubmitButton(container);
+            };
+
+            var content = document.createElement('div');
+            content.className = 'question-option-content';
+            content.innerHTML =
+              '<div class="question-option-label">' + escapeHtml(opt.label) + '</div>' +
+              (opt.description ? '<div class="question-option-description">' + escapeHtml(opt.description) + '</div>' : '');
+
+            optionDiv.appendChild(input);
+            optionDiv.appendChild(content);
+            optionsDiv.appendChild(optionDiv);
+          });
+
+          // Add "Other" option for custom input
+          var otherDiv = document.createElement('label');
+          otherDiv.className = 'question-option question-option-other';
+
+          var otherRadio = document.createElement('input');
+          otherRadio.type = inputType;
+          otherRadio.name = inputName;
+          otherRadio.value = '__other__';
+          otherRadio.className = 'question-other-radio';
+          otherRadio.id = inputName + '_other';
+
+          var otherContent = document.createElement('div');
+          otherContent.className = 'question-option-content question-other-content';
+          otherContent.innerHTML = '<div class="question-option-label">Other:</div>';
+
+          var otherTextInput = document.createElement('input');
+          otherTextInput.type = 'text';
+          otherTextInput.className = 'question-other-input';
+          otherTextInput.placeholder = 'Type your own answer...';
+
+          otherTextInput.onfocus = function() {
+            otherRadio.checked = true;
+            optionsDiv.querySelectorAll('.question-option').forEach(function(o) {
+              o.classList.remove('selected');
+            });
+            otherDiv.classList.add('selected');
+          };
+
+          otherTextInput.oninput = function() {
+            if (otherTextInput.value.trim()) {
+              container._answers[question.id] = otherTextInput.value.trim();
+              card.classList.add('answered');
+            } else {
+              delete container._answers[question.id];
+              card.classList.remove('answered');
+            }
+            updateSubmitButton(container);
+          };
+
+          otherRadio.onchange = function() {
+            optionsDiv.querySelectorAll('.question-option').forEach(function(o) {
+              o.classList.remove('selected');
+            });
+            otherDiv.classList.add('selected');
+            otherTextInput.focus();
+            if (otherTextInput.value.trim()) {
+              container._answers[question.id] = otherTextInput.value.trim();
+              card.classList.add('answered');
+            } else {
+              delete container._answers[question.id];
+              card.classList.remove('answered');
+            }
+            updateSubmitButton(container);
+          };
+
+          otherContent.appendChild(otherTextInput);
+          otherDiv.appendChild(otherRadio);
+          otherDiv.appendChild(otherContent);
+          optionsDiv.appendChild(otherDiv);
+        }
+
+        card.appendChild(optionsDiv);
+        return card;
+      }
+
+      // Update submit button state
+      function updateSubmitButton(container) {
+        var submitBtn = container.querySelector('.questions-submit-btn');
+        var questions = container.querySelectorAll('.question-card');
+        var allAnswered = true;
+
+        questions.forEach(function(card) {
+          var qId = card.getAttribute('data-question-id');
+          var answer = container._answers[qId];
+          var hasAnswer = answer !== undefined && answer !== '' &&
+            (!Array.isArray(answer) || answer.length > 0);
+          if (!hasAnswer) {
+            allAnswered = false;
+          }
+        });
+
+        submitBtn.disabled = !allAnswered;
+      }
+
+      // Handle questions submission
+      function handleQuestionsSubmit(questions, container, messageId) {
+        // Build a formatted message with questions and answers
+        var messageParts = ['Here are my answers:\\n'];
+
+        questions.forEach(function(q) {
+          var answer = container._answers[q.id];
+          if (answer !== undefined) {
+            var formattedAnswer = Array.isArray(answer) ? answer.join(', ') : answer;
+            messageParts.push('**' + q.question + '**');
+            messageParts.push('→ ' + formattedAnswer + '\\n');
+          }
+        });
+
+        messageParts.push('\\nPlease proceed based on these choices.');
+        var content = messageParts.join('\\n');
+
+        // Visual feedback - mark container as submitted
+        container.classList.add('submitted');
+        container.innerHTML = '<div class="questions-submitted">✓ Answers submitted</div>';
+
+        // Put message in input and send
+        inputEl.value = content;
+
+        // Hide quick actions
+        var quickActions = document.getElementById('quick-actions');
+        if (quickActions) {
+          quickActions.innerHTML = '';
+        }
+
+        // Send the message
+        sendMessage();
+
+        // Remove container after a short delay
+        setTimeout(function() {
+          container.remove();
+        }, 1000);
+      }
+
+      // Handle clarifyingQuestions message from backend
+      function handleClarifyingQuestionsMessage(payload) {
+        if (!payload.questions || payload.questions.length === 0) return;
+
+        // Find the message to attach questions to
+        var messageEl = document.querySelector('.message[data-id="' + payload.messageId + '"]');
+        if (!messageEl) {
+          // Find most recent assistant message
+          var messages = document.querySelectorAll('.message.assistant');
+          messageEl = messages[messages.length - 1];
+        }
+
+        if (messageEl) {
+          // Remove any existing questions container
+          var existing = messageEl.querySelector('.questions-container');
+          if (existing) existing.remove();
+
+          // Add new questions container (before any plan options)
+          var questionsContainer = renderClarifyingQuestions(payload.questions, payload.messageId);
+          if (questionsContainer) {
+            var planOptions = messageEl.querySelector('.plan-options-container');
+            if (planOptions) {
+              messageEl.insertBefore(questionsContainer, planOptions);
+            } else {
+              messageEl.appendChild(questionsContainer);
+            }
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+        }
+      }
+
       function showLoading() {
         state.isLoading = true;
         sendBtn.style.display = 'none';
@@ -4563,6 +6134,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
       // Dynamic suggestions functions (ezorro-style cards)
       function showSuggestionSkeleton() {
         var container = document.getElementById('quick-actions');
+        if (!container) return;
         container.classList.add('loading');
         container.innerHTML = '';
 
@@ -4582,6 +6154,7 @@ function getScript(mermaidUri: string, logoUri: string): string {
 
       function renderSuggestions(suggestions) {
         var container = document.getElementById('quick-actions');
+        if (!container) return;
         container.classList.remove('loading');
         container.innerHTML = '';
 

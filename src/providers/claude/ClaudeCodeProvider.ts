@@ -100,9 +100,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       '--output-format', 'stream-json',
       '--include-partial-messages',
       '--verbose',
-      '--dangerously-skip-permissions',
-      '--permission-mode', 'bypassPermissions',
     ];
+
+    // Map Mysti modes/access levels to Claude Code permission flags
+    // This ensures proper enforcement at the CLI level
+    this._addPermissionFlags(args, settings);
 
     // Session handling
     if (hasSession && this._currentSessionId) {
@@ -119,6 +121,61 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     }
 
     return args;
+  }
+
+  /**
+   * Add permission flags based on mode and access level
+   * Maps Mysti settings to Claude Code CLI permission modes
+   */
+  private _addPermissionFlags(args: string[], settings: Settings): void {
+    const { mode, accessLevel } = settings;
+
+    // Plan and brainstorm modes are always read-only (no file modifications)
+    if (mode === 'plan' || mode === 'brainstorm') {
+      args.push('--permission-mode', 'plan');
+      console.log('[Mysti] Claude: Using plan mode (read-only)');
+      return;
+    }
+
+    // Read-only access level enforces plan mode regardless of operation mode
+    if (accessLevel === 'read-only') {
+      args.push('--permission-mode', 'plan');
+      console.log('[Mysti] Claude: Using plan mode (read-only access level)');
+      return;
+    }
+
+    // edit-automatically + full-access = bypass all permissions
+    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
+      args.push('--dangerously-skip-permissions');
+      args.push('--permission-mode', 'bypassPermissions');
+      console.log('[Mysti] Claude: Bypassing all permissions (edit-automatically + full-access)');
+      return;
+    }
+
+    // edit-automatically + ask-permission = bypass permissions (auto-approve)
+    if (mode === 'edit-automatically' && accessLevel === 'ask-permission') {
+      args.push('--permission-mode', 'bypassPermissions');
+      console.log('[Mysti] Claude: Using bypass mode (edit-automatically + ask-permission)');
+      return;
+    }
+
+    // ask-before-edit + full-access = bypass permissions
+    if (mode === 'ask-before-edit' && accessLevel === 'full-access') {
+      args.push('--permission-mode', 'bypassPermissions');
+      console.log('[Mysti] Claude: Using bypass mode (ask-before-edit + full-access)');
+      return;
+    }
+
+    // ask-before-edit + ask-permission = default mode (CLI prompts for permissions)
+    if (mode === 'ask-before-edit' && accessLevel === 'ask-permission') {
+      args.push('--permission-mode', 'default');
+      console.log('[Mysti] Claude: Using default mode (CLI will prompt for permissions)');
+      return;
+    }
+
+    // Fallback: default mode (safest option)
+    args.push('--permission-mode', 'default');
+    console.log('[Mysti] Claude: Using default mode (fallback)');
   }
 
   protected parseStreamLine(line: string): StreamChunk | null {

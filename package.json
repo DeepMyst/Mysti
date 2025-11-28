@@ -256,6 +256,27 @@
           "type": "string",
           "default": "",
           "description": "Custom persona prompt for Codex (when persona is 'custom')"
+        },
+        "mysti.permission.timeout": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "Seconds to wait for permission approval (0 = no timeout, requires explicit action)"
+        },
+        "mysti.permission.timeoutBehavior": {
+          "type": "string",
+          "default": "auto-reject",
+          "enum": [
+            "auto-accept",
+            "auto-reject",
+            "require-action"
+          ],
+          "enumDescriptions": [
+            "Automatically approve the action when timeout expires",
+            "Automatically deny the action when timeout expires",
+            "No timeout - require explicit user action"
+          ],
+          "description": "Behavior when permission request times out"
         }
       }
     },

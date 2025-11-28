@@ -5,8 +5,10 @@ import { ConversationManager } from '../managers/ConversationManager';
 import { ProviderManager } from '../managers/ProviderManager';
 import { SuggestionManager } from '../managers/SuggestionManager';
 import { BrainstormManager } from '../managers/BrainstormManager';
+import { PermissionManager } from '../managers/PermissionManager';
+import { PlanOptionManager } from '../managers/PlanOptionManager';
 import { getWebviewContent } from '../webview/webviewContent';
-import type { WebviewMessage, Settings, ContextItem, QuickActionSuggestion, Message } from '../types';
+import type { WebviewMessage, Settings, ContextItem, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion } from '../types';
 
 interface PanelState {
   id: string;
@@ -26,8 +28,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _providerManager: ProviderManager;
   private _suggestionManager: SuggestionManager;
   private _brainstormManager: BrainstormManager;
+  private _permissionManager: PermissionManager;
+  private _planOptionManager: PlanOptionManager;
   // Per-panel cancel tracking for isolated cancellation
   private _cancelledPanels: Set<string> = new Set();
+  // Track last user message per panel for plan selection follow-up
+  private _lastUserMessage: Map<string, string> = new Map();
 
   constructor(
     extensionUri: vscode.Uri,
@@ -35,7 +41,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     conversationManager: ConversationManager,
     providerManager: ProviderManager,
     suggestionManager: SuggestionManager,
-    brainstormManager: BrainstormManager
+    brainstormManager: BrainstormManager,
+    permissionManager: PermissionManager
   ) {
     this._extensionUri = extensionUri;
     this._contextManager = contextManager;
@@ -43,6 +50,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._providerManager = providerManager;
     this._suggestionManager = suggestionManager;
     this._brainstormManager = brainstormManager;
+    this._permissionManager = permissionManager;
+    this._planOptionManager = new PlanOptionManager();
   }
 
   public resolveWebviewView(
@@ -253,6 +262,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
         break;
 
+      case 'permissionResponse':
+        this._handlePermissionResponse(
+          message.payload as PermissionResponse
+        );
+        break;
+
+      case 'planOptionSelected':
+        await this._handlePlanOptionSelected(
+          message.payload as PlanSelectionResult,
+          (message as any).panelId
+        );
+        break;
+
+      case 'questionAnswered':
+        await this._handleQuestionAnswered(
+          message.payload as QuestionSubmission,
+          (message as any).panelId
+        );
+        break;
+
       case 'openFile':
         await this._handleOpenFile(message.payload as { path: string; line?: number });
         break;
@@ -453,6 +482,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._cancelledPanels.delete(panelId);
     const { content, context, settings } = payload;
 
+    // Track the user's message for plan selection follow-up
+    this._lastUserMessage.set(panelId, content);
+
     // Get the panel's conversation
     const panelState = this._panelStates.get(panelId);
     const conversationId = panelState?.currentConversationId;
@@ -575,6 +607,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 usage: lastUsage
               }
             });
+
+            // Detect plan options in Plan mode
+            if (settings.mode === 'plan') {
+              this._detectAndSendPlanOptions(assistantMessage, panelId);
+            }
+
             // Trigger async suggestion generation
             this._generateSuggestionsAsync(assistantMessage, panelId);
             break;
@@ -949,6 +987,177 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: { action: payload.action, allowed: result === 'Allow' }
       });
     }
+  }
+
+  /**
+   * Handle permission response from the webview
+   * This is called when user responds to an inline permission card
+   */
+  private _handlePermissionResponse(response: PermissionResponse): void {
+    console.log('[Mysti] Permission response received:', response);
+    this._permissionManager.handleResponse(response);
+  }
+
+  /**
+   * Request permission for an action and show inline card in webview
+   * Returns a promise that resolves when user responds or timeout occurs
+   */
+  public async requestPermissionInline(
+    actionType: import('../types').PermissionActionType,
+    title: string,
+    description: string,
+    details: import('../types').PermissionDetails,
+    panelId: string,
+    toolCallId?: string
+  ): Promise<boolean> {
+    return this._permissionManager.requestPermission(
+      actionType,
+      title,
+      description,
+      details,
+      (message) => this._postToPanel(panelId, message as WebviewMessage),
+      toolCallId
+    );
+  }
+
+  /**
+   * Get the permission manager instance
+   */
+  public get permissionManager(): PermissionManager {
+    return this._permissionManager;
+  }
+
+  /**
+   * Detect plan options and clarifying questions in an assistant message using AI classification
+   */
+  private async _detectAndSendPlanOptions(message: Message, panelId: string): Promise<void> {
+    try {
+      // Use AI-powered classification to distinguish questions from plan options
+      const result = await this._planOptionManager.classifyResponse(message.content);
+      const originalQuery = this._lastUserMessage.get(panelId) || '';
+
+      // Send clarifying questions if detected
+      if (result.questions.length > 0) {
+        console.log('[Mysti] Detected clarifying questions:', result.questions.length);
+        this._postToPanel(panelId, {
+          type: 'clarifyingQuestions',
+          payload: {
+            questions: result.questions,
+            messageId: message.id,
+            context: result.context
+          }
+        });
+      }
+
+      // Send plan options if detected (need at least 2 distinct options)
+      if (result.planOptions.length >= 2) {
+        console.log('[Mysti] Detected plan options:', result.planOptions.length);
+        this._postToPanel(panelId, {
+          type: 'planOptions',
+          payload: {
+            options: result.planOptions,
+            messageId: message.id,
+            originalQuery,
+            context: result.context
+          }
+        });
+      }
+    } catch (error) {
+      console.error('[Mysti] Response classification failed:', error);
+    }
+  }
+
+  /**
+   * Handle user selection of a plan option
+   */
+  private async _handlePlanOptionSelected(
+    payload: PlanSelectionResult,
+    panelId: string
+  ): Promise<void> {
+    const { selectedPlan, originalQuery, executionMode, customInstructions } = payload;
+    console.log('[Mysti] Plan option selected:', selectedPlan.title, 'with mode:', executionMode);
+
+    // Generate the follow-up prompt
+    let followUpPrompt = this._planOptionManager.createSelectionPrompt(selectedPlan, originalQuery);
+
+    // Append custom instructions if provided
+    if (customInstructions?.trim()) {
+      followUpPrompt += `\n\nAdditional instructions:\n${customInstructions.trim()}`;
+    }
+
+    // Handle "Keep Planning" mode differently - just insert the prompt
+    if (executionMode === 'plan') {
+      this._postToPanel(panelId, {
+        type: 'setInputValue',
+        payload: { value: followUpPrompt }
+      });
+      return;
+    }
+
+    // For execution modes: switch mode and auto-execute
+    // 1. Switch to the selected execution mode
+    await this._handleUpdateSettings({ mode: executionMode });
+
+    // 2. Notify webview of mode change
+    this._postToPanel(panelId, {
+      type: 'modeChanged',
+      payload: { mode: executionMode }
+    });
+
+    // 3. Get current settings with the new mode
+    const config = vscode.workspace.getConfiguration('mysti');
+    const settings: Settings = {
+      mode: executionMode,
+      thinkingLevel: config.get('defaultThinkingLevel', 'medium'),
+      accessLevel: config.get('accessLevel', 'ask-permission'),
+      contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
+      model: config.get('defaultModel', 'claude-sonnet-4-5-20250929'),
+      provider: config.get('defaultProvider', 'claude-code')
+    };
+
+    // 4. Auto-execute by calling _handleSendMessage directly
+    await this._handleSendMessage(
+      {
+        content: followUpPrompt,
+        context: this._contextManager.getContext(),
+        settings
+      },
+      panelId
+    );
+  }
+
+  /**
+   * Handle user answers to clarifying questions
+   */
+  private async _handleQuestionAnswered(
+    payload: QuestionSubmission,
+    panelId: string
+  ): Promise<void> {
+    console.log('[Mysti] Questions answered:', payload.answers.length);
+
+    // Get the questions from the stored classification (we need to reconstruct them)
+    // For now, we'll create a simplified prompt from the answers
+    const answers = new Map<string, string | string[]>();
+    for (const answer of payload.answers) {
+      answers.set(answer.questionId, answer.value);
+    }
+
+    // Create a follow-up message with the user's answers
+    // We need to fetch the questions from somewhere - for now build a simple response
+    const answerParts: string[] = ['Here are my answers:\n'];
+    for (const answer of payload.answers) {
+      const value = Array.isArray(answer.value) ? answer.value.join(', ') : answer.value;
+      answerParts.push(`- ${value}`);
+    }
+    answerParts.push('\nPlease proceed based on these choices.');
+
+    const followUpPrompt = answerParts.join('\n');
+
+    // Insert the prompt into the input
+    this._postToPanel(panelId, {
+      type: 'insertPrompt',
+      payload: followUpPrompt
+    });
   }
 
   /**

@@ -194,3 +194,140 @@ export interface BrainstormStreamChunk {
   content?: string;
   phase?: BrainstormPhase;
 }
+
+// ============================================================================
+// Permission System Types
+// ============================================================================
+
+export type PermissionActionType =
+  | 'file-read'
+  | 'file-create'
+  | 'file-edit'
+  | 'file-delete'
+  | 'bash-command'
+  | 'web-request'
+  | 'multi-file-edit';
+
+export type PermissionStatus = 'pending' | 'approved' | 'denied' | 'expired';
+
+export type PermissionTimeoutBehavior = 'auto-accept' | 'auto-reject' | 'require-action';
+
+export type PermissionRiskLevel = 'low' | 'medium' | 'high';
+
+export interface PermissionConfig {
+  timeout: number;                         // Seconds (0 = no timeout)
+  timeoutBehavior: PermissionTimeoutBehavior;
+}
+
+export interface PermissionDetails {
+  // For file operations
+  filePath?: string;
+  fileName?: string;
+  linesAdded?: number;
+  linesRemoved?: number;
+  diffPreview?: DiffLine[];
+
+  // For bash commands
+  command?: string;
+  workingDirectory?: string;
+
+  // For multi-file operations
+  files?: Array<{
+    path: string;
+    action: 'create' | 'edit' | 'delete';
+  }>;
+
+  // Risk level indicator
+  riskLevel: PermissionRiskLevel;
+}
+
+export interface PermissionRequest {
+  id: string;
+  actionType: PermissionActionType;
+  title: string;              // e.g., "Edit file"
+  description: string;        // e.g., "Add onClick handler to Button component"
+  details: PermissionDetails;
+  status: PermissionStatus;
+  createdAt: number;
+  expiresAt: number;          // Timestamp for timeout (0 = no expiry)
+  toolCallId?: string;        // Link to originating tool call
+}
+
+export interface PermissionResponse {
+  requestId: string;
+  decision: 'approve' | 'deny' | 'always-allow';
+  scope?: 'this-action' | 'session';
+}
+
+// ============================================================================
+// Plan Selection Types
+// ============================================================================
+
+export interface PlanOption {
+  id: string;
+  title: string;              // "Option A: Microservices"
+  summary: string;            // Brief description (2-3 sentences)
+  approach: string;           // Full approach details
+  pros: string[];             // Advantages
+  cons: string[];             // Trade-offs
+  complexity: 'low' | 'medium' | 'high';
+  icon: string;               // Emoji icon
+  color: SuggestionColor;
+}
+
+export interface PlanDetectionResult {
+  hasPlanOptions: boolean;
+  options: PlanOption[];
+  context: string;            // Original AI explanation before options
+}
+
+export interface PlanSelectionResult {
+  selectedPlan: PlanOption;
+  originalQuery: string;
+  messageId: string;          // Reference to assistant message containing options
+  executionMode: 'edit-automatically' | 'ask-before-edit' | 'plan';
+  customInstructions?: string;
+}
+
+// ============================================================================
+// AI Response Classification Types
+// ============================================================================
+
+export type QuestionInputType = 'select' | 'radio' | 'checkbox' | 'text';
+
+export interface QuestionOption {
+  id: string;
+  label: string;              // "Delete them completely"
+  description?: string;       // Optional longer description
+  value: string;              // The value to send back
+}
+
+export interface ClarifyingQuestion {
+  id: string;
+  question: string;           // "What should we do with the analysis documents?"
+  inputType: QuestionInputType;
+  options?: QuestionOption[]; // For select/radio/checkbox
+  placeholder?: string;       // For text input
+  required: boolean;
+}
+
+export interface ResponseClassification {
+  // Any clarifying questions the AI is asking
+  questions: ClarifyingQuestion[];
+
+  // Implementation plan options (if presenting approaches)
+  planOptions: PlanOption[];
+
+  // The main content context (text before questions/options)
+  context: string;
+}
+
+export interface QuestionAnswer {
+  questionId: string;
+  value: string | string[];   // Single value or array for checkbox
+}
+
+export interface QuestionSubmission {
+  messageId: string;
+  answers: QuestionAnswer[];
+}
