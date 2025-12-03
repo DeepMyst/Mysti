@@ -19,6 +19,16 @@
 
 ---
 
+## See It In Action
+
+<p align="center">
+  <img src="docs/screenshots/user-experience.png" alt="Mysti Chat Interface" width="700">
+</p>
+
+<p align="center"><em>Beautiful, modern chat interface with syntax highlighting and markdown support</em></p>
+
+---
+
 ## Why Mysti?
 
 **Stop relying on a single AI.** Mysti lets you harness the power of multiple AI coding agents working as a team.
@@ -35,10 +45,6 @@
 ## Brainstorm Mode
 
 **This is where Mysti shines.** Instead of relying on one AI, get a **team of AI agents** working on your problem.
-
-<p align="center">
-  <img src="docs/screenshots/user-experience.png" alt="Mysti Brainstorm Interface" width="700">
-</p>
 
 ### How It Works
 
@@ -110,6 +116,16 @@ Shape how your AI thinks. Select from specialized personas that change the AI's 
 
 ---
 
+### Quick Persona Selection
+
+Select personas directly from the toolbar without opening panels.
+
+<p align="center">
+  <img src="docs/screenshots/persona-toolbar.png" alt="Toolbar Persona Selection" width="550">
+</p>
+
+---
+
 ### Intelligent Plan Detection
 
 When the AI presents multiple approaches, Mysti detects them and lets you choose.
@@ -136,16 +152,6 @@ Mysti automatically suggests relevant personas and actions based on your message
 
 <p align="center">
   <img src="docs/screenshots/auto-suggestions.png" alt="Auto Suggestions" width="550">
-</p>
-
----
-
-### Quick Persona Selection
-
-Select personas directly from the toolbar without opening panels.
-
-<p align="center">
-  <img src="docs/screenshots/persona-toolbar.png" alt="Toolbar Persona Selection" width="550">
 </p>
 
 ---
