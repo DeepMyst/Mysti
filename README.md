@@ -6,16 +6,26 @@
 
 <p align="center">
   <strong>Your AI Coding Dream Team</strong><br>
-  <em>Claude Code + Codex working together to solve your coding challenges</em>
+  <em>Claude Code + Codex collaborate in brainstorm mode, debate solutions, and synthesize the best approach for your code</em>
 </p>
 
 <p align="center">
+  <a href="#-see-it-in-action">Screenshots</a> •
   <a href="#-key-features">Features</a> •
-  <a href="#-brainstorm-mode">Brainstorm</a> •
   <a href="#-requirements">Requirements</a> •
-  <a href="#-personas--skills">Personas</a> •
+  <a href="#-quick-start">Quick Start</a> •
   <a href="#%EF%B8%8F-configuration">Config</a>
 </p>
+
+---
+
+## See It In Action
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/user-experience.png" alt="Mysti Chat Interface" width="700">
+</p>
+
+<p align="center"><em>Beautiful, modern chat interface with syntax highlighting and markdown support</em></p>
 
 ---
 
@@ -51,19 +61,23 @@ For **Brainstorm Mode** (multi-agent collaboration), install **both** CLIs to ge
 
 ## Key Features
 
-### Brainstorm Mode - AI Collaboration
+### Multiple AI Providers
 
-The standout feature. Enable brainstorm mode and watch **Claude Code** and **Codex** work together:
+Switch between Claude Code and Codex with a single click. Use whichever AI best fits your current task.
 
-1. **Both AIs analyze** your request independently
-2. **They debate** different approaches (in full mode)
-3. **One synthesizes** the best solution from both perspectives
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/agent-selection.png" alt="Agent Selection" width="450">
+</p>
 
-> *"Two AI giants, one goal - the best code for you."*
+---
 
 ### 16 Developer Personas
 
-Shape how your AI thinks:
+Shape how your AI thinks. Select from specialized personas that change the AI's approach to your problems.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/persona-skills-panel.png" alt="Personas and Skills Panel" width="550">
+</p>
 
 | Persona | Focus |
 |---------|-------|
@@ -75,61 +89,75 @@ Shape how your AI thinks:
 | **Refactorer** | Code quality, maintainability |
 | + 10 more... | Full-Stack, DevOps, Mentor, Designer... |
 
-### 12 Toggleable Skills
+---
 
-Mix and match behavioral modifiers:
+### Quick Persona Selection
 
-- **Concise** - Clear, brief communication
-- **Test-Driven** - Tests alongside code
-- **Auto-Commit** - Incremental commits
-- **First Principles** - Fundamental reasoning
-- **Scope Discipline** - Stay focused on the task
-- And 7 more...
+Select personas directly from the toolbar without opening panels.
 
-### Smart Plan Selection
-
-When the AI presents multiple approaches:
-
-- Mysti **detects the options** automatically
-- You **choose your preferred** implementation
-- Select **execution mode** (ask-before-edit, auto-edit, plan-only)
-
-### Permission Controls
-
-Stay in control:
-
-- **Read-only** - AI can only read, never modify
-- **Ask-permission** - Approve each file change
-- **Full-access** - Let the AI work autonomously
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/persona-toolbar.png" alt="Toolbar Persona Selection" width="550">
+</p>
 
 ---
 
-## Quick Start
+### Smart Auto-Suggestions
 
-### 1. Install CLI Tools
+Mysti automatically suggests relevant personas and actions based on your message.
 
-```bash
-# Claude Code (recommended)
-npm install -g @anthropic-ai/claude-code
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/auto-suggestions.png" alt="Auto Suggestions" width="550">
+</p>
 
-# Authenticate with your Anthropic account
-claude auth login
-```
+---
 
-For Brainstorm Mode, also install Codex CLI.
+### Intelligent Plan Detection
 
-### 2. Open Mysti
+When the AI presents multiple approaches, Mysti detects them and lets you choose.
 
-- Click the **Mysti icon** in the Activity Bar, or
-- Press `Ctrl+Shift+M` (`Cmd+Shift+M` on Mac)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/plan-suggestions.png" alt="Plan Suggestions" width="550">
+</p>
 
-### 3. Start Coding
+---
 
-Type your request and let the AI team assist you!
+### Powerful Plan Mode
 
-### 4. Try Brainstorm Mode
+Execute plans with full control - ask before editing, auto-edit, or plan only.
 
-Enable it in settings to unlock multi-agent collaboration.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/plan-mode.png" alt="Plan Mode" width="550">
+</p>
+
+---
+
+### Conversation History
+
+Never lose your work. All conversations are saved and easily accessible.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/conversation-history.png" alt="Conversation History" width="450">
+</p>
+
+---
+
+### Extensive Settings
+
+Fine-tune every aspect of Mysti including token budgets, access levels, and brainstorm mode.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/settings-panel.png" alt="Settings Panel" width="450">
+</p>
+
+---
+
+### Quick Actions on Welcome
+
+Get started fast with one-click actions for common tasks.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/quick-actions-welcome.png" alt="Quick Actions" width="550">
+</p>
 
 ---
 
@@ -173,37 +201,53 @@ Your Request
 | Faster results | More thorough |
 | Good for simple tasks | Best for complex problems |
 
-### Enable Brainstorm
+---
 
-Settings > `mysti.brainstorm.enabled: true`
+## Quick Start
+
+### 1. Install CLI Tools
+
+```bash
+# Claude Code (recommended)
+npm install -g @anthropic-ai/claude-code
+
+# Authenticate with your Anthropic account
+claude auth login
+```
+
+For Brainstorm Mode, also install Codex CLI.
+
+### 2. Open Mysti
+
+- Click the **Mysti icon** in the Activity Bar, or
+- Press `Ctrl+Shift+M` (`Cmd+Shift+M` on Mac)
+
+### 3. Start Coding
+
+Type your request and let the AI team assist you!
 
 ---
 
-## Personas & Skills
+## 12 Toggleable Skills
 
-### Using Personas
+Mix and match behavioral modifiers:
 
-1. Click the **persona indicator** in the toolbar
-2. Select from 16 specialized personas
-3. The AI adopts that mindset for your conversation
+- **Concise** - Clear, brief communication
+- **Test-Driven** - Tests alongside code
+- **Auto-Commit** - Incremental commits
+- **First Principles** - Fundamental reasoning
+- **Scope Discipline** - Stay focused on the task
+- And 7 more...
 
-### Auto-Suggest
+---
 
-Mysti can **automatically suggest** relevant personas based on your message:
+## Permission Controls
 
-- Type "review this code" > Suggests **Refactorer**
-- Type "design a system" > Suggests **Architect**
-- Type "fix this bug" > Suggests **Debugger**
+Stay in control of what the AI can do:
 
-### Combining with Skills
-
-Personas define *who* the AI is. Skills define *how* it works.
-
-**Example combo:**
-
-- Persona: **Architect**
-- Skills: **Concise** + **First Principles**
-- Result: An architect who explains design decisions clearly and from fundamentals
+- **Read-only** - AI can only read, never modify
+- **Ask-permission** - Approve each file change
+- **Full-access** - Let the AI work autonomously
 
 ---
 
