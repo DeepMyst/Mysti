@@ -5,254 +5,258 @@
 </p>
 
 <p align="center">
-  <strong>A powerful AI coding agent for VSCode supporting multiple AI backends</strong>
+  <strong>Your AI Coding Dream Team</strong><br>
+  <em>Claude Code + Codex working together to solve your coding challenges</em>
 </p>
 
 <p align="center">
-  <a href="#features">Features</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="#documentation">Documentation</a>
+  <a href="#-key-features">Features</a> •
+  <a href="#-brainstorm-mode">Brainstorm</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-personas--skills">Personas</a> •
+  <a href="#%EF%B8%8F-configuration">Config</a>
 </p>
 
 ---
 
-## Overview
+## Why Mysti?
 
-Mysti is a VSCode extension that provides an intelligent AI coding agent interface. It supports multiple AI providers (Claude Code CLI and OpenAI Codex CLI) and offers advanced features like multi-agent brainstorming, customizable personas, and fine-grained permission controls.
+**Stop relying on a single AI.** Mysti lets you harness the power of multiple AI coding agents working as a team.
 
-## Features
+| Single AI | Mysti's Team Approach |
+|-----------|----------------------|
+| One perspective | Multiple AI perspectives |
+| One solution | Debated, refined solutions |
+| Fixed behavior | 16 personas + 12 skills |
+| Take it or leave it | Choose your preferred approach |
 
-### Multi-Provider Support
-- **Claude Code** - Anthropic's Claude with models like Sonnet 4.5 and Opus 4.5
-- **OpenAI Codex** - OpenAI's code-focused models
-- Seamless switching between providers
+---
 
-### Brainstorm Mode
-Collaborate with multiple AI agents to solve complex problems:
-- **Quick Mode** - Direct synthesis for faster results
-- **Full Mode** - Agents review and discuss each other's responses (1-3 rounds)
-- Configurable synthesis agent
+## ✨ Key Features
 
-### 16 Developer Personas
-Customize AI behavior with specialized personas:
+### 🧠 Brainstorm Mode - AI Collaboration
+The standout feature. Enable brainstorm mode and watch **Claude Code** and **Codex** work together:
+
+1. **Both AIs analyze** your request independently
+2. **They debate** different approaches (in full mode)
+3. **One synthesizes** the best solution from both perspectives
+
+> *"Two AI giants, one goal - the best code for you."*
+
+### 🎭 16 Developer Personas
+Shape how your AI thinks:
 
 | Persona | Focus |
 |---------|-------|
-| Architect | System design, scalability, clean structure |
-| Prototyper | Quick iteration, PoCs, experimentation |
-| Product-Centric | User experience, feature delivery |
-| Refactorer | Code quality, readability, maintainability |
-| DevOps Engineer | CI/CD, automation, infrastructure |
-| Domain Expert | Business logic, domain modeling |
-| Researcher | Algorithms, ML, optimization |
-| Builder | Reliable feature delivery |
-| Debugger | Root cause analysis, bug fixing |
-| Integrator | APIs, system connections |
-| Mentor | Teaching, code reviews, guidance |
-| Designer | UI/UX, accessibility, visual design |
-| Full-Stack | Cross-cutting, end-to-end features |
-| Security-Minded | Vulnerabilities, threat modeling |
-| Performance Tuner | Optimization, profiling, latency |
-| Toolsmith | Internal tools, automation, DX |
+| **Architect** | System design, scalability, clean structure |
+| **Debugger** | Root cause analysis, bug fixing |
+| **Security-Minded** | Vulnerabilities, threat modeling |
+| **Performance Tuner** | Optimization, profiling, latency |
+| **Prototyper** | Quick iteration, PoCs |
+| **Refactorer** | Code quality, maintainability |
+| + 10 more... | Full-Stack, DevOps, Mentor, Designer... |
 
-### 12 Toggleable Skills
+### ⚡ 12 Toggleable Skills
 Mix and match behavioral modifiers:
+
 - **Concise** - Clear, brief communication
-- **Repo Hygiene** - Clean file structures
-- **Organized** - Logical structure
+- **Test-Driven** - Tests alongside code
 - **Auto-Commit** - Incremental commits
 - **First Principles** - Fundamental reasoning
-- **Auto-Compact** - Context management
-- **Dependency-Aware** - Respect project deps
-- **Graceful Degradation** - Error handling
-- **Scope Discipline** - Stay focused
-- **Doc Reflexes** - Auto documentation
-- **Test-Driven** - Tests alongside code
-- **Rollback Ready** - Reversible changes
+- **Scope Discipline** - Stay focused on the task
+- And 7 more...
 
-### Plan Selection & Execution
-- AI detects implementation options in responses
-- Choose your preferred approach
-- Select execution mode (ask-before-edit, edit-automatically, plan)
+### 🎯 Smart Plan Selection
+When the AI presents multiple approaches:
+- Mysti **detects the options** automatically
+- You **choose your preferred** implementation
+- Select **execution mode** (ask-before-edit, auto-edit, plan-only)
 
-### Permission Management
-- **Read-only** - No file modifications
-- **Ask-permission** - Approve each action
-- **Full-access** - All operations allowed
-- Configurable timeouts and behaviors
+### 🔐 Permission Controls
+Stay in control:
+- **Read-only** - AI can only read, never modify
+- **Ask-permission** - Approve each file change
+- **Full-access** - Let the AI work autonomously
 
-### Additional Features
-- Persistent conversation history
-- Context-aware suggestions
-- Code syntax highlighting with Prism.js
-- Mermaid diagram support
-- Theme-aware UI (light/dark)
+---
 
-## Installation
+## 🚀 Quick Start
 
-### From VSCode Marketplace
-1. Open VSCode
-2. Go to Extensions (`Ctrl+Shift+X` / `Cmd+Shift+X`)
-3. Search for "Mysti"
-4. Click Install
+### 1. Install a CLI Provider
 
-### Manual Installation
 ```bash
-# Clone the repository
-git clone https://github.com/DeepMyst/Mysti.git
-cd Mysti
+# Claude Code (recommended)
+npm install -g @anthropic-ai/claude-code
 
-# Install dependencies
-npm install
-
-# Build
-npm run compile
-
-# Package (optional)
-npx vsce package
+# Or OpenAI Codex
+# Follow OpenAI's installation instructions
 ```
 
-## Quick Start
+### 2. Open Mysti
+- Click the **Mysti icon** in the Activity Bar, or
+- Press `Ctrl+Shift+M` (`Cmd+Shift+M` on Mac)
 
-1. **Install a CLI Provider**
-   - [Claude Code CLI](https://docs.anthropic.com/claude/docs/claude-code) - `npm install -g @anthropic-ai/claude-code`
-   - Or [OpenAI Codex CLI](https://platform.openai.com/docs/guides/code)
+### 3. Start Coding
+Type your request and let the AI team assist you!
 
-2. **Open Mysti**
-   - Click the Mysti icon in the Activity Bar, or
-   - Press `Ctrl+Shift+M` (`Cmd+Shift+M` on Mac)
+### 4. Try Brainstorm Mode
+Enable it in settings to unlock multi-agent collaboration.
 
-3. **Start Chatting**
-   - Type your question or request
-   - Add context by right-clicking files in Explorer → "Add to Mysti Context"
+---
 
-4. **Configure Your Agent**
-   - Click the agent button to select a persona
-   - Toggle skills for customized behavior
+## 🧠 Brainstorm Mode
 
-## Keyboard Shortcuts
+This is where Mysti shines. Instead of relying on one AI, get a **team of AI agents** working on your problem.
 
-| Action | Windows/Linux | Mac |
-|--------|---------------|-----|
-| Open Mysti Chat | `Ctrl+Shift+M` | `Cmd+Shift+M` |
-| Open in New Tab | `Ctrl+Shift+N` | `Cmd+Shift+N` |
+### How It Works
 
-## Configuration
+```
+Your Request
+     ↓
+┌─────────────┬─────────────┐
+│ Claude Code │   Codex     │
+│  analyzes   │  analyzes   │
+└──────┬──────┴──────┬──────┘
+       │             │
+       ▼             ▼
+┌─────────────────────────────┐
+│    Discussion (Full Mode)    │
+│  Agents review each other's  │
+│  solutions and debate        │
+└──────────────┬──────────────┘
+               ↓
+┌─────────────────────────────┐
+│        Synthesis            │
+│  Best ideas combined into   │
+│  one refined solution       │
+└─────────────────────────────┘
+```
 
-Access settings via `File > Preferences > Settings` and search for "Mysti".
+### Two Modes
 
-### Provider Settings
+| Quick Mode | Full Mode |
+|------------|-----------|
+| Direct synthesis | Agents discuss first |
+| Faster results | More thorough |
+| Good for simple tasks | Best for complex problems |
+
+### Enable Brainstorm
+Settings → `mysti.brainstorm.enabled: true`
+
+---
+
+## 🎭 Personas & Skills
+
+### Using Personas
+1. Click the **persona indicator** in the toolbar
+2. Select from 16 specialized personas
+3. The AI adopts that mindset for your conversation
+
+### Auto-Suggest
+Mysti can **automatically suggest** relevant personas based on your message:
+- Type "review this code" → Suggests **Refactorer**
+- Type "design a system" → Suggests **Architect**
+- Type "fix this bug" → Suggests **Debugger**
+
+### Combining with Skills
+Personas define *who* the AI is. Skills define *how* it works.
+
+**Example combo:**
+- Persona: **Architect**
+- Skills: **Concise** + **First Principles**
+- Result: An architect who explains design decisions clearly and from fundamentals
+
+---
+
+## ⚙️ Configuration
+
+### Essential Settings
+
 ```json
 {
   "mysti.defaultProvider": "claude-code",
-  "mysti.claudeCodePath": "claude",
-  "mysti.codexPath": "codex",
-  "mysti.defaultModel": "claude-sonnet-4-5-20250929"
-}
-```
-
-### Operation Mode
-```json
-{
-  "mysti.defaultMode": "ask-before-edit",
-  "mysti.defaultThinkingLevel": "medium",
+  "mysti.brainstorm.enabled": true,
+  "mysti.brainstorm.discussionMode": "full",
   "mysti.accessLevel": "ask-permission"
 }
 ```
 
-### Brainstorm Settings
-```json
-{
-  "mysti.brainstorm.enabled": false,
-  "mysti.brainstorm.discussionMode": "quick",
-  "mysti.brainstorm.discussionRounds": 1,
-  "mysti.brainstorm.synthesisAgent": "claude-code"
-}
-```
+### All Settings
 
-### Permission Settings
-```json
-{
-  "mysti.permission.timeout": 30,
-  "mysti.permission.timeoutBehavior": "auto-reject"
-}
-```
-
-## Requirements
-
-- VSCode 1.85.0 or higher
-- One of the following CLI tools:
-  - **Claude Code CLI** - Install via `npm install -g @anthropic-ai/claude-code`
-  - **OpenAI Codex CLI** - Install via OpenAI's instructions
-
-## Telemetry
-
-Mysti collects anonymous usage data to improve the extension. This includes:
-
-- Feature usage (which personas/skills are popular)
-- Error rates and types
-- Provider/model preferences
-
-**No personal data, code, or file paths are ever collected.**
-
-Telemetry respects VSCode's global setting. To disable:
-
-1. Open Settings (`Ctrl+,` / `Cmd+,`)
-2. Search for "telemetry"
-3. Set `Telemetry: Telemetry Level` to "off"
-
-## Documentation
-
-- [Features Guide](docs/FEATURES.md) - Detailed feature documentation
-- [Architecture](docs/ARCHITECTURE.md) - Technical documentation for contributors
-- [CLAUDE.md](CLAUDE.md) - Development guidance
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `Mysti: Open Mysti Chat` | Open the chat sidebar |
-| `Mysti: New Conversation` | Start a new conversation |
-| `Mysti: Add to Mysti Context` | Add file/selection to context |
-| `Mysti: Clear Context` | Clear all context items |
-| `Mysti: Open Mysti in New Tab` | Open chat in editor tab |
-
-## Contributing
-
-Contributions are welcome! Please read our contributing guidelines before submitting PRs.
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the **Business Source License 1.1 (BSL 1.1)**.
-
-- **Non-commercial use**: Free for personal, educational, and non-profit use
-- **Commercial use**: Requires a separate commercial license
-- **Change Date**: December 3, 2030 (converts to MIT License)
-
-See the [LICENSE](LICENSE) file for full details.
-
-For commercial licensing inquiries, please contact baha@deepmyst.com.
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.defaultProvider` | `claude-code` | Primary AI provider |
+| `mysti.brainstorm.enabled` | `false` | Enable multi-agent mode |
+| `mysti.brainstorm.discussionMode` | `quick` | `quick` or `full` |
+| `mysti.accessLevel` | `ask-permission` | File access level |
+| `mysti.agents.autoSuggest` | `true` | Auto-suggest personas |
 
 ---
 
-## Credits
+## ⌨️ Keyboard Shortcuts
 
-**Mysti** is developed and maintained by [DeepMyst Inc](https://deepmyst.com).
+| Action | Windows/Linux | Mac |
+|--------|---------------|-----|
+| Open Mysti | `Ctrl+Shift+M` | `Cmd+Shift+M` |
+| Open in New Tab | `Ctrl+Shift+N` | `Cmd+Shift+N` |
 
-- **Author:** Baha Abunojaim
-- **Email:** baha@deepmyst.com
-- **GitHub:** [DeepMyst/Mysti](https://github.com/DeepMyst/Mysti)
+---
+
+## 📋 Commands
+
+| Command | Description |
+|---------|-------------|
+| `Mysti: Open Chat` | Open the chat sidebar |
+| `Mysti: New Conversation` | Start fresh |
+| `Mysti: Add to Context` | Add file/selection to context |
+| `Mysti: Clear Context` | Clear all context |
+| `Mysti: Open in New Tab` | Open chat as editor tab |
+
+---
+
+## 📊 Telemetry
+
+Mysti collects **anonymous** usage data to improve the extension:
+- Feature usage patterns
+- Error rates
+- Provider preferences
+
+**No code, file paths, or personal data is ever collected.**
+
+Respects VSCode's telemetry setting. Disable via:
+`Settings → Telemetry: Telemetry Level → off`
+
+---
+
+## 📄 License
+
+**Business Source License 1.1 (BSL 1.1)**
+
+- **Free** for personal, educational, and non-profit use
+- **Commercial use** requires a separate license
+- Converts to **MIT License** on December 3, 2030
+
+Contact baha@deepmyst.com for commercial licensing.
+
+---
+
+## 🤝 Contributing
+
+Contributions welcome! See our [Architecture Guide](docs/ARCHITECTURE.md) for technical details.
+
+1. Fork the repository
+2. Create a feature branch
+3. Submit a Pull Request
 
 ---
 
 <p align="center">
-  Made with Claude Code by DeepMyst Inc
+  <strong>Mysti</strong> - Built by <a href="https://deepmyst.com">DeepMyst Inc</a><br>
+  <sub>Made with Claude Code</sub>
+</p>
+
+<p align="center">
+  <a href="https://github.com/DeepMyst/Mysti">GitHub</a> •
+  <a href="https://deepmyst.com">Website</a> •
+  <a href="https://www.linkedin.com/company/deepmyst/">LinkedIn</a>
 </p>
