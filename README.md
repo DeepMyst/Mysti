@@ -10,22 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="#-see-it-in-action">Screenshots</a> •
+  <a href="#-brainstorm-mode">Brainstorm</a> •
   <a href="#-key-features">Features</a> •
   <a href="#-requirements">Requirements</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#%EF%B8%8F-configuration">Config</a>
 </p>
-
----
-
-## See It In Action
-
-<p align="center">
-  <img src="docs/screenshots/user-experience.png" alt="Mysti Chat Interface" width="700">
-</p>
-
-<p align="center"><em>Beautiful, modern chat interface with syntax highlighting and markdown support</em></p>
 
 ---
 
@@ -42,20 +32,49 @@
 
 ---
 
-## Requirements
+## Brainstorm Mode
 
-**Mysti works with your existing AI subscriptions** - no additional costs!
+**This is where Mysti shines.** Instead of relying on one AI, get a **team of AI agents** working on your problem.
 
-You need at least one of these CLI tools installed:
+<p align="center">
+  <img src="docs/screenshots/user-experience.png" alt="Mysti Brainstorm Interface" width="700">
+</p>
 
-| CLI Tool | Subscription | Install |
-|----------|--------------|---------|
-| **Claude Code** (recommended) | Anthropic API or Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **Codex CLI** | OpenAI API | Follow OpenAI's installation guide |
+### How It Works
 
-**Already paying for Claude or ChatGPT?** You're ready to go! Mysti leverages your existing subscriptions through the official CLI tools.
+```
+Your Request
+     |
+     v
++-----------+-----------+
+|Claude Code|   Codex   |
+| analyzes  | analyzes  |
++-----+-----+-----+-----+
+      |           |
+      v           v
++---------------------------+
+|   Discussion (Full Mode)  |
+| Agents review each other's|
+| solutions and debate      |
++-----------+---------------+
+            |
+            v
++---------------------------+
+|        Synthesis          |
+| Best ideas combined into  |
+| one refined solution      |
++---------------------------+
+```
 
-For **Brainstorm Mode** (multi-agent collaboration), install **both** CLIs to get two AI giants working together.
+### Two Modes
+
+| Quick Mode | Full Mode |
+|------------|-----------|
+| Direct synthesis | Agents discuss first |
+| Faster results | More thorough |
+| Good for simple tasks | Best for complex problems |
+
+**Requires both Claude Code and Codex CLIs installed.**
 
 ---
 
@@ -91,26 +110,6 @@ Shape how your AI thinks. Select from specialized personas that change the AI's 
 
 ---
 
-### Quick Persona Selection
-
-Select personas directly from the toolbar without opening panels.
-
-<p align="center">
-  <img src="docs/screenshots/persona-toolbar.png" alt="Toolbar Persona Selection" width="550">
-</p>
-
----
-
-### Smart Auto-Suggestions
-
-Mysti automatically suggests relevant personas and actions based on your message.
-
-<p align="center">
-  <img src="docs/screenshots/auto-suggestions.png" alt="Auto Suggestions" width="550">
-</p>
-
----
-
 ### Intelligent Plan Detection
 
 When the AI presents multiple approaches, Mysti detects them and lets you choose.
@@ -131,22 +130,32 @@ Execute plans with full control - ask before editing, auto-edit, or plan only.
 
 ---
 
+### Smart Auto-Suggestions
+
+Mysti automatically suggests relevant personas and actions based on your message.
+
+<p align="center">
+  <img src="docs/screenshots/auto-suggestions.png" alt="Auto Suggestions" width="550">
+</p>
+
+---
+
+### Quick Persona Selection
+
+Select personas directly from the toolbar without opening panels.
+
+<p align="center">
+  <img src="docs/screenshots/persona-toolbar.png" alt="Toolbar Persona Selection" width="550">
+</p>
+
+---
+
 ### Conversation History
 
 Never lose your work. All conversations are saved and easily accessible.
 
 <p align="center">
   <img src="docs/screenshots/conversation-history.png" alt="Conversation History" width="450">
-</p>
-
----
-
-### Extensive Settings
-
-Fine-tune every aspect of Mysti including token budgets, access levels, and brainstorm mode.
-
-<p align="center">
-  <img src="docs/screenshots/settings-panel.png" alt="Settings Panel" width="450">
 </p>
 
 ---
@@ -161,45 +170,30 @@ Get started fast with one-click actions for common tasks.
 
 ---
 
-## Brainstorm Mode
+### Extensive Settings
 
-This is where Mysti shines. Instead of relying on one AI, get a **team of AI agents** working on your problem.
+Fine-tune every aspect of Mysti including token budgets, access levels, and brainstorm mode.
 
-**Requires both Claude Code and Codex CLIs installed.**
+<p align="center">
+  <img src="docs/screenshots/settings-panel.png" alt="Settings Panel" width="450">
+</p>
 
-### How It Works
+---
 
-```
-Your Request
-     |
-     v
-+-----------+-----------+
-|Claude Code|   Codex   |
-| analyzes  | analyzes  |
-+-----+-----+-----+-----+
-      |           |
-      v           v
-+---------------------------+
-|   Discussion (Full Mode)  |
-| Agents review each other's|
-| solutions and debate      |
-+-----------+---------------+
-            |
-            v
-+---------------------------+
-|        Synthesis          |
-| Best ideas combined into  |
-| one refined solution      |
-+---------------------------+
-```
+## Requirements
 
-### Two Modes
+**Mysti works with your existing AI subscriptions** - no additional costs!
 
-| Quick Mode | Full Mode |
-|------------|-----------|
-| Direct synthesis | Agents discuss first |
-| Faster results | More thorough |
-| Good for simple tasks | Best for complex problems |
+You need at least one of these CLI tools installed:
+
+| CLI Tool | Subscription | Install |
+|----------|--------------|---------|
+| **Claude Code** (recommended) | Anthropic API or Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
+| **Codex CLI** | OpenAI API | Follow OpenAI's installation guide |
+
+**Already paying for Claude or ChatGPT?** You're ready to go! Mysti leverages your existing subscriptions through the official CLI tools.
+
+For **Brainstorm Mode** (multi-agent collaboration), install **both** CLIs to get two AI giants working together.
 
 ---
 
