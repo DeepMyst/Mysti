@@ -333,6 +333,11 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
             <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm8-7a7 7 0 0 0-5.468 11.37C3.242 11.226 4.805 10 8 10s4.757 1.225 5.468 2.37A7 7 0 0 0 8 1z"/>
           </svg>
           <span id="toolbar-persona-name">No persona</span>
+          <span id="toolbar-persona-clear" class="toolbar-persona-clear hidden" title="Clear persona">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+            </svg>
+          </span>
         </button>
         <span id="mode-indicator" class="mode-indicator">Ask before edit</span>
       </div>
@@ -914,6 +919,34 @@ function getStyles(): string {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .toolbar-persona-clear {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      margin-left: 2px;
+      opacity: 0.7;
+      transition: all 0.15s ease;
+    }
+
+    .toolbar-persona-clear:hover {
+      opacity: 1;
+      background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+      color: var(--vscode-inputValidation-errorForeground, #fff);
+    }
+
+    .toolbar-persona-clear.hidden {
+      display: none;
+    }
+
+    .toolbar-persona-clear svg {
+      flex-shrink: 0;
     }
 
     /* About Panel */
@@ -5714,7 +5747,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       (function() {
         var personaBtn = document.getElementById('toolbar-persona-btn');
         if (personaBtn) {
-          personaBtn.addEventListener('click', function() {
+          personaBtn.addEventListener('click', function(e) {
+            // Don't open suggestions if clicking the clear button
+            if (e.target.closest('.toolbar-persona-clear')) return;
+
             var widget = document.getElementById('inline-suggestions');
             var inputEl = document.getElementById('message-input');
 
@@ -5735,6 +5771,32 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             } else {
               widget.classList.add('hidden');
             }
+          });
+        }
+      })();
+
+      // Toolbar persona clear button click handler
+      (function() {
+        var clearBtn = document.getElementById('toolbar-persona-clear');
+        if (clearBtn) {
+          clearBtn.addEventListener('click', function(e) {
+            e.stopPropagation(); // Prevent triggering parent button click
+
+            // Clear persona selection
+            state.agentConfig.personaId = null;
+
+            // Update UI
+            document.querySelectorAll('.persona-card').forEach(function(card) {
+              card.classList.remove('selected');
+            });
+
+            // Hide inline suggestions if visible
+            var widget = document.getElementById('inline-suggestions');
+            if (widget) widget.classList.add('hidden');
+
+            updateConfigSummary();
+            updateToolbarPersonaIndicator();
+            saveAgentConfig();
           });
         }
       })();
@@ -5823,6 +5885,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       function updateToolbarPersonaIndicator() {
         var nameEl = document.getElementById('toolbar-persona-name');
         var btn = document.getElementById('toolbar-persona-btn');
+        var clearBtn = document.getElementById('toolbar-persona-clear');
         if (!nameEl || !btn) return;
 
         if (state.agentConfig.personaId) {
@@ -5832,10 +5895,12 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           nameEl.textContent = persona ? persona.name : 'Unknown';
           btn.classList.add('has-persona');
           btn.title = 'Active: ' + (persona ? persona.name : 'Unknown') + ' (click to change)';
+          if (clearBtn) clearBtn.classList.remove('hidden');
         } else {
           nameEl.textContent = 'No persona';
           btn.classList.remove('has-persona');
           btn.title = 'Click to select a persona';
+          if (clearBtn) clearBtn.classList.add('hidden');
         }
       }
 
