@@ -22,7 +22,7 @@
 ## See It In Action
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/user-experience.png" alt="Mysti Chat Interface" width="700">
+  <img src="docs/screenshots/user-experience.png" alt="Mysti Chat Interface" width="700">
 </p>
 
 <p align="center"><em>Beautiful, modern chat interface with syntax highlighting and markdown support</em></p>
@@ -66,7 +66,7 @@ For **Brainstorm Mode** (multi-agent collaboration), install **both** CLIs to ge
 Switch between Claude Code and Codex with a single click. Use whichever AI best fits your current task.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/agent-selection.png" alt="Agent Selection" width="450">
+  <img src="docs/screenshots/agent-selection.png" alt="Agent Selection" width="450">
 </p>
 
 ---
@@ -76,7 +76,7 @@ Switch between Claude Code and Codex with a single click. Use whichever AI best 
 Shape how your AI thinks. Select from specialized personas that change the AI's approach to your problems.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/persona-skills-panel.png" alt="Personas and Skills Panel" width="550">
+  <img src="docs/screenshots/persona-skills-panel.png" alt="Personas and Skills Panel" width="550">
 </p>
 
 | Persona | Focus |
@@ -96,7 +96,7 @@ Shape how your AI thinks. Select from specialized personas that change the AI's 
 Select personas directly from the toolbar without opening panels.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/persona-toolbar.png" alt="Toolbar Persona Selection" width="550">
+  <img src="docs/screenshots/persona-toolbar.png" alt="Toolbar Persona Selection" width="550">
 </p>
 
 ---
@@ -106,7 +106,7 @@ Select personas directly from the toolbar without opening panels.
 Mysti automatically suggests relevant personas and actions based on your message.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/auto-suggestions.png" alt="Auto Suggestions" width="550">
+  <img src="docs/screenshots/auto-suggestions.png" alt="Auto Suggestions" width="550">
 </p>
 
 ---
@@ -116,7 +116,7 @@ Mysti automatically suggests relevant personas and actions based on your message
 When the AI presents multiple approaches, Mysti detects them and lets you choose.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/plan-suggestions.png" alt="Plan Suggestions" width="550">
+  <img src="docs/screenshots/plan-suggestions.png" alt="Plan Suggestions" width="550">
 </p>
 
 ---
@@ -126,7 +126,7 @@ When the AI presents multiple approaches, Mysti detects them and lets you choose
 Execute plans with full control - ask before editing, auto-edit, or plan only.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/plan-mode.png" alt="Plan Mode" width="550">
+  <img src="docs/screenshots/plan-mode.png" alt="Plan Mode" width="550">
 </p>
 
 ---
@@ -136,7 +136,7 @@ Execute plans with full control - ask before editing, auto-edit, or plan only.
 Never lose your work. All conversations are saved and easily accessible.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/conversation-history.png" alt="Conversation History" width="450">
+  <img src="docs/screenshots/conversation-history.png" alt="Conversation History" width="450">
 </p>
 
 ---
@@ -146,7 +146,7 @@ Never lose your work. All conversations are saved and easily accessible.
 Fine-tune every aspect of Mysti including token budgets, access levels, and brainstorm mode.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/settings-panel.png" alt="Settings Panel" width="450">
+  <img src="docs/screenshots/settings-panel.png" alt="Settings Panel" width="450">
 </p>
 
 ---
@@ -156,7 +156,7 @@ Fine-tune every aspect of Mysti including token budgets, access levels, and brai
 Get started fast with one-click actions for common tasks.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/screenshots/quick-actions-welcome.png" alt="Quick Actions" width="550">
+  <img src="docs/screenshots/quick-actions-welcome.png" alt="Quick Actions" width="550">
 </p>
 
 ---
