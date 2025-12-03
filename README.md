@@ -12,7 +12,7 @@
 <p align="center">
   <a href="#-key-features">Features</a> •
   <a href="#-brainstorm-mode">Brainstorm</a> •
-  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-requirements">Requirements</a> •
   <a href="#-personas--skills">Personas</a> •
   <a href="#%EF%B8%8F-configuration">Config</a>
 </p>
@@ -29,6 +29,23 @@
 | One solution | Debated, refined solutions |
 | Fixed behavior | 16 personas + 12 skills |
 | Take it or leave it | Choose your preferred approach |
+
+---
+
+## Requirements
+
+**Mysti works with your existing AI subscriptions** - no additional costs!
+
+You need at least one of these CLI tools installed:
+
+| CLI Tool | Subscription | Install |
+|----------|--------------|---------|
+| **Claude Code** (recommended) | Anthropic API or Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
+| **Codex CLI** | OpenAI API | Follow OpenAI's installation guide |
+
+**Already paying for Claude or ChatGPT?** You're ready to go! Mysti leverages your existing subscriptions through the official CLI tools.
+
+For **Brainstorm Mode** (multi-agent collaboration), install **both** CLIs to get two AI giants working together.
 
 ---
 
@@ -89,15 +106,17 @@ Stay in control:
 
 ## Quick Start
 
-### 1. Install a CLI Provider
+### 1. Install CLI Tools
 
 ```bash
 # Claude Code (recommended)
 npm install -g @anthropic-ai/claude-code
 
-# Or OpenAI Codex
-# Follow OpenAI's installation instructions
+# Authenticate with your Anthropic account
+claude auth login
 ```
+
+For Brainstorm Mode, also install Codex CLI.
 
 ### 2. Open Mysti
 
@@ -117,6 +136,8 @@ Enable it in settings to unlock multi-agent collaboration.
 ## Brainstorm Mode
 
 This is where Mysti shines. Instead of relying on one AI, get a **team of AI agents** working on your problem.
+
+**Requires both Claude Code and Codex CLIs installed.**
 
 ### How It Works
 
