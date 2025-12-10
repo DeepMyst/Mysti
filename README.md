@@ -5,17 +5,50 @@
 </p>
 
 <p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti">
+    <img src="https://img.shields.io/visual-studio-marketplace/v/DeepMyst.mysti?style=flat-square&label=Version" alt="Version">
+  </a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti">
+    <img src="https://img.shields.io/visual-studio-marketplace/i/DeepMyst.mysti?style=flat-square&label=Installs" alt="Installs">
+  </a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti">
+    <img src="https://img.shields.io/visual-studio-marketplace/r/DeepMyst.mysti?style=flat-square&label=Rating" alt="Rating">
+  </a>
+  <a href="https://github.com/DeepMyst/Mysti/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/License-BSL%201.1-blue?style=flat-square" alt="License">
+  </a>
+</p>
+
+<p align="center">
   <strong>Your AI Coding Assistant for VSCode</strong><br>
   <em>Use Claude Code, Codex, or Gemini — or combine any two in Brainstorm Mode</em>
 </p>
 
 <p align="center">
-  <a href="#-choose-your-ai">Providers</a> •
-  <a href="#-brainstorm-mode">Brainstorm</a> •
-  <a href="#-key-features">Features</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#%EF%B8%8F-configuration">Config</a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti">
+    <img src="https://img.shields.io/badge/Install%20from-VS%20Code%20Marketplace-007ACC?style=for-the-badge&logo=visual-studio-code" alt="Install from VS Code Marketplace">
+  </a>
 </p>
+
+<p align="center">
+  <a href="#choose-your-ai">Providers</a> •
+  <a href="#brainstorm-mode">Brainstorm</a> •
+  <a href="#key-features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#configuration">Config</a>
+</p>
+
+---
+
+## Install in Seconds
+
+**From VS Code:** Press `Ctrl+P` (`Cmd+P` on Mac), then paste:
+
+```
+ext install DeepMyst.mysti
+```
+
+**Or** [install from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti)
 
 ---
 
@@ -35,6 +68,15 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | **Brainstorm Mode** | Any two AIs collaborate and debate solutions |
 
 **Switch providers with one click. No lock-in.**
+
+### Why Mysti?
+
+| vs Copilot/Cursor | Mysti Advantage |
+|-------------------|-----------------|
+| Single AI | **Multi-agent brainstorming** — two AIs collaborate |
+| Locked to one provider | **Use any CLI** — Claude, Codex, or Gemini |
+| Black box | **Full permission control** — read-only to full-access |
+| Generic responses | **16 personas** — architect, debugger, security expert... |
 
 ---
 
@@ -213,7 +255,16 @@ You only need **one** CLI to get started. Install **any two** to unlock Brainsto
 
 ## Quick Start
 
-### 1. Install a CLI Tool
+### 1. Install Mysti
+
+**Option A:** Press `Ctrl+P` (`Cmd+P` on Mac), paste and run:
+```
+ext install DeepMyst.mysti
+```
+
+**Option B:** [Install from VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti)
+
+### 2. Install a CLI Tool
 
 ```bash
 # Claude Code (recommended)
@@ -227,12 +278,12 @@ gemini auth login
 
 For Brainstorm Mode, install any two CLI tools.
 
-### 2. Open Mysti
+### 3. Open Mysti
 
 - Click the **Mysti icon** in the Activity Bar, or
 - Press `Ctrl+Shift+M` (`Cmd+Shift+M` on Mac)
 
-### 3. Start Coding
+### 4. Start Coding
 
 Type your request and let the AI assist you!
 
@@ -335,6 +386,12 @@ Contact [baha@deepmyst.com](mailto:baha@deepmyst.com) for commercial licensing.
 ---
 
 <p align="center">
-  <strong>Mysti</strong> - Built by <a href="https://deepmyst.com">DeepMyst Inc</a><br>
+  <a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti">Install</a> •
+  <a href="https://github.com/DeepMyst/Mysti/issues">Report Issue</a> •
+  <a href="https://github.com/DeepMyst/Mysti">GitHub</a>
+</p>
+
+<p align="center">
+  <strong>Mysti</strong> — Built by <a href="https://deepmyst.com">DeepMyst Inc</a><br>
   <sub>Made with Claude Code</sub>
 </p>
