@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Your AI Coding Assistant for VSCode</strong><br>
-  <em>Use Claude Code, Codex, or both together in Brainstorm Mode</em>
+  <em>Use Claude Code, Codex, or Gemini — or combine any two in Brainstorm Mode</em>
 </p>
 
 <p align="center">
@@ -31,7 +31,8 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 |----------|----------|
 | **Claude Code** | Deep reasoning, complex refactoring, thorough analysis |
 | **Codex** | Quick iterations, familiar OpenAI style |
-| **Brainstorm Mode** | Both AIs collaborate and debate solutions |
+| **Gemini** | Fast responses, Google ecosystem integration |
+| **Brainstorm Mode** | Any two AIs collaborate and debate solutions |
 
 **Switch providers with one click. No lock-in.**
 
@@ -49,7 +50,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 
 ## Brainstorm Mode
 
-**Want a second opinion?** Enable Brainstorm Mode and let Claude Code AND Codex tackle your problem together.
+**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose any 2 of 3 agents** (Claude, Codex, or Gemini) from the settings panel.
 
 <p align="center">
   <img src="docs/screenshots/brainstorm-mode.png" alt="Brainstorm Mode" width="700">
@@ -57,13 +58,23 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 
 ### Why Two AIs Beat One
 
-**Claude Code** (Anthropic) and **Codex** (OpenAI) have different training, different strengths, and different blind spots. When they work together:
+**Claude Code** (Anthropic), **Codex** (OpenAI), and **Gemini** (Google) have different training, different strengths, and different blind spots. When any two work together:
 
-- **Claude** catches edge cases Codex might miss
-- **Codex** suggests approaches Claude might overlook
+- Each AI catches edge cases the other might miss
+- Different perspectives lead to more robust solutions
 - **Together** they debate, challenge each other, and synthesize the best solution
 
 It's like having a senior dev and a tech lead review your code—except they actually discuss it first.
+
+### Choose Your Team
+
+Configure which two agents collaborate in the **Settings Panel**:
+
+| Combination | Best For |
+|-------------|----------|
+| Claude + Codex | Deep analysis meets rapid iteration |
+| Claude + Gemini | Thorough reasoning with fast validation |
+| Codex + Gemini | Quick iterations with Google ecosystem knowledge |
 
 ### How It Works
 
@@ -72,7 +83,7 @@ Your Request
      |
      v
 +-----------+-----------+
-|Claude Code|   Codex   |
+|  Agent 1  |  Agent 2  |
 | analyzes  | analyzes  |
 +-----+-----+-----+-----+
       |           |
@@ -96,7 +107,7 @@ Your Request
 | Quick Mode | Full Mode |
 |------------|-----------|
 | Direct synthesis | Agents discuss first |
-| Claude + Codex respond, then merge | Each AI critiques the other's solution |
+| Both agents respond, then merge | Each AI critiques the other's solution |
 | Faster results | More thorough analysis |
 | Good for simple tasks | Best for complex architecture decisions |
 
@@ -108,7 +119,7 @@ When the AI presents multiple implementation approaches, Mysti automatically det
   <img src="docs/screenshots/plan-suggestions.png" alt="Plan Suggestions" width="600">
 </p>
 
-*Requires both Claude Code and Codex CLIs installed. See [Requirements](#-requirements).*
+*Requires at least 2 CLI tools installed. See [Requirements](#requirements).*
 
 ---
 
@@ -186,7 +197,7 @@ Fine-tune every aspect of Mysti including token budgets, access levels, and brai
 
 ## Requirements
 
-**Already paying for Claude or ChatGPT? You're ready to go.**
+**Already paying for Claude, ChatGPT, or Gemini? You're ready to go.**
 
 Mysti works with your existing subscriptions—no additional costs!
 
@@ -194,8 +205,9 @@ Mysti works with your existing subscriptions—no additional costs!
 |----------|--------------|---------|
 | **Claude Code** (recommended) | Anthropic API or Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
 | **Codex CLI** | OpenAI API | Follow OpenAI's installation guide |
+| **Gemini CLI** | Google AI API or Gemini Advanced | `npm install -g @google/gemini-cli` |
 
-You only need **one** CLI to get started. Install **both** to unlock Brainstorm Mode.
+You only need **one** CLI to get started. Install **any two** to unlock Brainstorm Mode.
 
 ---
 
@@ -206,12 +218,14 @@ You only need **one** CLI to get started. Install **both** to unlock Brainstorm 
 ```bash
 # Claude Code (recommended)
 npm install -g @anthropic-ai/claude-code
-
-# Authenticate with your Anthropic account
 claude auth login
+
+# Or Gemini CLI
+npm install -g @google/gemini-cli
+gemini auth login
 ```
 
-For Brainstorm Mode, also install Codex CLI.
+For Brainstorm Mode, install any two CLI tools.
 
 ### 2. Open Mysti
 
@@ -254,7 +268,7 @@ Stay in control of what the AI can do:
 ```json
 {
   "mysti.defaultProvider": "claude-code",
-  "mysti.brainstorm.enabled": true,
+  "mysti.brainstorm.agents": ["claude-code", "google-gemini"],
   "mysti.brainstorm.discussionMode": "full",
   "mysti.accessLevel": "ask-permission"
 }
@@ -264,8 +278,8 @@ Stay in control of what the AI can do:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.defaultProvider` | `claude-code` | Primary AI provider |
-| `mysti.brainstorm.enabled` | `false` | Enable multi-agent mode |
+| `mysti.defaultProvider` | `claude-code` | Primary AI provider (`claude-code`, `openai-codex`, `google-gemini`) |
+| `mysti.brainstorm.agents` | `["claude-code", "openai-codex"]` | Which 2 agents to use in brainstorm mode |
 | `mysti.brainstorm.discussionMode` | `quick` | `quick` or `full` |
 | `mysti.accessLevel` | `ask-permission` | File access level |
 | `mysti.agents.autoSuggest` | `true` | Auto-suggest personas |

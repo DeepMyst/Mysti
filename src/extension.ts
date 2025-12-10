@@ -87,6 +87,11 @@ export async function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // Register chatViewProvider for proper disposal (prevents memory leaks)
+  context.subscriptions.push({
+    dispose: () => chatViewProvider.dispose()
+  });
+
   // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.openChat', () => {
@@ -197,4 +202,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
   console.log('Mysti extension is now deactivated');
+  // Cleanup is handled automatically via context.subscriptions
+  // Additional cleanup for managers not in subscriptions
+  if (permissionManager) {
+    permissionManager.dispose();
+  }
 }

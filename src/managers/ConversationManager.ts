@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
 import type { Conversation, Message, ContextItem, OperationMode, ProviderType, AgentConfiguration } from '../types';
 
 export class ConversationManager {
@@ -277,7 +278,7 @@ export class ConversationManager {
   }
 
   private _generateId(): string {
-    return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    return randomUUID();
   }
 
   private _loadConversations() {
@@ -292,10 +293,20 @@ export class ConversationManager {
     }
   }
 
-  private _saveConversations() {
-    this._extensionContext.globalState.update('mysti.conversations', {
-      conversations: Array.from(this._conversations.entries()),
-      currentId: this._currentConversationId
-    });
+  /**
+   * Save conversations to global state with error handling
+   * Critical: Prevents state inconsistency by awaiting the async operation
+   */
+  private async _saveConversations(): Promise<void> {
+    try {
+      await this._extensionContext.globalState.update('mysti.conversations', {
+        conversations: Array.from(this._conversations.entries()),
+        currentId: this._currentConversationId
+      });
+    } catch (error) {
+      console.error('[Mysti] Failed to save conversations:', error);
+      vscode.window.showErrorMessage('Failed to save conversation history');
+      throw error; // Re-throw to let callers know save failed
+    }
   }
 }

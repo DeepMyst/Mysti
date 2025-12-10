@@ -1,8 +1,8 @@
 {
   "name": "mysti",
   "displayName": "Mysti - AI Coding Agent",
-  "description": "Multi-agent AI coding assistant. Claude Code + Codex brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
-  "version": "0.1.13",
+  "description": "Multi-agent AI coding assistant. Claude Code, Codex, and Gemini brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
+  "version": "0.1.14",
   "publisher": "DeepMyst",
   "author": {
     "name": "Baha Abunojaim",
@@ -39,12 +39,14 @@
     "cursor",
     "gpt",
     "codex",
+    "gemini",
     "ai agent",
     "ai chat",
     "code assistant",
     "pair programming",
     "anthropic",
     "openai",
+    "google",
     "multi-agent",
     "brainstorm"
   ],
@@ -148,11 +150,13 @@
           "default": "claude-code",
           "enum": [
             "claude-code",
-            "openai-codex"
+            "openai-codex",
+            "google-gemini"
           ],
           "enumDescriptions": [
             "Claude Code CLI (Anthropic)",
-            "OpenAI Codex CLI"
+            "OpenAI Codex CLI",
+            "Google Gemini CLI"
           ],
           "description": "Default AI provider to use"
         },
@@ -165,6 +169,11 @@
           "type": "string",
           "default": "codex",
           "description": "Path to OpenAI Codex CLI executable"
+        },
+        "mysti.geminiPath": {
+          "type": "string",
+          "default": "gemini",
+          "description": "Path to Google Gemini CLI executable"
         },
         "mysti.defaultMode": {
           "type": "string",
@@ -237,9 +246,22 @@
           "default": "claude-code",
           "enum": [
             "claude-code",
-            "openai-codex"
+            "openai-codex",
+            "google-gemini"
           ],
           "description": "Agent to use for synthesis in brainstorm mode"
+        },
+        "mysti.brainstorm.agents": {
+          "type": "array",
+          "default": ["claude-code", "openai-codex"],
+          "items": {
+            "type": "string",
+            "enum": ["claude-code", "openai-codex", "google-gemini"]
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "description": "Which 2 agents to use in brainstorm mode"
         },
         "mysti.agents.claudePersona": {
           "type": "string",
@@ -296,6 +318,34 @@
           "type": "string",
           "default": "",
           "description": "Custom persona prompt for Codex (when persona is 'custom')"
+        },
+        "mysti.agents.geminiPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "No additional framing",
+            "Focus on system design and patterns",
+            "Focus on practical implementation",
+            "Focus on technical correctness and performance",
+            "Focus on code quality and issues",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for Gemini agent in brainstorm mode"
+        },
+        "mysti.agents.geminiCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Gemini (when persona is 'custom')"
         },
         "mysti.agents.autoSuggest": {
           "type": "boolean",

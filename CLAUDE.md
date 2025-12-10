@@ -4,16 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Mysti is a VSCode extension providing a unified AI coding assistant interface supporting multiple AI backends (Claude Code CLI and OpenAI Codex CLI). It features sidebar/tab chat panels, conversation persistence, multi-agent brainstorm mode, permission controls, and plan selection.
+Mysti is a VSCode extension providing a unified AI coding assistant interface supporting multiple AI backends (Claude Code CLI, OpenAI Codex CLI, and Google Gemini CLI). It features sidebar/tab chat panels, conversation persistence, multi-agent brainstorm mode (select 2 of 3 agents), permission controls, and plan selection.
 
 ## Build Commands
 
 ```bash
-npm run compile      # Production build (webpack)
-npm run watch        # Development build with watch mode
-npm run lint         # ESLint check
-npm run test         # Run tests
-npx vsce package     # Package extension as .vsix
+npm run compile         # Production build (webpack)
+npm run watch           # Development build with watch mode
+npm run lint            # ESLint check
+npm run test            # Run tests
+npm run sync-agents     # Sync agent definitions from resources/agents
+npm run sync-agents:force  # Force sync, overwrite user changes
+npx vsce package        # Package extension as .vsix
 ```
 
 Output: `dist/extension.js` from entry point `src/extension.ts`
@@ -40,19 +42,22 @@ extension.ts (entry)
     │   ├── SuggestionManager     - Quick action suggestions
     │   ├── SetupManager          - CLI auto-setup & authentication
     │   ├── AgentLoader           - Three-tier agent loading from markdown
-    │   └── AgentContextManager   - Recommendations & prompt building
+    │   ├── AgentContextManager   - Recommendations & prompt building
+    │   ├── TelemetryManager      - Anonymous usage analytics
+    │   └── AutocompleteManager   - Autocomplete functionality
     │
     └── ChatViewProvider (UI coordinator)
             │
             └── Providers (CLI integrations)
                 ├── ClaudeCodeProvider (extends BaseCliProvider)
-                └── CodexProvider (extends BaseCliProvider)
+                ├── CodexProvider (extends BaseCliProvider)
+                └── GeminiProvider (extends BaseCliProvider)
 ```
 
 ### Key Design Decisions
 
 - **Per-panel isolation**: Each webview panel (sidebar or tab) has independent state, conversation, and child process
-- **CLI-based providers**: Spawn `claude`/`codex` CLI with `--output-format stream-json`, parse line-delimited JSON events
+- **CLI-based providers**: Spawn `claude`/`codex`/`gemini` CLI with `--output-format stream-json`, parse line-delimited JSON events
 - **AsyncGenerator streaming**: Providers yield `StreamChunk` items for real-time response updates
 - **Webview communication**: Extension ↔ webview via `postMessage()` with typed `WebviewMessage`
 
@@ -73,6 +78,17 @@ extension.ts (entry)
 - `OperationMode` - "ask-before-edit" | "edit-automatically" | "plan"
 - `AccessLevel` - "read-only" | "ask-permission" | "full-access"
 
+## Constants (src/constants.ts)
+
+System-wide constants for timeouts, limits, and configuration:
+
+- `PROCESS_TIMEOUT_MS` - CLI process timeout (5 minutes)
+- `PROCESS_KILL_GRACE_PERIOD_MS` - Grace period before force kill (5 seconds)
+- `PROCESS_FORCE_KILL_TIMEOUT_MS` - Final force kill timeout (10 seconds)
+- `AUTH_POLL_INTERVAL_MS` / `AUTH_POLL_MAX_ATTEMPTS` - Authentication polling (2s interval, 60 attempts = 2 min)
+- `PERMISSION_DEFAULT_TIMEOUT_S` / `PERMISSION_MAX_TIMEOUT_S` - Permission timeouts (30s default, 5 min max)
+- `MAX_CONVERSATION_MESSAGES` - Maximum messages in history (10)
+
 ## Conventions
 
 - Private members use leading underscore: `_extensionContext`, `_currentProcess`
@@ -83,8 +99,17 @@ extension.ts (entry)
 ## VSCode Integration Points
 
 - View: `mysti.chatView` (webview sidebar)
-- Commands: `mysti.openChat`, `mysti.newConversation`, `mysti.addToContext`, `mysti.clearContext`, `mysti.openInNewTab`
-- Settings namespace: `mysti.*` (13 settings covering provider, mode, access, brainstorm)
+- Commands:
+  - `mysti.openChat` - Open sidebar chat
+  - `mysti.newConversation` - Start new conversation
+  - `mysti.addToContext` - Add file/selection to context
+  - `mysti.clearContext` - Clear context
+  - `mysti.openInNewTab` - Open chat in editor tab
+  - `mysti.debugSetup` / `mysti.debugSetupFailure` - Debug CLI setup flow
+- Keybindings:
+  - `Ctrl+Shift+M` (Mac: `Cmd+Shift+M`) - Open chat
+  - `Ctrl+Shift+N` (Mac: `Cmd+Shift+N`) - Open in new tab
+- Settings namespace: `mysti.*` (18+ settings covering provider, mode, access, brainstorm, agents, permissions)
 
 ## Webview UI
 
@@ -106,11 +131,19 @@ extension.ts (entry)
 
 ### Adding a New Persona (Markdown-based)
 
-Create a markdown file in one of the agent source directories:
+**Current count**: 16 core personas in `resources/agents/core/personas/`
 
-1. **Core**: `resources/agents/core/personas/my-persona.md`
-2. **User**: `~/.mysti/agents/personas/my-persona.md`
-3. **Workspace**: `.mysti/agents/personas/my-persona.md`
+Create a markdown file in one of the agent source directories (priority order):
+
+1. **Core** (bundled): `resources/agents/core/personas/my-persona.md`
+2. **User** (home dir): `~/.mysti/agents/personas/my-persona.md`
+3. **Workspace** (project): `.mysti/agents/personas/my-persona.md`
+
+**Three-tier loading system** (managed by AgentLoader):
+
+- **Tier 1 (Metadata)**: Always loaded for UI display - id, name, description, icon, category
+- **Tier 2 (Instructions)**: Loaded on selection for prompt injection - instructions, priorities, practices
+- **Tier 3 (Full)**: Loaded on demand - complete content including code examples
 
 **Markdown format:**
 
@@ -148,11 +181,13 @@ Main instructions for the AI...
 
 ### Adding a New Skill (Markdown-based)
 
-Create a markdown file in one of the agent source directories:
+**Current count**: 12 core skills in `resources/agents/core/skills/`
 
-1. **Core**: `resources/agents/core/skills/my-skill.md`
-2. **User**: `~/.mysti/agents/skills/my-skill.md`
-3. **Workspace**: `.mysti/agents/skills/my-skill.md`
+Create a markdown file in one of the agent source directories (priority order):
+
+1. **Core** (bundled): `resources/agents/core/skills/my-skill.md`
+2. **User** (home dir): `~/.mysti/agents/skills/my-skill.md`
+3. **Workspace** (project): `.mysti/agents/skills/my-skill.md`
 
 **Markdown format:**
 
@@ -171,6 +206,8 @@ activationTriggers:
 
 Detailed instructions for the AI when this skill is enabled...
 ```
+
+**Syncing agents**: Run `npm run sync-agents` to update cached agent definitions after modifying markdown files. Use `npm run sync-agents:force` to overwrite user customizations.
 
 ### Legacy: Static Personas/Skills (Fallback)
 

@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
 import type {
   AccessLevel,
   PermissionActionType,
@@ -301,7 +302,28 @@ export class PermissionManager {
     }
   }
 
+  /**
+   * Dispose the manager and clean up all resources
+   * Critical: Prevents pending timeouts from firing after deactivation
+   */
+  dispose(): void {
+    console.log('[Mysti] PermissionManager: Disposing and cleaning up resources');
+
+    // Clear all timeout handles
+    for (const handle of this._timeoutHandles.values()) {
+      clearTimeout(handle);
+    }
+    this._timeoutHandles.clear();
+
+    // Reject all pending promises
+    for (const [requestId, resolver] of this._resolvers) {
+      resolver(false);
+    }
+    this._resolvers.clear();
+    this._pendingRequests.clear();
+  }
+
   private _generateId(): string {
-    return 'perm_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    return 'perm_' + randomUUID();
   }
 }

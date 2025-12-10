@@ -15,6 +15,7 @@ import * as vscode from 'vscode';
 import type { ICliProvider } from './base/IProvider';
 import { ClaudeCodeProvider } from './claude/ClaudeCodeProvider';
 import { CodexProvider } from './codex/CodexProvider';
+import { GeminiProvider } from './gemini/GeminiProvider';
 
 /**
  * Registry for managing CLI providers
@@ -43,6 +44,11 @@ export class ProviderRegistry {
     const codex = new CodexProvider(this._extensionContext);
     this._providers.set(codex.id, codex);
     console.log(`[Mysti] Registered provider: ${codex.displayName}`);
+
+    // Register Google Gemini
+    const gemini = new GeminiProvider(this._extensionContext);
+    this._providers.set(gemini.id, gemini);
+    console.log(`[Mysti] Registered provider: ${gemini.displayName}`);
   }
 
   /**

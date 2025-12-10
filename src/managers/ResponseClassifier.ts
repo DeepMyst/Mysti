@@ -96,6 +96,7 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
     {
       "id": "q1",
       "question": "The exact question being asked to the user",
+      "questionType": "clarifying",
       "inputType": "radio",
       "options": [
         {"id": "a", "label": "First option text", "value": "first_option"},
@@ -119,16 +120,36 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
 }
 
 Classification Rules:
-1. "questions" = Items asking for user INPUT/PREFERENCE with short choices (no implementation details)
-   - Use "radio" for single-choice questions
-   - Use "checkbox" for multi-select
-   - Use "text" for open-ended questions
+1. "questions" - Classify into two types using "questionType" field:
+
+   a) **clarifying** questions (questionType: "clarifying"):
+      - Ask for MISSING information, requirements, or preferences
+      - AI needs answers to GENERATE implementation plans
+      - Examples: "Which framework are you using?", "What's your database?", "REST or GraphQL?"
+      - These questions should be answered BEFORE plans can be generated
+
+   b) **meta** questions (questionType: "meta"):
+      - Ask for APPROVAL, SELECTION, or CONFIRMATION
+      - Implementation plans are ALREADY present in the same response
+      - Examples: "Would you like to proceed?", "Which approach do you prefer?", "Ready to implement?"
+      - These questions appear AFTER plans are shown
+
 2. "planOptions" = DETAILED implementation approaches with pros/cons/complexity
    - Must have substantial content (not just short labels)
    - Should discuss implementation, architecture, or technical approach
-3. If content has BOTH questions AND implementation plans, include both
-4. Return empty arrays [] if no questions or planOptions detected
-5. Do NOT classify simple statements or explanations as questions
+
+3. CRITICAL: If content has implementation plans AND asks for selection/approval:
+   - Mark the approval question as "meta" (questionType: "meta")
+   - Include BOTH questions AND planOptions arrays in the response
+
+4. Input types:
+   - Use "radio" for single-choice questions
+   - Use "checkbox" for multi-select
+   - Use "text" for open-ended questions
+
+5. Return empty arrays [] if no questions or planOptions detected
+
+6. Do NOT classify simple statements or explanations as questions
 
 Return ONLY the JSON object, nothing else.`;
 
@@ -221,7 +242,8 @@ Return ONLY the JSON object, nothing else.`;
           value: String(opt.value || opt.label || '')
         })),
         placeholder: q.placeholder,
-        required: q.required !== false
+        required: q.required !== false,
+        questionType: ['clarifying', 'meta'].includes(q.questionType) ? q.questionType : 'clarifying'
       }));
 
     // Validate and normalize plan options (removed approach length requirement)

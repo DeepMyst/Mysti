@@ -39,8 +39,9 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   const claudeLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'Claude.png')).toString();
   const openaiLogoLightUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openai.svg')).toString();
   const openaiLogoDarkUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openai_white.png')).toString();
+  const geminiLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'gemini.png.webp')).toString();
 
-  const script = getScript(mermaidUri.toString(), logoUri.toString(), iconUris, claudeLogoUri, openaiLogoLightUri, openaiLogoDarkUri, version);
+  const script = getScript(mermaidUri.toString(), logoUri.toString(), iconUris, claudeLogoUri, openaiLogoLightUri, openaiLogoDarkUri, geminiLogoUri, version);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -74,9 +75,14 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
             <!-- Populated dynamically -->
           </div>
         </div>
-        <button id="new-chat-btn" class="icon-btn" title="Open in new tab">
+        <button id="new-conversation-btn" class="icon-btn" title="New conversation">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M8 1a.5.5 0 0 1 .5.5v6h6a.5.5 0 0 1 0 1h-6v6a.5.5 0 0 1-1 0v-6h-6a.5.5 0 0 1 0-1h6v-6A.5.5 0 0 1 8 1z"/>
+          </svg>
+        </button>
+        <button id="new-tab-btn" class="icon-btn" title="Open in new tab">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zM10 .5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 16 1.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zM.5 10a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 14.5v-4a.5.5 0 0 1 .5-.5zm15 0a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z"/>
           </svg>
         </button>
       </div>
@@ -115,7 +121,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <option value="detailed-plan">Detailed Plan</option>
         </select>
       </div>
-      <div class="settings-section">
+      <div class="settings-section" id="thinking-section">
         <label class="settings-label">Thinking Level</label>
         <select id="thinking-select" class="select">
           <option value="none">None</option>
@@ -129,6 +135,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <select id="provider-select" class="select">
           <option value="claude-code">Claude Code</option>
           <option value="openai-codex">OpenAI Codex</option>
+          <option value="google-gemini">Gemini</option>
           <option value="brainstorm">Brainstorm</option>
         </select>
       </div>
@@ -144,6 +151,36 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <option value="ask-permission">Ask permission</option>
           <option value="full-access">Full access</option>
         </select>
+      </div>
+      <div class="settings-section hidden" id="brainstorm-agents-section">
+        <label class="settings-label">Brainstorm Agents</label>
+        <div class="settings-hint">Select 2 agents for brainstorm mode</div>
+        <div class="brainstorm-agent-selector">
+          <label class="brainstorm-agent-option" data-agent="claude-code">
+            <input type="checkbox" name="brainstorm-agent" value="claude-code" />
+            <span class="brainstorm-agent-chip">
+              <span class="brainstorm-agent-dot" style="background: #8B5CF6;"></span>
+              <span class="brainstorm-agent-name">Claude</span>
+            </span>
+          </label>
+          <label class="brainstorm-agent-option" data-agent="openai-codex">
+            <input type="checkbox" name="brainstorm-agent" value="openai-codex" />
+            <span class="brainstorm-agent-chip">
+              <span class="brainstorm-agent-dot" style="background: #10B981;"></span>
+              <span class="brainstorm-agent-name">Codex</span>
+            </span>
+          </label>
+          <label class="brainstorm-agent-option" data-agent="google-gemini">
+            <input type="checkbox" name="brainstorm-agent" value="google-gemini" />
+            <span class="brainstorm-agent-chip">
+              <span class="brainstorm-agent-dot" style="background: #4285F4;"></span>
+              <span class="brainstorm-agent-name">Gemini</span>
+            </span>
+          </label>
+        </div>
+        <div class="brainstorm-agent-error hidden" id="brainstorm-agent-error">
+          Please select exactly 2 agents
+        </div>
       </div>
       <div class="settings-divider"></div>
       <div class="settings-section-title">Agent Settings</div>
@@ -382,6 +419,10 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <span class="agent-item-icon"><img class="openai-logo" src="${openaiLogoDarkUri}" alt="" /></span>
         <span class="agent-item-name">OpenAI Codex</span>
       </div>
+      <div class="agent-menu-item" data-agent="google-gemini">
+        <span class="agent-item-icon"><img class="gemini-logo" src="${geminiLogoUri}" alt="" /></span>
+        <span class="agent-item-name">Gemini</span>
+      </div>
       <div class="agent-menu-divider"></div>
       <div class="agent-menu-item" data-agent="brainstorm">
         <span class="agent-item-icon"><img src="${logoUri}" alt="" /></span>
@@ -391,7 +432,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     </div>
   </div>
 
-  <!-- Setup Overlay -->
+  <!-- Setup Overlay (legacy - kept for backward compatibility) -->
   <div id="setup-overlay" class="setup-overlay hidden">
     <div class="setup-content">
       <div class="setup-progress">
@@ -409,6 +450,153 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <button class="setup-btn primary" onclick="postMessageWithPanelId({ type: 'retrySetup', payload: { providerId: state.setup.providerId } })">Retry</button>
           <button class="setup-btn secondary" onclick="postMessageWithPanelId({ type: 'skipSetup' })">Skip</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Setup Wizard (Enhanced Onboarding) -->
+  <div id="setup-wizard" class="setup-wizard hidden">
+    <div class="wizard-content">
+      <!-- Header -->
+      <div class="wizard-header">
+        <img src="${logoUri}" alt="Mysti" class="wizard-logo" />
+        <h2>Welcome to Mysti</h2>
+        <p class="wizard-subtitle">Set up an AI provider to get started</p>
+      </div>
+
+      <!-- Prerequisites Warning -->
+      <div id="wizard-prerequisites" class="wizard-prereq hidden">
+        <span class="prereq-icon">⚠️</span>
+        <div class="prereq-content">
+          <strong>Node.js Required</strong>
+          <p>npm is not available. Install Node.js to enable automatic CLI installation.</p>
+          <a href="https://nodejs.org" target="_blank" class="prereq-link">Download Node.js →</a>
+        </div>
+      </div>
+
+      <!-- Provider Cards -->
+      <div class="wizard-providers">
+        <!-- Claude Code -->
+        <div class="provider-card" data-provider="claude-code">
+          <div class="provider-card-header">
+            <img src="${claudeLogoUri}" alt="Claude" class="provider-logo" />
+            <div class="provider-info">
+              <h3>Claude Code</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Anthropic's Claude - powerful reasoning and code generation</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+
+        <!-- OpenAI Codex -->
+        <div class="provider-card" data-provider="openai-codex">
+          <div class="provider-card-header">
+            <img src="${openaiLogoDarkUri}" alt="OpenAI" class="provider-logo openai-logo" />
+            <div class="provider-info">
+              <h3>OpenAI Codex</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">OpenAI's Codex - ChatGPT-powered code assistant</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+
+        <!-- Google Gemini -->
+        <div class="provider-card" data-provider="google-gemini">
+          <div class="provider-card-header">
+            <img src="${geminiLogoUri}" alt="Gemini" class="provider-logo gemini-logo" />
+            <div class="provider-info">
+              <h3>Google Gemini</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Google's Gemini - multimodal AI with code capabilities</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Auth Options Modal (for Gemini) -->
+      <div id="auth-options-modal" class="auth-options-modal hidden">
+        <div class="auth-options-content">
+          <h3>Choose Authentication Method</h3>
+          <p id="auth-options-subtitle"></p>
+          <div id="auth-options-list" class="auth-options-list"></div>
+          <button class="auth-options-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="wizard-footer">
+        <button class="wizard-skip-btn" onclick="postMessageWithPanelId({ type: 'dismissWizard', payload: { dontShowAgain: false } })">Skip for now</button>
+        <p class="wizard-footer-hint">You can configure providers later in Settings</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Install Provider Modal (outside wizard so it's always accessible) -->
+  <div id="install-provider-modal" class="install-provider-modal hidden">
+    <div class="install-provider-content">
+      <div class="install-provider-header">
+        <img id="install-provider-icon" src="" alt="" />
+        <h3 id="install-provider-title">Install Provider</h3>
+      </div>
+      <p id="install-provider-desc">Install this provider to use it with Mysti.</p>
+
+      <div id="install-auto-section" class="install-section">
+        <button id="install-auto-btn" class="install-action-btn primary">
+          <span class="install-btn-icon">&#9889;</span>
+          Install Automatically
+        </button>
+        <p class="install-hint">Requires npm installed on your system</p>
+      </div>
+
+      <div id="install-progress-section" class="install-section hidden">
+        <div class="install-progress-bar">
+          <div id="install-progress-fill" class="install-progress-fill"></div>
+        </div>
+        <p id="install-progress-msg" class="install-progress-msg">Installing...</p>
+      </div>
+
+      <div class="install-section">
+        <h4>Manual Installation</h4>
+        <div class="install-command-box">
+          <code id="install-command-text"></code>
+          <button id="install-copy-btn" class="install-copy-btn" title="Copy command">&#128203;</button>
+        </div>
+      </div>
+
+      <div id="install-auth-section" class="install-section">
+        <h4>Authentication</h4>
+        <ul id="install-auth-steps" class="install-auth-list"></ul>
+      </div>
+
+      <div class="install-footer">
+        <a id="install-docs-link" href="#" class="install-docs-link" target="_blank">
+          &#128218; View Documentation
+        </a>
+        <button id="install-close-btn" class="install-close-btn">Close</button>
       </div>
     </div>
   </div>
@@ -750,6 +938,81 @@ function getStyles(): string {
     }
 
     #token-budget-section.hidden {
+      display: none;
+    }
+
+    /* Brainstorm Agent Selection */
+    .settings-hint {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 6px;
+    }
+
+    .brainstorm-agent-selector {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+
+    .brainstorm-agent-option {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .brainstorm-agent-option input[type="checkbox"] {
+      display: none;
+    }
+
+    .brainstorm-agent-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 16px;
+      border: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-input-background);
+      font-size: 12px;
+      transition: all 0.15s ease;
+    }
+
+    .brainstorm-agent-option:hover .brainstorm-agent-chip {
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .brainstorm-agent-option input:checked + .brainstorm-agent-chip {
+      background: color-mix(in srgb, var(--vscode-button-background) 20%, transparent);
+      border-color: var(--vscode-button-background);
+    }
+
+    .brainstorm-agent-option.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .brainstorm-agent-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .brainstorm-agent-name {
+      color: var(--vscode-foreground);
+    }
+
+    .brainstorm-agent-error {
+      color: var(--vscode-errorForeground);
+      font-size: 11px;
+      margin-top: 4px;
+    }
+
+    .brainstorm-agent-error.hidden {
+      display: none;
+    }
+
+    #brainstorm-agents-section.hidden {
       display: none;
     }
 
@@ -2096,6 +2359,46 @@ function getStyles(): string {
       color: var(--vscode-list-activeSelectionForeground);
     }
 
+    /* Disabled menu items - use color dimming instead of opacity */
+    .agent-menu-item.disabled {
+      cursor: default;
+    }
+
+    .agent-menu-item.disabled:hover {
+      background: transparent;
+    }
+
+    .agent-menu-item.disabled .agent-item-name,
+    .agent-menu-item.disabled .agent-item-icon {
+      opacity: 0.5;
+    }
+
+    .agent-menu-item.disabled .agent-item-badge {
+      background: var(--vscode-errorBackground, rgba(255, 0, 0, 0.1));
+      color: var(--vscode-errorForeground, #f87171);
+    }
+
+    /* Install button - inside menu item, always fully visible */
+    .agent-install-btn {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: none;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      cursor: pointer;
+      margin-left: auto;
+      opacity: 1 !important;
+    }
+
+    .agent-install-btn:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    select option:disabled {
+      color: var(--vscode-disabledForeground);
+    }
+
     .agent-item-icon {
       width: 16px;
       height: 16px;
@@ -2377,6 +2680,13 @@ function getStyles(): string {
 
     .brainstorm-agent-icon {
       font-size: 14px;
+    }
+
+    .brainstorm-agent-logo {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      object-fit: contain;
     }
 
     .brainstorm-agent-name {
@@ -4741,10 +5051,664 @@ function getStyles(): string {
     .setup-auth-prompt {
       text-align: center;
     }
+
+    /* ============================================
+       Setup Wizard Styles (Enhanced Onboarding)
+       ============================================ */
+
+    .setup-wizard {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--vscode-sideBar-background);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 20px;
+      overflow-y: auto;
+      z-index: 100000;
+    }
+
+    .setup-wizard.hidden {
+      display: none;
+    }
+
+    .wizard-content {
+      max-width: 500px;
+      width: 100%;
+    }
+
+    .wizard-header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .wizard-logo {
+      width: 64px;
+      height: 64px;
+      margin-bottom: 12px;
+    }
+
+    .wizard-header h2 {
+      font-size: 20px;
+      font-weight: 600;
+      margin: 0 0 8px 0;
+      color: var(--vscode-foreground);
+    }
+
+    .wizard-subtitle {
+      color: var(--vscode-descriptionForeground);
+      font-size: 13px;
+      margin: 0;
+    }
+
+    /* Prerequisites Warning */
+    .wizard-prereq {
+      display: flex;
+      gap: 12px;
+      padding: 12px 16px;
+      background: rgba(255, 165, 0, 0.1);
+      border: 1px solid rgba(255, 165, 0, 0.3);
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+
+    .wizard-prereq.hidden {
+      display: none;
+    }
+
+    .prereq-icon {
+      font-size: 24px;
+      flex-shrink: 0;
+    }
+
+    .prereq-content {
+      flex: 1;
+    }
+
+    .prereq-content strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--vscode-foreground);
+    }
+
+    .prereq-content p {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      margin: 0 0 8px 0;
+    }
+
+    .prereq-link {
+      color: var(--vscode-textLink-foreground);
+      text-decoration: none;
+      font-size: 12px;
+    }
+
+    .prereq-link:hover {
+      text-decoration: underline;
+    }
+
+    /* Provider Cards */
+    .wizard-providers {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .provider-card {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      padding: 16px;
+      transition: all 0.2s ease;
+    }
+
+    .provider-card:hover {
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .provider-card.ready {
+      border-color: var(--vscode-charts-green, #22c55e);
+    }
+
+    .provider-card.error {
+      border-color: var(--vscode-editorError-foreground, #f85149);
+    }
+
+    .provider-card-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .provider-logo {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      object-fit: contain;
+    }
+
+    .provider-logo.gemini-logo {
+      width: 28px;
+      height: 28px;
+    }
+
+    .provider-info {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .provider-info h3 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+
+    .provider-status {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      text-transform: uppercase;
+      font-weight: 500;
+    }
+
+    .provider-status[data-status="unknown"] {
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+    }
+
+    .provider-status[data-status="not-installed"] {
+      background: rgba(255, 165, 0, 0.2);
+      color: #f59e0b;
+    }
+
+    .provider-status[data-status="installing"],
+    .provider-status[data-status="downloading"],
+    .provider-status[data-status="verifying"] {
+      background: rgba(59, 130, 246, 0.2);
+      color: #3b82f6;
+    }
+
+    .provider-status[data-status="not-authenticated"],
+    .provider-status[data-status="authenticating"] {
+      background: rgba(234, 179, 8, 0.2);
+      color: #eab308;
+    }
+
+    .provider-status[data-status="ready"],
+    .provider-status[data-status="complete"] {
+      background: rgba(34, 197, 94, 0.2);
+      color: var(--vscode-charts-green, #22c55e);
+    }
+
+    .provider-status[data-status="error"],
+    .provider-status[data-status="failed"] {
+      background: rgba(248, 81, 73, 0.2);
+      color: var(--vscode-editorError-foreground, #f85149);
+    }
+
+    .provider-desc {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      margin: 0 0 12px 0;
+    }
+
+    .provider-steps {
+      margin: 12px 0;
+      padding: 12px;
+      background: var(--vscode-textBlockQuote-background);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+
+    .provider-steps.hidden {
+      display: none;
+    }
+
+    .provider-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin-bottom: 8px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .provider-step:last-child {
+      margin-bottom: 0;
+    }
+
+    .step-number {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      font-size: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .step-number.completed {
+      background: var(--vscode-charts-green, #22c55e);
+    }
+
+    /* Provider Progress */
+    .provider-progress {
+      margin: 12px 0;
+    }
+
+    .provider-progress.hidden {
+      display: none;
+    }
+
+    .provider-progress .progress-track {
+      height: 4px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+
+    .provider-progress .progress-bar {
+      height: 100%;
+      background: var(--vscode-progressBar-background, #0078d4);
+      transition: width 0.3s ease;
+    }
+
+    .provider-progress .progress-msg {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    /* Provider Actions */
+    .provider-card-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .provider-action-btn {
+      flex: 1;
+      padding: 8px 16px;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    .provider-action-btn.primary {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+
+    .provider-action-btn.primary:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    .provider-action-btn.secondary {
+      background: transparent;
+      color: var(--vscode-foreground);
+      border: 1px solid var(--vscode-input-border);
+    }
+
+    .provider-action-btn.secondary:hover:not(:disabled) {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .provider-action-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .provider-action-btn.success {
+      background: var(--vscode-charts-green, #22c55e);
+      color: white;
+    }
+
+    /* Auth Options Modal */
+    .auth-options-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100001;
+    }
+
+    .auth-options-modal.hidden {
+      display: none;
+    }
+
+    .auth-options-content {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      padding: 20px;
+      max-width: 400px;
+      width: 90%;
+    }
+
+    .auth-options-content h3 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+
+    .auth-options-content > p {
+      margin: 0 0 16px 0;
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .auth-options-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .auth-option {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .auth-option:hover {
+      border-color: var(--vscode-focusBorder);
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .auth-option-icon {
+      font-size: 20px;
+      flex-shrink: 0;
+    }
+
+    .auth-option-content {
+      flex: 1;
+    }
+
+    .auth-option-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--vscode-foreground);
+      margin-bottom: 2px;
+    }
+
+    .auth-option-desc {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .auth-options-cancel {
+      width: 100%;
+      padding: 8px;
+      background: transparent;
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 4px;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .auth-options-cancel:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    /* Install Provider Modal */
+    .install-provider-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100002;
+    }
+
+    .install-provider-modal.hidden {
+      display: none;
+    }
+
+    .install-provider-content {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 8px;
+      padding: 20px;
+      max-width: 420px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    .install-provider-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .install-provider-header img {
+      width: 32px;
+      height: 32px;
+    }
+
+    .install-provider-header h3 {
+      margin: 0;
+      font-size: 16px;
+      color: var(--vscode-foreground);
+    }
+
+    #install-provider-desc {
+      margin: 0 0 12px 0;
+      font-size: 13px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .install-section {
+      margin: 16px 0;
+      padding-top: 12px;
+      border-top: 1px solid var(--vscode-widget-border);
+    }
+
+    .install-section:first-of-type {
+      border-top: none;
+      margin-top: 0;
+      padding-top: 0;
+    }
+
+    .install-section h4 {
+      margin: 0 0 8px 0;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .install-action-btn {
+      width: 100%;
+      padding: 10px 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .install-action-btn.primary {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+
+    .install-action-btn.primary:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    .install-action-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .install-hint {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      text-align: center;
+      margin-top: 6px;
+    }
+
+    .install-command-box {
+      display: flex;
+      align-items: center;
+      background: var(--vscode-textCodeBlock-background);
+      border-radius: 4px;
+      padding: 8px 12px;
+      gap: 8px;
+    }
+
+    .install-command-box code {
+      flex: 1;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 12px;
+      word-break: break-all;
+      color: var(--vscode-foreground);
+    }
+
+    .install-copy-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      opacity: 0.7;
+      font-size: 14px;
+    }
+
+    .install-copy-btn:hover {
+      opacity: 1;
+    }
+
+    .install-auth-list {
+      margin: 0;
+      padding-left: 20px;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--vscode-foreground);
+    }
+
+    .install-auth-list li {
+      margin-bottom: 4px;
+    }
+
+    .install-progress-bar {
+      height: 4px;
+      background: var(--vscode-progressBar-background);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .install-progress-fill {
+      height: 100%;
+      background: var(--vscode-button-background);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    .install-progress-msg {
+      font-size: 12px;
+      text-align: center;
+      margin-top: 8px;
+      color: var(--vscode-foreground);
+    }
+
+    .install-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--vscode-widget-border);
+    }
+
+    .install-docs-link {
+      color: var(--vscode-textLink-foreground);
+      text-decoration: none;
+      font-size: 13px;
+    }
+
+    .install-docs-link:hover {
+      text-decoration: underline;
+    }
+
+    .install-close-btn {
+      padding: 6px 16px;
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .install-close-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+
+
+    /* Wizard Footer */
+    .wizard-footer {
+      text-align: center;
+      padding-top: 16px;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+
+    .wizard-skip-btn {
+      background: transparent;
+      border: none;
+      color: var(--vscode-textLink-foreground);
+      cursor: pointer;
+      font-size: 13px;
+      padding: 8px 16px;
+    }
+
+    .wizard-skip-btn:hover {
+      text-decoration: underline;
+    }
+
+    .wizard-footer-hint {
+      margin: 8px 0 0 0;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
   `;
 }
 
-function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string, string>, claudeLogoUri: string, openaiLogoLightUri: string, openaiLogoDarkUri: string, version: string): string {
+function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string, string>, claudeLogoUri: string, openaiLogoLightUri: string, openaiLogoDarkUri: string, geminiLogoUri: string, version: string): string {
   return `
     (function() {
       const vscode = acquireVsCodeApi();
@@ -4755,6 +5719,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var CLAUDE_LOGO = '${claudeLogoUri}';
       var OPENAI_LOGO_LIGHT = '${openaiLogoLightUri}';
       var OPENAI_LOGO_DARK = '${openaiLogoDarkUri}';
+      var GEMINI_LOGO = '${geminiLogoUri}';
       var MYSTI_LOGO = '${logoUri}';
 
       // Theme detection for OpenAI logo
@@ -5036,7 +6001,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           tokenLimitEnabled: false,
           maxTokenBudget: 0
         },
-        // Setup state
+        // Brainstorm agent selection (which 2 of 3 agents to use)
+        brainstormAgents: ['claude-code', 'openai-codex'],
+        // Provider availability for brainstorm section
+        providerAvailability: {},
+        // Setup state (legacy)
         setup: {
           isChecking: true,
           isReady: false,
@@ -5047,8 +6016,38 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           error: null,
           npmAvailable: true,
           providers: []
+        },
+        // Setup wizard state (enhanced onboarding)
+        wizard: {
+          visible: false,
+          providers: [],
+          npmAvailable: true,
+          nodeVersion: null,
+          anyReady: false,
+          activeSetup: null,
+          currentAuthProviderId: null
         }
       };
+
+      // Agent display configuration for brainstorm UI
+      var AGENT_DISPLAY = {
+        'claude-code': { name: 'Claude', shortId: 'claude', color: '#8B5CF6', logo: CLAUDE_LOGO },
+        'openai-codex': { name: 'Codex', shortId: 'codex', color: '#10B981', logo: null }, // Uses getOpenAILogo() for theme support
+        'google-gemini': { name: 'Gemini', shortId: 'gemini', color: '#4285F4', logo: GEMINI_LOGO }
+      };
+
+      // Helper to get agent logo (handles OpenAI theme switching)
+      function getAgentLogo(agentId) {
+        if (agentId === 'openai-codex') {
+          return getOpenAILogo();
+        }
+        return AGENT_DISPLAY[agentId] ? AGENT_DISPLAY[agentId].logo : '';
+      }
+
+      // Helper to get short ID for an agent
+      function getAgentShortId(agentId) {
+        return AGENT_DISPLAY[agentId] ? AGENT_DISPLAY[agentId].shortId : agentId;
+      }
 
       // Helper to send messages with panelId
       function postMessageWithPanelId(msg) {
@@ -5095,7 +6094,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       const settingsPanel = document.getElementById('settings-panel');
       const aboutBtn = document.getElementById('about-btn');
       const aboutPanel = document.getElementById('about-panel');
-      const newChatBtn = document.getElementById('new-chat-btn');
+      const newConversationBtn = document.getElementById('new-conversation-btn');
+      const newTabBtn = document.getElementById('new-tab-btn');
       const modeSelect = document.getElementById('mode-select');
       const thinkingSelect = document.getElementById('thinking-select');
       const modelSelect = document.getElementById('model-select');
@@ -5972,7 +6972,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         });
       }
 
-      newChatBtn.addEventListener('click', function() {
+      newConversationBtn.addEventListener('click', function() {
+        postMessageWithPanelId({ type: 'newConversation' });
+      });
+
+      newTabBtn.addEventListener('click', function() {
         postMessageWithPanelId({ type: 'openInNewTab' });
       });
 
@@ -5993,6 +6997,30 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           historyMenu.classList.add('hidden');
         }
       });
+
+      // CAPTURE PHASE handler for Install buttons - runs before bubbling
+      // This ensures clicks work even on buttons inside disabled items
+      document.addEventListener('click', function(e) {
+        var installBtn = e.target.closest('.agent-install-btn');
+        if (installBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          var agentId = installBtn.dataset.agent;
+          console.log('[Mysti Webview] CAPTURE: Install button clicked for:', agentId);
+          if (agentId) {
+            try {
+              console.log('[Mysti Webview] Calling showInstallProviderModal...');
+              showInstallProviderModal(agentId);
+              console.log('[Mysti Webview] showInstallProviderModal called successfully');
+            } catch (err) {
+              console.error('[Mysti Webview] ERROR in showInstallProviderModal:', err);
+            }
+          } else {
+            console.log('[Mysti Webview] No agentId found on button');
+          }
+        }
+      }, true); // true = capture phase
 
       // Render history menu items
       function renderHistoryMenu(conversations, currentId) {
@@ -6104,6 +7132,112 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         });
       }
 
+      // Brainstorm agent selection handlers
+      var brainstormAgentSection = document.getElementById('brainstorm-agents-section');
+      var brainstormAgentCheckboxes = document.querySelectorAll('input[name="brainstorm-agent"]');
+      var brainstormAgentError = document.getElementById('brainstorm-agent-error');
+
+      function updateBrainstormAgentSelection() {
+        var selected = [];
+        brainstormAgentCheckboxes.forEach(function(cb) {
+          if (cb.checked) {
+            selected.push(cb.value);
+          }
+        });
+
+        // Validate: exactly 2 must be selected
+        if (selected.length === 2) {
+          brainstormAgentError.classList.add('hidden');
+          state.brainstormAgents = selected;
+          // Persist to settings
+          postMessageWithPanelId({
+            type: 'updateSettings',
+            payload: { 'brainstorm.agents': selected }
+          });
+        } else {
+          brainstormAgentError.classList.remove('hidden');
+        }
+
+        // Disable unchecked options if 2 are already selected
+        brainstormAgentCheckboxes.forEach(function(cb) {
+          var option = cb.closest('.brainstorm-agent-option');
+          if (selected.length >= 2 && !cb.checked) {
+            option.classList.add('disabled');
+          } else {
+            option.classList.remove('disabled');
+          }
+        });
+      }
+
+      brainstormAgentCheckboxes.forEach(function(cb) {
+        cb.addEventListener('change', updateBrainstormAgentSelection);
+      });
+
+      // Function to show/hide brainstorm section based on provider availability
+      function updateBrainstormSectionVisibility() {
+        if (!brainstormAgentSection) return;
+
+        var providerAvailability = state.providerAvailability || {};
+
+        // Count available providers
+        var availableCount = 0;
+        ['claude-code', 'openai-codex', 'google-gemini'].forEach(function(providerId) {
+          if (providerAvailability[providerId] &&
+              providerAvailability[providerId].available) {
+            availableCount++;
+          }
+        });
+
+        // Show section only if 2+ providers are available
+        if (availableCount >= 2) {
+          brainstormAgentSection.classList.remove('hidden');
+
+          // Disable unavailable provider checkboxes
+          brainstormAgentCheckboxes.forEach(function(cb) {
+            var providerId = cb.value;
+            var option = cb.closest('.brainstorm-agent-option');
+            if (providerAvailability[providerId] &&
+                !providerAvailability[providerId].available) {
+              option.classList.add('disabled');
+              cb.disabled = true;
+              // If this was selected, uncheck and revalidate
+              if (cb.checked) {
+                cb.checked = false;
+                updateBrainstormAgentSelection();
+              }
+            } else {
+              cb.disabled = false;
+            }
+          });
+        } else {
+          brainstormAgentSection.classList.add('hidden');
+        }
+      }
+
+      // Function to sync brainstorm agents UI from state
+      function updateBrainstormAgentsUI() {
+        if (!state.brainstormAgents) return;
+
+        brainstormAgentCheckboxes.forEach(function(cb) {
+          cb.checked = state.brainstormAgents.includes(cb.value);
+        });
+
+        // Re-apply disabled states
+        var selected = state.brainstormAgents.length;
+        brainstormAgentCheckboxes.forEach(function(cb) {
+          var option = cb.closest('.brainstorm-agent-option');
+          if (selected >= 2 && !cb.checked) {
+            option.classList.add('disabled');
+          } else {
+            option.classList.remove('disabled');
+          }
+        });
+
+        if (brainstormAgentError) {
+          brainstormAgentError.classList.add('hidden');
+        }
+      }
+
       providerSelect.addEventListener('change', function() {
         var newProvider = providerSelect.value;
 
@@ -6117,9 +7251,21 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           updateModelsForProvider(newProvider);
         }
 
+        // Hide thinking section for Gemini (doesn't support thinking tokens)
+        updateThinkingSectionVisibility(newProvider);
+
         // Notify backend of provider change
         postMessageWithPanelId({ type: 'updateSettings', payload: { provider: newProvider } });
       });
+
+      // Function to show/hide thinking section based on provider
+      function updateThinkingSectionVisibility(provider) {
+        var thinkingSection = document.getElementById('thinking-section');
+        if (thinkingSection) {
+          // Gemini doesn't support thinking tokens, hide the section
+          thinkingSection.style.display = (provider === 'google-gemini') ? 'none' : 'block';
+        }
+      }
 
       if (contextModeBtn && contextModeLabel) {
         contextModeBtn.addEventListener('click', function() {
@@ -6184,30 +7330,50 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           if (slashMenu) slashMenu.classList.add('hidden');
         });
 
-        // Agent menu item clicks
-        document.querySelectorAll('.agent-menu-item').forEach(function(item) {
-          item.addEventListener('click', function() {
-            var agent = item.dataset.agent;
-            if (agent) {
-              // Update state for all agent types including brainstorm
-              state.activeAgent = agent;
-              state.settings.provider = agent;
-
-              // Sync settings dropdown
-              if (providerSelect) providerSelect.value = agent;
-
-              if (agent !== 'brainstorm') {
-                // Update models for the new provider (brainstorm doesn't have its own models)
-                updateModelsForProvider(agent);
-              }
-
-              updateAgentMenuSelection();
-              agentMenu.classList.add('hidden');
-
-              // Notify backend of provider change
-              postMessageWithPanelId({ type: 'updateSettings', payload: { provider: agent } });
+        // Agent menu clicks with event delegation
+        agentMenu.addEventListener('click', function(e) {
+          // FIRST: Check if Install button was clicked (highest priority)
+          var installBtn = e.target.closest('.agent-install-btn');
+          if (installBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            var agentId = installBtn.dataset.agent;
+            console.log('[Mysti Webview] Install button clicked via delegation for:', agentId);
+            if (agentId) {
+              showInstallProviderModal(agentId);
             }
-          });
+            return;
+          }
+
+          // SECOND: Check if a menu item was clicked
+          var menuItem = e.target.closest('.agent-menu-item');
+          if (!menuItem) return; // Click was on header/divider/etc
+
+          // Skip disabled items
+          if (menuItem.classList.contains('disabled')) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+
+          // Handle normal agent selection
+          var agent = menuItem.dataset.agent;
+          if (agent) {
+            state.activeAgent = agent;
+            state.settings.provider = agent;
+
+            if (providerSelect) providerSelect.value = agent;
+
+            if (agent !== 'brainstorm') {
+              updateModelsForProvider(agent);
+            }
+
+            updateThinkingSectionVisibility(agent);
+            updateAgentMenuSelection();
+            agentMenu.classList.add('hidden');
+
+            postMessageWithPanelId({ type: 'updateSettings', payload: { provider: agent } });
+          }
         });
       }
 
@@ -6256,15 +7422,24 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var agentNameEl = document.getElementById('agent-name');
         var agentIconEl = document.getElementById('agent-icon');
         if (agentNameEl) {
-          var agentName = state.activeAgent === 'claude-code' ? 'Claude' :
-                         state.activeAgent === 'brainstorm' ? 'Brainstorm' : 'Codex';
-          agentNameEl.textContent = agentName;
+          var agentNames = {
+            'claude-code': 'Claude',
+            'openai-codex': 'Codex',
+            'google-gemini': 'Gemini',
+            'brainstorm': 'Brainstorm'
+          };
+          agentNameEl.textContent = agentNames[state.activeAgent] || 'Claude';
         }
         if (agentIconEl) {
           var img = agentIconEl.querySelector('img');
           if (img) {
-            img.src = state.activeAgent === 'claude-code' ? CLAUDE_LOGO :
-                      state.activeAgent === 'brainstorm' ? MYSTI_LOGO : getOpenAILogo();
+            var agentLogos = {
+              'claude-code': CLAUDE_LOGO,
+              'openai-codex': getOpenAILogo(),
+              'google-gemini': GEMINI_LOGO,
+              'brainstorm': MYSTI_LOGO
+            };
+            img.src = agentLogos[state.activeAgent] || CLAUDE_LOGO;
           }
         }
         // Sync settings provider dropdown (only for actual providers, not brainstorm)
@@ -6287,6 +7462,157 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             if (img) img.src = logo;
           }
         }
+      }
+
+      /**
+       * Update provider availability in the UI
+       * - Disables unavailable providers in dropdowns and agent menu
+       * - Auto-selects first available provider if current is unavailable
+       * - Handles brainstorm availability (requires 2+ providers)
+       */
+      function updateProviderAvailability() {
+        if (!state.providerAvailability) return;
+
+        var availability = state.providerAvailability;
+
+        // Count available providers
+        var availableCount = 0;
+        var firstAvailable = null;
+        ['claude-code', 'openai-codex', 'google-gemini'].forEach(function(providerId) {
+          if (availability[providerId] && availability[providerId].available) {
+            availableCount++;
+            if (!firstAvailable) firstAvailable = providerId;
+          }
+        });
+
+        // Update provider dropdown options
+        if (providerSelect) {
+          Array.from(providerSelect.options).forEach(function(option) {
+            var providerId = option.value;
+            if (providerId === 'brainstorm') {
+              // Brainstorm requires 2+ available providers
+              if (availableCount < 2) {
+                option.disabled = true;
+                option.textContent = 'Brainstorm (requires 2+ providers)';
+              } else {
+                option.disabled = false;
+                option.textContent = 'Brainstorm';
+              }
+            } else if (availability[providerId]) {
+              if (!availability[providerId].available) {
+                option.disabled = true;
+                option.textContent = option.textContent.replace(' (not installed)', '') + ' (not installed)';
+              } else {
+                option.disabled = false;
+                option.textContent = option.textContent.replace(' (not installed)', '');
+              }
+            }
+          });
+        }
+
+        // Update agent menu items
+        document.querySelectorAll('.agent-menu-item[data-agent]').forEach(function(item) {
+          var agentId = item.dataset.agent;
+
+          if (agentId === 'brainstorm') {
+            // Brainstorm requires 2+ available providers
+            if (availableCount < 2) {
+              item.classList.add('disabled');
+              item.title = 'Requires 2+ installed providers';
+              // Add disabled badge
+              var existingBadge = item.querySelector('.agent-item-badge');
+              if (!existingBadge || existingBadge.textContent === 'Active') {
+                var badge = existingBadge || document.createElement('span');
+                badge.className = 'agent-item-badge';
+                badge.textContent = 'Requires 2+';
+                if (!existingBadge) item.appendChild(badge);
+              }
+            } else {
+              item.classList.remove('disabled');
+              item.title = '';
+              // Remove disabled badge if not active
+              var badge = item.querySelector('.agent-item-badge');
+              if (badge && badge.textContent === 'Requires 2+') {
+                badge.remove();
+              }
+            }
+          } else if (availability[agentId]) {
+            if (!availability[agentId].available) {
+              item.classList.add('disabled');
+              item.dataset.installCommand = availability[agentId].installCommand || '';
+              item.title = 'Not installed - click Install to set up';
+
+              // Add or update "Not Installed" badge inside the item
+              var badge = item.querySelector('.agent-item-badge');
+              if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'agent-item-badge';
+                item.appendChild(badge);
+              }
+              badge.textContent = 'Not Installed';
+
+              // Add Install button inside the menu item (CSS handles pointer-events)
+              var installBtn = item.querySelector('.agent-install-btn');
+              if (!installBtn) {
+                installBtn = document.createElement('button');
+                installBtn.className = 'agent-install-btn';
+                installBtn.dataset.agent = agentId;
+                installBtn.textContent = 'Install';
+                installBtn.addEventListener('click', function(e) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  console.log('[Mysti Webview] Install button clicked for:', agentId);
+                  showInstallProviderModal(agentId);
+                });
+                item.appendChild(installBtn);
+              }
+            } else {
+              item.classList.remove('disabled');
+              item.title = '';
+              delete item.dataset.installCommand;
+              // Remove "Not Installed" badge
+              var badge = item.querySelector('.agent-item-badge');
+              if (badge && badge.textContent === 'Not Installed') {
+                badge.remove();
+              }
+              // Remove Install button
+              var installBtn = item.querySelector('.agent-install-btn');
+              if (installBtn) {
+                installBtn.remove();
+              }
+            }
+          }
+        });
+
+        // Auto-select first available provider if current is unavailable
+        var currentProvider = state.settings.provider;
+        if (currentProvider && currentProvider !== 'brainstorm') {
+          if (availability[currentProvider] && !availability[currentProvider].available) {
+            if (firstAvailable) {
+              console.log('[Mysti Webview] Current provider unavailable, switching to:', firstAvailable);
+              state.settings.provider = firstAvailable;
+              state.activeAgent = firstAvailable;
+              if (providerSelect) providerSelect.value = firstAvailable;
+              updateAgentMenuSelection();
+              updateModelsForProvider(firstAvailable);
+              postMessageWithPanelId({ type: 'updateSettings', payload: { provider: firstAvailable } });
+            }
+          }
+        } else if (currentProvider === 'brainstorm' && availableCount < 2) {
+          // Brainstorm selected but not enough providers
+          if (firstAvailable) {
+            console.log('[Mysti Webview] Brainstorm unavailable (need 2+ providers), switching to:', firstAvailable);
+            state.settings.provider = firstAvailable;
+            state.activeAgent = firstAvailable;
+            if (providerSelect) providerSelect.value = firstAvailable;
+            updateAgentMenuSelection();
+            updateModelsForProvider(firstAvailable);
+            postMessageWithPanelId({ type: 'updateSettings', payload: { provider: firstAvailable } });
+          }
+        }
+
+        // Update brainstorm agent section visibility
+        updateBrainstormSectionVisibility();
       }
 
       // Watch for theme changes
@@ -6404,6 +7730,26 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               suggestionsContainer.classList.remove('loading');
               suggestionsContainer.innerHTML = '';
             }
+            break;
+          case 'clearSuggestions':
+            // Clear suggestions when user interacts with questions/plans
+            var suggestionsContainer = document.getElementById('quick-actions');
+            if (suggestionsContainer) {
+              suggestionsContainer.classList.remove('loading');
+              suggestionsContainer.innerHTML = '';
+            }
+            break;
+          case 'clearPlanOptions':
+            // Clear plan options and questions when exiting plan mode
+            var planOptionsContainers = document.querySelectorAll('.plan-options-container');
+            planOptionsContainers.forEach(function(container) {
+              container.remove();
+            });
+            var questionsContainers = document.querySelectorAll('.questions-container');
+            questionsContainers.forEach(function(container) {
+              container.remove();
+            });
+            console.log('[Mysti] Cleared all plan options and questions from UI');
             break;
           case 'autocompleteSuggestion':
             if (message.payload && message.payload.suggestion) {
@@ -6593,11 +7939,33 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           case 'authPrompt':
             handleAuthPrompt(message.payload);
             break;
+          // Setup Wizard handlers (enhanced onboarding)
+          case 'showWizard':
+            handleShowWizard(message.payload);
+            break;
+          case 'wizardStatus':
+            handleWizardStatus(message.payload);
+            break;
+          case 'providerSetupStep':
+            handleProviderSetupStep(message.payload);
+            break;
+          case 'authOptions':
+            handleAuthOptions(message.payload);
+            break;
+          case 'providerInstallInfo':
+            handleProviderInstallInfo(message.payload);
+            break;
+          case 'wizardComplete':
+            handleWizardComplete(message.payload);
+            break;
+          case 'wizardDismissed':
+            handleWizardDismissed();
+            break;
         }
       }
 
       // ========================================
-      // Setup Flow Handlers
+      // Setup Flow Handlers (Legacy)
       // ========================================
 
       function handleSetupStatus(payload) {
@@ -6735,6 +8103,499 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       }
 
       // ========================================
+      // Setup Wizard Handlers (Enhanced Onboarding)
+      // ========================================
+
+      function handleShowWizard(payload) {
+        state.wizard.visible = true;
+        state.wizard.providers = payload.providers || [];
+        state.wizard.npmAvailable = payload.npmAvailable;
+        state.wizard.nodeVersion = payload.nodeVersion;
+        state.wizard.anyReady = payload.anyReady;
+
+        renderWizard();
+        initWizardEventListeners();
+      }
+
+      function handleWizardStatus(payload) {
+        state.wizard.providers = payload.providers || [];
+        state.wizard.npmAvailable = payload.npmAvailable;
+        state.wizard.anyReady = payload.anyReady;
+
+        if (state.wizard.visible) {
+          updateWizardProviderCards();
+        }
+      }
+
+      function handleProviderSetupStep(payload) {
+        // Update provider in state
+        var provider = state.wizard.providers.find(function(p) {
+          return p.providerId === payload.providerId;
+        });
+
+        if (provider) {
+          provider.setupStep = payload.step;
+          provider.setupProgress = payload.progress;
+          provider.setupMessage = payload.message;
+          provider.setupDetails = payload.details;
+
+          if (payload.step === 'complete') {
+            provider.installed = true;
+            provider.authenticated = true;
+          } else if (payload.step === 'failed') {
+            provider.lastError = payload.message;
+          }
+        }
+
+        updateWizardProviderCard(payload.providerId);
+
+        // Also update install modal if it's open for this provider
+        if (currentInstallProviderId === payload.providerId) {
+          updateInstallProgress(payload);
+        }
+      }
+
+      function handleAuthOptions(payload) {
+        state.wizard.currentAuthProviderId = payload.providerId;
+        showAuthOptionsModal(payload);
+      }
+
+      function handleWizardComplete(payload) {
+        hideWizard();
+        // Main UI will be shown via initialState
+      }
+
+      function handleWizardDismissed() {
+        hideWizard();
+        // Main UI will be shown via initialState
+      }
+
+      function renderWizard() {
+        var wizard = document.getElementById('setup-wizard');
+        if (!wizard) return;
+
+        wizard.classList.remove('hidden');
+
+        // Show/hide prerequisites warning
+        var prereqSection = document.getElementById('wizard-prerequisites');
+        if (prereqSection) {
+          if (state.wizard.npmAvailable) {
+            prereqSection.classList.add('hidden');
+          } else {
+            prereqSection.classList.remove('hidden');
+          }
+        }
+
+        // Update provider cards
+        updateWizardProviderCards();
+      }
+
+      function updateWizardProviderCards() {
+        state.wizard.providers.forEach(function(provider) {
+          updateWizardProviderCard(provider.providerId);
+        });
+      }
+
+      function updateWizardProviderCard(providerId) {
+        var card = document.querySelector('.provider-card[data-provider="' + providerId + '"]');
+        if (!card) return;
+
+        var provider = state.wizard.providers.find(function(p) {
+          return p.providerId === providerId;
+        });
+        if (!provider) return;
+
+        // Determine status
+        var status = getWizardProviderStatus(provider);
+
+        // Update status badge
+        var statusBadge = card.querySelector('.provider-status');
+        if (statusBadge) {
+          statusBadge.setAttribute('data-status', status);
+          statusBadge.textContent = getWizardStatusText(status);
+        }
+
+        // Update card class
+        card.classList.remove('ready', 'error');
+        if (status === 'ready' || status === 'complete') {
+          card.classList.add('ready');
+        } else if (status === 'error' || status === 'failed') {
+          card.classList.add('error');
+        }
+
+        // Update progress section
+        var progressSection = card.querySelector('.provider-progress');
+        if (progressSection) {
+          var showProgress = ['installing', 'downloading', 'verifying', 'authenticating', 'checking'].indexOf(status) !== -1;
+          if (showProgress) {
+            progressSection.classList.remove('hidden');
+            var progressBar = progressSection.querySelector('.progress-bar');
+            if (progressBar) {
+              progressBar.style.width = (provider.setupProgress || 0) + '%';
+            }
+            var progressMsg = progressSection.querySelector('.progress-msg');
+            if (progressMsg) {
+              progressMsg.textContent = provider.setupMessage || 'Working...';
+            }
+          } else {
+            progressSection.classList.add('hidden');
+          }
+        }
+
+        // Update action button
+        var actionBtn = card.querySelector('.provider-action-btn');
+        if (actionBtn) {
+          updateWizardActionButton(actionBtn, provider, status);
+        }
+      }
+
+      function getWizardProviderStatus(provider) {
+        if (provider.setupStep === 'failed') return 'failed';
+        if (provider.setupStep && provider.setupStep !== 'complete') return provider.setupStep;
+        if (provider.installed && provider.authenticated) return 'ready';
+        if (provider.installed && !provider.authenticated) return 'not-authenticated';
+        return 'not-installed';
+      }
+
+      function getWizardStatusText(status) {
+        var texts = {
+          'unknown': 'Checking...',
+          'not-installed': 'Not Installed',
+          'checking': 'Checking...',
+          'downloading': 'Downloading...',
+          'installing': 'Installing...',
+          'verifying': 'Verifying...',
+          'not-authenticated': 'Not Signed In',
+          'authenticating': 'Authenticating...',
+          'ready': 'Ready',
+          'complete': 'Ready',
+          'error': 'Error',
+          'failed': 'Failed'
+        };
+        return texts[status] || status;
+      }
+
+      function updateWizardActionButton(btn, provider, status) {
+        var configs = {
+          'not-installed': { text: 'Install', action: 'install', disabled: false, primary: true },
+          'checking': { text: 'Checking...', action: null, disabled: true, primary: false },
+          'downloading': { text: 'Downloading...', action: null, disabled: true, primary: false },
+          'installing': { text: 'Installing...', action: null, disabled: true, primary: false },
+          'verifying': { text: 'Verifying...', action: null, disabled: true, primary: false },
+          'not-authenticated': { text: 'Sign In', action: 'auth', disabled: false, primary: true },
+          'authenticating': { text: 'Waiting...', action: null, disabled: true, primary: false },
+          'ready': { text: 'Use This', action: 'select', disabled: false, primary: true, success: true },
+          'complete': { text: 'Use This', action: 'select', disabled: false, primary: true, success: true },
+          'error': { text: 'Retry', action: 'retry', disabled: false, primary: false },
+          'failed': { text: 'Retry', action: 'retry', disabled: false, primary: false }
+        };
+
+        var config = configs[status] || configs['not-installed'];
+
+        btn.textContent = config.text;
+        btn.disabled = config.disabled;
+        btn.setAttribute('data-action', config.action || '');
+        btn.setAttribute('data-provider', provider.providerId);
+
+        btn.classList.remove('primary', 'secondary', 'success');
+        if (config.success) {
+          btn.classList.add('success');
+        } else if (config.primary) {
+          btn.classList.add('primary');
+        } else {
+          btn.classList.add('secondary');
+        }
+      }
+
+      function initWizardEventListeners() {
+        // Provider card action buttons
+        var actionBtns = document.querySelectorAll('.provider-card .provider-action-btn');
+        console.log('[Mysti Webview] initWizardEventListeners: found', actionBtns.length, 'action buttons');
+        actionBtns.forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            var action = btn.getAttribute('data-action');
+            var card = btn.closest('.provider-card');
+            var providerId = card ? card.getAttribute('data-provider') : null;
+            console.log('[Mysti Webview] Wizard button clicked - action:', action, 'providerId:', providerId);
+            if (!action || !providerId) {
+              console.log('[Mysti Webview] Missing action or providerId, returning early');
+              return;
+            }
+            handleWizardProviderAction(providerId, action);
+          });
+        });
+
+        // Auth options cancel button
+        var authCancelBtn = document.querySelector('.auth-options-cancel');
+        if (authCancelBtn) {
+          authCancelBtn.addEventListener('click', function() {
+            hideAuthOptionsModal();
+          });
+        }
+      }
+
+      function handleWizardProviderAction(providerId, action) {
+        console.log('[Mysti Webview] handleWizardProviderAction:', providerId, action);
+        switch (action) {
+          case 'setup':
+          case 'install':
+          case 'retry':
+            postMessageWithPanelId({
+              type: 'startProviderSetup',
+              payload: { providerId: providerId, autoInstall: state.wizard.npmAvailable }
+            });
+            break;
+          case 'auth':
+            postMessageWithPanelId({
+              type: 'startProviderSetup',
+              payload: { providerId: providerId, autoInstall: false }
+            });
+            break;
+          case 'select':
+            postMessageWithPanelId({
+              type: 'selectProvider',
+              payload: { providerId: providerId }
+            });
+            break;
+        }
+      }
+
+      function showAuthOptionsModal(payload) {
+        var modal = document.getElementById('auth-options-modal');
+        if (!modal) return;
+
+        var subtitle = document.getElementById('auth-options-subtitle');
+        if (subtitle) {
+          subtitle.textContent = 'Select how to authenticate with ' + payload.displayName;
+        }
+
+        var optionsList = document.getElementById('auth-options-list');
+        if (optionsList) {
+          optionsList.innerHTML = '';
+
+          payload.options.forEach(function(option) {
+            var optionEl = document.createElement('div');
+            optionEl.className = 'auth-option';
+            optionEl.setAttribute('data-method', option.action);
+            optionEl.innerHTML =
+              '<span class="auth-option-icon">' + option.icon + '</span>' +
+              '<div class="auth-option-content">' +
+                '<div class="auth-option-label">' + option.label + '</div>' +
+                '<div class="auth-option-desc">' + option.description + '</div>' +
+              '</div>';
+
+            optionEl.addEventListener('click', function() {
+              hideAuthOptionsModal();
+              postMessageWithPanelId({
+                type: 'selectAuthMethod',
+                payload: {
+                  providerId: payload.providerId,
+                  method: option.action
+                }
+              });
+            });
+
+            optionsList.appendChild(optionEl);
+          });
+        }
+
+        modal.classList.remove('hidden');
+      }
+
+      function hideAuthOptionsModal() {
+        var modal = document.getElementById('auth-options-modal');
+        if (modal) {
+          modal.classList.add('hidden');
+        }
+        state.wizard.currentAuthProviderId = null;
+      }
+
+      // ========================================
+      // Install Provider Modal Functions
+      // ========================================
+
+      var currentInstallProviderId = null;
+
+      function showInstallProviderModal(providerId) {
+        console.log('[Mysti Webview] showInstallProviderModal called for:', providerId);
+        currentInstallProviderId = providerId;
+        // Request install info from extension
+        postMessageWithPanelId({
+          type: 'requestProviderInstallInfo',
+          payload: { providerId: providerId }
+        });
+        console.log('[Mysti Webview] requestProviderInstallInfo message sent');
+      }
+
+      function handleProviderInstallInfo(payload) {
+        console.log('[Mysti Webview] handleProviderInstallInfo received:', payload);
+        var modal = document.getElementById('install-provider-modal');
+        if (!modal) {
+          console.log('[Mysti Webview] ERROR: install-provider-modal not found in DOM!');
+          return;
+        }
+        console.log('[Mysti Webview] Modal found, updating content...');
+
+        currentInstallProviderId = payload.providerId;
+
+        // Update modal content
+        var icon = document.getElementById('install-provider-icon');
+        if (icon) {
+          icon.src = getProviderIconUri(payload.providerId);
+        }
+
+        var title = document.getElementById('install-provider-title');
+        if (title) {
+          title.textContent = 'Install ' + payload.displayName;
+        }
+
+        var commandText = document.getElementById('install-command-text');
+        if (commandText) {
+          commandText.textContent = payload.installCommand;
+        }
+
+        // Auth steps
+        var authList = document.getElementById('install-auth-steps');
+        if (authList) {
+          authList.innerHTML = '';
+          payload.authInstructions.forEach(function(step) {
+            var li = document.createElement('li');
+            li.textContent = step;
+            authList.appendChild(li);
+          });
+        }
+
+        // Docs link
+        var docsLink = document.getElementById('install-docs-link');
+        if (docsLink) {
+          if (payload.docsUrl) {
+            docsLink.href = payload.docsUrl;
+            docsLink.style.display = '';
+          } else {
+            docsLink.style.display = 'none';
+          }
+        }
+
+        // Auto-install button is always enabled
+        var autoBtn = document.getElementById('install-auto-btn');
+        if (autoBtn) {
+          autoBtn.disabled = false;
+        }
+
+        // Reset progress section
+        var progressSection = document.getElementById('install-progress-section');
+        var autoSection = document.getElementById('install-auto-section');
+        if (progressSection) progressSection.classList.add('hidden');
+        if (autoSection) autoSection.classList.remove('hidden');
+
+        modal.classList.remove('hidden');
+      }
+
+      function hideInstallProviderModal() {
+        var modal = document.getElementById('install-provider-modal');
+        if (modal) {
+          modal.classList.add('hidden');
+        }
+        currentInstallProviderId = null;
+      }
+
+      function startAutoInstallFromModal() {
+        if (!currentInstallProviderId) return;
+
+        // Show progress, hide auto-install section
+        var autoSection = document.getElementById('install-auto-section');
+        var progressSection = document.getElementById('install-progress-section');
+        if (autoSection) autoSection.classList.add('hidden');
+        if (progressSection) progressSection.classList.remove('hidden');
+
+        postMessageWithPanelId({
+          type: 'startProviderSetup',
+          payload: { providerId: currentInstallProviderId, autoInstall: true }
+        });
+      }
+
+      function updateInstallProgress(payload) {
+        var progressFill = document.getElementById('install-progress-fill');
+        var progressMsg = document.getElementById('install-progress-msg');
+
+        if (progressFill) {
+          progressFill.style.width = payload.progress + '%';
+        }
+        if (progressMsg) {
+          progressMsg.textContent = payload.message;
+        }
+
+        if (payload.step === 'complete') {
+          if (progressMsg) progressMsg.textContent = '✓ ' + payload.message;
+          setTimeout(function() {
+            hideInstallProviderModal();
+            // Refresh availability
+            postMessageWithPanelId({ type: 'requestProviderAvailability' });
+          }, 1500);
+        } else if (payload.step === 'failed') {
+          if (progressMsg) progressMsg.textContent = '✗ ' + payload.message;
+          // Show auto-install section again after delay
+          setTimeout(function() {
+            var autoSection = document.getElementById('install-auto-section');
+            if (autoSection) autoSection.classList.remove('hidden');
+          }, 2000);
+        }
+      }
+
+      function getProviderIconUri(providerId) {
+        var icons = {
+          'claude-code': CLAUDE_LOGO,
+          'openai-codex': getOpenAILogo(),
+          'google-gemini': GEMINI_LOGO
+        };
+        return icons[providerId] || '';
+      }
+
+      // Setup install modal event listeners
+      (function setupInstallModalListeners() {
+        var autoBtn = document.getElementById('install-auto-btn');
+        if (autoBtn) {
+          autoBtn.addEventListener('click', startAutoInstallFromModal);
+        }
+
+        var copyBtn = document.getElementById('install-copy-btn');
+        if (copyBtn) {
+          copyBtn.addEventListener('click', function() {
+            var commandText = document.getElementById('install-command-text');
+            if (commandText) {
+              navigator.clipboard.writeText(commandText.textContent).then(function() {
+                copyBtn.textContent = '✓';
+                setTimeout(function() { copyBtn.innerHTML = '&#128203;'; }, 1500);
+              });
+            }
+          });
+        }
+
+        var closeBtn = document.getElementById('install-close-btn');
+        if (closeBtn) {
+          closeBtn.addEventListener('click', hideInstallProviderModal);
+        }
+
+        // Close modal when clicking outside
+        var modal = document.getElementById('install-provider-modal');
+        if (modal) {
+          modal.addEventListener('click', function(e) {
+            if (e.target === modal) {
+              hideInstallProviderModal();
+            }
+          });
+        }
+      })();
+
+      function hideWizard() {
+        var wizard = document.getElementById('setup-wizard');
+        if (wizard) {
+          wizard.classList.add('hidden');
+        }
+        state.wizard.visible = false;
+      }
+
+      // ========================================
       // Brainstorm Mode Handlers
       // ========================================
 
@@ -6749,6 +8610,22 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         brainstormContainer.className = 'brainstorm-container';
         brainstormContainer.id = 'brainstorm-' + payload.sessionId;
 
+        // Generate agent cards dynamically from configured agents
+        var agents = state.brainstormAgents || ['claude-code', 'openai-codex'];
+        var agentCardsHtml = agents.map(function(agentId) {
+          var agentInfo = AGENT_DISPLAY[agentId] || { name: agentId, shortId: agentId, color: '#888', logo: '' };
+          var logoSrc = getAgentLogo(agentId);
+          var logoClass = agentId === 'openai-codex' ? 'brainstorm-agent-logo openai-logo' : 'brainstorm-agent-logo';
+          return '<div class="brainstorm-agent-card" data-agent="' + agentId + '">' +
+            '<div class="brainstorm-agent-header">' +
+              '<img src="' + logoSrc + '" alt="' + agentInfo.name + '" class="' + logoClass + '" />' +
+              '<span class="brainstorm-agent-name">' + agentInfo.name + '</span>' +
+              '<span class="brainstorm-agent-status streaming">Thinking...</span>' +
+            '</div>' +
+            '<div class="brainstorm-agent-content" id="brainstorm-' + agentInfo.shortId + '-content"></div>' +
+          '</div>';
+        }).join('');
+
         brainstormContainer.innerHTML =
           '<div class="brainstorm-header">' +
             '<span class="brainstorm-icon">🧠</span>' +
@@ -6756,22 +8633,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             '<span class="brainstorm-phase-indicator" id="brainstorm-phase">Individual Analysis</span>' +
           '</div>' +
           '<div class="brainstorm-agents">' +
-            '<div class="brainstorm-agent-card" data-agent="claude-code">' +
-              '<div class="brainstorm-agent-header">' +
-                '<span class="brainstorm-agent-icon">🟠</span>' +
-                '<span class="brainstorm-agent-name">Claude</span>' +
-                '<span class="brainstorm-agent-status streaming">Thinking...</span>' +
-              '</div>' +
-              '<div class="brainstorm-agent-content" id="brainstorm-claude-content"></div>' +
-            '</div>' +
-            '<div class="brainstorm-agent-card" data-agent="openai-codex">' +
-              '<div class="brainstorm-agent-header">' +
-                '<span class="brainstorm-agent-icon">🟢</span>' +
-                '<span class="brainstorm-agent-name">Codex</span>' +
-                '<span class="brainstorm-agent-status streaming">Thinking...</span>' +
-              '</div>' +
-              '<div class="brainstorm-agent-content" id="brainstorm-codex-content"></div>' +
-            '</div>' +
+            agentCardsHtml +
           '</div>' +
           '<div class="brainstorm-synthesis hidden" id="brainstorm-synthesis">' +
             '<div class="brainstorm-synthesis-header">' +
@@ -6790,7 +8652,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var content = payload.content || '';
         var chunkType = payload.type || 'text';
 
-        var contentEl = document.getElementById('brainstorm-' + (agentId === 'claude-code' ? 'claude' : 'codex') + '-content');
+        // Use dynamic lookup for agent content element
+        var contentEl = document.getElementById('brainstorm-' + getAgentShortId(agentId) + '-content');
         if (!contentEl) return;
 
         if (chunkType === 'thinking') {
@@ -7044,6 +8907,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (state.settings.provider) {
           providerSelect.value = state.settings.provider;
           state.activeAgent = state.settings.provider;
+          // Update thinking section visibility for Gemini
+          updateThinkingSectionVisibility(state.settings.provider);
         }
 
         // Populate model dropdown based on selected provider
@@ -7059,6 +8924,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         // Update agent menu to match settings
         updateAgentMenuSelection();
         updateOpenAILogos();
+
+        // Update provider availability (disable unavailable providers)
+        updateProviderAvailability();
 
         updateContext(state.context);
 
@@ -7077,6 +8945,12 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (state.agentSettings) {
           updateAgentSettingsUI();
         }
+
+        // Initialize brainstorm agents UI
+        if (state.brainstormAgents) {
+          updateBrainstormAgentsUI();
+        }
+        updateBrainstormSectionVisibility();
 
         if (state.conversation && state.conversation.messages) {
           state.conversation.messages.forEach(function(msg) { addMessage(msg); });
@@ -7761,13 +9635,36 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       // ========================================
 
       // Render plan options as interactive cards
-      function renderPlanOptions(options, messageId, originalQuery) {
+      function renderPlanOptions(options, messageId, originalQuery, metaQuestions) {
         if (!options || options.length === 0) return null;
 
         var container = document.createElement('div');
         container.className = 'plan-options-container';
         container.setAttribute('data-message-id', messageId);
         container.setAttribute('data-original-query', originalQuery || '');
+
+        // Render meta-questions if present (informational only)
+        if (metaQuestions && metaQuestions.length > 0) {
+          var metaSection = document.createElement('div');
+          metaSection.className = 'meta-questions-section';
+          metaSection.style.marginBottom = '16px';
+          metaSection.style.padding = '12px 16px';
+          metaSection.style.background = 'var(--vscode-editor-background)';
+          metaSection.style.border = '1px solid var(--vscode-panel-border)';
+          metaSection.style.borderRadius = '6px';
+          metaSection.style.fontSize = '14px';
+          metaSection.style.lineHeight = '1.5';
+
+          metaQuestions.forEach(function(q) {
+            var questionText = document.createElement('div');
+            questionText.className = 'meta-question-text';
+            questionText.style.marginBottom = '4px';
+            questionText.textContent = q.question;
+            metaSection.appendChild(questionText);
+          });
+
+          container.appendChild(metaSection);
+        }
 
         var header = document.createElement('div');
         header.className = 'plan-options-header';
@@ -7932,8 +9829,13 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           var existing = messageEl.querySelector('.plan-options-container');
           if (existing) existing.remove();
 
-          // Add new plan options
-          var planContainer = renderPlanOptions(payload.options, payload.messageId, payload.originalQuery);
+          // Add new plan options (with optional meta-questions)
+          var planContainer = renderPlanOptions(
+            payload.options,
+            payload.messageId,
+            payload.originalQuery,
+            payload.metaQuestions
+          );
           if (planContainer) {
             messageEl.appendChild(planContainer);
             messagesEl.scrollTop = messagesEl.scrollHeight;

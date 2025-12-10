@@ -353,10 +353,10 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       }
 
       // Handle direct result event (final message)
+      // This contains the complete response which was already streamed via text_delta chunks
+      // We should NOT emit this as text, or it will duplicate the content
       if (data.type === 'result') {
-        if (data.result) {
-          return { type: 'text', content: data.result };
-        }
+        // Just ignore - content was already streamed
         return null;
       }
 

@@ -13,6 +13,7 @@
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as path from 'path';
 import { ContextManager } from '../managers/ContextManager';
 import { ConversationManager } from '../managers/ConversationManager';
 import { ProviderManager } from '../managers/ProviderManager';
@@ -25,7 +26,7 @@ import { TelemetryManager } from '../managers/TelemetryManager';
 import { AgentLoader } from '../managers/AgentLoader';
 import { AgentContextManager } from '../managers/AgentContextManager';
 import { getWebviewContent } from '../webview/webviewContent';
-import type { WebviewMessage, Settings, ContextItem, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, AgentTypeDiscriminator } from '../types';
+import type { WebviewMessage, Settings, ContextItem, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, AgentTypeDiscriminator, ProviderType } from '../types';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
 
 interface PanelState {
@@ -59,6 +60,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _lastUserMessage: Map<string, string> = new Map();
   // Track if agents have been loaded
   private _agentsLoaded: boolean = false;
+  private _agentInitPromise: Promise<void>;
 
   constructor(
     extensionUri: vscode.Uri,
@@ -91,8 +93,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Connect agent context manager to provider manager
     this._providerManager.setAgentContextManager(this._agentContextManager);
 
-    // Load agents asynchronously
-    this._initializeAgents();
+    // Load agents asynchronously and track the promise
+    this._agentInitPromise = this._initializeAgents();
   }
 
   /**
@@ -142,14 +144,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _sendInitialState(panelId: string) {
+    // Critical: Wait for agents to load before building initial state
+    await this._agentInitPromise;
+
+    // Get wizard status for provider availability
+    const wizardStatus = await this._setupManager.getWizardStatus();
+
+    // Check if any provider is ready - show wizard if not
+    const wizardDismissed = this._extensionContext.globalState.get('mysti.setupWizardDismissed', false);
+    if (!wizardDismissed && !wizardStatus.anyReady) {
+      // No providers installed - show the setup wizard
+      this._postToPanel(panelId, {
+        type: 'showWizard',
+        payload: wizardStatus
+      });
+      return;
+    }
+
     const config = vscode.workspace.getConfiguration('mysti');
+
+    // Get the configured provider, but auto-select first available if it's not installed
+    let selectedProvider: ProviderType = config.get('defaultProvider', 'claude-code') as ProviderType;
+    const configuredProviderStatus = wizardStatus.providers.find(p => p.providerId === selectedProvider);
+
+    if (!configuredProviderStatus?.installed) {
+      // Current provider is not available, find first installed one
+      const firstInstalled = wizardStatus.providers.find(p => p.installed);
+      if (firstInstalled) {
+        selectedProvider = firstInstalled.providerId as ProviderType;
+        console.log(`[Mysti] Auto-selected provider: ${selectedProvider} (configured provider not available)`);
+      }
+    }
+
     const settings: Settings = {
       mode: config.get('defaultMode', 'ask-before-edit'),
       thinkingLevel: config.get('defaultThinkingLevel', 'medium'),
       accessLevel: config.get('accessLevel', 'ask-permission'),
       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
       model: config.get('defaultModel', 'claude-sonnet-4-5-20250929'),
-      provider: config.get('defaultProvider', 'claude-code')
+      provider: selectedProvider
     };
 
     const panelState = this._panelStates.get(panelId);
@@ -191,6 +224,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       maxTokenBudget: this._agentsLoaded ? this._agentContextManager.getTokenBudget() : 2000
     };
 
+    // Get brainstorm agent configuration
+    const brainstormAgents = vscode.workspace.getConfiguration('mysti')
+      .get<string[]>('brainstorm.agents', ['claude-code', 'openai-codex']);
+
+    // Get provider availability status for each provider
+    const providers = this._providerManager.getProviders();
+    const providerAvailability: Record<string, { available: boolean; installCommand?: string }> = {};
+    for (const provider of providers) {
+      const status = await this._providerManager.getProviderStatus(provider.name);
+      providerAvailability[provider.name] = {
+        available: status?.found ?? false,
+        installCommand: status?.installCommand
+      };
+    }
+
     this._postToPanel(panelId, {
       type: 'initialState',
       payload: {
@@ -198,14 +246,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         settings,
         context: this._contextManager.getContext(),
         conversation,
-        providers: this._providerManager.getProviders(),
+        providers,
+        providerAvailability,
         slashCommands: this._getSlashCommands(),
         quickActions: this._getQuickActions(),
         workspacePath,
         agentConfig: conversation?.agentConfig,
         availablePersonas,
         availableSkills,
-        agentSettings
+        agentSettings,
+        brainstormAgents
       }
     });
   }
@@ -400,6 +450,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'planOptionSelected':
+        // Clear suggestions before handling plan selection
+        this._postToPanel((message as any).panelId, { type: 'clearSuggestions' });
+
         await this._handlePlanOptionSelected(
           message.payload as PlanSelectionResult,
           (message as any).panelId
@@ -407,6 +460,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'questionAnswered':
+        // Clear suggestions before handling question answers
+        this._postToPanel((message as any).panelId, { type: 'clearSuggestions' });
+
         await this._handleQuestionAnswered(
           message.payload as QuestionSubmission,
           (message as any).panelId
@@ -487,6 +543,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'skipSetup':
         this._handleSkipSetup((message as any).panelId);
+        break;
+
+      case 'requestWizardStatus':
+        await this._handleRequestWizardStatus((message as any).panelId);
+        break;
+
+      case 'startProviderSetup':
+        await this._handleStartProviderSetup(
+          message.payload as { providerId: string; autoInstall?: boolean },
+          (message as any).panelId
+        );
+        break;
+
+      case 'selectAuthMethod':
+        await this._handleSelectAuthMethod(
+          message.payload as { providerId: string; method: string; apiKey?: string },
+          (message as any).panelId
+        );
+        break;
+
+      case 'selectProvider':
+        await this._handleSelectProvider(
+          (message.payload as { providerId: string }).providerId,
+          (message as any).panelId
+        );
+        break;
+
+      case 'dismissWizard':
+        this._handleDismissWizard(
+          (message as any).panelId,
+          (message.payload as { dontShowAgain?: boolean } | undefined)?.dontShowAgain
+        );
+        break;
+
+      case 'requestProviderInstallInfo':
+        await this._handleRequestProviderInstallInfo(
+          message.payload as { providerId: string },
+          (message as any).panelId
+        );
         break;
 
       case 'getConversationHistory':
@@ -644,6 +739,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     try {
+      // Security: Path validation is handled in _resolveFilePath
       const resolvedPath = this._resolveFilePath(payload.filePath);
       const content = await fs.promises.readFile(resolvedPath, 'utf-8');
       let lineNumber = 1;
@@ -853,10 +949,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             // Always run classification to show visual questions and plan options
             // (brainstorm has its own handler via _handleBrainstormMessage)
-            this._detectAndSendPlanOptions(assistantMessage, panelId);
+            const hasInteractiveElements = await this._detectAndSendPlanOptions(assistantMessage, panelId);
 
-            // Trigger async suggestion generation
-            this._generateSuggestionsAsync(assistantMessage, panelId);
+            // Only generate suggestions if no interactive elements were detected
+            if (!hasInteractiveElements) {
+              this._generateSuggestionsAsync(assistantMessage, panelId);
+            }
             break;
         }
       }
@@ -1082,6 +1180,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if ('agents.maxTokenBudget' in settingsAny) {
       await config.update('agents.maxTokenBudget', settingsAny['agents.maxTokenBudget'], vscode.ConfigurationTarget.Global);
     }
+
+    // Handle brainstorm agent selection
+    if ('brainstorm.agents' in settingsAny) {
+      const agents = settingsAny['brainstorm.agents'] as string[];
+      // Validate: exactly 2 agents from valid set
+      const validAgents = ['claude-code', 'openai-codex', 'google-gemini'];
+      const filtered = agents.filter(a => validAgents.includes(a));
+      if (filtered.length === 2) {
+        await config.update('brainstorm.agents', filtered, vscode.ConfigurationTarget.Global);
+        console.log(`[Mysti] Updated brainstorm agents to: ${filtered.join(', ')}`);
+      }
+    }
   }
 
   private async _handleAddToContext(
@@ -1133,12 +1243,51 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     suggestion: QuickActionSuggestion,
     panelId?: string
   ) {
-    if (panelId) {
-      this._postToPanel(panelId, {
-        type: 'insertPrompt',
-        payload: suggestion.message
-      });
+    if (!panelId) return;
+
+    // Detect mode change suggestions
+    const lowerMessage = suggestion.message.toLowerCase();
+
+    // Check if this is an "exit plan mode" suggestion
+    if (lowerMessage.includes('exit plan mode') ||
+        lowerMessage.includes('exit planning') ||
+        lowerMessage.includes('leave plan mode')) {
+
+      // Auto-detect and execute mode change
+      const config = vscode.workspace.getConfiguration('mysti');
+      const currentMode = config.get<string>('defaultMode');
+      const currentProvider = config.get<string>('defaultProvider');
+
+      if (currentMode === 'quick-plan' || currentMode === 'detailed-plan') {
+        console.log(`[Mysti] Auto-exiting ${currentMode} mode via suggestion (provider: ${currentProvider})`);
+
+        // Clear any pending plan options or questions from UI
+        this._postToPanel(panelId, { type: 'clearPlanOptions' });
+        this._postToPanel(panelId, { type: 'clearSuggestions' });
+
+        // Update mode setting
+        this._handleUpdateSettings({ mode: 'ask-before-edit' });
+
+        // Broadcast mode change to all panels
+        this.postMessage({
+          type: 'modeChanged',
+          payload: { mode: 'ask-before-edit' }
+        });
+
+        // Show confirmation message
+        this._postToPanel(panelId, {
+          type: 'info',
+          payload: `Exited ${currentMode}. Switched to: ask-before-edit\n(Ready for implementation with ${currentProvider})`
+        });
+        return; // Don't insert text, just change mode
+      }
     }
+
+    // Default behavior: insert prompt text
+    this._postToPanel(panelId, {
+      type: 'insertPrompt',
+      payload: suggestion.message
+    });
   }
 
   private async _generateSuggestionsAsync(lastMessage: Message, panelId?: string) {
@@ -1272,41 +1421,70 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Detect plan options and clarifying questions in an assistant message using AI classification
+   * Returns true if interactive elements (questions or plans) were detected and sent
    */
-  private async _detectAndSendPlanOptions(message: Message, panelId: string): Promise<void> {
+  private async _detectAndSendPlanOptions(message: Message, panelId: string): Promise<boolean> {
     try {
       // Use AI-powered classification to distinguish questions from plan options
       const result = await this._planOptionManager.classifyResponse(message.content);
       const originalQuery = this._lastUserMessage.get(panelId) || '';
 
-      // Send clarifying questions if detected
-      if (result.questions.length > 0) {
-        console.log('[Mysti] Detected clarifying questions:', result.questions.length);
+      let hasInteractiveElements = false;
+
+      // Separate questions by type
+      const clarifyingQuestions = result.questions.filter(
+        q => !q.questionType || q.questionType === 'clarifying'
+      );
+      const metaQuestions = result.questions.filter(
+        q => q.questionType === 'meta'
+      );
+
+      // Send clarifying questions if detected (these suppress plans)
+      if (clarifyingQuestions.length > 0) {
+        console.log('[Mysti] Detected clarifying questions:', clarifyingQuestions.length);
         this._postToPanel(panelId, {
           type: 'clarifyingQuestions',
           payload: {
-            questions: result.questions,
+            questions: clarifyingQuestions,
             messageId: message.id,
             context: result.context
           }
         });
+        hasInteractiveElements = true;
       }
 
-      // Send plan options if detected (allow 1+ options)
-      if (result.planOptions.length >= 1) {
+      // Send plan options if detected (even with meta-questions)
+      // Only suppress if CLARIFYING questions exist
+      if (result.planOptions.length >= 1 && clarifyingQuestions.length === 0) {
         console.log('[Mysti] Detected plan options:', result.planOptions.length);
+
+        // Include meta-questions with plan options
+        const planPayload: any = {
+          options: result.planOptions,
+          messageId: message.id,
+          originalQuery,
+          context: result.context
+        };
+
+        // Attach meta-questions if present
+        if (metaQuestions.length > 0) {
+          console.log('[Mysti] Including meta-questions with plans:', metaQuestions.length);
+          planPayload.metaQuestions = metaQuestions;
+        }
+
         this._postToPanel(panelId, {
           type: 'planOptions',
-          payload: {
-            options: result.planOptions,
-            messageId: message.id,
-            originalQuery,
-            context: result.context
-          }
+          payload: planPayload
         });
+        hasInteractiveElements = true;
+      } else if (result.planOptions.length >= 1 && clarifyingQuestions.length > 0) {
+        console.log('[Mysti] Plan options detected but suppressed due to clarifying questions');
       }
+
+      return hasInteractiveElements;
     } catch (error) {
       console.error('[Mysti] Response classification failed:', error);
+      return false;  // On error, allow suggestions to be generated
     }
   }
 
@@ -1320,12 +1498,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const { selectedPlan, originalQuery, executionMode, customInstructions } = payload;
     console.log('[Mysti] Plan option selected:', selectedPlan.title, 'with mode:', executionMode);
 
+    // Check if currently in plan mode
+    const config = vscode.workspace.getConfiguration('mysti');
+    const currentMode = config.get<string>('defaultMode');
+    const isInPlanMode = currentMode === 'quick-plan' || currentMode === 'detailed-plan';
+
+    // Auto-exit plan mode when user chooses to execute
+    if (isInPlanMode && (executionMode === 'edit-automatically' || executionMode === 'ask-before-edit')) {
+      console.log(`[Mysti] Exiting ${currentMode} to ${executionMode} on plan approval`);
+    }
+
     // Generate the follow-up prompt
     let followUpPrompt = this._planOptionManager.createSelectionPrompt(selectedPlan, originalQuery);
 
     // Append custom instructions if provided
     if (customInstructions?.trim()) {
       followUpPrompt += `\n\nAdditional instructions:\n${customInstructions.trim()}`;
+    }
+
+    // Clear plan UI when exiting plan mode to execution
+    if (isInPlanMode && (executionMode === 'edit-automatically' || executionMode === 'ask-before-edit')) {
+      this._postToPanel(panelId, { type: 'clearPlanOptions' });
+      this._postToPanel(panelId, { type: 'clearSuggestions' });
     }
 
     // Handle "Keep Planning" mode differently - just insert the prompt
@@ -1348,7 +1542,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     // 3. Get current settings with the new mode
-    const config = vscode.workspace.getConfiguration('mysti');
     const settings: Settings = {
       mode: executionMode,
       thinkingLevel: config.get('defaultThinkingLevel', 'medium'),
@@ -1404,9 +1597,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Validate file path to prevent directory traversal attacks
+   * @throws Error if path is invalid or contains directory traversal
+   */
+  private _validateFilePath(filePath: string): void {
+    // Check for null bytes (security risk)
+    if (filePath.includes('\0')) {
+      throw new Error('Invalid file path: contains null byte');
+    }
+
+    // Normalize the path to resolve .. and . components
+    const normalizedPath = path.normalize(filePath);
+
+    // Check for directory traversal attempts
+    if (normalizedPath.includes('..')) {
+      throw new Error('Invalid file path: directory traversal detected');
+    }
+
+    // If relative path, ensure it doesn't try to escape workspace
+    if (!path.isAbsolute(normalizedPath)) {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (workspaceFolders) {
+        const resolvedPath = path.resolve(workspaceFolders[0].uri.fsPath, normalizedPath);
+        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+
+        // Ensure resolved path is within workspace boundaries
+        if (!resolvedPath.startsWith(workspaceRoot)) {
+          throw new Error('Invalid file path: outside workspace boundaries');
+        }
+      }
+    }
+  }
+
+  /**
    * Resolve a file path (relative or absolute) to an absolute path
+   * @throws Error if path validation fails
    */
   private _resolveFilePath(filePath: string): string {
+    // Security: Validate path to prevent directory traversal
+    this._validateFilePath(filePath);
+
     // If already absolute (Unix or Windows), return as-is
     if (filePath.startsWith('/') || filePath.match(/^[A-Za-z]:/)) {
       return filePath;
@@ -1513,9 +1743,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             '/clear - Clear conversation and session\n' +
             '/help - Show this help message\n' +
             '/context - Show current context items\n' +
-            '/mode [mode] - Show/change mode (ask-before-edit, edit-automatically, plan)\n' +
+            '/mode [mode] - Show/change mode (ask-before-edit, edit-automatically, quick-plan, detailed-plan)\n' +
+            '/exit-plan-mode - Exit plan mode and switch to ask-before-edit\n' +
+            '/exit-plan - Alias for /exit-plan-mode\n' +
             '/model [model] - Show/change AI model\n' +
-            '/agent [agent] - Switch agent (claude-code, openai-codex, brainstorm)\n' +
+            '/agent [agent] - Switch agent (claude-code, openai-codex, google-gemini, brainstorm)\n' +
             '/brainstorm [on|off|status] - Toggle brainstorm mode';
         }
       },
@@ -1535,15 +1767,86 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         handler: (args: string) => {
           if (args) {
             // Note: brainstorm is an agent type, not a mode - use /brainstorm or /agent
-            const modes = ['ask-before-edit', 'edit-automatically', 'plan'];
-            if (modes.includes(args)) {
-              this._handleUpdateSettings({ mode: args as any });
-              return `Mode changed to: ${args}`;
+            const modes = ['ask-before-edit', 'edit-automatically', 'quick-plan', 'detailed-plan'];
+            const arg = args.trim();
+
+            // Handle legacy 'plan' alias -> quick-plan
+            const targetMode = arg === 'plan' ? 'quick-plan' : arg;
+
+            if (modes.includes(targetMode)) {
+              this._handleUpdateSettings({ mode: targetMode as any });
+              return `Mode changed to: ${targetMode}`;
             }
-            return `Invalid mode. Available modes: ${modes.join(', ')}`;
+            return `Invalid mode. Available modes: ${modes.join(', ')} (or 'plan' for quick-plan)`;
           }
           const config = vscode.workspace.getConfiguration('mysti');
           return `Current mode: ${config.get('defaultMode')}`;
+        }
+      },
+      {
+        name: 'exit-plan-mode',
+        description: 'Exit plan mode and switch to ask-before-edit',
+        handler: (args: string, panelId?: string) => {
+          const config = vscode.workspace.getConfiguration('mysti');
+          const currentMode = config.get<string>('defaultMode');
+          const currentProvider = config.get<string>('defaultProvider');
+
+          if (currentMode === 'quick-plan' || currentMode === 'detailed-plan') {
+            // Log provider-specific exit for debugging
+            console.log(`[Mysti] Exiting ${currentMode} mode (provider: ${currentProvider})`);
+
+            // Clear any pending plan options or questions from UI
+            if (panelId) {
+              this._postToPanel(panelId, { type: 'clearPlanOptions' });
+              this._postToPanel(panelId, { type: 'clearSuggestions' });
+            }
+
+            // Update mode setting
+            this._handleUpdateSettings({ mode: 'ask-before-edit' });
+
+            // Broadcast mode change to all panels
+            this.postMessage({
+              type: 'modeChanged',
+              payload: { mode: 'ask-before-edit' }
+            });
+
+            return `Exited ${currentMode}. Switched to: ask-before-edit\n(Ready for implementation with ${currentProvider})`;
+          } else {
+            return 'Not currently in plan mode.';
+          }
+        }
+      },
+      {
+        name: 'exit-plan',
+        description: 'Alias for /exit-plan-mode',
+        handler: (args: string, panelId?: string) => {
+          const config = vscode.workspace.getConfiguration('mysti');
+          const currentMode = config.get<string>('defaultMode');
+          const currentProvider = config.get<string>('defaultProvider');
+
+          if (currentMode === 'quick-plan' || currentMode === 'detailed-plan') {
+            // Log provider-specific exit for debugging
+            console.log(`[Mysti] Exiting ${currentMode} mode (provider: ${currentProvider})`);
+
+            // Clear any pending plan options or questions from UI
+            if (panelId) {
+              this._postToPanel(panelId, { type: 'clearPlanOptions' });
+              this._postToPanel(panelId, { type: 'clearSuggestions' });
+            }
+
+            // Update mode setting
+            this._handleUpdateSettings({ mode: 'ask-before-edit' });
+
+            // Broadcast mode change to all panels
+            this.postMessage({
+              type: 'modeChanged',
+              payload: { mode: 'ask-before-edit' }
+            });
+
+            return `Exited ${currentMode}. Switched to: ask-before-edit\n(Ready for implementation with ${currentProvider})`;
+          } else {
+            return 'Not currently in plan mode.';
+          }
         }
       },
       {
@@ -1560,10 +1863,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       {
         name: 'agent',
-        description: 'Switch AI agent (claude-code, openai-codex)',
+        description: 'Switch AI agent (claude-code, openai-codex, google-gemini)',
         handler: (args: string) => {
           if (args) {
-            const agents = ['claude-code', 'openai-codex'];
+            const agents = ['claude-code', 'openai-codex', 'google-gemini'];
             if (agents.includes(args)) {
               // Get the new provider's default model for feedback
               const newProviderConfig = this._providerManager.getProvider(args);
@@ -1581,7 +1884,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 });
               }
 
-              const agentName = args === 'claude-code' ? 'Claude Code' : 'OpenAI Codex';
+              const agentNames: Record<string, string> = {
+                'claude-code': 'Claude Code',
+                'openai-codex': 'OpenAI Codex',
+                'google-gemini': 'Gemini'
+              };
+              const agentName = agentNames[args] || args;
               if (willSwitchModel && newProviderConfig) {
                 return `Switched to ${agentName} (model auto-switched to ${newModel})`;
               }
@@ -1728,6 +2036,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Cleanup on dispose
     panel.onDidDispose(() => {
       this._panelStates.delete(panelId);
+      this._lastUserMessage.delete(panelId);
+      this._cancelledPanels.delete(panelId);
+      // Cancel any running processes for this panel
+      this._providerManager.cancelRequest(panelId);
     });
 
     // Send initial state with the new conversation
@@ -1980,6 +2292,302 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._sendInitialState(panelId);
   }
 
+  // ============================================================================
+  // Setup Wizard Handlers (Enhanced Onboarding)
+  // ============================================================================
+
+  /**
+   * Handle request for wizard status from webview
+   */
+  private async _handleRequestWizardStatus(panelId: string): Promise<void> {
+    const status = await this._setupManager.getWizardStatus();
+    this._postToPanel(panelId, {
+      type: 'wizardStatus',
+      payload: status
+    });
+  }
+
+  /**
+   * Handle start provider setup from wizard
+   */
+  private async _handleStartProviderSetup(
+    payload: { providerId: string; autoInstall?: boolean },
+    panelId: string
+  ): Promise<void> {
+    const { providerId, autoInstall = true } = payload;
+
+    // Send initial checking step
+    this._postToPanel(panelId, {
+      type: 'providerSetupStep',
+      payload: {
+        providerId,
+        step: 'checking',
+        progress: 5,
+        message: 'Checking current status...'
+      }
+    });
+
+    const provider = this._providerManager.getProviderInstance(providerId);
+    if (!provider) {
+      this._postToPanel(panelId, {
+        type: 'providerSetupStep',
+        payload: {
+          providerId,
+          step: 'failed',
+          progress: 0,
+          message: `Provider "${providerId}" not found`
+        }
+      });
+      return;
+    }
+
+    // Check if already installed
+    const discovery = await provider.discoverCli();
+
+    if (!discovery.found) {
+      if (autoInstall) {
+        // Try auto-install
+        this._postToPanel(panelId, {
+          type: 'providerSetupStep',
+          payload: {
+            providerId,
+            step: 'downloading',
+            progress: 15,
+            message: 'Preparing installation...'
+          }
+        });
+
+        this._postToPanel(panelId, {
+          type: 'providerSetupStep',
+          payload: {
+            providerId,
+            step: 'installing',
+            progress: 30,
+            message: `Installing ${provider.displayName} CLI...`
+          }
+        });
+
+        const installResult = await this._setupManager.autoInstallCli(providerId);
+
+        if (!installResult.success) {
+          this._postToPanel(panelId, {
+            type: 'providerSetupStep',
+            payload: {
+              providerId,
+              step: 'failed',
+              progress: 0,
+              message: installResult.error || 'Installation failed',
+              details: `Run: ${provider.getInstallCommand()}`
+            }
+          });
+          return;
+        }
+
+        this._postToPanel(panelId, {
+          type: 'providerSetupStep',
+          payload: {
+            providerId,
+            step: 'verifying',
+            progress: 60,
+            message: 'Verifying installation...'
+          }
+        });
+      } else {
+        // Manual install needed
+        this._postToPanel(panelId, {
+          type: 'providerSetupStep',
+          payload: {
+            providerId,
+            step: 'failed',
+            progress: 0,
+            message: 'CLI not installed',
+            details: `Run: ${provider.getInstallCommand()}`
+          }
+        });
+        return;
+      }
+    }
+
+    // CLI installed - check auth
+    this._postToPanel(panelId, {
+      type: 'providerSetupStep',
+      payload: {
+        providerId,
+        step: 'verifying',
+        progress: 70,
+        message: 'Checking authentication...'
+      }
+    });
+
+    const authStatus = await provider.checkAuthentication();
+
+    if (!authStatus.authenticated) {
+      // Check if provider has multiple auth options
+      const authOptions = this._setupManager.getAuthOptions(providerId);
+
+      if (authOptions.length > 1) {
+        // Show auth options for providers like Gemini
+        this._postToPanel(panelId, {
+          type: 'authOptions',
+          payload: {
+            providerId,
+            displayName: provider.displayName,
+            options: authOptions
+          }
+        });
+      } else {
+        // Single auth method - prompt for auth
+        this._postToPanel(panelId, {
+          type: 'authPrompt',
+          payload: {
+            providerId,
+            displayName: provider.displayName,
+            message: `Sign in to ${provider.displayName} to continue`
+          }
+        });
+      }
+      return;
+    }
+
+    // Fully ready!
+    this._postToPanel(panelId, {
+      type: 'providerSetupStep',
+      payload: {
+        providerId,
+        step: 'complete',
+        progress: 100,
+        message: 'Ready to use!',
+        details: authStatus.user
+      }
+    });
+
+    // Refresh wizard status
+    const status = await this._setupManager.getWizardStatus();
+    this._postToPanel(panelId, {
+      type: 'wizardStatus',
+      payload: status
+    });
+  }
+
+  /**
+   * Handle auth method selection from wizard
+   */
+  private async _handleSelectAuthMethod(
+    payload: { providerId: string; method: string; apiKey?: string },
+    panelId: string
+  ): Promise<void> {
+    const { providerId, method, apiKey } = payload;
+
+    this._postToPanel(panelId, {
+      type: 'providerSetupStep',
+      payload: {
+        providerId,
+        step: 'authenticating',
+        progress: 80,
+        message: 'Authenticating...'
+      }
+    });
+
+    const result = await this._setupManager.authenticateWithMethod(
+      providerId,
+      method as any,
+      apiKey
+    );
+
+    if (result.authenticated) {
+      this._postToPanel(panelId, {
+        type: 'providerSetupStep',
+        payload: {
+          providerId,
+          step: 'complete',
+          progress: 100,
+          message: 'Authentication successful!',
+          details: result.user
+        }
+      });
+
+      // Refresh wizard status
+      const status = await this._setupManager.getWizardStatus();
+      this._postToPanel(panelId, {
+        type: 'wizardStatus',
+        payload: status
+      });
+    } else if (method === 'oauth' || method === 'cli-login') {
+      // OAuth flow - poll for completion
+      this._pollAuthStatus(providerId, panelId);
+    } else {
+      this._postToPanel(panelId, {
+        type: 'providerSetupStep',
+        payload: {
+          providerId,
+          step: 'failed',
+          progress: 0,
+          message: result.error || 'Authentication failed'
+        }
+      });
+    }
+  }
+
+  /**
+   * Handle provider selection from wizard
+   */
+  private async _handleSelectProvider(providerId: string, panelId: string): Promise<void> {
+    // Set as default provider
+    const config = vscode.workspace.getConfiguration('mysti');
+    await config.update('defaultProvider', providerId, vscode.ConfigurationTarget.Global);
+
+    // Close wizard and show main UI
+    this._postToPanel(panelId, {
+      type: 'wizardComplete',
+      payload: { providerId }
+    });
+
+    // Send initial state with the selected provider
+    await this._sendInitialState(panelId);
+  }
+
+  /**
+   * Handle wizard dismissal
+   */
+  private _handleDismissWizard(panelId: string, dontShowAgain?: boolean): void {
+    if (dontShowAgain) {
+      // Store preference
+      this._extensionContext.globalState.update('mysti.setupWizardDismissed', true);
+    }
+
+    this._postToPanel(panelId, {
+      type: 'wizardDismissed'
+    });
+
+    // Send initial state anyway - user can configure later
+    this._sendInitialState(panelId);
+  }
+
+  /**
+   * Handle request for provider install info (from install modal)
+   */
+  private async _handleRequestProviderInstallInfo(
+    payload: { providerId: string },
+    panelId: string
+  ): Promise<void> {
+    const info = this._setupManager.getProviderSetupInfo(payload.providerId);
+    const wizardStatus = await this._setupManager.getWizardStatus();
+    const provider = wizardStatus.providers.find(p => p.providerId === payload.providerId);
+
+    this._postToPanel(panelId, {
+      type: 'providerInstallInfo',
+      payload: {
+        providerId: payload.providerId,
+        displayName: provider?.displayName || payload.providerId,
+        installCommand: info?.installCommand || '',
+        authCommand: info?.authCommand || '',
+        authInstructions: info?.authInstructions || [],
+        docsUrl: info?.docsUrl,
+        npmAvailable: wizardStatus.npmAvailable
+      }
+    });
+  }
+
   /**
    * Debug method: Force show setup UI for testing
    * Call this via the mysti.debugSetup command
@@ -2034,5 +2642,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         requiresManual: true
       }
     });
+  }
+
+  /**
+   * Dispose the provider and clean up all resources
+   * Critical: Prevents memory leaks from panel states and tracking maps
+   */
+  public dispose(): void {
+    console.log('[Mysti] ChatViewProvider: Disposing and cleaning up resources');
+
+    // Clean up all panel states
+    for (const [panelId, state] of this._panelStates) {
+      if (state.panel) {
+        state.panel.dispose();
+      }
+    }
+    this._panelStates.clear();
+
+    // Clear tracking maps
+    this._lastUserMessage.clear();
+    this._cancelledPanels.clear();
+
+    // Dispose managers that may have resources
+    this._providerManager.dispose();
   }
 }

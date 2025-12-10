@@ -41,6 +41,11 @@ const AGENT_STYLES: Record<AgentType, { color: string; icon: string; displayName
     color: '#10B981', // Green
     icon: '🟢',
     displayName: 'Codex'
+  },
+  'google-gemini': {
+    color: '#4285F4', // Google Blue
+    icon: '🔵',
+    displayName: 'Gemini'
   }
 };
 
@@ -68,11 +73,17 @@ export class BrainstormManager {
     agents: AgentType[];
   } {
     const config = vscode.workspace.getConfiguration('mysti');
+    // Read user-selected agents from settings (pick 2 of 3)
+    const selectedAgents = config.get<AgentType[]>('brainstorm.agents', ['claude-code', 'openai-codex']);
+    // Ensure we have exactly 2 valid agents
+    const validAgents = selectedAgents.filter(a => AGENT_STYLES[a]).slice(0, 2);
+    const agents = validAgents.length === 2 ? validAgents : ['claude-code', 'openai-codex'] as AgentType[];
+
     return {
       discussionMode: config.get<DiscussionMode>('brainstorm.discussionMode', 'quick'),
       discussionRounds: config.get<number>('brainstorm.discussionRounds', 1),
       synthesisAgent: config.get<AgentType>('brainstorm.synthesisAgent', 'claude-code'),
-      agents: ['claude-code', 'openai-codex'] as AgentType[] // Default to both agents
+      agents
     };
   }
 
@@ -81,7 +92,13 @@ export class BrainstormManager {
    */
   private _getPersonaConfig(agentId: AgentType): PersonaConfig {
     const config = vscode.workspace.getConfiguration('mysti');
-    const agentKey = agentId === 'claude-code' ? 'claude' : 'codex';
+    // Map agent ID to settings key
+    const agentKeyMap: Record<AgentType, string> = {
+      'claude-code': 'claude',
+      'openai-codex': 'codex',
+      'google-gemini': 'gemini'
+    };
+    const agentKey = agentKeyMap[agentId] || 'claude';
 
     const personaType = config.get<PersonaType>(`agents.${agentKey}Persona`, 'neutral');
     const customPrompt = config.get<string>(`agents.${agentKey}CustomPrompt`, '');
@@ -462,42 +479,60 @@ export class BrainstormManager {
 
   /**
    * Interleave chunks from multiple async generators
-   * Fixed: Track pending promises to avoid losing chunks when Promise.race returns
+   * Uses result queue to capture all completions and prevent race condition data loss
    */
   private async *_interleaveGenerators(
     generators: AsyncGenerator<BrainstormStreamChunk>[]
   ): AsyncGenerator<BrainstormStreamChunk> {
     type IteratorType = AsyncIterator<BrainstormStreamChunk>;
-    type PromiseType = Promise<{ iterator: IteratorType; result: IteratorResult<BrainstormStreamChunk> }>;
+    type ResultType = { iterator: IteratorType; result: IteratorResult<BrainstormStreamChunk> };
 
     const iterators = generators.map(g => g[Symbol.asyncIterator]());
     const active = new Set<IteratorType>(iterators);
-    const pending = new Map<IteratorType, PromiseType>();
 
-    // Initialize pending promises for all iterators
+    // Queue to store completed results (prevents race condition data loss)
+    const resultQueue: ResultType[] = [];
+
+    // Start all iterators
+    const pending = new Map<IteratorType, Promise<ResultType>>();
     for (const iterator of iterators) {
-      pending.set(iterator, iterator.next().then(result => ({ iterator, result })));
+      const promise = iterator.next()
+        .then(result => ({ iterator, result }))
+        .then(r => {
+          resultQueue.push(r);
+          return r;
+        });
+      pending.set(iterator, promise);
     }
 
     while (active.size > 0) {
-      // Only race on active iterators that have pending promises
+      // Wait for next result
       const activePending = Array.from(active)
         .filter(it => pending.has(it))
         .map(it => pending.get(it)!);
 
       if (activePending.length === 0) break;
 
-      const { iterator, result } = await Promise.race(activePending);
+      await Promise.race(activePending);
 
-      // Remove from pending since it completed
-      pending.delete(iterator);
+      // Process all completed results from queue
+      while (resultQueue.length > 0) {
+        const { iterator, result } = resultQueue.shift()!;
+        pending.delete(iterator);
 
-      if (result.done) {
-        active.delete(iterator);
-      } else {
-        yield result.value;
-        // Create new pending promise for this iterator
-        pending.set(iterator, iterator.next().then(r => ({ iterator, result: r })));
+        if (result.done) {
+          active.delete(iterator);
+        } else {
+          yield result.value;
+          // Start next iteration
+          const promise = iterator.next()
+            .then(r => ({ iterator, result: r }))
+            .then(r => {
+              resultQueue.push(r);
+              return r;
+            });
+          pending.set(iterator, promise);
+        }
       }
     }
   }

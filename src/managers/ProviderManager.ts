@@ -26,6 +26,7 @@ import type {
   ModelInfo,
   AgentConfiguration
 } from '../types';
+import { PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
 
 /**
  * ProviderManager - Facade over the ProviderRegistry
@@ -208,13 +209,24 @@ export class ProviderManager {
   }
 
   /**
-   * Cancel request for a specific panel only
+   * Cancel request for a specific panel only with graceful shutdown
    */
   public cancelRequest(panelId: string): void {
     const process = this._activePanelProcesses.get(panelId);
-    if (process) {
+    if (process && !process.killed) {
       console.log(`[Mysti] Cancelling request for panel: ${panelId}`);
+
+      // Try graceful termination first
       process.kill('SIGTERM');
+
+      // Schedule force kill if process doesn't terminate gracefully
+      setTimeout(() => {
+        if (process && !process.killed) {
+          console.warn(`[Mysti] Force killing process for panel: ${panelId}`);
+          process.kill('SIGKILL');
+        }
+      }, PROCESS_KILL_GRACE_PERIOD_MS);
+
       this._activePanelProcesses.delete(panelId);
     }
   }
@@ -233,9 +245,19 @@ export class ProviderManager {
     for (const provider of this._registry.getAll()) {
       provider.cancelCurrentRequest();
     }
-    // Also clear all tracked panel processes
+    // Also clear all tracked panel processes with graceful shutdown
     for (const [panelId, process] of this._activePanelProcesses) {
-      process.kill('SIGTERM');
+      if (process && !process.killed) {
+        process.kill('SIGTERM');
+
+        // Schedule force kill if needed
+        setTimeout(() => {
+          if (process && !process.killed) {
+            console.warn(`[Mysti] Force killing process for panel: ${panelId}`);
+            process.kill('SIGKILL');
+          }
+        }, PROCESS_KILL_GRACE_PERIOD_MS);
+      }
     }
     this._activePanelProcesses.clear();
   }

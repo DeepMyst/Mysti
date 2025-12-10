@@ -32,6 +32,7 @@ import type {
   AuthStatus
 } from '../../types';
 import type { AgentContextManager } from '../../managers/AgentContextManager';
+import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
 
 /**
  * Abstract base class for CLI-based AI providers
@@ -186,12 +187,14 @@ export abstract class BaseCliProvider implements ICliProvider {
 
       // Collect stderr for error reporting
       let stderrOutput = '';
+      const stderrHandler = (data: Buffer) => {
+        const text = data.toString();
+        stderrOutput += text;
+        console.log(`[Mysti] ${this.displayName} stderr:`, text);
+      };
+
       if (this._currentProcess.stderr) {
-        this._currentProcess.stderr.on('data', (data) => {
-          const text = data.toString();
-          stderrOutput += text;
-          console.log(`[Mysti] ${this.displayName} stderr:`, text);
-        });
+        this._currentProcess.stderr.on('data', stderrHandler);
       }
 
       // Send prompt via stdin
@@ -209,7 +212,30 @@ export abstract class BaseCliProvider implements ICliProvider {
     } catch (error) {
       yield this.handleError(error);
     } finally {
+      // Critical: Clean up process before clearing reference to prevent leaks
+      if (this._currentProcess && !this._currentProcess.killed) {
+        try {
+          // Remove event listeners to prevent memory leaks
+          this._currentProcess.removeAllListeners();
+
+          // Try graceful termination first
+          this._currentProcess.kill('SIGTERM');
+
+          // Schedule force kill if needed
+          const processToKill = this._currentProcess;
+          setTimeout(() => {
+            if (processToKill && !processToKill.killed) {
+              console.warn(`[Mysti] ${this.displayName}: Force killing leaked process`);
+              processToKill.kill('SIGKILL');
+            }
+          }, PROCESS_KILL_GRACE_PERIOD_MS);
+        } catch (e) {
+          console.error(`[Mysti] ${this.displayName}: Error cleaning up process:`, e);
+        }
+      }
+
       this._currentProcess = null;
+
       // Clear process tracking when done
       if (panelId && providerManager && typeof (providerManager as any).clearProcess === 'function') {
         (providerManager as any).clearProcess(panelId);
@@ -266,7 +292,7 @@ export abstract class BaseCliProvider implements ICliProvider {
   }
 
   /**
-   * Wait for the current process to complete
+   * Wait for the current process to complete with timeout protection
    */
   protected async waitForProcess(): Promise<number | null> {
     return new Promise<number | null>((resolve, reject) => {
@@ -275,12 +301,32 @@ export abstract class BaseCliProvider implements ICliProvider {
         return;
       }
 
+      // Add timeout to prevent infinite hang
+      const timeout = setTimeout(() => {
+        console.error(`[Mysti] ${this.displayName}: Process timeout after ${PROCESS_TIMEOUT_MS / 1000}s`);
+        if (this._currentProcess && !this._currentProcess.killed) {
+          // Try graceful termination first
+          this._currentProcess.kill('SIGTERM');
+
+          // Force kill if still alive after grace period
+          setTimeout(() => {
+            if (this._currentProcess && !this._currentProcess.killed) {
+              console.warn(`[Mysti] ${this.displayName}: Force killing process after grace period`);
+              this._currentProcess.kill('SIGKILL');
+            }
+          }, PROCESS_KILL_GRACE_PERIOD_MS);
+        }
+        reject(new Error('Process timeout'));
+      }, PROCESS_TIMEOUT_MS);
+
       this._currentProcess.on('close', (code) => {
+        clearTimeout(timeout);
         console.log(`[Mysti] ${this.displayName}: Process closed with code:`, code);
         resolve(code);
       });
 
       this._currentProcess.on('error', (err) => {
+        clearTimeout(timeout);
         console.error(`[Mysti] ${this.displayName}: Process error:`, err);
         reject(err);
       });

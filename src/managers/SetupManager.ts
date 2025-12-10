@@ -19,7 +19,10 @@ import type {
   ProviderSetupStatus,
   SetupResult,
   InstallResult,
-  AuthStatus
+  AuthStatus,
+  WizardProviderStatus,
+  AuthOption,
+  AuthMethodType
 } from '../types';
 
 const execAsync = promisify(exec);
@@ -261,6 +264,7 @@ export class SetupManager {
   getProviderSetupInfo(providerId: string): {
     installCommand: string;
     authCommand: string;
+    authInstructions: string[];
     docsUrl?: string;
   } | null {
     const provider = this._providerManager.getProviderInstance(providerId);
@@ -268,16 +272,213 @@ export class SetupManager {
       return null;
     }
 
-    const docsUrls: Record<string, string> = {
-      'claude-code': 'https://docs.anthropic.com/claude/docs/claude-code',
-      'openai-codex': 'https://platform.openai.com/docs/guides/codex'
+    const providerConfigs: Record<string, {
+      docsUrl: string;
+      authInstructions: string[];
+    }> = {
+      'claude-code': {
+        docsUrl: 'https://docs.anthropic.com/claude/docs/claude-code',
+        authInstructions: [
+          'Run "claude auth login" in your terminal',
+          'A browser window will open for authentication',
+          'Sign in with your Anthropic account',
+          'Return to VS Code once complete'
+        ]
+      },
+      'openai-codex': {
+        docsUrl: 'https://platform.openai.com/docs/guides/codex',
+        authInstructions: [
+          'Option 1: Run "codex auth login" to sign in with ChatGPT account',
+          'Option 2: Set OPENAI_API_KEY environment variable',
+          'Requires ChatGPT Plus/Pro subscription or API credits'
+        ]
+      },
+      'google-gemini': {
+        docsUrl: 'https://ai.google.dev/gemini-api/docs/aistudio-quickstart',
+        authInstructions: [
+          'Option 1: Run "gemini" and sign in with your Google account',
+          'Option 2: Set GEMINI_API_KEY environment variable',
+          'Option 3: Set GOOGLE_GENAI_USE_GCA=true for Google Cloud subscribers'
+        ]
+      }
+    };
+
+    const config = providerConfigs[providerId] || {
+      docsUrl: undefined,
+      authInstructions: ['Run the authentication command shown above']
     };
 
     return {
       installCommand: provider.getInstallCommand(),
       authCommand: provider.getAuthCommand(),
-      docsUrl: docsUrls[providerId]
+      authInstructions: config.authInstructions,
+      docsUrl: config.docsUrl
     };
+  }
+
+  /**
+   * Get detailed wizard status for all providers (enhanced for setup wizard)
+   */
+  async getWizardStatus(): Promise<{
+    providers: WizardProviderStatus[];
+    npmAvailable: boolean;
+    nodeVersion?: string;
+    anyReady: boolean;
+  }> {
+    const npmAvailable = await this.checkNpmAvailable();
+    const nodeVersion = await this._getNodeVersion();
+    const providers: WizardProviderStatus[] = [];
+
+    for (const provider of this._providerManager.getAllProviders()) {
+      const discovery = await provider.discoverCli();
+      let authenticated = false;
+
+      if (discovery.found) {
+        const authStatus = await provider.checkAuthentication();
+        authenticated = authStatus.authenticated;
+      }
+
+      const setupInfo = this.getProviderSetupInfo(provider.id);
+
+      providers.push({
+        providerId: provider.id,
+        displayName: provider.displayName,
+        installed: discovery.found,
+        authenticated,
+        cliVersion: discovery.version,
+        installCommand: setupInfo?.installCommand || provider.getInstallCommand(),
+        authCommand: setupInfo?.authCommand || provider.getAuthCommand(),
+        authInstructions: setupInfo?.authInstructions || [],
+        docsUrl: setupInfo?.docsUrl
+      });
+    }
+
+    // Only require installed (not authenticated) - auth errors handled inline during chat
+    const anyReady = providers.some(p => p.installed);
+
+    return {
+      providers,
+      npmAvailable,
+      nodeVersion,
+      anyReady
+    };
+  }
+
+  /**
+   * Get Node.js version if available
+   */
+  private async _getNodeVersion(): Promise<string | undefined> {
+    try {
+      const { stdout } = await execAsync('node --version');
+      return stdout.trim();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Get auth options for providers with multiple authentication methods
+   */
+  getAuthOptions(providerId: string): AuthOption[] {
+    if (providerId === 'google-gemini') {
+      return [
+        {
+          id: 'oauth',
+          label: 'Sign in with Google',
+          description: 'Use your Google account (recommended)',
+          icon: '🔐',
+          action: 'oauth'
+        },
+        {
+          id: 'api-key',
+          label: 'API Key',
+          description: 'Use a Gemini API key from Google AI Studio',
+          icon: '🔑',
+          action: 'api-key'
+        },
+        {
+          id: 'gca',
+          label: 'Google Cloud Auth (GCA)',
+          description: 'Use Application Default Credentials for Cloud subscribers',
+          icon: '☁️',
+          action: 'gca'
+        }
+      ];
+    }
+
+    if (providerId === 'openai-codex') {
+      return [
+        {
+          id: 'oauth',
+          label: 'Sign in with ChatGPT',
+          description: 'Use your ChatGPT Plus/Pro account',
+          icon: '🔐',
+          action: 'oauth'
+        },
+        {
+          id: 'api-key',
+          label: 'API Key',
+          description: 'Use an OpenAI API key',
+          icon: '🔑',
+          action: 'api-key'
+        }
+      ];
+    }
+
+    // Claude Code only has one auth method
+    return [];
+  }
+
+  /**
+   * Authenticate with a specific method (for providers with multiple auth options)
+   */
+  async authenticateWithMethod(
+    providerId: string,
+    method: AuthMethodType,
+    apiKey?: string
+  ): Promise<AuthStatus> {
+    const provider = this._providerManager.getProviderInstance(providerId);
+    if (!provider) {
+      return {
+        authenticated: false,
+        error: `Provider "${providerId}" not found`
+      };
+    }
+
+    // Handle GCA method for Gemini
+    if (method === 'gca' && providerId === 'google-gemini') {
+      // Set the environment variable for the current process
+      process.env['GOOGLE_GENAI_USE_GCA'] = 'true';
+      console.log('[Mysti] SetupManager: Set GOOGLE_GENAI_USE_GCA=true');
+
+      // Also suggest adding to shell profile
+      const terminal = vscode.window.createTerminal({
+        name: 'Gemini GCA Setup',
+        shellPath: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash'
+      });
+      terminal.show();
+      terminal.sendText('echo "Adding GOOGLE_GENAI_USE_GCA=true to your shell profile..."');
+      terminal.sendText('echo \'export GOOGLE_GENAI_USE_GCA=true\' >> ~/.zshrc');
+      terminal.sendText('echo "Done! Run \'source ~/.zshrc\' or restart your terminal."');
+
+      // Check if auth works now
+      const authStatus = await provider.checkAuthentication();
+      return authStatus;
+    }
+
+    // Handle API key method
+    if (method === 'api-key' && apiKey) {
+      const envVar = providerId === 'google-gemini' ? 'GEMINI_API_KEY' : 'OPENAI_API_KEY';
+      process.env[envVar] = apiKey;
+      console.log(`[Mysti] SetupManager: Set ${envVar} for this session`);
+
+      // Verify it works
+      const authStatus = await provider.checkAuthentication();
+      return authStatus;
+    }
+
+    // For OAuth/CLI login, use the standard flow
+    return this.authenticateProvider(providerId);
   }
 
   /**

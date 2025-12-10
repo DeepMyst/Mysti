@@ -15,11 +15,11 @@ export type OperationMode = 'default' | 'ask-before-edit' | 'edit-automatically'
 export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
 export type AccessLevel = 'read-only' | 'ask-permission' | 'full-access';
 export type ContextMode = 'auto' | 'manual';
-export type ProviderType = 'claude-code' | 'openai-codex';
+export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini';
 export type AutocompleteType = 'sentence' | 'paragraph' | 'message';
 
 // Agent and Brainstorm types
-export type AgentType = 'claude-code' | 'openai-codex';
+export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini';
 export type PersonaType = 'neutral' | 'architect' | 'pragmatist' | 'engineer' | 'reviewer' | 'designer' | 'custom';
 export type BrainstormPhase = 'initial' | 'individual' | 'discussion' | 'synthesis' | 'complete';
 export type DiscussionMode = 'quick' | 'full';
@@ -123,6 +123,11 @@ export interface ProviderConfig {
   displayName: string;
   models: ModelInfo[];
   defaultModel: string;
+}
+
+export interface ProviderAvailability {
+  available: boolean;
+  installCommand?: string;
 }
 
 export interface ModelInfo {
@@ -323,6 +328,7 @@ export interface ClarifyingQuestion {
   options?: QuestionOption[]; // For select/radio/checkbox
   placeholder?: string;       // For text input
   required: boolean;
+  questionType?: 'clarifying' | 'meta'; // Type: clarifying (pre-plan) or meta (post-plan)
 }
 
 export interface ResponseClassification {
@@ -541,6 +547,156 @@ export interface SetupStatusMessage {
     npmAvailable: boolean;
     anyReady: boolean;
   };
+}
+
+// ============================================================================
+// Setup Wizard Types (Enhanced Onboarding)
+// ============================================================================
+
+/**
+ * Setup wizard step for granular progress
+ */
+export type WizardSetupStep = 'checking' | 'downloading' | 'installing' | 'verifying' | 'authenticating' | 'complete' | 'failed';
+
+/**
+ * Extended provider status for wizard UI with detailed info
+ */
+export interface WizardProviderStatus extends ProviderSetupStatus {
+  cliVersion?: string;
+  installCommand: string;
+  authCommand: string;
+  authInstructions: string[];
+  docsUrl?: string;
+  setupStep?: WizardSetupStep;
+  setupProgress?: number;
+  setupMessage?: string;
+}
+
+/**
+ * Auth method types for providers with multiple options
+ */
+export type AuthMethodType = 'oauth' | 'api-key' | 'gca' | 'cli-login';
+
+/**
+ * Auth option for providers with multiple authentication methods (e.g., Gemini)
+ */
+export interface AuthOption {
+  id: string;
+  label: string;
+  description: string;
+  icon: string;
+  action: AuthMethodType;
+}
+
+/**
+ * Show wizard message - sent when no providers are ready
+ */
+export interface ShowWizardMessage {
+  type: 'showWizard';
+  payload: {
+    providers: WizardProviderStatus[];
+    npmAvailable: boolean;
+    nodeVersion?: string;
+    anyReady: boolean;
+  };
+}
+
+/**
+ * Update wizard status message
+ */
+export interface WizardStatusMessage {
+  type: 'wizardStatus';
+  payload: {
+    providers: WizardProviderStatus[];
+    npmAvailable: boolean;
+    anyReady: boolean;
+  };
+}
+
+/**
+ * Provider setup step progress message
+ */
+export interface ProviderSetupStepMessage {
+  type: 'providerSetupStep';
+  payload: {
+    providerId: string;
+    step: WizardSetupStep;
+    progress: number;
+    message: string;
+    details?: string;
+  };
+}
+
+/**
+ * Auth options message for providers with multiple auth methods
+ */
+export interface AuthOptionsMessage {
+  type: 'authOptions';
+  payload: {
+    providerId: string;
+    displayName: string;
+    options: AuthOption[];
+  };
+}
+
+/**
+ * Select auth method message from webview
+ */
+export interface SelectAuthMethodMessage {
+  type: 'selectAuthMethod';
+  payload: {
+    providerId: string;
+    method: AuthMethodType;
+    apiKey?: string;
+  };
+}
+
+/**
+ * Start provider setup message from webview
+ */
+export interface StartProviderSetupMessage {
+  type: 'startProviderSetup';
+  payload: {
+    providerId: string;
+    autoInstall?: boolean;
+  };
+}
+
+/**
+ * Select provider as default and close wizard
+ */
+export interface SelectProviderMessage {
+  type: 'selectProvider';
+  payload: {
+    providerId: string;
+  };
+}
+
+/**
+ * Dismiss wizard message
+ */
+export interface DismissWizardMessage {
+  type: 'dismissWizard';
+  payload?: {
+    dontShowAgain?: boolean;
+  };
+}
+
+/**
+ * Wizard complete message - provider selected, close wizard
+ */
+export interface WizardCompleteMessage {
+  type: 'wizardComplete';
+  payload: {
+    providerId: string;
+  };
+}
+
+/**
+ * Wizard dismissed message - user skipped setup
+ */
+export interface WizardDismissedMessage {
+  type: 'wizardDismissed';
 }
 
 // ============================================================================
