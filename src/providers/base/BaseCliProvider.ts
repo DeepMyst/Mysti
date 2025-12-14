@@ -284,7 +284,8 @@ export abstract class BaseCliProvider implements ICliProvider {
     const exitCode = await this.waitForProcess();
 
     // Handle errors
-    if (exitCode !== 0 && exitCode !== null && !hasYieldedContent && stderrCollector) {
+    // Show stderr errors if process failed, even if session/metadata was yielded
+    if (exitCode !== 0 && exitCode !== null && stderrCollector) {
       yield { type: 'error', content: stderrCollector };
     } else if (!hasYieldedContent && stderrCollector) {
       yield { type: 'error', content: `No response received. stderr: ${stderrCollector}` };

@@ -41,15 +41,9 @@ export class GeminiProvider extends BaseCliProvider {
     displayName: 'Gemini',
     models: [
       {
-        id: 'gemini-3-pro',
-        name: 'Gemini 3 Pro',
+        id: 'gemini-3-pro-preview',
+        name: 'Gemini 3 Pro (Preview)',
         description: 'Most intelligent, best for complex multimodal tasks',
-        contextWindow: 1048576
-      },
-      {
-        id: 'gemini-3-deep-think',
-        name: 'Gemini 3 Deep Think',
-        description: 'Advanced reasoning for complex problems',
         contextWindow: 1048576
       },
       {
@@ -71,7 +65,7 @@ export class GeminiProvider extends BaseCliProvider {
         contextWindow: 1048576
       }
     ],
-    defaultModel: 'gemini-3-pro'
+    defaultModel: 'gemini-2.5-flash'
   };
 
   readonly capabilities: ProviderCapabilities = {
@@ -192,9 +186,16 @@ export class GeminiProvider extends BaseCliProvider {
       '--output-format', 'stream-json'
     ];
 
-    // Add model selection
+    // Add model selection with validation
     if (settings.model) {
-      args.push('-m', settings.model);
+      // Validate model is in our config
+      const modelExists = this.config.models.some(m => m.id === settings.model);
+      if (!modelExists) {
+        console.warn(`[Mysti] Gemini: Invalid model ${settings.model}, using default ${this.config.defaultModel}`);
+        args.push('-m', this.config.defaultModel);
+      } else {
+        args.push('-m', settings.model);
+      }
     }
 
     // Map Mysti modes/access levels to Gemini CLI flags

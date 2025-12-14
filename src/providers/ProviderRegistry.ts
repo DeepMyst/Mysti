@@ -155,8 +155,8 @@ export class ProviderRegistry {
 
     for (const provider of this._providers.values()) {
       try {
-        const isAuth = await provider.checkAuthentication();
-        if (isAuth) {
+        const authStatus = await provider.checkAuthentication();
+        if (authStatus.authenticated) {
           authenticated.push(provider);
         }
       } catch (error) {
