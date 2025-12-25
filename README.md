@@ -1,4 +1,4 @@
-# Mysti - AI Coding Agent
+# Mysti - Your AI Coding Team (Claude, Codex and Gemini) working together
 
 <p align="center">
   <img src="resources/Mysti-Logo.png" alt="Mysti Logo" width="128" height="128">
@@ -20,8 +20,9 @@
 </p>
 
 <p align="center">
-  <strong>Your AI Coding Assistant for VSCode</strong><br>
-  <em>Use Claude Code, Codex, or Gemini — or combine any two in Brainstorm Mode</em>
+  <strong>Your AI Coding team for VSCode</strong><br>
+  <em>Use Claude Code, Codex, or Gemini — or combine any two in Brainstorm Mode and never hit bottlenecks</em><br>
+  <em>Wisdom of the crowd where the collective intelligence of several agents outperforms a single one.</em>
 </p>
 
 <p align="center">
