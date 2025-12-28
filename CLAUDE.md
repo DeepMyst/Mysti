@@ -12,16 +12,24 @@ Mysti is a VSCode extension providing a unified AI coding assistant interface su
 npm run compile           # Production build (webpack)
 npm run watch             # Development build with watch mode
 npm run lint              # ESLint check
-npm run sync-agents       # Sync agent definitions from resources/agents
-npm run sync-agents:force # Force sync, overwrite user changes
+npm run sync-agents       # Sync plugins from wshobson/agents repo
+npm run sync-agents:force # Force sync (ignores 24h cache)
 npx vsce package          # Package extension as .vsix
 ```
 
 Output: `dist/extension.js` from entry point `src/extension.ts`
 
+**Note:** Tests are not yet implemented (`npm run test` exists but has no test files).
+
 ## Development
 
 Press `F5` in VSCode to launch Extension Development Host for debugging. Set breakpoints in TypeScript files and filter Debug Console with `[Mysti]` for extension logs.
+
+**CLI requirements**: At least one of these CLIs must be installed for the extension to function:
+
+- `npm install -g @anthropic-ai/claude-code` (Claude Code)
+- `npm install -g @google/gemini-cli` (Gemini)
+- Codex CLI (OpenAI - follow their installation guide)
 
 ## Architecture
 
@@ -211,7 +219,7 @@ activationTriggers:
 Detailed instructions for the AI when this skill is enabled...
 ```
 
-**Syncing agents**: Run `npm run sync-agents` to update cached agent definitions after modifying markdown files. Use `npm run sync-agents:force` to overwrite user customizations.
+**Syncing agents**: Run `npm run sync-agents` to fetch curated plugins from the `wshobson/agents` GitHub repository into `resources/agents/plugins/`. The script caches for 24 hours; use `--force` to bypass.
 
 ### Legacy: Static Personas/Skills (Fallback)
 

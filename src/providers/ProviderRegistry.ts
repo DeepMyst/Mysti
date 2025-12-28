@@ -16,6 +16,7 @@ import type { ICliProvider } from './base/IProvider';
 import { ClaudeCodeProvider } from './claude/ClaudeCodeProvider';
 import { CodexProvider } from './codex/CodexProvider';
 import { GeminiProvider } from './gemini/GeminiProvider';
+import { CopilotProvider } from './copilot/CopilotProvider';
 
 /**
  * Registry for managing CLI providers
@@ -49,6 +50,11 @@ export class ProviderRegistry {
     const gemini = new GeminiProvider(this._extensionContext);
     this._providers.set(gemini.id, gemini);
     console.log(`[Mysti] Registered provider: ${gemini.displayName}`);
+
+    // Register GitHub Copilot
+    const copilot = new CopilotProvider(this._extensionContext);
+    this._providers.set(copilot.id, copilot);
+    console.log(`[Mysti] Registered provider: ${copilot.displayName}`);
   }
 
   /**

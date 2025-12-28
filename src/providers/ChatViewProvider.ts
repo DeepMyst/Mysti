@@ -61,6 +61,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // Track if agents have been loaded
   private _agentsLoaded: boolean = false;
   private _agentInitPromise: Promise<void>;
+  // Track panels with pending AskUserQuestion (to suppress plan options/suggestions)
+  private _pendingAskUserQuestions: Set<string> = new Set();
 
   constructor(
     extensionUri: vscode.Uri,
@@ -219,9 +221,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       : Object.values(DEVELOPER_SKILLS);
 
     // Get agent settings
+    const agentConfig = vscode.workspace.getConfiguration('mysti');
     const agentSettings = {
       autoSuggest: this._agentsLoaded ? this._agentContextManager.isAutoSuggestEnabled() : false,
-      maxTokenBudget: this._agentsLoaded ? this._agentContextManager.getTokenBudget() : 2000
+      maxTokenBudget: this._agentsLoaded ? this._agentContextManager.getTokenBudget() : 2000,
+      showSuggestions: agentConfig.get<boolean>('showSuggestions', true)
     };
 
     // Get brainstorm agent configuration
@@ -577,6 +581,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
         break;
 
+      case 'refreshProviderDetection':
+        await this._handleRefreshProviderDetection((message as any).panelId);
+        break;
+
+      case 'openTerminal':
+        this._handleOpenTerminal(
+          message.payload as { providerId: string; command: string }
+        );
+        break;
+
       case 'requestProviderInstallInfo':
         await this._handleRequestProviderInstallInfo(
           message.payload as { providerId: string },
@@ -725,6 +739,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         }
         break;
+
+      case 'askUserQuestionResponse':
+        await this._handleAskUserQuestionResponse(
+          message.payload as { toolCallId: string; answers: Record<string, string | string[]> },
+          (message as any).panelId
+        );
+        break;
+
+      case 'openTerminal':
+        {
+          const authCommand = message.payload as string;
+          const terminal = vscode.window.createTerminal('Authenticate Provider');
+          terminal.show();
+          terminal.sendText(authCommand);
+        }
+        break;
     }
   }
 
@@ -801,6 +831,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       vscode.window.showErrorMessage(`Failed to revert ${payload.path}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+
+  private async _handleAskUserQuestionResponse(
+    payload: { toolCallId: string; answers: Record<string, string | string[]> },
+    panelId: string
+  ): Promise<void> {
+    // Clear the pending AskUserQuestion tracking
+    this._pendingAskUserQuestions.delete(panelId);
+
+    // Send tool_result to mark the tool as completed
+    this._postToPanel(panelId, {
+      type: 'toolResult',
+      payload: {
+        id: payload.toolCallId,
+        name: 'AskUserQuestion',
+        input: {},
+        output: 'User provided answers',
+        status: 'completed'
+      }
+    });
+
+    // Format answers into a readable message for Claude
+    const parts = ['Here are my answers:\n'];
+    for (const [questionHeader, answer] of Object.entries(payload.answers)) {
+      const formattedAnswer = Array.isArray(answer) ? answer.join(', ') : answer;
+      parts.push(`**${questionHeader}**: ${formattedAnswer}`);
+    }
+    parts.push('\nPlease proceed based on these choices.');
+
+    // Get settings from config
+    const config = vscode.workspace.getConfiguration('mysti');
+    const settings: Settings = {
+      mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
+      thinkingLevel: config.get('defaultThinkingLevel', 'medium') as Settings['thinkingLevel'],
+      accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
+      contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
+      model: config.get('defaultModel', 'claude-sonnet-4-5-20250929'),
+      provider: config.get('defaultProvider', 'claude-code') as Settings['provider']
+    };
+
+    // Send as follow-up message
+    await this._handleSendMessage(
+      {
+        content: parts.join('\n'),
+        context: this._contextManager.getContext(),
+        settings
+      },
+      panelId
+    );
   }
 
   private async _handleSendMessage(
@@ -916,10 +995,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
             break;
 
+          case 'auth_error':
+            this._postToPanel(panelId, {
+              type: 'authError',
+              payload: {
+                error: chunk.content,
+                authCommand: chunk.authCommand,
+                providerName: chunk.providerName
+              }
+            });
+            break;
+
           case 'session_active':
             this._postToPanel(panelId, {
               type: 'sessionActive',
               payload: { sessionId: chunk.sessionId }
+            });
+            break;
+
+          case 'ask_user_question':
+            // Track that this panel has a pending question (suppresses plan options/suggestions)
+            this._pendingAskUserQuestions.add(panelId);
+            // Show tool_use with pending status so user sees it's waiting for their input
+            this._postToPanel(panelId, {
+              type: 'toolUse',
+              payload: {
+                id: chunk.askUserQuestion?.toolCallId || 'ask-user-question',
+                name: 'AskUserQuestion',
+                input: { questions: chunk.askUserQuestion?.questions },
+                status: 'pending'
+              }
+            });
+            // Send the question UI
+            this._postToPanel(panelId, {
+              type: 'askUserQuestion',
+              payload: chunk.askUserQuestion
             });
             break;
 
@@ -947,13 +1057,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
             });
 
-            // Always run classification to show visual questions and plan options
-            // (brainstorm has its own handler via _handleBrainstormMessage)
-            const hasInteractiveElements = await this._detectAndSendPlanOptions(assistantMessage, panelId);
+            // Skip plan options and suggestions if there's a pending AskUserQuestion
+            if (!this._pendingAskUserQuestions.has(panelId)) {
+              // Run classification to show visual questions and plan options
+              // (brainstorm has its own handler via _handleBrainstormMessage)
+              const hasInteractiveElements = await this._detectAndSendPlanOptions(assistantMessage, panelId);
 
-            // Only generate suggestions if no interactive elements were detected
-            if (!hasInteractiveElements) {
-              this._generateSuggestionsAsync(assistantMessage, panelId);
+              // Only generate suggestions if no interactive elements were detected
+              if (!hasInteractiveElements) {
+                this._generateSuggestionsAsync(assistantMessage, panelId);
+              }
             }
             break;
         }
@@ -1180,12 +1293,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if ('agents.maxTokenBudget' in settingsAny) {
       await config.update('agents.maxTokenBudget', settingsAny['agents.maxTokenBudget'], vscode.ConfigurationTarget.Global);
     }
+    if ('showSuggestions' in settingsAny) {
+      await config.update('showSuggestions', settingsAny['showSuggestions'], vscode.ConfigurationTarget.Global);
+    }
 
     // Handle brainstorm agent selection
     if ('brainstorm.agents' in settingsAny) {
       const agents = settingsAny['brainstorm.agents'] as string[];
       // Validate: exactly 2 agents from valid set
-      const validAgents = ['claude-code', 'openai-codex', 'google-gemini'];
+      const validAgents = ['claude-code', 'openai-codex', 'google-gemini', 'github-copilot'];
       const filtered = agents.filter(a => validAgents.includes(a));
       if (filtered.length === 2) {
         await config.update('brainstorm.agents', filtered, vscode.ConfigurationTarget.Global);
@@ -1747,7 +1863,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             '/exit-plan-mode - Exit plan mode and switch to ask-before-edit\n' +
             '/exit-plan - Alias for /exit-plan-mode\n' +
             '/model [model] - Show/change AI model\n' +
-            '/agent [agent] - Switch agent (claude-code, openai-codex, google-gemini, brainstorm)\n' +
+            '/agent [agent] - Switch agent (claude-code, openai-codex, google-gemini, github-copilot, brainstorm)\n' +
             '/brainstorm [on|off|status] - Toggle brainstorm mode';
         }
       },
@@ -1863,10 +1979,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       {
         name: 'agent',
-        description: 'Switch AI agent (claude-code, openai-codex, google-gemini)',
+        description: 'Switch AI agent (claude-code, openai-codex, google-gemini, github-copilot)',
         handler: (args: string) => {
           if (args) {
-            const agents = ['claude-code', 'openai-codex', 'google-gemini'];
+            const agents = ['claude-code', 'openai-codex', 'google-gemini', 'github-copilot'];
             if (agents.includes(args)) {
               // Get the new provider's default model for feedback
               const newProviderConfig = this._providerManager.getProvider(args);
@@ -1887,7 +2003,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               const agentNames: Record<string, string> = {
                 'claude-code': 'Claude Code',
                 'openai-codex': 'OpenAI Codex',
-                'google-gemini': 'Gemini'
+                'google-gemini': 'Gemini',
+                'github-copilot': 'GitHub Copilot'
               };
               const agentName = agentNames[args] || args;
               if (willSwitchModel && newProviderConfig) {
@@ -2561,6 +2678,54 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Send initial state anyway - user can configure later
     this._sendInitialState(panelId);
+  }
+
+  /**
+   * Handle refresh provider detection request
+   * Clears cached detection results and re-runs discovery
+   */
+  private async _handleRefreshProviderDetection(panelId: string): Promise<void> {
+    console.log('[Mysti] ChatViewProvider: Refreshing provider detection');
+
+    // Reset npm cache in SetupManager
+    this._setupManager.resetNpmCache();
+
+    // Re-run discovery for all providers and send updated wizard status
+    const wizardStatus = await this._setupManager.getWizardStatus();
+    this._postToPanel(panelId, {
+      type: 'wizardStatus',
+      payload: wizardStatus
+    });
+
+    // Also update provider availability
+    const providerStatuses = wizardStatus.providers.map(p => ({
+      id: p.providerId,
+      name: p.displayName,
+      installed: p.installed,
+      authenticated: p.authenticated
+    }));
+
+    this._postToPanel(panelId, {
+      type: 'providerAvailability',
+      payload: providerStatuses
+    });
+
+    console.log('[Mysti] ChatViewProvider: Provider detection refreshed');
+  }
+
+  /**
+   * Handle open terminal request
+   * Opens a VSCode terminal with the install command pre-filled
+   */
+  private _handleOpenTerminal(payload: { providerId: string; command: string }): void {
+    const terminal = vscode.window.createTerminal({
+      name: `Install ${payload.providerId}`,
+      shellPath: process.platform === 'win32' ? undefined : process.env.SHELL
+    });
+    terminal.show();
+    terminal.sendText(`# Run this command to install ${payload.providerId}:`);
+    terminal.sendText(payload.command);
+    console.log(`[Mysti] ChatViewProvider: Opened terminal for ${payload.providerId}`);
   }
 
   /**

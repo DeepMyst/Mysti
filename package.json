@@ -1,8 +1,8 @@
 {
   "name": "mysti",
   "displayName": "Mysti - AI Coding Agent",
-  "description": "Multi-agent AI coding assistant. Claude Code, Codex, and Gemini brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
-  "version": "0.2.1",
+  "description": "Multi-agent AI coding assistant. Claude Code, Codex, Gemini, and GitHub Copilot brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
+  "version": "0.2.2",
   "publisher": "DeepMyst",
   "author": {
     "name": "Baha Abunojaim",
@@ -36,21 +36,34 @@
     "claude",
     "claude code",
     "copilot",
+    "github copilot",
     "cursor",
+    "cursor alternative",
     "gpt",
+    "gpt-5",
     "codex",
     "gemini",
     "ai agent",
     "ai chat",
+    "ai coding",
+    "ai coding assistant",
     "code assistant",
+    "code completion",
     "pair programming",
     "anthropic",
     "openai",
     "google",
     "multi-agent",
-    "brainstorm"
+    "brainstorm",
+    "llm",
+    "chatgpt",
+    "agentic",
+    "developer tools",
+    "productivity",
+    "autocomplete",
+    "code generation"
   ],
-  "license": "BUSL-1.1",
+  "license": "MIT",
   "activationEvents": [
     "onStartupFinished",
     "workspaceContains:claude.md",
@@ -165,12 +178,14 @@
           "enum": [
             "claude-code",
             "openai-codex",
-            "google-gemini"
+            "google-gemini",
+            "github-copilot"
           ],
           "enumDescriptions": [
             "Claude Code CLI (Anthropic) - Deep reasoning, complex refactoring, thorough analysis",
             "OpenAI Codex CLI - Quick iterations, familiar GPT style, rapid prototyping",
-            "Google Gemini CLI - Fast responses, Google ecosystem integration"
+            "Google Gemini CLI - Fast responses, Google ecosystem integration",
+            "GitHub Copilot CLI - GitHub-native AI assistant with seamless GitHub integration"
           ],
           "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context."
         },
@@ -188,6 +203,11 @@
           "type": "string",
           "default": "gemini",
           "description": "Path to Google Gemini CLI executable"
+        },
+        "mysti.copilotPath": {
+          "type": "string",
+          "default": "copilot",
+          "description": "Path to GitHub Copilot CLI executable"
         },
         "mysti.defaultMode": {
           "type": "string",
@@ -235,6 +255,11 @@
           "default": true,
           "description": "Automatically include open files and selections as context for better AI responses"
         },
+        "mysti.showSuggestions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show quick action suggestions after AI responses"
+        },
         "mysti.brainstorm.enabled": {
           "type": "boolean",
           "default": false,
@@ -266,7 +291,8 @@
           "enum": [
             "claude-code",
             "openai-codex",
-            "google-gemini"
+            "google-gemini",
+            "github-copilot"
           ],
           "description": "Agent to use for synthesis in brainstorm mode"
         },
@@ -275,12 +301,12 @@
           "default": ["claude-code", "openai-codex"],
           "items": {
             "type": "string",
-            "enum": ["claude-code", "openai-codex", "google-gemini"]
+            "enum": ["claude-code", "openai-codex", "google-gemini", "github-copilot"]
           },
           "minItems": 2,
           "maxItems": 2,
           "uniqueItems": true,
-          "description": "Select any 2 of 3 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
+          "description": "Select any 2 of 4 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
         },
         "mysti.agents.claudePersona": {
           "type": "string",
@@ -365,6 +391,34 @@
           "type": "string",
           "default": "",
           "description": "Custom persona prompt for Gemini (when persona is 'custom')"
+        },
+        "mysti.agents.copilotPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "No additional framing",
+            "Focus on system design and patterns",
+            "Focus on practical implementation",
+            "Focus on technical correctness and performance",
+            "Focus on code quality and issues",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for Copilot agent in brainstorm mode"
+        },
+        "mysti.agents.copilotCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Copilot (when persona is 'custom')"
         },
         "mysti.agents.autoSuggest": {
           "type": "boolean",

@@ -12,6 +12,9 @@
  */
 
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
 import type { ProviderManager } from './ProviderManager';
@@ -40,6 +43,7 @@ export class SetupManager {
   private _extensionContext: vscode.ExtensionContext;
   private _providerManager: ProviderManager;
   private _npmAvailable: boolean | null = null;
+  private _npmPath: string | null = null;
 
   constructor(context: vscode.ExtensionContext, providerManager: ProviderManager) {
     this._extensionContext = context;
@@ -48,22 +52,143 @@ export class SetupManager {
 
   /**
    * Check if npm is available on the system
+   * Uses multiple detection methods to handle NVM and other non-standard installs
    */
   async checkNpmAvailable(): Promise<boolean> {
     if (this._npmAvailable !== null) {
       return this._npmAvailable;
     }
 
-    try {
-      await execAsync('npm --version');
+    // Method 1: Direct exec (works for standard PATH-based installs)
+    if (await this._checkNpmDirect()) {
       this._npmAvailable = true;
-      console.log('[Mysti] SetupManager: npm is available');
-    } catch {
-      this._npmAvailable = false;
-      console.log('[Mysti] SetupManager: npm is not available');
+      this._npmPath = 'npm';
+      console.log('[Mysti] SetupManager: npm found via direct exec');
+      return true;
     }
 
-    return this._npmAvailable;
+    // Method 2: Check common NVM paths directly
+    const nvmPath = await this._checkNpmInNvmPaths();
+    if (nvmPath) {
+      this._npmAvailable = true;
+      this._npmPath = nvmPath;
+      console.log(`[Mysti] SetupManager: npm found at: ${nvmPath}`);
+      return true;
+    }
+
+    // Method 3: Login shell execution (inherits .bashrc/.zshrc initialization)
+    if (await this._checkNpmViaLoginShell()) {
+      this._npmAvailable = true;
+      this._npmPath = 'npm'; // Will use login shell for execution
+      console.log('[Mysti] SetupManager: npm found via login shell');
+      return true;
+    }
+
+    this._npmAvailable = false;
+    console.log('[Mysti] SetupManager: npm not available');
+    return false;
+  }
+
+  /**
+   * Get the npm executable path (useful for running npm commands)
+   */
+  getNpmPath(): string | null {
+    return this._npmPath;
+  }
+
+  /**
+   * Direct npm --version check (original method, fast path)
+   */
+  private async _checkNpmDirect(): Promise<boolean> {
+    try {
+      await execAsync('npm --version');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Check common NVM installation paths directly
+   */
+  private async _checkNpmInNvmPaths(): Promise<string | null> {
+    const homeDir = os.homedir();
+    const nvmDir = process.env.NVM_DIR || path.join(homeDir, '.nvm');
+
+    // Check paths in order of likelihood
+    const pathsToCheck = [
+      // NVM current symlink (most common)
+      path.join(nvmDir, 'current', 'bin', 'npm'),
+      // Common user-local paths
+      path.join(homeDir, '.npm-global', 'bin', 'npm'),
+      path.join(homeDir, '.local', 'bin', 'npm'),
+      // System paths
+      '/usr/local/bin/npm',
+      '/opt/homebrew/bin/npm',
+    ];
+
+    for (const npmPath of pathsToCheck) {
+      try {
+        fs.accessSync(npmPath, fs.constants.X_OK);
+        // Verify it actually works
+        await execAsync(`"${npmPath}" --version`);
+        console.log(`[Mysti] SetupManager: Found npm at ${npmPath}`);
+        return npmPath;
+      } catch {
+        // Continue to next path
+      }
+    }
+
+    // Check NVM versions directory for installed Node versions
+    const versionsDir = path.join(nvmDir, 'versions', 'node');
+    if (fs.existsSync(versionsDir)) {
+      try {
+        const versions = fs.readdirSync(versionsDir)
+          .filter(v => v.startsWith('v'))
+          .sort()
+          .reverse(); // Latest first
+
+        for (const version of versions) {
+          const npmPath = path.join(versionsDir, version, 'bin', 'npm');
+          try {
+            fs.accessSync(npmPath, fs.constants.X_OK);
+            await execAsync(`"${npmPath}" --version`);
+            console.log(`[Mysti] SetupManager: Found npm in NVM version ${version}`);
+            return npmPath;
+          } catch {
+            // Continue to next version
+          }
+        }
+      } catch {
+        // Ignore directory read errors
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Check npm via login shell (inherits NVM initialization from shell rc files)
+   */
+  private async _checkNpmViaLoginShell(): Promise<boolean> {
+    if (process.platform === 'win32') {
+      // Windows doesn't have the same shell initialization issues
+      return false;
+    }
+
+    try {
+      // Determine user's default shell
+      const shell = process.env.SHELL || '/bin/bash';
+
+      // Use login shell (-l) to load initialization files (.bashrc, .zshrc, etc.)
+      // These files typically contain NVM initialization
+      const command = `${shell} -l -c "npm --version"`;
+
+      await execAsync(command, { timeout: 10000 });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -172,7 +297,7 @@ export class SetupManager {
     if (!npmAvailable) {
       return {
         success: false,
-        error: 'npm is not available on your system. Please install Node.js and npm first.',
+        error: 'npm is not available. This may be because npm is installed via NVM and not accessible from VSCode. Try: 1) Open a terminal and run the install command manually, or 2) Install Node.js from nodejs.org',
         requiresManual: true
       };
     }
@@ -191,8 +316,11 @@ export class SetupManager {
     onProgress?.('installing', `Running: ${installCommand}`, 40);
 
     try {
-      // Run npm install with timeout
-      const result = await this._runCommand(installCommand, 120000); // 2 minute timeout
+      // Determine if we need to use login shell (npm found via login shell check)
+      const useLoginShell = this._npmPath === 'npm' && !(await this._checkNpmDirect());
+
+      // Run npm install with timeout and optional login shell
+      const result = await this._runCommand(installCommand, 120000, useLoginShell);
 
       if (!result.success) {
         return {
@@ -483,16 +611,31 @@ export class SetupManager {
 
   /**
    * Run a command and return the result
+   * @param command The command to run
+   * @param timeout Timeout in milliseconds
+   * @param useLoginShell Whether to run in a login shell (for npm commands with NVM)
    */
   private async _runCommand(
     command: string,
-    timeout: number = 60000
+    timeout: number = 60000,
+    useLoginShell: boolean = false
   ): Promise<{ success: boolean; output?: string; error?: string }> {
     return new Promise((resolve) => {
-      const proc = spawn(command, [], {
-        shell: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-      });
+      let proc;
+
+      // For npm commands, optionally use login shell to inherit NVM environment
+      if (useLoginShell && process.platform !== 'win32') {
+        const shell = process.env.SHELL || '/bin/bash';
+        proc = spawn(shell, ['-l', '-c', command], {
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+        console.log(`[Mysti] SetupManager: Running command with login shell: ${command}`);
+      } else {
+        proc = spawn(command, [], {
+          shell: true,
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+      }
 
       let stdout = '';
       let stderr = '';
@@ -533,5 +676,13 @@ export class SetupManager {
         });
       });
     });
+  }
+
+  /**
+   * Reset npm availability cache (for refresh detection)
+   */
+  resetNpmCache(): void {
+    this._npmAvailable = null;
+    this._npmPath = null;
   }
 }

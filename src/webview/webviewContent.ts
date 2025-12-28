@@ -40,8 +40,9 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   const openaiLogoLightUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openai.svg')).toString();
   const openaiLogoDarkUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openai_white.png')).toString();
   const geminiLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'gemini.png.webp')).toString();
+  const copilotLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'copilot.png')).toString();
 
-  const script = getScript(mermaidUri.toString(), logoUri.toString(), iconUris, claudeLogoUri, openaiLogoLightUri, openaiLogoDarkUri, geminiLogoUri, version);
+  const script = getScript(mermaidUri.toString(), logoUri.toString(), iconUris, claudeLogoUri, openaiLogoLightUri, openaiLogoDarkUri, geminiLogoUri, copilotLogoUri, version);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -136,6 +137,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <option value="claude-code">Claude Code</option>
           <option value="openai-codex">OpenAI Codex</option>
           <option value="google-gemini">Gemini</option>
+          <option value="github-copilot">GitHub Copilot</option>
           <option value="brainstorm">Brainstorm</option>
         </select>
       </div>
@@ -177,6 +179,13 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
               <span class="brainstorm-agent-name">Gemini</span>
             </span>
           </label>
+          <label class="brainstorm-agent-option" data-agent="github-copilot">
+            <input type="checkbox" name="brainstorm-agent" value="github-copilot" />
+            <span class="brainstorm-agent-chip">
+              <span class="brainstorm-agent-dot" style="background: #6366F1;"></span>
+              <span class="brainstorm-agent-name">Copilot</span>
+            </span>
+          </label>
         </div>
         <div class="brainstorm-agent-error hidden" id="brainstorm-agent-error">
           Please select exactly 2 agents
@@ -210,6 +219,16 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <span class="token-budget-suffix">tokens</span>
         </div>
         <div class="token-budget-hint">Recommended: 1000-4000</div>
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-section">
+        <label class="settings-label">Quick Suggestions</label>
+        <div class="settings-toggle-row">
+          <div id="suggestions-toggle" class="settings-toggle active">
+            <div class="settings-toggle-knob"></div>
+          </div>
+          <span class="settings-toggle-label">Show after AI responses</span>
+        </div>
       </div>
     </div>
 
@@ -300,6 +319,14 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
 
     <!-- Messages area -->
     <div id="messages" class="messages">
+      <!-- Fixed container for stuck in-progress items -->
+      <div id="sticky-progress-container" class="sticky-progress-container">
+        <div class="sticky-progress-header">
+          <span class="sticky-progress-title">In Progress</span>
+          <span class="sticky-progress-count"></span>
+        </div>
+        <div class="sticky-progress-list"></div>
+      </div>
       <div class="welcome-container">
         <div class="welcome-header">
           <img src="${logoUri}" alt="Mysti" class="welcome-logo" />
@@ -311,8 +338,18 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     </div>
 
     <!-- Quick actions (dynamically populated) -->
-    <div id="quick-actions" class="quick-actions">
-      <!-- Suggestions will be dynamically generated after each response -->
+    <div id="quick-actions-container" class="quick-actions-container">
+      <div class="quick-actions-header">
+        <span class="quick-actions-title">Suggestions</span>
+        <button id="quick-actions-hide" class="quick-actions-hide" title="Hide suggestions">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+          </svg>
+        </button>
+      </div>
+      <div id="quick-actions" class="quick-actions">
+        <!-- Suggestions will be dynamically generated after each response -->
+      </div>
     </div>
 
     <!-- Inline suggestions widget (compact, above input) -->
@@ -422,6 +459,10 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
       <div class="agent-menu-item" data-agent="google-gemini">
         <span class="agent-item-icon"><img class="gemini-logo" src="${geminiLogoUri}" alt="" /></span>
         <span class="agent-item-name">Gemini</span>
+      </div>
+      <div class="agent-menu-item" data-agent="github-copilot">
+        <span class="agent-item-icon"><img class="copilot-logo" src="${copilotLogoUri}" alt="" /></span>
+        <span class="agent-item-name">GitHub Copilot</span>
       </div>
       <div class="agent-menu-divider"></div>
       <div class="agent-menu-item" data-agent="brainstorm">
@@ -535,6 +576,26 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
             <button class="provider-action-btn primary" data-action="setup">Set Up</button>
           </div>
         </div>
+
+        <!-- GitHub Copilot -->
+        <div class="provider-card" data-provider="github-copilot">
+          <div class="provider-card-header">
+            <img src="${copilotLogoUri}" alt="Copilot" class="provider-logo copilot-logo" />
+            <div class="provider-info">
+              <h3>GitHub Copilot</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">GitHub's Copilot - AI pair programmer with GitHub integration</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
       </div>
 
       <!-- Auth Options Modal (for Gemini) -->
@@ -584,6 +645,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <div class="install-command-box">
           <code id="install-command-text"></code>
           <button id="install-copy-btn" class="install-copy-btn" title="Copy command">&#128203;</button>
+          <button id="install-terminal-btn" class="install-terminal-btn" title="Open in Terminal">&#9654;</button>
         </div>
       </div>
 
@@ -596,6 +658,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <a id="install-docs-link" href="#" class="install-docs-link" target="_blank">
           &#128218; View Documentation
         </a>
+        <button id="install-refresh-btn" class="install-refresh-btn" title="Refresh Detection">&#8635; Refresh Detection</button>
         <button id="install-close-btn" class="install-close-btn">Close</button>
       </div>
     </div>
@@ -1864,19 +1927,93 @@ function getStyles(): string {
       display: none;
     }
 
-    /* Suggestions container - grid layout for cards */
+    /* Suggestions container wrapper */
+    .quick-actions-container {
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+
+    .quick-actions-container.hidden {
+      display: none;
+    }
+
+    .quick-actions-container.ai-running {
+      display: none;
+    }
+
+    .quick-actions-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 12px;
+      background: var(--vscode-sideBar-background);
+    }
+
+    .quick-actions-title {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--vscode-descriptionForeground);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .quick-actions-hide {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      border-radius: 4px;
+      opacity: 0.7;
+      transition: all 0.15s ease;
+    }
+
+    .quick-actions-hide:hover {
+      opacity: 1;
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-foreground);
+    }
+
+    /* Suggestions grid - layout for cards */
     .quick-actions {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
       gap: 8px;
       padding: 12px;
-      border-top: 1px solid var(--vscode-panel-border);
       max-height: 280px;
       overflow-y: auto;
     }
 
     .quick-actions.loading {
       pointer-events: none;
+    }
+
+    .quick-actions:empty {
+      display: none;
+    }
+
+    /* Responsive: single column for narrow panels */
+    @media (max-width: 400px) {
+      .quick-actions {
+        grid-template-columns: 1fr;
+        padding: 8px;
+        gap: 6px;
+        max-height: 200px;
+      }
+
+      .suggestion-card {
+        padding: 8px;
+      }
+
+      .suggestion-icon {
+        width: 28px;
+        height: 28px;
+        font-size: 14px;
+      }
     }
 
     @keyframes shimmer {
@@ -2941,6 +3078,24 @@ function getStyles(): string {
       color: white;
     }
 
+    .tool-call-status.pending {
+      background: var(--vscode-charts-yellow, #f59e0b);
+      color: #1a1a1a;
+    }
+
+    /* Pending tool call styling (for AskUserQuestion awaiting input) */
+    .tool-call.pending {
+      border-left: 3px solid var(--vscode-charts-yellow, #f59e0b);
+    }
+
+    .tool-call.pending .tool-call-spinner {
+      animation: spin 1.5s linear infinite;
+    }
+
+    .tool-call.pending .tool-call-spinner circle {
+      stroke: var(--vscode-charts-yellow, #f59e0b);
+    }
+
     /* Todo List Styles */
     .todo-list {
       display: flex;
@@ -2994,6 +3149,137 @@ function getStyles(): string {
 
     .todo-content {
       flex: 1;
+    }
+
+    /* Sticky Progress Container - for scroll-aware sticky items */
+    .sticky-progress-container {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: none;
+      background: var(--vscode-sideBar-background);
+      border-bottom: 1px solid var(--vscode-panel-border);
+      padding: 8px 12px;
+      margin: 0 0 8px 0;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      border-radius: 0 0 8px 8px;
+    }
+
+    .sticky-progress-container.has-items {
+      display: block;
+    }
+
+    .sticky-progress-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+      margin-bottom: 6px;
+    }
+
+    .sticky-progress-title {
+      opacity: 0.8;
+    }
+
+    .sticky-progress-count {
+      margin-left: auto;
+      font-weight: normal;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+    }
+
+    .sticky-progress-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    /* Individual stuck item styling */
+    .stuck-todo-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      background: var(--vscode-editor-background);
+      border-left: 2px solid var(--vscode-charts-blue);
+      animation: slideInFromTop 0.3s ease-out forwards;
+    }
+
+    .stuck-todo-item.unsticking {
+      animation: slideOutToPosition 0.3s ease-in forwards;
+    }
+
+    .stuck-todo-icon {
+      width: 14px;
+      height: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: var(--vscode-charts-blue);
+    }
+
+    .stuck-todo-icon svg {
+      animation: spin 1s linear infinite;
+    }
+
+    .stuck-todo-text {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Completion animation for stuck items */
+    .stuck-todo-item.completing {
+      animation: todoCompleteStuck 0.5s ease forwards;
+      border-left-color: var(--vscode-charts-green, #22c55e);
+    }
+
+    .stuck-todo-item.completing .stuck-todo-icon {
+      color: var(--vscode-charts-green, #22c55e);
+    }
+
+    .stuck-todo-item.completing .stuck-todo-icon svg {
+      animation: none;
+    }
+
+    /* Mark original item as stuck (invisible but maintains space) */
+    .todo-item.is-stuck {
+      visibility: hidden;
+    }
+
+    /* Slide animations */
+    @keyframes slideInFromTop {
+      from {
+        transform: translateY(-100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    @keyframes slideOutToPosition {
+      from {
+        transform: translateY(0);
+        opacity: 1;
+      }
+      to {
+        transform: translateY(-100%);
+        opacity: 0;
+      }
+    }
+
+    @keyframes todoCompleteStuck {
+      0% { opacity: 1; background: var(--vscode-editor-background); }
+      30% { opacity: 1; background: rgba(34, 197, 94, 0.15); }
+      100% { opacity: 0; max-height: 0; padding: 0; margin: 0; overflow: hidden; }
     }
 
     .tool-call-details {
@@ -3883,6 +4169,216 @@ function getStyles(): string {
       color: var(--vscode-charts-green, #22c55e);
       font-weight: 500;
       font-size: 13px;
+    }
+
+    /* ========================================
+       Native AskUserQuestion Tool UI (Tabbed)
+       ======================================== */
+    .ask-user-question-container {
+      margin-top: 16px;
+      border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+      border-radius: 8px;
+      background: var(--vscode-editor-background);
+      overflow: hidden;
+    }
+
+    .auq-tab-header {
+      display: flex;
+      border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+      background: var(--vscode-sideBar-background);
+    }
+
+    .auq-tab {
+      flex: 1;
+      padding: 10px 8px;
+      border: none;
+      background: none;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      opacity: 0.7;
+      transition: all 0.2s ease;
+      border-bottom: 2px solid transparent;
+      position: relative;
+    }
+
+    .auq-tab:hover {
+      opacity: 1;
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .auq-tab.active {
+      opacity: 1;
+      border-bottom-color: var(--vscode-focusBorder, var(--vscode-textLink-foreground));
+      background: var(--vscode-editor-background);
+    }
+
+    .auq-tab.answered::after {
+      content: ' ✓';
+      color: var(--vscode-charts-green, #22c55e);
+      font-size: 10px;
+    }
+
+    .auq-tab-content {
+      padding: 16px;
+    }
+
+    .auq-panel {
+      display: none;
+    }
+
+    .auq-question-text {
+      font-weight: 500;
+      font-size: 13px;
+      margin-bottom: 12px;
+      color: var(--vscode-foreground);
+      line-height: 1.4;
+    }
+
+    .auq-options {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .auq-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      background: var(--vscode-input-background);
+    }
+
+    .auq-option:hover {
+      background: var(--vscode-list-hoverBackground);
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .auq-option:has(input:checked) {
+      background: rgba(59, 130, 246, 0.1);
+      border-color: var(--vscode-textLink-foreground);
+    }
+
+    .auq-option input {
+      margin-top: 2px;
+      accent-color: var(--vscode-textLink-foreground);
+      cursor: pointer;
+    }
+
+    .auq-option-content {
+      flex: 1;
+    }
+
+    .auq-option-label {
+      font-weight: 500;
+      font-size: 12px;
+      color: var(--vscode-foreground);
+    }
+
+    .auq-option-desc {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+
+    .auq-option-other {
+      flex-wrap: wrap;
+    }
+
+    .auq-other-content {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+    }
+
+    .auq-other-text {
+      width: 100%;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: inherit;
+    }
+
+    .auq-other-text:focus {
+      outline: none;
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .auq-other-text::placeholder {
+      color: var(--vscode-input-placeholderForeground);
+    }
+
+    .auq-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 12px 16px;
+      border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+      background: var(--vscode-sideBar-background);
+    }
+
+    .auq-skip-btn {
+      padding: 8px 16px;
+      border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+      background: none;
+      color: var(--vscode-foreground);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.15s ease;
+    }
+
+    .auq-skip-btn:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .auq-submit-btn {
+      padding: 8px 16px;
+      border: none;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: all 0.15s ease;
+    }
+
+    .auq-submit-btn:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    .auq-submit-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .auq-submitted {
+      padding: 16px;
+      text-align: center;
+      color: var(--vscode-charts-green, #22c55e);
+      font-weight: 500;
+      font-size: 13px;
+    }
+
+    .auq-check {
+      margin-right: 6px;
+    }
+
+    .ask-user-question-container.submitted {
+      opacity: 0.7;
+      pointer-events: none;
     }
 
     /* Professional File Diff Component */
@@ -5613,6 +6109,35 @@ function getStyles(): string {
       opacity: 1;
     }
 
+    .install-terminal-btn {
+      background: var(--vscode-button-secondaryBackground);
+      border: none;
+      cursor: pointer;
+      padding: 4px 8px;
+      margin-left: 4px;
+      border-radius: 4px;
+      font-size: 14px;
+      color: var(--vscode-button-secondaryForeground);
+    }
+
+    .install-terminal-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+
+    .install-refresh-btn {
+      background: var(--vscode-button-secondaryBackground);
+      border: none;
+      cursor: pointer;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--vscode-button-secondaryForeground);
+    }
+
+    .install-refresh-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+
     .install-auth-list {
       margin: 0;
       padding-left: 20px;
@@ -5708,7 +6233,7 @@ function getStyles(): string {
   `;
 }
 
-function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string, string>, claudeLogoUri: string, openaiLogoLightUri: string, openaiLogoDarkUri: string, geminiLogoUri: string, version: string): string {
+function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string, string>, claudeLogoUri: string, openaiLogoLightUri: string, openaiLogoDarkUri: string, geminiLogoUri: string, copilotLogoUri: string, version: string): string {
   return `
     (function() {
       const vscode = acquireVsCodeApi();
@@ -5720,6 +6245,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var OPENAI_LOGO_LIGHT = '${openaiLogoLightUri}';
       var OPENAI_LOGO_DARK = '${openaiLogoDarkUri}';
       var GEMINI_LOGO = '${geminiLogoUri}';
+      var COPILOT_LOGO = '${copilotLogoUri}';
       var MYSTI_LOGO = '${logoUri}';
 
       // Theme detection for OpenAI logo
@@ -5999,7 +6525,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         agentSettings: {
           autoSuggest: true,
           tokenLimitEnabled: false,
-          maxTokenBudget: 0
+          maxTokenBudget: 0,
+          showSuggestions: true
         },
         // Brainstorm agent selection (which 2 of 3 agents to use)
         brainstormAgents: ['claude-code', 'openai-codex'],
@@ -6033,7 +6560,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var AGENT_DISPLAY = {
         'claude-code': { name: 'Claude', shortId: 'claude', color: '#8B5CF6', logo: CLAUDE_LOGO },
         'openai-codex': { name: 'Codex', shortId: 'codex', color: '#10B981', logo: null }, // Uses getOpenAILogo() for theme support
-        'google-gemini': { name: 'Gemini', shortId: 'gemini', color: '#4285F4', logo: GEMINI_LOGO }
+        'google-gemini': { name: 'Gemini', shortId: 'gemini', color: '#4285F4', logo: GEMINI_LOGO },
+        'github-copilot': { name: 'Copilot', shortId: 'copilot', color: '#6366F1', logo: COPILOT_LOGO }
       };
 
       // Helper to get agent logo (handles OpenAI theme switching)
@@ -7090,6 +7618,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var tokenLimitToggle = document.getElementById('token-limit-toggle');
       var tokenBudgetInput = document.getElementById('token-budget-input');
       var tokenBudgetSection = document.getElementById('token-budget-section');
+      var suggestionsToggle = document.getElementById('suggestions-toggle');
 
       if (autoSuggestToggle) {
         autoSuggestToggle.addEventListener('click', function() {
@@ -7129,6 +7658,34 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           tokenBudgetInput.value = value;
           state.agentSettings.maxTokenBudget = value;
           postMessageWithPanelId({ type: 'updateSettings', payload: { 'agents.maxTokenBudget': value } });
+        });
+      }
+
+      if (suggestionsToggle) {
+        suggestionsToggle.addEventListener('click', function() {
+          state.agentSettings.showSuggestions = !state.agentSettings.showSuggestions;
+          var quickActionsContainer = document.getElementById('quick-actions-container');
+          if (state.agentSettings.showSuggestions) {
+            suggestionsToggle.classList.add('active');
+            if (quickActionsContainer) quickActionsContainer.classList.remove('hidden');
+          } else {
+            suggestionsToggle.classList.remove('active');
+            if (quickActionsContainer) quickActionsContainer.classList.add('hidden');
+          }
+          postMessageWithPanelId({ type: 'updateSettings', payload: { showSuggestions: state.agentSettings.showSuggestions } });
+        });
+      }
+
+      // Quick actions hide button handler
+      var quickActionsHideBtn = document.getElementById('quick-actions-hide');
+      if (quickActionsHideBtn) {
+        quickActionsHideBtn.addEventListener('click', function() {
+          state.agentSettings.showSuggestions = false;
+          var quickActionsContainer = document.getElementById('quick-actions-container');
+          if (quickActionsContainer) quickActionsContainer.classList.add('hidden');
+          // Update settings toggle if visible
+          if (suggestionsToggle) suggestionsToggle.classList.remove('active');
+          postMessageWithPanelId({ type: 'updateSettings', payload: { showSuggestions: false } });
         });
       }
 
@@ -7181,7 +7738,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         // Count available providers
         var availableCount = 0;
-        ['claude-code', 'openai-codex', 'google-gemini'].forEach(function(providerId) {
+        ['claude-code', 'openai-codex', 'google-gemini', 'github-copilot'].forEach(function(providerId) {
           if (providerAvailability[providerId] &&
               providerAvailability[providerId].available) {
             availableCount++;
@@ -7426,6 +7983,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             'claude-code': 'Claude',
             'openai-codex': 'Codex',
             'google-gemini': 'Gemini',
+            'github-copilot': 'Copilot',
             'brainstorm': 'Brainstorm'
           };
           agentNameEl.textContent = agentNames[state.activeAgent] || 'Claude';
@@ -7437,6 +7995,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               'claude-code': CLAUDE_LOGO,
               'openai-codex': getOpenAILogo(),
               'google-gemini': GEMINI_LOGO,
+              'github-copilot': COPILOT_LOGO,
               'brainstorm': MYSTI_LOGO
             };
             img.src = agentLogos[state.activeAgent] || CLAUDE_LOGO;
@@ -7478,7 +8037,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         // Count available providers
         var availableCount = 0;
         var firstAvailable = null;
-        ['claude-code', 'openai-codex', 'google-gemini'].forEach(function(providerId) {
+        ['claude-code', 'openai-codex', 'google-gemini', 'github-copilot'].forEach(function(providerId) {
           if (availability[providerId] && availability[providerId].available) {
             availableCount++;
             if (!firstAvailable) firstAvailable = providerId;
@@ -7782,9 +8341,16 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           case 'clarifyingQuestions':
             handleClarifyingQuestionsMessage(message.payload);
             break;
+          case 'askUserQuestion':
+            handleAskUserQuestionMessage(message.payload);
+            break;
           case 'error':
             hideLoading();
             showError(message.payload);
+            break;
+          case 'authError':
+            hideLoading();
+            showAuthError(message.payload);
             break;
           case 'contextUpdated':
             updateContext(message.payload);
@@ -8546,7 +9112,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var icons = {
           'claude-code': CLAUDE_LOGO,
           'openai-codex': getOpenAILogo(),
-          'google-gemini': GEMINI_LOGO
+          'google-gemini': GEMINI_LOGO,
+          'github-copilot': COPILOT_LOGO
         };
         return icons[providerId] || '';
       }
@@ -8568,6 +9135,34 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
                 setTimeout(function() { copyBtn.innerHTML = '&#128203;'; }, 1500);
               });
             }
+          });
+        }
+
+        var terminalBtn = document.getElementById('install-terminal-btn');
+        if (terminalBtn) {
+          terminalBtn.addEventListener('click', function() {
+            var commandText = document.getElementById('install-command-text');
+            if (commandText && currentInstallProviderId) {
+              postMessageWithPanelId({
+                type: 'openTerminal',
+                payload: {
+                  providerId: currentInstallProviderId,
+                  command: commandText.textContent || ''
+                }
+              });
+            }
+          });
+        }
+
+        var refreshBtn = document.getElementById('install-refresh-btn');
+        if (refreshBtn) {
+          refreshBtn.addEventListener('click', function() {
+            postMessageWithPanelId({
+              type: 'refreshProviderDetection',
+              payload: {}
+            });
+            refreshBtn.textContent = '⟳ Refreshing...';
+            setTimeout(function() { refreshBtn.innerHTML = '&#8635; Refresh Detection'; }, 2000);
           });
         }
 
@@ -8952,6 +9547,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
         updateBrainstormSectionVisibility();
 
+        // Initialize sticky progress observer for scroll-aware sticking
+        initStickyProgressObserver();
+
         if (state.conversation && state.conversation.messages) {
           state.conversation.messages.forEach(function(msg) { addMessage(msg); });
         }
@@ -9048,6 +9646,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var currentThinking = '';
       var contentSegmentIndex = 0;
       var pendingToolData = new Map(); // toolId -> { name, input } for edit report cards
+      var currentTodos = []; // Track current todo list for sticky progress
+      var previousTodoContents = new Set(); // Track previous todo content for completion detection
+      var stuckTodoObservers = new Map(); // todoId -> IntersectionObserver
+      var stuckTodos = new Map(); // todoId -> { originalEl, cloneEl }
       var claudeThinkingBuffer = ''; // Buffer for Claude's streaming thinking chunks
       var claudeFirstSentenceComplete = false; // Track if first sentence is done
       var brainstormClaudeThinkingBuffer = ''; // Buffer for brainstorm mode Claude thinking
@@ -9276,8 +9878,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           currentResponse = '';
         }
 
+        // Use actual status from toolCall, default to 'running'
+        var toolStatus = toolCall.status || 'running';
+
         var div = document.createElement('div');
-        div.className = 'tool-call running';
+        div.className = 'tool-call ' + toolStatus;
         div.dataset.id = toolCall.id;
 
         // Format input for display
@@ -9289,7 +9894,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var chevronSvg = '<svg class="tool-call-chevron" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">' +
           '<path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
 
-        // Spinner SVG for running state
+        // Spinner SVG for running state (also used for pending)
         var spinnerSvg = '<svg class="tool-call-spinner" viewBox="0 0 16 16" width="12" height="12">' +
           '<circle cx="8" cy="8" r="6" stroke="var(--vscode-charts-blue)" stroke-width="2" fill="none" stroke-dasharray="28" stroke-dashoffset="8" stroke-linecap="round"/></svg>';
 
@@ -9303,7 +9908,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             chevronSvg +
             '<span class="tool-call-name">' + escapeHtml(toolCall.name) + '</span>' +
             '<span class="tool-call-summary">' + escapeHtml(summary) + '</span>' +
-            '<span class="tool-call-status running">running</span>' +
+            '<span class="tool-call-status ' + toolStatus + '">' + toolStatus + '</span>' +
             '<button class="tool-call-copy" title="Copy to clipboard">' + copySvg + '</button>' +
           '</div>' +
           '<div class="tool-call-details">' +
@@ -9382,7 +9987,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             }
           }
 
-          // For TodoWrite, render a nice todo list
+          // For TodoWrite, render a nice todo list and update sticky progress
           if (toolName && toolName.toLowerCase() === 'todowrite') {
             var todoInput = toolInput;
             if (todoInput && todoInput.todos && todoInput.todos.length > 0) {
@@ -9396,6 +10001,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               var todoContainer = document.createElement('div');
               todoContainer.innerHTML = todoListHtml;
               toolEl.appendChild(todoContainer.firstChild);
+
+              // Update sticky progress indicator
+              updateStickyTodos(todoInput.todos);
             }
           }
 
@@ -10129,6 +10737,290 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
       }
 
+      // Handle native AskUserQuestion tool from Claude Code CLI
+      function handleAskUserQuestionMessage(payload) {
+        if (!payload || !payload.questions || payload.questions.length === 0) return;
+
+        // Find most recent assistant message
+        var messages = document.querySelectorAll('.message.assistant');
+        var messageEl = messages[messages.length - 1];
+
+        if (messageEl) {
+          // Remove any existing AskUserQuestion container
+          var existing = messageEl.querySelector('.ask-user-question-container');
+          if (existing) existing.remove();
+
+          // Add tabbed question UI
+          var container = renderAskUserQuestionTabs(payload.toolCallId, payload.questions);
+          if (container) {
+            messageEl.appendChild(container);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+        }
+      }
+
+      function renderAskUserQuestionTabs(toolCallId, questions) {
+        var container = document.createElement('div');
+        container.className = 'ask-user-question-container';
+        container.setAttribute('data-tool-call-id', toolCallId);
+
+        // Track answers and current tab
+        container._answers = {};
+        container._currentTab = 0;
+        container._questions = questions;
+
+        // Tab header
+        var tabHeader = document.createElement('div');
+        tabHeader.className = 'auq-tab-header';
+
+        questions.forEach(function(q, idx) {
+          var tab = document.createElement('button');
+          tab.className = 'auq-tab' + (idx === 0 ? ' active' : '');
+          tab.textContent = (q.header || 'Q' + (idx + 1)).substring(0, 12);
+          tab.setAttribute('data-tab', idx);
+          tab.onclick = function() { switchAuqTab(container, idx); };
+          tabHeader.appendChild(tab);
+        });
+
+        container.appendChild(tabHeader);
+
+        // Tab content panels
+        var tabContent = document.createElement('div');
+        tabContent.className = 'auq-tab-content';
+
+        questions.forEach(function(q, idx) {
+          var panel = createAuqQuestionPanel(q, idx, container);
+          panel.style.display = idx === 0 ? 'block' : 'none';
+          tabContent.appendChild(panel);
+        });
+
+        container.appendChild(tabContent);
+
+        // Footer with submit button
+        var footer = document.createElement('div');
+        footer.className = 'auq-footer';
+
+        var skipBtn = document.createElement('button');
+        skipBtn.className = 'auq-skip-btn';
+        skipBtn.textContent = 'Skip';
+        skipBtn.onclick = function() { container.remove(); };
+
+        var submitBtn = document.createElement('button');
+        submitBtn.className = 'auq-submit-btn';
+        submitBtn.textContent = 'Submit Answers';
+        submitBtn.disabled = true;
+        submitBtn.onclick = function() { submitAuqAnswers(container, toolCallId); };
+
+        footer.appendChild(skipBtn);
+        footer.appendChild(submitBtn);
+        container.appendChild(footer);
+
+        return container;
+      }
+
+      function createAuqQuestionPanel(question, index, container) {
+        var panel = document.createElement('div');
+        panel.className = 'auq-panel';
+        panel.setAttribute('data-panel-index', index);
+
+        // Question text
+        var qText = document.createElement('div');
+        qText.className = 'auq-question-text';
+        qText.textContent = question.question;
+        panel.appendChild(qText);
+
+        // Options
+        var optionsDiv = document.createElement('div');
+        optionsDiv.className = 'auq-options';
+
+        var inputType = question.multiSelect ? 'checkbox' : 'radio';
+        var inputName = 'auq_' + index;
+
+        question.options.forEach(function(opt) {
+          var optionLabel = document.createElement('label');
+          optionLabel.className = 'auq-option';
+
+          var input = document.createElement('input');
+          input.type = inputType;
+          input.name = inputName;
+          input.value = opt.label;
+
+          input.onchange = function() {
+            handleAuqOptionChange(container, question, index, inputType);
+          };
+
+          var optContent = document.createElement('div');
+          optContent.className = 'auq-option-content';
+          optContent.innerHTML =
+            '<div class="auq-option-label">' + escapeHtml(opt.label) + '</div>' +
+            (opt.description ? '<div class="auq-option-desc">' + escapeHtml(opt.description) + '</div>' : '');
+
+          optionLabel.appendChild(input);
+          optionLabel.appendChild(optContent);
+          optionsDiv.appendChild(optionLabel);
+        });
+
+        // "Other" option with text input
+        var otherLabel = document.createElement('label');
+        otherLabel.className = 'auq-option auq-option-other';
+
+        var otherInput = document.createElement('input');
+        otherInput.type = inputType;
+        otherInput.name = inputName;
+        otherInput.value = '__other__';
+        otherInput.className = 'auq-other-radio';
+
+        var otherContent = document.createElement('div');
+        otherContent.className = 'auq-option-content auq-other-content';
+
+        var otherLabelText = document.createElement('div');
+        otherLabelText.className = 'auq-option-label';
+        otherLabelText.textContent = 'Other';
+        otherContent.appendChild(otherLabelText);
+
+        var otherTextInput = document.createElement('input');
+        otherTextInput.type = 'text';
+        otherTextInput.className = 'auq-other-text';
+        otherTextInput.placeholder = 'Type your answer...';
+
+        otherTextInput.onfocus = function() { otherInput.checked = true; };
+        otherTextInput.oninput = function() {
+          if (otherTextInput.value.trim()) {
+            var header = question.header || 'Q' + (index + 1);
+            container._answers[header] = otherTextInput.value.trim();
+          } else {
+            var header = question.header || 'Q' + (index + 1);
+            delete container._answers[header];
+          }
+          updateAuqSubmitButton(container);
+          updateAuqTabIndicators(container);
+        };
+
+        otherInput.onchange = function() {
+          handleAuqOptionChange(container, question, index, inputType);
+        };
+
+        otherContent.appendChild(otherTextInput);
+        otherLabel.appendChild(otherInput);
+        otherLabel.appendChild(otherContent);
+        optionsDiv.appendChild(otherLabel);
+
+        panel.appendChild(optionsDiv);
+        return panel;
+      }
+
+      function handleAuqOptionChange(container, question, index, inputType) {
+        var panels = container.querySelectorAll('.auq-panel');
+        var panel = panels[index];
+        var header = question.header || 'Q' + (index + 1);
+
+        if (inputType === 'checkbox') {
+          var inputs = panel.querySelectorAll('input[type="checkbox"]:checked');
+          var values = [];
+
+          inputs.forEach(function(i) {
+            if (i.value !== '__other__') {
+              values.push(i.value);
+            }
+          });
+
+          var otherRadio = panel.querySelector('.auq-other-radio:checked');
+          var otherText = panel.querySelector('.auq-other-text');
+          if (otherRadio && otherText && otherText.value.trim()) {
+            values.push(otherText.value.trim());
+          }
+
+          if (values.length > 0) {
+            container._answers[header] = values;
+          } else {
+            delete container._answers[header];
+          }
+        } else {
+          // Radio - single select
+          var checkedInput = panel.querySelector('input[type="radio"]:checked');
+          if (checkedInput) {
+            if (checkedInput.value === '__other__') {
+              var otherText = panel.querySelector('.auq-other-text');
+              if (otherText && otherText.value.trim()) {
+                container._answers[header] = otherText.value.trim();
+              } else {
+                delete container._answers[header];
+              }
+            } else {
+              container._answers[header] = checkedInput.value;
+              // Auto-advance to next tab for radio buttons
+              var tabCount = container.querySelectorAll('.auq-tab').length;
+              if (index < tabCount - 1) {
+                setTimeout(function() { switchAuqTab(container, index + 1); }, 300);
+              }
+            }
+          }
+        }
+
+        updateAuqSubmitButton(container);
+        updateAuqTabIndicators(container);
+      }
+
+      function switchAuqTab(container, index) {
+        var tabs = container.querySelectorAll('.auq-tab');
+        var panels = container.querySelectorAll('.auq-panel');
+
+        tabs.forEach(function(t, i) {
+          t.classList.toggle('active', i === index);
+        });
+
+        panels.forEach(function(p, i) {
+          p.style.display = i === index ? 'block' : 'none';
+        });
+
+        container._currentTab = index;
+      }
+
+      function updateAuqTabIndicators(container) {
+        var tabs = container.querySelectorAll('.auq-tab');
+        var questions = container._questions;
+
+        tabs.forEach(function(tab, idx) {
+          var header = questions[idx].header || 'Q' + (idx + 1);
+          var isAnswered = container._answers.hasOwnProperty(header);
+          tab.classList.toggle('answered', isAnswered);
+        });
+      }
+
+      function updateAuqSubmitButton(container) {
+        var submitBtn = container.querySelector('.auq-submit-btn');
+        var questions = container._questions;
+        var answeredCount = 0;
+
+        questions.forEach(function(q, idx) {
+          var header = q.header || 'Q' + (idx + 1);
+          if (container._answers.hasOwnProperty(header)) {
+            answeredCount++;
+          }
+        });
+
+        submitBtn.disabled = answeredCount < questions.length;
+      }
+
+      function submitAuqAnswers(container, toolCallId) {
+        // Visual feedback
+        container.classList.add('submitted');
+
+        // Send answers to extension
+        postMessageWithPanelId({
+          type: 'askUserQuestionResponse',
+          payload: {
+            toolCallId: toolCallId,
+            answers: container._answers
+          }
+        });
+
+        // Replace with confirmation
+        container.innerHTML = '<div class="auq-submitted"><span class="auq-check">✓</span> Answers submitted</div>';
+
+        setTimeout(function() { container.remove(); }, 1500);
+      }
+
       function showLoading() {
         state.isLoading = true;
         sendBtn.style.display = 'none';
@@ -10138,6 +11030,12 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         loading.innerHTML = '<div class="loading-dot"></div><div class="loading-dot"></div><div class="loading-dot"></div>';
         messagesEl.appendChild(loading);
         messagesEl.scrollTop = messagesEl.scrollHeight;
+
+        // Auto-hide suggestions while AI is running
+        var quickActionsContainer = document.getElementById('quick-actions-container');
+        if (quickActionsContainer) {
+          quickActionsContainer.classList.add('ai-running');
+        }
       }
 
       function hideLoading() {
@@ -10152,12 +11050,25 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         claudeFirstSentenceComplete = false;
         var loading = messagesEl.querySelector('.loading');
         if (loading) loading.remove();
+
+        // Show suggestions again if enabled
+        var quickActionsContainer = document.getElementById('quick-actions-container');
+        if (quickActionsContainer) {
+          quickActionsContainer.classList.remove('ai-running');
+        }
       }
 
       // Dynamic suggestions functions (ezorro-style cards)
       function showSuggestionSkeleton() {
         var container = document.getElementById('quick-actions');
         if (!container) return;
+
+        // Don't show if suggestions are disabled
+        if (state.agentSettings && !state.agentSettings.showSuggestions) {
+          container.innerHTML = '';
+          return;
+        }
+
         container.classList.add('loading');
         container.innerHTML = '';
 
@@ -10178,6 +11089,13 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       function renderSuggestions(suggestions) {
         var container = document.getElementById('quick-actions');
         if (!container) return;
+
+        // Don't render if suggestions are disabled
+        if (state.agentSettings && !state.agentSettings.showSuggestions) {
+          container.innerHTML = '';
+          return;
+        }
+
         container.classList.remove('loading');
         container.innerHTML = '';
 
@@ -10236,6 +11154,36 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         div.className = 'message error';
         div.innerHTML = '<div class="message-content" style="color: var(--vscode-errorForeground);">Error: ' + escapeHtml(error) + '</div>';
         messagesEl.appendChild(div);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      function showAuthError(data) {
+        var div = document.createElement('div');
+        div.className = 'message error auth-error';
+        div.innerHTML = '<div class="message-content">' +
+          '<div style="color: var(--vscode-errorForeground); margin-bottom: 8px;">' +
+            '<strong>Authentication Required</strong>' +
+          '</div>' +
+          '<p style="margin: 8px 0;">' + escapeHtml(data.providerName) + ' is not authenticated.</p>' +
+          '<div style="margin: 12px 0; padding: 8px; background: var(--vscode-textCodeBlock-background); border-radius: 4px; font-family: monospace;">' +
+            '<strong>To authenticate, run:</strong><br>' +
+            '<code style="color: var(--vscode-textPreformat-foreground);">' + escapeHtml(data.authCommand) + '</code>' +
+          '</div>' +
+          '<button id="auth-terminal-btn" ' +
+            'style="padding: 6px 12px; cursor: pointer; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px;">' +
+            'Open Terminal & Authenticate' +
+          '</button>' +
+        '</div>';
+        messagesEl.appendChild(div);
+
+        // Add event listener (CSP compliant - no inline onclick)
+        var authBtn = div.querySelector('#auth-terminal-btn');
+        if (authBtn) {
+          authBtn.addEventListener('click', function() {
+            vscode.postMessage({ type: 'openTerminal', payload: data.authCommand });
+          });
+        }
+
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 
@@ -10322,6 +11270,24 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         if (tokenBudgetInput && tokenLimitEnabled) {
           tokenBudgetInput.value = String(state.agentSettings.maxTokenBudget);
+        }
+
+        // Suggestions toggle
+        var suggestionsToggle = document.getElementById('suggestions-toggle');
+        var quickActionsContainer = document.getElementById('quick-actions-container');
+        if (suggestionsToggle) {
+          if (state.agentSettings.showSuggestions) {
+            suggestionsToggle.classList.add('active');
+          } else {
+            suggestionsToggle.classList.remove('active');
+          }
+        }
+        if (quickActionsContainer) {
+          if (state.agentSettings.showSuggestions) {
+            quickActionsContainer.classList.remove('hidden');
+          } else {
+            quickActionsContainer.classList.add('hidden');
+          }
         }
       }
 
@@ -10645,6 +11611,233 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         return info;
       }
 
+      // Generate unique ID from todo content
+      function generateTodoId(content) {
+        var hash = 0;
+        for (var i = 0; i < content.length; i++) {
+          hash = ((hash << 5) - hash) + content.charCodeAt(i);
+          hash |= 0;
+        }
+        return 'todo-' + Math.abs(hash);
+      }
+
+      // Update sticky progress count display
+      function updateStickyProgressCount() {
+        var container = document.getElementById('sticky-progress-container');
+        if (!container) return;
+        var countEl = container.querySelector('.sticky-progress-count');
+        if (countEl) {
+          countEl.textContent = stuckTodos.size + ' in progress';
+        }
+      }
+
+      // Stick a todo item to the top
+      function stickTodoItem(originalEl, todoId) {
+        if (stuckTodos.has(todoId)) return; // Already stuck
+
+        var container = document.getElementById('sticky-progress-container');
+        if (!container) return;
+        var listEl = container.querySelector('.sticky-progress-list');
+        if (!listEl) return;
+
+        // Mark original as stuck
+        originalEl.classList.add('is-stuck');
+
+        // Get the display text (activeForm if available)
+        var todoContent = originalEl.getAttribute('data-todo-content') || '';
+        var activeForm = originalEl.getAttribute('data-todo-active-form') || todoContent;
+
+        // Create clone for sticky container
+        var spinnerSvg = '<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2" fill="none" stroke-dasharray="28" stroke-dashoffset="8"/></svg>';
+
+        var cloneEl = document.createElement('div');
+        cloneEl.className = 'stuck-todo-item';
+        cloneEl.setAttribute('data-todo-id', todoId);
+        cloneEl.innerHTML =
+          '<span class="stuck-todo-icon">' + spinnerSvg + '</span>' +
+          '<span class="stuck-todo-text">' + escapeHtml(activeForm) + '</span>';
+
+        listEl.appendChild(cloneEl);
+
+        // Show container
+        container.classList.add('has-items');
+        updateStickyProgressCount();
+
+        // Track stuck item
+        stuckTodos.set(todoId, { originalEl: originalEl, cloneEl: cloneEl });
+      }
+
+      // Unstick a todo item (animate it back)
+      function unstickTodoItem(todoId) {
+        var stuckItem = stuckTodos.get(todoId);
+        if (!stuckItem) return;
+
+        var cloneEl = stuckItem.cloneEl;
+        var originalEl = stuckItem.originalEl;
+
+        // Animate out
+        cloneEl.classList.add('unsticking');
+
+        cloneEl.addEventListener('animationend', function() {
+          // Remove clone
+          if (cloneEl.parentNode) {
+            cloneEl.parentNode.removeChild(cloneEl);
+          }
+
+          // Restore original visibility
+          originalEl.classList.remove('is-stuck');
+
+          // Clean up tracking
+          stuckTodos.delete(todoId);
+
+          // Hide container if empty
+          var container = document.getElementById('sticky-progress-container');
+          if (container && stuckTodos.size === 0) {
+            container.classList.remove('has-items');
+          }
+          updateStickyProgressCount();
+        }, { once: true });
+      }
+
+      // Handle completion of a stuck todo
+      function completeStuckTodo(todoId) {
+        var stuckItem = stuckTodos.get(todoId);
+        if (!stuckItem) return;
+
+        var cloneEl = stuckItem.cloneEl;
+
+        // Change icon to checkmark
+        var checkSvg = '<svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>';
+        var iconEl = cloneEl.querySelector('.stuck-todo-icon');
+        if (iconEl) {
+          iconEl.innerHTML = checkSvg;
+        }
+
+        // Play completion animation
+        cloneEl.classList.add('completing');
+
+        cloneEl.addEventListener('animationend', function() {
+          // Remove clone
+          if (cloneEl.parentNode) {
+            cloneEl.parentNode.removeChild(cloneEl);
+          }
+
+          // Disconnect observer
+          var observer = stuckTodoObservers.get(todoId);
+          if (observer) {
+            observer.disconnect();
+            stuckTodoObservers.delete(todoId);
+          }
+
+          // Clean up tracking
+          stuckTodos.delete(todoId);
+
+          // Hide container if empty
+          var container = document.getElementById('sticky-progress-container');
+          if (container && stuckTodos.size === 0) {
+            container.classList.remove('has-items');
+          }
+          updateStickyProgressCount();
+        }, { once: true });
+      }
+
+      // Setup IntersectionObserver for a todo element
+      function setupTodoIntersectionObserver(todoElement) {
+        var todoId = todoElement.getAttribute('data-todo-id');
+        if (!todoId || stuckTodoObservers.has(todoId)) return;
+
+        var messagesEl = document.getElementById('messages');
+        if (!messagesEl) return;
+
+        var observer = new IntersectionObserver(function(entries) {
+          entries.forEach(function(entry) {
+            if (!entry.isIntersecting && entry.boundingClientRect.top < 0) {
+              // Item has scrolled above viewport - stick it
+              stickTodoItem(todoElement, todoId);
+            } else if (entry.isIntersecting && stuckTodos.has(todoId)) {
+              // Item is back in view - unstick it
+              unstickTodoItem(todoId);
+            }
+          });
+        }, {
+          root: messagesEl,
+          threshold: 0,
+          rootMargin: '-1px 0px 0px 0px' // Trigger right at the top edge
+        });
+
+        observer.observe(todoElement);
+        stuckTodoObservers.set(todoId, observer);
+      }
+
+      // Find and observe all in-progress todo items
+      function observeInProgressTodos() {
+        // Clean up existing observers for items that are no longer in_progress
+        var currentInProgressIds = new Set();
+        var inProgressItems = document.querySelectorAll('.todo-item.in_progress');
+
+        inProgressItems.forEach(function(item) {
+          var todoId = item.getAttribute('data-todo-id');
+          if (todoId) {
+            currentInProgressIds.add(todoId);
+            // Setup observer if not already observing
+            if (!stuckTodoObservers.has(todoId)) {
+              setupTodoIntersectionObserver(item);
+            }
+          }
+        });
+
+        // Disconnect observers for items no longer in_progress
+        stuckTodoObservers.forEach(function(observer, todoId) {
+          if (!currentInProgressIds.has(todoId)) {
+            observer.disconnect();
+            stuckTodoObservers.delete(todoId);
+            // Also remove from stuckTodos if present
+            if (stuckTodos.has(todoId)) {
+              var stuckItem = stuckTodos.get(todoId);
+              if (stuckItem.cloneEl && stuckItem.cloneEl.parentNode) {
+                stuckItem.cloneEl.parentNode.removeChild(stuckItem.cloneEl);
+              }
+              if (stuckItem.originalEl) {
+                stuckItem.originalEl.classList.remove('is-stuck');
+              }
+              stuckTodos.delete(todoId);
+            }
+          }
+        });
+
+        // Hide container if no stuck items
+        var container = document.getElementById('sticky-progress-container');
+        if (container && stuckTodos.size === 0) {
+          container.classList.remove('has-items');
+        }
+      }
+
+      // Initialize sticky progress observation with MutationObserver
+      function initStickyProgressObserver() {
+        var messagesEl = document.getElementById('messages');
+        if (!messagesEl) return;
+
+        // Observe for new todo items being added
+        var mutationObserver = new MutationObserver(function(mutations) {
+          mutations.forEach(function(mutation) {
+            mutation.addedNodes.forEach(function(node) {
+              if (node.nodeType === 1) { // Element node
+                // Check for todo lists
+                var todoLists = node.querySelectorAll ? node.querySelectorAll('.todo-list') : [];
+                if (todoLists.length > 0 || (node.classList && node.classList.contains('todo-list'))) {
+                  setTimeout(observeInProgressTodos, 50);
+                }
+              }
+            });
+          });
+        });
+
+        mutationObserver.observe(messagesEl, {
+          childList: true,
+          subtree: true
+        });
+      }
+
       function renderTodoList(todos) {
         if (!todos || !todos.length) return '';
 
@@ -10659,13 +11852,52 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             statusIcon = '<svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
           }
 
-          html += '<div class="todo-item ' + todo.status + '">' +
+          var todoId = generateTodoId(todo.content);
+          var activeForm = todo.activeForm || todo.content;
+          var displayText = todo.status === 'in_progress' ? activeForm : todo.content;
+
+          html += '<div class="todo-item ' + todo.status + '" ' +
+            'data-todo-id="' + todoId + '" ' +
+            'data-todo-content="' + escapeHtml(todo.content) + '" ' +
+            'data-todo-active-form="' + escapeHtml(activeForm) + '">' +
             '<span class="todo-status ' + todo.status + '">' + statusIcon + '</span>' +
-            '<span class="todo-content">' + escapeHtml(todo.content) + '</span>' +
+            '<span class="todo-content">' + escapeHtml(displayText) + '</span>' +
           '</div>';
         });
         html += '</div>';
         return html;
+      }
+
+      // Update sticky todo progress indicator - now uses scroll-aware sticking
+      function updateStickyTodos(todos) {
+        // Build set of current in-progress todo contents
+        var newInProgressContents = new Set();
+        var newInProgressMap = new Map(); // content -> todo
+
+        (todos || []).forEach(function(todo) {
+          if (todo.status === 'in_progress') {
+            newInProgressContents.add(todo.content);
+            newInProgressMap.set(todo.content, todo);
+          }
+        });
+
+        // Check for completed items that were stuck
+        stuckTodos.forEach(function(stuckItem, todoId) {
+          var content = stuckItem.originalEl.getAttribute('data-todo-content');
+          if (content && !newInProgressContents.has(content)) {
+            // This item was completed - animate it out
+            completeStuckTodo(todoId);
+          }
+        });
+
+        // Update previous state for next comparison
+        previousTodoContents = newInProgressContents;
+        currentTodos = todos || [];
+
+        // Re-observe any new in-progress items (after a small delay for DOM update)
+        setTimeout(function() {
+          observeInProgressTodos();
+        }, 50);
       }
 
       function renderEditReportCard(editInfo, thinkingContent) {

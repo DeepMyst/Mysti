@@ -1,4 +1,4 @@
-# Mysti - Your AI Coding Team (Claude, Codex and Gemini) working together
+# Mysti - Your AI Coding Team (Claude, Codex, Gemini & GitHub Copilot) working together
 
 <p align="center">
   <img src="resources/Mysti-Logo.png" alt="Mysti Logo" width="128" height="128">
@@ -14,14 +14,20 @@
   <a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti">
     <img src="https://img.shields.io/visual-studio-marketplace/r/DeepMyst.mysti?style=flat-square&label=Rating" alt="Rating">
   </a>
+  <a href="https://github.com/DeepMyst/Mysti/stargazers">
+    <img src="https://img.shields.io/github/stars/DeepMyst/Mysti?style=flat-square&label=Stars" alt="GitHub Stars">
+  </a>
+  <a href="https://github.com/DeepMyst/Mysti/network/members">
+    <img src="https://img.shields.io/github/forks/DeepMyst/Mysti?style=flat-square&label=Forks" alt="GitHub Forks">
+  </a>
   <a href="https://github.com/DeepMyst/Mysti/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/License-BSL%201.1-blue?style=flat-square" alt="License">
+    <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
   </a>
 </p>
 
 <p align="center">
   <strong>Your AI Coding team for VSCode</strong><br>
-  <em>Use Claude Code, Codex, or Gemini — or combine any two in Brainstorm Mode and never hit bottlenecks</em><br>
+  <em>Use Claude Code, Codex, Gemini, or GitHub Copilot — or combine any two in Brainstorm Mode and never hit bottlenecks</em><br>
   <em>Wisdom of the crowd where the collective intelligence of several agents outperforms a single one.</em>
 </p>
 
@@ -38,6 +44,30 @@
   <a href="#quick-start">Quick Start</a> •
   <a href="#configuration">Config</a>
 </p>
+
+---
+
+## What's New in v0.2.2
+
+### GitHub Copilot CLI Support
+
+Mysti now supports **GitHub Copilot CLI** as a fourth provider! Access 14+ models including Claude, GPT-5, and Gemini through your GitHub Copilot subscription.
+
+**Supported Models via Copilot:**
+- **Anthropic**: Claude Sonnet 4.5, Claude Opus 4.5, Claude Haiku 4.5
+- **OpenAI**: GPT-5.2, GPT-5.1 Codex Max, GPT-5.1 Codex, GPT-5
+- **Google**: Gemini 3 Pro, Gemini 3 Flash, Gemini 2.5 Pro
+
+### Improved Authentication UX
+
+When a provider isn't authenticated, Mysti now shows a friendly error with:
+- Clear instructions on how to authenticate
+- One-click "Open Terminal & Authenticate" button
+- Works for all providers (Claude, Codex, Gemini, Copilot)
+
+### Better Response Formatting
+
+Improved text formatting for CLI outputs with proper markdown rendering.
 
 ---
 
@@ -66,6 +96,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | **Claude Code** | Deep reasoning, complex refactoring, thorough analysis |
 | **Codex** | Quick iterations, familiar OpenAI style |
 | **Gemini** | Fast responses, Google ecosystem integration |
+| **GitHub Copilot** | Multi-model access (Claude, GPT-5, Gemini) via GitHub subscription |
 | **Brainstorm Mode** | Any two AIs collaborate and debate solutions |
 
 **Switch providers with one click. No lock-in.**
@@ -93,7 +124,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 
 ## Brainstorm Mode
 
-**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose any 2 of 3 agents** (Claude, Codex, or Gemini) from the settings panel.
+**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose any 2 of 4 agents** (Claude, Codex, Gemini, or GitHub Copilot) from the settings panel.
 
 <p align="center">
   <img src="docs/screenshots/brainstorm-mode.png" alt="Brainstorm Mode" width="700">
@@ -101,7 +132,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 
 ### Why Two AIs Beat One
 
-**Claude Code** (Anthropic), **Codex** (OpenAI), and **Gemini** (Google) have different training, different strengths, and different blind spots. When any two work together:
+**Claude Code** (Anthropic), **Codex** (OpenAI), **Gemini** (Google), and **GitHub Copilot** (multi-model) have different training, different strengths, and different blind spots. When any two work together:
 
 - Each AI catches edge cases the other might miss
 - Different perspectives lead to more robust solutions
@@ -117,7 +148,9 @@ Configure which two agents collaborate in the **Settings Panel**:
 |-------------|----------|
 | Claude + Codex | Deep analysis meets rapid iteration |
 | Claude + Gemini | Thorough reasoning with fast validation |
+| Claude + Copilot | Compare native Claude vs Copilot's multi-model approach |
 | Codex + Gemini | Quick iterations with Google ecosystem knowledge |
+| Copilot + Gemini | Multi-model flexibility with Google integration |
 
 ### How It Works
 
@@ -240,15 +273,16 @@ Fine-tune every aspect of Mysti including token budgets, access levels, and brai
 
 ## Requirements
 
-**Already paying for Claude, ChatGPT, or Gemini? You're ready to go.**
+**Already paying for Claude, ChatGPT, Gemini, or GitHub Copilot? You're ready to go.**
 
 Mysti works with your existing subscriptions—no additional costs!
 
 | CLI Tool | Subscription | Install |
 |----------|--------------|---------|
 | **Claude Code** (recommended) | Anthropic API or Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **Codex CLI** | OpenAI API | Follow OpenAI's installation guide |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
 | **Gemini CLI** | Google AI API or Gemini Advanced | `npm install -g @google/gemini-cli` |
+| **Codex CLI** | OpenAI API | Follow OpenAI's installation guide |
 
 You only need **one** CLI to get started. Install **any two** to unlock Brainstorm Mode.
 
@@ -271,6 +305,10 @@ ext install DeepMyst.mysti
 # Claude Code (recommended)
 npm install -g @anthropic-ai/claude-code
 claude auth login
+
+# Or GitHub Copilot CLI (access Claude, GPT-5, Gemini via GitHub)
+npm install -g @github/copilot-cli
+copilot  # then use /login command
 
 # Or Gemini CLI
 npm install -g @google/gemini-cli
@@ -330,11 +368,12 @@ Stay in control of what the AI can do:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.defaultProvider` | `claude-code` | Primary AI provider (`claude-code`, `openai-codex`, `google-gemini`) |
+| `mysti.defaultProvider` | `claude-code` | Primary AI provider (`claude-code`, `openai-codex`, `google-gemini`, `github-copilot`) |
 | `mysti.brainstorm.agents` | `["claude-code", "openai-codex"]` | Which 2 agents to use in brainstorm mode |
 | `mysti.brainstorm.discussionMode` | `quick` | `quick` or `full` |
 | `mysti.accessLevel` | `ask-permission` | File access level |
 | `mysti.agents.autoSuggest` | `true` | Auto-suggest personas |
+| `mysti.copilotPath` | `copilot` | Path to GitHub Copilot CLI executable |
 
 ---
 
@@ -374,9 +413,21 @@ Settings > Telemetry: Telemetry Level > off
 
 ---
 
+## Contributing
+
+We welcome contributions! Whether it's bug reports, feature requests, or code contributions.
+
+- **Good First Issues**: Look for [`good first issue`](https://github.com/DeepMyst/Mysti/labels/good%20first%20issue) labels
+- **Development**: Press `F5` in VS Code to launch Extension Development Host
+- **Pull Requests**: Fork, create a feature branch, and submit a PR
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+
+---
+
 ## License
 
-MIT License — free to use, modify, and distribute, including for commercial purposes.  
+MIT License — free to use, modify, and distribute, including for commercial purposes.
 See the `LICENSE` file for full text.
 
 

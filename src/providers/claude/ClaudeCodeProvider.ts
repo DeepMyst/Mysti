@@ -75,24 +75,55 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   private _lastUsageStats: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null = null;
 
   async discoverCli(): Promise<CliDiscoveryResult> {
-    const extensionPath = this._findVSCodeExtensionCli();
-    if (extensionPath) {
-      return { found: true, path: extensionPath };
+    const paths = this._getSearchPaths();
+
+    for (const searchPath of paths) {
+      if (await this._validateCliPath(searchPath)) {
+        console.log(`[Mysti] Claude: Found CLI at: ${searchPath}`);
+        return { found: true, path: searchPath };
+      }
     }
 
-    const configuredPath = this._getConfiguredPath();
-    const found = await this._validateCliPath(configuredPath);
+    // Final fallback: check if 'claude' is in PATH via which/where
+    if (await this._checkCommandExists('claude')) {
+      console.log('[Mysti] Claude: Found CLI via PATH');
+      return { found: true, path: 'claude' };
+    }
 
     return {
-      found,
-      path: configuredPath,
+      found: false,
+      path: 'claude',
       installCommand: 'Install the Claude Code VSCode extension or run: npm install -g @anthropic-ai/claude-code'
     };
   }
 
   getCliPath(): string {
-    const extensionPath = this._findVSCodeExtensionCli();
-    return extensionPath || this._getConfiguredPath();
+    // First check if user has configured a custom path
+    const config = vscode.workspace.getConfiguration('mysti');
+    const configuredPath = config.get<string>('claudeCodePath', 'claude');
+
+    // If user specified a non-default path, use it
+    if (configuredPath !== 'claude') {
+      return configuredPath;
+    }
+
+    // Otherwise, search known installation paths
+    const paths = this._getSearchPaths();
+    for (const searchPath of paths) {
+      try {
+        // Only check absolute paths with fs.accessSync
+        if (searchPath.includes(path.sep) || searchPath.startsWith('/')) {
+          fs.accessSync(searchPath, fs.constants.X_OK);
+          console.log(`[Mysti] Claude: Using CLI at: ${searchPath}`);
+          return searchPath;
+        }
+      } catch {
+        // Continue to next path
+      }
+    }
+
+    // Fallback to default (will rely on PATH)
+    return configuredPath;
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
@@ -280,7 +311,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
               name: contentBlock.name || '',
               inputJson: ''
             });
-            // Return tool_use immediately with running status
+            // For AskUserQuestion, don't emit immediate tool_use - wait for full input
+            if (contentBlock.name === 'AskUserQuestion') {
+              console.log('[Mysti] Claude: AskUserQuestion tool started, waiting for input');
+              return null;
+            }
+            // Return tool_use immediately with running status for other tools
             return {
               type: 'tool_use',
               toolCall: {
@@ -302,7 +338,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
           if (completedTool) {
             this._activeToolCalls.delete(blockIndex);
             // Parse the accumulated JSON
-            let parsedInput = {};
+            let parsedInput: Record<string, unknown> = {};
             try {
               if (completedTool.inputJson) {
                 parsedInput = JSON.parse(completedTool.inputJson);
@@ -310,6 +346,31 @@ export class ClaudeCodeProvider extends BaseCliProvider {
             } catch {
               console.log('[Mysti] Claude: Failed to parse tool input JSON:', completedTool.inputJson);
             }
+
+            // Check if this is AskUserQuestion tool - emit special chunk type
+            if (completedTool.name === 'AskUserQuestion' && parsedInput.questions) {
+              console.log('[Mysti] Claude: AskUserQuestion completed with', (parsedInput.questions as unknown[]).length, 'questions');
+              return {
+                type: 'ask_user_question',
+                askUserQuestion: {
+                  toolCallId: completedTool.id,
+                  questions: parsedInput.questions as import('../../types').AskUserQuestionItem[]
+                }
+              };
+            }
+
+            // Check if this is ExitPlanMode tool - emit special chunk type with plan path
+            if (completedTool.name === 'ExitPlanMode') {
+              // Extract plan file path from input, ensuring it's a string or null
+              const rawPath = parsedInput.plan_file_path || parsedInput.planFilePath;
+              const planFilePath: string | null = typeof rawPath === 'string' ? rawPath : null;
+              console.log('[Mysti] Claude: ExitPlanMode tool called, plan file:', planFilePath);
+              return {
+                type: 'exit_plan_mode',
+                planFilePath
+              };
+            }
+
             return {
               type: 'tool_use',
               toolCall: {
@@ -509,6 +570,69 @@ Enhanced prompt:`;
     return config.get<string>('claudeCodePath', 'claude');
   }
 
+  private _getSearchPaths(): string[] {
+    const paths: string[] = [];
+    const homeDir = os.homedir();
+
+    // 1. User-configured path first (if not default 'claude')
+    const config = vscode.workspace.getConfiguration('mysti');
+    const configuredPath = config.get<string>('claudeCodePath');
+    if (configuredPath && configuredPath !== 'claude') {
+      paths.push(configuredPath);
+    }
+
+    // 2. VSCode extension bundle (highest priority after configured)
+    const extensionCli = this._findVSCodeExtensionCli();
+    if (extensionCli) {
+      paths.push(extensionCli);
+    }
+
+    // 3. Standard installation locations (platform-specific)
+    if (process.platform === 'win32') {
+      // Windows paths
+      const appData = process.env.APPDATA || path.join(homeDir, 'AppData', 'Roaming');
+      paths.push(path.join(appData, 'npm', 'claude.cmd'));
+      paths.push(path.join(appData, 'npm', 'claude'));
+    } else {
+      // macOS and Linux
+      paths.push('/usr/local/bin/claude');        // Homebrew Intel, standard Unix
+      paths.push('/opt/homebrew/bin/claude');     // Homebrew Apple Silicon
+      paths.push('/usr/bin/claude');              // System install
+      paths.push(path.join(homeDir, '.npm-global', 'bin', 'claude'));  // npm config prefix
+      paths.push(path.join(homeDir, '.local', 'bin', 'claude'));       // pip-style user install
+      paths.push(path.join(homeDir, 'node_modules', '.bin', 'claude')); // Local npm install
+
+      // NVM-managed installations
+      const nvmDir = process.env.NVM_DIR || path.join(homeDir, '.nvm');
+      if (fs.existsSync(nvmDir)) {
+        // Check for current symlink first (most common)
+        const nvmCurrent = path.join(nvmDir, 'current', 'bin', 'claude');
+        paths.push(nvmCurrent);
+
+        // Also check versions directory for installed Node versions
+        const versionsDir = path.join(nvmDir, 'versions', 'node');
+        if (fs.existsSync(versionsDir)) {
+          try {
+            const versions = fs.readdirSync(versionsDir)
+              .filter(v => v.startsWith('v'))
+              .sort()
+              .reverse(); // Latest first
+            for (const version of versions) {
+              paths.push(path.join(versionsDir, version, 'bin', 'claude'));
+            }
+          } catch {
+            // Ignore errors reading NVM versions
+          }
+        }
+      }
+    }
+
+    // 4. Bare command fallback (relies on PATH)
+    paths.push('claude');
+
+    return paths;
+  }
+
   private _findVSCodeExtensionCli(): string | null {
     const homeDir = os.homedir();
     const extensionsDir = path.join(homeDir, '.vscode', 'extensions');
@@ -524,7 +648,7 @@ Enhanced prompt:`;
         for (const ext of claudeExtensions) {
           const binaryPath = path.join(extensionsDir, ext, 'resources', 'native-binary', 'claude');
           if (fs.existsSync(binaryPath)) {
-            console.log('[Mysti] Claude: Found CLI at:', binaryPath);
+            console.log('[Mysti] Claude: Found CLI in VSCode extension:', binaryPath);
             return binaryPath;
           }
         }
@@ -538,10 +662,31 @@ Enhanced prompt:`;
 
   private async _validateCliPath(cliPath: string): Promise<boolean> {
     try {
-      fs.accessSync(cliPath, fs.constants.X_OK);
-      return true;
+      // For absolute/relative paths, check file exists and is executable
+      if (cliPath.includes(path.sep) || cliPath.startsWith('/')) {
+        fs.accessSync(cliPath, fs.constants.X_OK);
+        return true;
+      }
+
+      // For bare commands like 'claude', use which/where
+      if (cliPath === 'claude') {
+        return this._checkCommandExists('claude');
+      }
+
+      return false;
     } catch {
       return false;
     }
+  }
+
+  private async _checkCommandExists(command: string): Promise<boolean> {
+    const { spawn } = await import('child_process');
+    const checkCmd = process.platform === 'win32' ? 'where' : 'which';
+
+    return new Promise((resolve) => {
+      const proc = spawn(checkCmd, [command], { stdio: ['ignore', 'pipe', 'ignore'] });
+      proc.on('close', (code) => resolve(code === 0));
+      proc.on('error', () => resolve(false));
+    });
   }
 }

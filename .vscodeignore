@@ -12,3 +12,4 @@ webpack.config.js
 .git/**
 CLAUDE.md
 docs/**
+.mcp.json

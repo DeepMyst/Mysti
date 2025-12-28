@@ -150,66 +150,87 @@ export abstract class BaseCliProvider implements ICliProvider {
     providerManager?: unknown,
     agentConfig?: AgentConfiguration
   ): AsyncGenerator<StreamChunk> {
+    const startTime = Date.now();
     const cliPath = this.getCliPath();
     const args = this.buildCliArgs(settings, this.hasSession());
 
-    // Build prompt with context, persona, and agent config
-    // Use async version to support three-tier agent loading
-    const fullPrompt = await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig);
+    // Get workspace folder for CWD
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
+
+    // Build environment with thinking tokens if applicable
+    const thinkingTokens = this.getThinkingTokens(settings.thinkingLevel);
+    const env: Record<string, string | undefined> = { ...process.env };
+    if (thinkingTokens && thinkingTokens > 0) {
+      env.MAX_THINKING_TOKENS = String(thinkingTokens);
+    }
+    console.log(`[Mysti] ${this.displayName}: Spawning CLI process...`);
+    // Check if we should use shell for spawning
+    const useShell = vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
+    const spawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
+    if (useShell) {
+      spawnOpts.shell = true;
+    }
+    
+    this._currentProcess = spawn(cliPath, args, spawnOpts);
+
+    const spawnTime = Date.now() - startTime;
+    console.log(`[Mysti] ${this.displayName}: CLI spawned in ${spawnTime}ms, building prompt...`);
+
+    // Register process with ProviderManager for per-panel cancellation
+    if (panelId && providerManager && typeof (providerManager as any).registerProcess === 'function') {
+      (providerManager as any).registerProcess(panelId, this._currentProcess);
+    }
+
+    // Set up stderr handler early to capture initialization errors
+    let stderrOutput = '';
+    const stderrHandler = (data: Buffer) => {
+      const text = data.toString();
+      stderrOutput += text;
+      console.log(`[Mysti] ${this.displayName} stderr:`, text);
+    };
+
+    if (this._currentProcess.stderr) {
+      this._currentProcess.stderr.on('data', stderrHandler);
+    }
 
     try {
-      // Get workspace folder for CWD
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
+      // Build prompt AFTER spawning (parallelizes CLI startup with prompt building)
+      // Use async version to support three-tier agent loading
+      const fullPrompt = await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig);
 
-      console.log(`[Mysti] ${this.displayName}: Starting CLI with args:`, args);
-      console.log(`[Mysti] ${this.displayName}: Working directory:`, cwd);
-
-      // Build environment with thinking tokens if applicable
-      const thinkingTokens = this.getThinkingTokens(settings.thinkingLevel);
-      const env: Record<string, string | undefined> = { ...process.env };
-      if (thinkingTokens && thinkingTokens > 0) {
-        env.MAX_THINKING_TOKENS = String(thinkingTokens);
-        console.log(`[Mysti] ${this.displayName}: Setting MAX_THINKING_TOKENS:`, thinkingTokens);
-      }
-
-      // Check if we should use shell for spawning
-      const useShell = vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
-      const spawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
-      if (useShell) {
-        spawnOpts.shell = true;
-      }
-
-      // Spawn the process
-      this._currentProcess = spawn(cliPath, args, spawnOpts);
-
-      // Register process with ProviderManager for per-panel cancellation
-      if (panelId && providerManager && typeof (providerManager as any).registerProcess === 'function') {
-        (providerManager as any).registerProcess(panelId, this._currentProcess);
-      }
-
-      // Collect stderr for error reporting
-      let stderrOutput = '';
-      const stderrHandler = (data: Buffer) => {
-        const text = data.toString();
-        stderrOutput += text;
-        console.log(`[Mysti] ${this.displayName} stderr:`, text);
-      };
-
-      if (this._currentProcess.stderr) {
-        this._currentProcess.stderr.on('data', stderrHandler);
-      }
+      const promptTime = Date.now() - startTime - spawnTime;
+      console.log(`[Mysti] ${this.displayName}: Prompt built in ${promptTime}ms (total: ${Date.now() - startTime}ms)`);
 
       // Send prompt via stdin
       if (this._currentProcess.stdin) {
         this._currentProcess.stdin.write(fullPrompt);
         this._currentProcess.stdin.end();
+        const promptSentTime = Date.now() - startTime;
+        console.log(`[Mysti] ${this.displayName}: Prompt sent to CLI stdin in ${promptSentTime}ms`);
       }
+
+      console.log(`[Mysti] ${this.displayName}: ⏱️ TIMING BREAKDOWN:`);
+      console.log(`  - CLI spawn: ${spawnTime}ms`);
+      console.log(`  - Prompt build: ${promptTime}ms`);
+      console.log(`  - Total setup: ${Date.now() - startTime}ms`);
+      console.log(`  - Waiting for first response...`);
 
       // Process stream output
       yield* this.processStream(stderrOutput);
 
       // Yield final done with any stored usage from stream parsing
+      const totalTime = Date.now() - startTime;
+      console.log(`[Mysti] ${this.displayName}: ✅ Request completed in ${totalTime}ms`);
+
+      // Performance warnings
+      if (promptTime > 500) {
+        console.warn(`[Mysti] ${this.displayName}: ⚠️ Slow prompt building (${promptTime}ms) - consider optimizing agent context loading`);
+      }
+      if (spawnTime > 100) {
+        console.warn(`[Mysti] ${this.displayName}: ⚠️ Slow CLI spawn (${spawnTime}ms) - CLI binary may need optimization`);
+      }
+
       const storedUsage = this.getStoredUsage();
       yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
     } catch (error) {
@@ -252,9 +273,18 @@ export abstract class BaseCliProvider implements ICliProvider {
   protected async *processStream(stderrCollector: string): AsyncGenerator<StreamChunk> {
     let buffer = '';
     let hasYieldedContent = false;
+    let firstChunkTime: number | null = null;
+    let firstContentTime: number | null = null;
+    const streamStartTime = Date.now();
 
     if (this._currentProcess?.stdout) {
       for await (const chunk of this._currentProcess.stdout) {
+        // Track time to first chunk of data
+        if (firstChunkTime === null) {
+          firstChunkTime = Date.now();
+          console.log(`[Mysti] ${this.displayName}: First stdout data received in ${firstChunkTime - streamStartTime}ms`);
+        }
+
         const chunkStr = chunk.toString();
         buffer += chunkStr;
 
@@ -266,6 +296,11 @@ export abstract class BaseCliProvider implements ICliProvider {
           if (line.trim()) {
             const parsed = this.parseStreamLine(line);
             if (parsed) {
+              // Track time to first meaningful content (not just metadata)
+              if (firstContentTime === null && (parsed.type === 'text' || parsed.type === 'thinking')) {
+                firstContentTime = Date.now();
+                console.log(`[Mysti] ${this.displayName}: First content chunk in ${firstContentTime - streamStartTime}ms (type: ${parsed.type})`);
+              }
               hasYieldedContent = true;
               yield parsed;
             }
@@ -289,9 +324,29 @@ export abstract class BaseCliProvider implements ICliProvider {
     // Handle errors
     // Show stderr errors if process failed, even if session/metadata was yielded
     if (exitCode !== 0 && exitCode !== null && stderrCollector) {
-      yield { type: 'error', content: stderrCollector };
+      // Check if this is an authentication error
+      if (this.isAuthenticationError(stderrCollector)) {
+        yield {
+          type: 'auth_error',
+          content: stderrCollector,
+          authCommand: this.getAuthCommand(),
+          providerName: this.displayName
+        };
+      } else {
+        yield { type: 'error', content: stderrCollector };
+      }
     } else if (!hasYieldedContent && stderrCollector) {
-      yield { type: 'error', content: `No response received. stderr: ${stderrCollector}` };
+      // Check if this is an authentication error
+      if (this.isAuthenticationError(stderrCollector)) {
+        yield {
+          type: 'auth_error',
+          content: stderrCollector,
+          authCommand: this.getAuthCommand(),
+          providerName: this.displayName
+        };
+      } else {
+        yield { type: 'error', content: `No response received. stderr: ${stderrCollector}` };
+      }
     }
   }
 
@@ -570,6 +625,27 @@ export abstract class BaseCliProvider implements ICliProvider {
     };
 
     return prompt + (modeInstructions[mode] || '');
+  }
+
+  /**
+   * Detect if an error message indicates an authentication failure
+   * Used to show user-friendly auth error messages with recovery steps
+   */
+  protected isAuthenticationError(stderr: string): boolean {
+    const authPatterns = [
+      /not authenticated/i,
+      /authentication.*failed/i,
+      /no authentication/i,
+      /invalid.*token/i,
+      /expired.*token/i,
+      /unauthorized/i,
+      /auth.*required/i,
+      /please.*login/i,
+      /please.*sign in/i,
+      /api.?key.*invalid/i,
+      /access.*denied/i,
+    ];
+    return authPatterns.some(pattern => pattern.test(stderr));
   }
 
   /**

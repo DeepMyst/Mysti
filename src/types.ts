@@ -15,11 +15,11 @@ export type OperationMode = 'default' | 'ask-before-edit' | 'edit-automatically'
 export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
 export type AccessLevel = 'read-only' | 'ask-permission' | 'full-access';
 export type ContextMode = 'auto' | 'manual';
-export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini';
+export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'github-copilot';
 export type AutocompleteType = 'sentence' | 'paragraph' | 'message';
 
 // Agent and Brainstorm types
-export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini';
+export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'github-copilot';
 export type PersonaType = 'neutral' | 'architect' | 'pragmatist' | 'engineer' | 'reviewer' | 'designer' | 'custom';
 export type BrainstormPhase = 'initial' | 'individual' | 'discussion' | 'synthesis' | 'complete';
 export type DiscussionMode = 'quick' | 'full';
@@ -144,12 +144,29 @@ export interface UsageStats {
   cache_read_input_tokens?: number;
 }
 
+export interface AskUserQuestionItem {
+  question: string;
+  header: string;
+  options: Array<{ label: string; description: string }>;
+  multiSelect: boolean;
+}
+
+export interface AskUserQuestionData {
+  toolCallId: string;
+  questions: AskUserQuestionItem[];
+}
+
 export interface StreamChunk {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'done' | 'session_active';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'auth_error' | 'done' | 'session_active' | 'ask_user_question' | 'exit_plan_mode';
   content?: string;
   toolCall?: ToolCall;
   sessionId?: string;
   usage?: UsageStats;
+  askUserQuestion?: AskUserQuestionData;
+  planFilePath?: string | null;
+  // Auth error specific fields
+  authCommand?: string;
+  providerName?: string;
 }
 
 // Brainstorm mode configuration

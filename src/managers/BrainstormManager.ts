@@ -46,6 +46,11 @@ const AGENT_STYLES: Record<AgentType, { color: string; icon: string; displayName
     color: '#4285F4', // Google Blue
     icon: '🔵',
     displayName: 'Gemini'
+  },
+  'github-copilot': {
+    color: '#6366F1', // Indigo
+    icon: '🟡',
+    displayName: 'Copilot'
   }
 };
 
@@ -96,7 +101,8 @@ export class BrainstormManager {
     const agentKeyMap: Record<AgentType, string> = {
       'claude-code': 'claude',
       'openai-codex': 'codex',
-      'google-gemini': 'gemini'
+      'google-gemini': 'gemini',
+      'github-copilot': 'copilot'
     };
     const agentKey = agentKeyMap[agentId] || 'claude';
 
