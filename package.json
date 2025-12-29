@@ -1,8 +1,8 @@
 {
   "name": "mysti",
   "displayName": "Mysti - AI Coding Agent",
-  "description": "Multi-agent AI coding assistant. Claude Code, Codex, and Gemini brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
-  "version": "0.2.1",
+  "description": "Multi-agent AI coding assistant. Claude Code, Codex, Gemini, and GitHub Copilot brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
+  "version": "0.2.2",
   "publisher": "DeepMyst",
   "author": {
     "name": "Baha Abunojaim",
@@ -36,22 +36,35 @@
     "claude",
     "claude code",
     "copilot",
+    "github copilot",
     "cursor",
+    "cursor alternative",
     "gpt",
+    "gpt-5",
     "codex",
     "gemini",
     "cline",
     "ai agent",
     "ai chat",
+    "ai coding",
+    "ai coding assistant",
     "code assistant",
+    "code completion",
     "pair programming",
     "anthropic",
     "openai",
     "google",
     "multi-agent",
-    "brainstorm"
+    "brainstorm",
+    "llm",
+    "chatgpt",
+    "agentic",
+    "developer tools",
+    "productivity",
+    "autocomplete",
+    "code generation"
   ],
-  "license": "BUSL-1.1",
+  "license": "MIT",
   "activationEvents": [
     "onStartupFinished",
     "workspaceContains:claude.md",
@@ -167,13 +180,15 @@
             "claude-code",
             "openai-codex",
             "google-gemini",
-            "cline"
+            "cline",
+            "github-copilot"
           ],
           "enumDescriptions": [
             "Claude Code CLI (Anthropic) - Deep reasoning, complex refactoring, thorough analysis",
             "OpenAI Codex CLI - Quick iterations, familiar GPT style, rapid prototyping",
             "Google Gemini CLI - Fast responses, Google ecosystem integration",
-            "Cline - Autonomous coding agent with browser use, file editing, and command execution"
+            "Cline - Autonomous coding agent with browser use, file editing, and command execution",
+            "GitHub Copilot CLI - GitHub-native AI assistant with seamless GitHub integration"
           ],
           "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context."
         },
@@ -196,6 +211,11 @@
           "type": "string",
           "default": "cline",
           "description": "Path to Cline CLI executable"
+        },
+        "mysti.copilotPath": {
+          "type": "string",
+          "default": "copilot",
+          "description": "Path to GitHub Copilot CLI executable"
         },
         "mysti.defaultMode": {
           "type": "string",
@@ -243,6 +263,11 @@
           "default": true,
           "description": "Automatically include open files and selections as context for better AI responses"
         },
+        "mysti.showSuggestions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show quick action suggestions after AI responses"
+        },
         "mysti.brainstorm.enabled": {
           "type": "boolean",
           "default": false,
@@ -275,7 +300,8 @@
             "claude-code",
             "openai-codex",
             "google-gemini",
-            "cline"
+            "cline",
+            "github-copilot"
           ],
           "description": "Agent to use for synthesis in brainstorm mode"
         },
@@ -291,7 +317,8 @@
               "claude-code",
               "openai-codex",
               "google-gemini",
-              "cline"
+              "cline",
+              "github-copilot"
             ]
           },
           "minItems": 2,
@@ -411,6 +438,34 @@
           "default": "",
           "description": "Custom persona prompt for Cline (when persona is 'custom')"
         },
+        "mysti.agents.copilotPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "No additional framing",
+            "Focus on system design and patterns",
+            "Focus on practical implementation",
+            "Focus on technical correctness and performance",
+            "Focus on code quality and issues",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for Copilot agent in brainstorm mode"
+        },
+        "mysti.agents.copilotCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Copilot (when persona is 'custom')"
+        },
         "mysti.agents.autoSuggest": {
           "type": "boolean",
           "default": true,
@@ -443,6 +498,11 @@
             "No timeout - require explicit user action"
           ],
           "description": "Behavior when permission request times out"
+        },
+        "mysti.useShellForCli": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run AI provider CLIs using a shell (sets shell=true when spawning processes). Enable this on Windows if you see \"spawn EINVAL\" errors with CLI .cmd wrappers."
         }
       }
     },

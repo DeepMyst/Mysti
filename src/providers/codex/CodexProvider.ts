@@ -307,11 +307,15 @@ export class CodexProvider extends BaseCliProvider {
       console.log(`[Mysti] ${this.displayName}: Command: ${cliPath} ${args.join(' ')}`);
       console.log(`[Mysti] ${this.displayName}: Working directory: ${cwd}`);
 
+      // Check if we should use shell for spawning
+      const useShell = vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
+
       // Spawn the process
       this._currentProcess = spawn(cliPath, args, {
         cwd,
         env: { ...process.env },
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: useShell
       });
 
       // Register process with ProviderManager for per-panel cancellation

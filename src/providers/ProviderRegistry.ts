@@ -17,6 +17,7 @@ import { ClaudeCodeProvider } from './claude/ClaudeCodeProvider';
 import { CodexProvider } from './codex/CodexProvider';
 import { GeminiProvider } from './gemini/GeminiProvider';
 import { ClineProvider } from './cline/ClineProvider';
+import { CopilotProvider } from './copilot/CopilotProvider';
 
 /**
  * Registry for managing CLI providers
@@ -55,6 +56,11 @@ export class ProviderRegistry {
     const cline = new ClineProvider(this._extensionContext);
     this._providers.set(cline.id, cline);
     console.log(`[Mysti] Registered provider: ${cline.displayName}`);
+
+    // Register GitHub Copilot
+    const copilot = new CopilotProvider(this._extensionContext);
+    this._providers.set(copilot.id, copilot);
+    console.log(`[Mysti] Registered provider: ${copilot.displayName}`);
   }
 
   /**
