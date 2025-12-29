@@ -40,6 +40,7 @@
     "gpt",
     "codex",
     "gemini",
+    "cline",
     "ai agent",
     "ai chat",
     "code assistant",
@@ -165,12 +166,14 @@
           "enum": [
             "claude-code",
             "openai-codex",
-            "google-gemini"
+            "google-gemini",
+            "cline"
           ],
           "enumDescriptions": [
             "Claude Code CLI (Anthropic) - Deep reasoning, complex refactoring, thorough analysis",
             "OpenAI Codex CLI - Quick iterations, familiar GPT style, rapid prototyping",
-            "Google Gemini CLI - Fast responses, Google ecosystem integration"
+            "Google Gemini CLI - Fast responses, Google ecosystem integration",
+            "Cline - Autonomous coding agent with browser use, file editing, and command execution"
           ],
           "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context."
         },
@@ -188,6 +191,11 @@
           "type": "string",
           "default": "gemini",
           "description": "Path to Google Gemini CLI executable"
+        },
+        "mysti.clinePath": {
+          "type": "string",
+          "default": "cline",
+          "description": "Path to Cline CLI executable"
         },
         "mysti.defaultMode": {
           "type": "string",
@@ -266,21 +274,30 @@
           "enum": [
             "claude-code",
             "openai-codex",
-            "google-gemini"
+            "google-gemini",
+            "cline"
           ],
           "description": "Agent to use for synthesis in brainstorm mode"
         },
         "mysti.brainstorm.agents": {
           "type": "array",
-          "default": ["claude-code", "openai-codex"],
+          "default": [
+            "claude-code",
+            "openai-codex"
+          ],
           "items": {
             "type": "string",
-            "enum": ["claude-code", "openai-codex", "google-gemini"]
+            "enum": [
+              "claude-code",
+              "openai-codex",
+              "google-gemini",
+              "cline"
+            ]
           },
           "minItems": 2,
           "maxItems": 2,
           "uniqueItems": true,
-          "description": "Select any 2 of 3 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
+          "description": "Select any 2 of 4 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
         },
         "mysti.agents.claudePersona": {
           "type": "string",
@@ -366,6 +383,34 @@
           "default": "",
           "description": "Custom persona prompt for Gemini (when persona is 'custom')"
         },
+        "mysti.agents.clinePersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "No additional framing",
+            "Focus on system design and patterns",
+            "Focus on practical implementation",
+            "Focus on technical correctness and performance",
+            "Focus on code quality and issues",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for Cline agent in brainstorm mode"
+        },
+        "mysti.agents.clineCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Cline (when persona is 'custom')"
+        },
         "mysti.agents.autoSuggest": {
           "type": "boolean",
           "default": true,
@@ -416,32 +461,57 @@
     "languages": [
       {
         "id": "claude-prompt",
-        "extensions": [".claude.md"],
-        "aliases": ["Claude Prompt", "Claude MD"],
+        "extensions": [
+          ".claude.md"
+        ],
+        "aliases": [
+          "Claude Prompt",
+          "Claude MD"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "prompt-markdown",
-        "extensions": [".prompt.md"],
-        "aliases": ["Prompt Markdown", "Prompt MD"],
+        "extensions": [
+          ".prompt.md"
+        ],
+        "aliases": [
+          "Prompt Markdown",
+          "Prompt MD"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "gpt-prompt",
-        "extensions": [".gpt.md"],
-        "aliases": ["GPT Prompt", "GPT MD"],
+        "extensions": [
+          ".gpt.md"
+        ],
+        "aliases": [
+          "GPT Prompt",
+          "GPT MD"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "gemini-prompt",
-        "extensions": [".gemini.md"],
-        "aliases": ["Gemini Prompt", "Gemini MD"],
+        "extensions": [
+          ".gemini.md"
+        ],
+        "aliases": [
+          "Gemini Prompt",
+          "Gemini MD"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "codex-prompt",
-        "extensions": [".codex.md"],
-        "aliases": ["Codex Prompt", "Codex MD"],
+        "extensions": [
+          ".codex.md"
+        ],
+        "aliases": [
+          "Codex Prompt",
+          "Codex MD"
+        ],
         "configuration": "./language-configuration.json"
       }
     ]
@@ -468,7 +538,9 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "@google/gemini-cli": "^0.22.4",
     "@vscode/extension-telemetry": "^0.9.0",
+    "cline": "^1.0.8",
     "marked": "^15.0.0",
     "prismjs": "^1.29.0",
     "uuid": "^9.0.1"

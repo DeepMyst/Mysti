@@ -11,39 +11,110 @@
  * SPDX-License-Identifier: BUSL-1.1
  */
 
-import * as vscode from 'vscode';
+import * as vscode from "vscode";
 
-export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri, version: string = '0.0.0'): string {
-  const nonce = getNonce();
-  const styles = getStyles();
+export function getWebviewContent(
+	webview: vscode.Webview,
+	extensionUri: vscode.Uri,
+	version: string = "0.0.0",
+): string {
+	const nonce = getNonce();
+	const styles = getStyles();
 
-  // URIs for library scripts
-  const markedUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'marked.min.js'));
-  const prismUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'prism-bundle.js'));
-  const mermaidUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'mermaid.min.js'));
-  const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'Mysti-Logo.png'));
+	// URIs for library scripts
+	const markedUri = webview.asWebviewUri(
+		vscode.Uri.joinPath(extensionUri, "resources", "marked.min.js"),
+	);
+	const prismUri = webview.asWebviewUri(
+		vscode.Uri.joinPath(extensionUri, "resources", "prism-bundle.js"),
+	);
+	const mermaidUri = webview.asWebviewUri(
+		vscode.Uri.joinPath(extensionUri, "resources", "mermaid.min.js"),
+	);
+	const logoUri = webview.asWebviewUri(
+		vscode.Uri.joinPath(extensionUri, "resources", "Mysti-Logo.png"),
+	);
 
-  // Icon URIs for welcome suggestions and personas
-  const iconUris: Record<string, string> = {};
-  const iconNames = [
-    // Welcome suggestions
-    'magnifier', 'eye', 'brush', 'lab', 'lock', 'flash', 'notes', 'recycle', 'rocket', 'package', 'check', 'bug',
-    // Personas (additional)
-    'architecture', 'gear', 'target', 'microscope', 'hammer', 'chain', 'teacher', 'paint', 'globe', 'tools'
-  ];
-  for (const name of iconNames) {
-    iconUris[name] = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', `${name}.png`)).toString();
-  }
+	// Icon URIs for welcome suggestions and personas
+	const iconUris: Record<string, string> = {};
+	const iconNames = [
+		// Welcome suggestions
+		"magnifier",
+		"eye",
+		"brush",
+		"lab",
+		"lock",
+		"flash",
+		"notes",
+		"recycle",
+		"rocket",
+		"package",
+		"check",
+		"bug",
+		// Personas (additional)
+		"architecture",
+		"gear",
+		"target",
+		"microscope",
+		"hammer",
+		"chain",
+		"teacher",
+		"paint",
+		"globe",
+		"tools",
+	];
+	for (const name of iconNames) {
+		iconUris[name] = webview
+			.asWebviewUri(
+				vscode.Uri.joinPath(extensionUri, "resources", "icons", `${name}.png`),
+			)
+			.toString();
+	}
 
-  // Provider logos
-  const claudeLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'Claude.png')).toString();
-  const openaiLogoLightUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openai.svg')).toString();
-  const openaiLogoDarkUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openai_white.png')).toString();
-  const geminiLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'gemini.png.webp')).toString();
+	// Provider logos
+	const claudeLogoUri = webview
+		.asWebviewUri(
+			vscode.Uri.joinPath(extensionUri, "resources", "icons", "Claude.png"),
+		)
+		.toString();
+	const openaiLogoLightUri = webview
+		.asWebviewUri(
+			vscode.Uri.joinPath(extensionUri, "resources", "icons", "openai.svg"),
+		)
+		.toString();
+	const openaiLogoDarkUri = webview
+		.asWebviewUri(
+			vscode.Uri.joinPath(
+				extensionUri,
+				"resources",
+				"icons",
+				"openai_white.png",
+			),
+		)
+		.toString();
+	const geminiLogoUri = webview
+		.asWebviewUri(
+			vscode.Uri.joinPath(
+				extensionUri,
+				"resources",
+				"icons",
+				"gemini.png.webp",
+			),
+		)
+		.toString();
 
-  const script = getScript(mermaidUri.toString(), logoUri.toString(), iconUris, claudeLogoUri, openaiLogoLightUri, openaiLogoDarkUri, geminiLogoUri, version);
+	const script = getScript(
+		mermaidUri.toString(),
+		logoUri.toString(),
+		iconUris,
+		claudeLogoUri,
+		openaiLogoLightUri,
+		openaiLogoDarkUri,
+		geminiLogoUri,
+		version,
+	);
 
-  return `<!DOCTYPE html>
+	return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -136,6 +207,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <option value="claude-code">Claude Code</option>
           <option value="openai-codex">OpenAI Codex</option>
           <option value="google-gemini">Gemini</option>
+          <option value="cline">Cline</option>
           <option value="brainstorm">Brainstorm</option>
         </select>
       </div>
@@ -175,6 +247,13 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
             <span class="brainstorm-agent-chip">
               <span class="brainstorm-agent-dot" style="background: #4285F4;"></span>
               <span class="brainstorm-agent-name">Gemini</span>
+            </span>
+          </label>
+          <label class="brainstorm-agent-option" data-agent="cline">
+            <input type="checkbox" name="brainstorm-agent" value="cline" />
+            <span class="brainstorm-agent-chip">
+              <span class="brainstorm-agent-dot" style="background: #F59E0B;"></span>
+              <span class="brainstorm-agent-name">Cline</span>
             </span>
           </label>
         </div>
@@ -423,6 +502,10 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <span class="agent-item-icon"><img class="gemini-logo" src="${geminiLogoUri}" alt="" /></span>
         <span class="agent-item-name">Gemini</span>
       </div>
+      <div class="agent-menu-item" data-agent="cline">
+        <span class="agent-item-icon"><img src="${logoUri}" alt="" /></span>
+        <span class="agent-item-name">Cline</span>
+      </div>
       <div class="agent-menu-divider"></div>
       <div class="agent-menu-item" data-agent="brainstorm">
         <span class="agent-item-icon"><img src="${logoUri}" alt="" /></span>
@@ -609,16 +692,17 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
 }
 
 function getNonce(): string {
-  let text = '';
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
+	let text = "";
+	const possible =
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+	for (let i = 0; i < 32; i++) {
+		text += possible.charAt(Math.floor(Math.random() * possible.length));
+	}
+	return text;
 }
 
 function getStyles(): string {
-  return `
+	return `
     * {
       box-sizing: border-box;
       margin: 0;
@@ -5708,8 +5792,17 @@ function getStyles(): string {
   `;
 }
 
-function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string, string>, claudeLogoUri: string, openaiLogoLightUri: string, openaiLogoDarkUri: string, geminiLogoUri: string, version: string): string {
-  return `
+function getScript(
+	mermaidUri: string,
+	logoUri: string,
+	iconUris: Record<string, string>,
+	claudeLogoUri: string,
+	openaiLogoLightUri: string,
+	openaiLogoDarkUri: string,
+	geminiLogoUri: string,
+	version: string,
+): string {
+	return `
     (function() {
       const vscode = acquireVsCodeApi();
       const MERMAID_URI = '${mermaidUri}';
@@ -5720,6 +5813,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var OPENAI_LOGO_LIGHT = '${openaiLogoLightUri}';
       var OPENAI_LOGO_DARK = '${openaiLogoDarkUri}';
       var GEMINI_LOGO = '${geminiLogoUri}';
+      var CLINE_LOGO = '${logoUri}'; // TODO: Using Mysti logo as placeholder for Cline
       var MYSTI_LOGO = '${logoUri}';
 
       // Theme detection for OpenAI logo
@@ -6033,7 +6127,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var AGENT_DISPLAY = {
         'claude-code': { name: 'Claude', shortId: 'claude', color: '#8B5CF6', logo: CLAUDE_LOGO },
         'openai-codex': { name: 'Codex', shortId: 'codex', color: '#10B981', logo: null }, // Uses getOpenAILogo() for theme support
-        'google-gemini': { name: 'Gemini', shortId: 'gemini', color: '#4285F4', logo: GEMINI_LOGO }
+        'google-gemini': { name: 'Gemini', shortId: 'gemini', color: '#4285F4', logo: GEMINI_LOGO },
+        'cline': { name: 'Cline', shortId: 'cline', color: '#F59E0B', logo: CLINE_LOGO }
       };
 
       // Helper to get agent logo (handles OpenAI theme switching)
@@ -7181,7 +7276,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         // Count available providers
         var availableCount = 0;
-        ['claude-code', 'openai-codex', 'google-gemini'].forEach(function(providerId) {
+        ['claude-code', 'openai-codex', 'google-gemini', 'cline'].forEach(function(providerId) {
           if (providerAvailability[providerId] &&
               providerAvailability[providerId].available) {
             availableCount++;
@@ -7426,6 +7521,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             'claude-code': 'Claude',
             'openai-codex': 'Codex',
             'google-gemini': 'Gemini',
+            'cline': 'Cline',
             'brainstorm': 'Brainstorm'
           };
           agentNameEl.textContent = agentNames[state.activeAgent] || 'Claude';
@@ -7437,6 +7533,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               'claude-code': CLAUDE_LOGO,
               'openai-codex': getOpenAILogo(),
               'google-gemini': GEMINI_LOGO,
+              'cline': CLINE_LOGO,
               'brainstorm': MYSTI_LOGO
             };
             img.src = agentLogos[state.activeAgent] || CLAUDE_LOGO;
@@ -7478,7 +7575,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         // Count available providers
         var availableCount = 0;
         var firstAvailable = null;
-        ['claude-code', 'openai-codex', 'google-gemini'].forEach(function(providerId) {
+        ['claude-code', 'openai-codex', 'google-gemini', 'cline'].forEach(function(providerId) {
           if (availability[providerId] && availability[providerId].available) {
             availableCount++;
             if (!firstAvailable) firstAvailable = providerId;
@@ -8546,7 +8643,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var icons = {
           'claude-code': CLAUDE_LOGO,
           'openai-codex': getOpenAILogo(),
-          'google-gemini': GEMINI_LOGO
+          'google-gemini': GEMINI_LOGO,
+          'cline': CLINE_LOGO
         };
         return icons[providerId] || '';
       }
@@ -9056,7 +9154,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       // Helper to detect first sentence end
       function findFirstSentenceEnd(text) {
         // Match sentence-ending punctuation followed by space, newline, or end
-        var match = text.match(/[.!?](?:\s|$)/);
+        var match = text.match(/[.!?]\s|$|$/);
         return match ? match.index + 1 : -1;
       }
 
@@ -9076,6 +9174,20 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var streamingEl = messagesEl.querySelector('.message.streaming');
 
         if (!streamingEl) {
+          // Remove loading indicator and reset button states when first streaming content arrives
+          var loading = messagesEl.querySelector('.loading');
+          if (loading) loading.remove();
+
+          // Reset loading state and buttons
+          state.isLoading = false;
+          if (sendBtn) {
+            sendBtn.style.display = 'flex';
+            sendBtn.disabled = false;
+          }
+          if (stopBtn) {
+            stopBtn.style.display = 'none';
+          }
+
           streamingEl = document.createElement('div');
           streamingEl.className = 'message assistant streaming';
           // Removed static thinking-block - now created dynamically for each thought
@@ -10336,7 +10448,14 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
         state.contextUsage.usedTokens = usedTokens || 0;
 
-        var percentage = Math.min(100, Math.round((state.contextUsage.usedTokens / state.contextUsage.contextWindow) * 100));
+        // Calculate percentage, handling edge cases where contextWindow might be 0 or undefined
+        var percentage = 0;
+        if (state.contextUsage.contextWindow > 0) {
+          percentage = Math.min(100, Math.round((state.contextUsage.usedTokens / state.contextUsage.contextWindow) * 100));
+        } else {
+          // Show "—" when context window is unknown
+          percentage = 0;
+        }
         state.contextUsage.percentage = percentage;
 
         var pieFill = document.getElementById('context-pie-fill');
@@ -10364,12 +10483,21 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           }
 
           // Update percentage text
-          usageText.textContent = percentage + '%';
+          // Show "—" when context window is unknown, otherwise show percentage
+          if (state.contextUsage.contextWindow > 0) {
+            usageText.textContent = percentage + '%';
+          } else {
+            usageText.textContent = '—';
+          }
 
           // Update tooltip
           var usedK = Math.round(state.contextUsage.usedTokens / 1000);
-          var totalK = Math.round(state.contextUsage.contextWindow / 1000);
-          usageContainer.title = 'Context usage: ' + usedK + 'k / ' + totalK + 'k tokens (' + percentage + '%)';
+          if (state.contextUsage.contextWindow > 0) {
+            var totalK = Math.round(state.contextUsage.contextWindow / 1000);
+            usageContainer.title = 'Context usage: ' + usedK + 'k / ' + totalK + 'k tokens (' + percentage + '%)';
+          } else {
+            usageContainer.title = 'Context used: ' + state.contextUsage.usedTokens + ' tokens (window size unknown)';
+          }
 
           // Update color based on usage level
           usageContainer.classList.remove('warning', 'danger');

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Mysti is a VSCode extension providing a unified AI coding assistant interface supporting multiple AI backends (Claude Code CLI, OpenAI Codex CLI, and Google Gemini CLI). It features sidebar/tab chat panels, conversation persistence, multi-agent brainstorm mode (select 2 of 3 agents), permission controls, and plan selection.
+Mysti is a VSCode extension providing a unified AI coding assistant interface supporting multiple AI backends (Claude Code CLI, OpenAI Codex CLI, Google Gemini CLI, and Cline). It features sidebar/tab chat panels, conversation persistence, multi-agent brainstorm mode (select 2 of 4 agents), permission controls, and plan selection.
 
 ## Build Commands
 
@@ -50,13 +50,14 @@ extension.ts (entry)
             └── Providers (CLI integrations)
                 ├── ClaudeCodeProvider (extends BaseCliProvider)
                 ├── CodexProvider (extends BaseCliProvider)
-                └── GeminiProvider (extends BaseCliProvider)
+                ├── GeminiProvider (extends BaseCliProvider)
+                └── ClineProvider (extends BaseCliProvider)
 ```
 
 ### Key Design Decisions
 
 - **Per-panel isolation**: Each webview panel (sidebar or tab) has independent state, conversation, and child process
-- **CLI-based providers**: Spawn `claude`/`codex`/`gemini` CLI with `--output-format stream-json`, parse line-delimited JSON events
+- **CLI-based providers**: Spawn `claude`/`codex`/`gemini`/`cline` CLI with `--output-format stream-json`, parse line-delimited JSON events
 - **AsyncGenerator streaming**: Providers yield `StreamChunk` items for real-time response updates
 - **Webview communication**: Extension ↔ webview via `postMessage()` with typed `WebviewMessage`
 
@@ -132,6 +133,24 @@ Libraries:
 3. Register in `src/providers/ProviderRegistry.ts`
 4. Add to `ProviderType` union in `src/types.ts`
 5. Add configuration options in `package.json`
+
+## Cline Provider Notes
+
+Cline is an autonomous coding agent that can use the CLI, editor, and browser. Key differences from other providers:
+
+**Installation**: Cline is primarily distributed as a VSCode extension (`ext install saoudrizwan.claude-dev`).
+
+**CLI Path**: The provider looks for the Cline binary in:
+- VSCode extensions directory (`~/.vscode/extensions/saoudrizwan.claude-dev-*/`)
+- Configured path via `mysti.clinePath` setting
+
+**Authentication**: Cline uses API keys configured in its own settings (Anthropic API, OpenRouter, etc.). The Mysti provider checks if an API key is configured.
+
+**Streaming Format**: Cline uses a similar stream-json format to Claude Code, making integration straightforward.
+
+**Models**: Cline supports the same Claude models (Sonnet 4.5, Opus 4.5, Haiku 4.5) as well as other providers via OpenRouter.
+
+**File**: `src/providers/cline/ClineProvider.ts`
 
 ### Adding a New Persona (Markdown-based)
 
