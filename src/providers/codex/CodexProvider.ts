@@ -152,6 +152,22 @@ export class CodexProvider extends BaseCliProvider {
     return configuredPath;
   }
 
+  /**
+   * Get custom Codex model from VSCode settings
+   */
+  private _getCustomModel(): string {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<string>('codexModel', '');
+  }
+
+  /**
+   * Get Codex profile from VSCode settings
+   */
+  private _getProfile(): string {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<string>('codexProfile', '');
+  }
+
   async getAuthConfig(): Promise<AuthConfig> {
     const configPath = path.join(os.homedir(), '.codex', 'config.toml');
     const hasConfig = fs.existsSync(configPath);
@@ -372,6 +388,13 @@ export class CodexProvider extends BaseCliProvider {
   private _buildCodexArgs(settings: Settings): string[] {
     const args: string[] = ['exec'];
 
+    // Profile parameter (if configured)
+    const profile = this._getProfile();
+    if (profile) {
+      args.push('--profile', profile);
+      console.log(`[Mysti] Codex: Using profile: ${profile}`);
+    }
+
     // Always use JSON mode for structured streaming output
     args.push('--json');
 
@@ -379,18 +402,27 @@ export class CodexProvider extends BaseCliProvider {
     // Priority: mode restrictions first, then access level
     this._addSandboxFlags(args, settings);
 
-    // Only set model if it's a valid Codex model (not a Claude model)
-    // This prevents passing Claude model names like 'claude-sonnet-4-5-20250929' to Codex
-    if (settings.model) {
-      const validCodexModels = this.config.models.map(m => m.id);
-      if (validCodexModels.includes(settings.model)) {
-        // Only pass model if different from Codex default
-        if (settings.model !== this.config.defaultModel) {
-          args.push('--model', settings.model);
-        }
+    // Model parameter: custom model has priority over UI selection
+    const customModel = this._getCustomModel();
+    let modelToUse = settings.model;
+
+    // If UI model is "custom", use the configured custom model
+    if (settings.model === 'custom') {
+      if (customModel) {
+        modelToUse = customModel;
+      } else {
+        // If custom model is not configured, fall back to default
+        console.warn('[Mysti] Codex: Custom model selected but no custom model configured, using default');
+        modelToUse = this.config.defaultModel;
       }
-      // If model is not a valid Codex model, don't pass --model flag
-      // Codex will use its own default
+    } else if (customModel) {
+      // If custom model is configured but UI model is not "custom", use UI selection
+      modelToUse = settings.model;
+    }
+
+    if (modelToUse && modelToUse !== this.config.defaultModel) {
+      args.push('--model', modelToUse);
+      console.log(`[Mysti] Codex: Using model: ${modelToUse}`);
     }
 
     // Skip git repo check - useful if workspace isn't a git repo

@@ -146,6 +146,23 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <select id="model-select" class="select">
         </select>
       </div>
+      <!-- Custom Model Input (shown only when Custom is selected) -->
+      <div class="settings-section hidden" id="custom-model-section">
+        <label class="settings-label">Custom Model</label>
+        <input type="text" id="custom-model-input" class="input"
+               placeholder="Enter custom model name (e.g., gpt-5.2-custom)" />
+        <div class="settings-hint">Enter any valid model name for the selected provider</div>
+      </div>
+      <!-- Codex Settings (conditionally shown) -->
+      <div class="settings-section hidden" id="codex-settings-section">
+        <div class="settings-section-title">Codex Settings</div>
+        <div class="settings-section">
+          <label class="settings-label">Profile</label>
+          <input type="text" id="codex-profile-input" class="input"
+                 placeholder="Profile name (from ~/.codex/config.toml)" />
+          <div class="settings-hint">Leave empty to use default profile</div>
+        </div>
+      </div>
       <div class="settings-section">
         <label class="settings-label">Access Level</label>
         <select id="access-select" class="select">
@@ -1076,6 +1093,14 @@ function getStyles(): string {
     }
 
     #brainstorm-agents-section.hidden {
+      display: none;
+    }
+
+    #codex-settings-section.hidden {
+      display: none;
+    }
+
+    #custom-model-section.hidden {
       display: none;
     }
 
@@ -7606,6 +7631,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       modelSelect.addEventListener('change', function() {
         state.settings.model = modelSelect.value;
         postMessageWithPanelId({ type: 'updateSettings', payload: { model: modelSelect.value } });
+        // Update custom model input visibility when model selection changes
+        updateCustomModelInputVisibility();
       });
 
       accessSelect.addEventListener('change', function() {
@@ -7673,6 +7700,32 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             if (quickActionsContainer) quickActionsContainer.classList.add('hidden');
           }
           postMessageWithPanelId({ type: 'updateSettings', payload: { showSuggestions: state.agentSettings.showSuggestions } });
+        });
+      }
+
+      // Codex settings input handlers
+      var codexProfileInput = document.getElementById('codex-profile-input');
+      if (codexProfileInput) {
+        codexProfileInput.addEventListener('blur', function() {
+          var value = codexProfileInput.value.trim();
+          if (!state.providerSettings) {
+            state.providerSettings = {};
+          }
+          state.providerSettings.codexProfile = value;
+          postMessageWithPanelId({ type: 'updateSettings', payload: { 'codexProfile': value } });
+        });
+      }
+
+      // Custom model input handler (generic for all providers)
+      var customModelInput = document.getElementById('custom-model-input');
+      if (customModelInput) {
+        customModelInput.addEventListener('blur', function() {
+          var value = customModelInput.value.trim();
+          if (!state.providerSettings) {
+            state.providerSettings = {};
+          }
+          state.providerSettings.customModel = value;
+          postMessageWithPanelId({ type: 'updateSettings', payload: { 'customModel': value } });
         });
       }
 
@@ -7811,6 +7864,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         // Hide thinking section for Gemini (doesn't support thinking tokens)
         updateThinkingSectionVisibility(newProvider);
 
+        // Show/hide Codex settings section
+        updateCodexSettingsVisibility(newProvider);
+
         // Notify backend of provider change
         postMessageWithPanelId({ type: 'updateSettings', payload: { provider: newProvider } });
       });
@@ -7821,6 +7877,30 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (thinkingSection) {
           // Gemini doesn't support thinking tokens, hide the section
           thinkingSection.style.display = (provider === 'google-gemini') ? 'none' : 'block';
+        }
+      }
+
+      // Function to show/hide Codex settings section based on provider
+      function updateCodexSettingsVisibility(provider) {
+        var codexSection = document.getElementById('codex-settings-section');
+        if (codexSection) {
+          if (provider === 'openai-codex') {
+            codexSection.classList.remove('hidden');
+          } else {
+            codexSection.classList.add('hidden');
+          }
+        }
+      }
+
+      // Function to show/hide custom model input based on model selection
+      function updateCustomModelInputVisibility() {
+        var customModelSection = document.getElementById('custom-model-section');
+        if (customModelSection) {
+          if (modelSelect.value === 'custom') {
+            customModelSection.classList.remove('hidden');
+          } else {
+            customModelSection.classList.add('hidden');
+          }
         }
       }
 
@@ -7939,9 +8019,14 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         var provider = state.providers.find(function(p) { return p.name === providerId; });
         if (provider && provider.models) {
-          modelSelect.innerHTML = provider.models.map(function(m) {
+          var modelOptions = provider.models.map(function(m) {
             return '<option value="' + m.id + '">' + m.name + '</option>';
           }).join('');
+
+          // Add Custom option at the end for all providers
+          modelOptions += '<option value="custom">Custom</option>';
+
+          modelSelect.innerHTML = modelOptions;
 
           // Select first model as default or keep current if it exists in the new provider
           if (provider.models.length > 0) {
@@ -7953,6 +8038,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               postMessageWithPanelId({ type: 'updateSettings', payload: { model: state.settings.model } });
             }
           }
+
+          // Update custom model input visibility based on selection
+          updateCustomModelInputVisibility();
         }
       }
 
@@ -9504,6 +9592,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           state.activeAgent = state.settings.provider;
           // Update thinking section visibility for Gemini
           updateThinkingSectionVisibility(state.settings.provider);
+          // Update Codex settings section visibility
+          updateCodexSettingsVisibility(state.settings.provider);
         }
 
         // Populate model dropdown based on selected provider
@@ -9546,6 +9636,21 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           updateBrainstormAgentsUI();
         }
         updateBrainstormSectionVisibility();
+
+        // Initialize provider settings input values
+        if (state.providerSettings) {
+          var codexProfileInput = document.getElementById('codex-profile-input');
+          var customModelInput = document.getElementById('custom-model-input');
+          if (codexProfileInput && state.providerSettings.codexProfile !== undefined) {
+            codexProfileInput.value = state.providerSettings.codexProfile;
+          }
+          if (customModelInput && state.providerSettings.customModel !== undefined) {
+            customModelInput.value = state.providerSettings.customModel;
+          }
+        }
+
+        // Initialize custom model input visibility based on current model selection
+        updateCustomModelInputVisibility();
 
         // Initialize sticky progress observer for scroll-aware sticking
         initStickyProgressObserver();

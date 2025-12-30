@@ -199,15 +199,40 @@
           "default": "codex",
           "description": "Path to OpenAI Codex CLI executable"
         },
+        "mysti.codexProfile": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI Codex Profile name to use (defined in ~/.codex/config.toml). Leave empty to use default profile."
+        },
+        "mysti.codexModel": {
+          "type": "string",
+          "default": "",
+          "description": "Custom OpenAI Codex model to use. Overrides the model selection in chat UI. Leave empty to use the selected model or default."
+        },
         "mysti.geminiPath": {
           "type": "string",
           "default": "gemini",
           "description": "Path to Google Gemini CLI executable"
         },
+        "mysti.geminiModel": {
+          "type": "string",
+          "default": "",
+          "description": "Custom Google Gemini model to use. Overrides the model selection in chat UI. Leave empty to use the selected model or default."
+        },
+        "mysti.claudeCodeModel": {
+          "type": "string",
+          "default": "",
+          "description": "Custom Claude Code model to use. Overrides the model selection in chat UI. Leave empty to use the selected model or default."
+        },
         "mysti.copilotPath": {
           "type": "string",
           "default": "copilot",
           "description": "Path to GitHub Copilot CLI executable"
+        },
+        "mysti.copilotModel": {
+          "type": "string",
+          "default": "",
+          "description": "Custom GitHub Copilot model to use. Overrides the model selection in chat UI. Leave empty to use the selected model or default."
         },
         "mysti.defaultMode": {
           "type": "string",

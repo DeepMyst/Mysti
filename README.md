@@ -373,6 +373,8 @@ Stay in control of what the AI can do:
 | `mysti.brainstorm.discussionMode` | `quick` | `quick` or `full` |
 | `mysti.accessLevel` | `ask-permission` | File access level |
 | `mysti.agents.autoSuggest` | `true` | Auto-suggest personas |
+| `mysti.codexProfile` | `""` | OpenAI Codex Profile name (defined in `~/.codex/config.toml`) |
+| `mysti.codexModel` | `""` | Custom OpenAI Codex model (overrides chat UI selection) |
 | `mysti.copilotPath` | `copilot` | Path to GitHub Copilot CLI executable |
 
 ---

@@ -228,6 +228,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       showSuggestions: agentConfig.get<boolean>('showSuggestions', true)
     };
 
+    // Get provider-specific settings
+    let customModel = '';
+    if (selectedProvider === 'openai-codex') {
+      customModel = config.get<string>('codexModel', '');
+    } else if (selectedProvider === 'google-gemini') {
+      customModel = config.get<string>('geminiModel', '');
+    } else if (selectedProvider === 'claude-code') {
+      customModel = config.get<string>('claudeCodeModel', '');
+    } else if (selectedProvider === 'github-copilot') {
+      customModel = config.get<string>('copilotModel', '');
+    }
+
+    const providerSettings = {
+      codexProfile: config.get<string>('codexProfile', ''),
+      customModel: customModel
+    };
+
     // Get brainstorm agent configuration
     const brainstormAgents = vscode.workspace.getConfiguration('mysti')
       .get<string[]>('brainstorm.agents', ['claude-code', 'openai-codex']);
@@ -259,6 +276,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         availablePersonas,
         availableSkills,
         agentSettings,
+        providerSettings,
         brainstormAgents
       }
     });
@@ -1295,6 +1313,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     if ('showSuggestions' in settingsAny) {
       await config.update('showSuggestions', settingsAny['showSuggestions'], vscode.ConfigurationTarget.Global);
+    }
+
+    // Handle Codex provider settings
+    if ('codexProfile' in settingsAny) {
+      await config.update('codexProfile', settingsAny['codexProfile'], vscode.ConfigurationTarget.Global);
+      console.log(`[Mysti] Updated codexProfile to: ${settingsAny['codexProfile']}`);
+    }
+    if ('customModel' in settingsAny) {
+      // Store custom model in the currently selected provider's config
+      const currentProvider = config.get<ProviderType>('defaultProvider', 'claude-code');
+      if (currentProvider === 'openai-codex') {
+        await config.update('codexModel', settingsAny['customModel'], vscode.ConfigurationTarget.Global);
+        console.log(`[Mysti] Updated codexModel to: ${settingsAny['customModel']}`);
+      } else if (currentProvider === 'google-gemini') {
+        await config.update('geminiModel', settingsAny['customModel'], vscode.ConfigurationTarget.Global);
+        console.log(`[Mysti] Updated geminiModel to: ${settingsAny['customModel']}`);
+      } else if (currentProvider === 'claude-code') {
+        await config.update('claudeCodeModel', settingsAny['customModel'], vscode.ConfigurationTarget.Global);
+        console.log(`[Mysti] Updated claudeCodeModel to: ${settingsAny['customModel']}`);
+      } else if (currentProvider === 'github-copilot') {
+        await config.update('copilotModel', settingsAny['customModel'], vscode.ConfigurationTarget.Global);
+        console.log(`[Mysti] Updated copilotModel to: ${settingsAny['customModel']}`);
+      }
     }
 
     // Handle brainstorm agent selection
