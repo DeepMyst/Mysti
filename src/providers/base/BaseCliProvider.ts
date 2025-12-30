@@ -319,7 +319,9 @@ export abstract class BaseCliProvider implements ICliProvider {
     }
 
     // Wait for process to complete
+    console.log(`[Mysti] ${this.displayName}: Stream ended, waiting for process to exit...`);
     const exitCode = await this.waitForProcess();
+    console.log(`[Mysti] ${this.displayName}: Process exited with code:`, exitCode);
 
     // Handle errors
     // Show stderr errors if process failed, even if session/metadata was yielded

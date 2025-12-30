@@ -21,7 +21,6 @@
 
             # Linting
             nodePackages.eslint
-``
             # Packaging (use npx vsce if vsce is not available)
             vsce
           ];

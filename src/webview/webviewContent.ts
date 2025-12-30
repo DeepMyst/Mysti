@@ -8277,6 +8277,18 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             addMessage(message.payload);
             break;
           case 'responseStarted':
+            // Clean up any incomplete streaming message from previous request
+            var oldStreaming = messagesEl.querySelector('.message.streaming');
+            if (oldStreaming) {
+              console.log('[Mysti Webview] Cleaning up old streaming message');
+              oldStreaming.classList.remove('streaming');
+              // Reset streaming buffers
+              currentResponse = '';
+              currentThinking = '';
+              contentSegmentIndex = 0;
+              claudeThinkingBuffer = '';
+              claudeFirstSentenceComplete = false;
+            }
             showLoading();
             break;
           case 'responseChunk':

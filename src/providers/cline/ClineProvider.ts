@@ -89,6 +89,9 @@ export class ClineProvider extends BaseCliProvider {
 		cache_read_input_tokens?: number;
 	} | null = null;
 
+	// Track last user input to filter out echoed text from Cline
+	private _lastUserInput: string = "";
+
 	async discoverCli(): Promise<CliDiscoveryResult> {
 		const extensionPath = this._findVSCodeExtensionCli();
 		if (extensionPath) {
@@ -247,6 +250,7 @@ export class ClineProvider extends BaseCliProvider {
 				this._jsonBuffer = [];
 				try {
 					const data = JSON.parse(fullJson);
+					console.log("[Mysti] Cline: Parsed JSON type:", data.type, "say:", data.say);
 
 					// Handle Cline's "say" message format
 					if (data.type === "say") {
@@ -261,6 +265,15 @@ export class ClineProvider extends BaseCliProvider {
 
 						// Handle text messages
 						if (data.say === "text" && data.text) {
+							// Filter out echoed user input
+							const trimmedText = data.text.trim();
+							if (trimmedText === this._lastUserInput) {
+								console.log(
+									"[Mysti] Cline: Filtered echoed user input:",
+									trimmedText,
+								);
+								return null;
+							}
 							console.log(
 								"[Mysti] Cline: Found text:",
 								data.text.substring(0, 50),
@@ -277,7 +290,24 @@ export class ClineProvider extends BaseCliProvider {
 						try {
 							const askData = JSON.parse(data.text);
 							if (askData.question) {
-								console.log("[Mysti] Cline: Found question:", askData.question);
+								// Filter out echoed user input
+								const trimmedQuestion = askData.question.trim();
+								if (trimmedQuestion === this._lastUserInput) {
+									console.log(
+										"[Mysti] Cline: Filtered echoed user input in question:",
+										trimmedQuestion,
+									);
+									return null;
+								}
+								console.log("[Mysti] Cline: Found question (ask):", askData.question);
+								// Cline is waiting for user input - we need to kill the process
+								// Schedule process termination after yielding the text
+								setTimeout(() => {
+									if (this._currentProcess && !this._currentProcess.killed) {
+										console.log("[Mysti] Cline: Killing process after ask message");
+										this._currentProcess.kill('SIGTERM');
+									}
+								}, 100);
 								return { type: "text", content: askData.question };
 							}
 						} catch {
@@ -287,6 +317,15 @@ export class ClineProvider extends BaseCliProvider {
 
 					// Handle direct text content
 					if (data.type === "text" && data.content) {
+						// Filter out echoed user input
+						const trimmedContent = data.content.trim();
+						if (trimmedContent === this._lastUserInput) {
+							console.log(
+								"[Mysti] Cline: Filtered echoed user input in direct text:",
+								trimmedContent,
+							);
+							return null;
+						}
 						return { type: "text", content: data.content };
 					}
 
@@ -330,9 +369,32 @@ export class ClineProvider extends BaseCliProvider {
 						};
 					}
 
-					// Handle done
+					// Handle done - check for usage data
 					if (data.type === "done" || data.type === "complete") {
+						// Check if usage data is embedded in the done message
+						if (data.usage || data.tokens) {
+							const usage = data.usage || data.tokens;
+							this._lastUsageStats = {
+								input_tokens: usage.input_tokens || usage.inputTokens || 0,
+								output_tokens: usage.output_tokens || usage.outputTokens || 0,
+								cache_creation_input_tokens: usage.cache_creation_input_tokens || usage.cacheCreationInputTokens,
+								cache_read_input_tokens: usage.cache_read_input_tokens || usage.cacheReadInputTokens,
+							};
+							console.log("[Mysti] Cline: Stored usage from done message:", this._lastUsageStats);
+						}
 						return { type: "done" };
+					}
+
+					// Handle explicit usage messages
+					if (data.type === "usage" && data.tokens) {
+						this._lastUsageStats = {
+							input_tokens: data.tokens.input_tokens || data.tokens.inputTokens || 0,
+							output_tokens: data.tokens.output_tokens || data.tokens.outputTokens || 0,
+							cache_creation_input_tokens: data.tokens.cache_creation_input_tokens || data.tokens.cacheCreationInputTokens,
+							cache_read_input_tokens: data.tokens.cache_read_input_tokens || data.tokens.cacheReadInputTokens,
+						};
+						console.log("[Mysti] Cline: Stored usage from usage message:", this._lastUsageStats);
+						return null; // Usage is not streamed to UI, just stored
 					}
 
 					// Skip all other JSON state messages
@@ -382,6 +444,9 @@ export class ClineProvider extends BaseCliProvider {
 		const cliPath = this.getCliPath();
 		const baseArgs = this.buildCliArgs(settings, this.hasSession());
 
+		// Store user input to filter out echoed text from Cline's response
+		this._lastUserInput = content.trim();
+
 		// Build prompt WITHOUT conversation history (Cline manages its own)
 		// Pass null for conversation to skip history formatting
 		const fullPrompt = await this.buildPromptAsync(
@@ -426,10 +491,12 @@ export class ClineProvider extends BaseCliProvider {
 			yield* this.processStream("");
 
 			// Done
+			console.log("[Mysti] Cline: Stream complete, yielding done chunk");
 			const storedUsage = this.getStoredUsage();
 			yield storedUsage
 				? { type: "done", usage: storedUsage }
 				: { type: "done" };
+			console.log("[Mysti] Cline: Done chunk yielded");
 		} catch (error) {
 			// Yield error chunk AND done to ensure loading state is cleared
 			yield this.handleError(error);
