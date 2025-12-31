@@ -104,8 +104,7 @@ export class ClineProvider extends BaseCliProvider {
 		return {
 			found,
 			path: configuredPath,
-			installCommand:
-				"Install the Cline VSCode extension from https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev",
+			installCommand: "npm install -g cline",
 		};
 	}
 
@@ -139,11 +138,11 @@ export class ClineProvider extends BaseCliProvider {
 	}
 
 	getAuthCommand(): string {
-		return "Open Cline settings to configure your API key";
+		return "cline auth";
 	}
 
 	getInstallCommand(): string {
-		return "Install from VSCode Marketplace: ext install saoudrizwan.claude-dev";
+		return "npm install -g cline";
 	}
 
 	protected buildCliArgs(settings: Settings, hasSession: boolean): string[] {

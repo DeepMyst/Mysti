@@ -600,7 +600,6 @@
   "dependencies": {
     "@google/gemini-cli": "^0.22.4",
     "@vscode/extension-telemetry": "^0.9.0",
-    "cline": "^1.0.8",
     "marked": "^15.0.0",
     "prismjs": "^1.29.0",
     "uuid": "^9.0.1"
