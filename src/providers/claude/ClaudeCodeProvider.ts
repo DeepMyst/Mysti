@@ -417,6 +417,18 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       // This contains the complete response which was already streamed via text_delta chunks
       // We should NOT emit this as text, or it will duplicate the content
       if (data.type === 'result') {
+        // Check for permission denials - CLI auto-denied operations in non-interactive mode
+        if (data.permission_denials && data.permission_denials.length > 0) {
+          console.log('[Mysti] Claude: Permission denials detected:', data.permission_denials.length);
+          return {
+            type: 'permission_denied',
+            permissionDenials: data.permission_denials.map((denial: { tool_name: string; tool_use_id: string; tool_input: Record<string, unknown> }) => ({
+              toolName: denial.tool_name,
+              toolUseId: denial.tool_use_id,
+              toolInput: denial.tool_input
+            }))
+          };
+        }
         // Just ignore - content was already streamed
         return null;
       }

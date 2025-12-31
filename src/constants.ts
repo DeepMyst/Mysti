@@ -34,3 +34,9 @@ export const PERMISSION_MAX_TIMEOUT_S = 300; // 5 minutes
  * Conversation history constants
  */
 export const MAX_CONVERSATION_MESSAGES = 10; // Maximum messages to include in history
+
+/**
+ * Default AI model for lightweight tasks (suggestions, autocomplete, classification)
+ * Using Claude Haiku for fast, cost-effective responses
+ */
+export const DEFAULT_LIGHTWEIGHT_MODEL = 'claude-haiku-4-5-20251001';

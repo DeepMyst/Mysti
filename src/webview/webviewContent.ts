@@ -50,7 +50,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource}; img-src ${webview.cspSource} data: blob:;">
-  <title>Mysti</title>
+  <title>Cmax</title>
   <style>
     ${styles}
   </style>
@@ -94,7 +94,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
             <path fill-rule="evenodd" d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm8-7a7 7 0 0 0-5.468 11.37C3.242 11.226 4.805 10 8 10s4.757 1.225 5.468 2.37A7 7 0 0 0 8 1z"/>
           </svg>
         </button>
-        <button id="about-btn" class="icon-btn" title="About Mysti">
+        <button id="about-btn" class="icon-btn" title="About Cmax">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
             <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588z"/>
@@ -235,16 +235,16 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     <!-- About panel (hidden by default) -->
     <div id="about-panel" class="about-panel hidden">
       <div class="about-header">
-        <img src="${logoUri}" alt="Mysti Logo" class="about-logo" />
+        <img src="${logoUri}" alt="Cmax Logo" class="about-logo" />
         <div class="about-title">
-          <h2>Mysti</h2>
+          <h2>Cmax</h2>
           <span class="about-version">v${version}</span>
         </div>
       </div>
       <p class="about-tagline">Your AI Coding Agent</p>
       <p class="about-description">
         A powerful AI coding agent for VSCode supporting multiple backends.
-        Mysti can analyze code, execute tasks, and collaborate with you on complex projects.
+        Cmax can analyze code, execute tasks, and collaborate with you on complex projects.
       </p>
       <div class="about-section">
         <h3>Created by</h3>
@@ -327,10 +327,30 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         </div>
         <div class="sticky-progress-list"></div>
       </div>
+
+      <!-- Files Modified sticky header -->
+      <div id="files-modified-container" class="files-modified-container">
+        <div class="files-modified-header" tabindex="0" role="button" aria-expanded="false" aria-label="Files modified">
+          <span class="files-modified-icon">
+            <svg viewBox="0 0 16 16" width="14" height="14">
+              <path fill="currentColor" d="M13 3H7c-.55 0-1 .45-1 1v8c0 .55.45 1 1 1h6c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zm-1 8H8V5h4v6zM3 4H2v10c0 .55.45 1 1 1h9v-1H3V4z"/>
+            </svg>
+          </span>
+          <span class="files-modified-title">Files Modified</span>
+          <span class="files-modified-count">0</span>
+          <span class="files-modified-chevron">
+            <svg viewBox="0 0 16 16" width="12" height="12">
+              <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+            </svg>
+          </span>
+        </div>
+        <div class="files-modified-list"></div>
+      </div>
+
       <div class="welcome-container">
         <div class="welcome-header">
-          <img src="${logoUri}" alt="Mysti" class="welcome-logo" />
-          <h2>Welcome to Mysti</h2>
+          <img src="${logoUri}" alt="Cmax" class="welcome-logo" />
+          <h2>Welcome to Cmax</h2>
           <p>Your AI coding team. Choose an action or ask anything!</p>
         </div>
         <div class="welcome-suggestions" id="welcome-suggestions"></div>
@@ -417,7 +437,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
       </div>
       <div class="input-container">
         <div class="input-wrapper">
-          <textarea id="message-input" placeholder="Ask Mysti..." rows="1"></textarea>
+          <textarea id="message-input" placeholder="Ask Cmax..." rows="1"></textarea>
           <div id="autocomplete-ghost" class="autocomplete-ghost"></div>
         </div>
         <button id="send-btn" class="send-btn" title="Send message">
@@ -477,8 +497,8 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   <div id="setup-overlay" class="setup-overlay hidden">
     <div class="setup-content">
       <div class="setup-progress">
-        <img src="${logoUri}" alt="Mysti" class="setup-logo" />
-        <div class="setup-step">Setting up Mysti...</div>
+        <img src="${logoUri}" alt="Cmax" class="setup-logo" />
+        <div class="setup-step">Setting up Cmax...</div>
         <div class="setup-progress-track">
           <div class="setup-progress-bar" style="width: 0%"></div>
         </div>
@@ -500,8 +520,8 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     <div class="wizard-content">
       <!-- Header -->
       <div class="wizard-header">
-        <img src="${logoUri}" alt="Mysti" class="wizard-logo" />
-        <h2>Welcome to Mysti</h2>
+        <img src="${logoUri}" alt="Cmax" class="wizard-logo" />
+        <h2>Welcome to Cmax</h2>
         <p class="wizard-subtitle">Set up an AI provider to get started</p>
       </div>
 
@@ -623,7 +643,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <img id="install-provider-icon" src="" alt="" />
         <h3 id="install-provider-title">Install Provider</h3>
       </div>
-      <p id="install-provider-desc">Install this provider to use it with Mysti.</p>
+      <p id="install-provider-desc">Install this provider to use it with Cmax.</p>
 
       <div id="install-auto-section" class="install-section">
         <button id="install-auto-btn" class="install-action-btn primary">
@@ -3280,6 +3300,227 @@ function getStyles(): string {
       0% { opacity: 1; background: var(--vscode-editor-background); }
       30% { opacity: 1; background: rgba(34, 197, 94, 0.15); }
       100% { opacity: 0; max-height: 0; padding: 0; margin: 0; overflow: hidden; }
+    }
+
+    /* Files Modified Sticky Header */
+    .files-modified-container {
+      position: sticky;
+      top: 0;
+      z-index: 98;
+      display: none;
+      background: var(--vscode-editor-background);
+      border-bottom: 1px solid var(--vscode-panel-border);
+      border-radius: 0 0 8px 8px;
+      margin-bottom: 8px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    }
+
+    .files-modified-container.has-files {
+      display: block;
+    }
+
+    .files-modified-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: background 0.15s;
+      border: none;
+      background: transparent;
+      width: 100%;
+      text-align: left;
+      color: inherit;
+    }
+
+    .files-modified-header:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .files-modified-header:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -1px;
+    }
+
+    .files-modified-icon {
+      color: var(--vscode-charts-blue, #3b82f6);
+      display: flex;
+      align-items: center;
+    }
+
+    .files-modified-title {
+      color: var(--vscode-foreground);
+    }
+
+    .files-modified-count {
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-size: 11px;
+      min-width: 18px;
+      text-align: center;
+    }
+
+    .files-modified-chevron {
+      margin-left: auto;
+      transition: transform 0.2s;
+      color: var(--vscode-descriptionForeground);
+      display: flex;
+      align-items: center;
+    }
+
+    .files-modified-container.expanded .files-modified-chevron {
+      transform: rotate(90deg);
+    }
+
+    .files-modified-list {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.25s ease-out;
+    }
+
+    .files-modified-container.expanded .files-modified-list {
+      max-height: 400px;
+      overflow-y: auto;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+
+    .files-modified-item {
+      display: flex;
+      flex-direction: column;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .files-modified-item:last-child {
+      border-bottom: none;
+    }
+
+    .files-modified-item:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .files-modified-item-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .files-modified-item-action {
+      font-size: 10px;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+
+    .files-modified-item-action.create {
+      background: rgba(35, 134, 54, 0.2);
+      color: var(--vscode-charts-green, #3fb950);
+    }
+
+    .files-modified-item-action.edit {
+      background: rgba(56, 139, 253, 0.2);
+      color: var(--vscode-charts-blue, #58a6ff);
+    }
+
+    .files-modified-item-action.delete {
+      background: rgba(248, 81, 73, 0.2);
+      color: var(--vscode-charts-red, #f85149);
+    }
+
+    .files-modified-item-filename {
+      flex: 1;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--vscode-foreground);
+    }
+
+    .files-modified-item-stats {
+      display: flex;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      flex-shrink: 0;
+    }
+
+    .files-modified-item-added {
+      color: var(--vscode-charts-green, #3fb950);
+    }
+
+    .files-modified-item-removed {
+      color: var(--vscode-charts-red, #f85149);
+    }
+
+    .files-modified-item-edits {
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+    }
+
+    .files-modified-item-chevron {
+      color: var(--vscode-descriptionForeground);
+      transition: transform 0.2s;
+      display: flex;
+      align-items: center;
+      margin-left: 4px;
+    }
+
+    .files-modified-item.expanded .files-modified-item-chevron {
+      transform: rotate(90deg);
+    }
+
+    .files-modified-item-diff {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.2s ease-out;
+      margin-top: 0;
+    }
+
+    .files-modified-item.expanded .files-modified-item-diff {
+      max-height: 200px;
+      overflow-y: auto;
+      margin-top: 8px;
+      background: var(--vscode-textCodeBlock-background);
+      border-radius: 4px;
+      padding: 4px 0;
+    }
+
+    .files-modified-diff-line {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 11px;
+      padding: 1px 8px;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .files-modified-diff-line.addition {
+      background: rgba(35, 134, 54, 0.15);
+      color: var(--vscode-charts-green, #3fb950);
+    }
+
+    .files-modified-diff-line.deletion {
+      background: rgba(248, 81, 73, 0.15);
+      color: var(--vscode-charts-red, #f85149);
+    }
+
+    .files-modified-diff-line.context {
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .files-modified-diff-more {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      padding: 4px 8px;
+      font-style: italic;
     }
 
     .tool-call-details {
@@ -6644,6 +6885,18 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       const historyBtn = document.getElementById('history-btn');
       const historyMenu = document.getElementById('history-menu');
 
+      // Smart scroll helper functions
+      function isNearBottom(threshold) {
+        threshold = threshold || 100; // 100px tolerance
+        return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
+      }
+
+      function smartScrollToBottom() {
+        if (isNearBottom()) {
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+      }
+
       // Welcome screen suggestions with auto-persona and skills configuration
       var WELCOME_SUGGESTIONS = [
   {
@@ -8202,7 +8455,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               if (ia) ia.classList.remove('enhancing');
               inputEl.placeholder = 'Enhancement timed out. Try again.';
               setTimeout(function() {
-                inputEl.placeholder = 'Ask Mysti...';
+                inputEl.placeholder = 'Ask Cmax...';
               }, 3000);
             }
           }, 30000);
@@ -9239,7 +9492,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           '</div>';
 
         messagesEl.appendChild(brainstormContainer);
-        scrollToBottom();
+        smartScrollToBottom();
       }
 
       function handleBrainstormAgentChunk(payload) {
@@ -9326,7 +9579,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           // Use formatContent for proper markdown rendering like normal mode
           textContainer.innerHTML = formatContent(state.agentResponses[agentId]);
         }
-        scrollToBottom();
+        smartScrollToBottom();
       }
 
       function handleBrainstormAgentComplete(payload) {
@@ -9391,7 +9644,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (synthesisContentEl) {
           synthesisContentEl.innerHTML = formatContent(state.synthesisContent);
         }
-        scrollToBottom();
+        smartScrollToBottom();
       }
 
       function handleBrainstormComplete(payload) {
@@ -9613,7 +9866,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         div.className = 'message ' + msg.role;
         div.dataset.id = msg.id;
 
-        var roleLabel = msg.role === 'assistant' ? 'Mysti' : msg.role;
+        var roleLabel = msg.role === 'assistant' ? 'Cmax' : msg.role;
         var html = '<div class="message-header">';
         html += '<div class="message-role-container">';
         html += '<span class="message-role ' + msg.role + '">' + roleLabel + '</span>';
@@ -9631,7 +9884,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         div.innerHTML = html;
         messagesEl.appendChild(div);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        smartScrollToBottom();
       }
 
       function addSystemMessage(content) {
@@ -9639,7 +9892,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         div.className = 'message system';
         div.innerHTML = '<div class="message-content">' + escapeHtml(content) + '</div>';
         messagesEl.appendChild(div);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        smartScrollToBottom();
       }
 
       var currentResponse = '';
@@ -9654,6 +9907,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var claudeFirstSentenceComplete = false; // Track if first sentence is done
       var brainstormClaudeThinkingBuffer = ''; // Buffer for brainstorm mode Claude thinking
       var brainstormFirstSentenceComplete = false; // Track if first sentence is done in brainstorm
+
+      // Files Modified tracking - tracks all file changes across the conversation
+      var modifiedFilesMap = new Map(); // filePath -> FileChangeInfo with editCount
+      var modifiedFilesOrder = []; // Ordered list of file paths for display
 
       // Helper to detect first sentence end
       function findFirstSentenceEnd(text) {
@@ -9681,7 +9938,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           streamingEl = document.createElement('div');
           streamingEl.className = 'message assistant streaming';
           // Removed static thinking-block - now created dynamically for each thought
-          streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Mysti</span><span class="message-model-info">' + getModelDisplayName(state.settings.model) + '</span></div></div><div class="message-body"></div>';
+          streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Cmax</span><span class="message-model-info">' + getModelDisplayName(state.settings.model) + '</span></div></div><div class="message-body"></div>';
           messagesEl.appendChild(streamingEl);
         }
 
@@ -9750,7 +10007,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             }
           }
         }
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        smartScrollToBottom();
       }
 
       function flushThinkingBuffer() {
@@ -9774,7 +10031,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
 
         segmentEl.innerHTML = formatContent(content);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        smartScrollToBottom();
       }
 
       // Legacy function for backward compatibility
@@ -9924,7 +10181,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         // Append tool call directly to message body (interleaved with content segments)
         messageBody.appendChild(div);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        smartScrollToBottom();
       }
 
       function handleToolResult(toolCall) {
@@ -9956,6 +10213,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           if (isFileEditTool(toolName)) {
             var editInfo = parseFileEditInfo(toolName, toolInput || {}, toolCall.output || '');
 
+            // Track file modification in sticky header
+            if (editInfo.filePath) {
+              trackFileModification(editInfo);
+            }
+
             // Check if edit report card already exists for this tool
             var existingCard = toolEl.parentNode.querySelector('.edit-report-card[data-tool-id="' + toolCall.id + '"]');
             if (!existingCard && editInfo.filePath) {
@@ -9983,7 +10245,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
                 });
               }
 
-              messagesEl.scrollTop = messagesEl.scrollHeight;
+              smartScrollToBottom();
             }
           }
 
@@ -10033,7 +10295,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         card.focus();
         state.focusedPermissionId = request.id;
 
-        scrollToBottom();
+        smartScrollToBottom();
       }
 
       function renderPermissionCard(request) {
@@ -10061,7 +10323,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           '</div>' +
           '<div class="permission-body">' +
             '<div class="permission-description">' +
-              'Mysti wants to: <strong>' + escapeHtml(request.title) + '</strong>' +
+              'Cmax wants to: <strong>' + escapeHtml(request.title) + '</strong>' +
             '</div>' +
             '<div class="permission-details">' +
               renderPermissionDetails(request) +
@@ -10446,7 +10708,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           );
           if (planContainer) {
             messageEl.appendChild(planContainer);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            smartScrollToBottom();
           }
         }
       }
@@ -10732,7 +10994,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             } else {
               messageEl.appendChild(questionsContainer);
             }
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            smartScrollToBottom();
           }
         }
       }
@@ -10754,7 +11016,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           var container = renderAskUserQuestionTabs(payload.toolCallId, payload.questions);
           if (container) {
             messageEl.appendChild(container);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            smartScrollToBottom();
           }
         }
       }
@@ -11029,7 +11291,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         loading.className = 'loading';
         loading.innerHTML = '<div class="loading-dot"></div><div class="loading-dot"></div><div class="loading-dot"></div>';
         messagesEl.appendChild(loading);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        smartScrollToBottom();
 
         // Auto-hide suggestions while AI is running
         var quickActionsContainer = document.getElementById('quick-actions-container');
@@ -11154,7 +11416,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         div.className = 'message error';
         div.innerHTML = '<div class="message-content" style="color: var(--vscode-errorForeground);">Error: ' + escapeHtml(error) + '</div>';
         messagesEl.appendChild(div);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        smartScrollToBottom();
       }
 
       function showAuthError(data) {
@@ -11184,11 +11446,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           });
         }
 
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        smartScrollToBottom();
       }
 
       function clearMessages() {
-        messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Mysti" class="welcome-logo" /><h2>Welcome to Mysti</h2><p>Your AI coding team. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div></div>';
+        messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Cmax" class="welcome-logo" /><h2>Welcome to Cmax</h2><p>Your AI coding team. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div></div>';
         renderWelcomeSuggestions();
         // Reset all streaming buffers
         currentResponse = '';
@@ -11198,6 +11460,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         claudeFirstSentenceComplete = false;
         brainstormClaudeThinkingBuffer = '';
         brainstormFirstSentenceComplete = false;
+        // Clear files modified tracking
+        clearFilesModified();
       }
 
       function updateContext(context) {
@@ -11609,6 +11873,215 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
 
         return info;
+      }
+
+      // ========================================
+      // Files Modified Tracking Functions
+      // ========================================
+
+      function trackFileModification(editInfo) {
+        if (!editInfo || !editInfo.filePath) return;
+
+        var filePath = editInfo.filePath;
+
+        if (modifiedFilesMap.has(filePath)) {
+          // Update existing entry - aggregate stats
+          var existing = modifiedFilesMap.get(filePath);
+          existing.linesAdded += editInfo.linesAdded;
+          existing.linesRemoved += editInfo.linesRemoved;
+          // Keep the latest diff lines for preview
+          existing.diffLines = editInfo.diffLines;
+          // Update action if it was a create and now edit
+          if (existing.action === 'create' && editInfo.action === 'edit') {
+            existing.action = 'edit';
+          }
+          // Track edit count
+          existing.editCount = (existing.editCount || 1) + 1;
+        } else {
+          // New file - add to tracking
+          modifiedFilesMap.set(filePath, {
+            action: editInfo.action,
+            filePath: editInfo.filePath,
+            fileName: editInfo.fileName,
+            linesAdded: editInfo.linesAdded,
+            linesRemoved: editInfo.linesRemoved,
+            diffLines: editInfo.diffLines,
+            editCount: 1,
+            firstModified: Date.now()
+          });
+          modifiedFilesOrder.push(filePath);
+        }
+
+        updateFilesModifiedHeader();
+      }
+
+      function updateFilesModifiedHeader() {
+        var container = document.getElementById('files-modified-container');
+        if (!container) return;
+
+        var count = modifiedFilesMap.size;
+        var countEl = container.querySelector('.files-modified-count');
+        var headerEl = container.querySelector('.files-modified-header');
+
+        if (count === 0) {
+          container.classList.remove('has-files', 'expanded');
+          return;
+        }
+
+        container.classList.add('has-files');
+        if (countEl) {
+          countEl.textContent = count.toString();
+        }
+
+        // Update header aria attributes
+        if (headerEl) {
+          headerEl.setAttribute('aria-label', count + ' file' + (count !== 1 ? 's' : '') + ' modified');
+        }
+
+        // Render file list
+        var listEl = container.querySelector('.files-modified-list');
+        if (listEl) {
+          renderFilesModifiedList(listEl);
+        }
+      }
+
+      function renderFilesModifiedList(listEl) {
+        // Clear existing content
+        while (listEl.firstChild) {
+          listEl.removeChild(listEl.firstChild);
+        }
+
+        modifiedFilesOrder.forEach(function(filePath) {
+          var info = modifiedFilesMap.get(filePath);
+          if (!info) return;
+
+          var actionLabel = info.action.charAt(0).toUpperCase() + info.action.slice(1);
+
+          // Create item container
+          var itemEl = document.createElement('div');
+          itemEl.className = 'files-modified-item';
+          itemEl.dataset.filePath = filePath;
+
+          // Create header
+          var headerEl = document.createElement('div');
+          headerEl.className = 'files-modified-item-header';
+
+          // Action badge
+          var actionEl = document.createElement('span');
+          actionEl.className = 'files-modified-item-action ' + info.action;
+          actionEl.textContent = actionLabel;
+          headerEl.appendChild(actionEl);
+
+          // Filename
+          var filenameEl = document.createElement('span');
+          filenameEl.className = 'files-modified-item-filename';
+          filenameEl.title = filePath;
+          filenameEl.textContent = info.fileName;
+          headerEl.appendChild(filenameEl);
+
+          // Stats container
+          var statsEl = document.createElement('div');
+          statsEl.className = 'files-modified-item-stats';
+
+          if (info.linesAdded > 0) {
+            var addedEl = document.createElement('span');
+            addedEl.className = 'files-modified-item-added';
+            addedEl.textContent = '+' + info.linesAdded;
+            statsEl.appendChild(addedEl);
+          }
+          if (info.linesRemoved > 0) {
+            var removedEl = document.createElement('span');
+            removedEl.className = 'files-modified-item-removed';
+            removedEl.textContent = '-' + info.linesRemoved;
+            statsEl.appendChild(removedEl);
+          }
+          if (info.editCount > 1) {
+            var editsEl = document.createElement('span');
+            editsEl.className = 'files-modified-item-edits';
+            editsEl.textContent = '(' + info.editCount + ' edits)';
+            statsEl.appendChild(editsEl);
+          }
+          headerEl.appendChild(statsEl);
+
+          // Chevron
+          var chevronEl = document.createElement('span');
+          chevronEl.className = 'files-modified-item-chevron';
+          var chevronSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          chevronSvg.setAttribute('viewBox', '0 0 16 16');
+          chevronSvg.setAttribute('width', '10');
+          chevronSvg.setAttribute('height', '10');
+          var chevronPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          chevronPath.setAttribute('d', 'M6 4l4 4-4 4');
+          chevronPath.setAttribute('stroke', 'currentColor');
+          chevronPath.setAttribute('stroke-width', '1.5');
+          chevronPath.setAttribute('fill', 'none');
+          chevronSvg.appendChild(chevronPath);
+          chevronEl.appendChild(chevronSvg);
+          headerEl.appendChild(chevronEl);
+
+          itemEl.appendChild(headerEl);
+
+          // Diff preview container
+          var diffEl = document.createElement('div');
+          diffEl.className = 'files-modified-item-diff';
+          renderCompactDiffDOM(diffEl, info.diffLines);
+          itemEl.appendChild(diffEl);
+
+          listEl.appendChild(itemEl);
+        });
+      }
+
+      function renderCompactDiffDOM(container, diffLines) {
+        if (!diffLines || diffLines.length === 0) {
+          var emptyEl = document.createElement('div');
+          emptyEl.className = 'files-modified-diff-more';
+          emptyEl.textContent = 'No diff available';
+          container.appendChild(emptyEl);
+          return;
+        }
+
+        var maxLines = 10;
+        var showLines = diffLines.slice(0, maxLines);
+
+        showLines.forEach(function(line) {
+          var prefix = line.type === 'addition' ? '+' : (line.type === 'deletion' ? '-' : ' ');
+          var lineContent = line.content || '';
+          // Truncate long lines
+          if (lineContent.length > 80) {
+            lineContent = lineContent.substring(0, 77) + '...';
+          }
+
+          var lineEl = document.createElement('div');
+          lineEl.className = 'files-modified-diff-line ' + line.type;
+          lineEl.textContent = prefix + ' ' + lineContent;
+          container.appendChild(lineEl);
+        });
+
+        if (diffLines.length > maxLines) {
+          var moreEl = document.createElement('div');
+          moreEl.className = 'files-modified-diff-more';
+          moreEl.textContent = '... ' + (diffLines.length - maxLines) + ' more lines';
+          container.appendChild(moreEl);
+        }
+      }
+
+      function clearFilesModified() {
+        modifiedFilesMap.clear();
+        modifiedFilesOrder = [];
+        var container = document.getElementById('files-modified-container');
+        if (container) {
+          container.classList.remove('has-files', 'expanded');
+          var listEl = container.querySelector('.files-modified-list');
+          if (listEl) {
+            while (listEl.firstChild) {
+              listEl.removeChild(listEl.firstChild);
+            }
+          }
+          var countEl = container.querySelector('.files-modified-count');
+          if (countEl) {
+            countEl.textContent = '0';
+          }
+        }
       }
 
       // Generate unique ID from todo content
@@ -12060,6 +12533,45 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         // Close agent menu when clicking outside
         if (agentSelectBtn && agentMenu && !agentSelectBtn.contains(e.target) && !agentMenu.contains(e.target)) {
           agentMenu.classList.add('hidden');
+        }
+
+        // ========================================
+        // Files Modified Click Handlers
+        // ========================================
+
+        // Files Modified: Header expand/collapse
+        var filesModifiedHeader = e.target.closest('.files-modified-header');
+        if (filesModifiedHeader) {
+          var container = document.getElementById('files-modified-container');
+          if (container) {
+            container.classList.toggle('expanded');
+            var isExpanded = container.classList.contains('expanded');
+            filesModifiedHeader.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+          }
+          return;
+        }
+
+        // Files Modified: Item filename click - open file
+        var filesModifiedFilename = e.target.closest('.files-modified-item-filename');
+        if (filesModifiedFilename) {
+          var item = filesModifiedFilename.closest('.files-modified-item');
+          if (item && item.dataset.filePath) {
+            postMessageWithPanelId({
+              type: 'openFile',
+              payload: { path: item.dataset.filePath }
+            });
+          }
+          return;
+        }
+
+        // Files Modified: Item header click - expand diff preview
+        var filesModifiedItemHeader = e.target.closest('.files-modified-item-header');
+        if (filesModifiedItemHeader) {
+          var item = filesModifiedItemHeader.closest('.files-modified-item');
+          if (item) {
+            item.classList.toggle('expanded');
+          }
+          return;
         }
 
         // Handle copy button click

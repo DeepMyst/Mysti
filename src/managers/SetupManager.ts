@@ -27,6 +27,7 @@ import type {
   AuthOption,
   AuthMethodType
 } from '../types';
+import { isAllowedCommand } from '../utils/cliSecurity';
 
 const execAsync = promisify(exec);
 
@@ -620,6 +621,15 @@ export class SetupManager {
     timeout: number = 60000,
     useLoginShell: boolean = false
   ): Promise<{ success: boolean; output?: string; error?: string }> {
+    // Security: Only allow whitelisted commands
+    if (!isAllowedCommand(command)) {
+      console.error(`[Mysti] SetupManager: Command not in allowlist: ${command}`);
+      return {
+        success: false,
+        error: 'Command not allowed for security reasons'
+      };
+    }
+
     return new Promise((resolve) => {
       let proc;
 

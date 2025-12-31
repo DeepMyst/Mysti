@@ -22,11 +22,10 @@ import { BrainstormManager } from '../managers/BrainstormManager';
 import { PermissionManager } from '../managers/PermissionManager';
 import { PlanOptionManager } from '../managers/PlanOptionManager';
 import { SetupManager } from '../managers/SetupManager';
-import { TelemetryManager } from '../managers/TelemetryManager';
 import { AgentLoader } from '../managers/AgentLoader';
 import { AgentContextManager } from '../managers/AgentContextManager';
 import { getWebviewContent } from '../webview/webviewContent';
-import type { WebviewMessage, Settings, ContextItem, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, AgentTypeDiscriminator, ProviderType } from '../types';
+import type { WebviewMessage, Settings, ContextItem, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, AgentTypeDiscriminator, ProviderType, OperationMode, AccessLevel } from '../types';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
 
 interface PanelState {
@@ -51,7 +50,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _permissionManager: PermissionManager;
   private _planOptionManager: PlanOptionManager;
   private _setupManager: SetupManager;
-  private _telemetryManager: TelemetryManager;
   private _agentLoader: AgentLoader;
   private _agentContextManager: AgentContextManager;
   // Per-panel cancel tracking for isolated cancellation
@@ -73,8 +71,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     suggestionManager: SuggestionManager,
     brainstormManager: BrainstormManager,
     permissionManager: PermissionManager,
-    setupManager: SetupManager,
-    telemetryManager: TelemetryManager
+    setupManager: SetupManager
   ) {
     this._extensionUri = extensionUri;
     this._extensionContext = extensionContext;
@@ -85,7 +82,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._brainstormManager = brainstormManager;
     this._permissionManager = permissionManager;
     this._setupManager = setupManager;
-    this._telemetryManager = telemetryManager;
     this._planOptionManager = new PlanOptionManager();
 
     // Initialize agent system (three-tier loading)
@@ -1033,6 +1029,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
             break;
 
+          case 'permission_denied':
+            // Handle permission denials from CLI (ask-before-edit mode)
+            if (chunk.permissionDenials && chunk.permissionDenials.length > 0) {
+              await this._handlePermissionDenials(
+                chunk.permissionDenials,
+                panelId,
+                content,
+                settings,
+                conversationId || undefined
+              );
+            }
+            break;
+
           case 'done':
             // Capture usage stats if present in this chunk
             if (chunk.usage) {
@@ -1526,6 +1535,271 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       (message) => this._postToPanel(panelId, message as WebviewMessage),
       toolCallId
     );
+  }
+
+  /**
+   * Handle permission denials from CLI result event (ask-before-edit mode)
+   * Shows permission cards for each denial, and retries with bypass if user approves
+   */
+  private async _handlePermissionDenials(
+    denials: import('../types').PermissionDenial[],
+    panelId: string,
+    originalPrompt: string,
+    settings: Settings,
+    conversationId: string | undefined
+  ): Promise<void> {
+    console.log('[Mysti] Handling permission denials:', denials.length);
+
+    // Show info message about permission request
+    this._postToPanel(panelId, {
+      type: 'responseChunk',
+      payload: {
+        type: 'text',
+        content: '\n\n---\n**Permission Required:** The following operations need your approval:\n'
+      }
+    });
+
+    // Request permission for each denial
+    for (const denial of denials) {
+      const actionType = this._mapToolToActionType(denial.toolName);
+      const title = this._getPermissionTitle(denial.toolName);
+      const description = this._formatDenialDescription(denial);
+
+      const approved = await this.requestPermissionInline(
+        actionType,
+        title,
+        description,
+        {
+          filePath: denial.toolInput.file_path,
+          command: denial.toolInput.command,
+          riskLevel: this._classifyRiskLevel(actionType)
+        },
+        panelId,
+        denial.toolUseId
+      );
+
+      if (!approved) {
+        // User denied - stop and inform
+        console.log('[Mysti] Permission denied by user for:', denial.toolName);
+        this._postToPanel(panelId, {
+          type: 'responseChunk',
+          payload: {
+            type: 'text',
+            content: '\n\n❌ **Operation cancelled** - Permission was denied.\n'
+          }
+        });
+        return;
+      }
+    }
+
+    // All permissions approved - retry with bypass mode
+    console.log('[Mysti] All permissions approved, retrying with bypass mode');
+    this._postToPanel(panelId, {
+      type: 'responseChunk',
+      payload: {
+        type: 'text',
+        content: '\n\n✅ **Permissions granted** - Executing operations...\n\n---\n'
+      }
+    });
+
+    await this._retryWithPermissions(originalPrompt, settings, panelId, conversationId);
+  }
+
+  /**
+   * Retry the original prompt with permission bypass enabled
+   */
+  private async _retryWithPermissions(
+    prompt: string,
+    originalSettings: Settings,
+    panelId: string,
+    conversationId: string | undefined
+  ): Promise<void> {
+    // Create settings with permission bypass
+    const retrySettings: Settings = {
+      ...originalSettings,
+      // Override to bypass permissions for this retry
+      mode: 'edit-automatically' as OperationMode,
+      accessLevel: 'full-access' as AccessLevel
+    };
+
+    // Get current context
+    const context = this._contextManager.getContext();
+    const conversation = conversationId
+      ? this._conversationManager.getConversation(conversationId)
+      : null;
+
+    // Get agent configuration
+    const agentConfig = conversationId
+      ? this._conversationManager.getAgentConfig(conversationId)
+      : undefined;
+
+    try {
+      // Stream response with bypassed permissions
+      const stream = this._providerManager.sendMessage(
+        prompt,
+        context,
+        retrySettings,
+        conversation,
+        undefined,
+        panelId,
+        agentConfig
+      );
+
+      let assistantContent = '';
+      let thinkingContent = '';
+      let lastUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined;
+
+      for await (const chunk of stream) {
+        if (this._cancelledPanels.has(panelId)) break;
+
+        switch (chunk.type) {
+          case 'text':
+            assistantContent += chunk.content || '';
+            this._postToPanel(panelId, {
+              type: 'responseChunk',
+              payload: { type: 'text', content: chunk.content }
+            });
+            break;
+
+          case 'thinking':
+            thinkingContent += chunk.content || '';
+            this._postToPanel(panelId, {
+              type: 'responseChunk',
+              payload: { type: 'thinking', content: chunk.content }
+            });
+            break;
+
+          case 'tool_use':
+            this._postToPanel(panelId, {
+              type: 'toolUse',
+              payload: chunk.toolCall
+            });
+            break;
+
+          case 'tool_result':
+            this._postToPanel(panelId, {
+              type: 'toolResult',
+              payload: chunk.toolCall
+            });
+            break;
+
+          case 'error':
+            this._postToPanel(panelId, {
+              type: 'error',
+              payload: chunk.content
+            });
+            break;
+
+          case 'done':
+            if (chunk.usage) {
+              lastUsage = chunk.usage;
+            }
+            // Update the existing assistant message with retry content
+            const updatedMessage = this._conversationManager.addMessageToConversation(
+              conversationId,
+              'assistant',
+              assistantContent,
+              undefined,
+              thinkingContent
+            );
+            this._postToPanel(panelId, {
+              type: 'responseComplete',
+              payload: {
+                message: updatedMessage,
+                usage: lastUsage
+              }
+            });
+            break;
+
+          case 'permission_denied':
+            // If we still get permission denied after retry, show error
+            console.error('[Mysti] Permission still denied after retry - this should not happen');
+            this._postToPanel(panelId, {
+              type: 'error',
+              payload: 'Unexpected permission denial after approval. Please try again.'
+            });
+            break;
+        }
+      }
+    } catch (error) {
+      this._postToPanel(panelId, {
+        type: 'error',
+        payload: error instanceof Error ? error.message : 'Failed to retry operation'
+      });
+    }
+  }
+
+  /**
+   * Map CLI tool name to permission action type
+   */
+  private _mapToolToActionType(toolName: string): import('../types').PermissionActionType {
+    const mapping: Record<string, import('../types').PermissionActionType> = {
+      'Edit': 'file-edit',
+      'Write': 'file-create',
+      'Bash': 'bash-command',
+      'Read': 'file-read',
+      'Delete': 'file-delete',
+      'MultiEdit': 'multi-file-edit',
+      'NotebookEdit': 'file-edit'
+    };
+    return mapping[toolName] || 'file-edit';
+  }
+
+  /**
+   * Get human-readable permission title for a tool
+   */
+  private _getPermissionTitle(toolName: string): string {
+    const titles: Record<string, string> = {
+      'Edit': 'Edit File',
+      'Write': 'Create File',
+      'Bash': 'Run Command',
+      'Read': 'Read File',
+      'Delete': 'Delete File',
+      'MultiEdit': 'Edit Multiple Files',
+      'NotebookEdit': 'Edit Notebook'
+    };
+    return titles[toolName] || `Use ${toolName}`;
+  }
+
+  /**
+   * Format denial details into human-readable description
+   */
+  private _formatDenialDescription(denial: import('../types').PermissionDenial): string {
+    const { toolName, toolInput } = denial;
+
+    if (toolName === 'Edit' && toolInput.file_path) {
+      return `Modify ${toolInput.file_path}`;
+    }
+    if (toolName === 'Write' && toolInput.file_path) {
+      return `Create ${toolInput.file_path}`;
+    }
+    if (toolName === 'Bash' && toolInput.command) {
+      // Truncate long commands
+      const cmd = toolInput.command.length > 100
+        ? toolInput.command.substring(0, 100) + '...'
+        : toolInput.command;
+      return `Execute: ${cmd}`;
+    }
+    if (toolInput.description) {
+      return toolInput.description;
+    }
+    return `${toolName} operation`;
+  }
+
+  /**
+   * Classify risk level for an action type
+   */
+  private _classifyRiskLevel(actionType: import('../types').PermissionActionType): import('../types').PermissionRiskLevel {
+    const riskMap: Record<string, import('../types').PermissionRiskLevel> = {
+      'file-read': 'low',
+      'file-create': 'medium',
+      'file-edit': 'medium',
+      'file-delete': 'high',
+      'bash-command': 'high',
+      'web-request': 'medium',
+      'multi-file-edit': 'high'
+    };
+    return riskMap[actionType] || 'medium';
   }
 
   /**

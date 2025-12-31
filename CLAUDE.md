@@ -50,7 +50,6 @@ extension.ts (entry)
     │   ├── SetupManager          - CLI auto-setup & authentication
     │   ├── AgentLoader           - Three-tier agent loading from markdown
     │   ├── AgentContextManager   - Recommendations & prompt building
-    │   ├── TelemetryManager      - Anonymous usage analytics
     │   └── AutocompleteManager   - Autocomplete functionality
     │
     └── ChatViewProvider (UI coordinator)

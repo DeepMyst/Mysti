@@ -11,17 +11,15 @@
  * SPDX-License-Identifier: BUSL-1.1
  */
 
-import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import type {
   ResponseClassification,
   ClarifyingQuestion,
   PlanOption,
   SuggestionColor
 } from '../types';
+import { findClaudeCliPath } from '../utils/cliDiscovery';
+import { DEFAULT_LIGHTWEIGHT_MODEL } from '../constants';
 
 const PLAN_COLORS: SuggestionColor[] = ['blue', 'green', 'purple', 'orange', 'indigo', 'teal'];
 const PLAN_ICONS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
@@ -35,7 +33,7 @@ export class ResponseClassifier {
   private _currentProcess: ChildProcess | null = null;
 
   constructor() {
-    this._claudePath = this._findClaudeCliPath();
+    this._claudePath = findClaudeCliPath();
     console.log('[Mysti] ResponseClassifier initialized with CLI path:', this._claudePath);
   }
 
@@ -158,7 +156,7 @@ Return ONLY the JSON object, nothing else.`;
       const proc = spawn(this._claudePath, [
         '--print',
         '--output-format', 'text',
-        '--model', 'claude-haiku-4-5-20251001'
+        '--model', DEFAULT_LIGHTWEIGHT_MODEL
       ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
       this._currentProcess = proc;
@@ -285,40 +283,4 @@ Return ONLY the JSON object, nothing else.`;
     this.cancel();
   }
 
-  /**
-   * Find Claude CLI path (same as SuggestionManager)
-   */
-  private _findClaudeCliPath(): string {
-    const config = vscode.workspace.getConfiguration('mysti');
-    const configuredPath = config.get<string>('claudeCodePath', 'claude');
-
-    if (configuredPath !== 'claude') {
-      return configuredPath;
-    }
-
-    const homeDir = os.homedir();
-    const extensionsDir = path.join(homeDir, '.vscode', 'extensions');
-
-    try {
-      if (fs.existsSync(extensionsDir)) {
-        const entries = fs.readdirSync(extensionsDir);
-        const claudeExtensions = entries
-          .filter(e => e.startsWith('anthropic.claude-code-'))
-          .sort()
-          .reverse();
-
-        for (const ext of claudeExtensions) {
-          const binaryPath = path.join(extensionsDir, ext, 'resources', 'native-binary', 'claude');
-          if (fs.existsSync(binaryPath)) {
-            console.log('[Mysti] Found Claude CLI at:', binaryPath);
-            return binaryPath;
-          }
-        }
-      }
-    } catch (error) {
-      console.error('[Mysti] Error searching for Claude CLI:', error);
-    }
-
-    return configuredPath;
-  }
 }

@@ -13,10 +13,9 @@
 
 import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import type { AutocompleteType } from '../types';
+import { findClaudeCliPath } from '../utils/cliDiscovery';
+import { DEFAULT_LIGHTWEIGHT_MODEL } from '../constants';
 
 interface CachedCompletions {
   sentence: string | null;
@@ -38,7 +37,7 @@ export class AutocompleteManager {
 
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
-    this._claudePath = this._findClaudeCliPath();
+    this._claudePath = findClaudeCliPath();
 
     // Pre-spawn a warm process immediately
     this._spawnWarmProcess();
@@ -68,7 +67,7 @@ export class AutocompleteManager {
       this._warmProcess = spawn(this._claudePath, [
         '--print',
         '--output-format', 'text',
-        '--model', 'claude-haiku-4-5-20251001'
+        '--model', DEFAULT_LIGHTWEIGHT_MODEL
       ], {
         stdio: ['pipe', 'pipe', 'pipe']
       });
@@ -299,43 +298,6 @@ Completion:`;
    */
   public clearCache(): void {
     this._cachedCompletions.clear();
-  }
-
-  /**
-   * Find the Claude CLI path (same logic as other managers)
-   */
-  private _findClaudeCliPath(): string {
-    const config = vscode.workspace.getConfiguration('mysti');
-    const configuredPath = config.get<string>('claudeCodePath', 'claude');
-
-    if (configuredPath !== 'claude') {
-      return configuredPath;
-    }
-
-    const homeDir = os.homedir();
-    const extensionsDir = path.join(homeDir, '.vscode', 'extensions');
-
-    try {
-      if (fs.existsSync(extensionsDir)) {
-        const entries = fs.readdirSync(extensionsDir);
-        const claudeExtensions = entries
-          .filter(e => e.startsWith('anthropic.claude-code-'))
-          .sort()
-          .reverse();
-
-        for (const ext of claudeExtensions) {
-          const binaryPath = path.join(extensionsDir, ext, 'resources', 'native-binary', 'claude');
-          if (fs.existsSync(binaryPath)) {
-            console.log('[Mysti] Found Claude CLI at:', binaryPath);
-            return binaryPath;
-          }
-        }
-      }
-    } catch (error) {
-      console.error('[Mysti] Error searching for Claude CLI:', error);
-    }
-
-    return configuredPath;
   }
 
   /**

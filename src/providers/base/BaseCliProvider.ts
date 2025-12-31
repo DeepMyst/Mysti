@@ -33,6 +33,7 @@ import type {
 } from '../../types';
 import type { AgentContextManager } from '../../managers/AgentContextManager';
 import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
+import { validateCliPath } from '../../utils/cliSecurity';
 
 /**
  * Abstract base class for CLI-based AI providers
@@ -169,9 +170,13 @@ export abstract class BaseCliProvider implements ICliProvider {
     const useShell = vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
     const spawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
     if (useShell) {
+      // Security: Validate CLI path when shell mode is enabled to prevent injection
+      if (!validateCliPath(cliPath)) {
+        throw new Error(`Invalid CLI path for shell execution: ${cliPath}`);
+      }
       spawnOpts.shell = true;
     }
-    
+
     this._currentProcess = spawn(cliPath, args, spawnOpts);
 
     const spawnTime = Date.now() - startTime;

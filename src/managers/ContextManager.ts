@@ -39,19 +39,34 @@ export class ContextManager {
   }
 
   public async addFileToContext(filePath: string): Promise<ContextItem | null> {
+    // Security: Normalize and resolve path to prevent traversal attacks
+    const resolvedPath = path.resolve(filePath);
+
+    // Security: Validate path is within workspace boundaries
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+      const isInWorkspace = workspaceFolders.some((folder) =>
+        resolvedPath.startsWith(folder.uri.fsPath + path.sep) || resolvedPath === folder.uri.fsPath
+      );
+      if (!isInWorkspace) {
+        console.warn(`[Mysti] Rejected file outside workspace: ${resolvedPath}`);
+        return null;
+      }
+    }
+
     // Check if file already exists in context
-    if (this._context.find(c => c.path === filePath && c.type === 'file')) {
+    if (this._context.find((c) => c.path === resolvedPath && c.type === 'file')) {
       return null;
     }
 
     try {
-      const content = await fs.promises.readFile(filePath, 'utf-8');
-      const language = this._getLanguageFromPath(filePath);
+      const content = await fs.promises.readFile(resolvedPath, 'utf-8');
+      const language = this._getLanguageFromPath(resolvedPath);
 
       const item: ContextItem = {
         id: this._generateId(),
         type: 'file',
-        path: filePath,
+        path: resolvedPath,
         content,
         language
       };
@@ -59,7 +74,7 @@ export class ContextManager {
       this._context.push(item);
       return item;
     } catch (error) {
-      console.error(`Failed to read file: ${filePath}`, error);
+      console.error(`Failed to read file: ${resolvedPath}`, error);
       return null;
     }
   }

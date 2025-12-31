@@ -20,7 +20,7 @@ import { SuggestionManager } from './managers/SuggestionManager';
 import { BrainstormManager } from './managers/BrainstormManager';
 import { PermissionManager } from './managers/PermissionManager';
 import { SetupManager } from './managers/SetupManager';
-import { TelemetryManager } from './managers/TelemetryManager';
+import { Logger } from './utils/logger';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -30,15 +30,11 @@ let suggestionManager: SuggestionManager;
 let brainstormManager: BrainstormManager;
 let permissionManager: PermissionManager;
 let setupManager: SetupManager;
-let telemetryManager: TelemetryManager;
 
 export async function activate(context: vscode.ExtensionContext) {
-  console.log('Mysti extension is now active');
-
-  // Initialize telemetry first
-  telemetryManager = new TelemetryManager(context);
-  const version = context.extension.packageJSON.version || '0.0.0';
-  telemetryManager.trackActivation(version);
+  // Initialize logger first
+  Logger.initialize();
+  Logger.info('Cmax extension is now active');
 
   // Initialize managers
   contextManager = new ContextManager(context);
@@ -70,8 +66,7 @@ export async function activate(context: vscode.ExtensionContext) {
     suggestionManager,
     brainstormManager,
     permissionManager,
-    setupManager,
-    telemetryManager
+    setupManager
   );
 
   // Register the webview provider
@@ -201,10 +196,12 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-  console.log('Mysti extension is now deactivated');
+  Logger.info('Cmax extension is now deactivated');
   // Cleanup is handled automatically via context.subscriptions
   // Additional cleanup for managers not in subscriptions
   if (permissionManager) {
     permissionManager.dispose();
   }
+  // Dispose logger last
+  Logger.dispose();
 }

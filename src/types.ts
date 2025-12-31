@@ -116,6 +116,7 @@ export interface SlashCommand {
 export interface WebviewMessage {
   type: string;
   payload?: unknown;
+  panelId?: string;
 }
 
 export interface ProviderConfig {
@@ -157,7 +158,7 @@ export interface AskUserQuestionData {
 }
 
 export interface StreamChunk {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'auth_error' | 'done' | 'session_active' | 'ask_user_question' | 'exit_plan_mode';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'auth_error' | 'done' | 'session_active' | 'ask_user_question' | 'exit_plan_mode' | 'permission_denied';
   content?: string;
   toolCall?: ToolCall;
   sessionId?: string;
@@ -167,6 +168,25 @@ export interface StreamChunk {
   // Auth error specific fields
   authCommand?: string;
   providerName?: string;
+  // Permission denial fields
+  permissionDenials?: PermissionDenial[];
+}
+
+/**
+ * Permission denial from CLI result event
+ * Returned when CLI auto-denies an operation in non-interactive mode
+ */
+export interface PermissionDenial {
+  toolName: string;       // "Edit", "Write", "Bash"
+  toolUseId: string;
+  toolInput: {
+    file_path?: string;
+    command?: string;
+    old_string?: string;
+    new_string?: string;
+    content?: string;
+    description?: string;
+  };
 }
 
 // Brainstorm mode configuration
@@ -810,4 +830,17 @@ export interface AgentDetailsMessage {
     antiPatterns?: string[];
     codeExamples?: string;
   };
+}
+
+// ============================================================================
+// Process Management Types
+// ============================================================================
+
+/**
+ * Interface for managing child processes per panel.
+ * Used by providers to register/clear processes for proper cleanup.
+ */
+export interface ProcessManager {
+  registerProcess(panelId: string, process: import('child_process').ChildProcess): void;
+  clearProcess(panelId: string): void;
 }

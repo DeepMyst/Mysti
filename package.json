@@ -1,6 +1,6 @@
 {
   "name": "mysti",
-  "displayName": "Mysti - AI Coding Agent",
+  "displayName": "Cmax - AI Coding Agent",
   "description": "Multi-agent AI coding assistant. Claude Code, Codex, Gemini, and GitHub Copilot brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
   "version": "0.2.2",
   "publisher": "DeepMyst",
@@ -83,7 +83,7 @@
       "activitybar": [
         {
           "id": "mysti-sidebar",
-          "title": "Mysti",
+          "title": "Cmax",
           "icon": "resources/Mysti-Logo.png"
         }
       ]
@@ -102,30 +102,30 @@
         "command": "mysti.openChat",
         "title": "Open Chat",
         "shortTitle": "Chat",
-        "category": "Mysti"
+        "category": "Cmax"
       },
       {
         "command": "mysti.newConversation",
         "title": "New Conversation",
         "shortTitle": "New",
-        "category": "Mysti"
+        "category": "Cmax"
       },
       {
         "command": "mysti.addToContext",
         "title": "Add to Context",
         "shortTitle": "Add Context",
-        "category": "Mysti"
+        "category": "Cmax"
       },
       {
         "command": "mysti.clearContext",
         "title": "Clear Context",
-        "category": "Mysti"
+        "category": "Cmax"
       },
       {
         "command": "mysti.openInNewTab",
         "title": "Open in Editor Tab",
         "shortTitle": "New Tab",
-        "category": "Mysti",
+        "category": "Cmax",
         "icon": {
           "light": "resources/Mysti-Logo.png",
           "dark": "resources/Mysti-Logo.png"
@@ -134,12 +134,12 @@
       {
         "command": "mysti.debugSetup",
         "title": "Debug: Test Setup Flow",
-        "category": "Mysti"
+        "category": "Cmax"
       },
       {
         "command": "mysti.debugSetupFailure",
         "title": "Debug: Test Setup Failure",
-        "category": "Mysti"
+        "category": "Cmax"
       }
     ],
     "menus": {
@@ -527,7 +527,6 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
-    "@vscode/extension-telemetry": "^0.9.0",
     "marked": "^15.0.0",
     "prismjs": "^1.29.0",
     "uuid": "^9.0.1"

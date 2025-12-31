@@ -15,6 +15,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { BaseCliProvider } from '../base/BaseCliProvider';
 import type {
   CliDiscoveryResult,
@@ -27,6 +28,7 @@ import type {
   ProviderConfig,
   AuthStatus
 } from '../../types';
+import { validateCliPath } from '../../utils/cliSecurity';
 
 /**
  * Google Gemini CLI provider implementation
@@ -363,6 +365,11 @@ export class GeminiProvider extends BaseCliProvider {
 
   private async _validateCliPath(cliPath: string): Promise<boolean> {
     try {
+      // Security: Validate CLI path before execution
+      if (!validateCliPath(cliPath)) {
+        return false;
+      }
+
       // Check if the path exists and is executable
       if (cliPath.includes(path.sep)) {
         fs.accessSync(cliPath, fs.constants.X_OK);
@@ -370,8 +377,8 @@ export class GeminiProvider extends BaseCliProvider {
       }
 
       // For bare command names, try to execute with --version
-      const { execSync } = await import('child_process');
-      execSync(`${cliPath} --version`, { stdio: 'ignore', timeout: 5000 });
+      // Using execFileSync instead of execSync to prevent shell injection
+      execFileSync(cliPath, ['--version'], { stdio: 'ignore', timeout: 5000 });
       return true;
     } catch {
       return false;
