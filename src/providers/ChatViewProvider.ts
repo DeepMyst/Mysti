@@ -3,7 +3,7 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
  * This file is part of Mysti, licensed under the Business Source License 1.1.
  * See the LICENSE file in the project root for full license terms.
@@ -31,6 +31,7 @@ import { MemoryManager } from '../managers/MemoryManager';
 import { CompactionManager } from '../managers/CompactionManager';
 import { AgentLifecycleManager } from '../managers/AgentLifecycleManager';
 import { SlashCommandManager, type SlashCommandCallbacks } from '../managers/SlashCommandManager';
+import { ActiveModeManager } from '../managers/ActiveModeManager';
 import { getWebviewContent } from '../webview/webviewContent';
 import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback } from '../types';
 import { AUTONOMOUS_CONTINUATION_DELAY_MS, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
@@ -78,6 +79,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _compactionManager: CompactionManager;
   private _lifecycleManager: AgentLifecycleManager;
   private _slashCommandManager: SlashCommandManager;
+  private _activeModeManager: ActiveModeManager;
   // Per-panel cancel tracking for isolated cancellation
   private _cancelledPanels: Set<string> = new Set();
   // Track last user message per panel for plan selection follow-up
@@ -121,7 +123,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     memoryManager: MemoryManager,
     compactionManager: CompactionManager,
     lifecycleManager: AgentLifecycleManager,
-    slashCommandManager: SlashCommandManager
+    slashCommandManager: SlashCommandManager,
+    activeModeManager: ActiveModeManager
   ) {
     this._extensionUri = extensionUri;
     this._extensionContext = extensionContext;
@@ -138,6 +141,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._compactionManager = compactionManager;
     this._lifecycleManager = lifecycleManager;
     this._slashCommandManager = slashCommandManager;
+    this._activeModeManager = activeModeManager;
     this._planOptionManager = new PlanOptionManager();
     this._mentionRouter = new MentionRouter(this._providerManager);
 
@@ -165,6 +169,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._permissionManager.onSemiAutonomousTimeout(
       (requestId, postToWebview) => this._handleSemiAutonomousPermissionTimeout(requestId, postToWebview)
     );
+
+    // Subscribe to ActiveModeManager events and broadcast to all panels
+    this._activeModeManager.onStatusChanged(status => {
+      this._broadcastToAll({
+        type: 'activeModeStatus',
+        payload: { installed: this._activeModeManager.isInstalled(), status }
+      });
+    });
+    this._activeModeManager.onChannelChanged(channels => {
+      this._broadcastToAll({ type: 'activeModeChannels', payload: channels });
+    });
+    this._activeModeManager.onActivity(entry => {
+      this._broadcastToAll({ type: 'activeModeActivity', payload: entry });
+    });
 
     // Load agents asynchronously and track the promise
     this._agentInitPromise = this._initializeAgents();
@@ -393,6 +411,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         permissionSettings
       }
     });
+
+    // Send active mode initial state (provider-independent)
+    this._postToPanel(panelId, {
+      type: 'activeModeStatus',
+      payload: {
+        installed: this._activeModeManager.isInstalled(),
+        status: this._activeModeManager.getDaemonStatus()
+      }
+    });
+    if (this._activeModeManager.isInstalled()) {
+      this._postToPanel(panelId, {
+        type: 'activeModeChannels',
+        payload: this._activeModeManager.getChannels()
+      });
+    }
   }
 
   private async _handleMessage(message: WebviewMessage) {
@@ -1234,6 +1267,58 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           type: 'autonomousStats',
           payload: this._autonomousManager.getSessionStats()
         });
+        break;
+
+      // --- Active Mode (provider-independent OpenClaw daemon) ---
+
+      case 'connectChannel':
+        {
+          const { channelType, config: channelConfig } = msg.payload as { channelType: string; config?: Record<string, unknown> };
+          const result = await this._activeModeManager.connectChannel(channelType, channelConfig || {});
+          this._postToPanel(msg.panelId, {
+            type: 'channelConnectResult',
+            payload: result
+          });
+          // If pairing data returned (e.g. QR code), send it
+          if (result.pairingData) {
+            this._postToPanel(msg.panelId, {
+              type: 'channelPairingData',
+              payload: { channelType, data: result.pairingData }
+            });
+          }
+        }
+        break;
+
+      case 'disconnectChannel':
+        {
+          const { channelId } = msg.payload as { channelId: string };
+          await this._activeModeManager.disconnectChannel(channelId);
+        }
+        break;
+
+      case 'refreshActiveMode':
+        await this._activeModeManager.refreshStatus();
+        this._postToPanel(msg.panelId, {
+          type: 'activeModeStatus',
+          payload: {
+            installed: this._activeModeManager.isInstalled(),
+            status: this._activeModeManager.getDaemonStatus()
+          }
+        });
+        this._postToPanel(msg.panelId, {
+          type: 'activeModeChannels',
+          payload: this._activeModeManager.getChannels()
+        });
+        break;
+
+      case 'startDaemon':
+        {
+          const started = await this._activeModeManager.startDaemon();
+          this._postToPanel(msg.panelId, {
+            type: 'daemonStartResult',
+            payload: { success: started }
+          });
+        }
         break;
     }
   }

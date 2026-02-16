@@ -7,7 +7,7 @@
   "author": {
     "name": "Baha Abunojaim",
     "email": "baha@deepmyst.com",
-    "url": "https://deepmyst.com"
+    "url": "https://www.deepmyst.com/mysti"
   },
   "icon": "resources/Mysti-Logo.png",
   "galleryBanner": {
@@ -21,7 +21,7 @@
   "bugs": {
     "url": "https://github.com/DeepMyst/Mysti/issues"
   },
-  "homepage": "https://deepmyst.com",
+  "homepage": "https://www.deepmyst.com/mysti",
   "engines": {
     "vscode": "^1.85.0"
   },

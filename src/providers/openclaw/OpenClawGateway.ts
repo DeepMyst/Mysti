@@ -21,6 +21,53 @@ export interface GatewayAgentOptions {
   model?: string;
 }
 
+// --- Active Mode types (used by ActiveModeManager) ---
+
+export interface GatewayStatus {
+  running: boolean;
+  uptime: number;
+  version: string;
+  heartbeatInterval: number;
+  channelCount: number;
+}
+
+export interface ChannelInfo {
+  id: string;
+  type: 'whatsapp' | 'telegram' | 'slack' | 'discord' | 'signal' | string;
+  name: string;
+  status: 'connected' | 'disconnected' | 'pairing' | 'error';
+  connectedSince?: number;
+  lastActivity?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ChannelEvent {
+  channelId: string;
+  channelType: string;
+  eventType: 'message_received' | 'message_sent' | 'connected' | 'disconnected' | 'pairing';
+  content?: string;
+  sender?: string;
+  timestamp: number;
+}
+
+export interface ActivityEntry {
+  timestamp: number;
+  source: string;
+  action: string;
+  details?: string;
+}
+
+export interface ChannelConnectResult {
+  success: boolean;
+  channelId?: string;
+  pairingData?: {
+    qrCode?: string;
+    authUrl?: string;
+    instructions?: string;
+  };
+  error?: string;
+}
+
 /**
  * OpenClaw Gateway WebSocket protocol frame types
  */
@@ -320,6 +367,139 @@ export class OpenClawGateway {
         this.disconnect();
         this._disposed = false;
       }
+    }
+  }
+
+  // --- Active Mode: Channel & Status Methods ---
+
+  /**
+   * Query the daemon for its current status
+   */
+  async getGatewayStatus(): Promise<GatewayStatus | null> {
+    if (!this.isConnected()) { return null; }
+    try {
+      const response = await this._sendRequest('gateway.status', {});
+      if (response.ok && response.payload) {
+        return {
+          running: true,
+          uptime: (response.payload.uptime || 0) as number,
+          version: (response.payload.version || 'unknown') as string,
+          heartbeatInterval: (response.payload.heartbeatInterval || 1800) as number,
+          channelCount: (response.payload.channelCount || 0) as number,
+        };
+      }
+      return { running: true, uptime: 0, version: 'unknown', heartbeatInterval: 1800, channelCount: 0 };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * List all configured channels and their status
+   */
+  async listChannels(): Promise<ChannelInfo[]> {
+    if (!this.isConnected()) { return []; }
+    try {
+      const response = await this._sendRequest('channels.list', {});
+      if (response.ok && response.payload) {
+        const channels = (response.payload.channels || response.payload) as unknown;
+        if (Array.isArray(channels)) {
+          return channels.map((ch: Record<string, unknown>) => ({
+            id: (ch.id || '') as string,
+            type: (ch.type || ch.channel_type || 'unknown') as string,
+            name: (ch.name || ch.label || '') as string,
+            status: (ch.status || 'disconnected') as ChannelInfo['status'],
+            connectedSince: ch.connectedSince as number | undefined,
+            lastActivity: (ch.lastActivity || ch.last_activity) as number | undefined,
+            metadata: (ch.metadata || {}) as Record<string, unknown>,
+          }));
+        }
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Initiate channel connection/pairing
+   */
+  async connectChannel(type: string, config: Record<string, unknown> = {}): Promise<ChannelConnectResult> {
+    if (!this.isConnected()) {
+      return { success: false, error: 'Gateway not connected' };
+    }
+    try {
+      const response = await this._sendRequest('channels.connect', { type, ...config });
+      if (response.ok && response.payload) {
+        return {
+          success: true,
+          channelId: response.payload.channelId as string | undefined,
+          pairingData: {
+            qrCode: response.payload.qrCode as string | undefined,
+            authUrl: response.payload.authUrl as string | undefined,
+            instructions: response.payload.instructions as string | undefined,
+          },
+        };
+      }
+      return { success: false, error: response.error?.message || 'Connection failed' };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Disconnect a channel
+   */
+  async disconnectChannel(channelId: string): Promise<boolean> {
+    if (!this.isConnected()) { return false; }
+    try {
+      const response = await this._sendRequest('channels.disconnect', { channelId });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Subscribe to channel events (messages, connect/disconnect, pairing)
+   * Returns a cleanup function to unsubscribe.
+   */
+  subscribeToChannelEvents(handler: (event: ChannelEvent) => void): () => void {
+    const wrappedHandler = (payload: Record<string, unknown>) => {
+      handler({
+        channelId: (payload.channelId || payload.channel_id || '') as string,
+        channelType: (payload.channelType || payload.channel_type || '') as string,
+        eventType: (payload.eventType || payload.event_type || 'message_received') as ChannelEvent['eventType'],
+        content: payload.content as string | undefined,
+        sender: (payload.sender || payload.from) as string | undefined,
+        timestamp: (payload.timestamp || Date.now()) as number,
+      });
+    };
+    this._addEventListener('channel', wrappedHandler);
+    return () => this._removeEventListener('channel', wrappedHandler);
+  }
+
+  /**
+   * Fetch recent cross-channel activity log
+   */
+  async getActivityLog(limit: number = 50): Promise<ActivityEntry[]> {
+    if (!this.isConnected()) { return []; }
+    try {
+      const response = await this._sendRequest('activity.log', { limit });
+      if (response.ok && response.payload) {
+        const entries = (response.payload.entries || response.payload) as unknown;
+        if (Array.isArray(entries)) {
+          return entries.map((e: Record<string, unknown>) => ({
+            timestamp: (e.timestamp || Date.now()) as number,
+            source: (e.source || 'unknown') as string,
+            action: (e.action || e.message || '') as string,
+            details: e.details as string | undefined,
+          }));
+        }
+      }
+      return [];
+    } catch {
+      return [];
     }
   }
 

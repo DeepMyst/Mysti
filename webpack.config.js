@@ -3,7 +3,7 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
  * SPDX-License-Identifier: BUSL-1.1
  */

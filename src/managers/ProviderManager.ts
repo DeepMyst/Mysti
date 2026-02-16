@@ -3,7 +3,7 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
  * This file is part of Mysti, licensed under the Business Source License 1.1.
  * See the LICENSE file in the project root for full license terms.

@@ -530,6 +530,6 @@ See the `LICENSE` file for full text.
 </p>
 
 <p align="center">
-  <strong>Mysti</strong> — Built by <a href="https://www.deepmyst.com">DeepMyst Inc</a><br>
+  <strong>Mysti</strong> — Built by <a href="https://www.deepmyst.com/mysti">DeepMyst Inc</a><br>
   <sub>Made with Mysti</sub>
 </p>
