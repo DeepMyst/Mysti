@@ -13,7 +13,7 @@
 
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
-import type { Conversation, Message, ContextItem, OperationMode, ProviderType, AgentConfiguration } from '../types';
+import type { Conversation, Message, ContextItem, Attachment, OperationMode, ProviderType, AgentConfiguration } from '../types';
 
 export class ConversationManager {
   private _conversations: Map<string, Conversation> = new Map();
@@ -122,7 +122,7 @@ export class ConversationManager {
    */
   public isFirstUserMessage(conversationId: string): boolean {
     const conversation = this._conversations.get(conversationId);
-    if (!conversation) return false;
+    if (!conversation) {return false;}
     const userMessages = conversation.messages.filter(m => m.role === 'user');
     return userMessages.length === 1;
   }
@@ -166,6 +166,7 @@ export class ConversationManager {
     role: 'user' | 'assistant' | 'system',
     content: string,
     context?: ContextItem[],
+    attachments?: Attachment[],
     thinking?: string
   ): Message {
     // Get the specific conversation or fall back to current
@@ -186,6 +187,7 @@ export class ConversationManager {
       content,
       timestamp: Date.now(),
       context,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
       thinking
     };
 
@@ -233,9 +235,9 @@ export class ConversationManager {
   }) {
     const conversation = this.getCurrentConversation();
     if (conversation) {
-      if (settings.mode) conversation.mode = settings.mode;
-      if (settings.model) conversation.model = settings.model;
-      if (settings.provider) conversation.provider = settings.provider;
+      if (settings.mode) {conversation.mode = settings.mode;}
+      if (settings.model) {conversation.model = settings.model;}
+      if (settings.provider) {conversation.provider = settings.provider;}
       conversation.updatedAt = Date.now();
       this._saveConversations();
     }

@@ -17,9 +17,10 @@ Technical documentation for contributors and developers.
 ```
 Mysti/
 ├── src/
-│   ├── extension.ts           # Extension entry point
-│   ├── types.ts               # Shared type definitions
-│   ├── managers/              # Business logic managers
+│   ├── extension.ts               # Extension entry point
+│   ├── types.ts                   # Shared type definitions
+│   ├── constants.ts               # Configuration constants
+│   ├── managers/                  # Business logic managers
 │   │   ├── ContextManager.ts
 │   │   ├── ConversationManager.ts
 │   │   ├── ProviderManager.ts
@@ -29,25 +30,54 @@ Mysti/
 │   │   ├── PlanOptionManager.ts
 │   │   ├── SuggestionManager.ts
 │   │   ├── AutocompleteManager.ts
-│   │   ├── AgentLoader.ts        # Three-tier agent loading from markdown
-│   │   ├── AgentContextManager.ts # Agent recommendations & prompt building
-│   │   └── SetupManager.ts       # CLI auto-setup & authentication
-│   ├── providers/             # AI provider implementations
-│   │   ├── ChatViewProvider.ts
-│   │   ├── ProviderRegistry.ts
+│   │   ├── AgentLoader.ts            # Three-tier agent loading from markdown
+│   │   ├── AgentContextManager.ts     # Agent recommendations & prompt building
+│   │   ├── AgentLifecycleManager.ts   # Session lifecycle & idle timeout
+│   │   ├── SetupManager.ts           # CLI auto-setup & authentication
+│   │   ├── TelemetryManager.ts       # Anonymous usage analytics
+│   │   ├── AutonomousManager.ts      # Autonomous mode orchestration
+│   │   ├── MemoryManager.ts          # Long-term preference learning
+│   │   ├── SafetyClassifier.ts       # Operation safety classification
+│   │   ├── CompactionManager.ts      # Context window compaction
+│   │   ├── MentionRouter.ts          # @-mention parsing & routing
+│   │   └── SlashCommandManager.ts    # Centralized slash command registry
+│   ├── providers/                 # AI provider implementations
+│   │   ├── ChatViewProvider.ts    # Main UI coordinator
+│   │   ├── ProviderRegistry.ts    # Provider registration & discovery
 │   │   ├── base/
-│   │   │   ├── IProvider.ts   # Interfaces + persona definitions
-│   │   │   └── BaseCliProvider.ts
+│   │   │   ├── IProvider.ts       # Interfaces + persona definitions
+│   │   │   └── BaseCliProvider.ts # Abstract CLI provider base
 │   │   ├── claude/
 │   │   │   └── ClaudeCodeProvider.ts
-│   │   └── codex/
-│   │       └── CodexProvider.ts
+│   │   ├── codex/
+│   │   │   └── CodexProvider.ts
+│   │   ├── gemini/
+│   │   │   └── GeminiProvider.ts
+│   │   ├── cline/
+│   │   │   └── ClineProvider.ts
+│   │   ├── copilot/
+│   │   │   └── CopilotProvider.ts
+│   │   ├── cursor/
+│   │   │   └── CursorProvider.ts
+│   │   ├── openclaw/
+│   │   │   └── OpenClawProvider.ts
+│   │   └── manus/
+│   │       └── ManusProvider.ts   # Experimental HTTP API provider
+│   ├── mcp/
+│   │   └── permissionServer.ts    # MCP permission intermediary
+│   ├── utils/
+│   │   ├── validation.ts          # Model name validation
+│   │   ├── processTree.ts         # Cross-platform child process scanning
+│   │   └── platform.ts            # Platform-specific helpers
 │   └── webview/
-│       └── webviewContent.ts  # HTML/CSS/JS for UI
+│       └── webviewContent.ts      # HTML/CSS/JS for UI
 ├── resources/
 │   ├── Mysti-Logo.png
 │   ├── icon.svg
-│   ├── icons/                 # UI icons
+│   ├── icons/                     # UI icons
+│   ├── agents/                    # Agent definitions (markdown)
+│   │   ├── core/                  # Bundled agents
+│   │   └── plugins/               # Synced community agents
 │   ├── marked.min.js
 │   ├── prism-bundle.js
 │   └── mermaid.min.js
@@ -55,8 +85,15 @@ Mysti/
 ├── tsconfig.json
 ├── webpack.config.js
 └── docs/
+    ├── ARCHITECTURE.md
     ├── FEATURES.md
-    └── ARCHITECTURE.md
+    ├── PROVIDERS.md
+    ├── BRAINSTORM.md
+    ├── PERSONAS-AND-SKILLS.md
+    ├── AUTONOMOUS-MODE.md
+    ├── MENTIONS.md
+    ├── COMPACTION.md
+    └── screenshots/
 ```
 
 ---
@@ -65,67 +102,45 @@ Mysti/
 
 ### Entry Point: extension.ts
 
-The extension entry point handles:
-- Activation and deactivation
-- Provider initialization
-- Command registration
-- View provider registration
-
-```typescript
-export function activate(context: vscode.ExtensionContext) {
-  // Initialize ChatViewProvider
-  // Register commands
-  // Set up context subscriptions
-}
-```
+The extension entry point wires everything together:
+- Instantiates all managers
+- Creates ChatViewProvider with all dependencies
+- Registers commands and keybindings
+- Sets up view providers and context subscriptions
 
 ### Managers
 
 #### ContextManager
 
-Manages code context for AI conversations.
+Manages code context for AI conversations with per-panel isolation.
 
-**Responsibilities:**
-- Track files, selections, folders in context
-- Auto-context feature (active editor tracking)
-- Language detection (30+ languages)
-- Format context for prompts
+**Key Design:**
+- `_panelContexts: Map<string, ContextItem[]>` for per-panel context isolation
+- Auto-context tracks active editor
+- Language detection for 30+ languages
 
 **Key Methods:**
 ```typescript
-addFile(uri: vscode.Uri): void
-addSelection(editor: vscode.TextEditor): void
-clearContext(): void
-getContextForPrompt(): ContextItem[]
+addFile(uri: vscode.Uri, panelId?: string): void
+addSelection(editor: vscode.TextEditor, panelId?: string): void
+clearPanelContext(panelId: string): void
+getContextForPrompt(panelId?: string): ContextItem[]
 ```
 
 #### ConversationManager
 
 Persistent conversation storage using VSCode's globalState.
 
-**Responsibilities:**
-- Create, update, delete conversations
-- Per-conversation settings storage
-- Agent configuration persistence
-- Title generation
-
 **Key Methods:**
 ```typescript
 createConversation(settings: Settings): Conversation
 addMessage(id: string, message: Message): void
 updateAgentConfig(id: string, config: AgentConfiguration): boolean
-getAgentConfig(id: string): AgentConfiguration | undefined
 ```
 
 #### ProviderManager
 
 Facade over the ProviderRegistry for provider management.
-
-**Responsibilities:**
-- Provider discovery and initialization
-- Active provider management
-- Request routing to providers
-- Process cancellation
 
 **Key Methods:**
 ```typescript
@@ -136,20 +151,25 @@ cancelRequest(panelId?: string): void
 
 #### BrainstormManager
 
-Orchestrates multi-agent brainstorm sessions.
+Orchestrates multi-agent team collaboration using structured reasoning frameworks.
 
-**Responsibilities:**
-- Coordinate multiple AI agents
-- Manage brainstorm phases (individual → discussion → synthesis)
-- Interleave streaming from multiple providers
-- Per-panel session isolation
+**Key Design:**
+- Per-panel sessions via `_panelSessions: Map<string, BrainstormSession>`
+- 5 collaboration strategies: quick, debate, red-team, perspectives, delphi
+- Parallel discussion via `_interleaveGenerators()`
+- Convergence detection via agreement/disagreement keyword tracking
 
 **Brainstorm Flow:**
 ```
 1. User submits query
 2. Individual Phase: Each agent analyzes independently (parallel)
-3. Discussion Phase (full mode): Agents review others' responses
-4. Synthesis Phase: Designated agent creates unified solution
+3. Discussion Phase: Strategy-specific role-based discussion
+   - Debate: Critic vs Defender
+   - Red-Team: Proposer vs Challenger
+   - Perspectives: Risk Analyst vs Innovator
+   - Delphi: Facilitator vs Refiner
+4. Convergence Check: Track agreement, optionally exit early
+5. Synthesis Phase: Designated agent creates unified solution
 ```
 
 **Key Methods:**
@@ -158,15 +178,88 @@ startBrainstorm(query, context, config, panelId): AsyncGenerator<BrainstormStrea
 cancelBrainstorm(panelId?: string): void
 ```
 
+#### AutonomousManager
+
+Enables AI to work independently with configurable safety controls.
+
+**Key Design:**
+- Integrates SafetyClassifier for operation classification
+- Integrates MemoryManager for learned preference queries
+- Continuation modes: goal-based and task-queue
+- Audit logging of all autonomous decisions
+
+**Key Methods:**
+```typescript
+activate(config: AutonomousConfig): void
+deactivate(): void
+handlePermission(request: PermissionRequest): AutonomousDecision
+handleQuestion(question: AskUserQuestionData): AutonomousDecision
+```
+
+#### SafetyClassifier
+
+Classifies operations into safety levels for autonomous mode.
+
+**Safety Levels:**
+- `safe`: Auto-approve (read-only, tests, version checks)
+- `caution`: Mode-dependent (file create/edit, unknown commands)
+- `blocked`: Always deny (deletion, force push, sudo, chmod 777)
+
+**Safety Modes:** conservative, balanced, aggressive
+
+#### MemoryManager
+
+Long-term memory for learning user preferences.
+
+**Key Design:**
+- Dual-layer storage: VSCode globalState (fast) + `~/.mysti/memory/preferences.json` (persistent)
+- Confidence decay (0.95/day) ensures recent decisions are weighted more
+- Auto-pruning when over capacity (default 500 entries)
+
+**Categories:** permission-preference, question-preference, project-context
+
+#### CompactionManager
+
+Prevents context window overflow via smart conversation compaction.
+
+**Key Design:**
+- Per-panel cumulative token tracking (input, output, cache read, cache creation)
+- Threshold-based triggering (default 75%)
+- Two strategies: native-cli (`/compact`) and client-summarize
+- Brainstorm agents tracked independently via `panelId-brainstorm-agentId` keys
+
+#### MentionRouter
+
+Handles `@agent` and `@file` mentions in user messages.
+
+**Key Design:**
+- File mentions resolve to transient ContextItems
+- Agent mentions generate task lists (heuristic-based, AI fallback)
+- Sequential execution with dependency tracking
+- Auto-retry failed sub-agent tasks
+
+#### SlashCommandManager
+
+Centralized registry for slash commands.
+
+**Key Design:**
+- Organized by sections: Context, Model, Customize, Commands, Settings, Support
+- Provider-specific commands: `/compact` (Claude), `/thinking` (Claude), `/profile` (Codex), `/plan-act` (Cline)
+- QuickPick dialogs for model, provider, mode selection
+
+#### AgentLifecycleManager
+
+Manages agent session lifecycle.
+
+**Key Design:**
+- Per-panel session tracking (active/busy/idle/shutting-down)
+- Configurable idle timeout (default 1 hour)
+- Cross-platform process tree tracking via `pgrep`/`wmic`
+- Child process protection — blocks shutdown if active builds detected
+
 #### PermissionManager
 
 Handles permission requests for file operations.
-
-**Responsibilities:**
-- Create permission requests
-- Track pending/approved/denied states
-- Handle timeouts
-- Session-level permissions
 
 **Key Methods:**
 ```typescript
@@ -175,152 +268,35 @@ resolveRequest(id, decision): void
 checkPermission(type, path): boolean
 ```
 
-#### ResponseClassifier
+#### Other Managers
 
-AI-powered response analysis using Claude Haiku.
-
-**Responsibilities:**
-- Detect clarifying questions in responses
-- Identify implementation plan options
-- Extract structured data from natural language
-
-**Returns:**
-```typescript
-interface ResponseClassification {
-  questions: ClarifyingQuestion[];
-  planOptions: PlanOption[];
-  context: string;
-}
-```
-
-#### SuggestionManager
-
-Generates context-aware quick action suggestions.
-
-**Responsibilities:**
-- Generate 6 suggestions per response
-- Pre-spawn CLI process (warm process optimization)
-- Parse structured suggestion output
-
-#### AutocompleteManager
-
-Provides sentence/paragraph/message completion.
-
-**Responsibilities:**
-
-- Generate completions based on partial input
-- Support multiple completion types
-
-#### AgentLoader
-
-Three-tier progressive loading system for agent definitions from markdown files.
-
-**Responsibilities:**
-
-- Load agent metadata from multiple sources (core, plugin, user, workspace)
-- Parse YAML frontmatter from markdown files
-- Cache agents at each tier for performance
-- Provide fast UI rendering with minimal data
-
-**Three-Tier Loading:**
-
-```text
-Tier 1: Metadata (AgentMetadata)
-├── id, name, description, icon
-├── category, source, activationTriggers
-└── Always loaded for fast UI
-
-Tier 2: Instructions (AgentInstructions)
-├── Extends Tier 1
-├── instructions, communicationStyle
-├── priorities, bestPractices, antiPatterns
-└── Loaded on selection
-
-Tier 3: Full (AgentFull)
-├── Extends Tier 2
-├── codeExamples, fullContent
-└── Loaded on demand for detailed view
-```
-
-**Source Priority:**
-
-1. Core agents (`resources/agents/core/`)
-2. Plugin agents (`resources/agents/plugins/`)
-3. User agents (`~/.mysti/agents/`)
-4. Workspace agents (`.mysti/agents/`)
-
-**Key Methods:**
-
-```typescript
-loadAllMetadata(): Promise<{ personas: AgentMetadata[]; skills: AgentMetadata[] }>
-loadInstructions(agentId: string): Promise<AgentInstructions | null>
-loadFull(agentId: string): Promise<AgentFull | null>
-findMatchingAgents(query: string): AgentMetadata[]
-```
-
-#### AgentContextManager
-
-Builds agent context for prompt injection with token budget management.
-
-**Responsibilities:**
-
-- Get recommendations based on user query
-- Build prompt context within token budget
-- Provide condensed versions when budget exceeded
-- Manage auto-suggest settings
-
-**Key Methods:**
-
-```typescript
-getRecommendations(query: string, limit?: number): AgentRecommendation[]
-buildPromptContext(config: AgentConfiguration): Promise<AgentPromptContext>
-isAutoSuggestEnabled(): boolean
-setTokenBudget(maxTokens: number): Promise<void>
-```
-
-**Token Budget Behavior:**
-
-- `0` = unlimited (no budget enforcement)
-- `> 0` = limit agent context to specified tokens
-- When exceeded, uses condensed persona prompt
+- **ResponseClassifier**: AI-powered response analysis using Claude Haiku
+- **SuggestionManager**: Context-aware quick action suggestions
+- **AgentLoader**: Three-tier progressive loading for agent definitions
+- **AgentContextManager**: Builds agent context for prompt injection with token budgets
+- **SetupManager**: CLI auto-setup and authentication
+- **TelemetryManager**: Anonymous usage analytics via Application Insights
 
 ### Providers
 
-#### ICliProvider Interface
+#### Per-Panel Session Isolation
 
-Base interface for all CLI-based providers.
+Provider instances are singletons, but mutable state is per-panel:
 
 ```typescript
-interface ICliProvider {
-  readonly id: string;
-  readonly displayName: string;
-  readonly config: ProviderConfig;
-  readonly capabilities: ProviderCapabilities;
+// Each provider tracks sessions per panel
+private _panelSessions: Map<string, PanelSessionState> = new Map();
 
-  initialize(): Promise<void>;
-  dispose(): void;
-  discoverCli(): Promise<CliDiscoveryResult>;
-  getCliPath(): string;
-  getAuthConfig(): Promise<AuthConfig>;
-  checkAuthentication(): Promise<boolean>;
-
-  sendMessage(
-    content: string,
-    context: ContextItem[],
-    settings: Settings,
-    conversation: Conversation | null,
-    persona?: PersonaConfig,
-    panelId?: string,
-    providerManager?: unknown,
-    agentConfig?: AgentConfiguration
-  ): AsyncGenerator<StreamChunk>;
-
-  cancelCurrentRequest(): void;
-  clearSession(): void;
-  hasSession(): boolean;
-  getSessionId(): string | null;
+// Base session state
+interface PanelSessionState {
+  panelId: string;
+  process: ChildProcess | null;
+  sessionId: string | null;
+  autonomousMode: boolean;
 }
 ```
+
+Each provider subclass extends with its own session type (e.g., `ClaudeSessionState`, `CodexSessionState`).
 
 #### BaseCliProvider
 
@@ -331,36 +307,37 @@ Abstract base class implementing common CLI functionality.
 // Build prompt with context, persona, skills
 protected buildPrompt(content, context, conversation, settings, persona?, agentConfig?): string
 
-// Build agent instructions from configuration
-protected buildAgentInstructions(agentConfig?): string
+// Build CLI arguments — takes session (not boolean)
+protected abstract buildCliArgs(settings: Settings, session: PanelSessionState): string[]
+
+// Parse provider-specific output — takes session for per-panel parse state
+protected abstract parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null
 
 // Process CLI output stream
 protected *processStream(stderrCollector): AsyncGenerator<StreamChunk>
 ```
 
-#### ClaudeCodeProvider
+#### Provider Implementations
 
-Claude Code CLI implementation.
+| Provider | Type | Key Differences |
+|----------|------|-----------------|
+| **ClaudeCodeProvider** | CLI | Thinking mode, native `/compact`, MCP permission server |
+| **CodexProvider** | CLI | Profile switching |
+| **GeminiProvider** | CLI | Thinking support, Google ecosystem |
+| **ClineProvider** | CLI | Plan/Act mode |
+| **CopilotProvider** | CLI | 14+ models via GitHub subscription |
+| **CursorProvider** | CLI | Auto model selection, cumulative streaming dedup |
+| **OpenClawProvider** | CLI + WebSocket | Dual-transport: WebSocket gateway + CLI fallback |
+| **ManusProvider** | HTTP API | Async polling workflow (experimental) |
 
-**Features:**
-- Models: Sonnet 4.5, Opus 4.5, Haiku 3.5
-- Streaming JSON output parsing
-- Extended thinking support
-- Tool use handling
-- Session management
+#### MCP Permission Server
 
-**CLI Invocation:**
-```bash
-claude --output-format stream-json [options]
+Intermediary between Claude Code CLI and VSCode for fine-grained permission control.
+
+**Flow:**
 ```
-
-#### CodexProvider
-
-OpenAI Codex CLI implementation.
-
-**Features:**
-- Similar structure to ClaudeCodeProvider
-- Provider-specific prompt building
+Claude CLI --stdin/stdout--> MCP Server --HTTP--> VSCode Extension --postMessage--> Webview UI
+```
 
 ### ChatViewProvider
 
@@ -369,21 +346,18 @@ Main UI coordinator and webview provider.
 **Responsibilities:**
 - Webview creation and management
 - Per-panel state (conversations, processes)
-- Message routing between webview and managers
-- Initial state setup
+- Message routing between webview and all managers
+- Threads `panelId` to all context/session/cancel calls
 
-**Webview Messages:**
+**Constructor (dependency injection):**
 ```typescript
-// Incoming from webview
-{ type: 'sendMessage', payload: { content, context } }
-{ type: 'newConversation' }
-{ type: 'updateAgentConfig', payload: AgentConfiguration }
-{ type: 'selectPlan', payload: PlanSelectionResult }
-
-// Outgoing to webview
-{ type: 'streamChunk', payload: StreamChunk }
-{ type: 'updateState', payload: { conversations, settings } }
-{ type: 'showPlanOptions', payload: PlanOption[] }
+constructor(
+  extensionUri, extensionContext,
+  contextManager, conversationManager, providerManager,
+  suggestionManager, brainstormManager, permissionManager,
+  setupManager, telemetryManager, autonomousManager,
+  memoryManager, compactionManager
+)
 ```
 
 ---
@@ -397,6 +371,10 @@ User Input (Webview)
        ↓
 ChatViewProvider.handleMessage()
        ↓
+MentionRouter.parse()  ← Check for @-mentions
+       ↓
+[If @-mentions: Generate task list → Execute sub-agents sequentially]
+       ↓
 ProviderManager.sendMessage()
        ↓
 BaseCliProvider.sendMessage()
@@ -405,9 +383,9 @@ BaseCliProvider.sendMessage()
        ↓
 BaseCliProvider.processStream()
        ↓
-[Parse JSON chunks]
+[Parse JSON chunks per panel session]
        ↓
-StreamChunk events
+StreamChunk events → CompactionManager.trackUsage()
        ↓
 ChatViewProvider → Webview
        ↓
@@ -421,25 +399,74 @@ User Query
        ↓
 BrainstormManager.startBrainstorm()
        ↓
-┌──────────────────────────────────────┐
-│ Individual Phase (Parallel)          │
-│ ┌─────────────┐ ┌─────────────────┐  │
-│ │ Claude CLI  │ │ Codex CLI       │  │
-│ │ (streaming) │ │ (streaming)     │  │
-│ └─────────────┘ └─────────────────┘  │
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│ Individual Phase (Parallel)                  │
+│ ┌──────────┐ ┌──────────┐                   │
+│ │ Agent 1  │ │ Agent 2  │                   │
+│ │ (stream) │ │ (stream) │                   │
+│ └──────────┘ └──────────┘                   │
+└──────────────────────────────────────────────┘
        ↓
-[Discussion Phase - Full Mode Only]
+┌──────────────────────────────────────────────┐
+│ Discussion Phase (strategy-dependent)        │
+│ Parallel via _interleaveGenerators()         │
+│ Roles assigned by strategy:                  │
+│   Debate: Critic vs Defender                 │
+│   Red-Team: Proposer vs Challenger           │
+│   Perspectives: Risk Analyst vs Innovator    │
+│   Delphi: Facilitator vs Refiner             │
+│                                              │
+│ Convergence tracked per round                │
+│ Auto-exit if agents converge                 │
+└──────────────────────────────────────────────┘
        ↓
-┌──────────────────────────────────────┐
-│ Synthesis Phase                      │
-│ ┌─────────────────────────────────┐  │
-│ │ Synthesis Agent                 │  │
-│ │ Combines all perspectives       │  │
-│ └─────────────────────────────────┘  │
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│ Synthesis Phase                              │
+│ ┌──────────────────────────────────────────┐ │
+│ │ Synthesis Agent combines all perspectives│ │
+│ │ Fallback: other agent → raw concat       │ │
+│ └──────────────────────────────────────────┘ │
+└──────────────────────────────────────────────┘
        ↓
 Unified Solution
+```
+
+### @-Mention Flow
+
+```
+User: "@claude Write tests, then @gemini review them"
+       ↓
+MentionRouter.parse()
+       ↓
+Generate Task List (heuristic or AI)
+  Task 1: { agent: claude, type: execute, task: "Write tests" }
+  Task 2: { agent: gemini, type: execute, task: "Review tests" }
+       ↓
+Execute Task 1 → Stream Claude response
+       ↓
+Build context from Task 1 response
+       ↓
+Execute Task 2 → Stream Gemini response (with Task 1 context)
+       ↓
+Return combined results
+```
+
+### Autonomous Flow
+
+```
+Permission/Question from CLI
+       ↓
+AutonomousManager.handlePermission() / handleQuestion()
+       ↓
+SafetyClassifier.classify(operation)
+       ↓
+[If safe]: Auto-approve → audit log
+[If caution]: Check safety mode → approve/deny/ask user
+[If blocked]: Auto-deny → audit log
+       ↓
+MemoryManager.query() → Check learned preferences
+       ↓
+Decision → audit log → notify ChatViewProvider
 ```
 
 ---
@@ -449,12 +476,10 @@ Unified Solution
 ### Core Types
 
 ```typescript
-// Operation modes
-type OperationMode = 'default' | 'ask-before-edit' | 'edit-automatically' | 'quick-plan' | 'detailed-plan';
-
-// Provider types
-type ProviderType = 'claude-code' | 'openai-codex';
-type AgentType = 'claude-code' | 'openai-codex';
+// Provider types (7 providers + manus experimental)
+type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' |
+                    'cline' | 'github-copilot' | 'cursor' | 'openclaw';
+type AgentType = ProviderType;
 
 // Streaming
 interface StreamChunk {
@@ -465,56 +490,26 @@ interface StreamChunk {
   usage?: UsageStats;
 }
 
-// Agent configuration
-type DeveloperPersonaId = 'architect' | 'prototyper' | ... | 'toolsmith';
-type SkillId = 'concise' | 'repo-hygiene' | ... | 'rollback-ready';
+// Brainstorm
+type CollaborationStrategy = 'quick' | 'debate' | 'red-team' | 'perspectives' | 'delphi';
+type DiscussionRole = 'critic' | 'defender' | 'proposer' | 'challenger' |
+                      'risk-analyst' | 'innovator' | 'facilitator' | 'refiner';
 
-interface AgentConfiguration {
-  personaId: DeveloperPersonaId | null;
-  enabledSkills: SkillId[];
-}
-```
+// Autonomous
+type SafetyLevel = 'safe' | 'caution' | 'blocked';
+type AutonomousContinuationMode = 'goal' | 'task-queue';
 
-### Brainstorm Types
-
-```typescript
-type BrainstormPhase = 'initial' | 'individual' | 'discussion' | 'synthesis' | 'complete';
-
-interface BrainstormSession {
-  id: string;
-  query: string;
-  phase: BrainstormPhase;
-  agents: AgentConfig[];
-  agentResponses: Map<AgentType, AgentResponse>;
-  discussionRounds: DiscussionRound[];
-  unifiedSolution: string | null;
+// @-Mentions
+interface MentionTask {
+  type: 'execute' | 'switch';
+  agent: AgentType;
+  task: string;
+  order: number;
 }
 
-interface BrainstormStreamChunk {
-  type: 'agent_text' | 'agent_thinking' | 'agent_complete' | 'agent_error' |
-        'discussion_text' | 'synthesis_text' | 'phase_change' | 'done';
-  agentId?: AgentType;
-  content?: string;
-  phase?: BrainstormPhase;
-}
-```
-
-### Permission Types
-
-```typescript
-type PermissionActionType = 'file-read' | 'file-create' | 'file-edit' | 'file-delete' |
-                            'bash-command' | 'web-request' | 'multi-file-edit';
-
-interface PermissionRequest {
-  id: string;
-  actionType: PermissionActionType;
-  title: string;
-  description: string;
-  details: PermissionDetails;
-  status: PermissionStatus;
-  createdAt: number;
-  expiresAt: number;
-}
+// Compaction
+type CompactionStrategy = 'native-cli' | 'client-summarize';
+type CompactionStatus = 'idle' | 'evaluating' | 'compacting' | 'complete' | 'error';
 ```
 
 ---
@@ -523,104 +518,24 @@ interface PermissionRequest {
 
 ### Adding a New Provider
 
-1. **Create provider class** extending `BaseCliProvider`:
+1. **Create provider class** extending `BaseCliProvider` in `src/providers/newprovider/`
+2. **Implement abstract methods**: `discoverCli()`, `getCliPath()`, `buildCliArgs()`, `parseStreamLine()`, `getAuthConfig()`, `checkAuthentication()`, `getAuthCommand()`, `getInstallCommand()`
+3. **Register** in `src/providers/ProviderRegistry.ts` (`_registerBuiltInProviders()`)
+4. **Add type** to `ProviderType` union in `src/types.ts`
+5. **Add agent style** in `BrainstormManager.ts` `AGENT_STYLES` record
+6. **Add settings** in `package.json` (`mysti.*` settings)
 
-```typescript
-// src/providers/newprovider/NewProvider.ts
-export class NewProvider extends BaseCliProvider {
-  readonly id = 'new-provider';
-  readonly displayName = 'New Provider';
-  readonly config: ProviderConfig = {
-    name: 'new-provider',
-    displayName: 'New Provider',
-    models: [...],
-    defaultModel: 'model-id'
-  };
-  readonly capabilities: ProviderCapabilities = {
-    supportsStreaming: true,
-    supportsThinking: false,
-    supportsToolUse: true,
-    supportsSessions: false
-  };
+### Adding a New Persona/Skill (Markdown)
 
-  protected buildCliArgs(settings: Settings, hasSession: boolean): string[] {
-    // Return CLI arguments
-  }
+Create a markdown file with YAML frontmatter in one of the agent directories:
 
-  protected parseStreamLine(line: string): StreamChunk | null {
-    // Parse provider-specific output format
-  }
+| Location | Scope | Priority |
+|----------|-------|----------|
+| `.mysti/agents/personas/` (or `skills/`) | Workspace | Highest |
+| `~/.mysti/agents/personas/` | User | Medium |
+| `resources/agents/core/personas/` | Core | Lowest |
 
-  // Implement other abstract methods...
-}
-```
-
-2. **Register in ProviderRegistry**:
-
-```typescript
-// src/providers/ProviderRegistry.ts
-this._providers.set('new-provider', new NewProvider(context));
-```
-
-3. **Update types**:
-
-```typescript
-// src/types.ts
-export type ProviderType = 'claude-code' | 'openai-codex' | 'new-provider';
-```
-
-4. **Update package.json** with configuration options.
-
-### Adding a New Persona
-
-1. **Add to types**:
-
-```typescript
-// src/types.ts
-export type DeveloperPersonaId = ... | 'new-persona';
-```
-
-2. **Define persona**:
-
-```typescript
-// src/providers/base/IProvider.ts
-export const DEVELOPER_PERSONAS: Record<DeveloperPersonaId, DeveloperPersona> = {
-  // ...
-  'new-persona': {
-    id: 'new-persona',
-    name: 'New Persona',
-    description: 'Description here',
-    icon: '🆕',
-    keyCharacteristics: 'Behavior instructions...'
-  }
-};
-```
-
-3. **Add icon** to `resources/icons/`.
-
-### Adding a New Skill
-
-1. **Add to types**:
-
-```typescript
-// src/types.ts
-export type SkillId = ... | 'new-skill';
-```
-
-2. **Define skill**:
-
-```typescript
-// src/providers/base/IProvider.ts
-export const DEVELOPER_SKILLS: Record<SkillId, Skill> = {
-  // ...
-  'new-skill': {
-    id: 'new-skill',
-    name: 'New Skill',
-    description: 'Brief description',
-    instructions: 'Detailed instructions for the AI...'
-  }
-};
-```
+See [Personas & Skills documentation](PERSONAS-AND-SKILLS.md) for the full format.
 
 ---
 
@@ -629,20 +544,12 @@ export const DEVELOPER_SKILLS: Record<SkillId, Skill> = {
 ### Commands
 
 ```bash
-# Install dependencies
-npm install
-
-# Development build with watch
-npm run watch
-
-# Production build
-npm run compile
-
-# Lint
-npm run lint
-
-# Package extension
-npx vsce package
+npm install                # Install dependencies
+npm run watch              # Development build with watch
+npm run compile            # Production build
+npm run lint               # ESLint check
+npm run sync-agents        # Sync community agents
+npx vsce package           # Package extension
 ```
 
 ### Debugging
@@ -650,14 +557,4 @@ npx vsce package
 1. Open project in VSCode
 2. Press `F5` to launch Extension Development Host
 3. Set breakpoints in TypeScript files
-4. Check Debug Console for logs
-
-### Logging
-
-All managers and providers log to console with `[Mysti]` prefix:
-
-```typescript
-console.log('[Mysti] ProviderManager: Initializing...');
-```
-
-Filter logs in Debug Console: `[Mysti]`
+4. Filter Debug Console with `[Mysti]` prefix

@@ -21,6 +21,11 @@ import { BrainstormManager } from './managers/BrainstormManager';
 import { PermissionManager } from './managers/PermissionManager';
 import { SetupManager } from './managers/SetupManager';
 import { TelemetryManager } from './managers/TelemetryManager';
+import { MemoryManager } from './managers/MemoryManager';
+import { AutonomousManager } from './managers/AutonomousManager';
+import { CompactionManager } from './managers/CompactionManager';
+import { AgentLifecycleManager } from './managers/AgentLifecycleManager';
+import { SlashCommandManager } from './managers/SlashCommandManager';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -31,6 +36,10 @@ let brainstormManager: BrainstormManager;
 let permissionManager: PermissionManager;
 let setupManager: SetupManager;
 let telemetryManager: TelemetryManager;
+let memoryManager: MemoryManager;
+let autonomousManager: AutonomousManager;
+let compactionManager: CompactionManager;
+let lifecycleManager: AgentLifecycleManager;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('Mysti extension is now active');
@@ -60,6 +69,22 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize setup manager for CLI auto-setup
   setupManager = new SetupManager(context, providerManager);
 
+  // Initialize memory, autonomous, and compaction managers
+  memoryManager = new MemoryManager(context);
+  autonomousManager = new AutonomousManager(context, memoryManager);
+  compactionManager = new CompactionManager(context);
+  lifecycleManager = new AgentLifecycleManager(context);
+
+  // Initialize slash command manager
+  const slashCommandManager = new SlashCommandManager({
+    providerManager,
+    contextManager,
+    conversationManager,
+    compactionManager,
+    memoryManager,
+    brainstormManager,
+  });
+
   // Initialize the chat view provider
   chatViewProvider = new ChatViewProvider(
     context.extensionUri,
@@ -71,7 +96,12 @@ export async function activate(context: vscode.ExtensionContext) {
     brainstormManager,
     permissionManager,
     setupManager,
-    telemetryManager
+    telemetryManager,
+    autonomousManager,
+    memoryManager,
+    compactionManager,
+    lifecycleManager,
+    slashCommandManager
   );
 
   // Register the webview provider
@@ -150,6 +180,13 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Toggle autonomous mode command
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.toggleAutonomous', () => {
+      chatViewProvider.toggleAutonomousMode();
+    })
+  );
+
   // Debug commands for testing setup flow (not in package.json - use Command Palette)
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.debugSetup', () => {
@@ -206,5 +243,17 @@ export function deactivate() {
   // Additional cleanup for managers not in subscriptions
   if (permissionManager) {
     permissionManager.dispose();
+  }
+  if (autonomousManager) {
+    autonomousManager.dispose();
+  }
+  if (memoryManager) {
+    memoryManager.dispose();
+  }
+  if (compactionManager) {
+    compactionManager.dispose();
+  }
+  if (lifecycleManager) {
+    lifecycleManager.dispose();
   }
 }

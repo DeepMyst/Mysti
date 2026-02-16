@@ -97,7 +97,7 @@ export class AgentContextManager {
 
     for (const agent of allAgents) {
       const agentType = this._agentLoader.getAgentType(agent.id);
-      if (!agentType) continue;
+      if (!agentType) {continue;}
 
       const matchedTriggers: string[] = [];
       let confidence: RecommendationConfidence = 'low';

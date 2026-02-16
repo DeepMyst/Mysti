@@ -24,7 +24,22 @@ npm-debug.log*
 coverage/
 .nyc_output/
 
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
 # Misc
 *.swp
 *.swo
 *~
+
+# Clipboard
+clipboard/
+
+# Stargazers
+.stargazers-cache-*
+stargazers-*.xlsx
+Mysti stargazers.xlsx
+scripts/fetch-stargazers.js
+scripts/export-cache.js

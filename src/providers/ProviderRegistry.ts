@@ -18,6 +18,8 @@ import { CodexProvider } from './codex/CodexProvider';
 import { GeminiProvider } from './gemini/GeminiProvider';
 import { ClineProvider } from './cline/ClineProvider';
 import { CopilotProvider } from './copilot/CopilotProvider';
+import { CursorProvider } from './cursor/CursorProvider';
+import { OpenClawProvider } from './openclaw/OpenClawProvider';
 
 /**
  * Registry for managing CLI providers
@@ -61,6 +63,17 @@ export class ProviderRegistry {
     const copilot = new CopilotProvider(this._extensionContext);
     this._providers.set(copilot.id, copilot);
     console.log(`[Mysti] Registered provider: ${copilot.displayName}`);
+
+    // Register Cursor
+    const cursor = new CursorProvider(this._extensionContext);
+    this._providers.set(cursor.id, cursor);
+    console.log(`[Mysti] Registered provider: ${cursor.displayName}`);
+
+    // Register OpenClaw
+    const openclaw = new OpenClawProvider(this._extensionContext);
+    this._providers.set(openclaw.id, openclaw);
+    console.log(`[Mysti] Registered provider: ${openclaw.displayName}`);
+
   }
 
   /**

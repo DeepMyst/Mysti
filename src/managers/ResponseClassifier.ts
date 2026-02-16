@@ -69,7 +69,7 @@ export class ResponseClassifier {
   private _hasStructuredContent(content: string): boolean {
     // Check for numbered lists, headers, or question patterns
     const patterns = [
-      /\d+[.\)]\s+/,              // Numbered lists
+      /\d+[.)]\s+/,               // Numbered lists
       /^#{1,3}\s+/m,              // Markdown headers
       /\?$/m,                     // Questions
       /options?:/i,               // "Options:" section
@@ -219,7 +219,7 @@ Return ONLY the JSON object, nothing else.`;
   /**
    * Parse and validate the AI response
    */
-  private _parseResponse(output: string, originalContent: string): ResponseClassification {
+  private _parseResponse(output: string, _originalContent: string): ResponseClassification {
     // Extract JSON from output (handle potential markdown wrapping)
     const jsonMatch = output.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
@@ -230,33 +230,33 @@ Return ONLY the JSON object, nothing else.`;
 
     // Validate and normalize questions
     const questions: ClarifyingQuestion[] = (parsed.questions || [])
-      .filter((q: any) => q.question && (q.options?.length > 0 || q.inputType === 'text'))
-      .map((q: any, i: number) => ({
-        id: q.id || `q${i + 1}`,
+      .filter((q: Record<string, unknown>) => q.question && (((q.options as unknown[] | undefined)?.length ?? 0) > 0 || q.inputType === 'text'))
+      .map((q: Record<string, unknown>, i: number) => ({
+        id: (q.id as string) || `q${i + 1}`,
         question: String(q.question),
-        inputType: ['select', 'radio', 'checkbox', 'text'].includes(q.inputType) ? q.inputType : 'radio',
-        options: (q.options || []).map((opt: any, j: number) => ({
-          id: opt.id || `opt${j}`,
+        inputType: ['select', 'radio', 'checkbox', 'text'].includes(q.inputType as string) ? q.inputType as string : 'radio',
+        options: ((q.options as Record<string, unknown>[] | undefined) || []).map((opt: Record<string, unknown>, j: number) => ({
+          id: (opt.id as string) || `opt${j}`,
           label: String(opt.label || ''),
-          description: opt.description,
+          description: opt.description as string | undefined,
           value: String(opt.value || opt.label || '')
         })),
-        placeholder: q.placeholder,
+        placeholder: q.placeholder as string | undefined,
         required: q.required !== false,
-        questionType: ['clarifying', 'meta'].includes(q.questionType) ? q.questionType : 'clarifying'
+        questionType: ['clarifying', 'meta'].includes(q.questionType as string) ? q.questionType as string : 'clarifying'
       }));
 
     // Validate and normalize plan options (removed approach length requirement)
     const planOptions: PlanOption[] = (parsed.planOptions || [])
-      .filter((p: any) => p.title && p.approach)
-      .map((p: any, i: number) => ({
+      .filter((p: Record<string, unknown>) => p.title && p.approach)
+      .map((p: Record<string, unknown>, i: number) => ({
         id: p.id || `plan${i + 1}`,
         title: String(p.title).substring(0, 60),
         summary: String(p.summary || '').substring(0, 200),
         approach: String(p.approach),
         pros: Array.isArray(p.pros) ? p.pros.map(String).slice(0, 5) : [],
         cons: Array.isArray(p.cons) ? p.cons.map(String).slice(0, 5) : [],
-        complexity: ['low', 'medium', 'high'].includes(p.complexity) ? p.complexity : 'medium',
+        complexity: ['low', 'medium', 'high'].includes(p.complexity as string) ? p.complexity : 'medium',
         icon: PLAN_ICONS[i % PLAN_ICONS.length],
         color: PLAN_COLORS[i % PLAN_COLORS.length]
       }));

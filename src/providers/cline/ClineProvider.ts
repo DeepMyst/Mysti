@@ -14,7 +14,8 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { BaseCliProvider } from "../base/BaseCliProvider";
+import { spawn } from "child_process";
+import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from "../base/BaseCliProvider";
 import type {
 	CliDiscoveryResult,
 	AuthConfig,
@@ -27,7 +28,28 @@ import type {
 	AuthStatus,
 	ContextItem,
 	Conversation,
+	SlashCommandDefinition,
+	AgentConfiguration,
 } from "../../types";
+import { PROCESS_KILL_GRACE_PERIOD_MS } from "../../constants";
+import { getEnrichedEnv } from "../../utils/platform";
+
+/**
+ * Extended per-panel session state for Cline-specific fields.
+ */
+interface ClineSessionState extends PanelSessionState {
+	activeToolCalls: Map<string, { id: string; name: string; inputJson: string }>;
+	completedToolCalls: Set<string>;
+	lastUsageStats: {
+		input_tokens: number;
+		output_tokens: number;
+		cache_creation_input_tokens?: number;
+		cache_read_input_tokens?: number;
+	} | null;
+	lastUserInput: string;
+	askReceived: boolean;
+	jsonBuffer: string[];
+}
 
 /**
  * Cline CLI provider implementation
@@ -46,26 +68,63 @@ export class ClineProvider extends BaseCliProvider {
 		name: "cline",
 		displayName: "Cline",
 		models: [
+			// Popular models (via OpenRouter)
 			{
-				id: "claude-sonnet-4-5-20250929",
+				id: "anthropic/claude-sonnet-4-5-20250929",
 				name: "Claude Sonnet 4.5",
-				description: "Most capable model, best for complex tasks",
+				description: "Best balance of speed, cost, and quality",
 				contextWindow: 200000,
 			},
 			{
-				id: "claude-opus-4-5-20251101",
-				name: "Claude Opus 4.5",
-				description: "Advanced reasoning and analysis",
+				id: "anthropic/claude-opus-4-6",
+				name: "Claude Opus 4.6",
+				description: "Most intelligent model for agents and coding",
 				contextWindow: 200000,
 			},
 			{
-				id: "claude-haiku-4-5-20251015",
-				name: "Claude Haiku 4.5",
-				description: "Fast and efficient for simpler tasks",
-				contextWindow: 200000,
+				id: "deepseek/deepseek-chat",
+				name: "DeepSeek V3",
+				description: "Strong open-source coding model",
+				contextWindow: 128000,
+			},
+			{
+				id: "deepseek/deepseek-r1",
+				name: "DeepSeek R1",
+				description: "Reasoning-focused open-source model",
+				contextWindow: 128000,
+			},
+			{
+				id: "kwaipilot/kat-coder-pro",
+				name: "KAT Coder Pro",
+				description: "KwaiKAT's advanced agentic coding model",
+				contextWindow: 256000,
+			},
+			{
+				id: "minimax/minimax-m2.5",
+				name: "MiniMax M2.5",
+				description: "Great coding capability and subagent use",
+				contextWindow: 256000,
+			},
+			{
+				id: "qwen/qwen3-coder",
+				name: "Qwen3 Coder",
+				description: "Qwen's specialized coding model (480B A35B)",
+				contextWindow: 262144,
+			},
+			{
+				id: "mistralai/codestral-2508",
+				name: "Codestral",
+				description: "Mistral's specialized coding model",
+				contextWindow: 256000,
+			},
+			{
+				id: "arcee-ai/trinity-large-preview",
+				name: "Trinity Large",
+				description: "Arcee AI's model optimized for agent harnesses",
+				contextWindow: 128000,
 			},
 		],
-		defaultModel: "claude-sonnet-4-5-20250929",
+		defaultModel: "deepseek/deepseek-chat",
 	};
 
 	readonly capabilities: ProviderCapabilities = {
@@ -73,44 +132,98 @@ export class ClineProvider extends BaseCliProvider {
 		supportsThinking: true,
 		supportsToolUse: true,
 		supportsSessions: true,
+		supportsAutoInstall: true,
 	};
 
-	// Tool call state tracking
-	private _activeToolCalls: Map<
-		number,
-		{ id: string; name: string; inputJson: string }
-	> = new Map();
+	// ============================================================================
+	// Slash command menu: Cline-specific commands
+	// ============================================================================
 
-	// Usage stats from message_delta
-	private _lastUsageStats: {
-		input_tokens: number;
-		output_tokens: number;
-		cache_creation_input_tokens?: number;
-		cache_read_input_tokens?: number;
-	} | null = null;
+	public override getSlashCommands(_panelId?: string): SlashCommandDefinition[] {
+		const base = super.getSlashCommands(_panelId);
+		return [
+			...base,
+			{
+				id: "cline:plan-act",
+				label: "Toggle plan/act mode",
+				description: "Switch between plan and act modes",
+				section: "customize",
+				icon: "map",
+				provider: "cline",
+				action: "execute",
+				keywords: ["plan", "act", "mode", "cline"],
+			},
+		];
+	}
 
-	// Track last user input to filter out echoed text from Cline
-	private _lastUserInput: string = "";
-
-	async discoverCli(): Promise<CliDiscoveryResult> {
-		const extensionPath = this._findVSCodeExtensionCli();
-		if (extensionPath) {
-			return { found: true, path: extensionPath };
-		}
-
-		const configuredPath = this._getConfiguredPath();
-		const found = await this._validateCliPath(configuredPath);
-
+	/**
+	 * Create a new Cline session with provider-specific fields.
+	 */
+	protected _createSession(panelId: string): ClineSessionState {
 		return {
-			found,
-			path: configuredPath,
-			installCommand: "npm install -g cline",
+			...super._createSession(panelId),
+			activeToolCalls: new Map(),
+			completedToolCalls: new Set(),
+			lastUsageStats: null,
+			lastUserInput: "",
+			askReceived: false,
+			jsonBuffer: [],
 		};
 	}
 
+	/**
+	 * Override clearSession to clear all Cline-specific state
+	 */
+	clearSession(panelId?: string): void {
+		super.clearSession(panelId);
+
+		if (panelId) {
+			const session = this._panelSessions.get(panelId) as ClineSessionState | undefined;
+			if (session) {
+				session.activeToolCalls.clear();
+				session.completedToolCalls.clear();
+				session.lastUsageStats = null;
+				session.lastUserInput = "";
+				session.askReceived = false;
+				session.jsonBuffer = [];
+			}
+		} else {
+			for (const session of this._panelSessions.values()) {
+				const clineSession = session as ClineSessionState;
+				clineSession.activeToolCalls.clear();
+				clineSession.completedToolCalls.clear();
+				clineSession.lastUsageStats = null;
+				clineSession.lastUserInput = "";
+				clineSession.askReceived = false;
+				clineSession.jsonBuffer = [];
+			}
+		}
+	}
+
+	async discoverCli(): Promise<CliDiscoveryResult> {
+		return this._discoverCliCommon();
+	}
+
 	getCliPath(): string {
-		const extensionPath = this._findVSCodeExtensionCli();
-		return extensionPath || this._getConfiguredPath();
+		return this._getCliPathCommon();
+	}
+
+	protected _getCliCommandName(): string {
+		return 'cline';
+	}
+
+	protected _getConfiguredCliPath(): string {
+		const config = vscode.workspace.getConfiguration("mysti");
+		return config.get<string>("clinePath", "cline");
+	}
+
+	protected _getAdditionalSearchPaths(): string[] {
+		const paths: string[] = [];
+		const extensionCli = this._findVSCodeExtensionCli();
+		if (extensionCli) {
+			paths.push(extensionCli);
+		}
+		return paths;
 	}
 
 	async getAuthConfig(): Promise<AuthConfig> {
@@ -125,16 +238,24 @@ export class ClineProvider extends BaseCliProvider {
 	}
 
 	async checkAuthentication(): Promise<AuthStatus> {
-		const auth = await this.getAuthConfig();
-		if (!auth.isAuthenticated) {
-			return {
-				authenticated: false,
-				error:
-					"Not authenticated. Please configure your API key in Cline settings.",
-			};
+		// Check if Cline data directory exists -- proves user has run cline auth before.
+		// Auth config lives in the Cline core gRPC service which may not be running,
+		// so we check for the data dir as a proxy. Runtime errors handle actual failures.
+		const clineDataDir = path.join(os.homedir(), '.cline', 'data');
+		if (fs.existsSync(clineDataDir)) {
+			return { authenticated: true, user: 'Cline CLI' };
 		}
 
-		return { authenticated: true };
+		// Fallback: check VSCode extension API key setting
+		const auth = await this.getAuthConfig();
+		if (auth.isAuthenticated) {
+			return { authenticated: true };
+		}
+
+		return {
+			authenticated: false,
+			error: 'Not authenticated. Run "cline auth" in your terminal to configure a provider.'
+		};
 	}
 
 	getAuthCommand(): string {
@@ -145,8 +266,19 @@ export class ClineProvider extends BaseCliProvider {
 		return "npm install -g cline";
 	}
 
-	protected buildCliArgs(settings: Settings, hasSession: boolean): string[] {
-		const args: string[] = ["--output-format", "json", "--verbose"];
+	protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
+		const args: string[] = ["--output-format", "json"];
+
+		// Do NOT connect to the VSCode Cline extension's Core instance.
+		// Its auth config is separate from CLI auth (configured via "cline auth").
+		// Let the CLI start its own Core so it uses the CLI-configured provider/key.
+
+		// Only add --verbose when debug mode is explicitly enabled
+		if (
+			vscode.workspace.getConfiguration("mysti").get<boolean>("debugVerbose", false)
+		) {
+			args.push("--verbose");
+		}
 
 		// Map Mysti modes to Cline modes
 		// Cline uses 'plan' (read-only) or 'act' (can make changes)
@@ -171,6 +303,10 @@ export class ClineProvider extends BaseCliProvider {
 			console.log("[Mysti] Cline: Using yolo mode (auto-approve)");
 		}
 
+		// Note: Cline CLI has no per-request model flag.
+		// The model is configured globally via "cline auth".
+		// The Mysti model dropdown for Cline is informational only.
+
 		return args;
 	}
 
@@ -187,14 +323,13 @@ export class ClineProvider extends BaseCliProvider {
 		return tokenMap[thinkingLevel];
 	}
 
-	// Buffer for accumulating multi-line JSON
-	private _jsonBuffer: string[] = [];
-
 	/**
 	 * Parse stream line from Cline CLI output
 	 * Cline outputs pretty-printed JSON (multi-line), so we need to buffer
 	 */
-	protected parseStreamLine(line: string): StreamChunk | null {
+	protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+		const clineSession = session as ClineSessionState;
+
 		if (!line.trim()) {
 			return null;
 		}
@@ -232,287 +367,453 @@ export class ClineProvider extends BaseCliProvider {
 
 		// Start of JSON object
 		if (trimmed.startsWith("{")) {
-			this._jsonBuffer = [trimmed];
+			clineSession.jsonBuffer = [trimmed];
+			// Check if this single line is a complete JSON object
+			if (this._isJsonComplete(trimmed)) {
+				try {
+					const data = JSON.parse(trimmed);
+					clineSession.jsonBuffer = [];
+					return this._handleParsedMessage(data, clineSession);
+				} catch {
+					// Not valid JSON despite balanced braces, continue buffering
+					return null;
+				}
+			}
 			return null;
 		}
 
 		// Middle/end of JSON object
-		if (this._jsonBuffer.length > 0) {
-			this._jsonBuffer.push(trimmed);
+		if (clineSession.jsonBuffer.length > 0) {
+			clineSession.jsonBuffer.push(trimmed);
 
-			// Check if we have a complete object (balanced braces)
-			const fullJson = this._jsonBuffer.join("");
-			const openBraces = (fullJson.match(/{/g) || []).length;
-			const closeBraces = (fullJson.match(/}/g) || []).length;
+			const fullJson = clineSession.jsonBuffer.join("");
 
-			if (openBraces === closeBraces) {
-				this._jsonBuffer = [];
-				try {
-					const data = JSON.parse(fullJson);
-					console.log("[Mysti] Cline: Parsed JSON type:", data.type, "say:", data.say);
-
-					// Handle Cline's "say" message format
-					if (data.type === "say") {
-						// Handle thinking/reasoning messages
-						if (data.say === "reasoning" && data.reasoning) {
-							console.log(
-								"[Mysti] Cline: Found thinking:",
-								data.reasoning.substring(0, 50),
-							);
-							return { type: "thinking", content: data.reasoning };
-						}
-
-						// Handle text messages
-						if (data.say === "text" && data.text) {
-							// Filter out echoed user input
-							const trimmedText = data.text.trim();
-							if (trimmedText === this._lastUserInput) {
-								console.log(
-									"[Mysti] Cline: Filtered echoed user input:",
-									trimmedText,
-								);
-								return null;
-							}
-							console.log(
-								"[Mysti] Cline: Found text:",
-								data.text.substring(0, 50),
-							);
-							return { type: "text", content: data.text };
-						}
-
-						// Skip all other say types (checkpoint_created, api_req_started, etc.)
-						return null;
-					}
-
-					// Handle ask type (followup questions)
-					if (data.type === "ask" && data.text) {
-						try {
-							const askData = JSON.parse(data.text);
-							if (askData.question) {
-								// Filter out echoed user input
-								const trimmedQuestion = askData.question.trim();
-								if (trimmedQuestion === this._lastUserInput) {
-									console.log(
-										"[Mysti] Cline: Filtered echoed user input in question:",
-										trimmedQuestion,
-									);
-									return null;
-								}
-								console.log("[Mysti] Cline: Found question (ask):", askData.question);
-								// Cline is waiting for user input - we need to kill the process
-								// Schedule process termination after yielding the text
-								setTimeout(() => {
-									if (this._currentProcess && !this._currentProcess.killed) {
-										console.log("[Mysti] Cline: Killing process after ask message");
-										this._currentProcess.kill('SIGTERM');
-									}
-								}, 100);
-								return { type: "text", content: askData.question };
-							}
-						} catch {
-							return null;
-						}
-					}
-
-					// Handle direct text content
-					if (data.type === "text" && data.content) {
-						// Filter out echoed user input
-						const trimmedContent = data.content.trim();
-						if (trimmedContent === this._lastUserInput) {
-							console.log(
-								"[Mysti] Cline: Filtered echoed user input in direct text:",
-								trimmedContent,
-							);
-							return null;
-						}
-						return { type: "text", content: data.content };
-					}
-
-					// Handle thinking
-					if (data.type === "thinking" && data.content) {
-						return { type: "thinking", content: data.content };
-					}
-
-					// Handle tool use
-					if (data.type === "tool_use" && data.toolCall) {
-						return {
-							type: "tool_use",
-							toolCall: {
-								id: data.toolCall.id || "",
-								name: data.toolCall.name || "",
-								input: data.toolCall.input || {},
-								status: data.toolCall.status || "running",
-							},
-						};
-					}
-
-					// Handle tool result
-					if (data.type === "tool_result" && data.toolCall) {
-						return {
-							type: "tool_result",
-							toolCall: {
-								id: data.toolCall.id || "",
-								name: data.toolCall.name || "",
-								input: {},
-								output: data.toolCall.output || "",
-								status: data.toolCall.status || "completed",
-							},
-						};
-					}
-
-					// Handle errors
-					if (data.type === "error") {
-						return {
-							type: "error",
-							content: data.error || data.message || "Unknown error",
-						};
-					}
-
-					// Handle done - check for usage data
-					if (data.type === "done" || data.type === "complete") {
-						// Check if usage data is embedded in the done message
-						if (data.usage || data.tokens) {
-							const usage = data.usage || data.tokens;
-							this._lastUsageStats = {
-								input_tokens: usage.input_tokens || usage.inputTokens || 0,
-								output_tokens: usage.output_tokens || usage.outputTokens || 0,
-								cache_creation_input_tokens: usage.cache_creation_input_tokens || usage.cacheCreationInputTokens,
-								cache_read_input_tokens: usage.cache_read_input_tokens || usage.cacheReadInputTokens,
-							};
-							console.log("[Mysti] Cline: Stored usage from done message:", this._lastUsageStats);
-						}
-						return { type: "done" };
-					}
-
-					// Handle explicit usage messages
-					if (data.type === "usage" && data.tokens) {
-						this._lastUsageStats = {
-							input_tokens: data.tokens.input_tokens || data.tokens.inputTokens || 0,
-							output_tokens: data.tokens.output_tokens || data.tokens.outputTokens || 0,
-							cache_creation_input_tokens: data.tokens.cache_creation_input_tokens || data.tokens.cacheCreationInputTokens,
-							cache_read_input_tokens: data.tokens.cache_read_input_tokens || data.tokens.cacheReadInputTokens,
-						};
-						console.log("[Mysti] Cline: Stored usage from usage message:", this._lastUsageStats);
-						return null; // Usage is not streamed to UI, just stored
-					}
-
-					// Skip all other JSON state messages
-					return null;
-				} catch (e) {
-					console.error("[Mysti] Cline: Failed to parse JSON:", e);
-					this._jsonBuffer = [];
-					return null;
-				}
+			// Use brace-depth tracking to detect complete JSON objects
+			if (!this._isJsonComplete(fullJson)) {
+				return null;
 			}
 
-			return null;
+			try {
+				const data = JSON.parse(fullJson);
+				clineSession.jsonBuffer = [];
+				return this._handleParsedMessage(data, clineSession);
+			} catch {
+				// JSON not yet complete despite balanced braces, continue buffering
+				return null;
+			}
 		}
 
 		return null;
 	}
 
 	/**
-	 * Get stored usage stats
+	 * Check if a JSON string has balanced braces (outside of string literals).
+	 * Returns true when brace depth returns to zero.
 	 */
-	getStoredUsage(): {
+	private _isJsonComplete(json: string): boolean {
+		let depth = 0;
+		let inString = false;
+		let escape = false;
+
+		for (const ch of json) {
+			if (escape) {
+				escape = false;
+				continue;
+			}
+			if (ch === '\\' && inString) {
+				escape = true;
+				continue;
+			}
+			if (ch === '"') {
+				inString = !inString;
+				continue;
+			}
+			if (!inString) {
+				if (ch === '{') { depth++; }
+				else if (ch === '}') { depth--; }
+			}
+		}
+
+		return depth === 0 && json.includes('{');
+	}
+
+	/**
+	 * Handle a fully parsed JSON message from Cline CLI
+	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private _handleParsedMessage(data: Record<string, any>, session: ClineSessionState): StreamChunk | null {
+		console.log("[Mysti] Cline: Parsed JSON type:", data.type, "say:", data.say);
+
+		// Handle Cline's "say" message format
+		if (data.type === "say") {
+			// Handle thinking/reasoning messages
+			if (data.say === "reasoning" && data.reasoning) {
+				console.log(
+					"[Mysti] Cline: Found thinking:",
+					data.reasoning.substring(0, 50),
+				);
+				return { type: "thinking", content: data.reasoning };
+			}
+
+			// Handle text messages -- Cline streams the model's reasoning as say:"text"
+			// events. The actual user-facing answer arrives as say:"completion_result".
+			// Show reasoning as thinking so Mysti only displays the clean answer.
+			if (data.say === "text" && data.text) {
+				// Filter out echoed user input
+				if (data.text.trim() === session.lastUserInput) {
+					return null;
+				}
+				return { type: "thinking", content: data.text };
+			}
+
+			// Handle completion_result (Cline's final clean answer)
+			if (data.say === "completion_result" && data.text) {
+				console.log("[Mysti] Cline: Got completion_result:", data.text.substring(0, 100));
+				return { type: "text", content: data.text };
+			}
+
+			// Surface error messages from Cline
+			if (data.say === "error" && data.text) {
+				console.log("[Mysti] Cline: Error from say message:", data.text.substring(0, 100));
+				return { type: "error", content: data.text };
+			}
+
+			// Detect streaming failures embedded in api_req_started events
+			if (data.say === "api_req_started" && data.text) {
+				try {
+					const reqData = JSON.parse(data.text);
+					if (reqData.streamingFailedMessage) {
+						const failData = typeof reqData.streamingFailedMessage === 'string'
+							? JSON.parse(reqData.streamingFailedMessage)
+							: reqData.streamingFailedMessage;
+						if (failData.message) {
+							const modelInfo = failData.modelId ? ` (model: ${failData.modelId})` : '';
+							console.log("[Mysti] Cline: Streaming failed:", failData.message);
+							return { type: "error", content: failData.message + modelInfo };
+						}
+					}
+				} catch {
+					// Not parseable, ignore
+				}
+			}
+
+			// Skip all other say types (checkpoint_created, error_retry, etc.)
+			return null;
+		}
+
+		if (data.type === "ask" && data.ask === "completion_result") {
+			// Cline asks user to accept/reject -- treat as end of response
+			session.askReceived = true;
+			return null;
+		}
+
+		// Handle ask type (followup questions, API errors)
+		if (data.type === "ask" && data.text) {
+			try {
+				const askData = JSON.parse(data.text);
+
+				// Handle API request failures (e.g. missing API key, model errors)
+				if (data.ask === "api_req_failed" && askData.message) {
+					const modelInfo = askData.modelId ? ` (model: ${askData.modelId})` : '';
+					console.log("[Mysti] Cline: API request failed:", askData.message);
+					session.askReceived = true;
+					return { type: "error", content: askData.message + modelInfo };
+				}
+
+				if (askData.question) {
+					// Filter out echoed user input
+					if (askData.question.trim() === session.lastUserInput) {
+						return null;
+					}
+					console.log("[Mysti] Cline: Found question (ask):", askData.question);
+					// Signal that Cline is waiting for user input;
+					// sendMessage will handle process termination
+					session.askReceived = true;
+					// Convert to structured ask_user_question chunk
+					return {
+						type: 'ask_user_question',
+						askUserQuestion: {
+							toolCallId: `cline-ask-${Date.now()}`,
+							questions: [{
+								question: String(askData.question),
+								header: 'Question',
+								options: Array.isArray(askData.options) ? askData.options.map((o: Record<string, unknown>) => ({
+									label: String(o.label || o),
+									description: String(o.description || '')
+								})) : [
+									{ label: 'Yes', description: 'Accept' },
+									{ label: 'No', description: 'Decline' }
+								],
+								multiSelect: false
+							}]
+						}
+					};
+				}
+			} catch {
+				// Non-JSON ask text -- check for known ask types
+				if (data.ask === "api_req_failed") {
+					session.askReceived = true;
+					return { type: "error", content: data.text };
+				}
+				return null;
+			}
+		}
+
+		// Handle direct text content
+		if (data.type === "text" && data.content) {
+			if (data.content.trim() === session.lastUserInput) {
+				return null;
+			}
+			return { type: "text", content: data.content };
+		}
+
+		// Handle thinking
+		if (data.type === "thinking" && data.content) {
+			return { type: "thinking", content: data.content };
+		}
+
+		// Handle tool use (with deduplication)
+		if (data.type === "tool_use" && data.toolCall) {
+			const toolId = data.toolCall.id || "";
+			if (session.completedToolCalls.has(toolId)) {
+				return null;
+			}
+			session.activeToolCalls.set(toolId, {
+				id: toolId,
+				name: data.toolCall.name || "",
+				inputJson: JSON.stringify(data.toolCall.input || {}),
+			});
+			return {
+				type: "tool_use",
+				toolCall: {
+					id: toolId,
+					name: data.toolCall.name || "",
+					input: data.toolCall.input || {},
+					status: data.toolCall.status || "running",
+				},
+			};
+		}
+
+		// Handle tool result (with deduplication)
+		if (data.type === "tool_result" && data.toolCall) {
+			const toolId = data.toolCall.id || "";
+			if (session.completedToolCalls.has(toolId)) {
+				return null;
+			}
+			session.completedToolCalls.add(toolId);
+			session.activeToolCalls.delete(toolId);
+			return {
+				type: "tool_result",
+				toolCall: {
+					id: toolId,
+					name: data.toolCall.name || "",
+					input: {},
+					output: data.toolCall.output || "",
+					status: data.toolCall.status || "completed",
+				},
+			};
+		}
+
+		// Handle errors
+		if (data.type === "error") {
+			return {
+				type: "error",
+				content: data.error || data.message || "Unknown error",
+			};
+		}
+
+		// Handle done - store usage data but don't yield done
+		// (sendMessage will emit the single authoritative done event)
+		if (data.type === "done" || data.type === "complete") {
+			if (data.usage || data.tokens) {
+				const usage = data.usage || data.tokens;
+				session.lastUsageStats = {
+					input_tokens: usage.input_tokens || usage.inputTokens || 0,
+					output_tokens: usage.output_tokens || usage.outputTokens || 0,
+					cache_creation_input_tokens: usage.cache_creation_input_tokens || usage.cacheCreationInputTokens,
+					cache_read_input_tokens: usage.cache_read_input_tokens || usage.cacheReadInputTokens,
+				};
+			}
+			return null;
+		}
+
+		// Handle explicit usage messages
+		if (data.type === "usage" && data.tokens) {
+			session.lastUsageStats = {
+				input_tokens: data.tokens.input_tokens || data.tokens.inputTokens || 0,
+				output_tokens: data.tokens.output_tokens || data.tokens.outputTokens || 0,
+				cache_creation_input_tokens: data.tokens.cache_creation_input_tokens || data.tokens.cacheCreationInputTokens,
+				cache_read_input_tokens: data.tokens.cache_read_input_tokens || data.tokens.cacheReadInputTokens,
+			};
+			return null;
+		}
+
+		// Skip all other JSON state messages
+		return null;
+	}
+
+	/**
+	 * Get stored usage stats for a specific panel session
+	 */
+	getStoredUsage(panelId?: string): {
 		input_tokens: number;
 		output_tokens: number;
 		cache_creation_input_tokens?: number;
 		cache_read_input_tokens?: number;
 	} | null {
-		const usage = this._lastUsageStats;
-		this._lastUsageStats = null;
+		const session = this._getSession(panelId) as ClineSessionState;
+		const usage = session.lastUsageStats;
+		session.lastUsageStats = null;
 		console.log("[Mysti] Cline: getStoredUsage returning:", usage);
 		return usage;
 	}
 
 	/**
-	 * Override sendMessage to pass prompt as CLI argument (not stdin)
-	 * NOTE: Cline manages its own conversation history, so we only send current message + context
+	 * Override sendMessage to pass prompt as CLI argument (not stdin).
+	 * Each Cline CLI invocation is a fresh process, so conversation history
+	 * is included in the prompt via buildPromptAsync.
 	 */
 	async *sendMessage(
 		content: string,
 		context: ContextItem[],
 		settings: Settings,
-		_conversation: Conversation | null, // Unused - Cline manages its own history
+		conversation: Conversation | null,
 		persona?: import("../base/IProvider").PersonaConfig,
 		panelId?: string,
-		providerManager?: any,
-		agentConfig?: any,
+		providerManager?: unknown,
+		agentConfig?: AgentConfiguration,
 	): AsyncGenerator<StreamChunk> {
+		const session = this._getSession(panelId) as ClineSessionState;
+
+		// Reset per-message state from any previous interrupted message
+		session.jsonBuffer = [];
+		session.askReceived = false;
+
 		const cliPath = this.getCliPath();
-		const baseArgs = this.buildCliArgs(settings, this.hasSession());
+		const baseArgs = this.buildCliArgs(settings, session);
 
 		// Store user input to filter out echoed text from Cline's response
-		this._lastUserInput = content.trim();
+		session.lastUserInput = content.trim();
 
-		// Build prompt WITHOUT conversation history (Cline manages its own)
-		// Pass null for conversation to skip history formatting
+		// Include conversation history since each Cline CLI invocation is a
+		// fresh process with no memory of prior turns
 		const fullPrompt = await this.buildPromptAsync(
 			content,
 			context,
-			null,
+			conversation,
 			settings,
 			persona,
 			agentConfig,
 		);
 
-		// For Cline, pass prompt as argument, not via stdin
-		const args = [...baseArgs, fullPrompt];
+		console.log(`[Mysti] Cline: Prompt length: ${fullPrompt.length} chars, preview: ${fullPrompt.substring(0, 200)}...`);
+
+		// Pass prompt as CLI argument unless it exceeds OS limits (~256KB on macOS)
+		const MAX_ARG_LENGTH = 200_000;
+		const useStdin = fullPrompt.length > MAX_ARG_LENGTH;
+		const args = useStdin ? [...baseArgs, "-"] : [...baseArgs, fullPrompt];
+
+		if (useStdin) {
+			console.log(`[Mysti] Cline: Prompt too long for CLI arg (${fullPrompt.length} chars), using stdin`);
+		}
+
+		// Declare outside try so finally block can access for cleanup
+		const stderrRef = { output: "" };
+		const stderrHandler = (data: Buffer) => {
+			const text = data.toString();
+			stderrRef.output += text;
+			console.log("[Mysti] Cline stderr:", text);
+		};
 
 		try {
-			const workspaceFolders = (await import("vscode")).workspace
-				.workspaceFolders;
+			const workspaceFolders = vscode.workspace.workspaceFolders;
 			const cwd = workspaceFolders
 				? workspaceFolders[0].uri.fsPath
 				: process.cwd();
 
-			console.log("[Mysti] Cline: Starting CLI with args:", args);
+			console.log("[Mysti] Cline: Starting CLI");
 			console.log("[Mysti] Cline: Working directory:", cwd);
 
-			const { spawn } = await import("child_process");
-			this._currentProcess = spawn(cliPath, args, {
+			// SECURITY: Never use shell mode for Cline -- the user prompt is passed
+			// as a CLI argument which is fundamentally incompatible with shell: true
+			session.process = spawn(cliPath, args, {
 				cwd,
-				env: process.env,
-				stdio: ["ignore", "pipe", "pipe"], // Don't use stdin for Cline
+				env: getEnrichedEnv(),
+				stdio: [useStdin ? "pipe" : "ignore", "pipe", "pipe"],
+				shell: false,
 			});
+
+			// Send prompt via stdin for large prompts
+			if (useStdin && session.process.stdin) {
+				session.process.stdin.write(fullPrompt);
+				session.process.stdin.end();
+			}
 
 			// Register process
 			if (
 				panelId &&
 				providerManager &&
-				typeof providerManager.registerProcess === "function"
+				typeof (providerManager as ProcessTracker).registerProcess === "function"
 			) {
-				providerManager.registerProcess(panelId, this._currentProcess);
+				(providerManager as ProcessTracker).registerProcess(panelId, session.process);
 			}
 
-			// Process output
-			yield* this.processStream("");
+			// Capture stderr for error reporting and auth error detection
+			if (session.process.stderr) {
+				session.process.stderr.on("data", stderrHandler);
+			}
 
-			// Done
-			console.log("[Mysti] Cline: Stream complete, yielding done chunk");
-			const storedUsage = this.getStoredUsage();
+			// Emit session_active so the webview shows the session indicator
+			if (!session.sessionId) {
+				session.sessionId = `cline-${panelId || 'default'}-${Date.now()}`;
+			}
+			yield { type: 'session_active' as const, sessionId: session.sessionId };
+
+			// Process output
+			yield* this.processStream(stderrRef, session);
+
+			// If Cline sent an "ask" message, terminate the process gracefully
+			if (session.askReceived && session.process && !session.process.killed) {
+				console.log("[Mysti] Cline: Killing process after ask message");
+				session.process.kill("SIGTERM");
+			}
+
+			// Yield single authoritative done chunk
+			const storedUsage = this.getStoredUsage(panelId);
 			yield storedUsage
 				? { type: "done", usage: storedUsage }
 				: { type: "done" };
-			console.log("[Mysti] Cline: Done chunk yielded");
 		} catch (error) {
-			// Yield error chunk AND done to ensure loading state is cleared
 			yield this.handleError(error);
-			// Always yield done after error to hide loading animation
 			yield { type: "done" };
 		} finally {
-			if (this._currentProcess && !this._currentProcess.killed) {
-				this._currentProcess.removeAllListeners();
-				this._currentProcess.kill("SIGTERM");
+			if (session.process && !session.process.killed) {
+				try {
+					// Remove only our stderr handler -- don't strip waitForProcess listeners
+					if (session.process.stderr) {
+						session.process.stderr.removeListener("data", stderrHandler);
+					}
+					session.process.kill("SIGTERM");
+
+					// Schedule force kill if SIGTERM doesn't work
+					const processToKill = session.process;
+					setTimeout(() => {
+						if (processToKill && !processToKill.killed) {
+							console.warn("[Mysti] Cline: Force killing leaked process");
+							processToKill.kill("SIGKILL");
+						}
+					}, PROCESS_KILL_GRACE_PERIOD_MS);
+				} catch (e) {
+					console.error("[Mysti] Cline: Error cleaning up process:", e);
+				}
 			}
-			this._currentProcess = null;
+			session.process = null;
 			if (
 				panelId &&
 				providerManager &&
-				typeof providerManager.clearProcess === "function"
+				typeof (providerManager as ProcessTracker).clearProcess === "function"
 			) {
-				providerManager.clearProcess(panelId);
+				(providerManager as ProcessTracker).clearProcess(panelId);
 			}
 		}
 	}
@@ -521,14 +822,9 @@ export class ClineProvider extends BaseCliProvider {
 	 * Enhance a prompt using Cline
 	 */
 	async enhancePrompt(prompt: string): Promise<string> {
-		const { spawn } = await import("child_process");
 		const clinePath = this.getCliPath();
 
-		const enhancePrompt = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:
-
-Original prompt: "${prompt}"
-
-Enhanced prompt:`;
+		const enhancePrompt = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
 
 		return new Promise((resolve) => {
 			const args = ["--print", "--output-format", "text"];
@@ -563,11 +859,6 @@ Enhanced prompt:`;
 	}
 
 	// Private helper methods
-
-	private _getConfiguredPath(): string {
-		const config = vscode.workspace.getConfiguration("mysti");
-		return config.get<string>("clinePath", "cline");
-	}
 
 	private _findVSCodeExtensionCli(): string | null {
 		const homeDir = os.homedir();
@@ -604,12 +895,4 @@ Enhanced prompt:`;
 		return null;
 	}
 
-	private async _validateCliPath(cliPath: string): Promise<boolean> {
-		try {
-			fs.accessSync(cliPath, fs.constants.X_OK);
-			return true;
-		} catch {
-			return false;
-		}
-	}
 }

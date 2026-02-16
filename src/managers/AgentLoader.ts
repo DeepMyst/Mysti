@@ -455,7 +455,7 @@ export class AgentLoader {
    */
   private _extractList(body: string, sectionName: string): string[] | undefined {
     const section = this._extractSection(body, sectionName);
-    if (!section) return undefined;
+    if (!section) {return undefined;}
 
     const items: string[] = [];
     const lines = section.split('\n');

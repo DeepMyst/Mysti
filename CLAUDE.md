@@ -4,20 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Mysti is a VSCode extension providing a unified AI coding assistant interface supporting multiple AI backends (Claude Code CLI, OpenAI Codex CLI, Google Gemini CLI, and Cline). It features sidebar/tab chat panels, conversation persistence, multi-agent brainstorm mode (select 2 of 4 agents), permission controls, and plan selection.
+Mysti is a VSCode extension providing a unified AI coding assistant interface supporting multiple AI backends (Claude Code CLI, OpenAI Codex CLI, Google Gemini CLI, Cline, and GitHub Copilot CLI). It features sidebar/tab chat panels, conversation persistence, multi-agent brainstorm mode (select 2 of 5 agents), permission controls, plan selection, and a three-tier agent loading system for personas and skills.
 
 ## Build Commands
 
 ```bash
 npm run compile           # Production build (webpack)
 npm run watch             # Development build with watch mode
-npm run lint              # ESLint check
+npm run lint              # ESLint check (src/**/*.ts)
 npm run sync-agents       # Sync plugins from wshobson/agents repo
 npm run sync-agents:force # Force sync (ignores 24h cache)
 npx vsce package          # Package extension as .vsix
 ```
 
-Output: `dist/extension.js` from entry point `src/extension.ts`
+Output: `dist/extension.js` from entry point `src/extension.ts` (webpack bundles with ts-loader, target: node, CommonJS2).
 
 **Note:** Tests are not yet implemented (`npm run test` exists but has no test files).
 
@@ -29,6 +29,7 @@ Press `F5` in VSCode to launch Extension Development Host for debugging. Set bre
 
 - `npm install -g @anthropic-ai/claude-code` (Claude Code)
 - `npm install -g @google/gemini-cli` (Gemini)
+- `npm install -g @github/copilot-cli` (GitHub Copilot)
 - Codex CLI (OpenAI - follow their installation guide)
 
 ## Architecture
@@ -36,9 +37,9 @@ Press `F5` in VSCode to launch Extension Development Host for debugging. Set bre
 ### Core Pattern: Manager + Provider Facades
 
 ```
-extension.ts (entry)
+extension.ts (entry — activate() wires everything)
     │
-    ├── Managers (business logic)
+    ├── Managers (business logic, src/managers/)
     │   ├── ContextManager        - File/selection tracking
     │   ├── ConversationManager   - Message persistence via globalState
     │   ├── ProviderManager       - Provider registry facade
@@ -53,49 +54,59 @@ extension.ts (entry)
     │   ├── TelemetryManager      - Anonymous usage analytics
     │   └── AutocompleteManager   - Autocomplete functionality
     │
-    └── ChatViewProvider (UI coordinator)
+    └── ChatViewProvider (UI coordinator, src/providers/ChatViewProvider.ts)
             │
-            └── Providers (CLI integrations)
-                ├── ClaudeCodeProvider (extends BaseCliProvider)
-                ├── CodexProvider (extends BaseCliProvider)
-                ├── GeminiProvider (extends BaseCliProvider)
-                └── ClineProvider (extends BaseCliProvider)
+            ├── Webview UI (src/webview/webviewContent.ts — embedded HTML/CSS/JS)
+            │
+            └── Providers (CLI integrations, src/providers/<name>/)
+                ├── ClaudeCodeProvider  (extends BaseCliProvider)
+                ├── CodexProvider       (extends BaseCliProvider)
+                ├── GeminiProvider      (extends BaseCliProvider)
+                ├── ClineProvider       (extends BaseCliProvider)
+                └── CopilotProvider     (extends BaseCliProvider)
 ```
 
 ### Key Design Decisions
 
 - **Per-panel isolation**: Each webview panel (sidebar or tab) has independent state, conversation, and child process
-- **CLI-based providers**: Spawn `claude`/`codex`/`gemini`/`cline` CLI with `--output-format stream-json`, parse line-delimited JSON events
+- **CLI-based providers**: Spawn `claude`/`codex`/`gemini`/`cline`/`copilot` CLI with `--output-format stream-json`, parse line-delimited JSON events
 - **AsyncGenerator streaming**: Providers yield `StreamChunk` items for real-time response updates
 - **Webview communication**: Extension ↔ webview via `postMessage()` with typed `WebviewMessage`
+- **MCP Permission Server** (`src/mcp/permissionServer.ts`): Intermediary between Claude Code CLI and VSCode for permission requests. Flow: `Claude CLI --stdin/stdout--> MCP Server --HTTP--> VSCode Extension --postMessage--> Webview UI`
 
 ### Provider Data Flow
 
-1. User message → ChatViewProvider._handleMessage()
-2. Context collection → ContextManager.getContext()
-3. Provider selection → ProviderManager._getActiveProvider()
-4. CLI spawn → Provider.sendMessage() returns AsyncGenerator<StreamChunk>
-5. Stream parsing → parseStreamLine() yields chunks (text, thinking, tool_use, etc.)
-6. UI update → postMessage() back to webview
+1. User message → `ChatViewProvider._handleMessage()`
+2. Context collection → `ContextManager.getContext()`
+3. Provider selection → `ProviderManager._getActiveProvider()`
+4. CLI spawn → `Provider.sendMessage()` returns `AsyncGenerator<StreamChunk>`
+5. Stream parsing → `parseStreamLine()` yields chunks (text, thinking, tool_use, etc.)
+6. UI update → `postMessage()` back to webview
+
+### Brainstorm Mode Data Flow
+
+1. User enables brainstorm (2 of 5 agents selected via settings)
+2. `BrainstormManager` dispatches message to both agents in parallel
+3. Quick mode: Direct synthesis from both responses. Full mode: Agents review each other's responses (configurable rounds)
+4. Synthesis agent combines into final response
 
 ## Key Types (src/types.ts)
 
 - `StreamChunk` - Events from provider CLI (text, thinking, tool_use, tool_result, error, done)
 - `WebviewMessage` - Extension ↔ webview communication
 - `Message` / `Conversation` - Persistent chat data
-- `OperationMode` - "ask-before-edit" | "edit-automatically" | "plan"
+- `OperationMode` - "default" | "ask-before-edit" | "edit-automatically" | "quick-plan" | "detailed-plan"
 - `AccessLevel` - "read-only" | "ask-permission" | "full-access"
+- `ProviderType` / `AgentType` - "claude-code" | "openai-codex" | "google-gemini" | "cline" | "github-copilot"
 
 ## Constants (src/constants.ts)
 
-System-wide constants for timeouts, limits, and configuration:
-
-- `PROCESS_TIMEOUT_MS` - CLI process timeout (5 minutes)
-- `PROCESS_KILL_GRACE_PERIOD_MS` - Grace period before force kill (5 seconds)
-- `PROCESS_FORCE_KILL_TIMEOUT_MS` - Final force kill timeout (10 seconds)
-- `AUTH_POLL_INTERVAL_MS` / `AUTH_POLL_MAX_ATTEMPTS` - Authentication polling (2s interval, 60 attempts = 2 min)
-- `PERMISSION_DEFAULT_TIMEOUT_S` / `PERMISSION_MAX_TIMEOUT_S` - Permission timeouts (30s default, 5 min max)
-- `MAX_CONVERSATION_MESSAGES` - Maximum messages in history (10)
+- `PROCESS_TIMEOUT_MS` — 5 minutes
+- `PROCESS_KILL_GRACE_PERIOD_MS` — 5 seconds
+- `PROCESS_FORCE_KILL_TIMEOUT_MS` — 10 seconds
+- `AUTH_POLL_INTERVAL_MS` / `AUTH_POLL_MAX_ATTEMPTS` — 2s interval, 60 attempts (2 min total)
+- `PERMISSION_DEFAULT_TIMEOUT_S` / `PERMISSION_MAX_TIMEOUT_S` — 30s default, 5 min max
+- `MAX_CONVERSATION_MESSAGES` — 10
 
 ## Conventions
 
@@ -103,66 +114,39 @@ System-wide constants for timeouts, limits, and configuration:
 - Console logging with `[Mysti]` prefix
 - Managers are single-responsibility classes
 - New providers extend `BaseCliProvider` and implement `ICliProvider`
+- All source files carry the BUSL-1.1 license header
+- TypeScript strict mode enabled, target ES2022
 
 ## VSCode Integration Points
 
 - View: `mysti.chatView` (webview sidebar)
-- Commands:
-  - `mysti.openChat` - Open sidebar chat
-  - `mysti.newConversation` - Start new conversation
-  - `mysti.addToContext` - Add file/selection to context
-  - `mysti.clearContext` - Clear context
-  - `mysti.openInNewTab` - Open chat in editor tab
-  - `mysti.debugSetup` / `mysti.debugSetupFailure` - Debug CLI setup flow
-- Keybindings:
-  - `Ctrl+Shift+M` (Mac: `Cmd+Shift+M`) - Open chat
-  - `Ctrl+Shift+N` (Mac: `Cmd+Shift+N`) - Open in new tab
-- Settings namespace: `mysti.*` (18+ settings covering provider, mode, access, brainstorm, agents, permissions)
+- Commands: `mysti.openChat`, `mysti.newConversation`, `mysti.addToContext`, `mysti.clearContext`, `mysti.openInNewTab`, `mysti.debugSetup`, `mysti.debugSetupFailure`
+- Keybindings: `Ctrl+Shift+M` / `Cmd+Shift+M` (open chat), `Ctrl+Shift+N` / `Cmd+Shift+N` (new tab)
+- Settings namespace: `mysti.*` (25+ settings covering provider, mode, access, brainstorm, agents, permissions)
+- Custom language IDs: `claude-prompt`, `prompt-markdown`, `gpt-prompt`, `gemini-prompt`, `codex-prompt`
+- Activation: `onStartupFinished` + `workspaceContains` triggers for config files (`.mysti/`, `.claude/`, `.gemini/`, `.openai/`, `claude.md`, `gemini.yaml`, `codex.json`, `agents.yaml`)
 
 ## Webview UI
 
 Two large files handle the UI:
 
-- `src/providers/ChatViewProvider.ts` (~88KB) - Main webview coordinator, handles all message routing between extension and webview
-- `src/webview/webviewContent.ts` - Embedded HTML/CSS/JS for the chat interface
+- `src/providers/ChatViewProvider.ts` — Main webview coordinator, handles all message routing between extension and webview
+- `src/webview/webviewContent.ts` — Embedded HTML/CSS/JS for the chat interface
 
-Libraries:
-- Marked.js for markdown rendering
-- Prism.js for syntax highlighting
-- Mermaid.js for diagrams
-- Resources loaded from `resources/` folder
+Libraries loaded from `resources/` folder: Marked.js (markdown), Prism.js (syntax highlighting), Mermaid.js (diagrams).
 
 ## Extension Points
 
 ### Adding a New Provider
 
 1. Create class extending `BaseCliProvider` in `src/providers/newprovider/`
-2. Implement abstract methods: `discoverCli()`, `getCliPath()`, `buildCliArgs()`, `parseStreamLine()`, `getThinkingTokens()`
-3. Register in `src/providers/ProviderRegistry.ts`
+2. Implement abstract methods: `discoverCli()`, `getCliPath()`, `buildCliArgs()`, `parseStreamLine()`, `getAuthConfig()`, `checkAuthentication()`, `getAuthCommand()`, `getInstallCommand()`
+3. Register in `src/providers/ProviderRegistry.ts` (add to `_registerBuiltInProviders()`)
 4. Add to `ProviderType` union in `src/types.ts`
-5. Add configuration options in `package.json`
-
-## Cline Provider Notes
-
-Cline is an autonomous coding agent that can use the CLI, editor, and browser. Key differences from other providers:
-
-**Installation**: Cline is primarily distributed as a VSCode extension (`ext install saoudrizwan.claude-dev`).
-
-**CLI Path**: The provider looks for the Cline binary in:
-- VSCode extensions directory (`~/.vscode/extensions/saoudrizwan.claude-dev-*/`)
-- Configured path via `mysti.clinePath` setting
-
-**Authentication**: Cline uses API keys configured in its own settings (Anthropic API, OpenRouter, etc.). The Mysti provider checks if an API key is configured.
-
-**Streaming Format**: Cline uses a similar stream-json format to Claude Code, making integration straightforward.
-
-**Models**: Cline supports the same Claude models (Sonnet 4.5, Opus 4.5, Haiku 4.5) as well as other providers via OpenRouter.
-
-**File**: `src/providers/cline/ClineProvider.ts`
+5. Add agent style entry in `BrainstormManager.ts` `AGENT_STYLES` record
+6. Add configuration options in `package.json` (`mysti.*` settings)
 
 ### Adding a New Persona (Markdown-based)
-
-**Current count**: 16 core personas in `resources/agents/core/personas/`
 
 Create a markdown file in one of the agent source directories (priority order):
 
@@ -172,9 +156,9 @@ Create a markdown file in one of the agent source directories (priority order):
 
 **Three-tier loading system** (managed by AgentLoader):
 
-- **Tier 1 (Metadata)**: Always loaded for UI display - id, name, description, icon, category
-- **Tier 2 (Instructions)**: Loaded on selection for prompt injection - instructions, priorities, practices
-- **Tier 3 (Full)**: Loaded on demand - complete content including code examples
+- **Tier 1 (Metadata)**: Always loaded for UI display — id, name, description, icon, category
+- **Tier 2 (Instructions)**: Loaded on selection for prompt injection — instructions, priorities, practices
+- **Tier 3 (Full)**: Loaded on demand — complete content including code examples
 
 **Markdown format:**
 
@@ -212,38 +196,10 @@ Main instructions for the AI...
 
 ### Adding a New Skill (Markdown-based)
 
-**Current count**: 12 core skills in `resources/agents/core/skills/`
+Create a markdown file in one of the agent source directories (same priority order as personas, under `skills/` instead of `personas/`).
 
-Create a markdown file in one of the agent source directories (priority order):
-
-1. **Core** (bundled): `resources/agents/core/skills/my-skill.md`
-2. **User** (home dir): `~/.mysti/agents/skills/my-skill.md`
-3. **Workspace** (project): `.mysti/agents/skills/my-skill.md`
-
-**Markdown format:**
-
-```markdown
----
-id: my-skill
-name: My Skill
-description: Brief description
-icon: ⚡
-category: workflow
-activationTriggers:
-  - trigger1
----
-
-## Instructions
-
-Detailed instructions for the AI when this skill is enabled...
-```
-
-**Syncing agents**: Run `npm run sync-agents` to fetch curated plugins from the `wshobson/agents` GitHub repository into `resources/agents/plugins/`. The script caches for 24 hours; use `--force` to bypass.
+**Syncing agents**: Run `npm run sync-agents` to fetch curated plugins from the `wshobson/agents` GitHub repository into `resources/agents/plugins/`. Caches for 24 hours; use `--force` to bypass.
 
 ### Legacy: Static Personas/Skills (Fallback)
 
-For backward compatibility, static definitions still exist:
-
-1. Add ID to `DeveloperPersonaId` in `src/types.ts`
-2. Define persona in `DEVELOPER_PERSONAS` record in `src/providers/base/IProvider.ts`
-3. Add icon to `resources/icons/`
+For backward compatibility, static definitions exist in `src/providers/base/IProvider.ts` (`PERSONA_PROMPTS`, `DEVELOPER_PERSONAS`, `DEVELOPER_SKILLS`). The dynamic markdown-based system takes precedence when `AgentContextManager` is set on a provider.

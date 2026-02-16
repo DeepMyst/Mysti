@@ -17,7 +17,7 @@ import * as path from 'path';
 import type { ContextItem } from '../types';
 
 export class ContextManager {
-  private _context: ContextItem[] = [];
+  private _panelContexts: Map<string, ContextItem[]> = new Map();
   private _autoContext: boolean = true;
   private _extensionContext: vscode.ExtensionContext;
 
@@ -26,8 +26,21 @@ export class ContextManager {
     this._autoContext = vscode.workspace.getConfiguration('mysti').get('autoContext', true);
   }
 
-  public getContext(): ContextItem[] {
-    return [...this._context];
+  /**
+   * Get the context array for a specific panel, creating if needed
+   */
+  private _getPanelContext(panelId: string): ContextItem[] {
+    let ctx = this._panelContexts.get(panelId);
+    if (!ctx) {
+      ctx = [];
+      this._panelContexts.set(panelId, ctx);
+    }
+    return ctx;
+  }
+
+  public getContext(panelId?: string): ContextItem[] {
+    const id = panelId || 'default';
+    return [...this._getPanelContext(id)];
   }
 
   public isAutoContextEnabled(): boolean {
@@ -38,9 +51,12 @@ export class ContextManager {
     this._autoContext = enabled;
   }
 
-  public async addFileToContext(filePath: string): Promise<ContextItem | null> {
+  public async addFileToContext(filePath: string, panelId?: string): Promise<ContextItem | null> {
+    const id = panelId || 'default';
+    const ctx = this._getPanelContext(id);
+
     // Check if file already exists in context
-    if (this._context.find(c => c.path === filePath && c.type === 'file')) {
+    if (ctx.find((c: ContextItem) => c.path === filePath && c.type === 'file')) {
       return null;
     }
 
@@ -56,7 +72,7 @@ export class ContextManager {
         language
       };
 
-      this._context.push(item);
+      ctx.push(item);
       return item;
     } catch (error) {
       console.error(`Failed to read file: ${filePath}`, error);
@@ -69,8 +85,12 @@ export class ContextManager {
     content: string,
     startLine: number,
     endLine: number,
-    language?: string
+    language?: string,
+    panelId?: string
   ): Promise<ContextItem> {
+    const id = panelId || 'default';
+    const ctx = this._getPanelContext(id);
+
     const item: ContextItem = {
       id: this._generateId(),
       type: 'selection',
@@ -81,16 +101,16 @@ export class ContextManager {
       language: language || this._getLanguageFromPath(filePath)
     };
 
-    this._context.push(item);
+    ctx.push(item);
     return item;
   }
 
-  public async addFolderToContext(folderPath: string): Promise<ContextItem[]> {
+  public async addFolderToContext(folderPath: string, panelId?: string): Promise<ContextItem[]> {
     const items: ContextItem[] = [];
     const files = await this._getFilesInFolder(folderPath);
 
     for (const file of files.slice(0, 20)) { // Limit to 20 files
-      const item = await this.addFileToContext(file);
+      const item = await this.addFileToContext(file, panelId);
       if (item) {
         items.push(item);
       }
@@ -99,36 +119,51 @@ export class ContextManager {
     return items;
   }
 
-  public removeFromContext(id: string) {
-    this._context = this._context.filter(c => c.id !== id);
+  public removeFromContext(id: string, panelId?: string) {
+    const pid = panelId || 'default';
+    const ctx = this._getPanelContext(pid);
+    const filtered = ctx.filter((c: ContextItem) => c.id !== id);
+    this._panelContexts.set(pid, filtered);
   }
 
-  public clearContext() {
-    this._context = [];
+  public clearContext(panelId?: string) {
+    const id = panelId || 'default';
+    this._panelContexts.set(id, []);
   }
 
-  public async refreshContext() {
+  /**
+   * Clean up all context for a panel (called on panel dispose)
+   */
+  public clearPanelContext(panelId: string) {
+    this._panelContexts.delete(panelId);
+  }
+
+  public async refreshContext(panelId?: string) {
+    const id = panelId || 'default';
+    const ctx = this._getPanelContext(id);
     // Refresh content for all file items
-    for (const item of this._context) {
+    for (const item of ctx) {
       if (item.type === 'file') {
         try {
           item.content = await fs.promises.readFile(item.path, 'utf-8');
         } catch (error) {
           // File might have been deleted, remove from context
-          this.removeFromContext(item.id);
+          this.removeFromContext(item.id, panelId);
         }
       }
     }
   }
 
-  public formatContextForPrompt(): string {
-    if (this._context.length === 0) {
+  public formatContextForPrompt(panelId?: string): string {
+    const id = panelId || 'default';
+    const ctx = this._getPanelContext(id);
+    if (ctx.length === 0) {
       return '';
     }
 
     let formatted = '# Context\n\n';
 
-    for (const item of this._context) {
+    for (const item of ctx) {
       if (item.type === 'file') {
         formatted += `## File: ${item.path}\n`;
         formatted += `\`\`\`${item.language || ''}\n${item.content}\n\`\`\`\n\n`;

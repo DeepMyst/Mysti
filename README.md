@@ -1,4 +1,4 @@
-# Mysti - Your AI Coding Team (Claude, Codex, Gemini & GitHub Copilot) working together
+# Mysti - Your AI Coding Team Working Together
 
 <p align="center">
   <img src="resources/Mysti-Logo.png" alt="Mysti Logo" width="128" height="128">
@@ -27,7 +27,7 @@
 
 <p align="center">
   <strong>Your AI Coding team for VSCode</strong><br>
-  <em>Use Claude Code, Codex, Gemini, or GitHub Copilot — or combine any two in Brainstorm Mode and never hit bottlenecks</em><br>
+  <em>7 AI providers — Claude Code, Codex, Gemini, Copilot, Cline, Cursor & OpenClaw — working solo or in teams</em><br>
   <em>Wisdom of the crowd where the collective intelligence of several agents outperforms a single one.</em>
 </p>
 
@@ -42,32 +42,33 @@
   <a href="#brainstorm-mode">Brainstorm</a> •
   <a href="#key-features">Features</a> •
   <a href="#quick-start">Quick Start</a> •
-  <a href="#configuration">Config</a>
+  <a href="#configuration">Config</a> •
+  <a href="#documentation">Docs</a>
 </p>
 
 ---
 
-## What's New in v0.2.2
+## What's New in v0.3.0
 
-### GitHub Copilot CLI Support
+### 7 AI Providers
 
-Mysti now supports **GitHub Copilot CLI** as a fourth provider! Access 14+ models including Claude, GPT-5, and Gemini through your GitHub Copilot subscription.
+Mysti now supports **7 AI providers** — added **Cursor**, **OpenClaw**, and **Cline** alongside Claude Code, Codex, Gemini, and GitHub Copilot. Switch between providers with one click or use `@agent` mentions to route tasks to specific AIs.
 
-**Supported Models via Copilot:**
-- **Anthropic**: Claude Sonnet 4.5, Claude Opus 4.5, Claude Haiku 4.5
-- **OpenAI**: GPT-5.2, GPT-5.1 Codex Max, GPT-5.1 Codex, GPT-5
-- **Google**: Gemini 3 Pro, Gemini 3 Flash, Gemini 2.5 Pro
+### Autonomous Mode
 
-### Improved Authentication UX
+Let the AI work independently with built-in safety controls. A three-level safety classifier (safe/caution/blocked) evaluates every operation, while a learning memory system adapts to your preferences over time. [Learn more](docs/AUTONOMOUS-MODE.md)
 
-When a provider isn't authenticated, Mysti now shows a friendly error with:
-- Clear instructions on how to authenticate
-- One-click "Open Terminal & Authenticate" button
-- Works for all providers (Claude, Codex, Gemini, Copilot)
+### @-Mention System
 
-### Better Response Formatting
+Type `@claude`, `@gemini`, or any agent name to route tasks directly. Chain agents for multi-perspective workflows: `@claude Write a sort function, then @codex optimize it`. Reference files with `@filename.ts` for instant context. [Learn more](docs/MENTIONS.md)
 
-Improved text formatting for CLI outputs with proper markdown rendering.
+### 5 Brainstorm Collaboration Strategies
+
+Brainstorm Mode now offers 5 strategies — **Quick**, **Debate**, **Red-Team**, **Perspectives**, and **Delphi** — each with role-based discussion and convergence detection. [Learn more](docs/BRAINSTORM.md)
+
+### Context Compaction
+
+Smart conversation compaction prevents context overflow. Native `/compact` support for Claude Code, with client-side summarization for other providers. [Learn more](docs/COMPACTION.md)
 
 ---
 
@@ -97,7 +98,9 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | **Codex** | Quick iterations, familiar OpenAI style |
 | **Gemini** | Fast responses, Google ecosystem integration |
 | **GitHub Copilot** | Multi-model access (Claude, GPT-5, Gemini) via GitHub subscription |
-| **Brainstorm Mode** | Any two AIs collaborate and debate solutions |
+| **Cline** | Plan/Act mode, structured task completion |
+| **Cursor** | Auto model selection, multi-model with Claude, GPT-5, Gemini |
+| **OpenClaw** | Real-time WebSocket streaming, configurable thinking levels |
 
 **Switch providers with one click. No lock-in.**
 
@@ -105,10 +108,12 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 
 | vs Copilot/Cursor | Mysti Advantage |
 |-------------------|-----------------|
-| Single AI | **Multi-agent brainstorming** — two AIs collaborate |
-| Locked to one provider | **Use any CLI** — Claude, Codex, or Gemini |
+| Single AI | **Multi-agent brainstorming** — two AIs collaborate with 5 strategies |
+| Locked to one provider | **7 providers** — Claude, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw |
 | Black box | **Full permission control** — read-only to full-access |
 | Generic responses | **16 personas** — architect, debugger, security expert... |
+| Manual workflow | **Autonomous mode** — AI works independently with safety controls |
+| No cross-agent routing | **@-mentions** — route tasks to specific agents inline |
 
 ---
 
@@ -124,21 +129,35 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 
 ## Brainstorm Mode
 
-**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose any 2 of 4 agents** (Claude, Codex, Gemini, or GitHub Copilot) from the settings panel.
+**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose any 2 of 7 agents** from the settings panel.
 
 <p align="center">
   <img src="docs/screenshots/brainstorm-mode.png" alt="Brainstorm Mode" width="700">
 </p>
 
+### 5 Collaboration Strategies
+
+| Strategy | Roles | Best For |
+|----------|-------|----------|
+| **Quick** | Direct synthesis | Simple tasks, fast answers |
+| **Debate** | Critic vs Defender | Architecture decisions, trade-offs |
+| **Red-Team** | Proposer vs Challenger | Security reviews, edge case discovery |
+| **Perspectives** | Risk Analyst vs Innovator | Greenfield design, technology selection |
+| **Delphi** | Facilitator vs Refiner | Complex problems, reaching consensus |
+
 ### Why Two AIs Beat One
 
-**Claude Code** (Anthropic), **Codex** (OpenAI), **Gemini** (Google), and **GitHub Copilot** (multi-model) have different training, different strengths, and different blind spots. When any two work together:
+**Claude Code** (Anthropic), **Codex** (OpenAI), **Gemini** (Google), **GitHub Copilot**, **Cline**, **Cursor**, and **OpenClaw** have different training, different strengths, and different blind spots. When any two work together:
 
 - Each AI catches edge cases the other might miss
 - Different perspectives lead to more robust solutions
 - **Together** they debate, challenge each other, and synthesize the best solution
 
 It's like having a senior dev and a tech lead review your code—except they actually discuss it first.
+
+### Convergence Detection
+
+During discussions, Mysti tracks agent agreement and position stability. When **auto-convergence** is enabled, the discussion exits early once agents reach consensus — saving time without sacrificing quality.
 
 ### Choose Your Team
 
@@ -149,43 +168,10 @@ Configure which two agents collaborate in the **Settings Panel**:
 | Claude + Codex | Deep analysis meets rapid iteration |
 | Claude + Gemini | Thorough reasoning with fast validation |
 | Claude + Copilot | Compare native Claude vs Copilot's multi-model approach |
-| Codex + Gemini | Quick iterations with Google ecosystem knowledge |
-| Copilot + Gemini | Multi-model flexibility with Google integration |
+| Cursor + Gemini | Multi-model flexibility with Google integration |
+| OpenClaw + Claude | WebSocket streaming with deep reasoning |
 
-### How It Works
-
-```
-Your Request
-     |
-     v
-+-----------+-----------+
-|  Agent 1  |  Agent 2  |
-| analyzes  | analyzes  |
-+-----+-----+-----+-----+
-      |           |
-      v           v
-+---------------------------+
-|   Discussion (Full Mode)  |
-| Agents review each other's|
-| solutions and debate      |
-+-----------+---------------+
-            |
-            v
-+---------------------------+
-|        Synthesis          |
-| Best ideas combined into  |
-| one refined solution      |
-+---------------------------+
-```
-
-### Two Collaboration Modes
-
-| Quick Mode | Full Mode |
-|------------|-----------|
-| Direct synthesis | Agents discuss first |
-| Both agents respond, then merge | Each AI critiques the other's solution |
-| Faster results | More thorough analysis |
-| Good for simple tasks | Best for complex architecture decisions |
+[Full Brainstorm documentation](docs/BRAINSTORM.md)
 
 ### Intelligent Plan Detection
 
@@ -200,6 +186,45 @@ When the AI presents multiple implementation approaches, Mysti automatically det
 ---
 
 ## Key Features
+
+### Autonomous Mode
+
+Let the AI work independently with configurable safety controls:
+
+- **Safety Classifier**: Three levels — safe (auto-approve), caution (mode-dependent), blocked (always deny)
+- **Three Safety Modes**: Conservative, Balanced, Aggressive
+- **Learning Memory**: Remembers your permission preferences and improves over time
+- **Continuation Modes**: Goal-based or task-queue for extended autonomous sessions
+- **Audit Trail**: Every autonomous decision is logged for review
+
+[Full Autonomous Mode documentation](docs/AUTONOMOUS-MODE.md)
+
+### @-Mention System
+
+Route tasks to specific agents and reference files inline:
+
+```
+@claude Review this code for security issues
+@src/auth.ts @gemini Suggest performance improvements for this file
+@claude Write tests, then @codex optimize them
+```
+
+- **File mentions**: `@filename` adds transient context
+- **Agent mentions**: `@agent` routes tasks to that provider
+- **Chaining**: Later agents receive earlier agents' responses as context
+
+[Full @-Mention documentation](docs/MENTIONS.md)
+
+### Context Compaction
+
+Smart conversation management that prevents context overflow:
+
+- **Automatic**: Triggers when token usage approaches the threshold (default 75%)
+- **Native support**: Claude Code uses built-in `/compact` command
+- **Client-side**: Other providers use intelligent message summarization
+- **Per-panel tracking**: Each chat panel tracks usage independently
+
+[Full Compaction documentation](docs/COMPACTION.md)
 
 ### 16 Developer Personas
 
@@ -218,6 +243,8 @@ Shape how your AI thinks. Select from specialized personas that change the AI's 
 | **Prototyper** | Quick iteration, PoCs |
 | **Refactorer** | Code quality, maintainability |
 | + 10 more... | Full-Stack, DevOps, Mentor, Designer... |
+
+[Full Personas & Skills documentation](docs/PERSONAS-AND-SKILLS.md)
 
 ---
 
@@ -283,6 +310,9 @@ Mysti works with your existing subscriptions—no additional costs!
 | **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
 | **Gemini CLI** | Google AI API or Gemini Advanced | `npm install -g @google/gemini-cli` |
 | **Codex CLI** | OpenAI API | Follow OpenAI's installation guide |
+| **Cline** | Depends on model provider | `npm install -g cline` |
+| **Cursor** | Cursor subscription | `curl https://cursor.com/install -fsS \| bash` |
+| **OpenClaw** | OpenClaw account | `npm install -g openclaw@latest && openclaw onboard --install-daemon` |
 
 You only need **one** CLI to get started. Install **any two** to unlock Brainstorm Mode.
 
@@ -313,6 +343,14 @@ copilot  # then use /login command
 # Or Gemini CLI
 npm install -g @google/gemini-cli
 gemini auth login
+
+# Or Cursor
+curl https://cursor.com/install -fsS | bash
+agent login
+
+# Or OpenClaw
+npm install -g openclaw@latest && openclaw onboard --install-daemon
+openclaw login
 ```
 
 For Brainstorm Mode, install any two CLI tools.
@@ -339,6 +377,8 @@ Mix and match behavioral modifiers:
 - **Scope Discipline** - Stay focused on the task
 - And 7 more...
 
+[Full Personas & Skills documentation](docs/PERSONAS-AND-SKILLS.md)
+
 ---
 
 ## Permission Controls
@@ -359,21 +399,56 @@ Stay in control of what the AI can do:
 {
   "mysti.defaultProvider": "claude-code",
   "mysti.brainstorm.agents": ["claude-code", "google-gemini"],
-  "mysti.brainstorm.discussionMode": "full",
+  "mysti.brainstorm.strategy": "quick",
   "mysti.accessLevel": "ask-permission"
 }
 ```
 
-### All Settings
+### Provider Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.defaultProvider` | `claude-code` | Primary AI provider (`claude-code`, `openai-codex`, `google-gemini`, `github-copilot`) |
-| `mysti.brainstorm.agents` | `["claude-code", "openai-codex"]` | Which 2 agents to use in brainstorm mode |
-| `mysti.brainstorm.discussionMode` | `quick` | `quick` or `full` |
+| `mysti.defaultProvider` | `claude-code` | Primary AI provider |
+| `mysti.claudePath` | `claude` | Path to Claude CLI |
+| `mysti.codexPath` | `codex` | Path to Codex CLI |
+| `mysti.geminiPath` | `gemini` | Path to Gemini CLI |
+| `mysti.copilotPath` | `copilot` | Path to Copilot CLI |
+| `mysti.clinePath` | `cline` | Path to Cline CLI |
+| `mysti.cursorPath` | `agent` | Path to Cursor CLI |
+| `mysti.openclawPath` | `openclaw` | Path to OpenClaw CLI |
+
+### Brainstorm Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.brainstorm.agents` | `["claude-code", "openai-codex"]` | Which 2 agents to use |
+| `mysti.brainstorm.strategy` | `quick` | Strategy: `quick`, `debate`, `red-team`, `perspectives`, `delphi` |
+| `mysti.brainstorm.autoConverge` | `true` | Auto-exit when agents converge |
+| `mysti.brainstorm.maxDiscussionRounds` | `3` | Maximum discussion rounds |
+
+### Autonomous Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.autonomous.safetyMode` | `balanced` | `conservative`, `balanced`, `aggressive` |
+| `mysti.autonomous.blockPatterns` | `[]` | Custom patterns to always block |
+
+### Compaction Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.compaction.enabled` | `true` | Enable context compaction |
+| `mysti.compaction.threshold` | `75` | Compaction threshold (% of context window) |
+
+### General Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
 | `mysti.accessLevel` | `ask-permission` | File access level |
 | `mysti.agents.autoSuggest` | `true` | Auto-suggest personas |
-| `mysti.copilotPath` | `copilot` | Path to GitHub Copilot CLI executable |
+| `mysti.agents.maxTokenBudget` | `0` | Max tokens for agent context (0 = unlimited) |
+
+[Full Provider documentation](docs/PROVIDERS.md)
 
 ---
 
@@ -395,6 +470,21 @@ Stay in control of what the AI can do:
 | `Mysti: Add to Context` | Add file/selection to context |
 | `Mysti: Clear Context` | Clear all context |
 | `Mysti: Open in New Tab` | Open chat as editor tab |
+
+---
+
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Providers](docs/PROVIDERS.md) | All 7 providers — setup, models, features |
+| [Brainstorm Mode](docs/BRAINSTORM.md) | 5 strategies, convergence, team selection |
+| [Personas & Skills](docs/PERSONAS-AND-SKILLS.md) | 16 personas, 12 skills, custom agents |
+| [Autonomous Mode](docs/AUTONOMOUS-MODE.md) | Safety system, memory, continuation modes |
+| [@-Mentions](docs/MENTIONS.md) | Agent routing and file context |
+| [Compaction](docs/COMPACTION.md) | Context management and summarization |
+| [Architecture](docs/ARCHITECTURE.md) | Technical internals and extension points |
+| [Features](docs/FEATURES.md) | Complete feature reference |
 
 ---
 

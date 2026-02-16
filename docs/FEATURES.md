@@ -1,15 +1,20 @@
 # Mysti Features Guide
 
-This document provides detailed documentation for all Mysti features.
+Detailed documentation for all Mysti features.
 
 ## Table of Contents
 
 - [Chat Interface](#chat-interface)
 - [Providers](#providers)
 - [Brainstorm Mode](#brainstorm-mode)
+- [Autonomous Mode](#autonomous-mode)
+- [@-Mention System](#-mention-system)
+- [Context Compaction](#context-compaction)
 - [Agent Configuration](#agent-configuration)
 - [Plan Selection](#plan-selection)
 - [Permission System](#permission-system)
+- [Agent Lifecycle](#agent-lifecycle)
+- [Slash Commands](#slash-commands)
 - [Settings Reference](#settings-reference)
 
 ---
@@ -34,16 +39,15 @@ The Mysti chat interface is accessible from the Activity Bar sidebar or as a sta
 Add relevant code context to improve AI responses.
 
 **Adding Context:**
-- Right-click a file in Explorer → "Add to Mysti Context"
-- Right-click selected code in Editor → "Add to Mysti Context"
-- Context items appear in the context panel
+- Right-click a file in Explorer -> "Add to Mysti Context"
+- Right-click selected code in Editor -> "Add to Mysti Context"
+- Use `@filename` mentions for transient file context
 
 **Auto-Context:**
 When enabled (`mysti.autoContext: true`), Mysti automatically tracks your active editor and includes relevant context.
 
-**Clearing Context:**
-- Click the clear button in the context panel
-- Run command: `Mysti: Clear Context`
+**Per-Panel Isolation:**
+Each chat panel (sidebar or tab) maintains its own independent context. Adding a file to one panel doesn't affect others.
 
 ### Conversation Management
 
@@ -60,175 +64,157 @@ When enabled (`mysti.autoContext: true`), Mysti automatically tracks your active
 
 ## Providers
 
-Mysti supports multiple AI providers through their CLI interfaces.
+Mysti supports 7 AI providers through their CLI interfaces. See [PROVIDERS.md](PROVIDERS.md) for complete setup guides.
 
-### Claude Code
-
-**Setup:**
-1. Install Claude Code CLI: `npm install -g @anthropic-ai/claude-code`
-2. Authenticate: `claude login`
-3. Set as default: `"mysti.defaultProvider": "claude-code"`
-
-**Available Models:**
-- `claude-sonnet-4-5-20250929` - Fast, capable (default)
-- `claude-opus-4-5-20250929` - Most capable
-- `claude-3-5-haiku-20241022` - Fastest, lightweight
-
-**Features:**
-- Streaming responses
-- Extended thinking
-- Tool use
-- Session management
-
-### OpenAI Codex
-
-**Setup:**
-1. Install Codex CLI following OpenAI's instructions
-2. Authenticate with your API key
-3. Set as default: `"mysti.defaultProvider": "openai-codex"`
+| Provider | Best For |
+|----------|----------|
+| **Claude Code** | Deep reasoning, complex refactoring |
+| **Codex** | Quick iterations, OpenAI ecosystem |
+| **Gemini** | Fast responses, Google integration |
+| **GitHub Copilot** | Multi-model access via GitHub subscription |
+| **Cline** | Plan/Act workflow, structured tasks |
+| **Cursor** | Auto model selection, multi-model |
+| **OpenClaw** | WebSocket streaming, thinking levels |
+| **Manus** (experimental) | HTTP API-based, async tasks |
 
 **Switching Providers:**
-- Use the provider selector in the toolbar
+- Use the `/agent` slash command
+- Change `mysti.defaultProvider` in settings
 - Each conversation remembers its provider
 
 ---
 
 ## Brainstorm Mode
 
-Brainstorm mode enables multiple AI agents to collaborate on complex problems.
+Brainstorm mode enables two AI agents to collaborate using structured reasoning frameworks. See [BRAINSTORM.md](BRAINSTORM.md) for the full guide.
 
-### How It Works
+### Collaboration Strategies
 
-1. **Individual Analysis** - Each agent independently analyzes the problem
-2. **Discussion Phase** (Full mode only) - Agents review and comment on each other's responses
-3. **Synthesis** - A designated agent synthesizes all perspectives into a unified solution
+| Strategy | Roles | Best For |
+|----------|-------|----------|
+| **Quick** | Direct synthesis | Simple tasks |
+| **Debate** | Critic vs Defender | Architecture decisions |
+| **Red-Team** | Proposer vs Challenger | Security reviews |
+| **Perspectives** | Risk Analyst vs Innovator | Greenfield design |
+| **Delphi** | Facilitator vs Refiner | Complex consensus |
 
-### Quick Mode vs Full Mode
+### Convergence Detection
 
-**Quick Mode** (`mysti.brainstorm.discussionMode: "quick"`):
-- Agents provide individual responses
-- Direct synthesis without explicit discussion
-- Faster results
-
-**Full Mode** (`mysti.brainstorm.discussionMode: "full"`):
-- Agents review each other's responses
-- 1-3 discussion rounds (configurable)
-- More thorough exploration of the problem
+During discussion rounds, Mysti tracks agent agreement and position stability. When auto-convergence is enabled, discussions exit early once agents reach consensus.
 
 ### Configuration
 
 ```json
 {
   "mysti.brainstorm.enabled": true,
-  "mysti.brainstorm.discussionMode": "full",
-  "mysti.brainstorm.discussionRounds": 2,
-  "mysti.brainstorm.synthesisAgent": "claude-code"
+  "mysti.brainstorm.strategy": "debate",
+  "mysti.brainstorm.autoConverge": true,
+  "mysti.brainstorm.maxDiscussionRounds": 3
 }
 ```
 
-### Enabling Brainstorm
+---
 
-1. Click the "Agent" button in the toolbar
-2. Toggle "Brainstorm Mode" in the dropdown
-3. Select which agents to include
+## Autonomous Mode
+
+Let the AI work independently with safety controls. See [AUTONOMOUS-MODE.md](AUTONOMOUS-MODE.md) for the full guide.
+
+### Safety Classification
+
+Every operation is classified before auto-approval:
+
+| Level | Action | Examples |
+|-------|--------|---------|
+| **Safe** | Auto-approve | File reads, test commands, git status |
+| **Caution** | Mode-dependent | File creates/edits, unknown bash commands |
+| **Blocked** | Always deny | File deletion, force push, sudo |
+
+### Safety Modes
+
+- **Conservative**: Only clearly safe operations auto-approved
+- **Balanced** (default): Common development operations auto-approved
+- **Aggressive**: Everything auto-approved except hardcoded blocks
+
+### Memory System
+
+Mysti learns from your decisions:
+- Permission approvals/denials are remembered
+- Question answers are cached for auto-response
+- Confidence decays over time (0.95/day)
+- Old memories auto-pruned when capacity reached
+
+### Continuation Modes
+
+- **Goal**: Free-form goal with completion detection
+- **Task Queue**: Sequential task list with progress tracking
+
+---
+
+## @-Mention System
+
+Route tasks to specific agents and reference files inline. See [MENTIONS.md](MENTIONS.md) for the full guide.
+
+### File Mentions
+
+```
+@utils.ts Can you explain these helper functions?
+```
+
+Adds the file as transient context (not persisted).
+
+### Agent Mentions
+
+```
+@claude Review this code for security issues
+@claude Write tests, then @gemini review them
+```
+
+Routes tasks to specific agents. Later agents receive earlier agents' responses as context.
+
+### Switching Providers
+
+```
+Switch to @cursor
+```
+
+---
+
+## Context Compaction
+
+Automatic context management to prevent overflow. See [COMPACTION.md](COMPACTION.md) for the full guide.
+
+- Tracks per-panel token usage
+- Triggers at configurable threshold (default 75%)
+- Native CLI strategy for Claude Code (`/compact`)
+- Client-side summarization for other providers
 
 ---
 
 ## Agent Configuration
 
-Customize AI behavior with personas and skills.
+Customize AI behavior with personas and skills. See [PERSONAS-AND-SKILLS.md](PERSONAS-AND-SKILLS.md) for the full guide.
 
 ### Developer Personas
 
-Select a persona to shape the AI's approach and focus.
-
-| Persona | Icon | Description | Key Behaviors |
-|---------|------|-------------|---------------|
-| **Architect** | 🏛️ | Designs the big picture | Focus on scalable, modular systems. Create system diagrams. Define clear module boundaries. Document architectural decisions. |
-| **Prototyper** | 🚀 | Moves fast to test ideas | Quick iteration and PoCs. Small, rapid commits. WIP prefixes. Minimal boilerplate. |
-| **Product-Centric** | 📦 | User experience as north star | Close alignment with design. Feature flags. User-facing documentation. |
-| **Refactorer** | 🔄 | Makes code cleaner | Dedicated refactoring PRs. Consistent naming. Increase test coverage. Remove dead code. |
-| **DevOps Engineer** | ⚙️ | Reliable pipelines and operations | CI/CD optimization. Infrastructure-as-Code. Monitoring and alerting. |
-| **Domain Expert** | 🎯 | Understands the business problem | Model domain entities precisely. Business rule tests. Bounded contexts. |
-| **Researcher** | 🔬 | Solves hard technical problems | Algorithm documentation. Complexity analysis. Benchmarking. |
-| **Builder** | 🔨 | Ships features reliably | Regular, predictable commits. Follow patterns. Review-ready PRs. |
-| **Debugger** | 🐛 | Finds root causes | Detailed root cause analysis. Regression tests. Add logging. |
-| **Integrator** | 🔗 | Makes systems work together | API client libraries. Data contracts. Mock services. |
-| **Mentor** | 👨‍🏫 | Teaches and guides | Educational comments. Constructive feedback. Style guides. |
-| **Designer** | 🎨 | Creates beautiful interfaces | UI/UX focus. Accessibility. Design systems. |
-| **Full-Stack Generalist** | 🌐 | Fills gaps anywhere | Broad knowledge. Cross-cutting features. Context-switching. |
-| **Security-Minded** | 🔒 | Keeps systems safe | Vulnerability review. Threat models. Secure coding patterns. |
-| **Performance Tuner** | ⚡ | Optimizes for speed | Profiling. Before/after metrics. Caching strategies. |
-| **Toolsmith** | 🛠️ | Builds internal tools | Scripts and CLIs. Developer utilities. Automation. |
+16 built-in personas: Architect, Prototyper, Product-Centric, Refactorer, DevOps, Domain Expert, Researcher, Builder, Debugger, Integrator, Mentor, Designer, Full-Stack, Security-Minded, Performance Tuner, Toolsmith.
 
 ### Toggleable Skills
 
-Mix and match skills to fine-tune behavior.
+12 skills: Concise, Repo Hygiene, Organized, Auto-Commit, First Principles, Auto-Compact, Dependency-Aware, Graceful Degradation, Scope Discipline, Doc Reflexes, Test-Driven, Rollback Ready.
 
-| Skill | Description | Behavior |
-|-------|-------------|----------|
-| **Concise** | Clear communication | Get to the point quickly while maintaining clarity |
-| **Repo Hygiene** | Clean structures | Remove dead code, follow project conventions |
-| **Organized** | Logical structure | Keep related changes together, clear separation of concerns |
-| **Auto-Commit** | Incremental commits | Commit on feature changes, create branches to isolate work |
-| **First Principles** | Fundamental reasoning | Understand "why" before "how" |
-| **Auto-Compact** | Context management | Run `/compact` when context grows large |
-| **Dependency-Aware** | Respect dependencies | Avoid unnecessary additions, keep versions aligned |
-| **Graceful Degradation** | Error handling | Handle edge cases without catastrophic failure |
-| **Scope Discipline** | Stay focused | Resist scope creep, ask before expanding work |
-| **Doc Reflexes** | Auto documentation | Document non-obvious decisions and API changes |
-| **Test-Driven** | Tests with code | Write/update tests alongside code changes |
-| **Rollback Ready** | Reversible changes | Structure changes for easy rollback |
+### Three-Tier Loading
 
-### Using Agent Configuration
+Agent definitions load progressively for fast UI:
+- **Tier 1**: Metadata (always loaded for lists)
+- **Tier 2**: Instructions (loaded on selection)
+- **Tier 3**: Full content (loaded on demand)
 
-1. Click the agent button in the toolbar
-2. Select a persona from the dropdown
-3. Toggle desired skills
-4. Configuration persists per-conversation
+### Custom Agents
 
-### Toolbar Persona Indicator
-
-A quick-access persona indicator appears in the toolbar between context usage and mode selector.
-
-**Features:**
-
-- Shows the currently active persona name (or "No persona" when none selected)
-- Click to toggle inline suggestions widget
-- Visual highlight when a persona is active
-
-### Auto-Suggest Personas
-
-Mysti can automatically suggest relevant personas based on your message content.
-
-**How it works:**
-
-1. Start typing your message
-2. After a brief delay, Mysti analyzes your input
-3. Relevant personas appear as chips above the input area
-4. Click a chip to select that persona
-
-**Settings:**
-
-- Enabled by default (`mysti.agents.autoSuggest: true`)
-- Toggle via the inline suggestions widget or settings
-
-### Token Budget (Optional)
-
-Control the maximum tokens used for agent context (personas + skills).
-
-**Settings:**
-
-- `mysti.agents.maxTokenBudget`: Maximum tokens (default: `0` = unlimited)
-- When set to 0, no budget enforcement is applied
-- When set to a value (e.g., 2000), agent context is limited to that token count
-- If a persona exceeds the budget, a condensed version is used
-
-**Recommended values:**
-
-- 0 (unlimited) - Full persona/skill instructions
-- 1000-2000 - Balanced context usage
-- 500-1000 - Minimal context footprint
+Create custom personas and skills as markdown files in:
+- `.mysti/agents/` (workspace, highest priority)
+- `~/.mysti/agents/` (user)
+- `resources/agents/core/` (bundled, lowest priority)
 
 ---
 
@@ -238,9 +224,9 @@ When the AI presents multiple implementation options, Mysti detects and displays
 
 ### How Plan Detection Works
 
-1. AI response contains implementation options/approaches
-2. Mysti's ResponseClassifier analyzes the response
-3. Detected plans are displayed as selectable cards
+1. AI response contains implementation options
+2. ResponseClassifier analyzes the response
+3. Detected plans displayed as selectable cards
 4. User selects preferred approach and execution mode
 
 ### Plan Card Information
@@ -248,13 +234,11 @@ When the AI presents multiple implementation options, Mysti detects and displays
 Each plan card shows:
 - **Title** - Name of the approach
 - **Summary** - Brief description
-- **Pros** - Advantages of this approach
-- **Cons** - Trade-offs to consider
+- **Pros** - Advantages
+- **Cons** - Trade-offs
 - **Complexity** - Low, Medium, or High
 
 ### Execution Modes
-
-When selecting a plan, choose how to proceed:
 
 | Mode | Description |
 |------|-------------|
@@ -279,28 +263,13 @@ Control what actions the AI can perform.
 ### Permission Requests
 
 In `ask-permission` mode, the AI shows requests for:
-- File creation
-- File editing
-- File deletion
+- File creation, editing, deletion
 - Bash commands
 - Web requests
 
-Each request includes:
-- Action description
-- Risk level (Low, Medium, High)
-- Diff preview (for file changes)
-- Approve/Deny buttons
+Each request includes action description, risk level, diff preview, and approve/deny buttons.
 
 ### Timeout Behavior
-
-Configure what happens when a permission request times out:
-
-```json
-{
-  "mysti.permission.timeout": 30,
-  "mysti.permission.timeoutBehavior": "auto-reject"
-}
-```
 
 | Behavior | Description |
 |----------|-------------|
@@ -310,25 +279,69 @@ Configure what happens when a permission request times out:
 
 ---
 
-## Settings Reference
+## Agent Lifecycle
 
-All Mysti settings with descriptions and defaults.
+Manages agent session lifecycle for resource efficiency.
+
+### Idle Timeout
+
+Sessions expire after configurable idle time (default 1 hour). Activity is tracked via touch/busy/idle API.
+
+### Process Protection
+
+Before shutdown, Mysti checks for active child processes (e.g., running builds). Shutdown is blocked if protected children are detected.
+
+### Configuration
+
+```json
+{
+  "mysti.lifecycle.enabled": true,
+  "mysti.lifecycle.idleTimeoutMinutes": 60,
+  "mysti.lifecycle.processTreeTracking": true,
+  "mysti.lifecycle.protectActiveChildren": true
+}
+```
+
+---
+
+## Slash Commands
+
+Type `/` in the chat to access slash commands organized by section.
+
+### Sections
+
+| Section | Commands |
+|---------|----------|
+| **Context** | `/context`, `/clear` |
+| **Model** | `/model`, `/agent`, `/mode` |
+| **Customize** | `/persona`, `/skills` |
+| **Commands** | `/compact` (Claude), `/thinking` (Claude), `/profile` (Codex), `/plan-act` (Cline) |
+| **Settings** | `/access`, `/thinking-level` |
+| **Support** | `/help` |
+
+---
+
+## Settings Reference
 
 ### Provider Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.defaultProvider` | `"claude-code"` | Default AI provider |
-| `mysti.claudeCodePath` | `"claude"` | Path to Claude CLI |
+| `mysti.claudePath` | `"claude"` | Path to Claude CLI |
 | `mysti.codexPath` | `"codex"` | Path to Codex CLI |
-| `mysti.defaultModel` | `"claude-sonnet-4-5-20250929"` | Default model |
+| `mysti.geminiPath` | `"gemini"` | Path to Gemini CLI |
+| `mysti.copilotPath` | `"copilot"` | Path to Copilot CLI |
+| `mysti.clinePath` | `"cline"` | Path to Cline CLI |
+| `mysti.cursorPath` | `"agent"` | Path to Cursor CLI |
+| `mysti.openclawPath` | `"openclaw"` | Path to OpenClaw CLI |
 
 ### Operation Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.defaultMode` | `"ask-before-edit"` | Default operation mode |
-| `mysti.defaultThinkingLevel` | `"medium"` | AI thinking level (none/low/medium/high) |
+| `mysti.defaultThinkingLevel` | `"medium"` | Thinking level (none/low/medium/high) |
 | `mysti.accessLevel` | `"ask-permission"` | File operation access level |
 | `mysti.autoContext` | `true` | Auto-include relevant context |
 
@@ -337,24 +350,48 @@ All Mysti settings with descriptions and defaults.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.brainstorm.enabled` | `false` | Enable brainstorm mode |
-| `mysti.brainstorm.discussionMode` | `"quick"` | Discussion mode (quick/full) |
-| `mysti.brainstorm.discussionRounds` | `1` | Rounds in full mode (1-3) |
-| `mysti.brainstorm.synthesisAgent` | `"claude-code"` | Agent for synthesis |
+| `mysti.brainstorm.agents` | `["claude-code", "openai-codex"]` | Which 2 agents to use |
+| `mysti.brainstorm.strategy` | `"quick"` | Collaboration strategy |
+| `mysti.brainstorm.autoConverge` | `true` | Auto-exit when agents converge |
+| `mysti.brainstorm.maxDiscussionRounds` | `3` | Maximum discussion rounds |
 
-### Agent Persona Settings
+### Autonomous Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.agents.claudePersona` | `"neutral"` | Claude's persona in brainstorm |
-| `mysti.agents.claudeCustomPrompt` | `""` | Custom prompt for Claude |
-| `mysti.agents.codexPersona` | `"neutral"` | Codex's persona in brainstorm |
-| `mysti.agents.codexCustomPrompt` | `""` | Custom prompt for Codex |
-| `mysti.agents.autoSuggest` | `true` | Auto-suggest personas based on message content |
-| `mysti.agents.maxTokenBudget` | `0` | Max tokens for agent context (0 = unlimited) |
+| `mysti.autonomous.safetyMode` | `"balanced"` | Safety mode |
+| `mysti.autonomous.maxSessionDuration` | `24` | Max session hours |
+| `mysti.autonomous.allowFileCreation` | `true` | Allow file creation |
+| `mysti.autonomous.allowFileEdit` | `true` | Allow file editing |
+| `mysti.autonomous.allowBashCommands` | `true` | Allow bash commands |
+| `mysti.autonomous.blockPatterns` | `[]` | Custom block patterns |
+
+### Compaction Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.compaction.enabled` | `true` | Enable context compaction |
+| `mysti.compaction.threshold` | `75` | Compaction threshold (%) |
+
+### Lifecycle Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.lifecycle.enabled` | `true` | Enable lifecycle management |
+| `mysti.lifecycle.idleTimeoutMinutes` | `60` | Idle timeout |
+| `mysti.lifecycle.processTreeTracking` | `true` | Track child processes |
+| `mysti.lifecycle.protectActiveChildren` | `true` | Protect active children |
+
+### Agent Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.agents.autoSuggest` | `true` | Auto-suggest personas |
+| `mysti.agents.maxTokenBudget` | `0` | Max tokens (0 = unlimited) |
 
 ### Permission Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.permission.timeout` | `30` | Seconds before timeout (0 = none) |
+| `mysti.permission.timeout` | `30` | Timeout seconds (0 = none) |
 | `mysti.permission.timeoutBehavior` | `"auto-reject"` | Timeout behavior |

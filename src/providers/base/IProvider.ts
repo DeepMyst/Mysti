@@ -14,17 +14,19 @@
 import type * as vscode from 'vscode';
 import type {
   ContextItem,
+  Attachment,
   Settings,
   Conversation,
   StreamChunk,
   ProviderConfig,
-  ModelInfo,
   DeveloperPersonaId,
   SkillId,
   DeveloperPersona,
   Skill,
   AgentConfiguration,
-  AuthStatus
+  AuthStatus,
+  InstallMethod,
+  SlashCommandDefinition
 } from '../../types';
 
 /**
@@ -54,6 +56,11 @@ export interface ProviderCapabilities {
   supportsThinking: boolean;
   supportsToolUse: boolean;
   supportsSessions: boolean;
+  supportsNativeCompact?: boolean;
+  supportsPersistentProcess?: boolean;
+  supportsImages?: boolean;
+  supportsFileAttachments?: boolean;
+  supportsAutoInstall: boolean;
 }
 
 /**
@@ -309,17 +316,25 @@ export interface ICliProvider {
     persona?: PersonaConfig,
     panelId?: string,
     providerManager?: unknown,  // ProviderManager for process registration
-    agentConfig?: AgentConfiguration  // Agent configuration (personas + skills)
+    agentConfig?: AgentConfiguration,  // Agent configuration (personas + skills)
+    attachments?: Attachment[]  // Image/file attachments
   ): AsyncGenerator<StreamChunk>;
 
-  // Request Management
-  cancelCurrentRequest(): void;
-  clearSession(): void;
-  hasSession(): boolean;
-  getSessionId(): string | null;
+  // Request Management (panelId enables per-panel isolation)
+  cancelCurrentRequest(panelId?: string): void;
+  clearSession(panelId?: string): void;
+  hasSession(panelId?: string): boolean;
+  getSessionId(panelId?: string): string | null;
+  getStoredUsage?(panelId?: string): { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null;
 
   // Utility
   enhancePrompt?(prompt: string): Promise<string>;
+
+  // Optional: alternative install methods for non-npm providers
+  getInstallMethods?(): InstallMethod[];
+
+  // Slash command menu: provider-specific commands
+  getSlashCommands?(panelId?: string): SlashCommandDefinition[];
 }
 
 /**

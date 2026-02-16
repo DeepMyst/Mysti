@@ -60,7 +60,7 @@ export class TelemetryManager {
    * Send a telemetry event
    */
   sendEvent(eventName: string, properties?: Record<string, string>, measurements?: Record<string, number>): void {
-    if (!this._enabled) return;
+    if (!this._enabled) {return;}
 
     if (this._reporter) {
       this._reporter.sendTelemetryEvent(eventName, properties, measurements);
@@ -74,7 +74,7 @@ export class TelemetryManager {
    * Send a telemetry error event
    */
   sendError(error: Error, properties?: Record<string, string>): void {
-    if (!this._enabled) return;
+    if (!this._enabled) {return;}
 
     if (this._reporter) {
       this._reporter.sendTelemetryErrorEvent(error.name, {

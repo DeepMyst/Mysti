@@ -51,25 +51,25 @@ interface ExtensionPermissionResponse {
 }
 
 class PermissionServer {
-	private extensionPort: number;
+	private _extensionPort: number;
 
 	constructor() {
 		// Extension port is passed via environment variable
-		this.extensionPort = parseInt(process.env.MYSTI_PERMISSION_PORT || '0', 10);
+		this._extensionPort = parseInt(process.env.MYSTI_PERMISSION_PORT || '0', 10);
 
-		if (!this.extensionPort) {
+		if (!this._extensionPort) {
 			console.error('[MCP Server] ERROR: MYSTI_PERMISSION_PORT not set');
 			process.exit(1);
 		}
 
-		console.error(`[MCP Server] Starting permission server, extension port: ${this.extensionPort}`);
-		this.setupStdioListener();
+		console.error(`[MCP Server] Starting permission server, extension port: ${this._extensionPort}`);
+		this._setupStdioListener();
 	}
 
 	/**
 	 * Listen for permission requests from Claude CLI via stdin
 	 */
-	private setupStdioListener(): void {
+	private _setupStdioListener(): void {
 		const rl = readline.createInterface({
 			input: process.stdin,
 			output: process.stdout,
@@ -80,7 +80,7 @@ class PermissionServer {
 			try {
 				const request = JSON.parse(line) as PermissionRequest;
 				console.error('[MCP Server] Received permission request:', request);
-				this.handlePermissionRequest(request);
+				this._handlePermissionRequest(request);
 			} catch (error) {
 				console.error('[MCP Server] Failed to parse permission request:', error);
 			}
@@ -96,12 +96,12 @@ class PermissionServer {
 	 * Handle permission request from Claude CLI
 	 * Make HTTP request to extension and wait for response
 	 */
-	private async handlePermissionRequest(request: PermissionRequest): Promise<void> {
+	private async _handlePermissionRequest(request: PermissionRequest): Promise<void> {
 		const { id, tool_name, input } = request;
 
 		try {
 			// Make HTTP POST request to extension
-			const approved = await this.requestPermissionFromExtension({
+			const approved = await this._requestPermissionFromExtension({
 				requestId: id,
 				toolName: tool_name,
 				toolInput: input
@@ -129,13 +129,13 @@ class PermissionServer {
 	/**
 	 * Make HTTP request to extension's permission endpoint
 	 */
-	private requestPermissionFromExtension(request: ExtensionPermissionRequest): Promise<boolean> {
+	private _requestPermissionFromExtension(request: ExtensionPermissionRequest): Promise<boolean> {
 		return new Promise((resolve, reject) => {
 			const postData = JSON.stringify(request);
 
 			const options: http.RequestOptions = {
 				hostname: 'localhost',
-				port: this.extensionPort,
+				port: this._extensionPort,
 				path: '/permission',
 				method: 'POST',
 				headers: {

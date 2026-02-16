@@ -23,6 +23,7 @@ import type {
   PermissionRiskLevel,
   PermissionTimeoutBehavior
 } from '../types';
+import { SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
 
 /**
  * Manages permission requests for tool operations
@@ -34,6 +35,7 @@ export class PermissionManager {
   private _timeoutHandles: Map<string, NodeJS.Timeout> = new Map();
   private _sessionAccessLevel: AccessLevel;
   private _config: PermissionConfig;
+  private _onSemiAutonomousTimeout: ((requestId: string, postToWebview: (msg: unknown) => void) => void) | null = null;
 
   constructor(initialAccessLevel: AccessLevel) {
     this._sessionAccessLevel = initialAccessLevel;
@@ -47,7 +49,8 @@ export class PermissionManager {
     const config = vscode.workspace.getConfiguration('mysti');
     return {
       timeout: config.get<number>('permission.timeout', 30),
-      timeoutBehavior: config.get<PermissionTimeoutBehavior>('permission.timeoutBehavior', 'auto-reject')
+      timeoutBehavior: config.get<PermissionTimeoutBehavior>('permission.timeoutBehavior', 'auto-reject'),
+      semiAutonomousTimeout: config.get<number>('semiAutonomous.timeout', SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S)
     };
   }
 
@@ -90,8 +93,12 @@ export class PermissionManager {
 
     // Create permission request
     const now = Date.now();
-    const expiresAt = this._config.timeout > 0
-      ? now + (this._config.timeout * 1000)
+    const isSemiAutonomous = this._config.timeoutBehavior === 'semi-autonomous';
+    const effectiveTimeout = isSemiAutonomous
+      ? this._config.semiAutonomousTimeout
+      : this._config.timeout;
+    const expiresAt = effectiveTimeout > 0
+      ? now + (effectiveTimeout * 1000)
       : 0; // 0 = no expiry
 
     const request: PermissionRequest = {
@@ -103,7 +110,8 @@ export class PermissionManager {
       status: 'pending',
       createdAt: now,
       expiresAt,
-      toolCallId
+      toolCallId,
+      semiAutonomous: isSemiAutonomous
     };
 
     this._pendingRequests.set(request.id, request);
@@ -114,17 +122,22 @@ export class PermissionManager {
       payload: request
     });
 
-    console.log('[Mysti] PermissionManager: Permission requested:', request.id, title);
+    console.log('[Mysti] PermissionManager: Permission requested:', request.id, title,
+      isSemiAutonomous ? '(semi-autonomous)' : '');
 
     // Return promise that resolves when user responds or timeout occurs
     return new Promise((resolve) => {
       this._resolvers.set(request.id, resolve);
 
       // Set up timeout if configured
-      if (this._config.timeout > 0 && this._config.timeoutBehavior !== 'require-action') {
+      if (effectiveTimeout > 0 && this._config.timeoutBehavior !== 'require-action') {
         const timeoutHandle = setTimeout(() => {
-          this._handleTimeout(request.id, postToWebview);
-        }, this._config.timeout * 1000);
+          if (isSemiAutonomous && this._onSemiAutonomousTimeout) {
+            this._onSemiAutonomousTimeout(request.id, postToWebview);
+          } else {
+            this._handleTimeout(request.id, postToWebview);
+          }
+        }, effectiveTimeout * 1000);
         this._timeoutHandles.set(request.id, timeoutHandle);
       }
     });
@@ -251,6 +264,13 @@ export class PermissionManager {
   }
 
   /**
+   * Get a specific pending request by ID (for autonomous mode inspection)
+   */
+  getPendingRequest(requestId: string): PermissionRequest | undefined {
+    return this._pendingRequests.get(requestId);
+  }
+
+  /**
    * Reset session access level to initial value
    */
   resetSessionAccessLevel(level: AccessLevel): void {
@@ -303,6 +323,41 @@ export class PermissionManager {
   }
 
   /**
+   * Register callback for semi-autonomous timeout handling.
+   * Called by ChatViewProvider to wire up AutonomousManager decision-making.
+   */
+  onSemiAutonomousTimeout(
+    callback: (requestId: string, postToWebview: (msg: unknown) => void) => void
+  ): void {
+    this._onSemiAutonomousTimeout = callback;
+  }
+
+  /**
+   * Resolve a pending permission request after semi-autonomous AI decision.
+   * Called by ChatViewProvider after AutonomousManager makes a decision.
+   */
+  resolveSemiAutonomous(requestId: string, approved: boolean): void {
+    const request = this._pendingRequests.get(requestId);
+    if (request) {
+      request.status = approved ? 'approved' : 'denied';
+      this._pendingRequests.delete(requestId);
+    }
+
+    const timeoutHandle = this._timeoutHandles.get(requestId);
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+      this._timeoutHandles.delete(requestId);
+    }
+
+    const resolver = this._resolvers.get(requestId);
+    if (resolver) {
+      resolver(approved);
+      this._resolvers.delete(requestId);
+      console.log('[Mysti] PermissionManager: Semi-autonomous resolved:', requestId, approved ? 'approved' : 'denied');
+    }
+  }
+
+  /**
    * Dispose the manager and clean up all resources
    * Critical: Prevents pending timeouts from firing after deactivation
    */
@@ -316,7 +371,7 @@ export class PermissionManager {
     this._timeoutHandles.clear();
 
     // Reject all pending promises
-    for (const [requestId, resolver] of this._resolvers) {
+    for (const [, resolver] of this._resolvers) {
       resolver(false);
     }
     this._resolvers.clear();
