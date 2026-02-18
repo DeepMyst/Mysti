@@ -2,6 +2,10 @@
 
 All notable changes to the Mysti extension will be documented in this file.
 
+## [0.3.1] - February 2026
+
+---
+
 ## [0.3.0] - February 2026
 
 ### Added
