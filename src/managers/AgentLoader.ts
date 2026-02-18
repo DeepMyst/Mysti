@@ -3,12 +3,12 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -455,7 +455,7 @@ export class AgentLoader {
    */
   private _extractList(body: string, sectionName: string): string[] | undefined {
     const section = this._extractSection(body, sectionName);
-    if (!section) return undefined;
+    if (!section) {return undefined;}
 
     const items: string[] = [];
     const lines = section.split('\n');

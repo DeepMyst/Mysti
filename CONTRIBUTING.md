@@ -127,7 +127,7 @@ Look for issues labeled [`good first issue`](https://github.com/DeepMyst/Mysti/l
 
 ## License
 
-By contributing to Mysti, you agree that your contributions will be licensed under the MIT License.
+By contributing to Mysti, you agree that your contributions will be licensed under the Apache License 2.0.
 
 ---
 

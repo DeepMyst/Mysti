@@ -3,12 +3,12 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -16,7 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
-import { BaseCliProvider } from '../base/BaseCliProvider';
+import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from '../base/BaseCliProvider';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -32,7 +32,14 @@ import type {
   Conversation,
   AgentConfiguration
 } from '../../types';
-import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
+import { validateModelName } from '../../utils/validation';
+import { getEnrichedEnv } from '../../utils/platform';
+import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
+
+export interface CopilotSessionState extends PanelSessionState {
+  activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
+  lastUsageStats: { input_tokens: number; output_tokens: number } | null;
+}
 
 /**
  * GitHub Copilot CLI provider implementation
@@ -50,25 +57,19 @@ export class CopilotProvider extends BaseCliProvider {
       {
         id: 'claude-sonnet-4.5',
         name: 'Claude Sonnet 4.5',
-        description: 'Default - best balance of speed and intelligence',
+        description: 'Best balance of speed and intelligence',
         contextWindow: 200000
       },
       {
         id: 'claude-opus-4.5',
         name: 'Claude Opus 4.5',
-        description: 'Most capable Anthropic model for complex tasks',
+        description: 'Flagship Anthropic model for complex tasks',
         contextWindow: 200000
       },
       {
         id: 'claude-sonnet-4',
         name: 'Claude Sonnet 4',
         description: 'Previous Claude Sonnet model',
-        contextWindow: 200000
-      },
-      {
-        id: 'claude-opus-4.1',
-        name: 'Claude Opus 4.1',
-        description: 'Previous Claude Opus model',
         contextWindow: 200000
       },
       {
@@ -81,7 +82,7 @@ export class CopilotProvider extends BaseCliProvider {
       {
         id: 'gpt-5.2',
         name: 'GPT-5.2',
-        description: 'Latest OpenAI model (preview)',
+        description: 'OpenAI general purpose model',
         contextWindow: 128000
       },
       {
@@ -114,23 +115,23 @@ export class CopilotProvider extends BaseCliProvider {
         description: 'OpenAI GPT-5 model',
         contextWindow: 128000
       },
+      {
+        id: 'gpt-5-mini',
+        name: 'GPT-5 Mini',
+        description: 'Lightweight OpenAI model',
+        contextWindow: 128000
+      },
+      {
+        id: 'gpt-4.1',
+        name: 'GPT-4.1',
+        description: 'OpenAI GPT-4.1 model',
+        contextWindow: 128000
+      },
       // Google Models
       {
-        id: 'gemini-3-pro',
-        name: 'Gemini 3 Pro',
+        id: 'gemini-3-pro-preview',
+        name: 'Gemini 3 Pro Preview',
         description: 'Google advanced reasoning model',
-        contextWindow: 1000000
-      },
-      {
-        id: 'gemini-3-flash',
-        name: 'Gemini 3 Flash',
-        description: 'Google fast multimodal model',
-        contextWindow: 1000000
-      },
-      {
-        id: 'gemini-2.5-pro',
-        name: 'Gemini 2.5 Pro',
-        description: 'Google previous generation model',
         contextWindow: 1000000
       }
     ],
@@ -141,53 +142,39 @@ export class CopilotProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: false,
     supportsToolUse: true,
-    supportsSessions: true
+    supportsSessions: true,
+    supportsAutoInstall: true
   };
 
-  // Tool call state tracking
-  private _activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }> = new Map();
-
-  // Usage stats from result event
-  private _lastUsageStats: { input_tokens: number; output_tokens: number } | null = null;
-
-  async discoverCli(): Promise<CliDiscoveryResult> {
-    // First check configured path
-    const configuredPath = this._getConfiguredPath();
-    if (configuredPath !== 'copilot') {
-      const found = await this._validateCliPath(configuredPath);
-      if (found) {
-        return { found: true, path: configuredPath };
-      }
-    }
-
-    // Search common installation paths
-    const searchPaths = [
-      '/usr/local/bin/copilot',
-      '/opt/homebrew/bin/copilot', // Apple Silicon
-      path.join(os.homedir(), '.npm-global', 'bin', 'copilot'),
-      path.join(os.homedir(), '.local', 'bin', 'copilot'),
-      // npm global paths
-      '/usr/bin/copilot',
-      path.join(process.env.APPDATA || '', 'npm', 'copilot.cmd'), // Windows
-    ];
-
-    for (const searchPath of searchPaths) {
-      if (await this._validateCliPath(searchPath)) {
-        return { found: true, path: searchPath };
-      }
-    }
-
-    // Fall back to checking if 'copilot' is in PATH
-    const found = await this._validateCliPath('copilot');
+  protected _createSession(panelId: string): CopilotSessionState {
     return {
-      found,
-      path: 'copilot',
-      installCommand: 'npm install -g @github/copilot'
+      panelId,
+      process: null,
+      sessionId: null,
+      autonomousMode: false,
+      persistentProcess: null,
+      persistentReady: false,
+      lastHealthCheck: 0,
+      activeToolCalls: new Map(),
+      lastUsageStats: null,
     };
   }
 
+  async discoverCli(): Promise<CliDiscoveryResult> {
+    return this._discoverCliCommon();
+  }
+
   getCliPath(): string {
-    return this._getConfiguredPath();
+    return this._getCliPathCommon();
+  }
+
+  protected _getCliCommandName(): string {
+    return 'copilot';
+  }
+
+  protected _getConfiguredCliPath(): string {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<string>('copilotPath', 'copilot');
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
@@ -258,6 +245,7 @@ export class CopilotProvider extends BaseCliProvider {
     providerManager?: unknown,
     agentConfig?: AgentConfiguration
   ): AsyncGenerator<StreamChunk> {
+    const session = this._getSession(panelId) as CopilotSessionState;
     const startTime = Date.now();
     const cliPath = this.getCliPath();
 
@@ -266,19 +254,22 @@ export class CopilotProvider extends BaseCliProvider {
     const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
 
     // Build prompt first (needed for -p flag)
-    const fullPrompt = await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig);
+    const fullPrompt = await this.buildPromptAsync(
+      content, context, conversation, settings, persona, agentConfig,
+      undefined, session.channelSystemContext,
+    );
     const promptTime = Date.now() - startTime;
     console.log(`[Mysti] Copilot: Prompt built in ${promptTime}ms`);
 
     // Build args with prompt using -p flag
-    const args = this.buildCliArgs(settings, this.hasSession());
+    const args = this.buildCliArgs(settings, session);
     args.push('-p', fullPrompt);
 
     console.log(`[Mysti] Copilot: Spawning CLI with -p flag...`);
 
-    this._currentProcess = spawn(cliPath, args, {
+    session.process = spawn(cliPath, args, {
       cwd,
-      env: { ...process.env },
+      env: getEnrichedEnv(),
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -286,20 +277,21 @@ export class CopilotProvider extends BaseCliProvider {
     console.log(`[Mysti] Copilot: CLI spawned in ${spawnTime}ms`);
 
     // Register process with ProviderManager for per-panel cancellation
-    if (panelId && providerManager && typeof (providerManager as any).registerProcess === 'function') {
-      (providerManager as any).registerProcess(panelId, this._currentProcess);
+    if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
+      (providerManager as ProcessTracker).registerProcess(panelId, session.process);
     }
 
     // Set up stderr handler
-    let stderrOutput = '';
+    // Use a mutable object so processStream always sees the latest stderr content
+    const stderrRef = { output: '' };
     const stderrHandler = (data: Buffer) => {
       const text = data.toString();
-      stderrOutput += text;
+      stderrRef.output += text;
       console.log(`[Mysti] Copilot stderr:`, text);
     };
 
-    if (this._currentProcess.stderr) {
-      this._currentProcess.stderr.on('data', stderrHandler);
+    if (session.process.stderr) {
+      session.process.stderr.on('data', stderrHandler);
     }
 
     try {
@@ -309,16 +301,22 @@ export class CopilotProvider extends BaseCliProvider {
       console.log(`  - Total setup: ${spawnTime}ms`);
       console.log(`  - Waiting for first response...`);
 
-      // Process stream output
-      // Note: stderrOutput is captured asynchronously, so we check for auth errors after stream completes
-      yield* this.processStream(stderrOutput);
+      // Emit session_active so the webview shows the session indicator
+      // Copilot CLI outputs plain text so its JSON init handler never fires
+      if (!session.sessionId) {
+        session.sessionId = `copilot-${panelId || 'default'}-${Date.now()}`;
+      }
+      yield { type: 'session_active' as const, sessionId: session.sessionId };
 
-      // Check for auth errors after stream processing (stderrOutput now has full content)
-      if (stderrOutput && this.isAuthenticationError(stderrOutput)) {
-        console.log(`[Mysti] Copilot: Auth error detected in stderr:`, stderrOutput);
+      // Process stream output (stderrRef is mutable, so processStream sees full stderr)
+      yield* this.processStream(stderrRef, session);
+
+      // Additional auth error check after stream processing
+      if (stderrRef.output && this.isAuthenticationError(stderrRef.output)) {
+        console.log(`[Mysti] Copilot: Auth error detected in stderr:`, stderrRef.output);
         yield {
           type: 'auth_error',
-          content: stderrOutput,
+          content: stderrRef.output,
           authCommand: this.getAuthCommand(),
           providerName: this.displayName
         };
@@ -329,18 +327,21 @@ export class CopilotProvider extends BaseCliProvider {
       const totalTime = Date.now() - startTime;
       console.log(`[Mysti] Copilot: ✅ Request completed in ${totalTime}ms`);
 
-      const storedUsage = this.getStoredUsage();
+      const storedUsage = this.getStoredUsage(panelId);
       yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
     } catch (error) {
       yield this.handleError(error);
     } finally {
       // Clean up process
-      if (this._currentProcess && !this._currentProcess.killed) {
+      if (session.process && !session.process.killed) {
         try {
-          this._currentProcess.removeAllListeners();
-          this._currentProcess.kill('SIGTERM');
+          // Remove only our stderr handler — don't strip waitForProcess listeners
+          if (session.process.stderr) {
+            session.process.stderr.removeListener('data', stderrHandler);
+          }
+          session.process.kill('SIGTERM');
 
-          const processToKill = this._currentProcess;
+          const processToKill = session.process;
           setTimeout(() => {
             if (processToKill && !processToKill.killed) {
               console.warn(`[Mysti] Copilot: Force killing leaked process`);
@@ -352,34 +353,54 @@ export class CopilotProvider extends BaseCliProvider {
         }
       }
 
-      this._currentProcess = null;
+      session.process = null;
 
       // Clear process tracking
-      if (panelId && providerManager && typeof (providerManager as any).clearProcess === 'function') {
-        (providerManager as any).clearProcess(panelId);
+      if (panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
+        (providerManager as ProcessTracker).clearProcess(panelId);
       }
     }
   }
 
-  protected buildCliArgs(settings: Settings, hasSession: boolean): string[] {
+  protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
     // Note: Copilot CLI uses -p flag for prompt (set in sendMessage override)
     // No --output-format flag exists - CLI outputs plain text
     const args: string[] = [];
 
-    // Note: Model selection in Copilot CLI is via /model slash command, not CLI flag
-    // We cannot set model via CLI args
+    // Add model selection (custom model override or dropdown selection)
+    const effectiveModel = this._getEffectiveModel(settings);
+    if (effectiveModel) {
+      args.push('--model', effectiveModel);
+    }
 
     // Map Mysti modes/access levels to Copilot CLI flags
     this._addPermissionFlags(args, settings);
 
     // Session handling - Copilot supports --resume
-    if (hasSession && this._currentSessionId) {
-      args.push('--resume', this._currentSessionId);
-      console.log('[Mysti] Copilot: Resuming session:', this._currentSessionId);
+    if (session.sessionId) {
+      args.push('--resume', session.sessionId);
+      console.log('[Mysti] Copilot: Resuming session:', session.sessionId);
     }
 
     console.log('[Mysti] Copilot: Built CLI args:', args.join(' '));
     return args;
+  }
+
+  /**
+   * Get the effective model, preferring provider-specific custom model over dropdown selection
+   */
+  private _getEffectiveModel(settings: Settings): string | undefined {
+    const config = vscode.workspace.getConfiguration('mysti');
+    const customModel = config.get<string>('copilotModel', '');
+    if (customModel) {
+      const validation = validateModelName(customModel);
+      if (validation.valid) {
+        console.log(`[Mysti] Copilot: Using custom model: ${customModel}`);
+        return customModel;
+      }
+      console.warn(`[Mysti] Copilot: Invalid custom model "${customModel}": ${validation.error}`);
+    }
+    return settings.model || undefined;
   }
 
   /**
@@ -425,7 +446,9 @@ export class CopilotProvider extends BaseCliProvider {
    * This parses line-by-line text output from the CLI and converts
    * terminal UI elements to proper markdown formatting
    */
-  protected parseStreamLine(line: string): StreamChunk | null {
+  protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    const copilotSession = session as CopilotSessionState;
+
     // Skip empty lines
     if (!line.trim()) {
       return null;
@@ -438,8 +461,8 @@ export class CopilotProvider extends BaseCliProvider {
       // Handle JSON events if they exist
       switch (data.type) {
         case 'init':
-          if (data.session_id && !this._currentSessionId) {
-            this._currentSessionId = data.session_id;
+          if (data.session_id && !session.sessionId) {
+            session.sessionId = data.session_id;
             console.log('[Mysti] Copilot: Session ID:', data.session_id);
             return { type: 'session_active', sessionId: data.session_id };
           }
@@ -451,25 +474,50 @@ export class CopilotProvider extends BaseCliProvider {
           }
           return null;
 
-        case 'tool_use':
-          this._activeToolCalls.set(data.tool_id, {
+        case 'tool_use': {
+          const toolNameCopilot = data.tool_name || '';
+          const paramsCopilot = data.parameters || {};
+
+          // Detect ask_user-style tools and convert to ask_user_question chunk
+          if ((toolNameCopilot === 'ask_user' || toolNameCopilot === 'AskUserQuestion' || toolNameCopilot === 'ask_user_question') &&
+              paramsCopilot.questions && Array.isArray(paramsCopilot.questions)) {
+            console.log('[Mysti] Copilot: Detected ask_user tool, converting to ask_user_question chunk');
+            return {
+              type: 'ask_user_question',
+              askUserQuestion: {
+                toolCallId: data.tool_id,
+                questions: (paramsCopilot.questions as Array<Record<string, unknown>>).map((q: Record<string, unknown>) => ({
+                  question: String(q.question || ''),
+                  header: String(q.header || '').substring(0, 12),
+                  options: Array.isArray(q.options) ? q.options.map((o: Record<string, unknown>) => ({
+                    label: String(o.label || ''),
+                    description: String(o.description || '')
+                  })) : [],
+                  multiSelect: Boolean(q.multiSelect)
+                }))
+              }
+            };
+          }
+
+          copilotSession.activeToolCalls.set(data.tool_id, {
             id: data.tool_id,
-            name: data.tool_name,
-            input: data.parameters || {}
+            name: toolNameCopilot,
+            input: paramsCopilot
           });
           return {
             type: 'tool_use',
             toolCall: {
               id: data.tool_id,
-              name: data.tool_name,
-              input: data.parameters || {},
+              name: toolNameCopilot,
+              input: paramsCopilot,
               status: 'running'
             }
           };
+        }
 
-        case 'tool_result':
-          const toolInfo = this._activeToolCalls.get(data.tool_id);
-          this._activeToolCalls.delete(data.tool_id);
+        case 'tool_result': {
+          const toolInfo = copilotSession.activeToolCalls.get(data.tool_id);
+          copilotSession.activeToolCalls.delete(data.tool_id);
           return {
             type: 'tool_result',
             toolCall: {
@@ -480,6 +528,7 @@ export class CopilotProvider extends BaseCliProvider {
               status: data.status === 'success' ? 'completed' : 'failed'
             }
           };
+        }
 
         case 'error':
           return {
@@ -489,11 +538,11 @@ export class CopilotProvider extends BaseCliProvider {
 
         case 'result':
           if (data.stats) {
-            this._lastUsageStats = {
+            copilotSession.lastUsageStats = {
               input_tokens: data.stats.input_tokens || data.stats.total_tokens || 0,
               output_tokens: data.stats.output_tokens || 0
             };
-            console.log('[Mysti] Copilot: Captured usage stats:', this._lastUsageStats);
+            console.log('[Mysti] Copilot: Captured usage stats:', copilotSession.lastUsageStats);
           }
           return null;
 
@@ -542,42 +591,24 @@ export class CopilotProvider extends BaseCliProvider {
   /**
    * Get stored usage stats from the last message and clear them
    */
-  getStoredUsage(): { input_tokens: number; output_tokens: number } | null {
-    const usage = this._lastUsageStats;
-    this._lastUsageStats = null;
+  getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number } | null {
+    const session = this._getSession(panelId) as CopilotSessionState;
+    const usage = session.lastUsageStats;
+    session.lastUsageStats = null;
     return usage;
   }
 
   /**
    * Clear session and reset state
    */
-  clearSession(): void {
-    super.clearSession();
-    this._activeToolCalls.clear();
-    this._lastUsageStats = null;
-  }
-
-  // Private helper methods
-
-  private _getConfiguredPath(): string {
-    const config = vscode.workspace.getConfiguration('mysti');
-    return config.get<string>('copilotPath', 'copilot');
-  }
-
-  private async _validateCliPath(cliPath: string): Promise<boolean> {
-    try {
-      // Check if the path exists and is executable
-      if (cliPath.includes(path.sep)) {
-        fs.accessSync(cliPath, fs.constants.X_OK);
-        return true;
+  clearSession(panelId?: string): void {
+    super.clearSession(panelId);
+    if (panelId) {
+      const session = this._panelSessions.get(panelId) as CopilotSessionState | undefined;
+      if (session) {
+        session.activeToolCalls.clear();
+        session.lastUsageStats = null;
       }
-
-      // For bare command names, try to execute with --version
-      const { execSync } = await import('child_process');
-      execSync(`${cliPath} --version`, { stdio: 'ignore', timeout: 5000 });
-      return true;
-    } catch {
-      return false;
     }
   }
 

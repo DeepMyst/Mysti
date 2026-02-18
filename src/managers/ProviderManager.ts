@@ -3,12 +3,12 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -19,6 +19,7 @@ import type { BaseCliProvider } from '../providers/base/BaseCliProvider';
 import type { AgentContextManager } from './AgentContextManager';
 import type {
   ContextItem,
+  Attachment,
   Settings,
   Conversation,
   StreamChunk,
@@ -124,6 +125,18 @@ export class ProviderManager {
   }
 
   /**
+   * Set channel system context on a provider's session for injection into the prompt.
+   * Must be called before sendMessage() so buildPromptAsync() reads it.
+   * Uses the explicit providerId to avoid routing to the wrong provider instance.
+   */
+  public setChannelSystemContext(panelId: string, context: string, providerId?: string): void {
+    const provider = this._getActiveProvider(providerId);
+    if (provider && 'setChannelSystemContext' in provider) {
+      (provider as BaseCliProvider).setChannelSystemContext(panelId, context);
+    }
+  }
+
+  /**
    * Get available models for a provider
    */
   public getModels(providerName: string): ModelInfo[] {
@@ -178,10 +191,11 @@ export class ProviderManager {
     conversation: Conversation | null,
     persona?: PersonaConfig,
     panelId?: string,
-    agentConfig?: AgentConfiguration
+    agentConfig?: AgentConfiguration,
+    attachments?: Attachment[]
   ): AsyncGenerator<StreamChunk> {
     const provider = this._getActiveProvider(settings.provider);
-    yield* provider.sendMessage(content, context, settings, conversation, persona, panelId, this, agentConfig);
+    yield* provider.sendMessage(content, context, settings, conversation, persona, panelId, this, agentConfig, attachments);
   }
 
   /**
@@ -265,33 +279,43 @@ export class ProviderManager {
   /**
    * Clear session on the default provider
    */
-  public clearSession(): void {
+  public clearSession(panelId?: string): void {
     const provider = this._registry.get(this._getDefaultProviderId());
-    provider?.clearSession();
+    provider?.clearSession(panelId);
   }
 
   /**
    * Clear session on a specific provider
    */
-  public clearSessionForProvider(providerId: string): void {
+  public clearSessionForProvider(providerId: string, panelId?: string): void {
     const provider = this._registry.get(providerId);
-    provider?.clearSession();
+    provider?.clearSession(panelId);
+  }
+
+  /**
+   * Dispose persistent process for a panel on the default provider.
+   */
+  public disposePersistentProcess(panelId?: string): void {
+    const provider = this._registry.get(this._getDefaultProviderId());
+    if (provider && 'disposePersistentProcess' in provider) {
+      (provider as { disposePersistentProcess(panelId?: string): void }).disposePersistentProcess(panelId);
+    }
   }
 
   /**
    * Check if the default provider has an active session
    */
-  public hasSession(): boolean {
+  public hasSession(panelId?: string): boolean {
     const provider = this._registry.get(this._getDefaultProviderId());
-    return provider?.hasSession() ?? false;
+    return provider?.hasSession(panelId) ?? false;
   }
 
   /**
    * Get the session ID from the default provider
    */
-  public getSessionId(): string | null {
+  public getSessionId(panelId?: string): string | null {
     const provider = this._registry.get(this._getDefaultProviderId());
-    return provider?.getSessionId() ?? null;
+    return provider?.getSessionId(panelId) ?? null;
   }
 
   /**

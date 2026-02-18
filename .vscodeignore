@@ -13,3 +13,9 @@ webpack.config.js
 CLAUDE.md
 docs/**
 .mcp.json
+clipboard/**
+*.xlsx
+*.ndjson
+.stargazers-cache-*
+stargazers-*
+CONTRIBUTING.md

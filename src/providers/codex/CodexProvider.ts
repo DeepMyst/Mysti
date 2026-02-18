@@ -3,12 +3,12 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -16,7 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
-import { BaseCliProvider } from '../base/BaseCliProvider';
+import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from '../base/BaseCliProvider';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -29,8 +29,20 @@ import type {
   ProviderConfig,
   ContextItem,
   Conversation,
-  AuthStatus
+  AuthStatus,
+  SlashCommandDefinition
 } from '../../types';
+import { validateModelName, validateProfileName } from '../../utils/validation';
+import { getEnrichedEnv } from '../../utils/platform';
+
+/**
+ * Per-panel session state for Codex, extending base with tool call tracking.
+ */
+export interface CodexSessionState extends PanelSessionState {
+  activeToolCalls: Map<string, { id: string; name: string; inputJson: string; status: 'running' | 'completed' | 'failed' }>;
+  completedToolCalls: Set<string>;
+  lastUsageStats: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null;
+}
 
 /**
  * OpenAI Codex CLI provider implementation
@@ -64,9 +76,21 @@ export class CodexProvider extends BaseCliProvider {
     displayName: 'OpenAI Codex',
     models: [
       {
+        id: 'gpt-5.3-codex',
+        name: 'GPT-5.3 Codex',
+        description: 'Newest coding model, best for code generation',
+        contextWindow: 400000
+      },
+      {
+        id: 'gpt-5.2-codex',
+        name: 'GPT-5.2 Codex',
+        description: 'Stable coding model, excellent for code tasks',
+        contextWindow: 400000
+      },
+      {
         id: 'gpt-5.2',
         name: 'GPT-5.2',
-        description: 'Latest model, best for professional tasks',
+        description: 'General purpose model for professional tasks',
         contextWindow: 1000000
       },
       {
@@ -79,6 +103,12 @@ export class CodexProvider extends BaseCliProvider {
         id: 'gpt-5.2-instant',
         name: 'GPT-5.2 Instant',
         description: 'Faster for writing and information seeking',
+        contextWindow: 1000000
+      },
+      {
+        id: 'gpt-5.1-codex-max',
+        name: 'GPT-5.1 Codex Max',
+        description: 'Previous gen flagship, supports context compaction',
         contextWindow: 1000000
       },
       {
@@ -100,56 +130,76 @@ export class CodexProvider extends BaseCliProvider {
         contextWindow: 200000
       }
     ],
-    defaultModel: 'gpt-5.2'
+    defaultModel: 'gpt-5.3-codex'
   };
 
   readonly capabilities: ProviderCapabilities = {
     supportsStreaming: true,
     supportsThinking: true, // Codex has 'reasoning' events
     supportsToolUse: true,
-    supportsSessions: true  // Can resume sessions with `codex exec resume`
+    supportsSessions: true,  // Can resume sessions with `codex exec resume`
+    supportsImages: false,
+    supportsAutoInstall: true
   };
 
-  async discoverCli(): Promise<CliDiscoveryResult> {
-    const paths = this._getSearchPaths();
+  // ============================================================================
+  // Slash command menu: Codex-specific commands
+  // ============================================================================
 
-    for (const searchPath of paths) {
-      if (await this._validateCliPath(searchPath)) {
-        return { found: true, path: searchPath };
-      }
-    }
+  public override getSlashCommands(_panelId?: string): SlashCommandDefinition[] {
+    const base = super.getSlashCommands(_panelId);
+    return [
+      ...base,
+      {
+        id: 'codex:profile',
+        label: 'Switch profile',
+        description: 'Change Codex CLI profile',
+        section: 'customize',
+        icon: 'account',
+        provider: 'openai-codex',
+        action: 'execute',
+        keywords: ['profile', 'config', 'codex'],
+      },
+    ];
+  }
 
+  protected _createSession(panelId: string): CodexSessionState {
     return {
-      found: false,
-      path: 'codex',
-      installCommand: 'npm install -g @openai/codex'
+      panelId,
+      process: null,
+      sessionId: null,
+      autonomousMode: false,
+      persistentProcess: null,
+      persistentReady: false,
+      lastHealthCheck: 0,
+      activeToolCalls: new Map(),
+      completedToolCalls: new Set(),
+      lastUsageStats: null,
     };
   }
 
+  async discoverCli(): Promise<CliDiscoveryResult> {
+    return this._discoverCliCommon();
+  }
+
   getCliPath(): string {
-    // First check if user has configured a custom path
+    return this._getCliPathCommon();
+  }
+
+  protected _getCliCommandName(): string {
+    return 'codex';
+  }
+
+  protected _getConfiguredCliPath(): string {
     const config = vscode.workspace.getConfiguration('mysti');
-    const configuredPath = config.get<string>('codexPath', 'codex');
+    return config.get<string>('codexPath', 'codex');
+  }
 
-    // If user specified a non-default path, use it
-    if (configuredPath !== 'codex') {
-      return configuredPath;
+  protected _getAdditionalSearchPaths(): string[] {
+    if (process.platform === 'darwin') {
+      return ['/Applications/Codex.app/Contents/MacOS/codex'];
     }
-
-    // Otherwise, search known installation paths
-    const paths = this._getSearchPaths();
-    for (const searchPath of paths) {
-      try {
-        fs.accessSync(searchPath, fs.constants.X_OK);
-        console.log(`[Mysti] Codex: Found CLI at: ${searchPath}`);
-        return searchPath;
-      } catch {
-        // Continue to next path
-      }
-    }
-
-    // Fallback to default (will likely fail but provides clear error)
-    return configuredPath;
+    return [];
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
@@ -166,9 +216,10 @@ export class CodexProvider extends BaseCliProvider {
   /**
    * Get stored usage stats from turn.completed and clear them
    */
-  getStoredUsage(): { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null {
-    const usage = this._lastUsageStats;
-    this._lastUsageStats = null;
+  getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null {
+    const session = this._getSession(panelId) as CodexSessionState;
+    const usage = session.lastUsageStats;
+    session.lastUsageStats = null;
     return usage;
   }
 
@@ -218,10 +269,15 @@ export class CodexProvider extends BaseCliProvider {
   /**
    * Override clearSession to also clear tool state
    */
-  clearSession(): void {
-    super.clearSession();
-    this._activeToolCalls.clear();
-    this._completedToolCalls.clear();
+  clearSession(panelId?: string): void {
+    super.clearSession(panelId);
+    if (panelId) {
+      const session = this._panelSessions.get(panelId) as CodexSessionState | undefined;
+      if (session) {
+        session.activeToolCalls.clear();
+        session.completedToolCalls.clear();
+      }
+    }
   }
 
   /**
@@ -287,12 +343,19 @@ export class CodexProvider extends BaseCliProvider {
     providerManager?: unknown
   ): AsyncGenerator<StreamChunk> {
     const cliPath = this.getCliPath();
+    const session = this._getSession(panelId) as CodexSessionState;
 
     // Build prompt with context and persona
     const fullPrompt = this.buildPrompt(content, context, conversation, settings, persona);
 
     // Build CLI arguments
     const args = this._buildCodexArgs(settings);
+
+    // Inject channel system context as native Codex system instructions
+    if (session.channelSystemContext) {
+      args.push('-c', `developer_instructions=${session.channelSystemContext}`);
+      console.log('[Mysti] Codex: Injecting channel context as developer_instructions');
+    }
 
     // Add prompt as the last argument (use '-' to read from stdin for long prompts)
     // For shorter prompts we could pass directly, but stdin is safer for any length
@@ -311,24 +374,22 @@ export class CodexProvider extends BaseCliProvider {
       const useShell = vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
 
       // Spawn the process
-      this._currentProcess = spawn(cliPath, args, {
+      session.process = spawn(cliPath, args, {
         cwd,
-        env: { ...process.env },
+        env: getEnrichedEnv(),
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: useShell
       });
 
       // Register process with ProviderManager for per-panel cancellation
-      if (panelId && providerManager && typeof (providerManager as any).registerProcess === 'function') {
-        (providerManager as any).registerProcess(panelId, this._currentProcess);
+      if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
+        (providerManager as ProcessTracker).registerProcess(panelId, session.process);
       }
 
       // Collect stderr for error reporting
-      let stderrOutput = '';
-      if (this._currentProcess.stderr) {
-        this._currentProcess.stderr.on('data', (data) => {
+      if (session.process.stderr) {
+        session.process.stderr.on('data', (data) => {
           const text = data.toString();
-          stderrOutput += text;
           // In --json mode, activity goes to stderr, results to stdout
           // So stderr might contain useful progress info
           console.log(`[Mysti] ${this.displayName} stderr:`, text);
@@ -336,24 +397,24 @@ export class CodexProvider extends BaseCliProvider {
       }
 
       // Send prompt via stdin (using '-' argument)
-      if (this._currentProcess.stdin) {
-        this._currentProcess.stdin.write(fullPrompt);
-        this._currentProcess.stdin.end();
+      if (session.process.stdin) {
+        session.process.stdin.write(fullPrompt);
+        session.process.stdin.end();
       }
 
       // Process stream output
-      yield* this._processCodexStream();
+      yield* this._processCodexStream(session);
 
       // Yield final done with any stored usage from stream parsing
-      const storedUsage = this.getStoredUsage();
+      const storedUsage = this.getStoredUsage(panelId);
       yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
     } catch (error) {
       yield this.handleError(error);
     } finally {
-      this._currentProcess = null;
+      session.process = null;
       // Clear process tracking when done
-      if (panelId && providerManager && typeof (providerManager as any).clearProcess === 'function') {
-        (providerManager as any).clearProcess(panelId);
+      if (panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
+        (providerManager as ProcessTracker).clearProcess(panelId);
       }
     }
   }
@@ -379,18 +440,16 @@ export class CodexProvider extends BaseCliProvider {
     // Priority: mode restrictions first, then access level
     this._addSandboxFlags(args, settings);
 
-    // Only set model if it's a valid Codex model (not a Claude model)
-    // This prevents passing Claude model names like 'claude-sonnet-4-5-20250929' to Codex
-    if (settings.model) {
-      const validCodexModels = this.config.models.map(m => m.id);
-      if (validCodexModels.includes(settings.model)) {
-        // Only pass model if different from Codex default
-        if (settings.model !== this.config.defaultModel) {
-          args.push('--model', settings.model);
-        }
-      }
-      // If model is not a valid Codex model, don't pass --model flag
-      // Codex will use its own default
+    // Add profile if configured
+    const profile = this._getProfile();
+    if (profile) {
+      args.push('--profile', profile);
+    }
+
+    // Add model selection (custom model override or dropdown selection)
+    const effectiveModel = this._getEffectiveModel(settings);
+    if (effectiveModel) {
+      args.push('--model', effectiveModel);
     }
 
     // Skip git repo check - useful if workspace isn't a git repo
@@ -403,7 +462,7 @@ export class CodexProvider extends BaseCliProvider {
    * Get thinking tokens based on thinking level
    * Codex doesn't use MAX_THINKING_TOKENS - reasoning is controlled by config
    */
-  protected getThinkingTokens(thinkingLevel: string): number | undefined {
+  protected getThinkingTokens(_thinkingLevel: string): number | undefined {
     // Codex doesn't use MAX_THINKING_TOKENS env var
     // Reasoning is controlled by model_reasoning_effort in config.toml
     return undefined;
@@ -480,12 +539,12 @@ export class CodexProvider extends BaseCliProvider {
    * - web_search: Web search operations
    * - todo_list: Task tracking
    */
-  private async *_processCodexStream(): AsyncGenerator<StreamChunk> {
+  private async *_processCodexStream(session: CodexSessionState): AsyncGenerator<StreamChunk> {
     let buffer = '';
     let hasYieldedContent = false;
 
-    if (this._currentProcess?.stdout) {
-      for await (const chunk of this._currentProcess.stdout) {
+    if (session.process?.stdout) {
+      for await (const chunk of session.process.stdout) {
         const chunkStr = chunk.toString();
         buffer += chunkStr;
 
@@ -495,7 +554,7 @@ export class CodexProvider extends BaseCliProvider {
 
         for (const line of lines) {
           if (line.trim()) {
-            const parsed = this._parseCodexEvent(line);
+            const parsed = this._parseCodexEvent(line, session);
             if (parsed) {
               hasYieldedContent = true;
               yield parsed;
@@ -507,7 +566,7 @@ export class CodexProvider extends BaseCliProvider {
 
     // Process remaining buffer
     if (buffer.trim()) {
-      const parsed = this._parseCodexEvent(buffer);
+      const parsed = this._parseCodexEvent(buffer, session);
       if (parsed) {
         hasYieldedContent = true;
         yield parsed;
@@ -515,7 +574,7 @@ export class CodexProvider extends BaseCliProvider {
     }
 
     // Wait for process to complete
-    const exitCode = await this.waitForProcess();
+    const exitCode = await this.waitForProcess(session);
 
     if (exitCode !== 0 && exitCode !== null && !hasYieldedContent) {
       yield { type: 'error', content: `Codex exited with code ${exitCode}` };
@@ -525,7 +584,7 @@ export class CodexProvider extends BaseCliProvider {
   /**
    * Parse a Codex JSONL event line
    */
-  private _parseCodexEvent(line: string): StreamChunk | null {
+  private _parseCodexEvent(line: string, session: CodexSessionState): StreamChunk | null {
     try {
       const event = JSON.parse(line);
 
@@ -534,16 +593,16 @@ export class CodexProvider extends BaseCliProvider {
         // Thread/session events
         case 'thread.started':
           if (event.thread_id) {
-            this._currentSessionId = event.thread_id;
+            session.sessionId = event.thread_id;
             return { type: 'session_active', sessionId: event.thread_id };
           }
           return null;
 
-        case 'turn.completed':
+        case 'turn.completed': {
           // Turn completed - store usage stats for retrieval by getStoredUsage()
           const usage = event.usage || event.turn?.usage;
           if (usage) {
-            this._lastUsageStats = {
+            session.lastUsageStats = {
               input_tokens: usage.input_tokens || usage.prompt_tokens || 0,
               output_tokens: usage.output_tokens || usage.completion_tokens || 0,
               // Codex uses cached_input_tokens, map to cache_read_input_tokens
@@ -551,6 +610,7 @@ export class CodexProvider extends BaseCliProvider {
             };
           }
           return null; // Don't return done here - let sendMessage handle it
+        }
 
         case 'turn.failed':
           return { type: 'error', content: event.error || 'Turn failed' };
@@ -563,7 +623,7 @@ export class CodexProvider extends BaseCliProvider {
           // - item.started: emits tool_use with status 'running'
           // - item.updated: emits deltas for streaming content
           // - item.completed: emits tool_result with status 'completed'
-          return this._parseCodexItem(event);
+          return this._parseCodexItem(event, session);
 
         // Direct error event
         case 'error':
@@ -601,8 +661,10 @@ export class CodexProvider extends BaseCliProvider {
    * Parse a Codex item event into a StreamChunk
    * Improved to handle delta updates for streaming and proper tool state tracking
    */
-  private _parseCodexItem(event: any): StreamChunk | null {
-    const item = event.item || event;
+  /* eslint-disable @typescript-eslint/no-explicit-any -- Codex emits deeply nested dynamic JSON */
+  private _parseCodexItem(event: Record<string, any>, session: CodexSessionState): StreamChunk | null {
+    const item = (event.item || event) as Record<string, any>;
+    /* eslint-enable @typescript-eslint/no-explicit-any */
     const itemType = item.type || item.item_type;
     const eventType = event.type; // 'item.updated' vs 'item.completed'
 
@@ -639,7 +701,7 @@ export class CodexProvider extends BaseCliProvider {
         const toolId = item.id || `tool-${Date.now()}`;
 
         // DEDUPLICATION: Skip if this tool has already completed
-        if (this._completedToolCalls.has(toolId)) {
+        if (session.completedToolCalls.has(toolId)) {
           return null;
         }
 
@@ -647,7 +709,7 @@ export class CodexProvider extends BaseCliProvider {
         const toolName = 'Bash';
 
         // Codex uses 'command' field for the shell command
-        const input: Record<string, any> = {
+        const input: Record<string, unknown> = {
           command: item.command || ''
         };
 
@@ -659,8 +721,8 @@ export class CodexProvider extends BaseCliProvider {
 
         if (isCompleted) {
           // Mark as completed to prevent duplicate tool_result emissions
-          this._completedToolCalls.add(toolId);
-          this._activeToolCalls.delete(toolId);
+          session.completedToolCalls.add(toolId);
+          session.activeToolCalls.delete(toolId);
           return {
             type: 'tool_result',
             toolCall: {
@@ -673,10 +735,10 @@ export class CodexProvider extends BaseCliProvider {
           };
         } else {
           // Only emit tool_use if not already active (prevent duplicate running events)
-          if (this._activeToolCalls.has(toolId)) {
+          if (session.activeToolCalls.has(toolId)) {
             return null;
           }
-          this._activeToolCalls.set(toolId, {
+          session.activeToolCalls.set(toolId, {
             id: toolId,
             name: toolName,
             inputJson: JSON.stringify(input),
@@ -701,12 +763,33 @@ export class CodexProvider extends BaseCliProvider {
         const toolId = item.id || item.call_id || `tool-${Date.now()}`;
 
         // DEDUPLICATION: Skip if this tool has already completed
-        if (this._completedToolCalls.has(toolId)) {
+        if (session.completedToolCalls.has(toolId)) {
           return null;
         }
 
         const toolName = item.name || item.tool || item.function?.name || 'tool';
         const input = item.arguments || item.input || item.function?.arguments || {};
+
+        // Detect ask_user-style tools and convert to ask_user_question chunk
+        if ((toolName === 'ask_user' || toolName === 'AskUserQuestion' || toolName === 'ask_user_question') &&
+            input.questions && Array.isArray(input.questions)) {
+          console.log('[Mysti] Codex: Detected ask_user tool, converting to ask_user_question chunk');
+          return {
+            type: 'ask_user_question',
+            askUserQuestion: {
+              toolCallId: toolId,
+              questions: (input.questions as Array<Record<string, unknown>>).map((q) => ({
+                question: String(q.question || ''),
+                header: String(q.header || '').substring(0, 12),
+                options: Array.isArray(q.options) ? q.options.map((o: Record<string, unknown>) => ({
+                  label: String(o.label || ''),
+                  description: String(o.description || '')
+                })) : [],
+                multiSelect: Boolean(q.multiSelect)
+              }))
+            }
+          };
+        }
 
         // Determine if this is a completion event
         const isCompleted = eventType === 'item.completed' ||
@@ -717,8 +800,8 @@ export class CodexProvider extends BaseCliProvider {
 
         if (isCompleted || isFailed) {
           // Mark as completed to prevent duplicate tool_result emissions
-          this._completedToolCalls.add(toolId);
-          this._activeToolCalls.delete(toolId);
+          session.completedToolCalls.add(toolId);
+          session.activeToolCalls.delete(toolId);
           return {
             type: 'tool_result',
             toolCall: {
@@ -731,10 +814,10 @@ export class CodexProvider extends BaseCliProvider {
           };
         } else {
           // Only emit tool_use if not already active (prevent duplicate running events)
-          if (this._activeToolCalls.has(toolId)) {
+          if (session.activeToolCalls.has(toolId)) {
             return null;
           }
-          this._activeToolCalls.set(toolId, {
+          session.activeToolCalls.set(toolId, {
             id: toolId,
             name: toolName,
             inputJson: JSON.stringify(input),
@@ -760,7 +843,7 @@ export class CodexProvider extends BaseCliProvider {
         const fileId = item.id || `file-${Date.now()}`;
 
         // DEDUPLICATION: Skip if this file operation has already completed
-        if (this._completedToolCalls.has(fileId)) {
+        if (session.completedToolCalls.has(fileId)) {
           return null;
         }
 
@@ -770,7 +853,7 @@ export class CodexProvider extends BaseCliProvider {
         const toolName = (itemType === 'write' || item.operation === 'create') ? 'Write' : 'Edit';
 
         // Build structured input for edit report cards
-        const input: Record<string, any> = {
+        const input: Record<string, unknown> = {
           file_path: filePath
         };
 
@@ -789,7 +872,7 @@ export class CodexProvider extends BaseCliProvider {
 
         if (isCompleted || isFailed) {
           // Mark as completed to prevent duplicates
-          this._completedToolCalls.add(fileId);
+          session.completedToolCalls.add(fileId);
           return {
             type: 'tool_result',
             toolCall: {
@@ -802,10 +885,10 @@ export class CodexProvider extends BaseCliProvider {
           };
         } else {
           // Only emit tool_use if not already active
-          if (this._activeToolCalls.has(fileId)) {
+          if (session.activeToolCalls.has(fileId)) {
             return null;
           }
-          this._activeToolCalls.set(fileId, {
+          session.activeToolCalls.set(fileId, {
             id: fileId,
             name: toolName,
             inputJson: JSON.stringify(input),
@@ -828,7 +911,7 @@ export class CodexProvider extends BaseCliProvider {
         const searchId = item.id || `search-${Date.now()}`;
 
         // DEDUPLICATION: Skip if this search has already completed
-        if (this._completedToolCalls.has(searchId)) {
+        if (session.completedToolCalls.has(searchId)) {
           return null;
         }
 
@@ -840,7 +923,7 @@ export class CodexProvider extends BaseCliProvider {
 
         if (isCompleted || isFailed) {
           // Mark as completed to prevent duplicates
-          this._completedToolCalls.add(searchId);
+          session.completedToolCalls.add(searchId);
           return {
             type: 'tool_result',
             toolCall: {
@@ -853,10 +936,10 @@ export class CodexProvider extends BaseCliProvider {
           };
         } else {
           // Only emit tool_use if not already active
-          if (this._activeToolCalls.has(searchId)) {
+          if (session.activeToolCalls.has(searchId)) {
             return null;
           }
-          this._activeToolCalls.set(searchId, {
+          session.activeToolCalls.set(searchId, {
             id: searchId,
             name: 'web_search',
             inputJson: JSON.stringify(searchInput),
@@ -877,7 +960,7 @@ export class CodexProvider extends BaseCliProvider {
       case 'todo_list': {
         // Task tracking - emit as text for now
         if (item.todos && Array.isArray(item.todos)) {
-          const todoText = item.todos.map((t: any) =>
+          const todoText = item.todos.map((t: Record<string, unknown>) =>
             `- [${t.status === 'completed' ? 'x' : ' '}] ${t.content}`
           ).join('\n');
           return { type: 'text', content: `\n**Tasks:**\n${todoText}\n` };
@@ -918,69 +1001,54 @@ export class CodexProvider extends BaseCliProvider {
     }
   }
 
+  /**
+   * Get the effective model, preferring provider-specific custom model over dropdown selection
+   */
+  private _getEffectiveModel(settings: Settings): string | undefined {
+    const config = vscode.workspace.getConfiguration('mysti');
+    const customModel = config.get<string>('codexModel', '');
+    if (customModel) {
+      const validation = validateModelName(customModel);
+      if (validation.valid) {
+        console.log(`[Mysti] Codex: Using custom model: ${customModel}`);
+        return customModel;
+      }
+      console.warn(`[Mysti] Codex: Invalid custom model "${customModel}": ${validation.error}`);
+    }
+    // Fall back to dropdown selection, but only if it's a valid Codex model
+    if (settings.model) {
+      const validCodexModels = this.config.models.map(m => m.id);
+      if (validCodexModels.includes(settings.model)) {
+        return settings.model !== this.config.defaultModel ? settings.model : undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Get the Codex profile from settings
+   */
+  private _getProfile(): string | undefined {
+    const config = vscode.workspace.getConfiguration('mysti');
+    const profile = config.get<string>('codexProfile', '');
+    if (profile) {
+      const validation = validateProfileName(profile);
+      if (validation.valid) {
+        console.log(`[Mysti] Codex: Using profile: ${profile}`);
+        return profile;
+      }
+      console.warn(`[Mysti] Codex: Invalid profile "${profile}": ${validation.error}`);
+    }
+    return undefined;
+  }
+
   // These methods are required by abstract base but we override sendMessage
-  protected buildCliArgs(settings: Settings, _hasSession: boolean): string[] {
+  protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
     return this._buildCodexArgs(settings);
   }
 
-  protected parseStreamLine(line: string): StreamChunk | null {
-    return this._parseCodexEvent(line);
+  protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    return this._parseCodexEvent(line, session as CodexSessionState);
   }
 
-  // Private helper methods
-
-  private _getSearchPaths(): string[] {
-    const paths: string[] = [];
-    const homeDir = os.homedir();
-
-    // Configured path first
-    const config = vscode.workspace.getConfiguration('mysti');
-    const configuredPath = config.get<string>('codexPath');
-    if (configuredPath && configuredPath !== 'codex') {
-      paths.push(configuredPath);
-    }
-
-    // Standard locations
-    if (process.platform === 'win32') {
-      paths.push(path.join(homeDir, 'AppData', 'Roaming', 'npm', 'codex.cmd'));
-      paths.push(path.join(homeDir, 'AppData', 'Roaming', 'npm', 'codex'));
-    } else {
-      // macOS and Linux
-      paths.push('/usr/local/bin/codex');
-      paths.push('/opt/homebrew/bin/codex'); // Homebrew on Apple Silicon
-      paths.push(path.join(homeDir, '.npm-global', 'bin', 'codex'));
-      paths.push(path.join(homeDir, 'node_modules', '.bin', 'codex'));
-      paths.push(path.join(homeDir, '.local', 'bin', 'codex'));
-      // Homebrew cask location
-      paths.push('/Applications/Codex.app/Contents/MacOS/codex');
-    }
-
-    // Default fallback
-    paths.push('codex');
-
-    return paths;
-  }
-
-  private async _validateCliPath(cliPath: string): Promise<boolean> {
-    try {
-      fs.accessSync(cliPath, fs.constants.X_OK);
-      return true;
-    } catch {
-      // Try which/where command as fallback
-      if (cliPath === 'codex') {
-        return this._checkCommandExists('codex');
-      }
-      return false;
-    }
-  }
-
-  private async _checkCommandExists(command: string): Promise<boolean> {
-    const checkCmd = process.platform === 'win32' ? 'where' : 'which';
-
-    return new Promise((resolve) => {
-      const proc = spawn(checkCmd, [command], { stdio: ['ignore', 'pipe', 'ignore'] });
-      proc.on('close', (code) => resolve(code === 0));
-      proc.on('error', () => resolve(false));
-    });
-  }
 }

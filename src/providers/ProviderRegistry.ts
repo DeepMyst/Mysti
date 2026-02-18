@@ -3,12 +3,12 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -16,7 +16,10 @@ import type { ICliProvider } from './base/IProvider';
 import { ClaudeCodeProvider } from './claude/ClaudeCodeProvider';
 import { CodexProvider } from './codex/CodexProvider';
 import { GeminiProvider } from './gemini/GeminiProvider';
+import { ClineProvider } from './cline/ClineProvider';
 import { CopilotProvider } from './copilot/CopilotProvider';
+import { CursorProvider } from './cursor/CursorProvider';
+import { OpenClawProvider } from './openclaw/OpenClawProvider';
 
 /**
  * Registry for managing CLI providers
@@ -51,10 +54,26 @@ export class ProviderRegistry {
     this._providers.set(gemini.id, gemini);
     console.log(`[Mysti] Registered provider: ${gemini.displayName}`);
 
+    // Register Cline
+    const cline = new ClineProvider(this._extensionContext);
+    this._providers.set(cline.id, cline);
+    console.log(`[Mysti] Registered provider: ${cline.displayName}`);
+
     // Register GitHub Copilot
     const copilot = new CopilotProvider(this._extensionContext);
     this._providers.set(copilot.id, copilot);
     console.log(`[Mysti] Registered provider: ${copilot.displayName}`);
+
+    // Register Cursor
+    const cursor = new CursorProvider(this._extensionContext);
+    this._providers.set(cursor.id, cursor);
+    console.log(`[Mysti] Registered provider: ${cursor.displayName}`);
+
+    // Register OpenClaw
+    const openclaw = new OpenClawProvider(this._extensionContext);
+    this._providers.set(openclaw.id, openclaw);
+    console.log(`[Mysti] Registered provider: ${openclaw.displayName}`);
+
   }
 
   /**

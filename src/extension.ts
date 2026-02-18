@@ -3,12 +3,12 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -21,6 +21,12 @@ import { BrainstormManager } from './managers/BrainstormManager';
 import { PermissionManager } from './managers/PermissionManager';
 import { SetupManager } from './managers/SetupManager';
 import { TelemetryManager } from './managers/TelemetryManager';
+import { MemoryManager } from './managers/MemoryManager';
+import { AutonomousManager } from './managers/AutonomousManager';
+import { CompactionManager } from './managers/CompactionManager';
+import { AgentLifecycleManager } from './managers/AgentLifecycleManager';
+import { SlashCommandManager } from './managers/SlashCommandManager';
+import { ActiveModeManager } from './managers/ActiveModeManager';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -31,6 +37,11 @@ let brainstormManager: BrainstormManager;
 let permissionManager: PermissionManager;
 let setupManager: SetupManager;
 let telemetryManager: TelemetryManager;
+let memoryManager: MemoryManager;
+let autonomousManager: AutonomousManager;
+let compactionManager: CompactionManager;
+let lifecycleManager: AgentLifecycleManager;
+let activeModeManager: ActiveModeManager;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('Mysti extension is now active');
@@ -60,6 +71,29 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize setup manager for CLI auto-setup
   setupManager = new SetupManager(context, providerManager);
 
+  // Initialize memory, autonomous, and compaction managers
+  memoryManager = new MemoryManager(context);
+  autonomousManager = new AutonomousManager(context, memoryManager);
+  compactionManager = new CompactionManager(context);
+  lifecycleManager = new AgentLifecycleManager(context);
+
+  // Initialize active mode manager (provider-independent OpenClaw daemon connection)
+  activeModeManager = new ActiveModeManager(context);
+  // Non-blocking: detects CLI, connects to daemon if available
+  activeModeManager.initialize().catch(err =>
+    console.log('[Mysti] ActiveMode: initialization error:', err)
+  );
+
+  // Initialize slash command manager
+  const slashCommandManager = new SlashCommandManager({
+    providerManager,
+    contextManager,
+    conversationManager,
+    compactionManager,
+    memoryManager,
+    brainstormManager,
+  });
+
   // Initialize the chat view provider
   chatViewProvider = new ChatViewProvider(
     context.extensionUri,
@@ -71,7 +105,13 @@ export async function activate(context: vscode.ExtensionContext) {
     brainstormManager,
     permissionManager,
     setupManager,
-    telemetryManager
+    telemetryManager,
+    autonomousManager,
+    memoryManager,
+    compactionManager,
+    lifecycleManager,
+    slashCommandManager,
+    activeModeManager
   );
 
   // Register the webview provider
@@ -90,6 +130,25 @@ export async function activate(context: vscode.ExtensionContext) {
   // Register chatViewProvider for proper disposal (prevents memory leaks)
   context.subscriptions.push({
     dispose: () => chatViewProvider.dispose()
+  });
+
+  // Active Mode status bar item (provider-independent)
+  const activeStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
+  activeStatusBar.command = 'mysti.openChat';
+  context.subscriptions.push(activeStatusBar);
+
+  activeModeManager.onStatusChanged((status) => {
+    if (!activeModeManager.isInstalled()) {
+      activeStatusBar.hide();
+    } else if (status?.running) {
+      activeStatusBar.text = '$(radio-tower) OpenClaw Active';
+      activeStatusBar.tooltip = `Daemon running \u00B7 ${status.channelCount} channel${status.channelCount !== 1 ? 's' : ''}`;
+      activeStatusBar.show();
+    } else {
+      activeStatusBar.text = '$(radio-tower) OpenClaw Offline';
+      activeStatusBar.tooltip = 'OpenClaw daemon not running';
+      activeStatusBar.show();
+    }
   });
 
   // Register commands
@@ -150,6 +209,13 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Toggle autonomous mode command
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.toggleAutonomous', () => {
+      chatViewProvider.toggleAutonomousMode();
+    })
+  );
+
   // Debug commands for testing setup flow (not in package.json - use Command Palette)
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.debugSetup', () => {
@@ -206,5 +272,20 @@ export function deactivate() {
   // Additional cleanup for managers not in subscriptions
   if (permissionManager) {
     permissionManager.dispose();
+  }
+  if (autonomousManager) {
+    autonomousManager.dispose();
+  }
+  if (memoryManager) {
+    memoryManager.dispose();
+  }
+  if (compactionManager) {
+    compactionManager.dispose();
+  }
+  if (lifecycleManager) {
+    lifecycleManager.dispose();
+  }
+  if (activeModeManager) {
+    activeModeManager.dispose();
   }
 }

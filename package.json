@@ -2,12 +2,12 @@
   "name": "mysti",
   "displayName": "Mysti - AI Coding Agent",
   "description": "Multi-agent AI coding assistant. Claude Code, Codex, Gemini, and GitHub Copilot brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "publisher": "DeepMyst",
   "author": {
     "name": "Baha Abunojaim",
     "email": "baha@deepmyst.com",
-    "url": "https://deepmyst.com"
+    "url": "https://www.deepmyst.com/mysti"
   },
   "icon": "resources/Mysti-Logo.png",
   "galleryBanner": {
@@ -21,7 +21,7 @@
   "bugs": {
     "url": "https://github.com/DeepMyst/Mysti/issues"
   },
-  "homepage": "https://deepmyst.com",
+  "homepage": "https://www.deepmyst.com/mysti",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -43,6 +43,7 @@
     "gpt-5",
     "codex",
     "gemini",
+    "cline",
     "ai agent",
     "ai chat",
     "ai coding",
@@ -63,7 +64,7 @@
     "autocomplete",
     "code generation"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "activationEvents": [
     "onStartupFinished",
     "workspaceContains:claude.md",
@@ -75,7 +76,8 @@
     "workspaceContains:.mysti/agents.yaml",
     "workspaceContains:.claude/**",
     "workspaceContains:.gemini/**",
-    "workspaceContains:.openai/**"
+    "workspaceContains:.openai/**",
+    "workspaceContains:.openclaw/**"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -84,7 +86,7 @@
         {
           "id": "mysti-sidebar",
           "title": "Mysti",
-          "icon": "resources/Mysti-Logo.png"
+          "icon": "resources/icon.svg"
         }
       ]
     },
@@ -140,6 +142,11 @@
         "command": "mysti.debugSetupFailure",
         "title": "Debug: Test Setup Failure",
         "category": "Mysti"
+      },
+      {
+        "command": "mysti.toggleAutonomous",
+        "title": "Toggle Autonomous Mode",
+        "category": "Mysti"
       }
     ],
     "menus": {
@@ -179,13 +186,19 @@
             "claude-code",
             "openai-codex",
             "google-gemini",
-            "github-copilot"
+            "cline",
+            "github-copilot",
+            "cursor",
+            "openclaw"
           ],
           "enumDescriptions": [
             "Claude Code CLI (Anthropic) - Deep reasoning, complex refactoring, thorough analysis",
             "OpenAI Codex CLI - Quick iterations, familiar GPT style, rapid prototyping",
             "Google Gemini CLI - Fast responses, Google ecosystem integration",
-            "GitHub Copilot CLI - GitHub-native AI assistant with seamless GitHub integration"
+            "Cline - Autonomous coding agent with browser use, file editing, and command execution",
+            "GitHub Copilot CLI - GitHub-native AI assistant with seamless GitHub integration",
+            "Cursor - AI-powered coding with fast editing and multi-file changes",
+            "OpenClaw - Open-source personal AI assistant with multi-model support and Gateway streaming"
           ],
           "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context."
         },
@@ -204,10 +217,40 @@
           "default": "gemini",
           "description": "Path to Google Gemini CLI executable"
         },
+        "mysti.clinePath": {
+          "type": "string",
+          "default": "cline",
+          "description": "Path to Cline CLI executable"
+        },
         "mysti.copilotPath": {
           "type": "string",
           "default": "copilot",
           "description": "Path to GitHub Copilot CLI executable"
+        },
+        "mysti.cursorPath": {
+          "type": "string",
+          "default": "agent",
+          "description": "Path to Cursor CLI (agent) executable"
+        },
+        "mysti.cursorApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Cursor API key. Set this instead of the CURSOR_API_KEY environment variable. Get your key from Cursor settings."
+        },
+        "mysti.openclawPath": {
+          "type": "string",
+          "default": "openclaw",
+          "description": "Path to OpenClaw CLI executable"
+        },
+        "mysti.openclawGatewayUrl": {
+          "type": "string",
+          "default": "ws://127.0.0.1:18789",
+          "description": "URL of the OpenClaw Gateway WebSocket server"
+        },
+        "mysti.openclawUseGateway": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use OpenClaw Gateway WebSocket for streaming (falls back to CLI if unavailable)"
         },
         "mysti.defaultMode": {
           "type": "string",
@@ -235,6 +278,62 @@
           "default": "claude-sonnet-4-5-20250929",
           "description": "Default model to use"
         },
+        "mysti.claudeCodeModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "maxLength": 128,
+          "description": "Custom model for Claude Code. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-sonnet-4-5-20250929"
+        },
+        "mysti.codexModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "maxLength": 128,
+          "description": "Custom model for OpenAI Codex. Overrides the dropdown selection. Leave empty to use the selected model. Example: gpt-5.3-codex"
+        },
+        "mysti.codexProfile": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-]*$",
+          "maxLength": 64,
+          "description": "Codex profile from ~/.codex/config.toml. Leave empty to use default profile."
+        },
+        "mysti.geminiModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "maxLength": 128,
+          "description": "Custom model for Google Gemini. Overrides the dropdown selection. Leave empty to use the selected model. Example: gemini-3-pro-preview"
+        },
+        "mysti.clineModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "maxLength": 128,
+          "description": "Custom model for Cline. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-sonnet-4-5-20250929"
+        },
+        "mysti.copilotModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "maxLength": 128,
+          "description": "Custom model for GitHub Copilot. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4.6"
+        },
+        "mysti.cursorModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "maxLength": 128,
+          "description": "Custom model for Cursor. Overrides the dropdown selection. Leave empty to use the default model. Example: claude-sonnet-4-5-20250929"
+        },
+        "mysti.openclawModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "maxLength": 128,
+          "description": "Custom model for OpenClaw. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4-6"
+        },
         "mysti.accessLevel": {
           "type": "string",
           "default": "ask-permission",
@@ -255,6 +354,76 @@
           "default": true,
           "description": "Automatically include open files and selections as context for better AI responses"
         },
+        "mysti.compaction.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic context compaction when token usage exceeds the threshold"
+        },
+        "mysti.compaction.threshold": {
+          "type": "number",
+          "default": 75,
+          "minimum": 50,
+          "maximum": 95,
+          "description": "Context usage percentage at which automatic compaction triggers (50-95%)"
+        },
+        "mysti.activeMode.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Active Mode panel and connect to OpenClaw daemon automatically (provider-independent)"
+        },
+        "mysti.activeMode.pollInterval": {
+          "type": "number",
+          "default": 30,
+          "minimum": 10,
+          "maximum": 300,
+          "description": "Seconds between daemon status polls"
+        },
+        "mysti.activeMode.showActivityFeed": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show cross-channel activity feed in Active Mode panel"
+        },
+        "mysti.activeMode.activityLimit": {
+          "type": "number",
+          "default": 50,
+          "minimum": 10,
+          "maximum": 200,
+          "description": "Maximum number of activity entries to display"
+        },
+        "mysti.activeMode.autoStartDaemon": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically start OpenClaw daemon if not running on extension activation"
+        },
+        "mysti.lifecycle.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable agent lifecycle management with idle timeout and process tree protection"
+        },
+        "mysti.lifecycle.idleTimeoutMinutes": {
+          "type": "number",
+          "default": 60,
+          "minimum": 1,
+          "maximum": 1440,
+          "description": "Minutes of inactivity before an agent session is automatically cleared (1-1440)"
+        },
+        "mysti.lifecycle.processTreeTracking": {
+          "type": "boolean",
+          "default": true,
+          "description": "Track child processes spawned by CLI agents to prevent premature shutdown"
+        },
+        "mysti.lifecycle.protectActiveChildren": {
+          "type": "boolean",
+          "default": true,
+          "description": "Block automatic shutdown when the agent has active child processes (requires explicit user action)"
+        },
+        "mysti.lifecycle.checkIntervalSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 10,
+          "maximum": 300,
+          "description": "Seconds between process tree scans for idle sessions (10-300)"
+        },
         "mysti.showSuggestions": {
           "type": "boolean",
           "default": true,
@@ -265,6 +434,25 @@
           "default": false,
           "description": "Enable multi-agent brainstorm mode where two AI providers collaborate, debate, and synthesize solutions"
         },
+        "mysti.brainstorm.strategy": {
+          "type": "string",
+          "default": "quick",
+          "enum": [
+            "quick",
+            "debate",
+            "red-team",
+            "perspectives",
+            "delphi"
+          ],
+          "enumDescriptions": [
+            "Quick - Direct synthesis without discussion (fastest)",
+            "Structured Debate - Agents critique each other's reasoning with rebuttals",
+            "Red Team - One agent proposes, the other challenges, then defense",
+            "Perspective Lenses - Risk analysis vs. opportunity analysis",
+            "Delphi Convergence - Facilitator-mediated iterative refinement"
+          ],
+          "description": "Collaboration strategy for brainstorm mode. Determines how agents interact as a team."
+        },
         "mysti.brainstorm.discussionMode": {
           "type": "string",
           "default": "quick",
@@ -274,16 +462,30 @@
           ],
           "enumDescriptions": [
             "Direct synthesis - faster, agents don't explicitly discuss",
-            "Full discussion - agents review and comment on each other's responses"
+            "Full discussion - agents review and comment on each other's responses (maps to 'debate' strategy)"
           ],
-          "description": "How agents interact before synthesis in brainstorm mode"
+          "description": "Deprecated: Use mysti.brainstorm.strategy instead. Kept for backward compatibility.",
+          "deprecationMessage": "Use mysti.brainstorm.strategy instead"
+        },
+        "mysti.brainstorm.maxDiscussionRounds": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Maximum discussion rounds for debate and delphi strategies (may stop early with auto-converge)"
         },
         "mysti.brainstorm.discussionRounds": {
           "type": "number",
-          "default": 1,
+          "default": 2,
           "minimum": 1,
           "maximum": 3,
-          "description": "Number of discussion rounds in full mode"
+          "description": "Deprecated: Use mysti.brainstorm.maxDiscussionRounds instead.",
+          "deprecationMessage": "Use mysti.brainstorm.maxDiscussionRounds instead"
+        },
+        "mysti.brainstorm.autoConverge": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically stop discussion when agents reach consensus (reduces unnecessary rounds)"
         },
         "mysti.brainstorm.synthesisAgent": {
           "type": "string",
@@ -292,21 +494,35 @@
             "claude-code",
             "openai-codex",
             "google-gemini",
-            "github-copilot"
+            "cline",
+            "github-copilot",
+            "cursor",
+            "openclaw"
           ],
           "description": "Agent to use for synthesis in brainstorm mode"
         },
         "mysti.brainstorm.agents": {
           "type": "array",
-          "default": ["claude-code", "openai-codex"],
+          "default": [
+            "claude-code",
+            "openai-codex"
+          ],
           "items": {
             "type": "string",
-            "enum": ["claude-code", "openai-codex", "google-gemini", "github-copilot"]
+            "enum": [
+              "claude-code",
+              "openai-codex",
+              "google-gemini",
+              "cline",
+              "github-copilot",
+              "cursor",
+              "openclaw"
+            ]
           },
           "minItems": 2,
           "maxItems": 2,
           "uniqueItems": true,
-          "description": "Select any 2 of 4 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
+          "description": "Select any 2 of 7 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
         },
         "mysti.agents.claudePersona": {
           "type": "string",
@@ -392,6 +608,34 @@
           "default": "",
           "description": "Custom persona prompt for Gemini (when persona is 'custom')"
         },
+        "mysti.agents.clinePersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "No additional framing",
+            "Focus on system design and patterns",
+            "Focus on practical implementation",
+            "Focus on technical correctness and performance",
+            "Focus on code quality and issues",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for Cline agent in brainstorm mode"
+        },
+        "mysti.agents.clineCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Cline (when persona is 'custom')"
+        },
         "mysti.agents.copilotPersona": {
           "type": "string",
           "default": "neutral",
@@ -420,6 +664,62 @@
           "default": "",
           "description": "Custom persona prompt for Copilot (when persona is 'custom')"
         },
+        "mysti.agents.cursorPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "No additional framing",
+            "Focus on system design and patterns",
+            "Focus on practical implementation",
+            "Focus on technical correctness and performance",
+            "Focus on code quality and issues",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for Cursor agent in brainstorm mode"
+        },
+        "mysti.agents.cursorCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Cursor (when persona is 'custom')"
+        },
+        "mysti.agents.openclawPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "No additional framing",
+            "Focus on system design and patterns",
+            "Focus on practical implementation",
+            "Focus on technical correctness and performance",
+            "Focus on code quality and issues",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for OpenClaw agent in brainstorm mode"
+        },
+        "mysti.agents.openclawCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for OpenClaw (when persona is 'custom')"
+        },
         "mysti.agents.autoSuggest": {
           "type": "boolean",
           "default": true,
@@ -444,19 +744,98 @@
           "enum": [
             "auto-accept",
             "auto-reject",
-            "require-action"
+            "require-action",
+            "semi-autonomous"
           ],
           "enumDescriptions": [
             "Automatically approve the action when timeout expires",
             "Automatically deny the action when timeout expires",
-            "No timeout - require explicit user action"
+            "No timeout - require explicit user action",
+            "AI makes an intelligent decision using safety classification and learned preferences when timeout expires"
           ],
           "description": "Behavior when permission request times out"
+        },
+        "mysti.semiAutonomous.timeout": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "maximum": 300,
+          "description": "Seconds before AI takes over in semi-autonomous mode. Applies to both permission requests and questions."
         },
         "mysti.useShellForCli": {
           "type": "boolean",
           "default": false,
           "description": "Run AI provider CLIs using a shell (sets shell=true when spawning processes). Enable this on Windows if you see \"spawn EINVAL\" errors with CLI .cmd wrappers."
+        },
+        "mysti.debugVerbose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pass --verbose flag to CLI providers (Claude Code, Cline). Adds extra diagnostic output but may slow responses. Only enable for debugging."
+        },
+        "mysti.autonomous.safetyMode": {
+          "type": "string",
+          "default": "balanced",
+          "enum": [
+            "conservative",
+            "balanced",
+            "aggressive"
+          ],
+          "enumDescriptions": [
+            "Only auto-approve read and create operations",
+            "Auto-approve edits to existing files within workspace",
+            "Auto-approve most operations (destructive actions always blocked)"
+          ],
+          "description": "Safety level for autonomous mode decisions"
+        },
+        "mysti.autonomous.maxSessionDuration": {
+          "type": "number",
+          "default": 24,
+          "minimum": 0,
+          "maximum": 168,
+          "description": "Maximum hours for an autonomous session (0 = unlimited)"
+        },
+        "mysti.autonomous.maxMemoryEntries": {
+          "type": "number",
+          "default": 500,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "Maximum number of memory entries to store"
+        },
+        "mysti.autonomous.blockPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional regex patterns to block in autonomous mode (e.g. dangerous commands)"
+        },
+        "mysti.autonomous.allowFileCreation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow autonomous mode to create new files"
+        },
+        "mysti.autonomous.allowFileEdit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow autonomous mode to edit existing files"
+        },
+        "mysti.autonomous.allowBashCommands": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow autonomous mode to run bash commands (destructive commands always blocked)"
+        },
+        "mysti.autonomous.continuationMode": {
+          "type": "string",
+          "default": "goal",
+          "enum": [
+            "goal",
+            "task-queue"
+          ],
+          "enumDescriptions": [
+            "Provide a high-level goal and the agent continues until it's met",
+            "Provide a list of tasks and the agent works through them sequentially"
+          ],
+          "description": "How autonomous mode handles task continuation"
         }
       }
     },
@@ -470,37 +849,67 @@
         "command": "mysti.openInNewTab",
         "key": "ctrl+shift+n",
         "mac": "cmd+shift+n"
+      },
+      {
+        "command": "mysti.toggleAutonomous",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
       }
     ],
     "languages": [
       {
         "id": "claude-prompt",
-        "extensions": [".claude.md"],
-        "aliases": ["Claude Prompt", "Claude MD"],
+        "extensions": [
+          ".claude.md"
+        ],
+        "aliases": [
+          "Claude Prompt",
+          "Claude MD"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "prompt-markdown",
-        "extensions": [".prompt.md"],
-        "aliases": ["Prompt Markdown", "Prompt MD"],
+        "extensions": [
+          ".prompt.md"
+        ],
+        "aliases": [
+          "Prompt Markdown",
+          "Prompt MD"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "gpt-prompt",
-        "extensions": [".gpt.md"],
-        "aliases": ["GPT Prompt", "GPT MD"],
+        "extensions": [
+          ".gpt.md"
+        ],
+        "aliases": [
+          "GPT Prompt",
+          "GPT MD"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "gemini-prompt",
-        "extensions": [".gemini.md"],
-        "aliases": ["Gemini Prompt", "Gemini MD"],
+        "extensions": [
+          ".gemini.md"
+        ],
+        "aliases": [
+          "Gemini Prompt",
+          "Gemini MD"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "codex-prompt",
-        "extensions": [".codex.md"],
-        "aliases": ["Codex Prompt", "Codex MD"],
+        "extensions": [
+          ".codex.md"
+        ],
+        "aliases": [
+          "Codex Prompt",
+          "Codex MD"
+        ],
         "configuration": "./language-configuration.json"
       }
     ]
@@ -512,15 +921,18 @@
     "lint": "eslint src --ext ts",
     "test": "node ./out/test/runTest.js",
     "sync-agents": "node scripts/sync-agents.js",
-    "sync-agents:force": "node scripts/sync-agents.js --force"
+    "sync-agents:force": "node scripts/sync-agents.js --force",
+    "fetch-stargazers": "node scripts/fetch-stargazers.js"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/uuid": "^10.0.0",
     "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
     "eslint": "^8.54.0",
+    "exceljs": "^4.4.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.2",
     "webpack": "^5.89.0",
@@ -530,6 +942,7 @@
     "@vscode/extension-telemetry": "^0.9.0",
     "marked": "^15.0.0",
     "prismjs": "^1.29.0",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "ws": "^8.19.0"
   }
 }

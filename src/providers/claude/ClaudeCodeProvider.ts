@@ -3,30 +3,49 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { BaseCliProvider } from '../base/BaseCliProvider';
+import { BaseCliProvider, PanelSessionState } from '../base/BaseCliProvider';
 import type {
   CliDiscoveryResult,
   AuthConfig,
-  ProviderCapabilities
+  ProviderCapabilities,
+  PersonaConfig
 } from '../base/IProvider';
 import type {
+  Attachment,
+  ContextItem,
   Settings,
+  Conversation,
   StreamChunk,
   ProviderConfig,
-  AuthStatus
+  AgentConfiguration,
+  AuthStatus,
+  SlashCommandDefinition
 } from '../../types';
+import { validateModelName } from '../../utils/validation';
+import { getEnrichedEnv } from '../../utils/platform';
+
+/**
+ * Extended per-panel session state for Claude Code provider.
+ * Adds tool call accumulation and usage stats tracking per panel.
+ */
+export interface ClaudeSessionState extends PanelSessionState {
+  activeToolCalls: Map<number, { id: string; name: string; inputJson: string }>;
+  lastUsageStats: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null;
+  hasStreamedText: boolean;
+  awaitingCompactSummary: boolean;
+}
 
 /**
  * Claude Code CLI provider implementation
@@ -40,19 +59,25 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     displayName: 'Claude Code',
     models: [
       {
+        id: 'claude-opus-4-6',
+        name: 'Claude Opus 4.6',
+        description: 'Latest flagship model, most capable for complex tasks',
+        contextWindow: 200000
+      },
+      {
         id: 'claude-sonnet-4-5-20250929',
         name: 'Claude Sonnet 4.5',
-        description: 'Most capable model, best for complex tasks',
+        description: 'Best balance of speed and intelligence',
         contextWindow: 200000
       },
       {
         id: 'claude-opus-4-5-20251101',
         name: 'Claude Opus 4.5',
-        description: 'Advanced reasoning and analysis',
+        description: 'Previous flagship, advanced reasoning and analysis',
         contextWindow: 200000
       },
       {
-        id: 'claude-haiku-4-5-20251015',
+        id: 'claude-haiku-4-5-20251001',
         name: 'Claude Haiku 4.5',
         description: 'Fast and efficient for simpler tasks',
         contextWindow: 200000
@@ -65,65 +90,40 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
-    supportsSessions: true
+    supportsSessions: true,
+    supportsNativeCompact: true,
+    // TODO: Enable after testing Claude CLI interactive mode with piped stdin.
+    // The infrastructure is ready — set to true once the REPL protocol is verified.
+    // supportsPersistentProcess: true,
+    supportsImages: true,
+    supportsFileAttachments: true,
+    supportsAutoInstall: true
   };
 
-  // Tool call state tracking (Claude-specific)
-  private _activeToolCalls: Map<number, { id: string; name: string; inputJson: string }> = new Map();
-
-  // Usage stats from message_delta (message_stop doesn't include usage)
-  private _lastUsageStats: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null = null;
-
   async discoverCli(): Promise<CliDiscoveryResult> {
-    const paths = this._getSearchPaths();
-
-    for (const searchPath of paths) {
-      if (await this._validateCliPath(searchPath)) {
-        console.log(`[Mysti] Claude: Found CLI at: ${searchPath}`);
-        return { found: true, path: searchPath };
-      }
-    }
-
-    // Final fallback: check if 'claude' is in PATH via which/where
-    if (await this._checkCommandExists('claude')) {
-      console.log('[Mysti] Claude: Found CLI via PATH');
-      return { found: true, path: 'claude' };
-    }
-
-    return {
-      found: false,
-      path: 'claude',
-      installCommand: 'Install the Claude Code VSCode extension or run: npm install -g @anthropic-ai/claude-code'
-    };
+    return this._discoverCliCommon();
   }
 
   getCliPath(): string {
-    // First check if user has configured a custom path
+    return this._getCliPathCommon();
+  }
+
+  protected _getCliCommandName(): string {
+    return 'claude';
+  }
+
+  protected _getConfiguredCliPath(): string {
     const config = vscode.workspace.getConfiguration('mysti');
-    const configuredPath = config.get<string>('claudeCodePath', 'claude');
+    return config.get<string>('claudeCodePath', 'claude');
+  }
 
-    // If user specified a non-default path, use it
-    if (configuredPath !== 'claude') {
-      return configuredPath;
+  protected _getAdditionalSearchPaths(): string[] {
+    const paths: string[] = [];
+    const extensionCli = this._findVSCodeExtensionCli();
+    if (extensionCli) {
+      paths.push(extensionCli);
     }
-
-    // Otherwise, search known installation paths
-    const paths = this._getSearchPaths();
-    for (const searchPath of paths) {
-      try {
-        // Only check absolute paths with fs.accessSync
-        if (searchPath.includes(path.sep) || searchPath.startsWith('/')) {
-          fs.accessSync(searchPath, fs.constants.X_OK);
-          console.log(`[Mysti] Claude: Using CLI at: ${searchPath}`);
-          return searchPath;
-        }
-      } catch {
-        // Continue to next path
-      }
-    }
-
-    // Fallback to default (will rely on PATH)
-    return configuredPath;
+    return paths;
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
@@ -169,7 +169,60 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     return 'npm install -g @anthropic-ai/claude-code';
   }
 
-  protected buildCliArgs(settings: Settings, hasSession: boolean): string[] {
+  // ============================================================================
+  // Slash command menu: Claude-specific commands
+  // ============================================================================
+
+  public override getSlashCommands(_panelId?: string): SlashCommandDefinition[] {
+    const base = super.getSlashCommands(_panelId);
+    return [
+      ...base,
+      {
+        id: 'claude:compact',
+        label: '/compact',
+        description: 'Compact conversation context',
+        section: 'commands',
+        icon: 'fold',
+        provider: 'claude-code',
+        action: 'execute',
+        isCliPassthrough: true,
+        keywords: ['compact', 'compress', 'context', 'tokens'],
+      },
+      {
+        id: 'claude:thinking',
+        label: 'Thinking level',
+        description: 'Adjust Claude thinking depth',
+        section: 'model',
+        icon: 'lightbulb',
+        provider: 'claude-code',
+        action: 'execute',
+        keywords: ['thinking', 'reasoning', 'depth'],
+      },
+    ];
+  }
+
+  // ============================================================================
+  // Per-panel session creation (override for Claude-specific state)
+  // ============================================================================
+
+  protected _createSession(panelId: string): ClaudeSessionState {
+    return {
+      panelId,
+      process: null,
+      sessionId: null,
+      autonomousMode: false,
+      persistentProcess: null,
+      persistentReady: false,
+      lastHealthCheck: 0,
+      activeToolCalls: new Map(),
+      lastUsageStats: null,
+      hasStreamedText: false,
+      awaitingCompactSummary: false,
+    };
+  }
+
+  protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
+    // --verbose is required by Claude CLI when using --print with --output-format=stream-json
     const args: string[] = [
       '--output-format', 'stream-json',
       '--include-partial-messages',
@@ -180,21 +233,73 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     // This ensures proper enforcement at the CLI level
     this._addPermissionFlags(args, settings);
 
-    // Session handling
-    if (hasSession && this._currentSessionId) {
-      args.push('--resume', this._currentSessionId);
-      console.log('[Mysti] Claude: Resuming session:', this._currentSessionId);
+    // Session handling - resume existing session or start new
+    if (session.sessionId) {
+      args.push('--resume', session.sessionId);
+      console.log('[Mysti] Claude: Continuing session:', session.sessionId);
     } else {
       args.push('--print');
       console.log('[Mysti] Claude: Starting new session');
     }
 
-    // Add model selection
-    if (settings.model) {
-      args.push('--model', settings.model);
+    // Add model selection (custom model override or dropdown selection)
+    const effectiveModel = this._getEffectiveModel(settings);
+    if (effectiveModel) {
+      args.push('--model', effectiveModel);
+    }
+
+    // Inject channel system context as real system instructions (not user message)
+    if (session.channelSystemContext) {
+      args.push('--append-system-prompt', session.channelSystemContext);
+      console.log('[Mysti] Claude: Appending channel context to system prompt');
     }
 
     return args;
+  }
+
+  // ============================================================================
+  // Persistent Process Mode
+  // ============================================================================
+
+  /**
+   * Build CLI args for persistent (interactive) mode.
+   * Omits --print so the CLI stays alive as an interactive REPL.
+   * Always uses --resume to maintain conversation context.
+   */
+  protected buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] | null {
+    const args: string[] = [
+      '--output-format', 'stream-json',
+      '--include-partial-messages',
+      '--verbose',
+    ];
+
+    this._addPermissionFlags(args, settings);
+
+    // Always use --resume for persistent sessions so context carries over
+    if (session.sessionId) {
+      args.push('--resume', session.sessionId);
+    }
+    // No --print flag — this keeps the CLI alive in interactive mode
+
+    const effectiveModel = this._getEffectiveModel(settings);
+    if (effectiveModel) {
+      args.push('--model', effectiveModel);
+    }
+
+    return args;
+  }
+
+  /**
+   * Detect response boundary in Claude CLI stream-json output.
+   * The `result` event marks the end of a response in interactive mode.
+   */
+  protected _isResponseBoundary(line: string): boolean {
+    try {
+      const data = JSON.parse(line.trim());
+      return data.type === 'result';
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -272,7 +377,26 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     console.log('[Mysti] Claude: Using default mode');
   }
 
-  protected parseStreamLine(line: string): StreamChunk | null {
+  /**
+   * Get the effective model, preferring provider-specific custom model over dropdown selection
+   */
+  private _getEffectiveModel(settings: Settings): string | undefined {
+    const config = vscode.workspace.getConfiguration('mysti');
+    const customModel = config.get<string>('claudeCodeModel', '');
+    if (customModel) {
+      const validation = validateModelName(customModel);
+      if (validation.valid) {
+        console.log(`[Mysti] Claude: Using custom model: ${customModel}`);
+        return customModel;
+      }
+      console.warn(`[Mysti] Claude: Invalid custom model "${customModel}": ${validation.error}`);
+    }
+    return settings.model || undefined;
+  }
+
+  protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    const claudeSession = session as ClaudeSessionState;
+
     try {
       const data = JSON.parse(line);
 
@@ -286,6 +410,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         if (nestedType === 'content_block_delta') {
           const delta = nestedEvent.delta || {};
           if (delta.type === 'text_delta') {
+            claudeSession.hasStreamedText = true;
             return { type: 'text', content: delta.text || '' };
           }
           if (delta.type === 'thinking_delta') {
@@ -293,7 +418,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
           }
           if (delta.type === 'input_json_delta') {
             // Accumulate tool input JSON
-            const activeTool = this._activeToolCalls.get(blockIndex);
+            const activeTool = claudeSession.activeToolCalls.get(blockIndex);
             if (activeTool) {
               activeTool.inputJson += delta.partial_json || '';
             }
@@ -306,7 +431,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
           const contentBlock = nestedEvent.content_block || {};
           if (contentBlock.type === 'tool_use') {
             // Store tool call info for accumulation
-            this._activeToolCalls.set(blockIndex, {
+            claudeSession.activeToolCalls.set(blockIndex, {
               id: contentBlock.id || '',
               name: contentBlock.name || '',
               inputJson: ''
@@ -334,9 +459,9 @@ export class ClaudeCodeProvider extends BaseCliProvider {
 
         // Handle content_block_stop - end of a content block
         if (nestedType === 'content_block_stop') {
-          const completedTool = this._activeToolCalls.get(blockIndex);
+          const completedTool = claudeSession.activeToolCalls.get(blockIndex);
           if (completedTool) {
-            this._activeToolCalls.delete(blockIndex);
+            claudeSession.activeToolCalls.delete(blockIndex);
             // Parse the accumulated JSON
             let parsedInput: Record<string, unknown> = {};
             try {
@@ -386,6 +511,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
 
         // Handle message lifecycle events
         if (nestedType === 'message_start') {
+          claudeSession.hasStreamedText = false;
           return null;
         }
 
@@ -393,13 +519,13 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         if (nestedType === 'message_delta') {
           const usage = nestedEvent.usage;
           if (usage) {
-            this._lastUsageStats = {
+            claudeSession.lastUsageStats = {
               input_tokens: usage.input_tokens || 0,
               output_tokens: usage.output_tokens || 0,
               cache_creation_input_tokens: usage.cache_creation_input_tokens,
               cache_read_input_tokens: usage.cache_read_input_tokens
             };
-            console.log('[Mysti] Claude: Captured usage from message_delta:', this._lastUsageStats);
+            console.log('[Mysti] Claude: Captured usage from message_delta:', claudeSession.lastUsageStats);
           }
           return null;
         }
@@ -414,10 +540,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       }
 
       // Handle direct result event (final message)
-      // This contains the complete response which was already streamed via text_delta chunks
-      // We should NOT emit this as text, or it will duplicate the content
+      // For normal messages, text was already streamed via text_delta chunks — skip to avoid duplication.
+      // For CLI internal commands like /compact, no text_delta events are emitted, so emit the result text.
       if (data.type === 'result') {
-        // Just ignore - content was already streamed
+        if (!claudeSession.hasStreamedText && data.result && typeof data.result === 'string') {
+          return { type: 'text', content: data.result };
+        }
         return null;
       }
 
@@ -425,11 +553,18 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       if (data.type === 'system') {
         if (data.subtype === 'init') {
           const sessionId = data.session_id || data.sessionId;
-          if (sessionId && !this._currentSessionId) {
-            this._currentSessionId = sessionId;
+          if (sessionId && !session.sessionId) {
+            session.sessionId = sessionId;
             console.log('[Mysti] Claude: Session ID extracted:', sessionId);
             return { type: 'session_active', sessionId };
           }
+        }
+        // Handle compact_boundary — emitted by CLI when /compact completes
+        if (data.subtype === 'compact_boundary' && data.compact_metadata) {
+          claudeSession.awaitingCompactSummary = true;
+          const preTokens = data.compact_metadata.pre_tokens || 0;
+          console.log(`[Mysti] Claude: Compact boundary - pre_tokens: ${preTokens}`);
+          return { type: 'text', content: `Conversation compacted (was ~${Math.round(preTokens / 1000)}k tokens)` };
         }
         return null;
       }
@@ -462,8 +597,21 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         };
       }
 
-      // Handle tool_result events (user message containing tool results)
+      // Handle user events
       if (data.type === 'user' && data.message?.content) {
+        // Capture compaction summary — a user message with string content after compact_boundary
+        if (claudeSession.awaitingCompactSummary && typeof data.message.content === 'string') {
+          const content = data.message.content;
+          if (content.includes('session is being continued')) {
+            claudeSession.awaitingCompactSummary = false;
+            // Extract just the Summary section (skip the verbose Analysis section)
+            const summaryIdx = content.indexOf('Summary:');
+            const summaryText = summaryIdx >= 0 ? content.substring(summaryIdx) : content;
+            return { type: 'text', content: summaryText };
+          }
+          return null; // skip "Compacted" echo and other noise
+        }
+        // Handle tool_result blocks (array content)
         for (const block of data.message.content) {
           if (block.type === 'tool_result') {
             return {
@@ -508,11 +656,117 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    * Get stored usage stats from the last message and clear them
    * Called by sendMessage after stream processing to include in final done chunk
    */
-  getStoredUsage(): { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null {
-    const usage = this._lastUsageStats;
-    this._lastUsageStats = null;
+  getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null {
+    const session = this._getSession(panelId) as ClaudeSessionState;
+    const usage = session.lastUsageStats;
+    session.lastUsageStats = null;
     console.log('[Mysti] Claude: getStoredUsage returning:', usage);
     return usage;
+  }
+
+  /**
+   * Prepare attachments (images and files) for Claude Code CLI.
+   * Writes base64 data to temp files and sets filePath on each attachment
+   * so buildPromptAsync can reference them in the prompt text.
+   */
+  protected async prepareAttachments(
+    attachments: Attachment[] | undefined,
+    _args: string[]
+  ): Promise<(() => Promise<void>) | null> {
+    if (!attachments || attachments.length === 0) {
+      return null;
+    }
+
+    const allAttachments = attachments.filter(a => a.type === 'image' || a.type === 'file');
+    if (allAttachments.length === 0) {
+      return null;
+    }
+
+    // Write attachments to workspace .mysti/tmp/ so Claude Code CLI has guaranteed filesystem access
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    const wsRoot = workspaceFolders?.[0]?.uri.fsPath;
+    const attachmentDir = wsRoot
+      ? path.join(wsRoot, '.mysti', 'tmp')
+      : os.tmpdir();
+
+    await fs.promises.mkdir(attachmentDir, { recursive: true });
+
+    const tempFiles: string[] = [];
+
+    for (const att of allAttachments) {
+      if (att.filePath && !att.base64Data) {
+        // File from disk via attach button — already has path
+        console.log(`[Mysti] Claude: Attachment from disk: ${att.fileName} -> ${att.filePath}`);
+      } else if (att.base64Data) {
+        // Clipboard/dropped file — write to workspace temp dir
+        const ext = att.fileName.split('.').pop() || (att.type === 'image' ? (att.mimeType.split('/')[1] || 'png') : 'bin');
+        const tempPath = path.join(attachmentDir, `mysti-attachment-${att.id}.${ext}`);
+        const buffer = Buffer.from(att.base64Data, 'base64');
+        await fs.promises.writeFile(tempPath, buffer);
+        tempFiles.push(tempPath);
+        att.filePath = tempPath;
+        console.log(`[Mysti] Claude: Wrote ${att.type} attachment to workspace: ${att.fileName} -> ${tempPath}`);
+      }
+    }
+
+    // Return cleanup function if we created any temp files
+    if (tempFiles.length > 0) {
+      return async () => {
+        for (const tempFile of tempFiles) {
+          try {
+            await fs.promises.unlink(tempFile);
+            console.log(`[Mysti] Claude: Cleaned up temp attachment: ${tempFile}`);
+          } catch {
+            // Ignore cleanup errors
+          }
+        }
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * Override buildPromptAsync to append attachment file path references.
+   * Claude Code CLI can read and analyze files when given file paths in the prompt.
+   */
+  protected async buildPromptAsync(
+    content: string,
+    context: ContextItem[],
+    conversation: Conversation | null,
+    settings: Settings,
+    persona?: PersonaConfig,
+    agentConfig?: AgentConfiguration,
+    attachments?: Attachment[],
+    _systemContext?: string
+  ): Promise<string> {
+    // Skip systemContext for Claude — it's injected as real system instructions via --append-system-prompt in buildCliArgs()
+    let prompt = await super.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, attachments, undefined);
+
+    // Prepend attachment file references so Claude sees them first and uses its Read tool
+    const imageAttachments = (attachments || []).filter(a => a.type === 'image' && a.filePath);
+    const fileAttachments = (attachments || []).filter(a => a.type === 'file' && a.filePath);
+
+    if (imageAttachments.length > 0 || fileAttachments.length > 0) {
+      let attachmentSection = '[Attached Files — use your Read tool to view these files]\n';
+
+      if (imageAttachments.length > 0) {
+        for (const att of imageAttachments) {
+          attachmentSection += `Image "${att.fileName}": ${att.filePath}\n`;
+        }
+      }
+
+      if (fileAttachments.length > 0) {
+        for (const att of fileAttachments) {
+          attachmentSection += `File "${att.fileName}": ${att.filePath}\n`;
+        }
+      }
+
+      attachmentSection += '\n';
+      prompt = attachmentSection + prompt;
+    }
+
+    return prompt;
   }
 
   /**
@@ -534,6 +788,7 @@ Enhanced prompt:`;
       const config = vscode.workspace.getConfiguration('mysti');
       const useShell = config.get<boolean>('useShellForCli', false);
       const proc = spawn(claudePath, args, {
+        env: getEnrichedEnv(),
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: useShell
       });
@@ -565,74 +820,6 @@ Enhanced prompt:`;
 
   // Private helper methods
 
-  private _getConfiguredPath(): string {
-    const config = vscode.workspace.getConfiguration('mysti');
-    return config.get<string>('claudeCodePath', 'claude');
-  }
-
-  private _getSearchPaths(): string[] {
-    const paths: string[] = [];
-    const homeDir = os.homedir();
-
-    // 1. User-configured path first (if not default 'claude')
-    const config = vscode.workspace.getConfiguration('mysti');
-    const configuredPath = config.get<string>('claudeCodePath');
-    if (configuredPath && configuredPath !== 'claude') {
-      paths.push(configuredPath);
-    }
-
-    // 2. VSCode extension bundle (highest priority after configured)
-    const extensionCli = this._findVSCodeExtensionCli();
-    if (extensionCli) {
-      paths.push(extensionCli);
-    }
-
-    // 3. Standard installation locations (platform-specific)
-    if (process.platform === 'win32') {
-      // Windows paths
-      const appData = process.env.APPDATA || path.join(homeDir, 'AppData', 'Roaming');
-      paths.push(path.join(appData, 'npm', 'claude.cmd'));
-      paths.push(path.join(appData, 'npm', 'claude'));
-    } else {
-      // macOS and Linux
-      paths.push('/usr/local/bin/claude');        // Homebrew Intel, standard Unix
-      paths.push('/opt/homebrew/bin/claude');     // Homebrew Apple Silicon
-      paths.push('/usr/bin/claude');              // System install
-      paths.push(path.join(homeDir, '.npm-global', 'bin', 'claude'));  // npm config prefix
-      paths.push(path.join(homeDir, '.local', 'bin', 'claude'));       // pip-style user install
-      paths.push(path.join(homeDir, 'node_modules', '.bin', 'claude')); // Local npm install
-
-      // NVM-managed installations
-      const nvmDir = process.env.NVM_DIR || path.join(homeDir, '.nvm');
-      if (fs.existsSync(nvmDir)) {
-        // Check for current symlink first (most common)
-        const nvmCurrent = path.join(nvmDir, 'current', 'bin', 'claude');
-        paths.push(nvmCurrent);
-
-        // Also check versions directory for installed Node versions
-        const versionsDir = path.join(nvmDir, 'versions', 'node');
-        if (fs.existsSync(versionsDir)) {
-          try {
-            const versions = fs.readdirSync(versionsDir)
-              .filter(v => v.startsWith('v'))
-              .sort()
-              .reverse(); // Latest first
-            for (const version of versions) {
-              paths.push(path.join(versionsDir, version, 'bin', 'claude'));
-            }
-          } catch {
-            // Ignore errors reading NVM versions
-          }
-        }
-      }
-    }
-
-    // 4. Bare command fallback (relies on PATH)
-    paths.push('claude');
-
-    return paths;
-  }
-
   private _findVSCodeExtensionCli(): string | null {
     const homeDir = os.homedir();
     const extensionsDir = path.join(homeDir, '.vscode', 'extensions');
@@ -660,33 +847,4 @@ Enhanced prompt:`;
     return null;
   }
 
-  private async _validateCliPath(cliPath: string): Promise<boolean> {
-    try {
-      // For absolute/relative paths, check file exists and is executable
-      if (cliPath.includes(path.sep) || cliPath.startsWith('/')) {
-        fs.accessSync(cliPath, fs.constants.X_OK);
-        return true;
-      }
-
-      // For bare commands like 'claude', use which/where
-      if (cliPath === 'claude') {
-        return this._checkCommandExists('claude');
-      }
-
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  private async _checkCommandExists(command: string): Promise<boolean> {
-    const { spawn } = await import('child_process');
-    const checkCmd = process.platform === 'win32' ? 'where' : 'which';
-
-    return new Promise((resolve) => {
-      const proc = spawn(checkCmd, [command], { stdio: ['ignore', 'pipe', 'ignore'] });
-      proc.on('close', (code) => resolve(code === 0));
-      proc.on('error', () => resolve(false));
-    });
-  }
 }

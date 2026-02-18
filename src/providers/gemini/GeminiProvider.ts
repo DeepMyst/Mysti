@@ -3,19 +3,19 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { BaseCliProvider } from '../base/BaseCliProvider';
+import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -27,10 +27,19 @@ import type {
   ProviderConfig,
   AuthStatus
 } from '../../types';
+import { validateModelName } from '../../utils/validation';
+
+/**
+ * Per-panel session state for Gemini, extending base with tool call tracking.
+ */
+export interface GeminiSessionState extends PanelSessionState {
+  activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
+  lastUsageStats: { input_tokens: number; output_tokens: number } | null;
+}
 
 /**
  * Google Gemini CLI provider implementation
- * Supports Gemini 3 Pro, 2.5 Pro, 2.5 Flash, and 2.5 Flash-Lite models
+ * Supports Gemini 3 Pro, 3 Flash, 2.5 Pro, and 2.5 Flash models
  */
 export class GeminiProvider extends BaseCliProvider {
   readonly id = 'google-gemini';
@@ -47,6 +56,12 @@ export class GeminiProvider extends BaseCliProvider {
         contextWindow: 1048576
       },
       {
+        id: 'gemini-3-flash-preview',
+        name: 'Gemini 3 Flash (Preview)',
+        description: 'Fast multimodal understanding with strong reasoning',
+        contextWindow: 1048576
+      },
+      {
         id: 'gemini-2.5-pro',
         name: 'Gemini 2.5 Pro',
         description: 'Advanced reasoning for code, math, and STEM',
@@ -60,8 +75,8 @@ export class GeminiProvider extends BaseCliProvider {
       },
       {
         id: 'gemini-2.5-flash-lite',
-        name: 'Gemini 2.5 Flash-Lite',
-        description: 'Ultra fast, optimized for cost efficiency',
+        name: 'Gemini 2.5 Flash Lite',
+        description: 'Lightweight and cost-efficient for simple tasks',
         contextWindow: 1048576
       }
     ],
@@ -72,53 +87,40 @@ export class GeminiProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: false, // Gemini doesn't expose thinking tokens like Claude
     supportsToolUse: true,
-    supportsSessions: true
+    supportsSessions: true,
+    supportsImages: false,
+    supportsAutoInstall: true
   };
 
-  // Tool call state tracking
-  private _activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }> = new Map();
-
-  // Usage stats from result event
-  private _lastUsageStats: { input_tokens: number; output_tokens: number } | null = null;
-
-  async discoverCli(): Promise<CliDiscoveryResult> {
-    // First check configured path
-    const configuredPath = this._getConfiguredPath();
-    if (configuredPath !== 'gemini') {
-      const found = await this._validateCliPath(configuredPath);
-      if (found) {
-        return { found: true, path: configuredPath };
-      }
-    }
-
-    // Search common installation paths
-    const searchPaths = [
-      '/usr/local/bin/gemini',
-      '/opt/homebrew/bin/gemini', // Apple Silicon
-      path.join(os.homedir(), '.npm-global', 'bin', 'gemini'),
-      path.join(os.homedir(), '.local', 'bin', 'gemini'),
-      // npm global paths
-      '/usr/bin/gemini',
-      path.join(process.env.APPDATA || '', 'npm', 'gemini.cmd'), // Windows
-    ];
-
-    for (const searchPath of searchPaths) {
-      if (await this._validateCliPath(searchPath)) {
-        return { found: true, path: searchPath };
-      }
-    }
-
-    // Fall back to checking if 'gemini' is in PATH
-    const found = await this._validateCliPath('gemini');
+  protected _createSession(panelId: string): GeminiSessionState {
     return {
-      found,
-      path: 'gemini',
-      installCommand: 'npm install -g @google/gemini-cli'
+      panelId,
+      process: null,
+      sessionId: null,
+      autonomousMode: false,
+      persistentProcess: null,
+      persistentReady: false,
+      lastHealthCheck: 0,
+      activeToolCalls: new Map(),
+      lastUsageStats: null,
     };
   }
 
+  async discoverCli(): Promise<CliDiscoveryResult> {
+    return this._discoverCliCommon();
+  }
+
   getCliPath(): string {
-    return this._getConfiguredPath();
+    return this._getCliPathCommon();
+  }
+
+  protected _getCliCommandName(): string {
+    return 'gemini';
+  }
+
+  protected _getConfiguredCliPath(): string {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<string>('geminiPath', 'gemini');
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
@@ -178,7 +180,7 @@ export class GeminiProvider extends BaseCliProvider {
     return 'npm install -g @google/gemini-cli';
   }
 
-  protected buildCliArgs(settings: Settings, hasSession: boolean): string[] {
+  protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
     // Note: Prompt is sent via stdin by BaseCliProvider
     // The -p flag appends to stdin, but having it without value may cause issues
     // So we omit it and just use stdin directly like Claude provider does
@@ -186,25 +188,19 @@ export class GeminiProvider extends BaseCliProvider {
       '--output-format', 'stream-json'
     ];
 
-    // Add model selection with validation
-    if (settings.model) {
-      // Validate model is in our config
-      const modelExists = this.config.models.some(m => m.id === settings.model);
-      if (!modelExists) {
-        console.warn(`[Mysti] Gemini: Invalid model ${settings.model}, using default ${this.config.defaultModel}`);
-        args.push('-m', this.config.defaultModel);
-      } else {
-        args.push('-m', settings.model);
-      }
+    // Add model selection (custom model override or dropdown selection)
+    const effectiveModel = this._getEffectiveModel(settings);
+    if (effectiveModel) {
+      args.push('-m', effectiveModel);
     }
 
     // Map Mysti modes/access levels to Gemini CLI flags
     this._addPermissionFlags(args, settings);
 
     // Session handling - Gemini supports --resume for session continuation
-    if (hasSession && this._currentSessionId) {
-      args.push('--resume', this._currentSessionId);
-      console.log('[Mysti] Gemini: Resuming session:', this._currentSessionId);
+    if (session.sessionId) {
+      args.push('--resume', session.sessionId);
+      console.log('[Mysti] Gemini: Resuming session:', session.sessionId);
     }
 
     console.log('[Mysti] Gemini: Built CLI args:', args.join(' '));
@@ -245,18 +241,46 @@ export class GeminiProvider extends BaseCliProvider {
   }
 
   /**
+   * Get the effective model, preferring provider-specific custom model over dropdown selection
+   */
+  private _getEffectiveModel(settings: Settings): string | undefined {
+    const config = vscode.workspace.getConfiguration('mysti');
+    const customModel = config.get<string>('geminiModel', '');
+    if (customModel) {
+      const validation = validateModelName(customModel);
+      if (validation.valid) {
+        console.log(`[Mysti] Gemini: Using custom model: ${customModel}`);
+        return customModel;
+      }
+      console.warn(`[Mysti] Gemini: Invalid custom model "${customModel}": ${validation.error}`);
+    }
+
+    // Only pass settings.model if it's actually a Gemini model —
+    // the global defaultModel may belong to another provider (e.g. claude-sonnet-*)
+    if (settings.model) {
+      const isKnownGeminiModel = this.config.models.some(m => m.id === settings.model);
+      if (isKnownGeminiModel) {
+        return settings.model;
+      }
+      console.log(`[Mysti] Gemini: Ignoring non-Gemini model "${settings.model}", using CLI default`);
+    }
+    return undefined;
+  }
+
+  /**
    * Parse Gemini CLI stream-json output format
    * Event types: init, message, tool_use, tool_result, error, result
    */
-  protected parseStreamLine(line: string): StreamChunk | null {
+  protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    const geminiSession = session as GeminiSessionState;
     try {
       const data = JSON.parse(line);
 
       switch (data.type) {
         // Session initialization
         case 'init':
-          if (data.session_id && !this._currentSessionId) {
-            this._currentSessionId = data.session_id;
+          if (data.session_id && !session.sessionId) {
+            session.sessionId = data.session_id;
             console.log('[Mysti] Gemini: Session ID:', data.session_id);
             return { type: 'session_active', sessionId: data.session_id };
           }
@@ -270,27 +294,53 @@ export class GeminiProvider extends BaseCliProvider {
           return null;
 
         // Tool invocation start
-        case 'tool_use':
+        case 'tool_use': {
+          const toolName = data.tool_name || '';
+          const params = data.parameters || {};
+
+          // Detect ask_user-style tools and emit as ask_user_question chunk
+          // Gemini CLI may use 'ask_user' or similar tool names for interactive questions
+          if ((toolName === 'ask_user' || toolName === 'AskUserQuestion' || toolName === 'ask_user_question') &&
+              params.questions && Array.isArray(params.questions)) {
+            console.log('[Mysti] Gemini: Detected ask_user tool, converting to ask_user_question chunk');
+            return {
+              type: 'ask_user_question',
+              askUserQuestion: {
+                toolCallId: data.tool_id,
+                questions: params.questions.map((q: Record<string, unknown>) => ({
+                  question: String(q.question || ''),
+                  header: String(q.header || '').substring(0, 12), // Enforce 12-char limit to prevent validation loops
+                  options: Array.isArray(q.options) ? q.options.map((o: Record<string, unknown>) => ({
+                    label: String(o.label || ''),
+                    description: String(o.description || '')
+                  })) : [],
+                  multiSelect: Boolean(q.multiSelect || false)
+                }))
+              }
+            };
+          }
+
           // Track active tool call
-          this._activeToolCalls.set(data.tool_id, {
+          geminiSession.activeToolCalls.set(data.tool_id, {
             id: data.tool_id,
-            name: data.tool_name,
-            input: data.parameters || {}
+            name: toolName,
+            input: params
           });
           return {
             type: 'tool_use',
             toolCall: {
               id: data.tool_id,
-              name: data.tool_name,
-              input: data.parameters || {},
+              name: toolName,
+              input: params,
               status: 'running'
             }
           };
+        }
 
         // Tool execution result
-        case 'tool_result':
-          const toolInfo = this._activeToolCalls.get(data.tool_id);
-          this._activeToolCalls.delete(data.tool_id);
+        case 'tool_result': {
+          const toolInfo = geminiSession.activeToolCalls.get(data.tool_id);
+          geminiSession.activeToolCalls.delete(data.tool_id);
           return {
             type: 'tool_result',
             toolCall: {
@@ -301,6 +351,7 @@ export class GeminiProvider extends BaseCliProvider {
               status: data.status === 'success' ? 'completed' : 'failed'
             }
           };
+        }
 
         // Error event
         case 'error':
@@ -312,11 +363,11 @@ export class GeminiProvider extends BaseCliProvider {
         // Final result with stats
         case 'result':
           if (data.stats) {
-            this._lastUsageStats = {
+            geminiSession.lastUsageStats = {
               input_tokens: data.stats.input_tokens || data.stats.total_tokens || 0,
               output_tokens: data.stats.output_tokens || 0
             };
-            console.log('[Mysti] Gemini: Captured usage stats:', this._lastUsageStats);
+            console.log('[Mysti] Gemini: Captured usage stats:', geminiSession.lastUsageStats);
           }
           // Don't return done here - let sendMessage handle it
           return null;
@@ -326,8 +377,9 @@ export class GeminiProvider extends BaseCliProvider {
           return null;
       }
     } catch {
-      // If it's not JSON, treat as plain text
-      if (line.trim()) {
+      // If it's not JSON, only forward genuinely meaningful non-JSON output
+      const trimmed = line.trim();
+      if (trimmed && !this._isDiagnosticLine(trimmed)) {
         console.log('[Mysti] Gemini: Non-JSON line:', line.substring(0, 200));
         return { type: 'text', content: line };
       }
@@ -337,44 +389,40 @@ export class GeminiProvider extends BaseCliProvider {
   }
 
   /**
+   * Check if a non-JSON line is CLI diagnostic noise that should be suppressed
+   */
+  private _isDiagnosticLine(line: string): boolean {
+    return /^\[STARTUP\]/i.test(line)
+      || /^Recording metric/i.test(line)
+      || /^Loaded cached credentials/i.test(line)
+      || /^Full report available at:/i.test(line)
+      || /^StartupProfiler/i.test(line)
+      || /^Hook registry initialized/i.test(line)
+      || /^\s*at\s+/.test(line);
+  }
+
+  /**
    * Get stored usage stats from the last message and clear them
    */
-  getStoredUsage(): { input_tokens: number; output_tokens: number } | null {
-    const usage = this._lastUsageStats;
-    this._lastUsageStats = null;
+  getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number } | null {
+    const session = this._getSession(panelId) as GeminiSessionState;
+    const usage = session.lastUsageStats;
+    session.lastUsageStats = null;
     return usage;
   }
 
   /**
    * Clear session and reset state
    */
-  clearSession(): void {
-    super.clearSession();
-    this._activeToolCalls.clear();
-    this._lastUsageStats = null;
-  }
-
-  // Private helper methods
-
-  private _getConfiguredPath(): string {
-    const config = vscode.workspace.getConfiguration('mysti');
-    return config.get<string>('geminiPath', 'gemini');
-  }
-
-  private async _validateCliPath(cliPath: string): Promise<boolean> {
-    try {
-      // Check if the path exists and is executable
-      if (cliPath.includes(path.sep)) {
-        fs.accessSync(cliPath, fs.constants.X_OK);
-        return true;
+  clearSession(panelId?: string): void {
+    super.clearSession(panelId);
+    if (panelId) {
+      const session = this._panelSessions.get(panelId) as GeminiSessionState | undefined;
+      if (session) {
+        session.activeToolCalls.clear();
+        session.lastUsageStats = null;
       }
-
-      // For bare command names, try to execute with --version
-      const { execSync } = await import('child_process');
-      execSync(`${cliPath} --version`, { stdio: 'ignore', timeout: 5000 });
-      return true;
-    } catch {
-      return false;
     }
   }
+
 }

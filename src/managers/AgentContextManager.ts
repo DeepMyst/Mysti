@@ -3,12 +3,12 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
  * Author: Baha Abunojaim <baha@deepmyst.com>
- * Website: https://deepmyst.com
+ * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -97,7 +97,7 @@ export class AgentContextManager {
 
     for (const agent of allAgents) {
       const agentType = this._agentLoader.getAgentType(agent.id);
-      if (!agentType) continue;
+      if (!agentType) {continue;}
 
       const matchedTriggers: string[] = [];
       let confidence: RecommendationConfidence = 'low';
