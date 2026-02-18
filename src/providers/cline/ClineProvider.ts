@@ -4,10 +4,10 @@
  *
  * Author: MostlyK <bruvistrue93@gmail.com>
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from "vscode";
@@ -704,6 +704,8 @@ export class ClineProvider extends BaseCliProvider {
 			settings,
 			persona,
 			agentConfig,
+			undefined,
+			session.channelSystemContext,
 		);
 
 		console.log(`[Mysti] Cline: Prompt length: ${fullPrompt.length} chars, preview: ${fullPrompt.substring(0, 200)}...`);

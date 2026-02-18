@@ -5,10 +5,10 @@
  * Author: Baha Abunojaim <baha@deepmyst.com>
  * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -350,6 +350,12 @@ export class CodexProvider extends BaseCliProvider {
 
     // Build CLI arguments
     const args = this._buildCodexArgs(settings);
+
+    // Inject channel system context as native Codex system instructions
+    if (session.channelSystemContext) {
+      args.push('-c', `developer_instructions=${session.channelSystemContext}`);
+      console.log('[Mysti] Codex: Injecting channel context as developer_instructions');
+    }
 
     // Add prompt as the last argument (use '-' to read from stdin for long prompts)
     // For shorter prompts we could pass directly, but stdin is safer for any length

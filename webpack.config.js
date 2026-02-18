@@ -5,7 +5,7 @@
  * Author: Baha Abunojaim <baha@deepmyst.com>
  * Website: https://www.deepmyst.com/mysti
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 //@ts-check

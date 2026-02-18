@@ -2,10 +2,10 @@
  * Mysti - AI Coding Agent
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -29,7 +29,7 @@ import type {
   AgentConfiguration,
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
-import { getEnrichedEnv } from '../../utils/platform';
+import { getEnrichedEnv, readOpenClawToken } from '../../utils/platform';
 
 export interface OpenClawSessionState extends PanelSessionState {
   activeToolCalls: Map<string, { id: string; name: string; inputJson: string }>;
@@ -91,7 +91,8 @@ export class OpenClawProvider extends BaseCliProvider {
     const gatewayUrl = vscode.workspace.getConfiguration('mysti').get<string>(
       'openclawGatewayUrl', 'ws://127.0.0.1:18789'
     );
-    this._gateway = new OpenClawGateway(gatewayUrl);
+    const token = readOpenClawToken();
+    this._gateway = new OpenClawGateway(gatewayUrl, token);
   }
 
   protected _createSession(panelId: string): OpenClawSessionState {
@@ -573,8 +574,10 @@ export class OpenClawProvider extends BaseCliProvider {
     panelId?: string,
     agentConfig?: AgentConfiguration,
   ): AsyncGenerator<StreamChunk> {
+    const session = this._getSession(panelId);
     const fullPrompt = await this.buildPromptAsync(
       content, context, null, settings, persona, agentConfig,
+      undefined, session.channelSystemContext,
     );
 
     // Map settings to Gateway options
@@ -636,6 +639,7 @@ export class OpenClawProvider extends BaseCliProvider {
 
     const fullPrompt = await this.buildPromptAsync(
       content, context, null, settings, persona, agentConfig,
+      undefined, session.channelSystemContext,
     );
 
     // Session identifier — reuse existing session or derive from panelId

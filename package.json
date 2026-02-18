@@ -64,7 +64,7 @@
     "autocomplete",
     "code generation"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "activationEvents": [
     "onStartupFinished",
     "workspaceContains:claude.md",
@@ -365,6 +365,35 @@
           "minimum": 50,
           "maximum": 95,
           "description": "Context usage percentage at which automatic compaction triggers (50-95%)"
+        },
+        "mysti.activeMode.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Active Mode panel and connect to OpenClaw daemon automatically (provider-independent)"
+        },
+        "mysti.activeMode.pollInterval": {
+          "type": "number",
+          "default": 30,
+          "minimum": 10,
+          "maximum": 300,
+          "description": "Seconds between daemon status polls"
+        },
+        "mysti.activeMode.showActivityFeed": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show cross-channel activity feed in Active Mode panel"
+        },
+        "mysti.activeMode.activityLimit": {
+          "type": "number",
+          "default": 50,
+          "minimum": 10,
+          "maximum": 200,
+          "description": "Maximum number of activity entries to display"
+        },
+        "mysti.activeMode.autoStartDaemon": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically start OpenClaw daemon if not running on extension activation"
         },
         "mysti.lifecycle.enabled": {
           "type": "boolean",

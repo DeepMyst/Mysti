@@ -5,10 +5,10 @@
  * Author: Baha Abunojaim <baha@deepmyst.com>
  * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -122,6 +122,18 @@ export class ProviderManager {
       }
     }
     console.log('[Mysti] AgentContextManager connected to all providers');
+  }
+
+  /**
+   * Set channel system context on a provider's session for injection into the prompt.
+   * Must be called before sendMessage() so buildPromptAsync() reads it.
+   * Uses the explicit providerId to avoid routing to the wrong provider instance.
+   */
+  public setChannelSystemContext(panelId: string, context: string, providerId?: string): void {
+    const provider = this._getActiveProvider(providerId);
+    if (provider && 'setChannelSystemContext' in provider) {
+      (provider as BaseCliProvider).setChannelSystemContext(panelId, context);
+    }
   }
 
   /**

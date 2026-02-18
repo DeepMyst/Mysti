@@ -5,10 +5,10 @@
  * Author: Baha Abunojaim <baha@deepmyst.com>
  * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -66,6 +66,8 @@ export interface PanelSessionState {
   persistentReady: boolean;
   /** Timestamp of last successful health check */
   lastHealthCheck: number;
+  /** Channel context to inject as system instructions (set before each message) */
+  channelSystemContext?: string;
 }
 
 /**
@@ -94,6 +96,15 @@ export abstract class BaseCliProvider implements ICliProvider {
    */
   public setAgentContextManager(manager: AgentContextManager): void {
     this._agentContextManager = manager;
+  }
+
+  /**
+   * Set channel system context on a panel session.
+   * Called by ProviderManager before sendMessage() so buildPromptAsync() can read it.
+   */
+  public setChannelSystemContext(panelId: string, context: string): void {
+    const session = this._getSession(panelId);
+    session.channelSystemContext = context;
   }
 
   // Abstract methods - must be implemented by subclasses
@@ -403,7 +414,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     session.process = proc;
 
     const fullPrompt = await this.buildPromptAsync(
-      content, context, conversation, settings, persona, agentConfig, attachments,
+      content, context, conversation, settings, persona, agentConfig, attachments, session.channelSystemContext,
     );
 
     // Send prompt followed by newline delimiter
@@ -702,7 +713,7 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     try {
       // Build prompt AFTER spawning (parallelizes CLI startup with prompt building)
-      const fullPrompt = await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, attachments);
+      const fullPrompt = await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, attachments, session.channelSystemContext);
 
       const promptTime = Date.now() - startTime - spawnTime;
       console.log(`[Mysti] ${this.displayName}: Prompt built in ${promptTime}ms (total: ${Date.now() - startTime}ms)`);
@@ -966,7 +977,8 @@ export abstract class BaseCliProvider implements ICliProvider {
     settings: Settings,
     persona?: PersonaConfig,
     agentConfig?: AgentConfiguration,
-    _attachments?: Attachment[]
+    _attachments?: Attachment[],
+    systemContext?: string
   ): Promise<string> {
     if (content.trim().startsWith('/')) {
       return content.trim();
@@ -982,6 +994,11 @@ export abstract class BaseCliProvider implements ICliProvider {
       if (personaPrompt) {
         fullPrompt += personaPrompt + '\n\n';
       }
+    }
+
+    // System context (e.g., OpenClaw channel capabilities) — injected after agent instructions
+    if (systemContext) {
+      fullPrompt += systemContext + '\n\n';
     }
 
     if (context.length > 0) {
@@ -1012,7 +1029,8 @@ export abstract class BaseCliProvider implements ICliProvider {
     conversation: Conversation | null,
     settings: Settings,
     persona?: PersonaConfig,
-    agentConfig?: AgentConfiguration
+    agentConfig?: AgentConfiguration,
+    systemContext?: string
   ): string {
     if (content.trim().startsWith('/')) {
       return content.trim();
@@ -1028,6 +1046,11 @@ export abstract class BaseCliProvider implements ICliProvider {
       if (personaPrompt) {
         fullPrompt += personaPrompt + '\n\n';
       }
+    }
+
+    // System context (e.g., OpenClaw channel capabilities) — injected after agent instructions
+    if (systemContext) {
+      fullPrompt += systemContext + '\n\n';
     }
 
     if (context.length > 0) {

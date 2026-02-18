@@ -2,10 +2,10 @@
  * Mysti - AI Coding Agent
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import WebSocket from 'ws';
@@ -55,6 +55,21 @@ export interface ActivityEntry {
   source: string;
   action: string;
   details?: string;
+}
+
+// --- Session types (for inbound message polling) ---
+
+export interface SessionInfo {
+  sessionKey: string;
+  lastActivity?: number;
+  messageCount?: number;
+}
+
+export interface SessionMessage {
+  role: string;
+  content: string;
+  timestamp: number;
+  from?: string;
 }
 
 export interface ChannelConnectResult {
@@ -120,9 +135,11 @@ export class OpenClawGateway {
   }> = new Map();
   private _eventListeners: Map<string, ((payload: Record<string, unknown>, seq?: number) => void)[]> = new Map();
   private _disposed: boolean = false;
+  private _token: string | undefined;
 
-  constructor(url: string = 'ws://127.0.0.1:18789') {
+  constructor(url: string = 'ws://127.0.0.1:18789', token?: string) {
     this._url = url;
+    this._token = token;
   }
 
   /**
@@ -137,42 +154,76 @@ export class OpenClawGateway {
     return new Promise<boolean>((resolve) => {
       try {
         this._ws = new WebSocket(this._url);
+        let resolved = false;
 
-        const timeout = setTimeout(() => {
-          if (!this._connected) {
-            this._ws?.terminate();
-            console.log('[Mysti] OpenClaw Gateway: Connection timeout');
-            resolve(false);
+        const cleanup = () => {
+          if (challengeHandler) {
+            this._removeEventListener('connect.challenge', challengeHandler);
           }
-        }, 5000);
+        };
 
-        this._ws.on('open', async () => {
-          clearTimeout(timeout);
-          console.log('[Mysti] OpenClaw Gateway: WebSocket connected');
-
-          // Send protocol handshake
-          try {
-            const response = await this._sendRequest('connect', {
-              minProtocol: 1,
-              maxProtocol: 1,
-              client: { name: 'mysti', version: '1.0.0' }
-            });
-
-            if (response.ok) {
-              this._connected = true;
-              this._reconnectAttempts = 0;
-              console.log('[Mysti] OpenClaw Gateway: Handshake complete');
-              resolve(true);
-            } else {
-              console.log('[Mysti] OpenClaw Gateway: Handshake rejected:', response.error);
-              this._ws?.close();
-              resolve(false);
-            }
-          } catch (err) {
-            console.log('[Mysti] OpenClaw Gateway: Handshake error:', err);
+        const fail = (reason: string) => {
+          if (!resolved) {
+            resolved = true;
+            cleanup();
+            console.log('[Mysti] OpenClaw Gateway:', reason);
             this._ws?.close();
             resolve(false);
           }
+        };
+
+        // Overall timeout for the entire connect flow (WebSocket open + challenge + handshake)
+        const timeout = setTimeout(() => {
+          fail('Connection timeout');
+          this._ws?.terminate();
+        }, 10000);
+
+        // One-shot handler for the connect.challenge event from the gateway
+        const challengeHandler = async (_payload: Record<string, unknown>) => {
+          cleanup(); // Remove listener after first call
+          console.log('[Mysti] OpenClaw Gateway: Challenge received, sending connect...');
+
+          try {
+            const params: Record<string, unknown> = {
+              minProtocol: 3,
+              maxProtocol: 3,
+              client: {
+                id: 'cli',
+                version: '1.0.0',
+                platform: process.platform,
+                mode: 'cli',
+              },
+              role: 'operator',
+              scopes: ['operator.admin', 'operator.read', 'operator.write'],
+              caps: [],
+              auth: this._token ? { token: this._token } : {},
+              locale: 'en-US',
+            };
+
+            const response = await this._sendRequest('connect', params);
+
+            clearTimeout(timeout);
+            if (response.ok) {
+              this._connected = true;
+              this._reconnectAttempts = 0;
+              resolved = true;
+              console.log('[Mysti] OpenClaw Gateway: Handshake complete');
+              resolve(true);
+            } else {
+              fail('Handshake rejected: ' + (response.error ? JSON.stringify(response.error) : 'unknown'));
+            }
+          } catch (err) {
+            fail('Handshake error: ' + err);
+          }
+        };
+
+        // Register the challenge listener before opening so it's ready
+        // when the first message arrives
+        this._addEventListener('connect.challenge', challengeHandler);
+
+        this._ws.on('open', () => {
+          console.log('[Mysti] OpenClaw Gateway: WebSocket connected, waiting for challenge...');
+          // Don't send anything yet — wait for connect.challenge event
         });
 
         this._ws.on('message', (data: WebSocket.Data) => {
@@ -182,16 +233,26 @@ export class OpenClawGateway {
         this._ws.on('close', () => {
           this._connected = false;
           console.log('[Mysti] OpenClaw Gateway: Disconnected');
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            cleanup();
+            resolve(false);
+          }
           if (!this._disposed) {
             this._scheduleReconnect();
           }
         });
 
         this._ws.on('error', (err) => {
-          clearTimeout(timeout);
           console.log('[Mysti] OpenClaw Gateway: Connection error:', err.message);
           this._connected = false;
-          resolve(false);
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            cleanup();
+            resolve(false);
+          }
         });
       } catch (err) {
         console.log('[Mysti] OpenClaw Gateway: Failed to create WebSocket:', err);
@@ -378,41 +439,60 @@ export class OpenClawGateway {
   async getGatewayStatus(): Promise<GatewayStatus | null> {
     if (!this.isConnected()) { return null; }
     try {
-      const response = await this._sendRequest('gateway.status', {});
+      const response = await this._sendRequest('health', {});
       if (response.ok && response.payload) {
+        const p = response.payload as Record<string, unknown>;
+        const channels = p.channels as Record<string, unknown> | undefined;
+        const channelCount = channels ? Object.keys(channels).length : 0;
+        const heartbeatSeconds = (p.heartbeatSeconds || 3600) as number;
         return {
           running: true,
-          uptime: (response.payload.uptime || 0) as number,
-          version: (response.payload.version || 'unknown') as string,
-          heartbeatInterval: (response.payload.heartbeatInterval || 1800) as number,
-          channelCount: (response.payload.channelCount || 0) as number,
+          uptime: 0,
+          version: 'unknown',
+          heartbeatInterval: heartbeatSeconds,
+          channelCount,
         };
       }
-      return { running: true, uptime: 0, version: 'unknown', heartbeatInterval: 1800, channelCount: 0 };
+      return { running: true, uptime: 0, version: 'unknown', heartbeatInterval: 3600, channelCount: 0 };
     } catch {
       return null;
     }
   }
 
   /**
-   * List all configured channels and their status
+   * List all configured channels and their status.
+   * Uses `channels.status` which returns channels keyed by channel ID.
    */
   async listChannels(): Promise<ChannelInfo[]> {
     if (!this.isConnected()) { return []; }
     try {
-      const response = await this._sendRequest('channels.list', {});
+      const response = await this._sendRequest('channels.status', {});
       if (response.ok && response.payload) {
-        const channels = (response.payload.channels || response.payload) as unknown;
-        if (Array.isArray(channels)) {
-          return channels.map((ch: Record<string, unknown>) => ({
-            id: (ch.id || '') as string,
-            type: (ch.type || ch.channel_type || 'unknown') as string,
-            name: (ch.name || ch.label || '') as string,
-            status: (ch.status || 'disconnected') as ChannelInfo['status'],
-            connectedSince: ch.connectedSince as number | undefined,
-            lastActivity: (ch.lastActivity || ch.last_activity) as number | undefined,
-            metadata: (ch.metadata || {}) as Record<string, unknown>,
-          }));
+        const p = response.payload as Record<string, unknown>;
+        const channelsMap = p.channels as Record<string, Record<string, unknown>> | undefined;
+        const channelLabels = (p.channelLabels || {}) as Record<string, string>;
+        if (channelsMap && typeof channelsMap === 'object') {
+          return Object.entries(channelsMap).map(([id, ch]) => {
+            const selfInfo = ch.self as Record<string, unknown> | undefined;
+            return {
+              id,
+              type: id,
+              name: channelLabels[id] || id,
+              // OpenClaw treats linked channels as operational — it connects on-demand.
+              // Map both connected AND linked to 'connected' so the prompt snippet is injected.
+              status: ((ch.connected || ch.linked) ? 'connected' : ch.configured ? 'disconnected' : 'error') as ChannelInfo['status'],
+              connectedSince: ch.lastConnectedAt as number | undefined,
+              lastActivity: (ch.lastMessageAt || ch.lastEventAt) as number | undefined,
+              metadata: {
+                configured: ch.configured,
+                linked: ch.linked,
+                running: ch.running,
+                connected: ch.connected,
+                phoneNumber: selfInfo?.e164,
+                jid: selfInfo?.jid,
+              },
+            };
+          });
         }
       }
       return [];
@@ -424,12 +504,13 @@ export class OpenClawGateway {
   /**
    * Initiate channel connection/pairing
    */
-  async connectChannel(type: string, config: Record<string, unknown> = {}): Promise<ChannelConnectResult> {
+  async connectChannel(type: string, _config: Record<string, unknown> = {}): Promise<ChannelConnectResult> {
     if (!this.isConnected()) {
       return { success: false, error: 'Gateway not connected' };
     }
     try {
-      const response = await this._sendRequest('channels.connect', { type, ...config });
+      // Channel setup uses the wizard flow
+      const response = await this._sendRequest('wizard.start', { wizard: 'channel-setup', channel: type });
       if (response.ok && response.payload) {
         return {
           success: true,
@@ -437,11 +518,11 @@ export class OpenClawGateway {
           pairingData: {
             qrCode: response.payload.qrCode as string | undefined,
             authUrl: response.payload.authUrl as string | undefined,
-            instructions: response.payload.instructions as string | undefined,
+            instructions: (response.payload.instructions || response.payload.message) as string | undefined,
           },
         };
       }
-      return { success: false, error: response.error?.message || 'Connection failed' };
+      return { success: false, error: response.error?.message || 'Channel setup failed' };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
     }
@@ -453,9 +534,74 @@ export class OpenClawGateway {
   async disconnectChannel(channelId: string): Promise<boolean> {
     if (!this.isConnected()) { return false; }
     try {
-      const response = await this._sendRequest('channels.disconnect', { channelId });
+      const response = await this._sendRequest('channels.logout', { channel: channelId });
       return response.ok;
     } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Send a message directly to a channel via the Gateway's `send` RPC.
+   * Uses the direct delivery path (not the `chat.send` agent pipeline).
+   */
+  async sendToChannel(channelId: string, message: string, target?: string): Promise<boolean> {
+    if (!this.isConnected()) {
+      console.log('[Mysti] OpenClaw Gateway: Cannot send — not connected');
+      return false;
+    }
+    if (!target) {
+      console.log('[Mysti] OpenClaw Gateway: Cannot send — no recipient (to) address');
+      return false;
+    }
+    try {
+      const idempotencyKey = `mysti-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const params: Record<string, unknown> = {
+        channel: channelId,
+        message,
+        to: target,
+        idempotencyKey,
+      };
+      console.log(`[Mysti] OpenClaw Gateway: send to '${channelId}' (to: ${target})`);
+      const response = await this._sendRequest('send', params);
+      if (!response.ok) {
+        console.log('[Mysti] OpenClaw Gateway: send failed:', JSON.stringify(response.error || response.payload));
+      } else {
+        console.log('[Mysti] OpenClaw Gateway: send succeeded');
+      }
+      return response.ok === true;
+    } catch (err) {
+      console.log('[Mysti] OpenClaw Gateway: send error:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Delegate a task to the OpenClaw agent via the `chat.send` RPC.
+   * Routes through the agent pipeline — the agent can use tools (message, exec,
+   * browse, etc.) and resolve fuzzy contact names.
+   */
+  async sendAgentTask(prompt: string, sessionKey: string = 'main'): Promise<boolean> {
+    if (!this.isConnected()) {
+      console.log('[Mysti] OpenClaw Gateway: Cannot delegate — not connected');
+      return false;
+    }
+    try {
+      const idempotencyKey = `mysti-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      console.log(`[Mysti] OpenClaw Gateway: chat.send (session: ${sessionKey}, ${prompt.length} chars)`);
+      const response = await this._sendRequest('chat.send', {
+        sessionKey,
+        idempotencyKey,
+        message: prompt,
+      });
+      if (!response.ok) {
+        console.log('[Mysti] OpenClaw Gateway: chat.send failed:', JSON.stringify(response.error || response.payload));
+      } else {
+        console.log('[Mysti] OpenClaw Gateway: chat.send accepted');
+      }
+      return response.ok === true;
+    } catch (err) {
+      console.log('[Mysti] OpenClaw Gateway: chat.send error:', err);
       return false;
     }
   }
@@ -482,23 +628,75 @@ export class OpenClawGateway {
   /**
    * Fetch recent cross-channel activity log
    */
-  async getActivityLog(limit: number = 50): Promise<ActivityEntry[]> {
+  async getActivityLog(_limit: number = 50): Promise<ActivityEntry[]> {
+    // Activity log is maintained client-side from channel events.
+    // The gateway does not expose a persistent activity.log method.
+    return [];
+  }
+
+  // --- Session history methods (for inbound message polling) ---
+
+  /**
+   * List active sessions from the Gateway.
+   * Used to discover which channels/conversations have recent activity.
+   */
+  async listSessions(): Promise<SessionInfo[]> {
     if (!this.isConnected()) { return []; }
     try {
-      const response = await this._sendRequest('activity.log', { limit });
+      const response = await this._sendRequest('sessions.list', {});
       if (response.ok && response.payload) {
-        const entries = (response.payload.entries || response.payload) as unknown;
-        if (Array.isArray(entries)) {
-          return entries.map((e: Record<string, unknown>) => ({
-            timestamp: (e.timestamp || Date.now()) as number,
-            source: (e.source || 'unknown') as string,
-            action: (e.action || e.message || '') as string,
-            details: e.details as string | undefined,
+        const sessions = response.payload.sessions as Array<Record<string, unknown>> | undefined;
+        if (Array.isArray(sessions)) {
+          return sessions.map(s => ({
+            sessionKey: (s.sessionKey || s.key || s.id || '') as string,
+            lastActivity: (s.lastActivity || s.updatedAt || s.lastMessageAt) as number | undefined,
+            messageCount: (s.messageCount || s.count) as number | undefined,
+          }));
+        }
+        // If payload is a map of sessionKey -> info (alternative format)
+        const entries = Object.entries(response.payload).filter(([k]) => k !== 'ok' && k !== 'status');
+        if (entries.length > 0) {
+          return entries.map(([key, val]) => {
+            const info = val as Record<string, unknown> | undefined;
+            return {
+              sessionKey: key,
+              lastActivity: (info?.lastActivity || info?.updatedAt) as number | undefined,
+              messageCount: (info?.messageCount || info?.count) as number | undefined,
+            };
+          });
+        }
+      }
+      return [];
+    } catch (err) {
+      console.log('[Mysti] OpenClaw Gateway: sessions.list error:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Fetch message history for a specific session.
+   * Used to poll for new inbound messages.
+   */
+  async getSessionHistory(sessionKey: string, after?: number, limit: number = 20): Promise<SessionMessage[]> {
+    if (!this.isConnected()) { return []; }
+    try {
+      const params: Record<string, unknown> = { sessionKey, limit };
+      if (after) { params.after = after; }
+      const response = await this._sendRequest('sessions.history', params);
+      if (response.ok && response.payload) {
+        const messages = (response.payload.messages || response.payload.history || response.payload.entries) as Array<Record<string, unknown>> | undefined;
+        if (Array.isArray(messages)) {
+          return messages.map(m => ({
+            role: (m.role || m.type || 'unknown') as string,
+            content: (m.content || m.text || m.body || m.message || '') as string,
+            timestamp: (m.timestamp || m.createdAt || m.time || 0) as number,
+            from: (m.from || m.sender || m.source) as string | undefined,
           }));
         }
       }
       return [];
-    } catch {
+    } catch (err) {
+      console.log('[Mysti] OpenClaw Gateway: sessions.history error:', err);
       return [];
     }
   }
@@ -558,16 +756,16 @@ export class OpenClawGateway {
           pending.resolve(frame as GatewayResponse);
         }
       } else if (frame.type === 'event') {
+        // Debug log all non-tick events to help diagnose inbound message routing
+        if (frame.event !== 'tick') {
+          console.log(`[Mysti] OpenClaw Gateway: Event received: ${frame.event}`, JSON.stringify(frame.payload).substring(0, 200));
+        }
+
         const listeners = this._eventListeners.get(frame.event);
         if (listeners) {
           for (const listener of listeners) {
             listener(frame.payload, frame.seq);
           }
-        }
-
-        // Handle tick (keepalive) silently
-        if (frame.event === 'tick') {
-          return;
         }
 
         // Handle shutdown

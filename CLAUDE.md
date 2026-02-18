@@ -114,7 +114,7 @@ extension.ts (entry — activate() wires everything)
 - Console logging with `[Mysti]` prefix
 - Managers are single-responsibility classes
 - New providers extend `BaseCliProvider` and implement `ICliProvider`
-- All source files carry the BUSL-1.1 license header
+- All source files carry the Apache-2.0 license header
 - TypeScript strict mode enabled, target ES2022
 
 ## VSCode Integration Points

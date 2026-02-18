@@ -43,3 +43,6 @@ stargazers-*.xlsx
 Mysti stargazers.xlsx
 scripts/fetch-stargazers.js
 scripts/export-cache.js
+
+.clipboard/
+clipboard/

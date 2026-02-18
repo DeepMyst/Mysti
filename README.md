@@ -21,7 +21,7 @@
     <img src="https://img.shields.io/github/forks/DeepMyst/Mysti?style=flat-square&label=Forks" alt="GitHub Forks">
   </a>
   <a href="https://github.com/DeepMyst/Mysti/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square" alt="License">
   </a>
 </p>
 
@@ -89,7 +89,7 @@ ext install DeepMyst.mysti
 Mysti works with the AI coding tools you already have. **No extra subscriptions needed.**
 
 <p align="center">
-  <img src="docs/screenshots/agent-selection.png" alt="Agent Selection" width="450">
+  <img src="docs/gifs/agent switching.gif" alt="Agent Switching" width="450">
 </p>
 
 | Provider | Best For |
@@ -120,10 +120,16 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 ## See It In Action
 
 <p align="center">
-  <img src="docs/screenshots/user-experience.png" alt="Mysti Chat Interface" width="700">
+  <img src="docs/gifs/main screen.gif" alt="Mysti Chat Interface" width="700">
 </p>
 
 <p align="center"><em>Beautiful, modern chat interface with syntax highlighting, markdown support, and mermaid diagrams</em></p>
+
+<p align="center">
+  <img src="docs/gifs/Task list rendering and progress tracking.gif" alt="Task List Rendering" width="700">
+</p>
+
+<p align="center"><em>Real-time task list rendering and progress tracking</em></p>
 
 ---
 
@@ -132,7 +138,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 **Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose any 2 of 7 agents** from the settings panel.
 
 <p align="center">
-  <img src="docs/screenshots/brainstorm-mode.png" alt="Brainstorm Mode" width="700">
+  <img src="docs/gifs/brainstorm example.gif" alt="Brainstorm Mode" width="700">
 </p>
 
 ### 5 Collaboration Strategies
@@ -162,6 +168,10 @@ During discussions, Mysti tracks agent agreement and position stability. When **
 ### Choose Your Team
 
 Configure which two agents collaborate in the **Settings Panel**:
+
+<p align="center">
+  <img src="docs/gifs/Brainstorm model selection.gif" alt="Brainstorm Model Selection" width="600">
+</p>
 
 | Combination | Best For |
 |-------------|----------|
@@ -197,11 +207,19 @@ Let the AI work independently with configurable safety controls:
 - **Continuation Modes**: Goal-based or task-queue for extended autonomous sessions
 - **Audit Trail**: Every autonomous decision is logged for review
 
+<p align="center">
+  <img src="docs/gifs/Selecting autonomy mode.gif" alt="Selecting Autonomy Mode" width="600">
+</p>
+
 [Full Autonomous Mode documentation](docs/AUTONOMOUS-MODE.md)
 
 ### @-Mention System
 
 Route tasks to specific agents and reference files inline:
+
+<p align="center">
+  <img src="docs/gifs/Agent tagging and multi agent workflows.gif" alt="@-Mention Tagging" width="600">
+</p>
 
 ```
 @claude Review this code for security issues
@@ -231,7 +249,7 @@ Smart conversation management that prevents context overflow:
 Shape how your AI thinks. Select from specialized personas that change the AI's approach to your problems.
 
 <p align="center">
-  <img src="docs/screenshots/persona-skills-panel.png" alt="Personas and Skills Panel" width="550">
+  <img src="docs/gifs/Personas and skills.gif" alt="Personas and Skills Panel" width="550">
 </p>
 
 | Persona | Focus |
@@ -263,7 +281,7 @@ Select personas directly from the toolbar without opening panels.
 Mysti automatically suggests relevant personas and actions based on your message.
 
 <p align="center">
-  <img src="docs/screenshots/auto-suggestions.png" alt="Auto Suggestions" width="550">
+  <img src="docs/gifs/PErsona Suggestion.gif" alt="Auto Suggestions" width="550">
 </p>
 
 ---
@@ -366,6 +384,16 @@ Type your request and let the AI assist you!
 
 ---
 
+## Slash Commands
+
+Access skills and actions quickly with the built-in slash command menu.
+
+<p align="center">
+  <img src="docs/gifs/slash commands menu.gif" alt="Slash Commands Menu" width="600">
+</p>
+
+---
+
 ## 12 Toggleable Skills
 
 Mix and match behavioral modifiers:
@@ -388,6 +416,10 @@ Stay in control of what the AI can do:
 - **Read-only** - AI can only read, never modify
 - **Ask-permission** - Approve each file change
 - **Full-access** - Let the AI work autonomously
+
+<p align="center">
+  <img src="docs/gifs/Semi auto answering questions .gif" alt="Permission Controls Demo" width="600">
+</p>
 
 ---
 
@@ -517,7 +549,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ## License
 
-MIT License — free to use, modify, and distribute, including for commercial purposes.
+Apache License 2.0 — free to use, modify, and distribute, including for commercial purposes.
 See the `LICENSE` file for full text.
 
 

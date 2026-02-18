@@ -5,10 +5,10 @@
  * Author: Baha Abunojaim <baha@deepmyst.com>
  * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as fs from 'fs';
@@ -432,4 +432,30 @@ export async function getNpmPrefix(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Read the OpenClaw Gateway auth token.
+ * Priority: ~/.openclaw/openclaw.json -> gateway.auth.token, then env OPENCLAW_GATEWAY_TOKEN.
+ * Returns undefined if no token is found.
+ */
+export function readOpenClawToken(): string | undefined {
+  try {
+    const configPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      // Strip single-line comments and trailing commas for JSON5 compat
+      const cleaned = raw.replace(/\/\/.*$/gm, '').replace(/,(\s*[}\]])/g, '$1');
+      const config = JSON.parse(cleaned);
+      const token = config?.gateway?.auth?.token;
+      if (typeof token === 'string' && token.length > 0) {
+        return token;
+      }
+    }
+  } catch {
+    // Config unreadable or unparseable — fall through to env
+  }
+
+  const envToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  return (typeof envToken === 'string' && envToken.length > 0) ? envToken : undefined;
 }

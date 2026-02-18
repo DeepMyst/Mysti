@@ -5,10 +5,10 @@
  * Author: Baha Abunojaim <baha@deepmyst.com>
  * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -246,6 +246,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     const effectiveModel = this._getEffectiveModel(settings);
     if (effectiveModel) {
       args.push('--model', effectiveModel);
+    }
+
+    // Inject channel system context as real system instructions (not user message)
+    if (session.channelSystemContext) {
+      args.push('--append-system-prompt', session.channelSystemContext);
+      console.log('[Mysti] Claude: Appending channel context to system prompt');
     }
 
     return args;
@@ -731,9 +737,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     settings: Settings,
     persona?: PersonaConfig,
     agentConfig?: AgentConfiguration,
-    attachments?: Attachment[]
+    attachments?: Attachment[],
+    _systemContext?: string
   ): Promise<string> {
-    let prompt = await super.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, attachments);
+    // Skip systemContext for Claude — it's injected as real system instructions via --append-system-prompt in buildCliArgs()
+    let prompt = await super.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, attachments, undefined);
 
     // Prepend attachment file references so Claude sees them first and uses its Read tool
     const imageAttachments = (attachments || []).filter(a => a.type === 'image' && a.filePath);

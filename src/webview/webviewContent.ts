@@ -5,10 +5,10 @@
  * Author: Baha Abunojaim <baha@deepmyst.com>
  * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -100,6 +100,15 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         </button>
       </div>
       <div class="header-right">
+        <button id="active-mode-btn" class="icon-btn" title="Active Mode" style="display: none;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M3.17 6.706a5 5 0 0 1 9.66 0 .5.5 0 0 1-.962.268 4 4 0 0 0-7.736 0 .5.5 0 0 1-.962-.268z"/>
+            <path d="M1.086 5.19a8 8 0 0 1 13.828 0 .5.5 0 0 1-.866.5 7 7 0 0 0-12.096 0 .5.5 0 0 1-.866-.5z"/>
+            <path d="M5.254 8.222a3 3 0 0 1 5.492 0 .5.5 0 0 1-.916.398 2 2 0 0 0-3.66 0 .5.5 0 0 1-.916-.398z"/>
+            <circle cx="8" cy="11" r="1.5"/>
+          </svg>
+          <span class="active-mode-btn-dot" id="active-mode-btn-dot"></span>
+        </button>
         <button id="agent-config-btn" class="icon-btn" title="Agent Configuration">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M11 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>
@@ -471,24 +480,18 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         </button>
       </div>
       <div class="active-mode-body" id="active-mode-body" style="display: none;">
+        <div class="active-mode-section active-mode-toggle-section">
+          <label class="active-mode-toggle-label">
+            <span>Integration</span>
+            <button class="active-mode-integration-toggle on" id="active-mode-integration-toggle" title="Toggle OpenClaw integration on/off">ON</button>
+          </label>
+        </div>
         <div class="active-mode-section">
           <div class="active-mode-section-title">Channels</div>
           <div id="active-mode-channels" class="active-mode-channels">
             <div class="active-mode-empty">No channels connected</div>
           </div>
           <button class="active-mode-connect-btn" id="active-mode-connect-btn">+ Connect Channel</button>
-        </div>
-        <div class="active-mode-section" id="active-mode-connect-wizard" style="display: none;">
-          <div class="active-mode-section-title">Connect Channel</div>
-          <div class="active-mode-channel-types">
-            <button class="channel-type-btn" data-channel="whatsapp">WhatsApp</button>
-            <button class="channel-type-btn" data-channel="telegram">Telegram</button>
-            <button class="channel-type-btn" data-channel="slack">Slack</button>
-            <button class="channel-type-btn" data-channel="discord">Discord</button>
-            <button class="channel-type-btn" data-channel="signal">Signal</button>
-          </div>
-          <div id="active-mode-pairing" class="active-mode-pairing" style="display: none;"></div>
-          <button class="active-mode-cancel-btn" id="active-mode-cancel-connect">Cancel</button>
         </div>
         <div class="active-mode-section">
           <div class="active-mode-section-title">Activity</div>
@@ -498,6 +501,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         </div>
         <div id="active-mode-daemon-actions" class="active-mode-daemon-actions" style="display: none;">
           <button class="active-mode-start-btn" id="active-mode-start-daemon">Start Daemon</button>
+          <button class="active-mode-detect-btn" id="active-mode-detect">Detect Connection</button>
         </div>
       </div>
     </div>
@@ -7971,6 +7975,266 @@ function getStyles(): string {
       font-size: 11px;
       color: var(--vscode-descriptionForeground);
     }
+
+    /* ===== Active Mode Button (header) ===== */
+    #active-mode-btn {
+      position: relative;
+    }
+    .active-mode-btn-dot {
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--vscode-testing-iconFailed, #f44);
+      display: none;
+    }
+    .active-mode-btn-dot.connected {
+      background: var(--vscode-testing-iconPassed, #4c4);
+      display: block;
+    }
+    .active-mode-btn-dot.offline {
+      background: var(--vscode-testing-iconFailed, #f44);
+      display: block;
+    }
+
+    /* ===== Active Mode Panel ===== */
+    .active-mode-strip {
+      border-bottom: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-sideBar-background);
+      font-size: 12px;
+    }
+    .active-mode-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .active-mode-header:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+    .active-mode-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--vscode-testing-iconFailed, #f44);
+      flex-shrink: 0;
+    }
+    .active-mode-dot.connected {
+      background: var(--vscode-testing-iconPassed, #4c4);
+    }
+    .active-mode-label {
+      flex: 1;
+      color: var(--vscode-foreground);
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .active-mode-toggle {
+      background: none;
+      border: none;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      padding: 2px;
+      opacity: 0.6;
+      transition: transform 0.2s;
+    }
+    .active-mode-toggle.expanded {
+      transform: rotate(180deg);
+    }
+    .active-mode-body {
+      padding: 0 12px 8px;
+    }
+    .active-mode-section {
+      margin-bottom: 8px;
+    }
+    .active-mode-section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+    .active-mode-channels {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .active-mode-channel-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 6px;
+      border-radius: 3px;
+    }
+    .active-mode-channel-row:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+    .active-mode-channel-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .active-mode-channel-dot.connected { background: var(--vscode-testing-iconPassed, #4c4); }
+    .active-mode-channel-dot.disconnected { background: var(--vscode-testing-iconFailed, #f44); }
+    .active-mode-channel-dot.pairing { background: var(--vscode-testing-iconQueued, #fa0); }
+    .active-mode-channel-name {
+      flex: 1;
+      font-size: 11px;
+      color: var(--vscode-foreground);
+    }
+    .active-mode-channel-meta {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .active-mode-channel-disconnect {
+      background: none;
+      border: none;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      padding: 0 2px;
+      font-size: 12px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .active-mode-channel-row:hover .active-mode-channel-disconnect {
+      opacity: 1;
+    }
+    .active-mode-toggle-section {
+      padding: 4px 8px;
+    }
+    .active-mode-toggle-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--vscode-foreground);
+    }
+    .active-mode-integration-toggle {
+      background: var(--vscode-testing-iconFailed, #f44);
+      color: #fff;
+      border: none;
+      border-radius: 3px;
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      min-width: 32px;
+      text-align: center;
+    }
+    .active-mode-integration-toggle.on {
+      background: var(--vscode-testing-iconPassed, #4c4);
+    }
+    .active-mode-connect-btn, .active-mode-start-btn {
+      background: none;
+      border: 1px solid var(--vscode-button-secondaryBackground, #333);
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      border-radius: 3px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      margin-top: 4px;
+    }
+    .active-mode-connect-btn:hover, .active-mode-start-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, #444);
+    }
+    .active-mode-activity {
+      max-height: 120px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .active-mode-activity-entry {
+      display: flex;
+      gap: 6px;
+      padding: 2px 4px;
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .active-mode-activity-time {
+      flex-shrink: 0;
+      opacity: 0.7;
+    }
+    .active-mode-activity-source {
+      flex-shrink: 0;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+    .active-mode-activity-action {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .active-mode-empty {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+      padding: 4px 0;
+    }
+    .active-mode-daemon-actions {
+      padding-top: 4px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .active-mode-detect-btn {
+      flex: 1;
+      padding: 4px 10px;
+      border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+      background: var(--vscode-button-secondaryBackground, rgba(255,255,255,0.08));
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 11px;
+      text-align: center;
+    }
+    .active-mode-detect-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, rgba(255,255,255,0.12));
+    }
+    .active-mode-refresh-info {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      text-align: center;
+      padding: 2px 0 0;
+      width: 100%;
+    }
+
+    /* Channel action cards (cross-channel messaging) */
+    .channel-action-card {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      margin: 4px 0;
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.4;
+      background: var(--vscode-editor-inactiveSelectionBackground, rgba(255,255,255,0.05));
+      border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.1));
+    }
+    .channel-action-card.send { border-left: 3px solid var(--vscode-testing-iconPassed, #4c4); }
+    .channel-action-card.ask { border-left: 3px solid var(--vscode-editorInfo-foreground, #3794ff); }
+    .channel-action-card.delegate { border-left: 3px solid var(--vscode-terminal-ansiCyan, #11a8cd); }
+    .channel-action-card.queued { border-left: 3px solid var(--vscode-editorWarning-foreground, #cca700); }
+    .channel-action-card.inbound { border-left: 3px solid var(--vscode-terminal-ansiMagenta, #bc89bd); }
+    .channel-action-card .channel-action-icon { font-size: 14px; flex-shrink: 0; }
+    .channel-action-card .channel-action-text { color: var(--vscode-descriptionForeground); }
+    .channel-action-card .channel-action-status {
+      font-weight: 500;
+      color: var(--vscode-testing-iconPassed, #4c4);
+    }
+    .channel-action-card .channel-action-status.failed {
+      color: var(--vscode-testing-iconFailed, #f44);
+    }
+    .channel-action-card .channel-action-status.waiting {
+      color: var(--vscode-editorInfo-foreground, #3794ff);
+    }
   `;
 }
 
@@ -11534,6 +11798,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           case 'toolResult':
             handleToolResult(message.payload);
             break;
+          case 'channelAction':
+            handleChannelAction(message.payload);
+            break;
           case 'permissionRequest':
             handlePermissionRequest(message.payload);
             break;
@@ -11878,8 +12145,243 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           case 'autonomousStats':
             console.log('[Mysti] Autonomous stats:', message.payload);
             break;
+
+          // --- Active Mode ---
+          case 'activeModeStatus':
+            handleActiveModeStatus(message.payload);
+            break;
+          case 'activeModeChannels':
+            handleActiveModeChannels(message.payload);
+            break;
+          case 'activeModeActivity':
+            handleActiveModeActivity(message.payload);
+            break;
+          case 'daemonStartResult':
+            handleDaemonStartResult(message.payload);
+            break;
         }
       }
+
+      // ========================================
+      // Active Mode Handlers
+      // ========================================
+
+      function handleActiveModeStatus(payload) {
+        const strip = document.getElementById('active-mode-strip');
+        const dot = document.getElementById('active-mode-dot');
+        const label = document.getElementById('active-mode-label');
+        const daemonActions = document.getElementById('active-mode-daemon-actions');
+        const headerBtn = document.getElementById('active-mode-btn');
+        const headerDot = document.getElementById('active-mode-btn-dot');
+        if (!strip || !dot || !label) return;
+
+        if (!payload.installed) {
+          strip.style.display = 'none';
+          if (headerBtn) headerBtn.style.display = 'none';
+          return;
+        }
+
+        strip.style.display = 'block';
+        if (headerBtn) headerBtn.style.display = '';
+        const status = payload.status;
+        if (status && status.running) {
+          dot.classList.add('connected');
+          const chCount = status.channelCount || 0;
+          label.textContent = 'OpenClaw Active' + (chCount > 0 ? ' \\u00B7 ' + chCount + ' channel' + (chCount !== 1 ? 's' : '') : '');
+          if (daemonActions) daemonActions.style.display = 'none';
+          if (headerDot) { headerDot.className = 'active-mode-btn-dot connected'; }
+        } else {
+          dot.classList.remove('connected');
+          label.textContent = 'OpenClaw Offline';
+          if (daemonActions) daemonActions.style.display = 'block';
+          if (headerDot) { headerDot.className = 'active-mode-btn-dot offline'; }
+        }
+      }
+
+      function handleActiveModeChannels(channels) {
+        const container = document.getElementById('active-mode-channels');
+        if (!container) return;
+
+        if (!channels || channels.length === 0) {
+          container.innerHTML = '<div class="active-mode-empty">No channels connected</div>';
+          return;
+        }
+
+        container.innerHTML = channels.map(function(ch) {
+          var meta = ch.metadata || {};
+          var identifier = meta.phoneNumber || meta.botUsername || meta.workspaceName || ch.name || '';
+          var timeAgo = ch.lastActivity ? formatTimeAgo(ch.lastActivity) : '';
+          return '<div class="active-mode-channel-row">' +
+            '<span class="active-mode-channel-dot ' + (ch.status || 'disconnected') + '"></span>' +
+            '<span class="active-mode-channel-name">' + escapeHtml(ch.type) + (identifier ? ' \\u00B7 ' + escapeHtml(identifier) : '') + '</span>' +
+            (timeAgo ? '<span class="active-mode-channel-meta">' + timeAgo + '</span>' : '') +
+            '<button class="active-mode-channel-disconnect" data-channel-id="' + escapeHtml(ch.id) + '" title="Disconnect">\\u00D7</button>' +
+          '</div>';
+        }).join('');
+
+        // Bind disconnect buttons
+        container.querySelectorAll('.active-mode-channel-disconnect').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var channelId = btn.getAttribute('data-channel-id');
+            if (channelId) {
+              vscode.postMessage({ type: 'disconnectChannel', payload: { channelId: channelId }, panelId: state.panelId });
+            }
+          });
+        });
+      }
+
+      function handleActiveModeActivity(entry) {
+        var container = document.getElementById('active-mode-activity');
+        if (!container) return;
+
+        // Remove empty placeholder if present
+        var empty = container.querySelector('.active-mode-empty');
+        if (empty) empty.remove();
+
+        var el = document.createElement('div');
+        el.className = 'active-mode-activity-entry';
+        var time = new Date(entry.timestamp);
+        el.innerHTML =
+          '<span class="active-mode-activity-time">' + time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '</span>' +
+          '<span class="active-mode-activity-source">' + escapeHtml(entry.source) + '</span>' +
+          '<span class="active-mode-activity-action">' + escapeHtml(entry.action) + '</span>';
+        container.insertBefore(el, container.firstChild);
+
+        // Keep max 50 entries
+        while (container.children.length > 50) {
+          container.removeChild(container.lastChild);
+        }
+      }
+
+
+
+      function handleDaemonStartResult(payload) {
+        if (payload.success) {
+          // Refresh will happen via activeModeStatus event
+          console.log('[Mysti] Daemon started successfully');
+        } else {
+          var daemonActions = document.getElementById('active-mode-daemon-actions');
+          if (daemonActions) {
+            daemonActions.innerHTML = '<button class="active-mode-start-btn" id="active-mode-start-daemon">Start Daemon</button>' +
+              '<div class="active-mode-empty" style="color: var(--vscode-testing-iconFailed);">Failed to start. Run: openclaw onboard --install-daemon</div>';
+            setupActiveModeListeners();
+          }
+        }
+      }
+
+      function formatTimeAgo(timestamp) {
+        var diff = Date.now() - timestamp;
+        if (diff < 60000) return 'now';
+        if (diff < 3600000) return Math.floor(diff / 60000) + 'm';
+        if (diff < 86400000) return Math.floor(diff / 3600000) + 'h';
+        return Math.floor(diff / 86400000) + 'd';
+      }
+
+      function setupActiveModeListeners() {
+        // Header button toggles the panel body open/closed
+        var headerBtn = document.getElementById('active-mode-btn');
+        if (headerBtn) {
+          headerBtn.onclick = function() {
+            var body = document.getElementById('active-mode-body');
+            var toggle = document.getElementById('active-mode-toggle');
+            var strip = document.getElementById('active-mode-strip');
+            if (body && toggle && strip) {
+              // Ensure strip is visible
+              strip.style.display = 'block';
+              var hidden = body.style.display === 'none';
+              body.style.display = hidden ? 'block' : 'none';
+              toggle.classList.toggle('expanded', hidden);
+              // Scroll strip into view
+              if (hidden) strip.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          };
+        }
+
+        // Toggle expand/collapse
+        var header = document.getElementById('active-mode-header');
+        if (header) {
+          header.onclick = function() {
+            var body = document.getElementById('active-mode-body');
+            var toggle = document.getElementById('active-mode-toggle');
+            if (body && toggle) {
+              var hidden = body.style.display === 'none';
+              body.style.display = hidden ? 'block' : 'none';
+              toggle.classList.toggle('expanded', hidden);
+            }
+          };
+        }
+
+        // Integration toggle button
+        var integrationToggle = document.getElementById('active-mode-integration-toggle');
+        if (integrationToggle) {
+          integrationToggle.onclick = function(e) {
+            e.stopPropagation();
+            var isOn = integrationToggle.classList.contains('on');
+            var newState = !isOn;
+            integrationToggle.classList.toggle('on', newState);
+            integrationToggle.textContent = newState ? 'ON' : 'OFF';
+            vscode.postMessage({ type: 'toggleIntegration', payload: { enabled: newState }, panelId: state.panelId });
+          };
+        }
+
+        // Connect channel button — opens a terminal for interactive OpenClaw setup
+        var connectBtn = document.getElementById('active-mode-connect-btn');
+        if (connectBtn) {
+          connectBtn.onclick = function() {
+            vscode.postMessage({ type: 'connectChannel', payload: { channelType: 'channels' }, panelId: state.panelId });
+          };
+        }
+
+        // Start daemon button
+        var startBtn = document.getElementById('active-mode-start-daemon');
+        if (startBtn) {
+          startBtn.onclick = function() {
+            vscode.postMessage({ type: 'startDaemon', panelId: state.panelId });
+            startBtn.textContent = 'Starting...';
+            startBtn.disabled = true;
+          };
+        }
+
+        // Detect connection button
+        var detectBtn = document.getElementById('active-mode-detect');
+        if (detectBtn) {
+          detectBtn.onclick = function() {
+            vscode.postMessage({ type: 'refreshActiveMode', panelId: state.panelId });
+            detectBtn.textContent = 'Detecting...';
+            detectBtn.disabled = true;
+            setTimeout(function() {
+              detectBtn.textContent = 'Detect Connection';
+              detectBtn.disabled = false;
+            }, 3000);
+          };
+        }
+      }
+
+      // --- Active Mode auto-refresh ---
+      var _activeModeRefreshTimer = null;
+
+      function startActiveModeAutoRefresh() {
+        stopActiveModeAutoRefresh();
+        // Refresh every 5 seconds while the panel body is visible
+        _activeModeRefreshTimer = setInterval(function() {
+          var body = document.getElementById('active-mode-body');
+          if (body && body.style.display !== 'none') {
+            vscode.postMessage({ type: 'refreshActiveMode', panelId: state.panelId });
+          }
+        }, 5000);
+      }
+
+      function stopActiveModeAutoRefresh() {
+        if (_activeModeRefreshTimer) {
+          clearInterval(_activeModeRefreshTimer);
+          _activeModeRefreshTimer = null;
+        }
+      }
+
+      // Initialize active mode listeners on load
+      setupActiveModeListeners();
+      startActiveModeAutoRefresh();
 
       // ========================================
       // Setup Flow Handlers (Legacy)
@@ -13917,7 +14419,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         console.log('[Mysti Webview] Received chunk:', JSON.stringify(chunk));
         if (chunk.type === 'text') {
           currentResponse += chunk.content;
-          updateCurrentContentSegment(currentResponse);
+          // Strip channel markers from display (actions handled by extension side)
+          var displayContent = stripChannelMarkers(currentResponse);
+          updateCurrentContentSegment(displayContent);
         } else if (chunk.type === 'thinking') {
           console.log('[Mysti Webview] Thinking content:', JSON.stringify(chunk.content));
           currentThinking += chunk.content;  // Still accumulate for storage
@@ -14275,6 +14779,66 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           // Clean up stored data
           pendingToolData.delete(toolCall.id);
         }
+      }
+
+      // ========================================
+      // Channel Action Handling Functions
+      // ========================================
+
+      function handleChannelAction(payload) {
+        // For inbound messages, attach to last message (any type) since agent may be idle
+        var targetEl;
+        if (payload.action === 'inbound') {
+          targetEl = messagesEl.querySelector('.message:last-child');
+        } else {
+          targetEl = messagesEl.querySelector('.message.streaming') || messagesEl.querySelector('.message.assistant:last-child');
+        }
+        if (!targetEl) return;
+
+        var messageBody = targetEl.querySelector('.message-body');
+        if (!messageBody) return;
+
+        var card = document.createElement('div');
+        var actionType = payload.action || 'send';
+        card.className = 'channel-action-card ' + actionType;
+
+        var icon = actionType === 'send' ? '\u{1F4E8}' : actionType === 'ask' ? '\u{2753}' : actionType === 'delegate' ? '\u{1F916}' : actionType === 'inbound' ? '\u{1F4E5}' : actionType === 'queued' ? '\u{1F4E9}' : '\u{1F4E9}';
+        var channelName = (payload.channel || 'channel').charAt(0).toUpperCase() + (payload.channel || 'channel').slice(1);
+        var recipientLabel = payload.to ? ' to ' + payload.to : '';
+        var senderLabel = payload.sender ? ' from ' + payload.sender : '';
+        var statusText = '';
+        var statusClass = '';
+
+        if (actionType === 'send') {
+          statusText = payload.success ? 'Sent' : 'Failed';
+          statusClass = payload.success ? '' : 'failed';
+        } else if (actionType === 'ask') {
+          statusText = 'Waiting for reply...';
+          statusClass = 'waiting';
+        } else if (actionType === 'delegate') {
+          statusText = payload.success ? 'Delegated' : 'Failed';
+          statusClass = payload.success ? '' : 'failed';
+        } else if (actionType === 'inbound') {
+          statusText = 'Received';
+          statusClass = '';
+        } else if (actionType === 'queued') {
+          statusText = 'Queued';
+          statusClass = 'waiting';
+          icon = '\u{1F4E9}';
+        }
+
+        var label = channelName + (actionType === 'inbound' ? senderLabel : recipientLabel);
+        card.innerHTML = '<span class="channel-action-icon">' + icon + '</span>' +
+          '<span class="channel-action-text">' + label + '</span>' +
+          '<span class="channel-action-status ' + statusClass + '">' + statusText + '</span>';
+
+        messageBody.appendChild(card);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      /** Strip channel markers from content for clean display */
+      function stripChannelMarkers(text) {
+        return text.replace(/<<<(?:CHANNEL_(?:SEND|ASK)\\s+[^>]*|OPENCLAW)>>>([\\s\\S]*?)<<<END_(?:CHANNEL_(?:SEND|ASK)|OPENCLAW)>>>/g, '');
       }
 
       // ========================================

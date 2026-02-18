@@ -5,10 +5,10 @@
  * Author: Baha Abunojaim <baha@deepmyst.com>
  * Website: https://www.deepmyst.com/mysti
  *
- * This file is part of Mysti, licensed under the Business Source License 1.1.
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * See the LICENSE file in the project root for full license terms.
  *
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import * as vscode from 'vscode';
@@ -32,6 +32,7 @@ import { CompactionManager } from '../managers/CompactionManager';
 import { AgentLifecycleManager } from '../managers/AgentLifecycleManager';
 import { SlashCommandManager, type SlashCommandCallbacks } from '../managers/SlashCommandManager';
 import { ActiveModeManager } from '../managers/ActiveModeManager';
+import { ChannelBridge } from '../managers/ChannelBridge';
 import { getWebviewContent } from '../webview/webviewContent';
 import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback } from '../types';
 import { AUTONOMOUS_CONTINUATION_DELAY_MS, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
@@ -80,8 +81,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _lifecycleManager: AgentLifecycleManager;
   private _slashCommandManager: SlashCommandManager;
   private _activeModeManager: ActiveModeManager;
+  private _channelBridge: ChannelBridge;
   // Per-panel cancel tracking for isolated cancellation
   private _cancelledPanels: Set<string> = new Set();
+  // Track which panels have an active stream (for ChannelBridge inbound routing)
+  private _runningPanels: Set<string> = new Set();
+  // Track most recently active panel for channel message routing
+  private _lastActivePanelId: string | null = null;
   // Track last user message per panel for plan selection follow-up
   private _lastUserMessage: Map<string, string> = new Map();
   // Store mention context per panel for sub-agent retry support
@@ -142,6 +148,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._lifecycleManager = lifecycleManager;
     this._slashCommandManager = slashCommandManager;
     this._activeModeManager = activeModeManager;
+    this._channelBridge = new ChannelBridge(activeModeManager);
     this._planOptionManager = new PlanOptionManager();
     this._mentionRouter = new MentionRouter(this._providerManager);
 
@@ -182,6 +189,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     this._activeModeManager.onActivity(entry => {
       this._broadcastToAll({ type: 'activeModeActivity', payload: entry });
+    });
+
+    // Set up ChannelBridge delegate for inbound message routing
+    this._channelBridge.setDelegate({
+      hasPendingQuestion: (panelId: string) => this._pendingAskUserQuestions.has(panelId),
+      getPendingQuestionToolCallId: (panelId: string) => {
+        if (!this._pendingAskUserQuestions.has(panelId)) { return null; }
+        for (const [toolCallId] of this._pendingQuestionData) {
+          return toolCallId;
+        }
+        return null;
+      },
+      answerPendingQuestion: (panelId: string, toolCallId: string, answer: string) => {
+        // Clear semi-autonomous timer if running
+        const timer = this._semiAutoQuestionTimeouts.get(toolCallId);
+        if (timer) {
+          clearTimeout(timer);
+          this._semiAutoQuestionTimeouts.delete(toolCallId);
+        }
+        const originalQuestion = this._pendingQuestionData.get(toolCallId);
+        this._pendingQuestionData.delete(toolCallId);
+        this._handleAskUserQuestionResponse(
+          { toolCallId, answers: { '0': answer } },
+          panelId,
+          originalQuestion
+        );
+      },
+      cancelPanelRequest: (panelId: string) => {
+        this._cancelledPanels.add(panelId);
+        this._providerManager.cancelRequest(panelId);
+        this._brainstormManager.cancelSession(panelId);
+        this._postToPanel(panelId, { type: 'requestCancelled' });
+      },
+      injectChannelMessage: (panelId: string, channelName: string, content: string, sender?: string) => {
+        // Post inbound card to webview
+        this._postToPanel(panelId, {
+          type: 'channelAction',
+          payload: { action: 'inbound', channel: channelName, sender, content: content.substring(0, 100) }
+        });
+
+        const senderLabel = sender ? ` from ${sender}` : '';
+        const config = vscode.workspace.getConfiguration('mysti');
+        const settings: Settings = {
+          mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
+          thinkingLevel: config.get('defaultThinkingLevel', 'medium') as Settings['thinkingLevel'],
+          accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
+          contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
+          model: this._getPanelModel(panelId),
+          provider: this._getPanelProvider(panelId) as Settings['provider']
+        };
+        this._handleSendMessage(
+          {
+            content: `[Via ${channelName}${senderLabel}]: ${content}`,
+            context: this._contextManager.getContext(panelId),
+            settings
+          },
+          panelId
+        );
+      },
+      isRunning: (panelId: string) => this._runningPanels.has(panelId),
+      getActivePanelId: () => this._lastActivePanelId || this._sidebarId,
     });
 
     // Load agents asynchronously and track the promise
@@ -1273,19 +1341,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'connectChannel':
         {
-          const { channelType, config: channelConfig } = msg.payload as { channelType: string; config?: Record<string, unknown> };
-          const result = await this._activeModeManager.connectChannel(channelType, channelConfig || {});
-          this._postToPanel(msg.panelId, {
-            type: 'channelConnectResult',
-            payload: result
+          const { channelType } = msg.payload as { channelType: string };
+          // Open a terminal so the user can run the interactive OpenClaw channel setup
+          const terminal = vscode.window.createTerminal({
+            name: `OpenClaw: ${channelType}`,
+            shellPath: process.env.SHELL || '/bin/zsh',
           });
-          // If pairing data returned (e.g. QR code), send it
-          if (result.pairingData) {
-            this._postToPanel(msg.panelId, {
-              type: 'channelPairingData',
-              payload: { channelType, data: result.pairingData }
-            });
-          }
+          terminal.show();
+          terminal.sendText(`openclaw configure --section channels`);
         }
         break;
 
@@ -1293,6 +1356,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         {
           const { channelId } = msg.payload as { channelId: string };
           await this._activeModeManager.disconnectChannel(channelId);
+        }
+        break;
+
+      case 'toggleIntegration':
+        {
+          const { enabled } = msg.payload as { enabled: boolean };
+          this._activeModeManager.setIntegrationEnabled(enabled);
         }
         break;
 
@@ -1881,6 +1951,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
+      // Set channel context as system instructions (injected at top of prompt by buildPromptAsync)
+      const channelSnippet = this._channelBridge.getChannelPromptSnippet();
+      const replyContext = this._channelBridge.getReplyContext(panelId);
+      const channelContext = [channelSnippet, replyContext].filter(Boolean).join('\n\n');
+      if (channelContext) {
+        this._providerManager.setChannelSystemContext(panelId, channelContext, effectiveSettings.provider);
+        console.log('[Mysti] Channel context set as system instructions (' + channelContext.length + ' chars)');
+      }
+
+      // Reset channel bridge marker tracking for this new response
+      this._channelBridge.resetForNewResponse(panelId);
+      this._lastActivePanelId = panelId;
+
       const stream = this._providerManager.sendMessage(
         enrichedContent,
         enrichedContext,
@@ -1904,6 +1987,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       });
 
+      this._runningPanels.add(panelId);
       for await (const chunk of stream) {
         // Check if THIS panel's request was cancelled
         if (this._cancelledPanels.has(panelId)) {break;}
@@ -1915,6 +1999,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               type: 'responseChunk',
               payload: { type: 'text', content: chunk.content }
             });
+
+            // Detect completed channel markers and execute send/ask actions
+            {
+              const actions = this._channelBridge.detectMarkers(panelId, assistantContent);
+              for (const action of actions) {
+                if (action.type === 'send') {
+                  const ok = await this._channelBridge.executeSend(action);
+                  this._postToPanel(panelId, {
+                    type: 'channelAction',
+                    payload: { action: 'send', channel: action.channel, to: action.to, success: ok }
+                  });
+                } else if (action.type === 'ask') {
+                  const ok = await this._channelBridge.executeAsk(action, panelId);
+                  this._postToPanel(panelId, {
+                    type: 'channelAction',
+                    payload: { action: 'ask', channel: action.channel, to: action.to, askId: action.askId, success: ok }
+                  });
+                } else if (action.type === 'delegate') {
+                  const ok = await this._channelBridge.executeDelegate(action);
+                  this._postToPanel(panelId, {
+                    type: 'channelAction',
+                    payload: { action: 'delegate', channel: 'openclaw', success: ok }
+                  });
+                }
+              }
+            }
             break;
 
           case 'thinking':
@@ -2057,6 +2167,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 usage: lastUsage
               }
             });
+
+            // Mark panel as no longer running and drain queued channel messages
+            this._runningPanels.delete(panelId);
+            {
+              const queued = this._channelBridge.drainQueuedMessages(panelId);
+              if (queued.length > 0) {
+                for (const qMsg of queued) {
+                  const qSenderLabel = qMsg.sender ? ` from ${qMsg.sender}` : '';
+                  this._postToPanel(panelId, {
+                    type: 'channelAction',
+                    payload: { action: 'inbound', channel: qMsg.channelName, sender: qMsg.sender, content: qMsg.content.substring(0, 100) }
+                  });
+                  // Inject as new user message after a short delay
+                  setTimeout(() => {
+                    const config = vscode.workspace.getConfiguration('mysti');
+                    const qSettings: Settings = {
+                      mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
+                      thinkingLevel: config.get('defaultThinkingLevel', 'medium') as Settings['thinkingLevel'],
+                      accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
+                      contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
+                      model: this._getPanelModel(panelId),
+                      provider: this._getPanelProvider(panelId) as Settings['provider']
+                    };
+                    this._handleSendMessage(
+                      {
+                        content: `[Via ${qMsg.channelName}${qSenderLabel}]: ${qMsg.content}`,
+                        context: this._contextManager.getContext(panelId),
+                        settings: qSettings
+                      },
+                      panelId
+                    );
+                  }, 500);
+                }
+              }
+            }
 
             // Evaluate compaction threshold
             if (lastUsage) {
@@ -3681,6 +3826,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._providerManager.cancelRequest(panelId);
       // Clean up per-panel context
       this._contextManager.clearPanelContext(panelId);
+      // Clean up per-panel channel bridge state
+      this._channelBridge.clearPanel(panelId);
+      this._runningPanels.delete(panelId);
       // Clean up per-panel provider sessions
       for (const provider of this._providerManager.getAllProviders()) {
         provider.cancelCurrentRequest(panelId);
