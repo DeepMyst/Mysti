@@ -535,6 +535,37 @@ Settings > Telemetry: Telemetry Level > off
 
 ---
 
+## Contributors
+
+Thanks to everyone who has helped make Mysti better!
+
+<a href="https://github.com/BahaAbuNojaim"><img src="https://avatars.githubusercontent.com/u/6247079?v=4" width="60" height="60" style="border-radius:50%" alt="BahaAbuNojaim" /></a>
+<a href="https://github.com/MostlyKIGuess"><img src="https://avatars.githubusercontent.com/u/135974627?v=4" width="60" height="60" style="border-radius:50%" alt="MostlyKIGuess" /></a>
+<a href="https://github.com/a-programmers-programmer"><img src="https://avatars.githubusercontent.com/u/161260774?v=4" width="60" height="60" style="border-radius:50%" alt="a-programmers-programmer" /></a>
+<a href="https://github.com/patrick-fu"><img src="https://avatars.githubusercontent.com/u/20736775?v=4" width="60" height="60" style="border-radius:50%" alt="patrick-fu" /></a>
+
+Want to join them? Check out the [Contributing](#contributing) section below.
+
+---
+
+## Star History
+
+If Mysti has been useful to you, consider giving it a star — it helps others discover the project and keeps us motivated!
+
+<p align="center">
+  <a href="https://github.com/DeepMyst/Mysti/stargazers">
+    <img src="https://img.shields.io/github/stars/DeepMyst/Mysti?style=for-the-badge&logo=github&color=yellow" alt="GitHub Stars" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://star-history.com/#DeepMyst/Mysti&Date">
+    <img src="https://api.star-history.com/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="Star History Chart" />
+  </a>
+</p>
+
+---
+
 ## Contributing
 
 We welcome contributions! Whether it's bug reports, feature requests, or code contributions.
