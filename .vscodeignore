@@ -10,6 +10,9 @@ scripts/**
 tsconfig.json
 webpack.config.js
 .git/**
+.claude/**
+.env
+.env.*
 CLAUDE.md
 docs/**
 .mcp.json

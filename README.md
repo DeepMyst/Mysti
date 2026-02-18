@@ -48,7 +48,7 @@
 
 ---
 
-## What's New in v0.3.0
+## What's New in v0.3.1
 
 ### 7 AI Providers
 

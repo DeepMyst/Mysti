@@ -29,6 +29,9 @@ coverage/
 .env.local
 .env.*.local
 
+# Claude Code local settings (may contain tokens in permission rules)
+.claude/
+
 # Misc
 *.swp
 *.swo
