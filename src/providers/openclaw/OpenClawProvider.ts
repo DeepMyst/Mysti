@@ -28,7 +28,6 @@ import type {
   Conversation,
   AgentConfiguration,
 } from '../../types';
-import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv, readOpenClawToken } from '../../utils/platform';
 
 export interface OpenClawSessionState extends PanelSessionState {
@@ -585,16 +584,6 @@ export class OpenClawProvider extends BaseCliProvider {
       'none': 'off', 'low': 'low', 'medium': 'medium', 'high': 'high',
     };
 
-    const { mode, accessLevel } = settings;
-    let elevated = 'ask';
-    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      elevated = 'off';
-    } else if (accessLevel === 'ask-permission') {
-      elevated = 'ask';
-    } else if (accessLevel === 'full-access') {
-      elevated = mode === 'edit-automatically' ? 'full' : 'on';
-    }
-
     try {
       // Emit session_active so the webview shows the session indicator
       // The Gateway WebSocket doesn't emit system/init events like the CLI does
@@ -606,8 +595,7 @@ export class OpenClawProvider extends BaseCliProvider {
 
       yield* this._gateway.sendAgentMessage(fullPrompt, {
         thinking: thinkingMap[settings.thinkingLevel] || 'medium',
-        elevated,
-        model: this._getEffectiveModel(settings),
+        sessionKey: session.sessionId || `mysti-${panelId || 'default'}`,
       });
 
       // Yield done with usage stats
@@ -771,28 +759,6 @@ export class OpenClawProvider extends BaseCliProvider {
 
       proc.on('error', () => resolve(prompt));
     });
-  }
-
-  // --- Private helpers ---
-
-  private _getEffectiveModel(settings: Settings): string | undefined {
-    const config = vscode.workspace.getConfiguration('mysti');
-    const customModel = config.get<string>('openclawModel', '');
-    if (customModel) {
-      const validation = validateModelName(customModel);
-      if (validation.valid) {
-        console.log(`[Mysti] OpenClaw: Using custom model: ${customModel}`);
-        return customModel;
-      }
-      console.warn(`[Mysti] OpenClaw: Invalid custom model "${customModel}": ${validation.error}`);
-    }
-
-    // Use the model from settings dropdown
-    if (settings.model && settings.model !== this.config.defaultModel) {
-      return settings.model;
-    }
-
-    return undefined;
   }
 
 }

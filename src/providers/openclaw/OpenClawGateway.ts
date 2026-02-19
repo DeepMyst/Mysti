@@ -17,8 +17,7 @@ import { OPENCLAW_GATEWAY_TIMEOUT_MS } from '../../constants';
  */
 export interface GatewayAgentOptions {
   thinking?: string;
-  elevated?: string;
-  model?: string;
+  sessionKey?: string;
 }
 
 // --- Active Mode types (used by ActiveModeManager) ---
@@ -300,15 +299,19 @@ export class OpenClawGateway {
       }
     };
 
-    // Listen for agent events
+    // Listen for agent events on multiple possible event names
     const eventHandler = (payload: Record<string, unknown>, _seq?: number) => {
+      console.log('[Mysti] OpenClaw Gateway: Agent event payload:', JSON.stringify(payload).substring(0, 500));
       const chunk = this._mapEventToChunk(payload);
       if (chunk) {
         chunks.push(chunk);
         notify();
       }
     };
-    this._addEventListener('agent', eventHandler);
+    const eventNames = ['agent', 'chat', 'stream', 'message', 'response'];
+    for (const name of eventNames) {
+      this._addEventListener(name, eventHandler);
+    }
 
     // Listen for the response (ack + final)
     const responsePromise = new Promise<GatewayResponse>((resolve, reject) => {
@@ -320,10 +323,10 @@ export class OpenClawGateway {
     });
 
     // Send the agent request
-    const params: Record<string, unknown> = { message };
+    const idempotencyKey = `mysti-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const sessionKey = options.sessionKey || 'main';
+    const params: Record<string, unknown> = { message, idempotencyKey, sessionKey };
     if (options.thinking) { params.thinking = options.thinking; }
-    if (options.elevated) { params.elevated = options.elevated; }
-    if (options.model) { params.model = options.model; }
 
     this._sendFrame({
       type: 'req',
@@ -334,9 +337,27 @@ export class OpenClawGateway {
 
     // Handle the response asynchronously
     responsePromise.then((response) => {
+      console.log('[Mysti] OpenClaw Gateway: Final response:', JSON.stringify(response).substring(0, 1000));
       if (!response.ok) {
         const errMsg = response.error?.message || 'Agent request failed';
         chunks.push({ type: 'error', content: errMsg });
+      } else if (response.payload) {
+        // Extract content from the final response payload if no streaming events provided it
+        const p = response.payload;
+        const text = (p.text || p.content || p.message || p.response || p.output || p.result) as string | undefined;
+        if (text && typeof text === 'string') {
+          chunks.push({ type: 'text', content: text });
+        }
+        // Check for payloads array (batch format)
+        const payloads = p.payloads as Array<Record<string, unknown>> | undefined;
+        if (Array.isArray(payloads)) {
+          for (const item of payloads) {
+            const itemText = (item.text || item.content) as string | undefined;
+            if (itemText) {
+              chunks.push({ type: 'text', content: itemText });
+            }
+          }
+        }
       }
       done = true;
       notify();
@@ -379,7 +400,9 @@ export class OpenClawGateway {
         yield { type: 'error', content: finalError.message };
       }
     } finally {
-      this._removeEventListener('agent', eventHandler);
+      for (const name of eventNames) {
+        this._removeEventListener(name, eventHandler);
+      }
       this._pendingRequests.delete(requestId);
     }
   }
@@ -783,6 +806,44 @@ export class OpenClawGateway {
    * Map a Gateway agent event payload to a Mysti StreamChunk
    */
   private _mapEventToChunk(payload: Record<string, unknown>): StreamChunk | null {
+    // --- OpenClaw Gateway native format ---
+    // Agent events: {stream: "assistant"|"thinking", data: {delta: "...", text: "..."}, ...}
+    // Chat events:  {state: "delta", message: {role, content: [{type, text}]}, ...}
+    // Lifecycle:    {stream: "lifecycle", data: {phase: "start"|"end"}, ...}
+    const stream = payload.stream as string | undefined;
+    const data = payload.data as Record<string, unknown> | undefined;
+    const state = payload.state as string | undefined;
+
+    if (stream === 'assistant' && data) {
+      const delta = data.delta as string | undefined;
+      if (delta) {
+        return { type: 'text', content: delta };
+      }
+      return null;
+    }
+
+    if (stream === 'thinking' && data) {
+      const delta = data.delta as string | undefined;
+      if (delta) {
+        return { type: 'thinking', content: delta };
+      }
+      return null;
+    }
+
+    if (stream === 'lifecycle' && data) {
+      const phase = data.phase as string | undefined;
+      if (phase === 'end' || phase === 'complete') {
+        return { type: 'done' };
+      }
+      return null; // Ignore start/other lifecycle phases
+    }
+
+    // Chat delta events — skip to avoid duplicate text (agent events already provide deltas)
+    if (state === 'delta' && payload.message) {
+      return null;
+    }
+
+    // --- Legacy/fallback format (payload.type based) ---
     const eventType = (payload.type || payload.event_type || '') as string;
 
     // Text content
