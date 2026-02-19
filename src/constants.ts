@@ -69,7 +69,7 @@ export const LOCAL_CLI_PREFIX = '.mysti/cli';            // Fallback user-local 
 /**
  * Sub-agent (mention routing) constants
  */
-export const SUBAGENT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes for sub-agent tasks
+export const SUBAGENT_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour for sub-agent tasks
 export const SUBAGENT_MAX_RETRIES = 1;             // Auto-retry once, then manual
 
 /**
