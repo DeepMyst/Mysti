@@ -49,6 +49,8 @@ interface ClineSessionState extends PanelSessionState {
 	lastUserInput: string;
 	askReceived: boolean;
 	jsonBuffer: string[];
+	clineruleBackup: string | null;
+	clineruleWritten: boolean;
 }
 
 /**
@@ -168,6 +170,8 @@ export class ClineProvider extends BaseCliProvider {
 			lastUserInput: "",
 			askReceived: false,
 			jsonBuffer: [],
+			clineruleBackup: null,
+			clineruleWritten: false,
 		};
 	}
 
@@ -186,6 +190,8 @@ export class ClineProvider extends BaseCliProvider {
 				session.lastUserInput = "";
 				session.askReceived = false;
 				session.jsonBuffer = [];
+				session.clineruleBackup = null;
+				session.clineruleWritten = false;
 			}
 		} else {
 			for (const session of this._panelSessions.values()) {
@@ -196,6 +202,8 @@ export class ClineProvider extends BaseCliProvider {
 				clineSession.lastUserInput = "";
 				clineSession.askReceived = false;
 				clineSession.jsonBuffer = [];
+				clineSession.clineruleBackup = null;
+				clineSession.clineruleWritten = false;
 			}
 		}
 	}
@@ -304,8 +312,8 @@ export class ClineProvider extends BaseCliProvider {
 		}
 
 		// Note: Cline CLI has no per-request model flag.
-		// The model is configured globally via "cline auth".
-		// The Mysti model dropdown for Cline is informational only.
+		// -m is the short form for --mode (plan|act), not model selection.
+		// The model is configured globally via "cline auth" or "cline config".
 
 		return args;
 	}
@@ -695,6 +703,24 @@ export class ClineProvider extends BaseCliProvider {
 		// Store user input to filter out echoed text from Cline's response
 		session.lastUserInput = content.trim();
 
+		// Build system instructions separately — these go into .clinerules so Cline
+		// injects them as real system prompt, not visible user message text.
+		const agentInstructions = await this.buildAgentInstructionsAsync(agentConfig);
+		const systemParts: string[] = [];
+		if (agentInstructions) {
+			systemParts.push(agentInstructions);
+		} else if (persona) {
+			const personaPrompt = this.getPersonaPrompt(persona);
+			if (personaPrompt) {
+				systemParts.push(personaPrompt);
+			}
+		}
+		if (session.channelSystemContext) {
+			systemParts.push(session.channelSystemContext);
+		}
+		const systemInstructions = systemParts.join('\n\n');
+
+		// Build user prompt WITHOUT agent config or system context (moved to .clinerules)
 		// Include conversation history since each Cline CLI invocation is a
 		// fresh process with no memory of prior turns
 		const fullPrompt = await this.buildPromptAsync(
@@ -702,10 +728,10 @@ export class ClineProvider extends BaseCliProvider {
 			context,
 			conversation,
 			settings,
-			persona,
-			agentConfig,
-			undefined,
-			session.channelSystemContext,
+			undefined, // persona — handled in .clinerules above
+			undefined, // agentConfig — handled in .clinerules above
+			undefined, // attachments
+			undefined, // systemContext — handled in .clinerules above
 		);
 
 		console.log(`[Mysti] Cline: Prompt length: ${fullPrompt.length} chars, preview: ${fullPrompt.substring(0, 200)}...`);
@@ -727,12 +753,19 @@ export class ClineProvider extends BaseCliProvider {
 			console.log("[Mysti] Cline stderr:", text);
 		};
 
-		try {
-			const workspaceFolders = vscode.workspace.workspaceFolders;
-			const cwd = workspaceFolders
-				? workspaceFolders[0].uri.fsPath
-				: process.cwd();
+		// Resolve workspace root early so we can write .clinerules and clean up in finally
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+		const cwd = workspaceFolders
+			? workspaceFolders[0].uri.fsPath
+			: process.cwd();
 
+		// Write system instructions to .clinerules so Cline injects them
+		// as proper system prompt (not part of user message)
+		if (systemInstructions) {
+			this._writeClinerules(cwd, systemInstructions, session);
+		}
+
+		try {
 			console.log("[Mysti] Cline: Starting CLI");
 			console.log("[Mysti] Cline: Working directory:", cwd);
 
@@ -789,6 +822,9 @@ export class ClineProvider extends BaseCliProvider {
 			yield this.handleError(error);
 			yield { type: "done" };
 		} finally {
+			// Restore original .clinerules (or remove temp one)
+			this._restoreClinerules(cwd, session);
+
 			if (session.process && !session.process.killed) {
 				try {
 					// Remove only our stderr handler -- don't strip waitForProcess listeners
@@ -829,7 +865,7 @@ export class ClineProvider extends BaseCliProvider {
 		const enhancePrompt = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
 
 		return new Promise((resolve) => {
-			const args = ["--print", "--output-format", "text"];
+			const args = ["--print", "--output-format", "text"];  // enhancePrompt uses text output, not --json
 
 			const proc = spawn(clinePath, args, {
 				stdio: ["pipe", "pipe", "pipe"],
@@ -861,6 +897,55 @@ export class ClineProvider extends BaseCliProvider {
 	}
 
 	// Private helper methods
+
+	/**
+	 * Write system instructions to a .clinerules file in the workspace root.
+	 * Cline CLI auto-discovers this file and injects its content into the
+	 * system prompt slot of API requests (not the user message).
+	 * Backs up any existing .clinerules content on the session for later restore.
+	 */
+	private _writeClinerules(cwd: string, instructions: string, session: ClineSessionState): void {
+		const rulesPath = path.join(cwd, '.clinerules');
+		try {
+			if (fs.existsSync(rulesPath)) {
+				session.clineruleBackup = fs.readFileSync(rulesPath, 'utf-8');
+				console.log('[Mysti] Cline: Backed up existing .clinerules');
+			} else {
+				session.clineruleBackup = null;
+			}
+			fs.writeFileSync(rulesPath, instructions, 'utf-8');
+			session.clineruleWritten = true;
+			console.log(`[Mysti] Cline: Wrote .clinerules (${instructions.length} chars)`);
+		} catch (error) {
+			console.warn('[Mysti] Cline: Failed to write .clinerules:', error);
+			session.clineruleWritten = false;
+		}
+	}
+
+	/**
+	 * Restore the original .clinerules file (or delete the temp one).
+	 */
+	private _restoreClinerules(cwd: string, session: ClineSessionState): void {
+		if (!session.clineruleWritten) {
+			return;
+		}
+		const rulesPath = path.join(cwd, '.clinerules');
+		try {
+			if (session.clineruleBackup !== null) {
+				fs.writeFileSync(rulesPath, session.clineruleBackup, 'utf-8');
+				console.log('[Mysti] Cline: Restored original .clinerules');
+			} else {
+				if (fs.existsSync(rulesPath)) {
+					fs.unlinkSync(rulesPath);
+					console.log('[Mysti] Cline: Removed temp .clinerules');
+				}
+			}
+		} catch (error) {
+			console.warn('[Mysti] Cline: Failed to restore .clinerules:', error);
+		}
+		session.clineruleBackup = null;
+		session.clineruleWritten = false;
+	}
 
 	private _findVSCodeExtensionCli(): string | null {
 		const homeDir = os.homedir();
