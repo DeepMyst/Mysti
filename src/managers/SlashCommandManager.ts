@@ -329,11 +329,11 @@ export class SlashCommandManager {
 
       // ---- Support ----
       case 'support:help':
-        vscode.env.openExternal(vscode.Uri.parse('https://github.com/a-programmers-programmer/Mysti#readme'));
+        vscode.env.openExternal(vscode.Uri.parse('https://github.com/DeepMyst/Mysti/tree/main/docs'));
         return;
 
       case 'support:report':
-        vscode.env.openExternal(vscode.Uri.parse('https://github.com/a-programmers-programmer/Mysti/issues'));
+        vscode.env.openExternal(vscode.Uri.parse('https://github.com/DeepMyst/Mysti/issues'));
         return;
 
       case 'support:version': {
@@ -577,7 +577,7 @@ export class SlashCommandManager {
         icon: 'book',
         provider: 'all',
         action: 'external',
-        url: 'https://github.com/a-programmers-programmer/Mysti#readme',
+        url: 'https://github.com/DeepMyst/Mysti/tree/main/docs',
         keywords: ['docs', 'documentation', 'help'],
       },
       {
@@ -588,7 +588,7 @@ export class SlashCommandManager {
         icon: 'bug',
         provider: 'all',
         action: 'external',
-        url: 'https://github.com/a-programmers-programmer/Mysti/issues',
+        url: 'https://github.com/DeepMyst/Mysti/issues',
         keywords: ['bug', 'issue', 'problem', 'report'],
       },
       {
