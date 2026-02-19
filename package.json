@@ -2,7 +2,7 @@
   "name": "mysti",
   "displayName": "Mysti - AI Coding Agent",
   "description": "Multi-agent AI coding assistant. Claude Code, Codex, Gemini, and GitHub Copilot brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "DeepMyst",
   "author": {
     "name": "Baha Abunojaim",
