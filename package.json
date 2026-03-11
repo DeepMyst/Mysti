@@ -153,6 +153,16 @@
         "command": "mysti.codeLensAction",
         "title": "CodeLens Action",
         "category": "Mysti"
+      },
+      {
+        "command": "mysti.startVisualTest",
+        "title": "Start Visual Test",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.openVisualTestDashboard",
+        "title": "Open Visual Test Dashboard",
+        "category": "Mysti"
       }
     ],
     "menus": {
@@ -1088,6 +1098,72 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically learn and remember project patterns across sessions (like Claude Code's auto-memory)"
+        },
+        "mysti.visualTest.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable visual testing feature (requires Playwright)"
+        },
+        "mysti.visualTest.devServerCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Dev server command (e.g. 'npm run dev'). Auto-detected from package.json if empty."
+        },
+        "mysti.visualTest.url": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "description": "URL to test after dev server starts"
+        },
+        "mysti.visualTest.maxIterations": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum screenshot→analyze→fix iterations before stopping"
+        },
+        "mysti.visualTest.browser": {
+          "type": "string",
+          "default": "chromium",
+          "enum": [
+            "chromium",
+            "firefox",
+            "webkit"
+          ],
+          "enumDescriptions": [
+            "Chromium (Chrome/Edge) — fastest and most compatible",
+            "Firefox — Gecko engine",
+            "WebKit (Safari) — for macOS/iOS testing"
+          ],
+          "description": "Browser engine for screenshots and interactions"
+        },
+        "mysti.visualTest.headless": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run browser in headless mode (no visible window)"
+        },
+        "mysti.visualTest.viewportWidth": {
+          "type": "number",
+          "default": 1280,
+          "minimum": 320,
+          "maximum": 3840,
+          "description": "Browser viewport width in pixels"
+        },
+        "mysti.visualTest.viewportHeight": {
+          "type": "number",
+          "default": 720,
+          "minimum": 240,
+          "maximum": 2160,
+          "description": "Browser viewport height in pixels"
+        },
+        "mysti.visualTest.interactionsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow AI to interact with the page (click, type, navigate, scroll)"
+        },
+        "mysti.visualTest.serverReadyPattern": {
+          "type": "string",
+          "default": "localhost:\\d+|ready in|compiled successfully|VITE|started server on",
+          "description": "Regex pattern to detect when dev server is ready (matched against stdout)"
         }
       }
     },
@@ -1275,6 +1351,7 @@
   "dependencies": {
     "@vscode/extension-telemetry": "^0.9.0",
     "marked": "^15.0.0",
+    "playwright": "^1.58.2",
     "prismjs": "^1.29.0",
     "uuid": "^9.0.1",
     "ws": "^8.19.0"

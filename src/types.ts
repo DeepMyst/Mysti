@@ -1242,3 +1242,114 @@ export interface ShutdownResult {
   reason?: string;
   childPids?: number[];
 }
+
+// ============================================================================
+// Visual Testing Types
+// ============================================================================
+
+export type VisualTestStatus = 'idle' | 'starting-server' | 'capturing' | 'analyzing'
+  | 'fixing' | 'verifying' | 'complete' | 'failed' | 'cancelled';
+
+export interface VisualTestConfig {
+  url: string;
+  devServerCommand?: string;
+  requirements: string;
+  maxIterations: number;
+  screenshotMode: 'full-page' | 'viewport' | 'element';
+  elementSelector?: string;
+  browser: 'chromium' | 'firefox' | 'webkit';
+  headless: boolean;
+  viewportWidth: number;
+  viewportHeight: number;
+  waitForSelector?: string;
+  waitForTimeout?: number;
+  interactionsEnabled: boolean;
+}
+
+export interface VisualTestScreenshot {
+  id: string;
+  iteration: number;
+  timestamp: number;
+  filePath: string;
+  base64Data?: string;
+  label: string;
+  url: string;
+}
+
+export interface VisualTestIssue {
+  id: string;
+  description: string;
+  severity: 'critical' | 'major' | 'minor' | 'cosmetic';
+  location?: string;
+  screenshotId: string;
+  status: 'open' | 'fixing' | 'fixed' | 'wont-fix';
+}
+
+export interface VisualTestIteration {
+  number: number;
+  screenshot: VisualTestScreenshot;
+  issues: VisualTestIssue[];
+  fixesApplied: string[];
+  interactions: VisualTestInteraction[];
+  duration: number;
+}
+
+export interface VisualTestInteraction {
+  action: 'click' | 'type' | 'navigate' | 'scroll' | 'hover' | 'select';
+  target?: string;
+  value?: string;
+  screenshotBefore?: string;
+  screenshotAfter?: string;
+  timestamp: number;
+}
+
+export interface VisualTestReport {
+  id: string;
+  status: VisualTestStatus;
+  config: VisualTestConfig;
+  iterations: VisualTestIteration[];
+  summary: {
+    totalIssuesFound: number;
+    totalIssuesFixed: number;
+    totalIterations: number;
+    maxIterations: number;
+    totalDuration: number;
+    passRate: number;
+    verdict: 'pass' | 'partial' | 'fail';
+  };
+  startedAt: number;
+  completedAt?: number;
+}
+
+export interface VisualTestStreamChunk {
+  type: 'visual_test_started' | 'visual_test_screenshot' | 'visual_test_iteration'
+    | 'visual_test_interaction' | 'visual_test_issue' | 'visual_test_fix'
+    | 'visual_test_complete' | 'visual_test_error';
+  screenshot?: VisualTestScreenshot;
+  iteration?: VisualTestIteration;
+  interaction?: VisualTestInteraction;
+  issue?: VisualTestIssue;
+  report?: VisualTestReport;
+  status?: VisualTestStatus;
+  message?: string;
+  feedbackForAgent?: string;
+  toolDetail?: {
+    toolName: string;
+    filePath?: string;
+    action?: string;
+    description: string;
+    linesAdded?: number;
+    linesRemoved?: number;
+    command?: string;
+  };
+}
+
+export interface VisualTestTrigger {
+  url?: string;
+  devServerCommand?: string;
+  requirements: string;
+  maxIterations?: number;
+  screenshotMode?: 'full-page' | 'viewport' | 'element';
+  elementSelector?: string;
+  showDashboard?: boolean;
+}

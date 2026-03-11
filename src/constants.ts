@@ -105,3 +105,16 @@ export const OPENCLAW_GATEWAY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes overall
  */
 export const MANUS_API_BASE_URL = 'https://api.manus.im';
 export const MANUS_POLL_INTERVAL_MS = 3000; // 3 seconds between status polls
+
+/**
+ * Visual testing constants
+ */
+export const VISUAL_TEST_MAX_ITERATIONS = 5;
+export const VISUAL_TEST_ITERATION_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes per iteration
+export const VISUAL_TEST_TOTAL_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes total
+export const VISUAL_TEST_SERVER_STARTUP_TIMEOUT_MS = 30 * 1000; // 30 seconds
+export const VISUAL_TEST_SERVER_HEALTH_POLL_MS = 500;
+export const VISUAL_TEST_SCREENSHOT_WAIT_MS = 1000; // Wait for page to settle before screenshot
+export const VISUAL_TEST_SERVER_KILL_GRACE_MS = 5000; // 5 seconds before SIGKILL
+export const VISUAL_TEST_HOT_RELOAD_WAIT_MS = 2000; // Wait for hot-reload after code changes
+export const VISUAL_TEST_DEFAULT_VIEWPORT = { width: 1280, height: 720 };

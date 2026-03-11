@@ -703,6 +703,12 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
             <path d="M7.657 6.247c.11-.33.576-.33.686 0l.645 1.937a2.89 2.89 0 0 0 1.829 1.828l1.936.645c.33.11.33.576 0 .686l-1.937.645a2.89 2.89 0 0 0-1.828 1.829l-.645 1.936a.361.361 0 0 1-.686 0l-.645-1.937a2.89 2.89 0 0 0-1.828-1.828l-1.937-.645a.361.361 0 0 1 0-.686l1.937-.645a2.89 2.89 0 0 0 1.828-1.828l.645-1.937zM3.794 1.148a.217.217 0 0 1 .412 0l.387 1.162c.173.518.579.924 1.097 1.097l1.162.387a.217.217 0 0 1 0 .412l-1.162.387A1.734 1.734 0 0 0 4.593 5.69l-.387 1.162a.217.217 0 0 1-.412 0L3.407 5.69a1.734 1.734 0 0 0-1.097-1.097l-1.162-.387a.217.217 0 0 1 0-.412l1.162-.387A1.734 1.734 0 0 0 3.407 2.31l.387-1.162zM10.863.099a.145.145 0 0 1 .274 0l.258.774c.115.346.386.617.732.732l.774.258a.145.145 0 0 1 0 .274l-.774.258a1.156 1.156 0 0 0-.732.732l-.258.774a.145.145 0 0 1-.274 0l-.258-.774a1.156 1.156 0 0 0-.732-.732L9.1 2.137a.145.145 0 0 1 0-.274l.774-.258c.346-.115.617-.386.732-.732L10.863.1z"/>
           </svg>
         </button>
+        <button id="visual-test-btn" class="toolbar-btn" title="Visual Test — screenshot, test, fix your app">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M10.5 8.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/>
+            <path d="M2 4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-1.172a2 2 0 0 1-1.414-.586l-.828-.828A2 2 0 0 0 9.172 2H6.828a2 2 0 0 0-1.414.586l-.828.828A2 2 0 0 1 3.172 4H2zm.5 2a.5.5 0 1 1 0-1 .5.5 0 0 1 0 1zm9 2.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0z"/>
+          </svg>
+        </button>
         <div class="toolbar-spacer"></div>
         <button id="agent-select-btn" class="toolbar-btn agent-btn" title="Select AI agent">
           <span id="agent-icon" class="agent-icon"><img src="${claudeLogoUri}" alt="" /></span>
@@ -764,6 +770,11 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         </div>
       </div>
       <div id="export-toast" class="export-toast">Copied to clipboard!</div>
+      <!-- Visual Test Mini Status Bar (dashboard runs in separate tab) -->
+      <div id="vt-mini-status" class="vt-mini-status hidden">
+        <span id="vt-mini-status-text">Visual Test: Running...</span>
+        <button id="vt-mini-cancel" class="vt-mini-cancel">Cancel</button>
+      </div>
       <div id="badge-toast" class="badge-toast" onclick="this.classList.remove('show')">
         <span class="badge-toast-icon" id="badge-toast-icon"></span>
         <div class="badge-toast-content">
@@ -2889,6 +2900,38 @@ function getStyles(): string {
     .badge-toast .badge-toast-tier.silver { color: #C0C0C0; }
     .badge-toast .badge-toast-tier.gold { color: #FFD700; }
     .badge-toast .badge-toast-tier.platinum { color: #E5E4E2; }
+
+    /* Visual Test Mini Status Bar (dashboard runs in separate tab) */
+    .vt-mini-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      margin: 0 12px 4px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 4px;
+      font-size: 11px;
+    }
+    .vt-mini-status.hidden { display: none; }
+    #vt-mini-status-text {
+      flex: 1;
+      color: var(--vscode-descriptionForeground);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .vt-mini-cancel {
+      padding: 2px 8px;
+      font-size: 10px;
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .vt-mini-cancel:hover { opacity: 0.9; }
 
     .message-content pre {
       background: var(--vscode-textCodeBlock-background);
@@ -13026,6 +13069,13 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           case 'triggerImport':
             postMessageWithPanelId({ type: 'importFromFile' });
             break;
+          case 'openVisualTestDialog':
+            // Redirect to opening the dashboard in a separate tab
+            postMessageWithPanelId({ type: 'openVisualTestDashboard' });
+            break;
+          case 'visualTestMiniStatus':
+            handleVisualTestMiniStatus(message.payload);
+            break;
           case 'badgeUnlocked': {
             var badge = message.payload;
             var toastIcon = document.getElementById('badge-toast-icon');
@@ -13178,6 +13228,69 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       // ========================================
       // Export / Copy Handlers
       // ========================================
+
+      // ====================================================================
+      // Visual Test UI Functions
+      // ====================================================================
+
+      // Visual test mini status handler (dashboard runs in separate tab)
+      var vtMiniHideTimer = null;
+      function handleVisualTestMiniStatus(chunk) {
+        if (!chunk) return;
+        var bar = document.getElementById('vt-mini-status');
+        var text = document.getElementById('vt-mini-status-text');
+        if (!bar || !text) return;
+
+        bar.classList.remove('hidden');
+        if (vtMiniHideTimer) { clearTimeout(vtMiniHideTimer); vtMiniHideTimer = null; }
+
+        switch (chunk.type) {
+          case 'visual_test_started':
+            text.textContent = 'Visual Test: ' + (chunk.message || 'Starting...');
+            break;
+          case 'visual_test_screenshot':
+            text.textContent = 'Visual Test: Screenshot captured (iteration ' + (chunk.screenshot ? chunk.screenshot.iteration : '?') + ')';
+            break;
+          case 'visual_test_fix':
+            text.textContent = 'Visual Test: ' + (chunk.message || 'Applying fix...');
+            break;
+          case 'visual_test_iteration':
+            if (chunk.iteration) {
+              text.textContent = 'Visual Test: Iteration ' + chunk.iteration.number + ' complete';
+            }
+            break;
+          case 'visual_test_error':
+            text.textContent = 'Visual Test: Error — ' + (chunk.message || 'Unknown');
+            vtMiniHideTimer = setTimeout(function() { bar.classList.add('hidden'); }, 8000);
+            break;
+          case 'visual_test_complete': {
+            var verdict = chunk.report && chunk.report.summary ? chunk.report.summary.verdict : 'fail';
+            text.textContent = 'Visual Test: Complete — ' + verdict.toUpperCase();
+            vtMiniHideTimer = setTimeout(function() { bar.classList.add('hidden'); }, 5000);
+            break;
+          }
+          default:
+            if (chunk.message) { text.textContent = 'Visual Test: ' + chunk.message; }
+            break;
+        }
+      }
+
+      // Wire up visual test button → opens dashboard in separate tab
+      (function() {
+        var vtBtn = document.getElementById('visual-test-btn');
+        if (vtBtn) {
+          vtBtn.addEventListener('click', function() {
+            postMessageWithPanelId({ type: 'openVisualTestDashboard' });
+          });
+        }
+        // Mini status cancel button
+        var vtMiniCancel = document.getElementById('vt-mini-cancel');
+        if (vtMiniCancel) {
+          vtMiniCancel.addEventListener('click', function() {
+            postMessageWithPanelId({ type: 'cancelVisualTest' });
+          });
+        }
+      })();
 
       function handleExportResult(payload) {
         var toast = document.getElementById('export-toast');

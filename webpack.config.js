@@ -27,7 +27,8 @@ const config = {
   externals: {
     vscode: 'commonjs vscode',
     bufferutil: 'commonjs bufferutil',
-    'utf-8-validate': 'commonjs utf-8-validate'
+    'utf-8-validate': 'commonjs utf-8-validate',
+    playwright: 'commonjs playwright'
   },
   resolve: {
     extensions: ['.ts', '.js']

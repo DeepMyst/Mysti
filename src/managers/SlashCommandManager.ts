@@ -85,6 +85,7 @@ export class SlashCommandManager {
     'init-team': 'cmd:init-team',
     'memory': 'cmd:memory',
     'rules': 'cmd:rules',
+    'visual-test': 'cmd:visual-test',
   };
 
   constructor(deps: SlashCommandManagerDeps) {
@@ -274,6 +275,12 @@ export class SlashCommandManager {
           return `Exited ${currentMode}. Switched to: ask-before-edit\n(Ready for implementation with ${currentProv})`;
         }
         return 'Not currently in plan mode.';
+      }
+
+      case 'cmd:visual-test': {
+        // Open the visual test dashboard in a separate editor tab
+        callbacks.postToPanel(panelId, { type: 'openVisualTestDashboard' });
+        return;
       }
 
       case 'cmd:export': {
@@ -566,6 +573,16 @@ export class SlashCommandManager {
         provider: 'all',
         action: 'execute',
         keywords: ['exit', 'plan', 'mode'],
+      },
+      {
+        id: 'cmd:visual-test',
+        label: '/visual-test',
+        description: 'Run visual testing on your app (screenshot → analyze → fix → verify)',
+        section: 'commands',
+        icon: 'device-camera',
+        provider: 'all',
+        action: 'execute',
+        keywords: ['visual', 'test', 'screenshot', 'browser', 'playwright', 'ui'],
       },
       {
         id: 'cmd:export',

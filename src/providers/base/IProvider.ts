@@ -60,6 +60,7 @@ export interface ProviderCapabilities {
   supportsPersistentProcess?: boolean;
   supportsImages?: boolean;
   supportsFileAttachments?: boolean;
+  supportsVisualTesting?: boolean;
   supportsAutoInstall: boolean;
 }
 

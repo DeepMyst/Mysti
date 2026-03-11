@@ -34,9 +34,11 @@ import { SlashCommandManager, type SlashCommandCallbacks } from '../managers/Sla
 import { ActiveModeManager } from '../managers/ActiveModeManager';
 import { EngagementManager } from '../managers/EngagementManager';
 import { ProjectContextManager } from '../managers/ProjectContextManager';
+import { VisualTestManager } from '../managers/VisualTestManager';
 import { ChannelBridge } from '../managers/ChannelBridge';
 import { getWebviewContent } from '../webview/webviewContent';
-import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback } from '../types';
+import { getVisualTestDashboardContent } from '../webview/visualTestDashboardContent';
+import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualTestTrigger, VisualTestStreamChunk } from '../types';
 import { AUTONOMOUS_CONTINUATION_DELAY_MS, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
 import { validateModelName, validateProfileName } from '../utils/validation';
@@ -86,7 +88,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _activeModeManager: ActiveModeManager;
   private _engagementManager: EngagementManager;
   private _projectContextManager: ProjectContextManager;
+  private _visualTestManager: VisualTestManager;
   private _channelBridge: ChannelBridge;
+  // Visual test dashboard tracking
+  private _vtDashboardPanelId: string | null = null;
+  private _vtDashboardChatOrigin: string | null = null;
+  private _vtTriggeredThisResponse: boolean = false;
   // Per-panel cancel tracking for isolated cancellation
   private _cancelledPanels: Set<string> = new Set();
   // Track which panels have an active stream (for ChannelBridge inbound routing)
@@ -142,7 +149,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     slashCommandManager: SlashCommandManager,
     activeModeManager: ActiveModeManager,
     engagementManager: EngagementManager,
-    projectContextManager: ProjectContextManager
+    projectContextManager: ProjectContextManager,
+    visualTestManager: VisualTestManager
   ) {
     this._extensionUri = extensionUri;
     this._extensionContext = extensionContext;
@@ -162,6 +170,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._activeModeManager = activeModeManager;
     this._engagementManager = engagementManager;
     this._projectContextManager = projectContextManager;
+    this._visualTestManager = visualTestManager;
     this._channelBridge = new ChannelBridge(activeModeManager);
     this._planOptionManager = new PlanOptionManager();
     this._mentionRouter = new MentionRouter(this._providerManager);
@@ -1692,6 +1701,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await this._openProjectRules();
         }
         break;
+
+      case 'startVisualTest':
+        {
+          // Open the visual test dashboard (separate editor tab)
+          const panelId = msg.panelId;
+          const payload = msg.payload as {
+            config: VisualTestConfig;
+            settings: Settings;
+          };
+          if (panelId && payload?.config) {
+            this.openVisualTestDashboard(payload.config, panelId);
+          }
+        }
+        break;
+
+      case 'openVisualTestDashboard':
+        {
+          const panelId = msg.panelId;
+          this.openVisualTestDashboard(undefined, panelId);
+        }
+        break;
+
+      case 'cancelVisualTest':
+        {
+          const panelId = msg.panelId;
+          if (panelId) {
+            this._visualTestManager.cancelTest(panelId);
+          }
+          // Also cancel via dashboard if running
+          if (this._vtDashboardPanelId) {
+            this._visualTestManager.cancelTest(this._vtDashboardPanelId);
+            this._postToPanel(this._vtDashboardPanelId, { type: 'visualTestDashboardCancelled' } as any);
+          }
+        }
+        break;
+
+      case 'getVisualTestReport':
+        {
+          const panelId = msg.panelId;
+          if (panelId) {
+            const report = this._visualTestManager.getReport(panelId);
+            this._postToPanel(panelId, {
+              type: 'visualTestReport',
+              payload: report
+            });
+          }
+        }
+        break;
+
+      case 'stopVisualTestServer':
+        {
+          const panelId = msg.panelId;
+          if (panelId) {
+            await this._visualTestManager.stopDevServer(panelId);
+            this._postToPanel(panelId, {
+              type: 'visualTestServerStopped',
+              payload: {}
+            });
+          }
+        }
+        break;
     }
   }
 
@@ -2670,6 +2740,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       let assistantContent = '';
       let thinkingContent = '';
+      this._vtTriggeredThisResponse = false;
       let lastUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined;
 
       // Send context window info when starting
@@ -2720,6 +2791,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     type: 'channelAction',
                     payload: { action: 'delegate', channel: 'openclaw', success: ok }
                   });
+                }
+              }
+            }
+
+            // Detect visual test trigger from AI (```visual-test\n{...}\n```)
+            if (!this._vtTriggeredThisResponse) {
+              const trigger = this._detectVisualTestTrigger(assistantContent);
+              if (trigger) {
+                this._vtTriggeredThisResponse = true;
+                const vtConfig: VisualTestConfig = {
+                  url: trigger.url || 'http://localhost:3000',
+                  devServerCommand: trigger.devServerCommand,
+                  requirements: trigger.requirements,
+                  maxIterations: trigger.maxIterations || 5,
+                  screenshotMode: (trigger.screenshotMode as any) || 'viewport',
+                  elementSelector: trigger.elementSelector,
+                  browser: 'chromium',
+                  headless: true,
+                  viewportWidth: 1280,
+                  viewportHeight: 720,
+                  interactionsEnabled: true
+                };
+                const effectiveSettings = this._getSettingsForPanel(panelId);
+                if (trigger.showDashboard) {
+                  const dashPanelId = this.openVisualTestDashboard(vtConfig, panelId);
+                  this._runVisualTestWithDashboard(dashPanelId, vtConfig, panelId, effectiveSettings);
+                } else {
+                  this._runVisualTestHeadless(vtConfig, panelId, effectiveSettings);
                 }
               }
             }
@@ -4670,6 +4769,221 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         icon: 'book'
       }
     ];
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Visual Test Dashboard
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Open the Visual Test Dashboard in a separate editor tab.
+   * If a dashboard is already open, focuses it.
+   * Returns the dashboard panelId.
+   */
+  public openVisualTestDashboard(config?: VisualTestConfig, originPanelId?: string): string {
+    // If dashboard already open, focus it
+    if (this._vtDashboardPanelId) {
+      const existing = this._panelStates.get(this._vtDashboardPanelId);
+      if (existing?.panel) {
+        existing.panel.reveal();
+        // If config provided, send it to pre-fill
+        if (config) {
+          existing.webview.postMessage({ type: 'visualTestDashboardConfig', payload: config });
+        }
+        return this._vtDashboardPanelId;
+      }
+    }
+
+    const panelId = `vt-dashboard-${Date.now()}`;
+    const panel = vscode.window.createWebviewPanel(
+      'mysti.visualTestDashboard',
+      'Mysti Visual Test',
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        localResourceRoots: [this._extensionUri],
+        retainContextWhenHidden: true
+      }
+    );
+
+    panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
+    const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
+    panel.webview.html = getVisualTestDashboardContent(panel.webview, this._extensionUri, version);
+
+    // Track dashboard
+    this._vtDashboardPanelId = panelId;
+    this._vtDashboardChatOrigin = originPanelId || null;
+
+    // Register in panel states (for message routing)
+    this._panelStates.set(panelId, {
+      id: panelId,
+      webview: panel.webview,
+      panel,
+      currentConversationId: null,
+      isSidebar: false
+    });
+
+    // Wire messages
+    panel.webview.onDidReceiveMessage(
+      async (msg: any) => this._handleDashboardMessage(msg, panelId)
+    );
+
+    // Cleanup on dispose
+    panel.onDidDispose(() => {
+      this._vtDashboardPanelId = null;
+      this._vtDashboardChatOrigin = null;
+      this._panelStates.delete(panelId);
+      // Cancel running test on close
+      this._visualTestManager.cancelTest(panelId);
+    });
+
+    // If config provided, pre-fill
+    if (config) {
+      panel.webview.postMessage({ type: 'visualTestDashboardConfig', payload: config });
+    }
+
+    return panelId;
+  }
+
+  /**
+   * Handle messages from the Visual Test Dashboard webview.
+   */
+  private async _handleDashboardMessage(msg: any, dashboardPanelId: string): Promise<void> {
+    switch (msg.type) {
+      case 'dashboardStartVisualTest': {
+        const config = msg.payload?.config as VisualTestConfig | undefined;
+        if (!config) { break; }
+        // Get settings from the origin chat panel or use defaults
+        const settings = this._getSettingsForPanel(this._vtDashboardChatOrigin || this._sidebarId);
+        this._runVisualTestWithDashboard(dashboardPanelId, config, this._vtDashboardChatOrigin, settings);
+        break;
+      }
+      case 'dashboardCancelVisualTest':
+        this._visualTestManager.cancelTest(dashboardPanelId);
+        this._postToPanel(dashboardPanelId, { type: 'visualTestDashboardCancelled' } as any);
+        break;
+      case 'dashboardStopServer':
+        await this._visualTestManager.stopDevServer(dashboardPanelId);
+        break;
+    }
+  }
+
+  /**
+   * Run a visual test with dashboard panel (streams to both dashboard and chat).
+   */
+  private async _runVisualTestWithDashboard(
+    dashPanelId: string,
+    config: VisualTestConfig,
+    chatPanelId: string | null,
+    settings: Settings
+  ): Promise<void> {
+    try {
+      const stream = this._visualTestManager.startVisualTest(
+        dashPanelId, config, this._providerManager, settings
+      );
+      for await (const chunk of stream) {
+        // Send to dashboard
+        this._postToPanel(dashPanelId, { type: 'visualTestDashboardUpdate', payload: chunk } as any);
+        // Send mini status to origin chat panel
+        if (chatPanelId) {
+          this._postToPanel(chatPanelId, { type: 'visualTestMiniStatus', payload: chunk } as any);
+        }
+        // On completion, inject summary into chat for agent reasoning
+        if (chunk.type === 'visual_test_complete' && chunk.report && chatPanelId) {
+          const summary = this._visualTestManager.buildAgentFeedbackSummary(chunk.report);
+          this._postToPanel(chatPanelId, {
+            type: 'responseChunk',
+            payload: { type: 'text', content: `\n\n${summary}` }
+          });
+        }
+      }
+    } catch (err: any) {
+      this._postToPanel(dashPanelId, {
+        type: 'visualTestDashboardUpdate',
+        payload: { type: 'visual_test_error', status: 'failed', message: err.message || 'Visual test failed' }
+      } as any);
+      if (chatPanelId) {
+        this._postToPanel(chatPanelId, {
+          type: 'visualTestMiniStatus',
+          payload: { type: 'visual_test_error', status: 'failed', message: err.message }
+        } as any);
+      }
+    }
+  }
+
+  /**
+   * Run a visual test headlessly (no dashboard, results go to chat only).
+   */
+  private async _runVisualTestHeadless(
+    config: VisualTestConfig,
+    chatPanelId: string,
+    settings: Settings
+  ): Promise<void> {
+    const testPanelId = `vt-headless-${Date.now()}`;
+    try {
+      this._postToPanel(chatPanelId, {
+        type: 'visualTestMiniStatus',
+        payload: { type: 'visual_test_started', status: 'capturing', message: 'Visual test starting (headless)...' }
+      } as any);
+
+      const stream = this._visualTestManager.startVisualTest(
+        testPanelId, config, this._providerManager, settings
+      );
+      for await (const chunk of stream) {
+        this._postToPanel(chatPanelId, { type: 'visualTestMiniStatus', payload: chunk } as any);
+
+        if (chunk.type === 'visual_test_complete' && chunk.report) {
+          const summary = this._visualTestManager.buildAgentFeedbackSummary(chunk.report);
+          this._postToPanel(chatPanelId, {
+            type: 'responseChunk',
+            payload: { type: 'text', content: `\n\n${summary}` }
+          });
+        }
+      }
+    } catch (err: any) {
+      this._postToPanel(chatPanelId, {
+        type: 'visualTestMiniStatus',
+        payload: { type: 'visual_test_error', status: 'failed', message: err.message }
+      } as any);
+    }
+  }
+
+  /**
+   * Detect a visual test trigger in AI response text.
+   * Looks for: ```visual-test\n{...JSON...}\n```
+   */
+  private _detectVisualTestTrigger(content: string): VisualTestTrigger | null {
+    const match = content.match(/```visual-test\s*\n([\s\S]*?)```/);
+    if (!match) { return null; }
+    try {
+      return JSON.parse(match[1]);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get the effective settings for a panel (resolves overrides).
+   */
+  private _getSettingsForPanel(panelId: string): Settings {
+    const config = vscode.workspace.getConfiguration('mysti');
+    // Build base settings from config (simplified — the real settings resolution is in _handleMessage)
+    const settings: Settings = {
+      provider: config.get('provider', 'claude-code') as any,
+      model: config.get('model', ''),
+      mode: config.get('mode', 'default') as any,
+      thinkingLevel: config.get('thinkingLevel', 'none') as any,
+      accessLevel: config.get('accessLevel', 'ask-permission') as any,
+      contextMode: config.get('contextMode', 'auto') as any,
+      autonomousMode: config.get('autonomous.enabled', false),
+    };
+    // Apply per-panel overrides
+    const state = this._panelStates.get(panelId);
+    if (state?.settingsOverrides) {
+      if (state.settingsOverrides.provider) { settings.provider = state.settingsOverrides.provider; }
+      if (state.settingsOverrides.model) { settings.model = state.settingsOverrides.model; }
+    }
+    return settings;
   }
 
   /**

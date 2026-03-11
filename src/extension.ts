@@ -33,6 +33,7 @@ import { TeamPresenceManager } from './managers/TeamPresenceManager';
 import { MystiFileDecorationProvider } from './providers/MystiFileDecorationProvider';
 import { MystiCodeLensProvider } from './providers/MystiCodeLensProvider';
 import { ProjectContextManager } from './managers/ProjectContextManager';
+import { VisualTestManager } from './managers/VisualTestManager';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -53,6 +54,7 @@ let commitSignatureManager: CommitSignatureManager;
 let teamPresenceManager: TeamPresenceManager;
 let fileDecorationProvider: MystiFileDecorationProvider;
 let projectContextManager: ProjectContextManager;
+let visualTestManager: VisualTestManager;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('Mysti extension is now active');
@@ -113,6 +115,9 @@ export async function activate(context: vscode.ExtensionContext) {
     console.log('[Mysti] ActiveMode: initialization error:', err)
   );
 
+  // Initialize visual test manager
+  visualTestManager = new VisualTestManager(context);
+
   // Initialize slash command manager
   const slashCommandManager = new SlashCommandManager({
     providerManager,
@@ -142,7 +147,8 @@ export async function activate(context: vscode.ExtensionContext) {
     slashCommandManager,
     activeModeManager,
     engagementManager,
-    projectContextManager
+    projectContextManager,
+    visualTestManager
   );
 
   // Register the webview provider
@@ -330,6 +336,13 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.openInNewTab', () => {
       chatViewProvider.openInNewTab();
+    })
+  );
+
+  // Open Visual Test Dashboard command
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.openVisualTestDashboard', () => {
+      chatViewProvider.openVisualTestDashboard();
     })
   );
 
@@ -576,5 +589,8 @@ export function deactivate() {
   }
   if (projectContextManager) {
     projectContextManager.dispose();
+  }
+  if (visualTestManager) {
+    visualTestManager.dispose();
   }
 }
