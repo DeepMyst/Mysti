@@ -1,6 +1,6 @@
 # AI Providers
 
-Mysti supports 7 AI providers. You only need one to get started — install any two to unlock Brainstorm Mode.
+Mysti supports 12 AI providers. You only need one to get started — install any two to unlock Brainstorm Mode.
 
 ## Provider Overview
 
@@ -13,6 +13,10 @@ Mysti supports 7 AI providers. You only need one to get started — install any 
 | **GitHub Copilot** | CLI | 14+ models (Claude, GPT, Gemini) | Multi-model access via GitHub subscription |
 | **Cursor** | CLI | Auto, Claude Sonnet 4, GPT-5, o3, Gemini 2.5 Pro | Multi-model with auto-selection |
 | **OpenClaw** | CLI + WebSocket | Claude Opus 4.6, Sonnet 4.5, GPT-5 | Real-time WebSocket streaming, thinking levels |
+| **OpenCode** | CLI | Configurable (Anthropic, OpenAI, Google, Groq) | Multi-backend agent, flexible model selection |
+| **Qwen Code** | CLI | Qwen3 Coder, Qwen3 Coder Plus | Alibaba's AI coding agent, deep reasoning |
+| **Ollama** | CLI | Local models (Llama, Mistral, CodeLlama, etc.) | Local inference, privacy-first, no subscription |
+| **LocalAI** | CLI | Self-hosted models | Full control, on-premise deployment |
 
 ## Claude Code
 
@@ -296,6 +300,152 @@ Configuration stored in `~/.openclaw/openclaw.json`.
 
 ---
 
+## OpenCode
+
+Multi-backend coding agent supporting multiple LLM providers through a unified CLI.
+
+### Installation
+
+```bash
+npm i -g opencode-ai@latest
+```
+
+### Authentication
+
+```bash
+opencode auth login
+```
+
+Or set provider API keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`.
+
+### Supported Models
+
+OpenCode uses your configured default model. Models depend on your provider setup — run `opencode models` to see available models.
+
+### Unique Features
+
+- **Multi-Backend**: Single CLI supporting Anthropic, OpenAI, Google, Groq, AWS Bedrock, Azure OpenAI, OpenRouter
+- **Agent Modes**: `build` agent for full access, `plan` agent for read-only analysis
+- **Thinking Support**: Built-in thinking block streaming
+- **Session Resume**: Continue previous sessions via `--session <id>` or `--continue`
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.opencodePath` | `opencode` | Path to OpenCode CLI executable |
+| `mysti.opencodeModel` | `` | Custom model (provider/model format) |
+
+---
+
+## Qwen Code
+
+Alibaba's AI coding CLI agent with deep reasoning capabilities. Uses the same streaming protocol as Claude Code.
+
+### Installation
+
+```bash
+npm install -g @qwen-code/qwen-code@latest
+```
+
+### Authentication
+
+```bash
+qwen
+# Then type /auth in the interactive session
+```
+
+Or set API keys: `QWEN_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
+
+### Supported Models
+
+- Qwen3 Coder
+- Qwen3 Coder Plus
+
+### Unique Features
+
+- **Claude-Compatible Protocol**: Uses the same stream-json NDJSON format as Claude Code
+- **Approval Modes**: plan, default, auto-edit, yolo — mapped from Mysti's access levels
+- **Auth Error UI**: Guided authentication when not configured
+- **Session Resume**: Continue previous sessions with `--continue`
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.qwenCodePath` | `qwen` | Path to Qwen Code CLI executable |
+| `mysti.qwenCodeModel` | `` | Custom model |
+
+---
+
+## Ollama
+
+Local LLM inference — run AI models on your own machine with no cloud dependency.
+
+### Installation
+
+Download from [ollama.com](https://ollama.com), then pull a model:
+
+```bash
+ollama pull llama3
+```
+
+### Authentication
+
+No authentication needed — runs entirely locally.
+
+### Supported Models
+
+Any model available in the Ollama library: Llama 3, Mistral, CodeLlama, Phi, Gemma, and more.
+
+### Unique Features
+
+- **Fully Local**: No internet connection required after model download
+- **Privacy**: Your code never leaves your machine
+- **No Subscription**: Free to use with any compatible model
+- **Fast Inference**: Hardware-accelerated on Apple Silicon, NVIDIA GPUs
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.ollamaPath` | `ollama` | Path to Ollama CLI executable |
+| `mysti.ollamaModel` | `` | Custom model |
+
+---
+
+## LocalAI
+
+Self-hosted AI model provider for on-premise deployments.
+
+### Installation
+
+Follow the installation guide at [localai.io](https://localai.io).
+
+### Authentication
+
+No authentication needed — runs entirely locally.
+
+### Supported Models
+
+Supports a wide range of self-hosted models. See LocalAI documentation for compatible models.
+
+### Unique Features
+
+- **Self-Hosted**: Run on your own infrastructure
+- **Full Control**: Configure models, resources, and access as needed
+- **On-Premise**: Meets compliance requirements for data residency
+- **No Subscription**: Free and open source
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.localaiPath` | `localai` | Path to LocalAI CLI executable |
+| `mysti.localaiModel` | `` | Custom model |
+
+---
+
 ## Manus (Experimental)
 
 HTTP API-based provider for Manus AI. Currently under development.
@@ -343,12 +493,12 @@ Click the settings gear icon in the Mysti sidebar to access the full settings pa
 
 ## Provider Feature Matrix
 
-| Feature | Claude | Codex | Gemini | Cline | Copilot | Cursor | OpenClaw |
-|---------|--------|-------|--------|-------|---------|--------|----------|
-| Streaming | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Thinking Mode | Yes | Yes | Yes | No | No | Yes | Yes |
-| Native Compaction | Yes | No | No | No | No | No | No |
-| Session Resume | Yes | Yes | Yes | No | No | Yes | Yes |
-| Tool Use Display | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Brainstorm Support | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Autonomous Mode | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Feature | Claude | Codex | Gemini | Cline | Copilot | Cursor | OpenClaw | OpenCode | Qwen | Ollama | LocalAI |
+|---------|--------|-------|--------|-------|---------|--------|----------|----------|------|--------|---------|
+| Streaming | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Thinking Mode | Yes | Yes | Yes | No | No | Yes | Yes | Yes | Yes | No | No |
+| Native Compaction | Yes | No | No | No | No | No | No | No | No | No | No |
+| Session Resume | Yes | Yes | Yes | No | No | Yes | Yes | Yes | Yes | No | No |
+| Tool Use Display | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Brainstorm Support | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Autonomous Mode | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |

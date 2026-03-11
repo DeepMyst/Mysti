@@ -226,22 +226,46 @@ export class ProviderManager {
    * Cancel request for a specific panel only with graceful shutdown
    */
   public cancelRequest(panelId: string): void {
-    const process = this._activePanelProcesses.get(panelId);
-    if (process && !process.killed) {
-      console.log(`[Mysti] Cancelling request for panel: ${panelId}`);
+    // Delegate to provider first — it handles SIGKILL for suspended processes
+    // (avoids SIGCONT+SIGTERM which would give the CLI a window to execute tools)
+    try {
+      const provider = this._getActiveProvider();
+      provider.cancelCurrentRequest(panelId);
+    } catch {
+      // Provider may not be available; fall back to direct process kill
+      const process = this._activePanelProcesses.get(panelId);
+      if (process && !process.killed) {
+        console.log(`[Mysti] Cancelling request for panel: ${panelId} (direct)`);
+        process.kill('SIGKILL');
+      }
+    }
+    this._activePanelProcesses.delete(panelId);
+  }
 
-      // Try graceful termination first
-      process.kill('SIGTERM');
+  /**
+   * Suspend (SIGSTOP) the CLI process for a panel to prevent tool execution.
+   * Returns false on Windows or if no active process.
+   */
+  public suspendRequest(panelId: string): boolean {
+    try {
+      const provider = this._getActiveProvider();
+      return provider.suspendProcess(panelId);
+    } catch (err) {
+      console.warn(`[Mysti] Failed to suspend request for panel ${panelId}:`, err);
+      return false;
+    }
+  }
 
-      // Schedule force kill if process doesn't terminate gracefully
-      setTimeout(() => {
-        if (process && !process.killed) {
-          console.warn(`[Mysti] Force killing process for panel: ${panelId}`);
-          process.kill('SIGKILL');
-        }
-      }, PROCESS_KILL_GRACE_PERIOD_MS);
-
-      this._activePanelProcesses.delete(panelId);
+  /**
+   * Resume (SIGCONT) a previously suspended CLI process for a panel.
+   */
+  public resumeRequest(panelId: string): boolean {
+    try {
+      const provider = this._getActiveProvider();
+      return provider.resumeProcess(panelId);
+    } catch (err) {
+      console.warn(`[Mysti] Failed to resume request for panel ${panelId}:`, err);
+      return false;
     }
   }
 

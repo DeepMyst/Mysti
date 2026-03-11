@@ -79,6 +79,12 @@ export class SlashCommandManager {
     'exit-plan-mode': 'cmd:exit-plan',
     'exit-plan': 'cmd:exit-plan',
     'compact': 'claude:compact',
+    'export': 'cmd:export',
+    'import': 'cmd:import',
+    'share': 'cmd:share',
+    'init-team': 'cmd:init-team',
+    'memory': 'cmd:memory',
+    'rules': 'cmd:rules',
   };
 
   constructor(deps: SlashCommandManagerDeps) {
@@ -200,7 +206,7 @@ export class SlashCommandManager {
 
       case 'provider:switch': {
         if (trimmedArgs) {
-          const agents = ['claude-code', 'openai-codex', 'google-gemini', 'github-copilot', 'cursor', 'cline', 'openclaw'];
+          const agents = ['claude-code', 'openai-codex', 'google-gemini', 'github-copilot', 'cursor', 'cline', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'];
           if (agents.includes(trimmedArgs)) {
             return this._applyProviderSwitch(trimmedArgs, panelId, callbacks);
           }
@@ -268,6 +274,42 @@ export class SlashCommandManager {
           return `Exited ${currentMode}. Switched to: ask-before-edit\n(Ready for implementation with ${currentProv})`;
         }
         return 'Not currently in plan mode.';
+      }
+
+      case 'cmd:export': {
+        // Trigger the export via the webview (ChatViewProvider handles the actual export)
+        callbacks.postToPanel(panelId, { type: 'triggerExport' });
+        return;
+      }
+
+      case 'cmd:import': {
+        // Trigger the import via the webview (ChatViewProvider handles the file dialog)
+        callbacks.postToPanel(panelId, { type: 'triggerImport' });
+        return;
+      }
+
+      case 'cmd:share': {
+        // Generate and copy a shareable deep link for the current conversation
+        callbacks.postToPanel(panelId, { type: 'triggerShareLink' });
+        return;
+      }
+
+      case 'cmd:init-team': {
+        // Scaffold .mysti/ team workspace config
+        callbacks.postToPanel(panelId, { type: 'triggerInitTeam' });
+        return;
+      }
+
+      case 'cmd:memory': {
+        // Open project MEMORY.md for viewing/editing
+        callbacks.postToPanel(panelId, { type: 'triggerOpenMemory' });
+        return;
+      }
+
+      case 'cmd:rules': {
+        // Open .mysti/rules/ directory
+        callbacks.postToPanel(panelId, { type: 'triggerOpenRules' });
+        return;
       }
 
       // ---- Settings ----
@@ -525,6 +567,66 @@ export class SlashCommandManager {
         action: 'execute',
         keywords: ['exit', 'plan', 'mode'],
       },
+      {
+        id: 'cmd:export',
+        label: 'Export Conversation',
+        description: 'Copy conversation as Markdown',
+        section: 'commands' as SlashCommandSection,
+        icon: 'export',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['export', 'copy', 'markdown', 'share'],
+      },
+      {
+        id: 'cmd:import',
+        label: 'Import Conversation',
+        description: 'Import from .mysti.json, .json, or .jsonl file',
+        section: 'commands' as SlashCommandSection,
+        icon: 'cloud-download',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['import', 'load', 'file', 'open'],
+      },
+      {
+        id: 'cmd:share',
+        label: 'Share Conversation',
+        description: 'Copy a shareable deep link to clipboard',
+        section: 'commands' as SlashCommandSection,
+        icon: 'link',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['share', 'link', 'deep', 'copy', 'url'],
+      },
+      {
+        id: 'cmd:init-team',
+        label: 'Init Team Workspace',
+        description: 'Set up .mysti/ config for your team',
+        section: 'commands' as SlashCommandSection,
+        icon: 'organization',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['init', 'team', 'workspace', 'setup', 'config'],
+      },
+      {
+        id: 'cmd:memory',
+        label: 'Memory',
+        description: 'View and edit project memory (MEMORY.md)',
+        section: 'commands' as SlashCommandSection,
+        icon: 'book',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['memory', 'learn', 'remember', 'knowledge'],
+      },
+      {
+        id: 'cmd:rules',
+        label: 'Rules',
+        description: 'View and edit project rules (.mysti/rules/)',
+        section: 'commands' as SlashCommandSection,
+        icon: 'law',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['rules', 'constraints', 'always', 'never'],
+      },
 
       // -- Settings --
       {
@@ -677,6 +779,10 @@ export class SlashCommandManager {
       'cursor': 'Cursor',
       'cline': 'Cline',
       'openclaw': 'OpenClaw',
+      'opencode': 'OpenCode',
+      'ollama': 'Ollama',
+      'localai': 'LocalAI',
+      'qwen-code': 'Qwen Code',
       'brainstorm': 'Brainstorm',
     };
     return names[providerId] || providerId;

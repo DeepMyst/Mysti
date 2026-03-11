@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -30,6 +31,7 @@ import {
 
 const GLOBAL_STATE_KEY = 'mysti.autonomousMemory';
 const MEMORY_DIR_NAME = 'memory';
+const PROJECT_MEMORY_MAX_LINES = 200;
 
 interface MemoryStore {
   entries: MemoryEntry[];
@@ -43,6 +45,9 @@ export class MemoryManager {
   private _syncInterval: NodeJS.Timeout | null = null;
   private _dirty = false;
   private _memoryDirPath: string;
+  // Per-project auto-memory (like ~/.claude/projects/<project>/memory/)
+  private _projectMemoryDir: string | null = null;
+  private _projectMemoryContent: string = '';
 
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
@@ -268,6 +273,160 @@ export class MemoryManager {
     this._dirty = true;
     this._saveToGlobalState();
     this._syncToFiles();
+  }
+
+  // ---- Per-Project Auto-Memory (like ~/.claude/projects/<project>/memory/) ----
+
+  /**
+   * Initialize per-project memory for the current workspace.
+   * Creates ~/.mysti/projects/<hash>/memory/ directory and loads MEMORY.md.
+   */
+  initProjectMemory(workspacePath: string): void {
+    const hash = crypto.createHash('sha256').update(workspacePath).digest('hex').substring(0, 12);
+    const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+    this._projectMemoryDir = path.join(homeDir, '.mysti', 'projects', hash, 'memory');
+
+    try {
+      fs.mkdirSync(this._projectMemoryDir, { recursive: true });
+    } catch (error) {
+      console.warn('[Mysti] Failed to create project memory dir:', error);
+      this._projectMemoryDir = null;
+      return;
+    }
+
+    this._loadProjectMemory();
+    console.log(`[Mysti] Project memory initialized at ${this._projectMemoryDir} (${this._projectMemoryContent.length} chars)`);
+  }
+
+  /**
+   * Get the first 200 lines of MEMORY.md for prompt injection.
+   */
+  getProjectMemoryContent(): string {
+    return this._projectMemoryContent;
+  }
+
+  /**
+   * Get the path to the project's MEMORY.md file, or null if not initialized.
+   */
+  getProjectMemoryPath(): string | null {
+    if (!this._projectMemoryDir) { return null; }
+    return path.join(this._projectMemoryDir, 'MEMORY.md');
+  }
+
+  /**
+   * Write or update the MEMORY.md file with new content.
+   */
+  writeProjectMemory(content: string): void {
+    if (!this._projectMemoryDir) { return; }
+
+    const memoryPath = path.join(this._projectMemoryDir, 'MEMORY.md');
+    try {
+      fs.writeFileSync(memoryPath, content, 'utf-8');
+      this._loadProjectMemory(); // Reload cached content (respects 200 line limit)
+    } catch (error) {
+      console.error('[Mysti] Failed to write project memory:', error);
+    }
+  }
+
+  /**
+   * Write or update a topic file in the project memory directory.
+   */
+  writeTopicFile(topic: string, content: string): void {
+    if (!this._projectMemoryDir) { return; }
+
+    const safeName = topic.replace(/[^a-z0-9-]/gi, '-').toLowerCase() + '.md';
+    const filePath = path.join(this._projectMemoryDir, safeName);
+    try {
+      fs.writeFileSync(filePath, content, 'utf-8');
+    } catch (error) {
+      console.error(`[Mysti] Failed to write topic file ${safeName}:`, error);
+    }
+  }
+
+  /**
+   * Read a topic file from the project memory directory.
+   */
+  readTopicFile(topic: string): string | null {
+    if (!this._projectMemoryDir) { return null; }
+
+    const safeName = topic.replace(/[^a-z0-9-]/gi, '-').toLowerCase() + '.md';
+    const filePath = path.join(this._projectMemoryDir, safeName);
+    try {
+      if (fs.existsSync(filePath)) {
+        return fs.readFileSync(filePath, 'utf-8');
+      }
+    } catch (error) {
+      console.warn(`[Mysti] Failed to read topic file ${safeName}:`, error);
+    }
+    return null;
+  }
+
+  /**
+   * Record a project learning. Appends to MEMORY.md under the appropriate section.
+   * Creates MEMORY.md with default structure if it doesn't exist.
+   */
+  recordProjectLearning(section: string, insight: string): void {
+    if (!this._projectMemoryDir) { return; }
+
+    const memoryPath = path.join(this._projectMemoryDir, 'MEMORY.md');
+    let content: string;
+
+    try {
+      content = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, 'utf-8') : '';
+    } catch {
+      content = '';
+    }
+
+    // If empty, create default structure
+    if (!content.trim()) {
+      content = '# Mysti Project Memory\n';
+    }
+
+    // Find or create the section
+    const sectionHeader = `## ${section}`;
+    const sectionIndex = content.indexOf(sectionHeader);
+
+    if (sectionIndex >= 0) {
+      // Find the end of this section (next ## or end of file)
+      const afterHeader = sectionIndex + sectionHeader.length;
+      const nextSectionMatch = content.substring(afterHeader).search(/\n## /);
+      const insertPoint = nextSectionMatch >= 0
+        ? afterHeader + nextSectionMatch
+        : content.length;
+
+      // Check if this insight already exists (dedup)
+      const sectionContent = content.substring(afterHeader, insertPoint);
+      if (sectionContent.includes(insight)) {
+        return; // Already recorded
+      }
+
+      // Insert before next section
+      content = content.substring(0, insertPoint) + `\n- ${insight}` + content.substring(insertPoint);
+    } else {
+      // Append new section at end
+      content += `\n${sectionHeader}\n\n- ${insight}\n`;
+    }
+
+    this.writeProjectMemory(content);
+  }
+
+  private _loadProjectMemory(): void {
+    if (!this._projectMemoryDir) { return; }
+
+    const memoryPath = path.join(this._projectMemoryDir, 'MEMORY.md');
+    try {
+      if (fs.existsSync(memoryPath)) {
+        const full = fs.readFileSync(memoryPath, 'utf-8');
+        // Only load first 200 lines (like Claude Code)
+        const lines = full.split('\n');
+        this._projectMemoryContent = lines.slice(0, PROJECT_MEMORY_MAX_LINES).join('\n');
+      } else {
+        this._projectMemoryContent = '';
+      }
+    } catch (error) {
+      console.warn('[Mysti] Failed to load project memory:', error);
+      this._projectMemoryContent = '';
+    }
   }
 
   dispose(): void {

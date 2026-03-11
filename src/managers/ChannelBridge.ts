@@ -133,6 +133,10 @@ export class ChannelBridge {
   /** Contacts that Mysti has sent messages to — only these get inbound routing */
   private _trackedContacts: Map<string, TrackedContact> = new Map();
 
+  /** Cached channel prompt snippet — invalidated on channel state changes */
+  private _cachedSnippet: string | null = null;
+  private _cachedChannelSignature: string = '';
+
   constructor(activeModeManager: ActiveModeManager) {
     this._activeModeManager = activeModeManager;
     this._subscribeToChannelEvents();
@@ -170,6 +174,13 @@ export class ChannelBridge {
       return '';
     }
 
+    // Cache invalidation: rebuild only when channel set changes
+    const signature = connected.map(c => `${c.id}:${c.type}`).sort().join('|');
+    if (this._cachedSnippet && signature === this._cachedChannelSignature) {
+      return this._cachedSnippet;
+    }
+    this._cachedChannelSignature = signature;
+
     console.log(`[Mysti] ChannelBridge: Generating snippet for ${connected.length} channels: ${connected.map(c => c.type).join(', ')}`);
 
     const channelList = connected.map(c =>
@@ -178,7 +189,7 @@ export class ChannelBridge {
 
     const channelTypes = connected.map(c => c.type).join(', ');
 
-    return `[SYSTEM: OpenClaw Integration]
+    const snippet = `[SYSTEM: OpenClaw Integration]
 
 OpenClaw is a local gateway daemon running on the user's machine. It provides:
 - Bidirectional messaging with WhatsApp, Telegram, Slack, Discord, Signal, iMessage, and more
@@ -226,6 +237,9 @@ RULES:
 - You can include multiple markers in a single response
 - All markers are processed automatically — content is delivered or delegated instantly
 - Do NOT say you cannot send messages, contact specific people, or perform tasks — these are built-in capabilities via OpenClaw`;
+
+    this._cachedSnippet = snippet;
+    return snippet;
   }
 
   /**

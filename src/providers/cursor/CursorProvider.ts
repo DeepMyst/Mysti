@@ -114,6 +114,7 @@ export class CursorProvider extends BaseCliProvider {
 			persistentProcess: null,
 			persistentReady: false,
 			lastHealthCheck: 0,
+			suspended: false,
 			activeToolCalls: new Map(),
 			lastUsageStats: null,
 			streamedTextLength: 0,
@@ -244,18 +245,24 @@ export class CursorProvider extends BaseCliProvider {
 		const { mode, accessLevel } = settings;
 
 		// --force enables direct file modifications without confirmation
-		// Only add when the user has granted full edit + full access permissions
-		if (mode === "edit-automatically" && accessLevel === "full-access") {
-			args.push("--force");
-			console.log("[Mysti] Cursor: Using --force (auto-approve file changes)");
-		} else if (
+		// More-restrictive-wins: only auto-approve when BOTH mode and access allow it
+		if (
 			mode === "quick-plan" ||
 			mode === "detailed-plan" ||
 			accessLevel === "read-only"
 		) {
 			console.log("[Mysti] Cursor: Read-only mode (no --force)");
+		} else if (mode === "edit-automatically" && accessLevel === "full-access") {
+			args.push("--force");
+			console.log("[Mysti] Cursor: Using --force (edit-automatically + full-access)");
+		} else if (mode === "default" && accessLevel === "full-access") {
+			args.push("--force");
+			console.log("[Mysti] Cursor: Using --force (default + full-access)");
 		} else {
-			console.log("[Mysti] Cursor: Default mode (no --force)");
+			// Bypass CLI permissions to prevent stdin hang.
+			// The stream-level tool-use gate in ChatViewProvider handles permission prompts.
+			args.push("--force");
+			console.log(`[Mysti] Cursor: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
 		}
 
 		return args;

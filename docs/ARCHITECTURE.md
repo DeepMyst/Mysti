@@ -61,6 +61,14 @@ Mysti/
 │   │   │   └── CursorProvider.ts
 │   │   ├── openclaw/
 │   │   │   └── OpenClawProvider.ts
+│   │   ├── opencode/
+│   │   │   └── OpenCodeProvider.ts
+│   │   ├── qwen/
+│   │   │   └── QwenCodeProvider.ts
+│   │   ├── ollama/
+│   │   │   └── OllamaProvider.ts
+│   │   ├── localai/
+│   │   │   └── LocalAIProvider.ts
 │   │   └── manus/
 │   │       └── ManusProvider.ts   # Experimental HTTP API provider
 │   ├── mcp/

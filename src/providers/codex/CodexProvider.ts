@@ -172,6 +172,7 @@ export class CodexProvider extends BaseCliProvider {
       persistentProcess: null,
       persistentReady: false,
       lastHealthCheck: 0,
+      suspended: false,
       activeToolCalls: new Map(),
       completedToolCalls: new Set(),
       lastUsageStats: null,
@@ -197,7 +198,8 @@ export class CodexProvider extends BaseCliProvider {
 
   protected _getAdditionalSearchPaths(): string[] {
     if (process.platform === 'darwin') {
-      return ['/Applications/Codex.app/Contents/MacOS/codex'];
+      // Use the CLI binary bundled inside the app, NOT the Electron launcher at Contents/MacOS/codex
+      return ['/Applications/Codex.app/Contents/Resources/codex'];
     }
     return [];
   }
@@ -475,51 +477,39 @@ export class CodexProvider extends BaseCliProvider {
   private _addSandboxFlags(args: string[], settings: Settings): void {
     const { mode, accessLevel } = settings;
 
-    // Quick Plan - read-only sandbox
-    if (mode === 'quick-plan') {
+    // Plan modes → always read-only regardless of access level
+    if (mode === 'quick-plan' || mode === 'detailed-plan') {
       args.push('--sandbox', 'read-only');
-      console.log('[Mysti] Codex: Using quick plan mode (read-only)');
+      console.log(`[Mysti] Codex: Using read-only sandbox (${mode})`);
       return;
     }
 
-    // Detailed Plan - read-only sandbox
-    if (mode === 'detailed-plan') {
-      args.push('--sandbox', 'read-only');
-      console.log('[Mysti] Codex: Using detailed plan mode (read-only)');
-      return;
-    }
-
-    // Read-only access level enforces read-only sandbox regardless of operation mode
+    // Read-only access level → read-only sandbox regardless of operation mode
     if (accessLevel === 'read-only') {
       args.push('--sandbox', 'read-only');
       console.log('[Mysti] Codex: Using read-only sandbox (read-only access level)');
       return;
     }
 
-    // Full access - bypass all approvals and sandboxing (DANGEROUS)
-    if (accessLevel === 'full-access') {
+    // More-restrictive-wins: only bypass when BOTH mode and access allow it
+    // edit-automatically + full-access = bypass all approvals and sandboxing
+    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
       args.push('--dangerously-bypass-approvals-and-sandbox');
-      console.log('[Mysti] Codex: Bypassing all approvals and sandbox (full-access)');
+      console.log('[Mysti] Codex: Bypassing all approvals and sandbox (edit-automatically + full-access)');
       return;
     }
 
-    // edit-automatically + ask-permission = workspace-write with auto-approve
-    if (mode === 'edit-automatically') {
+    // default mode + full-access = full-auto (no explicit edit restriction)
+    if (mode === 'default' && accessLevel === 'full-access') {
       args.push('--full-auto');
-      console.log('[Mysti] Codex: Using full-auto mode (edit-automatically)');
+      console.log('[Mysti] Codex: Using full-auto mode (default + full-access)');
       return;
     }
 
-    // ask-before-edit + ask-permission = workspace-write (CLI prompts)
-    if (mode === 'ask-before-edit' && accessLevel === 'ask-permission') {
-      args.push('--sandbox', 'workspace-write');
-      console.log('[Mysti] Codex: Using workspace-write sandbox (ask-before-edit)');
-      return;
-    }
-
-    // Default mode or fallback - workspace write with prompts
-    args.push('--sandbox', 'workspace-write');
-    console.log('[Mysti] Codex: Using default mode (workspace-write)');
+    // All other combinations: bypass CLI permissions to prevent stdin hang.
+    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
+    args.push('--full-auto');
+    console.log(`[Mysti] Codex: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**

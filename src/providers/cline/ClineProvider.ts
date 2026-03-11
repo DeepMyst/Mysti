@@ -305,10 +305,11 @@ export class ClineProvider extends BaseCliProvider {
 			console.log("[Mysti] Cline: Using act mode");
 		}
 
-		// Add --yolo for full-access/edit-automatically to reduce prompts
-		if (mode === "edit-automatically" && accessLevel === "full-access") {
+		// Always add --yolo in act mode to prevent CLI stdin hang.
+		// The stream-level tool-use gate in ChatViewProvider handles permission prompts.
+		if (args.includes("--mode") && args[args.indexOf("--mode") + 1] === "act") {
 			args.push("--yolo");
-			console.log("[Mysti] Cline: Using yolo mode (auto-approve)");
+			console.log(`[Mysti] Cline: Using yolo mode (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
 		}
 
 		// Note: Cline CLI has no per-request model flag.

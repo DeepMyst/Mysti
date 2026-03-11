@@ -1,3 +1,7 @@
+<p align="center">
+  English | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a> | <a href="README.es.md">Español</a> | <a href="README.pt-BR.md">Português</a> | <a href="README.ar.md">العربية</a> | <a href="README.de.md">Deutsch</a> | <a href="README.fr.md">Français</a> | <a href="README.tr.md">Türkçe</a> | <a href="README.ru.md">Русский</a>
+</p>
+
 # Mysti - Your AI Coding Team Working Together
 
 <p align="center">
@@ -27,7 +31,7 @@
 
 <p align="center">
   <strong>Your AI Coding team for VSCode</strong><br>
-  <em>7 AI providers — Claude Code, Codex, Gemini, Copilot, Cline, Cursor & OpenClaw — working solo or in teams</em><br>
+  <em>12 AI providers — Claude Code, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, Manus, OpenCode, Qwen Code, Ollama & LocalAI — working solo or in teams</em><br>
   <em>Wisdom of the crowd where the collective intelligence of several agents outperforms a single one.</em>
 </p>
 
@@ -48,27 +52,32 @@
 
 ---
 
-## What's New in v0.3.1
+## What's New in v0.4.0
 
-### 7 AI Providers
+### 4 New Providers (12 Total)
 
-Mysti now supports **7 AI providers** — added **Cursor**, **OpenClaw**, and **Cline** alongside Claude Code, Codex, Gemini, and GitHub Copilot. Switch between providers with one click or use `@agent` mentions to route tasks to specific AIs.
+Mysti now supports **12 AI providers** — added **OpenCode**, **Qwen Code**, **Ollama**, and **LocalAI** alongside Claude Code, Codex, Gemini, GitHub Copilot, Cline, Cursor, OpenClaw, and Manus. Run local models with Ollama/LocalAI or use cloud providers like OpenCode and Qwen Code. Each provider has its own authentic logo in the UI.
 
-### Autonomous Mode
+### Qwen Code
 
-Let the AI work independently with built-in safety controls. A three-level safety classifier (safe/caution/blocked) evaluates every operation, while a learning memory system adapts to your preferences over time. [Learn more](docs/AUTONOMOUS-MODE.md)
+Alibaba's AI coding CLI with deep reasoning capabilities. Uses the same streaming protocol as Claude Code for seamless integration. Supports Qwen3 Coder models with plan, auto-edit, and yolo approval modes.
 
-### @-Mention System
+### OpenCode
 
-Type `@claude`, `@gemini`, or any agent name to route tasks directly. Chain agents for multi-perspective workflows: `@claude Write a sort function, then @codex optimize it`. Reference files with `@filename.ts` for instant context. [Learn more](docs/MENTIONS.md)
+Multi-backend coding agent supporting Anthropic, OpenAI, Google, and Groq through a single CLI. Uses your configured default model — no lock-in to specific providers.
 
-### 5 Brainstorm Collaboration Strategies
+### Local AI Support
 
-Brainstorm Mode now offers 5 strategies — **Quick**, **Debate**, **Red-Team**, **Perspectives**, and **Delphi** — each with role-based discussion and convergence detection. [Learn more](docs/BRAINSTORM.md)
+Run AI models locally with **Ollama** and **LocalAI** — no cloud subscription needed. Full privacy, zero latency, complete control over your models.
 
-### Context Compaction
+### Stability & Testing
 
-Smart conversation compaction prevents context overflow. Native `/compact` support for Claude Code, with client-side summarization for other providers. [Learn more](docs/COMPACTION.md)
+18 stability fixes across brainstorm mode and @-mention tagging — silence-based timeouts, auth pre-checks, convergence guards, mention limits, and retry cleanup. Plus **360 automated tests** via vitest ensuring reliability across all features.
+
+### Bug Fixes
+
+- **Windows**: Fixed `spawn EINVAL` error with auto shell mode (#14)
+- **Codex**: Brainstorm now respects `mysti.codexPath` setting (#26)
 
 ---
 
@@ -101,6 +110,10 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | **Cline** | Plan/Act mode, structured task completion |
 | **Cursor** | Auto model selection, multi-model with Claude, GPT-5, Gemini |
 | **OpenClaw** | Real-time WebSocket streaming, configurable thinking levels |
+| **OpenCode** | Multi-backend agent (Anthropic, OpenAI, Google, Groq) |
+| **Qwen Code** | Alibaba's AI coding agent, deep reasoning |
+| **Ollama** | Local LLM inference, privacy-first, no subscription |
+| **LocalAI** | Self-hosted AI models, full control |
 
 **Switch providers with one click. No lock-in.**
 
@@ -109,7 +122,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | vs Copilot/Cursor | Mysti Advantage |
 |-------------------|-----------------|
 | Single AI | **Multi-agent brainstorming** — two AIs collaborate with 5 strategies |
-| Locked to one provider | **7 providers** — Claude, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw |
+| Locked to one provider | **12 providers** — Claude, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, Manus, OpenCode, Qwen, Ollama, LocalAI |
 | Black box | **Full permission control** — read-only to full-access |
 | Generic responses | **16 personas** — architect, debugger, security expert... |
 | Manual workflow | **Autonomous mode** — AI works independently with safety controls |
@@ -135,7 +148,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 
 ## Brainstorm Mode
 
-**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose any 2 of 7 agents** from the settings panel.
+**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose any 2 of 12 agents** from the settings panel.
 
 <p align="center">
   <img src="docs/gifs/brainstorm example.gif" alt="Brainstorm Mode" width="700">
@@ -153,7 +166,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 
 ### Why Two AIs Beat One
 
-**Claude Code** (Anthropic), **Codex** (OpenAI), **Gemini** (Google), **GitHub Copilot**, **Cline**, **Cursor**, and **OpenClaw** have different training, different strengths, and different blind spots. When any two work together:
+**Claude Code** (Anthropic), **Codex** (OpenAI), **Gemini** (Google), **GitHub Copilot**, **Cline**, **Cursor**, **OpenClaw**, **OpenCode**, **Qwen Code** (Alibaba), **Ollama**, and **LocalAI** have different training, different strengths, and different blind spots. When any two work together:
 
 - Each AI catches edge cases the other might miss
 - Different perspectives lead to more robust solutions
@@ -180,6 +193,9 @@ Configure which two agents collaborate in the **Settings Panel**:
 | Claude + Copilot | Compare native Claude vs Copilot's multi-model approach |
 | Cursor + Gemini | Multi-model flexibility with Google integration |
 | OpenClaw + Claude | WebSocket streaming with deep reasoning |
+| Qwen + Claude | Compare Alibaba and Anthropic reasoning |
+| OpenCode + Gemini | Multi-backend flexibility with Google speed |
+| Ollama + Claude | Local privacy meets cloud intelligence |
 
 [Full Brainstorm documentation](docs/BRAINSTORM.md)
 
@@ -331,6 +347,10 @@ Mysti works with your existing subscriptions—no additional costs!
 | **Cline** | Depends on model provider | `npm install -g cline` |
 | **Cursor** | Cursor subscription | `curl https://cursor.com/install -fsS \| bash` |
 | **OpenClaw** | OpenClaw account | `npm install -g openclaw@latest && openclaw onboard --install-daemon` |
+| **OpenCode** | Provider API keys (Anthropic, OpenAI, etc.) | `npm i -g opencode-ai@latest` |
+| **Qwen Code** | Qwen OAuth or API keys | `npm install -g @qwen-code/qwen-code@latest` |
+| **Ollama** | Local (no subscription needed) | [Install from ollama.com](https://ollama.com) |
+| **LocalAI** | Local (no subscription needed) | [Install from localai.io](https://localai.io) |
 
 You only need **one** CLI to get started. Install **any two** to unlock Brainstorm Mode.
 
@@ -369,6 +389,14 @@ agent login
 # Or OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
 openclaw login
+
+# Or OpenCode
+npm i -g opencode-ai@latest
+opencode auth login
+
+# Or Qwen Code
+npm install -g @qwen-code/qwen-code@latest
+qwen  # then type /auth
 ```
 
 For Brainstorm Mode, install any two CLI tools.
@@ -448,6 +476,10 @@ Stay in control of what the AI can do:
 | `mysti.clinePath` | `cline` | Path to Cline CLI |
 | `mysti.cursorPath` | `agent` | Path to Cursor CLI |
 | `mysti.openclawPath` | `openclaw` | Path to OpenClaw CLI |
+| `mysti.opencodePath` | `opencode` | Path to OpenCode CLI |
+| `mysti.qwenCodePath` | `qwen` | Path to Qwen Code CLI |
+| `mysti.ollamaPath` | `ollama` | Path to Ollama CLI |
+| `mysti.localaiPath` | `localai` | Path to LocalAI CLI |
 
 ### Brainstorm Settings
 
@@ -509,7 +541,7 @@ Stay in control of what the AI can do:
 
 | Guide | Description |
 |-------|-------------|
-| [Providers](docs/PROVIDERS.md) | All 7 providers — setup, models, features |
+| [Providers](docs/PROVIDERS.md) | All 12 providers — setup, models, features |
 | [Brainstorm Mode](docs/BRAINSTORM.md) | 5 strategies, convergence, team selection |
 | [Personas & Skills](docs/PERSONAS-AND-SKILLS.md) | 16 personas, 12 skills, custom agents |
 | [Autonomous Mode](docs/AUTONOMOUS-MODE.md) | Safety system, memory, continuation modes |

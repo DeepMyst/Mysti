@@ -32,12 +32,15 @@ import { CompactionManager } from '../managers/CompactionManager';
 import { AgentLifecycleManager } from '../managers/AgentLifecycleManager';
 import { SlashCommandManager, type SlashCommandCallbacks } from '../managers/SlashCommandManager';
 import { ActiveModeManager } from '../managers/ActiveModeManager';
+import { EngagementManager } from '../managers/EngagementManager';
+import { ProjectContextManager } from '../managers/ProjectContextManager';
 import { ChannelBridge } from '../managers/ChannelBridge';
 import { getWebviewContent } from '../webview/webviewContent';
 import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback } from '../types';
 import { AUTONOMOUS_CONTINUATION_DELAY_MS, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
 import { validateModelName, validateProfileName } from '../utils/validation';
+import { classifyToolAction, shouldGateToolUse } from '../utils/permissionClassifier';
 
 /**
  * Extended message type that includes the panelId field sent by the webview
@@ -81,6 +84,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _lifecycleManager: AgentLifecycleManager;
   private _slashCommandManager: SlashCommandManager;
   private _activeModeManager: ActiveModeManager;
+  private _engagementManager: EngagementManager;
+  private _projectContextManager: ProjectContextManager;
   private _channelBridge: ChannelBridge;
   // Per-panel cancel tracking for isolated cancellation
   private _cancelledPanels: Set<string> = new Set();
@@ -113,6 +118,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _semiAutoPlanTimeouts: Map<string, NodeJS.Timeout> = new Map();
   // Track per-panel autonomy level (source of truth for semi-auto checks)
   private _panelAutonomyLevel: Map<string, string> = new Map();
+  // Track files touched per panel for auto-memory learning
+  private _panelFilesRead: Map<string, Set<string>> = new Map();
+  private _panelFilesWritten: Map<string, Set<string>> = new Map();
+  // M6: Debounced workspace file cache refresh
+  private _fileCacheRefreshTimer: NodeJS.Timeout | null = null;
 
   constructor(
     extensionUri: vscode.Uri,
@@ -130,7 +140,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     compactionManager: CompactionManager,
     lifecycleManager: AgentLifecycleManager,
     slashCommandManager: SlashCommandManager,
-    activeModeManager: ActiveModeManager
+    activeModeManager: ActiveModeManager,
+    engagementManager: EngagementManager,
+    projectContextManager: ProjectContextManager
   ) {
     this._extensionUri = extensionUri;
     this._extensionContext = extensionContext;
@@ -148,6 +160,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._lifecycleManager = lifecycleManager;
     this._slashCommandManager = slashCommandManager;
     this._activeModeManager = activeModeManager;
+    this._engagementManager = engagementManager;
+    this._projectContextManager = projectContextManager;
     this._channelBridge = new ChannelBridge(activeModeManager);
     this._planOptionManager = new PlanOptionManager();
     this._mentionRouter = new MentionRouter(this._providerManager);
@@ -191,6 +205,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._broadcastToAll({ type: 'activeModeActivity', payload: entry });
     });
 
+    // M6: Refresh workspace file cache on FS changes
+    const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*', false, true, false);
+    fileWatcher.onDidCreate(() => this._refreshWorkspaceFileCacheDebounced());
+    fileWatcher.onDidDelete(() => this._refreshWorkspaceFileCacheDebounced());
+    extensionContext.subscriptions.push(fileWatcher);
+
     // Set up ChannelBridge delegate for inbound message routing
     this._channelBridge.setDelegate({
       hasPendingQuestion: (panelId: string) => this._pendingAskUserQuestions.has(panelId),
@@ -233,7 +253,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const config = vscode.workspace.getConfiguration('mysti');
         const settings: Settings = {
           mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
-          thinkingLevel: config.get('defaultThinkingLevel', 'medium') as Settings['thinkingLevel'],
+          thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
           accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
           contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
           model: this._getPanelModel(panelId),
@@ -261,8 +281,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async _initializeAgents(): Promise<void> {
     try {
-      await this._agentLoader.loadAllMetadata();
+      const { personas, skills } = await this._agentLoader.loadAllMetadata();
       this._agentsLoaded = true;
+
+      // Detect custom (user/workspace) personas and skills for engagement badges
+      const hasCustomPersona = personas.some(p => p.source === 'user' || p.source === 'workspace');
+      const hasCustomSkill = skills.some(s => s.source === 'user' || s.source === 'workspace');
+      if (hasCustomPersona) {
+        this._engagementManager.trackCustomPersonaCreated();
+      }
+      if (hasCustomSkill) {
+        this._engagementManager.trackCustomSkillCreated();
+      }
+
       console.log('[Mysti] Agent system initialized');
     } catch (error) {
       console.error('[Mysti] Failed to initialize agent system:', error);
@@ -335,6 +366,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Send initial state with panelId
     this._sendInitialState(this._sidebarId);
+
+    // Pre-spawn persistent process so first message is instant
+    this._tryPreSpawnPersistentProcess(this._sidebarId);
   }
 
   private async _sendInitialState(panelId: string) {
@@ -372,7 +406,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const settings: Settings = {
       mode: config.get('defaultMode', 'ask-before-edit'),
-      thinkingLevel: config.get('defaultThinkingLevel', 'medium'),
+      thinkingLevel: config.get('defaultThinkingLevel', 'none'),
       accessLevel: config.get('accessLevel', 'ask-permission'),
       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
       model: this._getPanelModel(panelId),
@@ -387,7 +421,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'cline': 'clineModel',
       'github-copilot': 'copilotModel',
       'cursor': 'cursorModel',
-      'openclaw': 'openclawModel'
+      'openclaw': 'openclawModel',
+      'opencode': 'opencodeModel',
+      'ollama': 'ollamaModel',
+      'localai': 'localaiModel',
+      'qwen-code': 'qwenCodeModel'
     };
     const customModelKey = providerModelKeys[selectedProvider];
     const providerSettings = {
@@ -476,7 +514,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         brainstormAgents,
         brainstormStrategy,
         providerSettings,
-        permissionSettings
+        permissionSettings,
+        githubStarCount: await this._getGithubStarCount(),
+        usageStats: this._engagementManager.getUsageStats(),
+        badges: this._engagementManager.getAllBadges(),
+        badgeCounts: this._engagementManager.getUnlockedCount()
       }
     });
 
@@ -494,6 +536,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: this._activeModeManager.getChannels()
       });
     }
+
   }
 
   private async _handleMessage(message: WebviewMessage) {
@@ -564,7 +607,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this._providerManager.cancelRequest(panelId);
             this._brainstormManager.cancelSession(panelId);
             // Cancel any running sub-agent processes from @-mentions
-            const allAgentIds: AgentType[] = ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw'];
+            const allAgentIds: AgentType[] = ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'];
             this._mentionRouter.cancelSubAgents(panelId, allAgentIds);
             // Resolve any pending sub-agent questions with null (skip)
             this._cancelPendingSubAgentQuestions(panelId);
@@ -618,6 +661,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                       });
                       break;
                     case 'subagent_tool_use':
+                      // Permission gate for sub-agent write operations (retry path)
+                      if (chunk.toolCall && this._shouldGateToolUse(mentionCtx.settings, chunk.toolCall.name)) {
+                        const retryGateAction = this._classifyToolAction(chunk.toolCall.name);
+                        if (retryGateAction !== 'file-read') {
+                          const retryInputPreview = JSON.stringify(chunk.toolCall.input || {}, null, 2).slice(0, 500);
+                          const retryRiskLevel = PermissionManager.classifyRisk(retryGateAction);
+                          const retryApproved = await this.requestPermissionInline(
+                            retryGateAction,
+                            chunk.toolCall.name,
+                            `${chunk.agentId || 'Sub-agent'} wants to: ${chunk.toolCall.name}`,
+                            { command: retryInputPreview, riskLevel: retryRiskLevel },
+                            retryPanelId,
+                            chunk.toolCall.id
+                          );
+                          if (!retryApproved) {
+                            this._providerManager.cancelRequest(retryPanelId);
+                            break;
+                          }
+                        }
+                      }
                       this._postToPanel(retryPanelId, {
                         type: 'subAgentToolUse',
                         payload: { agentId: chunk.agentId, toolCall: chunk.toolCall }
@@ -726,6 +789,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       case 'executeSlashCommand':
+        this._emitBadgeUnlocks(msg.panelId, this._engagementManager.trackSlashCommandUsed());
         await this._handleSlashCommand(
           msg.payload as { command?: string; commandId?: string; args?: string },
           msg.panelId
@@ -736,6 +800,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const url = (msg.payload as { url: string })?.url;
         if (url) {
           vscode.env.openExternal(vscode.Uri.parse(url));
+          // Track engagement for specific external link types
+          if (url.includes('github.com/DeepMyst/Mysti') && !url.includes('issues') && !url.includes('CHANGELOG')) {
+            this._emitBadgeUnlocks(msg.panelId, this._engagementManager.trackStarClick());
+          } else if (url.includes('marketplace.visualstudio.com') && url.includes('review')) {
+            this._emitBadgeUnlocks(msg.panelId, this._engagementManager.trackReviewClick());
+          } else if (url.includes('twitter.com') || url.includes('x.com')) {
+            this._emitBadgeUnlocks(msg.panelId, this._engagementManager.trackShareClick());
+          }
         }
         break;
       }
@@ -764,7 +836,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._cancelledPanels.add(panelId);
           this._providerManager.cancelRequest(panelId);
           this._brainstormManager.cancelSession(panelId);
-          const allAgentIds: AgentType[] = ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw'];
+          const allAgentIds: AgentType[] = ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'];
           this._mentionRouter.cancelSubAgents(panelId, allAgentIds);
           this._cancelPendingSubAgentQuestions(panelId);
 
@@ -776,6 +848,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (panelState) {
             panelState.currentConversationId = newConv.id;
           }
+
+          // Track engagement: new conversation started
+          this._emitBadgeUnlocks(panelId, this._engagementManager.trackConversationStarted());
 
           this._postToPanel(panelId, {
             type: 'conversationChanged',
@@ -864,7 +939,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           const settings: Settings = {
             mode: config.get('defaultMode', 'default') as Settings['mode'],
-            thinkingLevel: config.get('defaultThinkingLevel', 'medium') as Settings['thinkingLevel'],
+            thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
             accessLevel: config.get('defaultAccessLevel', 'ask-permission') as Settings['accessLevel'],
             contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
             model,
@@ -896,6 +971,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._handlePermissionResponse(
           msg.payload as PermissionResponse
         );
+        break;
+
+      case 'permissionCustomInstruction':
+        {
+          const customText = (msg.payload as { text: string }).text;
+          if (customText) {
+            // The permission deny was already handled — now send the custom instruction as a new message
+            const ciConfig = vscode.workspace.getConfiguration('mysti');
+            const ciProvider = ciConfig.get<string>('defaultProvider', 'claude-code') as Settings['provider'];
+            const ciSettings: Settings = {
+              mode: ciConfig.get('defaultMode', 'default') as Settings['mode'],
+              thinkingLevel: ciConfig.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
+              accessLevel: ciConfig.get('defaultAccessLevel', 'ask-permission') as Settings['accessLevel'],
+              contextMode: ciConfig.get('autoContext', true) ? 'auto' : 'manual',
+              model: this._getPanelModel(msg.panelId),
+              provider: ciProvider
+            };
+            const ciContext = this._contextManager.getContext(msg.panelId);
+            await this._handleSendMessage(
+              { content: customText, context: ciContext, settings: ciSettings },
+              msg.panelId
+            );
+          }
+        }
         break;
 
       case 'planOptionSelected':
@@ -1110,6 +1209,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               type: 'agentConfigUpdated',
               payload: config
             });
+
+            // Track engagement: persona and skill selections
+            if (config.personaId) {
+              this._emitBadgeUnlocks(panelId, this._engagementManager.trackPersonaSelected(config.personaId));
+            }
+            if (config.enabledSkills?.length) {
+              for (const skillId of config.enabledSkills) {
+                this._emitBadgeUnlocks(panelId, this._engagementManager.trackSkillActivated(skillId));
+              }
+            }
           }
         }
         break;
@@ -1390,6 +1499,490 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           });
         }
         break;
+
+      // ---- Engagement & Badge Messages ----
+
+      case 'requestBadges':
+        this._postToPanel(msg.panelId, {
+          type: 'badgesUpdate',
+          payload: {
+            badges: this._engagementManager.getAllBadges(),
+            counts: this._engagementManager.getUnlockedCount(),
+            stats: this._engagementManager.getUsageStats()
+          }
+        });
+        break;
+
+      case 'getBadgeShareText':
+        {
+          const badgeId = (msg.payload as { badgeId: string })?.badgeId;
+          const shareText = this._engagementManager.getBadgeShareText(badgeId);
+          if (shareText) {
+            await vscode.env.clipboard.writeText(shareText);
+            this._postToPanel(msg.panelId, {
+              type: 'badgeShareCopied',
+              payload: { badgeId, shareText }
+            });
+          }
+        }
+        break;
+
+      // ---- Conversation Export Messages ----
+
+      case 'exportConversation':
+        {
+          const exportPanelId = msg.panelId;
+          const panelState = this._panelStates.get(exportPanelId);
+          const conversationId = panelState?.currentConversationId;
+          if (conversationId) {
+            const markdown = this._conversationManager.exportToMarkdown(conversationId);
+            if (markdown) {
+              await vscode.env.clipboard.writeText(markdown);
+              this._postToPanel(exportPanelId, {
+                type: 'exportResult',
+                payload: { success: true, markdown }
+              });
+              // Track export for engagement badges
+              const exportBadges = this._engagementManager.trackExport();
+              this._emitBadgeUnlocks(exportPanelId, exportBadges);
+              console.log('[Mysti] Conversation exported to clipboard');
+            } else {
+              this._postToPanel(exportPanelId, {
+                type: 'exportResult',
+                payload: { success: false, error: 'Conversation not found' }
+              });
+            }
+          }
+        }
+        break;
+
+      case 'copyMessageMarkdown':
+        {
+          const copyMsgPanelId = msg.panelId;
+          const copyPayload = msg.payload as { messageId: string };
+          const copyPanelState = this._panelStates.get(copyMsgPanelId);
+          const copyConvId = copyPanelState?.currentConversationId;
+          if (copyConvId && copyPayload?.messageId) {
+            const markdown = this._conversationManager.exportMessageToMarkdown(
+              copyConvId,
+              copyPayload.messageId
+            );
+            if (markdown) {
+              await vscode.env.clipboard.writeText(markdown);
+              this._postToPanel(copyMsgPanelId, {
+                type: 'exportResult',
+                payload: { success: true, markdown }
+              });
+              console.log('[Mysti] Message exported to clipboard');
+            } else {
+              this._postToPanel(copyMsgPanelId, {
+                type: 'exportResult',
+                payload: { success: false, error: 'Message not found' }
+              });
+            }
+          }
+        }
+        break;
+
+      // ---- File Import/Export Messages ----
+
+      case 'exportToFile':
+        {
+          const expPanelId = msg.panelId;
+          const expFormat = (msg.payload as { format: string })?.format || 'json';
+          const expPanelState = this._panelStates.get(expPanelId);
+          const expConvId = expPanelState?.currentConversationId;
+          if (expConvId) {
+            const isMarkdown = expFormat === 'markdown';
+            const content = isMarkdown
+              ? this._conversationManager.exportToMarkdown(expConvId)
+              : this._conversationManager.exportToJson(expConvId);
+            if (content) {
+              const uri = await vscode.window.showSaveDialog({
+                filters: isMarkdown
+                  ? { 'Markdown': ['md'] }
+                  : { 'Mysti JSON': ['mysti.json'], 'JSON': ['json'] },
+                defaultUri: vscode.Uri.file(`conversation.${isMarkdown ? 'md' : 'mysti.json'}`)
+              });
+              if (uri) {
+                await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
+                this._emitBadgeUnlocks(expPanelId, this._engagementManager.trackExport());
+                this._postToPanel(expPanelId, {
+                  type: 'exportResult',
+                  payload: { success: true }
+                });
+                console.log(`[Mysti] Conversation exported to file: ${uri.fsPath}`);
+              }
+            }
+          }
+        }
+        break;
+
+      case 'importFromFile':
+        {
+          const impPanelId = msg.panelId;
+          const uris = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectMany: false,
+            filters: {
+              'Conversation Files': ['mysti.json', 'json', 'jsonl', 'md']
+            }
+          });
+          if (uris && uris.length > 0) {
+            const fileContent = await vscode.workspace.fs.readFile(uris[0]);
+            const text = Buffer.from(fileContent).toString('utf-8');
+            const fileName = uris[0].fsPath;
+            const imported = this._conversationManager.importFromContent(text, fileName);
+            if (imported) {
+              const impPanelState = this._panelStates.get(impPanelId);
+              if (impPanelState) {
+                impPanelState.currentConversationId = imported.id;
+              }
+              this._postToPanel(impPanelId, {
+                type: 'conversationChanged',
+                payload: imported
+              });
+              console.log(`[Mysti] Conversation imported from: ${fileName}`);
+            } else {
+              vscode.window.showErrorMessage('Failed to import conversation: unrecognized format');
+            }
+          }
+        }
+        break;
+
+      case 'triggerShareLink':
+        {
+          const sharePanelId = msg.panelId;
+          const sharePanelState = this._panelStates.get(sharePanelId);
+          const shareConvId = sharePanelState?.currentConversationId;
+          if (shareConvId) {
+            const data = this._conversationManager.exportToShareable(shareConvId);
+            if (data) {
+              const uri = `vscode://DeepMyst.mysti/import?data=${data}`;
+              if (uri.length > 2000) {
+                // Too long for a URI — fall back to clipboard with JSON
+                const json = this._conversationManager.exportToJson(shareConvId);
+                await vscode.env.clipboard.writeText(json);
+                vscode.window.showInformationMessage('Conversation too long for a deep link — full JSON copied to clipboard instead.');
+              } else {
+                await vscode.env.clipboard.writeText(uri);
+                vscode.window.showInformationMessage('Share link copied to clipboard!');
+              }
+              this._emitBadgeUnlocks(sharePanelId, this._engagementManager.trackConversationShared());
+              console.log('[Mysti] Share link generated');
+            }
+          }
+        }
+        break;
+
+      case 'triggerInitTeam':
+        {
+          await this._initTeamWorkspace(msg.panelId);
+        }
+        break;
+
+      case 'triggerOpenMemory':
+        {
+          await this._openProjectMemory();
+        }
+        break;
+
+      case 'triggerOpenRules':
+        {
+          await this._openProjectRules();
+        }
+        break;
+    }
+  }
+
+  /**
+   * Scaffold .mysti/ team workspace config directory.
+   * Scans workspace to generate real mysti.md content (like Claude Code's /init).
+   */
+  private async _initTeamWorkspace(_panelId: string): Promise<void> {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      vscode.window.showWarningMessage('No workspace folder open. Open a project first.');
+      return;
+    }
+
+    const rootUri = workspaceFolders[0].uri;
+    const projectName = workspaceFolders[0].name;
+    const mystiDir = vscode.Uri.joinPath(rootUri, '.mysti');
+    const teamJson = vscode.Uri.joinPath(mystiDir, 'team.json');
+    const personasDir = vscode.Uri.joinPath(mystiDir, 'agents', 'personas');
+    const skillsDir = vscode.Uri.joinPath(mystiDir, 'agents', 'skills');
+    const promptsDir = vscode.Uri.joinPath(mystiDir, 'prompts');
+    const rulesDir = vscode.Uri.joinPath(mystiDir, 'rules');
+
+    // Create directories (including new rules/ directory)
+    await vscode.workspace.fs.createDirectory(personasDir);
+    await vscode.workspace.fs.createDirectory(skillsDir);
+    await vscode.workspace.fs.createDirectory(promptsDir);
+    await vscode.workspace.fs.createDirectory(rulesDir);
+
+    // Create team.json if it doesn't exist
+    try {
+      await vscode.workspace.fs.stat(teamJson);
+      console.log('[Mysti] team.json already exists, skipping');
+    } catch {
+      const config = vscode.workspace.getConfiguration('mysti');
+      const provider = config.get<string>('defaultProvider', 'claude-code');
+      const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
+      const teamData = {
+        teamName: projectName,
+        defaultProvider: provider,
+        version,
+        setupUrl: 'https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti'
+      };
+      await vscode.workspace.fs.writeFile(teamJson, Buffer.from(JSON.stringify(teamData, null, 2), 'utf-8'));
+    }
+
+    // Create mysti.md with real project data from workspace scan (like Claude Code's /init)
+    const mystiMd = vscode.Uri.joinPath(rootUri, 'mysti.md');
+    try {
+      await vscode.workspace.fs.stat(mystiMd);
+      console.log('[Mysti] mysti.md already exists, skipping');
+    } catch {
+      const scan = await this._projectContextManager.scanWorkspace();
+      const content = this._projectContextManager.generateMystiMdContent(projectName, scan);
+      await vscode.workspace.fs.writeFile(mystiMd, Buffer.from(content, 'utf-8'));
+    }
+
+    // Create default rules file if rules/ directory is empty
+    const defaultRules = vscode.Uri.joinPath(rulesDir, 'general.md');
+    try {
+      await vscode.workspace.fs.stat(defaultRules);
+    } catch {
+      const rulesContent = [
+        '# Project Rules',
+        '',
+        '<!-- Rules Mysti should always follow in this project -->',
+        '<!-- Example: "Always use TypeScript strict mode" -->',
+        '<!-- Example: "Never modify files in vendor/" -->',
+        '',
+        '<!-- For path-specific rules, add YAML frontmatter: -->',
+        '<!-- --- -->',
+        '<!-- paths: -->',
+        '<!--   - "src/api/**" -->',
+        '<!-- --- -->',
+        '',
+      ].join('\n');
+      await vscode.workspace.fs.writeFile(defaultRules, Buffer.from(rulesContent, 'utf-8'));
+    }
+
+    // Also add to workspace recommendations
+    const extJsonUri = vscode.Uri.joinPath(rootUri, '.vscode', 'extensions.json');
+    try {
+      const existing = await vscode.workspace.fs.readFile(extJsonUri);
+      const parsed = JSON.parse(Buffer.from(existing).toString('utf-8'));
+      if (!parsed.recommendations?.includes('DeepMyst.mysti')) {
+        parsed.recommendations = parsed.recommendations || [];
+        parsed.recommendations.push('DeepMyst.mysti');
+        await vscode.workspace.fs.writeFile(extJsonUri, Buffer.from(JSON.stringify(parsed, null, 2), 'utf-8'));
+      }
+    } catch {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(rootUri, '.vscode'));
+      const newExtJson = { recommendations: ['DeepMyst.mysti'] };
+      await vscode.workspace.fs.writeFile(extJsonUri, Buffer.from(JSON.stringify(newExtJson, null, 2), 'utf-8'));
+    }
+
+    // Reload project context to pick up the new mysti.md and rules
+    await this._projectContextManager.reload();
+
+    // Initialize per-project auto-memory
+    this._memoryManager.initProjectMemory(workspaceFolders[0].uri.fsPath);
+
+    this._emitBadgeUnlocks(_panelId, this._engagementManager.trackWorkspaceRecommendation());
+    this._emitBadgeUnlocks(_panelId, this._engagementManager.trackTeamInitialized());
+    vscode.window.showInformationMessage(
+      'Project configured for Mysti. Created .mysti/, mysti.md, and rules/ — commit these so collaborators can discover Mysti.'
+    );
+    console.log('[Mysti] Team workspace initialized with mysti.md + rules');
+  }
+
+  /**
+   * Open the project's MEMORY.md file in the editor.
+   * Creates the file with a default template if it doesn't exist.
+   */
+  private async _openProjectMemory(): Promise<void> {
+    const memoryPath = this._memoryManager.getProjectMemoryPath();
+    if (!memoryPath) {
+      // Initialize project memory if not yet done
+      if (vscode.workspace.workspaceFolders?.length) {
+        this._memoryManager.initProjectMemory(vscode.workspace.workspaceFolders[0].uri.fsPath);
+      }
+      const retryPath = this._memoryManager.getProjectMemoryPath();
+      if (!retryPath) {
+        vscode.window.showWarningMessage('No workspace folder open.');
+        return;
+      }
+      // Create default MEMORY.md
+      this._memoryManager.writeProjectMemory('# Mysti Project Memory\n\n<!-- Mysti writes learnings here as it works on your project -->\n');
+      const doc = await vscode.workspace.openTextDocument(retryPath);
+      await vscode.window.showTextDocument(doc);
+      return;
+    }
+
+    // Create if it doesn't exist
+    const fsPath = vscode.Uri.file(memoryPath);
+    try {
+      await vscode.workspace.fs.stat(fsPath);
+    } catch {
+      this._memoryManager.writeProjectMemory('# Mysti Project Memory\n\n<!-- Mysti writes learnings here as it works on your project -->\n');
+    }
+
+    const doc = await vscode.workspace.openTextDocument(memoryPath);
+    await vscode.window.showTextDocument(doc);
+  }
+
+  /**
+   * Open the .mysti/rules/ directory or the first rule file in the editor.
+   * Creates a template rule file if the directory is empty.
+   */
+  private async _openProjectRules(): Promise<void> {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      vscode.window.showWarningMessage('No workspace folder open.');
+      return;
+    }
+
+    const rootUri = workspaceFolders[0].uri;
+    const rulesDir = vscode.Uri.joinPath(rootUri, '.mysti', 'rules');
+    const defaultRulesFile = vscode.Uri.joinPath(rulesDir, 'general.md');
+
+    // Create directory and template if they don't exist
+    try {
+      await vscode.workspace.fs.stat(rulesDir);
+    } catch {
+      await vscode.workspace.fs.createDirectory(rulesDir);
+    }
+
+    try {
+      await vscode.workspace.fs.stat(defaultRulesFile);
+    } catch {
+      const template = [
+        '# Project Rules',
+        '',
+        '<!-- Rules Mysti should always follow in this project -->',
+        '<!-- Example: "Always use TypeScript strict mode" -->',
+        '<!-- Example: "Never modify files in vendor/" -->',
+        '',
+      ].join('\n');
+      await vscode.workspace.fs.writeFile(defaultRulesFile, Buffer.from(template, 'utf-8'));
+    }
+
+    const doc = await vscode.workspace.openTextDocument(defaultRulesFile.fsPath);
+    await vscode.window.showTextDocument(doc);
+  }
+
+  /**
+   * Track tool_use events for auto-memory learning.
+   * Categorizes file reads/writes by directory to learn project structure.
+   */
+  private _trackToolUseForMemory(panelId: string, toolName: string, toolInput: Record<string, unknown>): void {
+    const name = toolName.toLowerCase();
+    const filePath = (toolInput.file_path || toolInput.path || toolInput.filePath) as string | undefined;
+
+    if (!filePath) { return; }
+
+    if (name.includes('read') || name.includes('view') || name === 'cat') {
+      if (!this._panelFilesRead.has(panelId)) {
+        this._panelFilesRead.set(panelId, new Set());
+      }
+      this._panelFilesRead.get(panelId)!.add(filePath);
+    } else if (name.includes('write') || name.includes('edit') || name.includes('create') || name.includes('patch')) {
+      if (!this._panelFilesWritten.has(panelId)) {
+        this._panelFilesWritten.set(panelId, new Set());
+      }
+      this._panelFilesWritten.get(panelId)!.add(filePath);
+    }
+  }
+
+  /**
+   * Record project learnings from the current session's tool_use patterns.
+   * Extracts directory structure insights and records them in auto-memory.
+   */
+  private _recordProjectLearningsFromSession(panelId: string): void {
+    const config = vscode.workspace.getConfiguration('mysti');
+    if (!config.get('autoMemory.enabled', true)) { return; }
+
+    const filesRead = this._panelFilesRead.get(panelId);
+    const filesWritten = this._panelFilesWritten.get(panelId);
+
+    if (!filesRead?.size && !filesWritten?.size) { return; }
+
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) { return; }
+
+    // Extract unique top-level directories that were touched
+    const touchedDirs = new Set<string>();
+    const allFiles = [...(filesRead || []), ...(filesWritten || [])];
+
+    for (const file of allFiles) {
+      const relative = path.relative(workspaceRoot, file);
+      if (relative.startsWith('..')) { continue; } // Outside workspace
+      const topDir = relative.split(path.sep)[0];
+      if (topDir && !topDir.startsWith('.')) {
+        touchedDirs.add(topDir);
+      }
+    }
+
+    // Record directory usage patterns
+    for (const dir of touchedDirs) {
+      this._memoryManager.recordProjectLearning('Key Paths', `\`${dir}/\` — actively used`);
+    }
+
+    // Clear per-panel tracking for next message cycle
+    this._panelFilesRead.delete(panelId);
+    this._panelFilesWritten.delete(panelId);
+  }
+
+  /**
+   * Send badge unlock events to the webview for toast notifications.
+   */
+  private _emitBadgeUnlocks(panelId: string, events: import('../managers/EngagementManager').BadgeUnlockEvent[]): void {
+    for (const event of events) {
+      if (event.isNew) {
+        this._postToPanel(panelId, {
+          type: 'badgeUnlocked',
+          payload: event.badge
+        });
+      }
+    }
+  }
+
+  // ---- File Modification Tracking (for commit signatures + file decorations) ----
+
+  private _fileModifiedListeners: ((filePath: string, provider: string) => void)[] = [];
+
+  /**
+   * Register a callback to be notified when Mysti modifies a file.
+   * Used by CommitSignatureManager and MystiFileDecorationProvider.
+   */
+  public onFileModified(listener: (filePath: string, provider: string) => void): void {
+    this._fileModifiedListeners.push(listener);
+  }
+
+  private _onFileModifiedByMysti(filePath: string, provider: string): void {
+    for (const listener of this._fileModifiedListeners) {
+      listener(filePath, provider);
+    }
+  }
+
+  private _aiCommitListeners: ((toolName: string, toolInput: Record<string, unknown>) => void)[] = [];
+
+  /**
+   * Register a callback to be notified when the AI executes a tool_use.
+   * Used by CommitSignatureManager to detect AI-initiated git commits.
+   */
+  public onToolUseDetected(listener: (toolName: string, toolInput: Record<string, unknown>) => void): void {
+    this._aiCommitListeners.push(listener);
+  }
+
+  private _onToolUseDetected(toolName: string, toolInput: Record<string, unknown>): void {
+    for (const listener of this._aiCommitListeners) {
+      listener(toolName, toolInput);
     }
   }
 
@@ -1507,7 +2100,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const config = vscode.workspace.getConfiguration('mysti');
     const settings: Settings = {
       mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
-      thinkingLevel: config.get('defaultThinkingLevel', 'medium') as Settings['thinkingLevel'],
+      thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
       accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
       model: this._getPanelModel(panelId),
@@ -1574,6 +2167,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'autonomousDeactivated',
         payload: stats
       });
+      // Track engagement: autonomous session completed
+      this._emitBadgeUnlocks(targetPanel, this._engagementManager.trackAutonomousSession());
       console.log('[Mysti] Autonomous mode deactivated');
     } else {
       // Show confirmation dialog in webview
@@ -1640,13 +2235,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     },
     panelId: string
   ) {
+    // Cancel any running/suspended request on this panel before starting a new one.
+    // This handles the case where the user sends a new message while a permission
+    // card is pending (e.g., typing "yes" in chat instead of clicking the permission button).
+    if (this._runningPanels.has(panelId)) {
+      console.log(`[Mysti] New message while panel ${panelId} is running — cancelling previous request`);
+      this._cancelledPanels.add(panelId);
+      this._providerManager.cancelRequest(panelId);
+      // Dismiss any pending permission cards so the old gate resolves (denied)
+      this._permissionManager.cancelAllRequests();
+      this._postToPanel(panelId, { type: 'permissionDismissed', payload: {} });
+      // Brief yield to let the cancelled for-await loop exit before we start a new one
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+
+    const _t0 = Date.now();
+    console.log(`[Mysti] ⏱️ _handleSendMessage START for panel ${panelId}`);
+
     // Clear cancel flag for this panel
     this._cancelledPanels.delete(panelId);
+
+    // Clear any pending interactive states — a new message implicitly dismisses them
+    this._pendingPlanSelections.delete(panelId);
+    this._pendingAskUserQuestions.delete(panelId);
+
     const { content, context, mentions, attachments } = payload;
     let { settings } = payload;
 
     // Track the user's message for plan selection follow-up
     this._lastUserMessage.set(panelId, content);
+
+    // Track engagement: message sent
+    const badgeEvents = this._engagementManager.trackMessageSent(settings.provider);
+    this._emitBadgeUnlocks(panelId, badgeEvents);
 
     // Get the panel's conversation
     const panelState = this._panelStates.get(panelId);
@@ -1686,6 +2307,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._lifecycleManager.touchSession(panelId);
     this._lifecycleManager.markBusy(panelId);
 
+    console.log(`[Mysti] ⏱️ Setup done in ${Date.now() - _t0}ms, entering try block`);
+
     // Stream response from provider
     try {
       this._postToPanel(panelId, { type: 'responseStarted' });
@@ -1703,15 +2326,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       let mainProviderTaskDescriptions: MentionTask[] = [];
 
       if (mentions && mentions.length > 0) {
-        console.log('[Mysti] Processing mentions:', mentions.length, 'mentions for panel:', panelId);
+        // M2: Enforce maximum mentions per message
+        const { MAX_MENTIONS_PER_MESSAGE } = await import('../constants');
+        const agentMentionCount = mentions.filter(m => m.type === 'agent').length;
+        let effectiveMentions = mentions;
+        if (agentMentionCount > MAX_MENTIONS_PER_MESSAGE) {
+          console.warn(`[Mysti] Too many agent mentions (${agentMentionCount}), truncating to ${MAX_MENTIONS_PER_MESSAGE}`);
+          let kept = 0;
+          effectiveMentions = mentions.filter(m => {
+            if (m.type !== 'agent') { return true; }
+            if (kept < MAX_MENTIONS_PER_MESSAGE) { kept++; return true; }
+            return false;
+          });
+          this._postToPanel(panelId, {
+            type: 'mentionWarning',
+            payload: { message: `Too many @-mentions (${agentMentionCount}). Only the first ${MAX_MENTIONS_PER_MESSAGE} agent mentions will be processed.` }
+          });
+        }
+        console.log(`[Mysti] ⏱️ Starting mention processing at ${Date.now() - _t0}ms`);
+        console.log('[Mysti] Processing mentions:', effectiveMentions.length, 'mentions for panel:', panelId);
         const subAgentResponses = new Map<AgentType, SubAgentResponse>();
 
         // Store mention context for retry support
-        this._lastMentionContext.set(panelId, { content, mentions, context, settings });
+        this._lastMentionContext.set(panelId, { content, mentions: effectiveMentions, context, settings });
 
         const subAgentQuestionCallback = this._createSubAgentQuestionCallback(panelId);
         const mentionStream = this._mentionRouter.processMentions(
-          content, mentions, context, settings, conversation, panelId, subAgentQuestionCallback
+          content, effectiveMentions, context, settings, conversation, panelId, subAgentQuestionCallback
         );
 
         for await (const chunk of mentionStream) {
@@ -1723,6 +2364,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               if (chunk.resolvedFiles) {
                 enrichedContext.push(...chunk.resolvedFiles);
               }
+              break;
+
+            case 'file_resolution_warning':
+              // M7: Show warning about unresolvable file mentions
+              this._postToPanel(panelId, {
+                type: 'mentionWarning',
+                payload: { message: chunk.content || 'Some file mentions could not be resolved.' }
+              });
               break;
 
             case 'task_list_generated':
@@ -1789,6 +2438,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               break;
 
             case 'subagent_tool_use':
+              // Permission gate for sub-agent write operations
+              if (chunk.toolCall && this._shouldGateToolUse(settings, chunk.toolCall.name)) {
+                const subGateAction = this._classifyToolAction(chunk.toolCall.name);
+                if (subGateAction !== 'file-read') {
+                  const subInputPreview = JSON.stringify(chunk.toolCall.input || {}, null, 2).slice(0, 500);
+                  const subRiskLevel = PermissionManager.classifyRisk(subGateAction);
+                  const subApproved = await this.requestPermissionInline(
+                    subGateAction,
+                    chunk.toolCall.name,
+                    `${chunk.agentId || 'Sub-agent'} wants to: ${chunk.toolCall.name}`,
+                    { command: subInputPreview, riskLevel: subRiskLevel },
+                    panelId,
+                    chunk.toolCall.id
+                  );
+                  if (!subApproved) {
+                    this._providerManager.cancelRequest(panelId);
+                    break;
+                  }
+                }
+              }
               this._postToPanel(panelId, {
                 type: 'subAgentToolUse',
                 payload: { agentId: chunk.agentId, toolCall: chunk.toolCall }
@@ -1951,19 +2620,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
-      // Set channel context as system instructions (injected at top of prompt by buildPromptAsync)
+      console.log(`[Mysti] ⏱️ Pre-processing done in ${Date.now() - _t0}ms`);
+
+      // Set channel context + project context as system instructions (injected at top of prompt by buildPromptAsync)
+      const _tCtx = Date.now();
       const channelSnippet = this._channelBridge.getChannelPromptSnippet();
+      console.log(`[Mysti] ⏱️ Channel snippet in ${Date.now() - _tCtx}ms`);
       const replyContext = this._channelBridge.getReplyContext(panelId);
       const channelContext = [channelSnippet, replyContext].filter(Boolean).join('\n\n');
-      if (channelContext) {
-        this._providerManager.setChannelSystemContext(panelId, channelContext, effectiveSettings.provider);
-        console.log('[Mysti] Channel context set as system instructions (' + channelContext.length + ' chars)');
+
+      // Inject mysti.md project instructions + .mysti/rules/ (like CLAUDE.md + .claude/rules/)
+      const mystiConfig = vscode.workspace.getConfiguration('mysti');
+      const projectContextEnabled = mystiConfig.get('projectContext.enabled', true);
+      const autoMemoryEnabled = mystiConfig.get('autoMemory.enabled', true);
+      const _tRules = Date.now();
+      const projectRules = projectContextEnabled ? this._projectContextManager.readRules() : '';
+      console.log(`[Mysti] ⏱️ Project rules in ${Date.now() - _tRules}ms`);
+      const _tMd = Date.now();
+      const mystiMdContent = projectContextEnabled ? this._projectContextManager.getMystiMdContent() : '';
+      console.log(`[Mysti] ⏱️ mysti.md in ${Date.now() - _tMd}ms`);
+      const _tMem = Date.now();
+      const autoMemory = autoMemoryEnabled ? this._memoryManager.getProjectMemoryContent() : '';
+      console.log(`[Mysti] ⏱️ Auto-memory in ${Date.now() - _tMem}ms`);
+      const fullSystemContext = [projectRules, channelContext, mystiMdContent, autoMemory].filter(Boolean).join('\n\n');
+
+      if (fullSystemContext) {
+        this._providerManager.setChannelSystemContext(panelId, fullSystemContext, effectiveSettings.provider);
+        console.log('[Mysti] System context set (' + fullSystemContext.length + ' chars' +
+          (mystiMdContent ? ', mysti.md: ' + mystiMdContent.length : '') +
+          (projectRules ? ', rules: ' + projectRules.length : '') +
+          (autoMemory ? ', memory: ' + autoMemory.length : '') + ')');
       }
 
       // Reset channel bridge marker tracking for this new response
       this._channelBridge.resetForNewResponse(panelId);
       this._lastActivePanelId = panelId;
 
+      console.log(`[Mysti] ⏱️ Context built in ${Date.now() - _t0}ms, calling sendMessage...`);
       const stream = this._providerManager.sendMessage(
         enrichedContent,
         enrichedContext,
@@ -1988,7 +2681,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
 
       this._runningPanels.add(panelId);
+      let _firstChunkLogged = false;
       for await (const chunk of stream) {
+        if (!_firstChunkLogged) {
+          console.log(`[Mysti] ⏱️ First stream chunk (${chunk.type}) in ${Date.now() - _t0}ms`);
+          _firstChunkLogged = true;
+        }
         // Check if THIS panel's request was cancelled
         if (this._cancelledPanels.has(panelId)) {break;}
 
@@ -2035,12 +2733,78 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
             break;
 
-          case 'tool_use':
+          case 'tool_use': {
+            // Permission gate: block write operations when mode/access requires approval.
+            // Uses SIGSTOP to freeze the CLI process BEFORE tool execution, ensuring
+            // the tool cannot run until the user explicitly approves.
+            // NOTE: Claude emits two tool_use chunks per tool (content_block_start with empty input,
+            // then content_block_stop with full input). We skip gating for chunks with empty input
+            // to avoid double-gating and to show meaningful input preview in the permission card.
+            const hasInput = chunk.toolCall?.input && Object.keys(chunk.toolCall.input).length > 0;
+            if (chunk.toolCall && hasInput && this._shouldGateToolUse(effectiveSettings, chunk.toolCall.name)) {
+              const gateActionType = this._classifyToolAction(chunk.toolCall.name);
+              if (gateActionType !== 'file-read') {
+                // Freeze the CLI process immediately to prevent tool execution.
+                // SIGSTOP halts the process at the OS level — no further instructions
+                // run until SIGCONT is sent. Returns false on Windows.
+                const wasSuspended = this._providerManager.suspendRequest(panelId);
+
+                const inputPreview = JSON.stringify(chunk.toolCall.input || {}, null, 2).slice(0, 500);
+                const riskLevel = PermissionManager.classifyRisk(gateActionType);
+                const gateApproved = await this.requestPermissionInline(
+                  gateActionType,
+                  chunk.toolCall.name,
+                  `Mysti wants to: ${chunk.toolCall.name}`,
+                  { command: inputPreview, riskLevel, suspended: wasSuspended },
+                  panelId,
+                  chunk.toolCall.id
+                );
+                if (gateApproved) {
+                  // Resume the frozen CLI process so tool execution proceeds
+                  if (wasSuspended) {
+                    this._providerManager.resumeRequest(panelId);
+                  }
+                } else {
+                  // User denied or a new message superseded this request.
+                  // If cancelled by a new message, skip error posting — the new message
+                  // already cancelled the process and the user expects a fresh response.
+                  if (!this._cancelledPanels.has(panelId)) {
+                    this._providerManager.cancelRequest(panelId);
+                    this._postToPanel(panelId, {
+                      type: 'toolResult',
+                      payload: {
+                        id: chunk.toolCall.id,
+                        name: chunk.toolCall.name,
+                        output: 'Permission denied by user',
+                        status: 'failed'
+                      }
+                    });
+                    this._postToPanel(panelId, {
+                      type: 'error',
+                      payload: `Operation "${chunk.toolCall.name}" was denied. Request cancelled.`
+                    });
+                  }
+                  return;
+                }
+              }
+            }
             this._postToPanel(panelId, {
               type: 'toolUse',
               payload: chunk.toolCall
             });
+            // Track file modifications for file decorations
+            if (chunk.toolCall?.fileChange?.filePath) {
+              const filePath = chunk.toolCall.fileChange.filePath;
+              this._onFileModifiedByMysti(filePath, settings.provider);
+            }
+            // Track AI-initiated git commits for badge
+            if (chunk.toolCall) {
+              this._onToolUseDetected(chunk.toolCall.name, chunk.toolCall.input);
+              // Track files for auto-memory learning
+              this._trackToolUseForMemory(panelId, chunk.toolCall.name, chunk.toolCall.input);
+            }
             break;
+          }
 
           case 'tool_result':
             this._postToPanel(panelId, {
@@ -2168,6 +2932,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
             });
 
+            // Track successful response for engagement (review prompts + badges)
+            this._engagementManager.trackSuccessfulResponse();
+
+            // Auto-memory: record project learnings from tool_use patterns
+            // This is lightweight — only records when tool_use detected file patterns
+            this._recordProjectLearningsFromSession(panelId);
+
+            // Mark first completion for workspace recommendation flow
+            if (!this._extensionContext.globalState.get<boolean>('mysti.hasCompletedSetup')) {
+              this._extensionContext.globalState.update('mysti.hasCompletedSetup', true);
+            }
+
             // Mark panel as no longer running and drain queued channel messages
             this._runningPanels.delete(panelId);
             {
@@ -2184,7 +2960,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     const config = vscode.workspace.getConfiguration('mysti');
                     const qSettings: Settings = {
                       mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
-                      thinkingLevel: config.get('defaultThinkingLevel', 'medium') as Settings['thinkingLevel'],
+                      thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
                       accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
                       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
                       model: this._getPanelModel(panelId),
@@ -2221,13 +2997,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             // Skip plan options and suggestions if there's a pending AskUserQuestion or plan selection
             if (!this._pendingAskUserQuestions.has(panelId) && !this._pendingPlanSelections.has(panelId)) {
-              // Run classification to show visual questions and plan options
-              // (brainstorm has its own handler via _handleBrainstormMessage)
-              const hasInteractiveElements = await this._detectAndSendPlanOptions(assistantMessage, panelId);
+              // Run classification and suggestions fully async (non-blocking) for faster perceived response
+              this._generateSuggestionsAsync(assistantMessage, panelId);
 
-              // Only generate suggestions if no interactive elements were detected
-              if (!hasInteractiveElements) {
-                this._generateSuggestionsAsync(assistantMessage, panelId);
+              const mystiConfig = vscode.workspace.getConfiguration('mysti');
+              const planDetectionEnabled = mystiConfig.get('planDetection.enabled', true);
+              if (planDetectionEnabled) {
+                this._detectAndSendPlanOptions(assistantMessage, panelId).then(hasInteractiveElements => {
+                  if (hasInteractiveElements) {
+                    this.postMessage({ type: 'clearSuggestions' } as WebviewMessage, panelId);
+                  }
+                });
               }
             }
 
@@ -2239,7 +3019,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 const autoConfig = vscode.workspace.getConfiguration('mysti');
                 const autoSettings: Settings = {
                   mode: 'edit-automatically' as Settings['mode'],
-                  thinkingLevel: autoConfig.get('defaultThinkingLevel', 'medium') as Settings['thinkingLevel'],
+                  thinkingLevel: autoConfig.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
                   accessLevel: 'full-access' as Settings['accessLevel'],
                   contextMode: autoConfig.get('autoContext', true) ? 'auto' : 'manual',
                   model: this._getPanelModel(panelId),
@@ -2571,8 +3351,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
             break;
 
+          case 'synthesis_fallback':
+            // B3: Show fallback notice in the synthesis area
+            this._postToPanel(panelId, {
+              type: 'brainstormSynthesisChunk',
+              payload: { content: `*${chunk.content}*\n\n` }
+            });
+            break;
+
           case 'done': {
             const session = this._brainstormManager.getCurrentSession(panelId);
+            // Track engagement: brainstorm completed
+            const brainstormStrategy = session?.strategy || 'quick';
+            this._emitBadgeUnlocks(panelId, this._engagementManager.trackBrainstormCompleted(brainstormStrategy));
+
             // Add unified solution as assistant message
             if (session?.unifiedSolution) {
               const assistantMessage = this._conversationManager.addMessageToConversation(
@@ -2692,7 +3484,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         'cline': 'clineModel',
         'github-copilot': 'copilotModel',
         'cursor': 'cursorModel',
-        'openclaw': 'openclawModel'
+        'openclaw': 'openclawModel',
+        'opencode': 'opencodeModel',
+        'ollama': 'ollamaModel',
+        'localai': 'localaiModel'
       };
       const settingKey = providerModelKeys[provider];
       if (settingKey) {
@@ -2746,7 +3541,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if ('brainstorm.agents' in settingsAny) {
       const agents = settingsAny['brainstorm.agents'] as string[];
       // Validate: exactly 2 agents from valid set
-      const validAgents = ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw'];
+      const validAgents = ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'];
       const filtered = agents.filter(a => validAgents.includes(a));
       if (filtered.length === 2) {
         await config.update('brainstorm.agents', filtered, vscode.ConfigurationTarget.Global);
@@ -2784,6 +3579,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         console.log(`[Mysti] Updated semi-autonomous timeout to: ${timeout}s`);
       }
     }
+
+    // Pre-spawn persistent process when provider, model, or spawn-affecting settings change
+    if (settings.provider !== undefined || settings.model !== undefined ||
+        settings.mode !== undefined || settings.accessLevel !== undefined ||
+        settings.thinkingLevel !== undefined) {
+      const pid = panelId || this._lastActivePanelId;
+      if (pid) {
+        this._tryPreSpawnPersistentProcess(pid);
+      }
+    }
+
+  }
+
+  /**
+   * Pre-spawn a persistent CLI process for the active provider on a panel.
+   * Called when provider/model/mode changes so the process is warm before the user sends a message.
+   */
+  private _tryPreSpawnPersistentProcess(panelId: string): void {
+    const providerType = this._getPanelProvider(panelId) as Settings['provider'];
+    const provider = this._providerManager.getProviderInstance(providerType);
+    if (!provider?.capabilities.supportsPersistentProcess) {
+      return;
+    }
+    if (typeof provider.preSpawnPersistentProcess !== 'function') {
+      return;
+    }
+
+    const config = vscode.workspace.getConfiguration('mysti');
+    const settings: Settings = {
+      mode: config.get('defaultMode', 'default') as Settings['mode'],
+      thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
+      accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
+      contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
+      model: this._getPanelModel(panelId),
+      provider: providerType
+    };
+
+    provider.preSpawnPersistentProcess(panelId, settings).catch((err: unknown) => {
+      console.error(`[Mysti] Pre-spawn persistent process failed:`, err);
+    });
   }
 
   private async _handleRequestFileAttachment(panelId?: string) {
@@ -3281,6 +4116,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Classify a tool name into a PermissionActionType.
+   * Delegates to the extracted pure function in utils/permissionClassifier.
+   */
+  private _classifyToolAction(toolName: string): import('../types').PermissionActionType {
+    return classifyToolAction(toolName);
+  }
+
+  /**
+   * Determine if a tool_use should be gated with a permission card.
+   * Delegates to the extracted pure function in utils/permissionClassifier.
+   */
+  private _shouldGateToolUse(settings: Settings, toolName: string): boolean {
+    return shouldGateToolUse(settings, toolName);
+  }
+
+  /**
    * Convert text-detected ClarifyingQuestions into AskUserQuestionData format
    * so they can be routed through the same UI and handling path as explicit questions.
    */
@@ -3443,7 +4294,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _detectAndSendPlanOptions(message: Message, panelId: string): Promise<boolean> {
     try {
       // Use AI-powered classification to distinguish questions from plan options
+      const classifyStart = Date.now();
       const result = await this._planOptionManager.classifyResponse(message.content);
+      console.log(`[Mysti] Classification completed in ${Date.now() - classifyStart}ms — questions: ${result.questions.length}, plans: ${result.planOptions.length}`);
       const originalQuery = this._lastUserMessage.get(panelId) || '';
 
       let hasInteractiveElements = false;
@@ -3557,7 +4410,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // 3. Get current settings with the new mode (use per-panel provider/model)
     const settings: Settings = {
       mode: executionMode,
-      thinkingLevel: config.get('defaultThinkingLevel', 'medium'),
+      thinkingLevel: config.get('defaultThinkingLevel', 'none'),
       accessLevel: config.get('accessLevel', 'ask-permission'),
       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
       model: this._getPanelModel(panelId),
@@ -3710,6 +4563,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * M6: Debounced refresh of workspace file cache — broadcasts to all panels
+   */
+  private _refreshWorkspaceFileCacheDebounced(): void {
+    if (this._fileCacheRefreshTimer) { clearTimeout(this._fileCacheRefreshTimer); }
+    this._fileCacheRefreshTimer = setTimeout(async () => {
+      const files = await vscode.workspace.findFiles('**/*', '**/node_modules/**', 1000);
+      const payload = files.map(f => f.fsPath);
+      this._broadcastToAll({ type: 'workspaceFiles', payload });
+    }, 2000); // 2s debounce to batch rapid FS changes
+  }
+
   private async _handleGetWorkspaceFiles(panelId?: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders) {
@@ -3733,6 +4598,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** @deprecated Replaced by SlashCommandManager — kept for reference only */
   // Old _getSlashCommands removed — logic moved to SlashCommandManager
+
+  /** Fetch GitHub star count with 24-hour cache */
+  private async _getGithubStarCount(): Promise<number> {
+    const cacheKey = 'mysti.githubStarCount';
+    const cached = this._extensionContext.globalState.get<{ count: number; fetchedAt: number }>(cacheKey);
+    const ONE_DAY = 24 * 60 * 60 * 1000;
+
+    if (cached && Date.now() - cached.fetchedAt < ONE_DAY) {
+      return cached.count;
+    }
+
+    try {
+      const https = await import('https');
+      const data = await new Promise<string>((resolve, reject) => {
+        const req = https.get('https://api.github.com/repos/DeepMyst/Mysti', {
+          headers: { 'User-Agent': 'Mysti-VSCode-Extension' }
+        }, (res) => {
+          let body = '';
+          res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+          res.on('end', () => resolve(body));
+        });
+        req.on('error', reject);
+        req.setTimeout(5000, () => { req.destroy(); reject(new Error('timeout')); });
+      });
+      const json = JSON.parse(data);
+      const count = typeof json.stargazers_count === 'number' ? json.stargazers_count : 0;
+      await this._extensionContext.globalState.update(cacheKey, { count, fetchedAt: Date.now() });
+      return count;
+    } catch {
+      return cached?.count || 0;
+    }
+  }
 
   private _getQuickActions() {
     return [
@@ -3829,9 +4726,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Clean up per-panel channel bridge state
       this._channelBridge.clearPanel(panelId);
       this._runningPanels.delete(panelId);
-      // Clean up per-panel provider sessions
+      // Clean up per-panel provider sessions (including persistent processes)
       for (const provider of this._providerManager.getAllProviders()) {
         provider.cancelCurrentRequest(panelId);
+        if (typeof provider.disposePersistentProcess === 'function') {
+          provider.disposePersistentProcess(panelId);
+        }
       }
       // Clean up pending plan selections
       this._pendingPlanSelections.delete(panelId);
@@ -3846,6 +4746,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Send initial state with the new conversation
     this._sendInitialState(panelId);
+
+    // Pre-spawn persistent process so first message is instant
+    this._tryPreSpawnPersistentProcess(panelId);
   }
 
   /**

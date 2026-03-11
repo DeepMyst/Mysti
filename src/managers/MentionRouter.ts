@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ProviderManager } from './ProviderManager';
-import { SUBAGENT_TIMEOUT_MS, SUBAGENT_MAX_RETRIES } from '../constants';
+import { SUBAGENT_TIMEOUT_MS, SUBAGENT_MAX_RETRIES, SUBAGENT_QUESTION_TIMEOUT_MS } from '../constants';
 import type {
   ContextItem,
   Settings,
@@ -26,7 +26,6 @@ import type {
   MentionTaskList,
   SubAgentResponse,
   AgentType,
-  AskUserQuestionData,
   SubAgentQuestionCallback
 } from '../types';
 
@@ -74,10 +73,18 @@ export class MentionRouter {
   ): AsyncGenerator<MentionStreamChunk> {
     // 1. Resolve file mentions into transient ContextItems
     const fileMentions = mentions.filter(m => m.type === 'file');
-    const resolvedFiles = await this._resolveFileMentions(fileMentions);
+    const { items: resolvedFiles, failedFiles } = await this._resolveFileMentions(fileMentions);
 
     if (resolvedFiles.length > 0) {
       yield { type: 'files_resolved', resolvedFiles };
+    }
+
+    // M7: Warn user about unresolvable file mentions
+    if (failedFiles.length > 0) {
+      yield {
+        type: 'file_resolution_warning',
+        content: `Could not read ${failedFiles.length} file(s): ${failedFiles.join(', ')}`
+      };
     }
 
     // 2. Generate task list for agent mentions
@@ -458,6 +465,9 @@ export class MentionRouter {
       let responseText = '';
 
       if (attempt > 0) {
+        // M8: Cancel previous attempt's process before retrying
+        const prevPanelId = `${panelId}-subagent-${agentId}${attempt > 1 ? `-retry${attempt - 1}` : ''}`;
+        this._providerManager.cancelRequest(prevPanelId);
         console.log(`[Mysti] MentionRouter: Retrying sub-agent ${agentId} (attempt ${attempt + 1})`);
         yield { type: 'subagent_retry', agentId, retryCount: attempt };
       }
@@ -518,9 +528,17 @@ export class MentionRouter {
                 clearTimeout(timeoutHandle);
                 this._providerManager.cancelRequest(subAgentPanelId);
 
-                // Wait for user's answer
-                console.log(`[Mysti] MentionRouter: Sub-agent ${agentId} asked a question, waiting for user answer`);
-                const userResponse = await onSubAgentQuestion(agentId, chunk.askUserQuestion);
+                // M1: Wait for user's answer with timeout
+                console.log(`[Mysti] MentionRouter: Sub-agent ${agentId} asked a question, waiting for user answer (${Math.round(SUBAGENT_QUESTION_TIMEOUT_MS / 1000)}s timeout)`);
+                const userResponse = await Promise.race([
+                  onSubAgentQuestion(agentId, chunk.askUserQuestion),
+                  new Promise<null>(resolve =>
+                    setTimeout(() => {
+                      console.log(`[Mysti] MentionRouter: Sub-agent question timed out for ${agentId}`);
+                      resolve(null);
+                    }, SUBAGENT_QUESTION_TIMEOUT_MS)
+                  )
+                ]);
 
                 if (userResponse) {
                   // Format the answer and spawn a NEW sub-agent process with original task + answer
@@ -551,9 +569,10 @@ export class MentionRouter {
                     }
                   }
                 } else {
-                  // User skipped the question
-                  responseText += '\n[User skipped the question]\n';
-                  yield { type: 'subagent_text', agentId, content: '\n[User skipped the question]\n' };
+                  // User skipped or question timed out
+                  const skipMsg = '\n[Question timed out — skipped]\n';
+                  responseText += skipMsg;
+                  yield { type: 'subagent_text', agentId, content: skipMsg };
                 }
 
                 // We already handled the follow-up — return from this attempt
@@ -657,8 +676,9 @@ export class MentionRouter {
   /**
    * Resolve @file mentions to transient ContextItems (not added to persistent context)
    */
-  private async _resolveFileMentions(fileMentions: Mention[]): Promise<ContextItem[]> {
+  private async _resolveFileMentions(fileMentions: Mention[]): Promise<{ items: ContextItem[]; failedFiles: string[] }> {
     const items: ContextItem[] = [];
+    const failedFiles: string[] = [];
 
     for (const mention of fileMentions) {
       const filePath = mention.value;
@@ -684,11 +704,13 @@ export class MentionRouter {
           language
         });
       } catch (error) {
+        // M7: Track failed files so caller can report to user
         console.warn(`[Mysti] Failed to resolve file mention: ${filePath}`, error);
+        failedFiles.push(filePath);
       }
     }
 
-    return items;
+    return { items, failedFiles };
   }
 
   private _getLanguageFromExtension(ext: string): string {

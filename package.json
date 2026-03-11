@@ -2,7 +2,7 @@
   "name": "mysti",
   "displayName": "Mysti - AI Coding Agent",
   "description": "Multi-agent AI coding assistant. Claude Code, Codex, Gemini, and GitHub Copilot brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "publisher": "DeepMyst",
   "author": {
     "name": "Baha Abunojaim",
@@ -26,8 +26,8 @@
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Machine Learning",
-    "Data Science",
+    "AI",
+    "Programming Languages",
     "Other"
   ],
   "keywords": [
@@ -66,12 +66,19 @@
     "workspaceContains:gemini.yaml",
     "workspaceContains:codex.json",
     "workspaceContains:agents.yaml",
+    "workspaceContains:mysti.md",
+    "workspaceContains:MYSTI.md",
     "workspaceContains:.mysti/config.json",
     "workspaceContains:.mysti/agents.yaml",
+    "workspaceContains:.mysti/team.json",
+    "workspaceContains:.mysti/rules/**",
+    "workspaceContains:.mysti/mysti.md",
     "workspaceContains:.claude/**",
     "workspaceContains:.gemini/**",
     "workspaceContains:.openai/**",
-    "workspaceContains:.openclaw/**"
+    "workspaceContains:.openclaw/**",
+    "workspaceContains:opencode.json",
+    "workspaceContains:.qwen/**"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -89,7 +96,7 @@
         {
           "type": "webview",
           "id": "mysti.chatView",
-          "name": "Chat"
+          "name": "Mysti"
         }
       ]
     },
@@ -141,6 +148,11 @@
         "command": "mysti.toggleAutonomous",
         "title": "Toggle Autonomous Mode",
         "category": "Mysti"
+      },
+      {
+        "command": "mysti.codeLensAction",
+        "title": "CodeLens Action",
+        "category": "Mysti"
       }
     ],
     "menus": {
@@ -183,7 +195,11 @@
             "cline",
             "github-copilot",
             "cursor",
-            "openclaw"
+            "openclaw",
+            "opencode",
+            "ollama",
+            "localai",
+            "qwen-code"
           ],
           "enumDescriptions": [
             "Claude Code CLI (Anthropic) - Deep reasoning, complex refactoring, thorough analysis",
@@ -192,7 +208,11 @@
             "Cline - Autonomous coding agent with browser use, file editing, and command execution",
             "GitHub Copilot CLI - GitHub-native AI assistant with seamless GitHub integration",
             "Cursor - AI-powered coding with fast editing and multi-file changes",
-            "OpenClaw - Open-source personal AI assistant with multi-model support and Gateway streaming"
+            "OpenClaw - Open-source personal AI assistant with multi-model support and Gateway streaming",
+            "OpenCode - Multi-provider AI coding agent with support for OpenAI, Anthropic, Gemini, Groq, and OpenRouter",
+            "Ollama - Local LLM inference server supporting Llama, CodeLlama, Mistral, and more",
+            "LocalAI - Self-hosted OpenAI-compatible local inference with GPU/CPU support",
+            "Qwen Code - Alibaba's AI coding agent with Qwen3-Coder models and multi-provider support"
           ],
           "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context."
         },
@@ -246,6 +266,84 @@
           "default": true,
           "description": "Use OpenClaw Gateway WebSocket for streaming (falls back to CLI if unavailable)"
         },
+        "mysti.opencodePath": {
+          "type": "string",
+          "default": "opencode",
+          "description": "Path to OpenCode CLI executable"
+        },
+        "mysti.qwenCodePath": {
+          "type": "string",
+          "default": "qwen",
+          "description": "Path to Qwen Code CLI executable"
+        },
+        "mysti.ollamaEndpoint": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama API server URL (host and port)"
+        },
+        "mysti.ollamaModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model to use with Ollama (e.g., llama3.2, codellama, deepseek-coder). Leave empty to use the default model."
+        },
+        "mysti.ollamaTemperature": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature for Ollama (0.0-2.0). Lower values produce more deterministic output."
+        },
+        "mysti.ollamaContextLength": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Context window size in tokens for Ollama (0 = use model default). Increase for longer conversations."
+        },
+        "mysti.ollamaKeepAlive": {
+          "type": "string",
+          "default": "5m",
+          "description": "How long Ollama keeps the model loaded in memory after the last request (e.g., '5m', '1h', '0' to unload immediately)."
+        },
+        "mysti.ollamaRequestTimeout": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 5000,
+          "description": "Request timeout in milliseconds for Ollama. Increase for large models or slow hardware."
+        },
+        "mysti.localaiEndpoint": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "LocalAI API server URL (host and port)"
+        },
+        "mysti.localaiModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model to use with LocalAI. Leave empty to use the default model."
+        },
+        "mysti.localaiTemperature": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature for LocalAI (0.0-2.0). Lower values produce more deterministic output."
+        },
+        "mysti.localaiMaxTokens": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Maximum tokens to generate with LocalAI (0 = no limit). Useful for controlling response length."
+        },
+        "mysti.localaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for LocalAI (if authentication is configured on your server). Leave empty if not required."
+        },
+        "mysti.localaiRequestTimeout": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 5000,
+          "description": "Request timeout in milliseconds for LocalAI. Increase for large models or slow hardware."
+        },
         "mysti.defaultMode": {
           "type": "string",
           "default": "ask-before-edit",
@@ -258,7 +356,7 @@
         },
         "mysti.defaultThinkingLevel": {
           "type": "string",
-          "default": "medium",
+          "default": "none",
           "enum": [
             "none",
             "low",
@@ -328,6 +426,25 @@
           "maxLength": 128,
           "description": "Custom model for OpenClaw. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4-6"
         },
+        "mysti.opencodeModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "maxLength": 128,
+          "description": "Custom model for OpenCode. Overrides the dropdown selection. Leave empty to use the default model. Example: anthropic/claude-sonnet-4-5"
+        },
+        "mysti.qwenCodeModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "maxLength": 128,
+          "description": "Custom model for Qwen Code. Overrides the dropdown selection. Leave empty to use the default model. Example: qwen3-coder-plus"
+        },
+        "mysti.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show 'Mysti: Explain | Refactor | Write Tests' CodeLens above functions in the editor."
+        },
         "mysti.accessLevel": {
           "type": "string",
           "default": "ask-permission",
@@ -347,6 +464,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically include open files and selections as context for better AI responses"
+        },
+        "mysti.planDetection.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Detect and show implementation plan options in AI responses. Disable to reduce post-response latency."
         },
         "mysti.compaction.enabled": {
           "type": "boolean",
@@ -491,7 +613,11 @@
             "cline",
             "github-copilot",
             "cursor",
-            "openclaw"
+            "openclaw",
+            "opencode",
+            "ollama",
+            "localai",
+            "qwen-code"
           ],
           "description": "Agent to use for synthesis in brainstorm mode"
         },
@@ -510,13 +636,17 @@
               "cline",
               "github-copilot",
               "cursor",
-              "openclaw"
+              "openclaw",
+              "opencode",
+              "ollama",
+              "localai",
+              "qwen-code"
             ]
           },
           "minItems": 2,
           "maxItems": 2,
           "uniqueItems": true,
-          "description": "Select any 2 of 7 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
+          "description": "Select any 2 of 10 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
         },
         "mysti.agents.claudePersona": {
           "type": "string",
@@ -714,6 +844,109 @@
           "default": "",
           "description": "Custom persona prompt for OpenClaw (when persona is 'custom')"
         },
+        "mysti.agents.opencodePersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "Balanced, no specific bias",
+            "Focus on system design and patterns",
+            "Focus on practical, working solutions",
+            "Focus on implementation quality and performance",
+            "Focus on code review and best practices",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for OpenCode agent in brainstorm mode"
+        },
+        "mysti.agents.opencodeCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for OpenCode (when persona is 'custom')"
+        },
+        "mysti.agents.ollamaPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "Balanced, no specific bias",
+            "Focus on system design and patterns",
+            "Focus on practical, working solutions",
+            "Focus on implementation quality and performance",
+            "Focus on code review and best practices",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for Ollama agent in brainstorm mode"
+        },
+        "mysti.agents.ollamaCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Ollama (when persona is 'custom')"
+        },
+        "mysti.agents.localaiPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "Balanced, no specific bias",
+            "Focus on system design and patterns",
+            "Focus on practical, working solutions",
+            "Focus on implementation quality and performance",
+            "Focus on code review and best practices",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for LocalAI agent in brainstorm mode"
+        },
+        "mysti.agents.localaiCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for LocalAI (when persona is 'custom')"
+        },
+        "mysti.agents.qwenCodePersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "description": "Persona for Qwen Code agent in brainstorm mode"
+        },
+        "mysti.agents.qwenCodeCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Qwen Code (when persona is 'custom')"
+        },
         "mysti.agents.autoSuggest": {
           "type": "boolean",
           "default": true,
@@ -830,9 +1063,45 @@
             "Provide a list of tasks and the agent works through them sequentially"
           ],
           "description": "How autonomous mode handles task continuation"
+        },
+        "mysti.commitSignature.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Track when Mysti creates git commits for the Trail Blazer badge"
+        },
+        "mysti.fileDecorations.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show sparkle 'M' badge on files modified by Mysti in the VS Code Explorer"
+        },
+        "mysti.fileDecorations.duration": {
+          "type": "number",
+          "default": 24,
+          "description": "How long (in hours) to show file decoration badges after a file is modified by Mysti"
+        },
+        "mysti.projectContext.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read mysti.md and .mysti/rules/ for project-specific instructions (like CLAUDE.md)"
+        },
+        "mysti.autoMemory.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically learn and remember project patterns across sessions (like Claude Code's auto-memory)"
         }
       }
     },
+    "colors": [
+      {
+        "id": "mysti.fileDecorationForeground",
+        "description": "Color for the Mysti file decoration badge in the Explorer",
+        "defaults": {
+          "dark": "#9B59B6",
+          "light": "#8E44AD",
+          "highContrast": "#BB86FC"
+        }
+      }
+    ],
     "keybindings": [
       {
         "command": "mysti.openChat",
@@ -848,6 +1117,75 @@
         "command": "mysti.toggleAutonomous",
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "mysti.gettingStarted",
+        "title": "Get Started with Mysti",
+        "description": "Set up your multi-agent AI coding assistant in 2 minutes",
+        "steps": [
+          {
+            "id": "mysti.walkthrough.openChat",
+            "title": "Open the Mysti Panel",
+            "description": "Click the Mysti icon in the Activity Bar or press ``Cmd+Shift+M`` (``Ctrl+Shift+M`` on Windows/Linux) to open the chat panel.\n\n[Open Mysti](command:mysti.openChat)",
+            "media": {
+              "image": "docs/screenshots/quick-actions-welcome.png",
+              "altText": "Mysti chat panel with welcome screen"
+            },
+            "completionEvents": [
+              "onCommand:mysti.openChat"
+            ]
+          },
+          {
+            "id": "mysti.walkthrough.setupProvider",
+            "title": "Set Up an AI Provider",
+            "description": "Install and authenticate at least one AI CLI tool. Claude Code is recommended for the best experience.\n\n[Open Settings](command:workbench.action.openSettings?%5B%22mysti.defaultProvider%22%5D)",
+            "media": {
+              "image": "docs/screenshots/settings-panel.png",
+              "altText": "Mysti settings panel showing provider options"
+            },
+            "completionEvents": [
+              "onSettingChanged:mysti.defaultProvider"
+            ]
+          },
+          {
+            "id": "mysti.walkthrough.firstMessage",
+            "title": "Send Your First Message",
+            "description": "Ask Mysti to explain code, fix a bug, write tests, or generate new features. You're Mysting now!\n\n[Open Chat](command:mysti.openChat)",
+            "media": {
+              "image": "docs/screenshots/user-experience.png",
+              "altText": "Mysti chat with AI response"
+            },
+            "completionEvents": [
+              "onCommand:mysti.openChat"
+            ]
+          },
+          {
+            "id": "mysti.walkthrough.brainstorm",
+            "title": "Try Multi-Agent Brainstorm",
+            "description": "Enable Brainstorm Mode to have two AI agents collaborate, debate, and synthesize solutions together. Pick any 2 of 7 providers.\n\n[Open Settings](command:workbench.action.openSettings?%5B%22mysti.brainstorm.enabled%22%5D)",
+            "media": {
+              "image": "docs/screenshots/brainstorm-mode.png",
+              "altText": "Brainstorm mode with two AI agents collaborating"
+            },
+            "completionEvents": [
+              "onSettingChanged:mysti.brainstorm.enabled"
+            ]
+          },
+          {
+            "id": "mysti.walkthrough.star",
+            "title": "Star Mysti on GitHub",
+            "description": "If Mysti is useful, [star it on GitHub](https://github.com/DeepMyst/Mysti) to help other developers discover it!\n\nJoin the community and help shape the future of multi-agent AI coding.",
+            "media": {
+              "image": "resources/Mysti-Logo.png",
+              "altText": "Mysti logo"
+            },
+            "completionEvents": [
+              "onLink:https://github.com/DeepMyst/Mysti"
+            ]
+          }
+        ]
       }
     ],
     "languages": [
@@ -913,7 +1251,8 @@
     "compile": "webpack --mode production",
     "watch": "webpack --mode development --watch",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "sync-agents": "node scripts/sync-agents.js",
     "sync-agents:force": "node scripts/sync-agents.js --force",
     "fetch-stargazers": "node scripts/fetch-stargazers.js"
@@ -929,6 +1268,7 @@
     "exceljs": "^4.4.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.2",
+    "vitest": "^4.0.18",
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4"
   },

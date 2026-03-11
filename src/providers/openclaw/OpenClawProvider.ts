@@ -103,6 +103,7 @@ export class OpenClawProvider extends BaseCliProvider {
       persistentProcess: null,
       persistentReady: false,
       lastHealthCheck: 0,
+      suspended: false,
       activeToolCalls: new Map(),
       lastUsageStats: null,
     };
@@ -246,7 +247,44 @@ export class OpenClawProvider extends BaseCliProvider {
     // Local mode (no gateway needed for CLI fallback)
     args.push('--local');
 
+    // Add permission flags based on mode and access level
+    this._addPermissionFlags(args, settings);
+
     return args;
+  }
+
+  /**
+   * Add permission flags based on mode and access level
+   * Maps Mysti settings to OpenClaw CLI permission modes
+   */
+  private _addPermissionFlags(args: string[], settings: Settings): void {
+    const { mode, accessLevel } = settings;
+
+    // Plan modes or read-only → sandbox mode
+    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
+      args.push('--sandbox');
+      console.log('[Mysti] OpenClaw: Using sandbox mode (read-only)');
+      return;
+    }
+
+    // More-restrictive-wins: only auto-approve when BOTH mode and access allow it
+    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
+      args.push('--yolo');
+      console.log('[Mysti] OpenClaw: Using yolo mode (edit-automatically + full-access)');
+      return;
+    }
+
+    // default mode + full-access = yolo (no explicit edit restriction)
+    if (mode === 'default' && accessLevel === 'full-access') {
+      args.push('--yolo');
+      console.log('[Mysti] OpenClaw: Using yolo mode (default + full-access)');
+      return;
+    }
+
+    // All other combinations: bypass CLI permissions to prevent stdin hang.
+    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
+    args.push('--yolo');
+    console.log(`[Mysti] OpenClaw: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**

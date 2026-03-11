@@ -44,8 +44,12 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   const copilotLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'copilot.png')).toString();
   const cursorLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'cursor.png')).toString();
   const openclawLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openclaw.png')).toString();
+  const opencodeLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'opencode.png')).toString();
+  const ollamaLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'ollama.png')).toString();
+  const localaiLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'localai.png')).toString();
+  const qwenLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'qwen.png')).toString();
 
-  const script = getScript(mermaidUri.toString(), logoUri.toString(), iconUris, claudeLogoUri, openaiLogoLightUri, openaiLogoDarkUri, geminiLogoUri, clineLogoUri, copilotLogoUri, cursorLogoUri, openclawLogoUri, version);
+  const script = getScript(mermaidUri.toString(), logoUri.toString(), iconUris, claudeLogoUri, openaiLogoLightUri, openaiLogoDarkUri, geminiLogoUri, clineLogoUri, copilotLogoUri, cursorLogoUri, openclawLogoUri, opencodeLogoUri, ollamaLogoUri, localaiLogoUri, qwenLogoUri, version);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -62,6 +66,18 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
 </head>
 <body>
   <div id="app">
+    <!-- Loading overlay (shown until initialState arrives) -->
+    <div id="init-loading-overlay" class="init-loading-overlay">
+      <div class="init-loading-content">
+        <img src="${logoUri}" alt="Mysti" class="init-loading-logo" />
+        <div class="init-loading-spinner">
+          <div class="init-spinner-ring"></div>
+        </div>
+        <div class="init-loading-text">Preparing your workspace...</div>
+        <div class="init-loading-subtext">Setting up providers and loading agents</div>
+      </div>
+    </div>
+
     <!-- Header with settings -->
     <header class="header">
       <div class="header-left">
@@ -98,6 +114,12 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
             <path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zM10 .5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 16 1.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zM.5 10a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 14.5v-4a.5.5 0 0 1 .5-.5zm15 0a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z"/>
           </svg>
         </button>
+        <button id="export-conversation-btn" class="icon-btn export-conversation-btn" title="Export conversation as Markdown">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4.406 1.342A5.53 5.53 0 0 1 8 0c2.69 0 4.923 2 5.166 4.579C14.758 4.804 16 6.137 16 7.773 16 9.569 14.502 11 12.687 11H10a.5.5 0 0 1 0-1h2.688C13.979 10 15 8.988 15 7.773c0-1.216-1.02-2.228-2.313-2.228h-.5v-.5C12.188 2.825 10.328 1 8 1a4.53 4.53 0 0 0-2.941 1.1c-.757.652-1.153 1.438-1.153 2.055v.448l-.445.049C2.064 4.805 1 5.952 1 7.318 1 8.785 2.23 10 3.781 10H6a.5.5 0 0 1 0 1H3.781C1.708 11 0 9.366 0 7.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383z"/>
+            <path d="M7.646 15.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 14.293V5.5a.5.5 0 0 0-1 0v8.793l-2.146-2.147a.5.5 0 0 0-.708.708l3 3z" transform="rotate(180, 8, 10.5)"/>
+          </svg>
+        </button>
       </div>
       <div class="header-right">
         <button id="active-mode-btn" class="icon-btn" title="Active Mode" style="display: none;">
@@ -113,6 +135,12 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M11 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>
             <path fill-rule="evenodd" d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm8-7a7 7 0 0 0-5.468 11.37C3.242 11.226 4.805 10 8 10s4.757 1.225 5.468 2.37A7 7 0 0 0 8 1z"/>
+          </svg>
+        </button>
+        <button id="badges-btn" class="icon-btn" title="My Badges">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2H8.5v1.5A2.5 2.5 0 0 1 11 10v.5a.5.5 0 0 1-.5.5h-5a.5.5 0 0 1-.5-.5V10a2.5 2.5 0 0 1 2.5-2.5V6H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5zM2 2a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1h5V2H2zm9 0v3h3a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1h-3zM6 10v.5h4V10a1.5 1.5 0 0 0-1.5-1.5h-1A1.5 1.5 0 0 0 6 10z"/>
+            <path d="M5 12h6v2.5a.5.5 0 0 1-.765.424L8 13.65l-2.235 1.274A.5.5 0 0 1 5 14.5V12z"/>
           </svg>
         </button>
         <button id="about-btn" class="icon-btn" title="About Mysti">
@@ -152,6 +180,10 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <option value="github-copilot">GitHub Copilot</option>
           <option value="openclaw">OpenClaw</option>
           <option value="cline">Cline</option>
+          <option value="opencode">OpenCode</option>
+          <option value="ollama">Ollama</option>
+          <option value="localai">LocalAI</option>
+          <option value="qwen-code">Qwen Code</option>
           <option value="brainstorm">Brainstorm</option>
         </select>
       </div>
@@ -220,6 +252,34 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
             <span class="brainstorm-agent-chip">
               <span class="brainstorm-agent-dot" style="background: #E11D48;"></span>
               <span class="brainstorm-agent-name">OpenClaw</span>
+            </span>
+          </label>
+          <label class="brainstorm-agent-option" data-agent="opencode">
+            <input type="checkbox" name="brainstorm-agent" value="opencode" />
+            <span class="brainstorm-agent-chip">
+              <span class="brainstorm-agent-dot" style="background: #22C55E;"></span>
+              <span class="brainstorm-agent-name">OpenCode</span>
+            </span>
+          </label>
+          <label class="brainstorm-agent-option" data-agent="ollama">
+            <input type="checkbox" name="brainstorm-agent" value="ollama" />
+            <span class="brainstorm-agent-chip">
+              <span class="brainstorm-agent-dot" style="background: #FFFFFF;"></span>
+              <span class="brainstorm-agent-name">Ollama</span>
+            </span>
+          </label>
+          <label class="brainstorm-agent-option" data-agent="localai">
+            <input type="checkbox" name="brainstorm-agent" value="localai" />
+            <span class="brainstorm-agent-chip">
+              <span class="brainstorm-agent-dot" style="background: #06B6D4;"></span>
+              <span class="brainstorm-agent-name">LocalAI</span>
+            </span>
+          </label>
+          <label class="brainstorm-agent-option" data-agent="qwen-code">
+            <input type="checkbox" name="brainstorm-agent" value="qwen-code" />
+            <span class="brainstorm-agent-chip">
+              <span class="brainstorm-agent-dot" style="background: #6C5CE7;"></span>
+              <span class="brainstorm-agent-name">Qwen</span>
             </span>
           </label>
         </div>
@@ -399,41 +459,79 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
       </p>
       <div class="about-section">
         <h3>Created by</h3>
-        <p>DeepMyst Inc.</p>
-        <p class="about-author">Baha Abunojaim</p>
+        <div class="about-creator">
+          <span class="creator-name">DeepMyst Inc.</span>
+          <div class="about-links creator-links">
+            <a href="https://www.deepmyst.com/mysti" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm7.5-6.923c-.67.204-1.335.82-1.887 1.855A7.97 7.97 0 0 0 5.145 4H7.5V1.077zM4.09 4a9.267 9.267 0 0 1 .64-1.539 6.7 6.7 0 0 1 .597-.933A7.025 7.025 0 0 0 2.255 4H4.09zm-.582 3.5c.03-.877.138-1.718.312-2.5H1.674a6.958 6.958 0 0 0-.656 2.5h2.49zM4.847 5a12.5 12.5 0 0 0-.338 2.5H7.5V5H4.847zM8.5 5v2.5h2.99a12.495 12.495 0 0 0-.337-2.5H8.5zM4.51 8.5a12.5 12.5 0 0 0 .337 2.5H7.5V8.5H4.51zm3.99 0V11h2.653c.187-.765.306-1.608.338-2.5H8.5zM5.145 12c.138.386.295.744.468 1.068.552 1.035 1.218 1.65 1.887 1.855V12H5.145zm.182 2.472a6.696 6.696 0 0 1-.597-.933A9.268 9.268 0 0 1 4.09 12H2.255a7.024 7.024 0 0 0 3.072 2.472zM3.82 11a13.652 13.652 0 0 1-.312-2.5h-2.49c.062.89.291 1.733.656 2.5H3.82zm6.853 3.472A7.024 7.024 0 0 0 13.745 12H11.91a9.27 9.27 0 0 1-.64 1.539 6.688 6.688 0 0 1-.597.933zM8.5 12v2.923c.67-.204 1.335-.82 1.887-1.855.173-.324.33-.682.468-1.068H8.5zm3.68-1h2.146c.365-.767.594-1.61.656-2.5h-2.49a13.65 13.65 0 0 1-.312 2.5zm2.802-3.5a6.959 6.959 0 0 0-.656-2.5H12.18c.174.782.282 1.623.312 2.5h2.49zM11.27 2.461c.247.464.462.98.64 1.539h1.835a7.024 7.024 0 0 0-3.072-2.472c.218.284.418.598.597.933zM10.855 4a7.966 7.966 0 0 0-.468-1.068C9.835 1.897 9.17 1.282 8.5 1.077V4h2.355z"/>
+              </svg>
+              Website
+            </a>
+            <a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+              </svg>
+              GitHub
+            </a>
+            <a href="https://www.linkedin.com/company/deepmyst/" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 1.146C0 .513.526 0 1.175 0h13.65C15.474 0 16 .513 16 1.146v13.708c0 .633-.526 1.146-1.175 1.146H1.175C.526 16 0 15.487 0 14.854V1.146zm4.943 12.248V6.169H2.542v7.225h2.401zm-1.2-8.212c.837 0 1.358-.554 1.358-1.248-.015-.709-.52-1.248-1.342-1.248-.822 0-1.359.54-1.359 1.248 0 .694.521 1.248 1.327 1.248h.016zm4.908 8.212V9.359c0-.216.016-.432.08-.586.173-.431.568-.878 1.232-.878.869 0 1.216.662 1.216 1.634v3.865h2.401V9.25c0-2.22-1.184-3.252-2.764-3.252-1.274 0-1.845.7-2.165 1.193v.025h-.016a5.54 5.54 0 0 1 .016-.025V6.169h-2.4c.03.678 0 7.225 0 7.225h2.4z"/>
+              </svg>
+              LinkedIn
+            </a>
+          </div>
+        </div>
+        <div class="about-creator">
+          <span class="creator-name about-author">Baha Abunojaim</span>
+          <div class="about-links creator-links">
+            <a href="https://www.linkedin.com/in/bahaabunojaim/" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 1.146C0 .513.526 0 1.175 0h13.65C15.474 0 16 .513 16 1.146v13.708c0 .633-.526 1.146-1.175 1.146H1.175C.526 16 0 15.487 0 14.854V1.146zm4.943 12.248V6.169H2.542v7.225h2.401zm-1.2-8.212c.837 0 1.358-.554 1.358-1.248-.015-.709-.52-1.248-1.342-1.248-.822 0-1.359.54-1.359 1.248 0 .694.521 1.248 1.327 1.248h.016zm4.908 8.212V9.359c0-.216.016-.432.08-.586.173-.431.568-.878 1.232-.878.869 0 1.216.662 1.216 1.634v3.865h2.401V9.25c0-2.22-1.184-3.252-2.764-3.252-1.274 0-1.845.7-2.165 1.193v.025h-.016a5.54 5.54 0 0 1 .016-.025V6.169h-2.4c.03.678 0 7.225 0 7.225h2.4z"/>
+              </svg>
+              LinkedIn
+            </a>
+            <a href="https://github.com/BahaAbuNojaim" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+              </svg>
+              GitHub
+            </a>
+          </div>
+        </div>
       </div>
-      <div class="about-links">
-        <a href="https://www.deepmyst.com/mysti" target="_blank" rel="noopener">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm7.5-6.923c-.67.204-1.335.82-1.887 1.855A7.97 7.97 0 0 0 5.145 4H7.5V1.077zM4.09 4a9.267 9.267 0 0 1 .64-1.539 6.7 6.7 0 0 1 .597-.933A7.025 7.025 0 0 0 2.255 4H4.09zm-.582 3.5c.03-.877.138-1.718.312-2.5H1.674a6.958 6.958 0 0 0-.656 2.5h2.49zM4.847 5a12.5 12.5 0 0 0-.338 2.5H7.5V5H4.847zM8.5 5v2.5h2.99a12.495 12.495 0 0 0-.337-2.5H8.5zM4.51 8.5a12.5 12.5 0 0 0 .337 2.5H7.5V8.5H4.51zm3.99 0V11h2.653c.187-.765.306-1.608.338-2.5H8.5zM5.145 12c.138.386.295.744.468 1.068.552 1.035 1.218 1.65 1.887 1.855V12H5.145zm.182 2.472a6.696 6.696 0 0 1-.597-.933A9.268 9.268 0 0 1 4.09 12H2.255a7.024 7.024 0 0 0 3.072 2.472zM3.82 11a13.652 13.652 0 0 1-.312-2.5h-2.49c.062.89.291 1.733.656 2.5H3.82zm6.853 3.472A7.024 7.024 0 0 0 13.745 12H11.91a9.27 9.27 0 0 1-.64 1.539 6.688 6.688 0 0 1-.597.933zM8.5 12v2.923c.67-.204 1.335-.82 1.887-1.855.173-.324.33-.682.468-1.068H8.5zm3.68-1h2.146c.365-.767.594-1.61.656-2.5h-2.49a13.65 13.65 0 0 1-.312 2.5zm2.802-3.5a6.959 6.959 0 0 0-.656-2.5H12.18c.174.782.282 1.623.312 2.5h2.49zM11.27 2.461c.247.464.462.98.64 1.539h1.835a7.024 7.024 0 0 0-3.072-2.472c.218.284.418.598.597.933zM10.855 4a7.966 7.966 0 0 0-.468-1.068C9.835 1.897 9.17 1.282 8.5 1.077V4h2.355z"/>
-          </svg>
-          Website
-        </a>
-        <a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
-          </svg>
-          GitHub
-        </a>
-        <a href="https://www.linkedin.com/company/deepmyst/" target="_blank" rel="noopener">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M0 1.146C0 .513.526 0 1.175 0h13.65C15.474 0 16 .513 16 1.146v13.708c0 .633-.526 1.146-1.175 1.146H1.175C.526 16 0 15.487 0 14.854V1.146zm4.943 12.248V6.169H2.542v7.225h2.401zm-1.2-8.212c.837 0 1.358-.554 1.358-1.248-.015-.709-.52-1.248-1.342-1.248-.822 0-1.359.54-1.359 1.248 0 .694.521 1.248 1.327 1.248h.016zm4.908 8.212V9.359c0-.216.016-.432.08-.586.173-.431.568-.878 1.232-.878.869 0 1.216.662 1.216 1.634v3.865h2.401V9.25c0-2.22-1.184-3.252-2.764-3.252-1.274 0-1.845.7-2.165 1.193v.025h-.016a5.54 5.54 0 0 1 .016-.025V6.169h-2.4c.03.678 0 7.225 0 7.225h2.4z"/>
-          </svg>
-          LinkedIn
-        </a>
+      <div class="about-section about-stats">
+        <h3>Your Stats</h3>
+        <div class="stats-grid" id="stats-grid">
+          <div class="stat-card">
+            <span class="stat-value" id="stat-conversations">0</span>
+            <span class="stat-label">Conversations</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="stat-messages">0</span>
+            <span class="stat-label">Messages</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="stat-brainstorms">0</span>
+            <span class="stat-label">Brainstorms</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="stat-streak">0</span>
+            <span class="stat-label">Day Streak</span>
+          </div>
+        </div>
       </div>
-      <div class="about-section">
-        <h3>License</h3>
-        <p>Business Source License 1.1</p>
+    </div>
+
+    <!-- Badges panel (hidden by default) -->
+    <div id="badges-panel" class="badges-panel hidden">
+      <h3 class="badges-panel-title">My Badges <span class="badge-counter" id="badge-counter">0/0</span></h3>
+      <div id="badges-spinner" class="badges-spinner">
+        <div class="spinner-dot"></div>
+        <div class="spinner-dot"></div>
+        <div class="spinner-dot"></div>
       </div>
-      <div class="about-section about-credits">
-        <h3>Third-party Libraries</h3>
-        <ul class="credits-list">
-          <li>Marked.js - Markdown parsing</li>
-          <li>Prism.js - Syntax highlighting</li>
-          <li>Mermaid.js - Diagram rendering</li>
-        </ul>
-      </div>
+      <div class="badges-grid" id="badges-grid"></div>
     </div>
 
     <!-- Agent Configuration panel (hidden by default) -->
@@ -521,8 +619,38 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <img src="${logoUri}" alt="Mysti" class="welcome-logo" />
           <h2>Welcome to Mysti</h2>
           <p>Your AI coding team. Choose an action or ask anything!</p>
+          <a id="github-star-badge" href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="github-star-badge" style="display:none;">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="margin-right:4px;">
+              <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/>
+            </svg>
+            <span id="github-star-count">--</span> stars on GitHub
+          </a>
         </div>
         <div class="welcome-suggestions" id="welcome-suggestions"></div>
+        <div class="welcome-spread">
+          <h3>Spread the Word</h3>
+          <div class="about-links spread-links">
+            <a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="spread-link">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/>
+              </svg>
+              Star on GitHub
+            </a>
+            <a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti&ssr=false#review-details" target="_blank" rel="noopener" class="spread-link">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.254.008.045-.236 2.101-.574.028.166-.978 4.607z"/>
+                <circle cx="8" cy="4.5" r="1"/>
+              </svg>
+              Rate on Marketplace
+            </a>
+            <a id="share-on-x" href="#" class="spread-link" title="Share on X / Twitter">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+              </svg>
+              Share on X
+            </a>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -635,6 +763,15 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           </select>
         </div>
       </div>
+      <div id="export-toast" class="export-toast">Copied to clipboard!</div>
+      <div id="badge-toast" class="badge-toast" onclick="this.classList.remove('show')">
+        <span class="badge-toast-icon" id="badge-toast-icon"></span>
+        <div class="badge-toast-content">
+          <span class="badge-toast-tier" id="badge-toast-tier"></span>
+          <span class="badge-toast-title" id="badge-toast-title"></span>
+          <span class="badge-toast-subtitle" id="badge-toast-subtitle"></span>
+        </div>
+      </div>
       <div class="input-container">
         <div id="attachment-previews" class="attachment-previews"></div>
         <div class="input-wrapper">
@@ -708,6 +845,22 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
       <div class="agent-menu-item" data-agent="cline">
         <span class="agent-item-icon"><img class="cline-logo" src="${clineLogoUri}" alt="" /></span>
         <span class="agent-item-name">Cline</span>
+      </div>
+      <div class="agent-menu-item" data-agent="opencode">
+        <span class="agent-item-icon"><img class="opencode-logo" src="${opencodeLogoUri}" alt="" /></span>
+        <span class="agent-item-name">OpenCode</span>
+      </div>
+      <div class="agent-menu-item" data-agent="ollama">
+        <span class="agent-item-icon"><img class="ollama-logo" src="${ollamaLogoUri}" alt="" /></span>
+        <span class="agent-item-name">Ollama</span>
+      </div>
+      <div class="agent-menu-item" data-agent="localai">
+        <span class="agent-item-icon"><img class="localai-logo" src="${localaiLogoUri}" alt="" /></span>
+        <span class="agent-item-name">LocalAI</span>
+      </div>
+      <div class="agent-menu-item" data-agent="qwen-code">
+        <span class="agent-item-icon"><img class="qwen-logo" src="${qwenLogoUri}" alt="" /></span>
+        <span class="agent-item-name">Qwen Code</span>
       </div>
       <div class="agent-menu-divider"></div>
       <div class="agent-menu-item" data-agent="brainstorm">
@@ -1322,7 +1475,7 @@ function getStyles(): string {
 
     .settings-panel {
       padding: 12px;
-      border-bottom: 1px solid var(--vscode-panel-border);
+      border-bottom: 2px solid var(--vscode-focusBorder);
       background: var(--vscode-editor-background);
       position: relative;
       z-index: 50;
@@ -1738,7 +1891,7 @@ function getStyles(): string {
     .about-panel {
       padding: 16px;
       background: var(--vscode-sideBar-background);
-      border-bottom: 1px solid var(--vscode-panel-border);
+      border-bottom: 2px solid var(--vscode-focusBorder);
     }
 
     .about-panel.hidden {
@@ -1813,6 +1966,23 @@ function getStyles(): string {
       color: var(--vscode-descriptionForeground);
     }
 
+    .about-creator {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .about-creator .creator-name {
+      font-size: 12px;
+      color: var(--vscode-foreground);
+      white-space: nowrap;
+    }
+
+    .about-creator .creator-links {
+      margin-bottom: 0;
+    }
+
     .about-links {
       display: flex;
       gap: 12px;
@@ -1837,6 +2007,242 @@ function getStyles(): string {
       height: 14px;
     }
 
+    /* Usage stats grid */
+    .about-stats h3 {
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .stat-card {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-editorWidget-border, #333);
+      border-radius: 6px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+    }
+    .stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--vscode-foreground);
+    }
+    .stat-label {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    /* Badges panel */
+    .badges-panel {
+      padding: 16px;
+      background: var(--vscode-sideBar-background);
+      border-bottom: 2px solid var(--vscode-focusBorder);
+      max-height: 50vh;
+      overflow-y: auto;
+    }
+
+    .badges-panel.hidden {
+      display: none;
+    }
+
+    .badges-spinner {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 6px;
+      padding: 24px 0;
+    }
+    .badges-spinner.hidden {
+      display: none;
+    }
+    .spinner-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--vscode-textLink-foreground);
+      animation: spinnerBounce 1.2s infinite ease-in-out;
+    }
+    .spinner-dot:nth-child(2) { animation-delay: 0.2s; }
+    .spinner-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes spinnerBounce {
+      0%, 80%, 100% { opacity: 0.25; transform: scale(0.8); }
+      40% { opacity: 1; transform: scale(1.2); }
+    }
+
+    .badges-panel-title {
+      margin: 0 0 12px 0;
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Welcome spread the word */
+    .welcome-spread {
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--vscode-editorWidget-border, #333);
+    }
+
+    .welcome-spread h3 {
+      margin: 0 0 8px 0;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    /* My Badges grid */
+    .badge-counter {
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--vscode-descriptionForeground);
+    }
+    .badges-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 10px;
+    }
+    .badge-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 14px 8px;
+      border-radius: 8px;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-editorWidget-border, #333);
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.2s;
+      position: relative;
+    }
+    .badge-item:hover {
+      transform: scale(1.05);
+      z-index: 10;
+    }
+    .badge-item.locked .badge-icon,
+    .badge-item.locked .badge-name,
+    .badge-item.locked .badge-progress-bar {
+      opacity: 0.35;
+      filter: grayscale(1);
+    }
+    .badge-item .badge-icon {
+      font-size: 48px;
+      margin-bottom: 6px;
+    }
+    .badge-item .badge-name {
+      font-size: 12px;
+      text-align: center;
+      color: var(--vscode-descriptionForeground);
+      line-height: 1.3;
+      max-width: 110px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .badge-item .badge-progress-bar {
+      width: 100%;
+      height: 3px;
+      background: var(--vscode-editorWidget-border, #333);
+      border-radius: 2px;
+      margin-top: 4px;
+      overflow: hidden;
+    }
+    .badge-item .badge-progress-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+    .badge-progress-fill.bronze { background: #CD7F32; }
+    .badge-progress-fill.silver { background: #C0C0C0; }
+    .badge-progress-fill.gold { background: #FFD700; }
+    .badge-progress-fill.platinum { background: #E5E4E2; }
+    .badge-item .badge-tooltip {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      box-sizing: border-box;
+      background: var(--vscode-editorHoverWidget-background, #2d2d30);
+      border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+      color: var(--vscode-editorHoverWidget-foreground);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 11px;
+      white-space: normal;
+      z-index: 100;
+      pointer-events: auto;
+      line-height: 1.4;
+      opacity: 1;
+      filter: none;
+      overflow: auto;
+    }
+    .badge-tooltip-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .badge-tooltip-tier {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 3px;
+      margin-left: 4px;
+      text-transform: capitalize;
+    }
+    .badge-tooltip-tier.bronze { background: #CD7F32; color: #fff; }
+    .badge-tooltip-tier.silver { background: #C0C0C0; color: #333; }
+    .badge-tooltip-tier.gold { background: #FFD700; color: #333; }
+    .badge-tooltip-tier.platinum { background: #E5E4E2; color: #333; }
+    .badge-tooltip-howto {
+      margin-top: 4px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+    }
+    .badge-tooltip-progress {
+      margin-top: 4px;
+      font-size: 10px;
+      color: var(--vscode-textLink-foreground);
+    }
+    .badge-tooltip-unlocked {
+      margin-top: 4px;
+      font-size: 10px;
+      color: #4ec9b0;
+    }
+    .badge-item:hover .badge-tooltip,
+    .badge-item .badge-tooltip:hover {
+      display: block;
+    }
+
+    .spread-links {
+      flex-wrap: wrap;
+    }
+
+    .github-star-badge {
+      display: inline-flex;
+      align-items: center;
+      margin-top: 8px;
+      padding: 4px 10px;
+      font-size: 11px;
+      color: var(--vscode-textLink-foreground);
+      text-decoration: none;
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 12px;
+      transition: background 0.15s;
+    }
+
+    .github-star-badge:hover {
+      background: var(--vscode-list-hoverBackground);
+      text-decoration: none;
+    }
+
     .credits-list {
       margin: 0;
       padding-left: 16px;
@@ -1851,7 +2257,7 @@ function getStyles(): string {
     /* Agent Configuration Panel */
     .agent-config-panel {
       padding: 12px;
-      border-bottom: 1px solid var(--vscode-panel-border);
+      border-bottom: 2px solid var(--vscode-focusBorder);
       background: var(--vscode-editor-background);
       position: relative;
       z-index: 50;
@@ -2351,6 +2757,139 @@ function getStyles(): string {
       border: 1px solid var(--vscode-panel-border);
     }
 
+    /* Message copy button (hover to reveal) */
+    .message-header {
+      position: relative;
+    }
+
+    .message-copy-btn {
+      position: absolute;
+      right: 0;
+      top: 0;
+      background: transparent;
+      border: none;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.2s ease, color 0.2s ease, background 0.2s ease;
+      flex-shrink: 0;
+      font-size: 11px;
+      gap: 3px;
+    }
+
+    .message:hover .message-copy-btn {
+      opacity: 1;
+    }
+
+    .message-copy-btn:hover {
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-foreground);
+    }
+
+    .message-copy-btn.copied {
+      opacity: 1;
+      color: var(--vscode-charts-green);
+    }
+
+    /* Export conversation button in header */
+    .export-conversation-btn {
+      background: transparent;
+      border: none;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .export-conversation-btn:hover {
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-foreground);
+    }
+
+    /* Export toast notification */
+    .export-toast {
+      position: fixed;
+      bottom: 80px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: var(--vscode-notificationsInfoIcon-foreground, #3794ff);
+      color: #fff;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      z-index: 10000;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+
+    .export-toast.visible {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+      pointer-events: auto;
+    }
+
+    /* Badge unlock toast notification */
+    .badge-toast {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      background: var(--vscode-editorWidget-background, #252526);
+      border: 1px solid var(--vscode-editorWidget-border, #454545);
+      border-radius: 8px;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 10000;
+      transform: translateX(120%);
+      transition: transform 0.3s ease;
+      max-width: 320px;
+      cursor: pointer;
+    }
+    .badge-toast.show {
+      transform: translateX(0);
+    }
+    .badge-toast .badge-toast-icon {
+      font-size: 28px;
+      flex-shrink: 0;
+    }
+    .badge-toast .badge-toast-content {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .badge-toast .badge-toast-title {
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--vscode-foreground);
+    }
+    .badge-toast .badge-toast-subtitle {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .badge-toast .badge-toast-tier {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-toast .badge-toast-tier.bronze { color: #CD7F32; }
+    .badge-toast .badge-toast-tier.silver { color: #C0C0C0; }
+    .badge-toast .badge-toast-tier.gold { color: #FFD700; }
+    .badge-toast .badge-toast-tier.platinum { color: #E5E4E2; }
+
     .message-content pre {
       background: var(--vscode-textCodeBlock-background);
       padding: 8px;
@@ -2465,13 +3004,13 @@ function getStyles(): string {
       color: var(--vscode-foreground);
     }
 
-    /* Suggestions grid - layout for cards */
+    /* Suggestions grid - compact chip layout */
     .quick-actions {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      display: flex;
+      flex-wrap: wrap;
       gap: 8px;
-      padding: 12px;
-      max-height: 280px;
+      padding: 10px 12px;
+      max-height: 200px;
       overflow-y: auto;
     }
 
@@ -2481,26 +3020,6 @@ function getStyles(): string {
 
     .quick-actions:empty {
       display: none;
-    }
-
-    /* Responsive: single column for narrow panels */
-    @media (max-width: 400px) {
-      .quick-actions {
-        grid-template-columns: 1fr;
-        padding: 8px;
-        gap: 6px;
-        max-height: 200px;
-      }
-
-      .suggestion-card {
-        padding: 8px;
-      }
-
-      .suggestion-icon {
-        width: 28px;
-        height: 28px;
-        font-size: 14px;
-      }
     }
 
     @keyframes shimmer {
@@ -2555,68 +3074,55 @@ function getStyles(): string {
     .skeleton-card:nth-child(5) { animation-delay: 0.4s; }
     .skeleton-card:nth-child(6) { animation-delay: 0.5s; }
 
-    /* Suggestion cards */
+    /* Suggestion chips */
     .suggestion-card {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      padding: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
       background: var(--vscode-editor-background);
       border: 1px solid var(--vscode-widget-border);
-      border-radius: 8px;
+      border-radius: 16px;
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: all 0.15s ease;
       opacity: 0;
       animation: fadeSlideIn 0.3s ease forwards;
       text-align: left;
+      font-size: 12px;
+      white-space: nowrap;
     }
 
     .suggestion-card:hover {
       border-color: var(--card-color, var(--vscode-focusBorder));
-      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-      transform: translateY(-1px);
+      background: var(--icon-bg, rgba(59,130,246,0.06));
     }
 
     .suggestion-card:active {
-      transform: translateY(0);
+      transform: scale(0.98);
     }
 
     .suggestion-icon {
-      width: 32px;
-      height: 32px;
-      border-radius: 6px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 16px;
+      font-size: 13px;
       flex-shrink: 0;
-      background: var(--icon-bg, rgba(59,130,246,0.15));
+      line-height: 1;
     }
 
     .suggestion-content {
-      flex: 1;
       min-width: 0;
       overflow: hidden;
     }
 
     .suggestion-title {
-      font-weight: 600;
+      font-weight: 500;
       font-size: 12px;
       color: var(--vscode-foreground);
-      margin-bottom: 2px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
     .suggestion-description {
-      font-size: 10px;
-      color: var(--vscode-descriptionForeground);
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-      line-height: 1.3;
+      display: none;
     }
 
     /* Color variants */
@@ -4960,26 +5466,21 @@ function getStyles(): string {
       margin: 12px 0;
       overflow: hidden;
       animation: fadeSlideIn 0.3s ease forwards;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     }
 
     .permission-card.pending {
-      border-left: 4px solid var(--vscode-charts-orange, #f59e0b);
-      background: rgba(245, 158, 11, 0.03);
+      border-color: var(--vscode-focusBorder, #007acc);
     }
 
     .permission-card.approved {
-      border-left: 4px solid var(--vscode-charts-green, #22c55e);
       animation: approvedFade 0.5s ease forwards;
     }
 
     .permission-card.denied {
-      border-left: 4px solid var(--vscode-charts-red, #ef4444);
       animation: deniedShake 0.3s ease, fadeOut 0.3s 0.3s ease forwards;
     }
 
     .permission-card.expired {
-      border-left: 4px solid var(--vscode-descriptionForeground);
       opacity: 0.6;
     }
 
@@ -4999,104 +5500,37 @@ function getStyles(): string {
       to { opacity: 0; height: 0; padding: 0; margin: 0; overflow: hidden; }
     }
 
-    .permission-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 14px;
-      background: var(--vscode-titleBar-activeBackground, var(--vscode-sideBar-background));
-      border-bottom: 1px solid var(--vscode-panel-border);
-    }
-
-    .permission-header-left {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .permission-icon {
-      width: 24px;
-      height: 24px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 6px;
-      background: rgba(245, 158, 11, 0.15);
-      color: var(--vscode-charts-orange);
-      font-size: 12px;
-    }
-
-    .permission-card.pending .permission-icon {
-      animation: pulse 2s infinite;
-    }
-
-    .permission-title {
+    .permission-question {
       font-weight: 600;
       font-size: 13px;
       color: var(--vscode-foreground);
+      padding: 14px 16px 0;
     }
 
-    .permission-risk {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 10px;
-      padding: 2px 8px;
-      border-radius: 10px;
-      margin-left: 8px;
-    }
-
-    .permission-risk.low {
-      background: rgba(34, 197, 94, 0.15);
-      color: #22c55e;
-    }
-
-    .permission-risk.medium {
-      background: rgba(245, 158, 11, 0.15);
-      color: #f59e0b;
-    }
-
-    .permission-risk.high {
-      background: rgba(239, 68, 68, 0.15);
-      color: #ef4444;
-    }
-
-    .permission-timer {
+    .permission-details-toggle {
       font-size: 11px;
-      color: var(--vscode-descriptionForeground);
-      font-variant-numeric: tabular-nums;
-      padding: 2px 8px;
-      background: var(--vscode-badge-background);
-      border-radius: 10px;
+      color: var(--vscode-textLink-foreground);
+      cursor: pointer;
+      padding: 4px 16px 0;
+      user-select: none;
     }
 
-    .permission-timer.warning {
-      color: var(--vscode-charts-orange);
-      background: rgba(245, 158, 11, 0.15);
-    }
-
-    .permission-timer.critical {
-      color: var(--vscode-charts-red);
-      background: rgba(239, 68, 68, 0.15);
-      animation: pulse 0.5s infinite;
-    }
-
-    .permission-body {
-      padding: 12px 14px;
-    }
-
-    .permission-description {
-      font-size: 13px;
-      color: var(--vscode-foreground);
-      margin-bottom: 10px;
+    .permission-details-toggle:hover {
+      text-decoration: underline;
     }
 
     .permission-details {
       background: var(--vscode-textCodeBlock-background);
       border-radius: 6px;
-      padding: 10px 12px;
+      padding: 8px 10px;
       font-size: 12px;
       font-family: var(--vscode-editor-font-family);
+      margin: 8px 16px 0;
+      display: none;
+    }
+
+    .permission-details.expanded {
+      display: block;
     }
 
     .permission-detail-row {
@@ -5119,90 +5553,133 @@ function getStyles(): string {
       word-break: break-all;
     }
 
-    .permission-actions {
+    .permission-options {
       display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      background: var(--vscode-sideBarSectionHeader-background, rgba(0,0,0,0.1));
-      border-top: 1px solid var(--vscode-panel-border);
-      flex-wrap: wrap;
-    }
-
-    .permission-btn {
-      padding: 6px 14px;
-      border: none;
-      border-radius: 6px;
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
+      flex-direction: column;
       gap: 6px;
-      transition: all 0.15s ease;
+      padding: 12px 16px;
     }
 
-    .permission-btn.approve {
-      background: var(--vscode-charts-green, #22c55e);
-      color: white;
-    }
-
-    .permission-btn.approve:hover {
-      background: #16a34a;
-    }
-
-    .permission-btn.deny {
+    .permission-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.12s ease;
       background: transparent;
-      border: 1px solid var(--vscode-charts-red, #ef4444);
-      color: var(--vscode-charts-red);
+      font-size: 13px;
+      color: var(--vscode-foreground);
+      text-align: left;
+      width: 100%;
     }
 
-    .permission-btn.deny:hover {
-      background: rgba(239, 68, 68, 0.1);
+    .permission-option:hover {
+      background: var(--vscode-list-hoverBackground);
+      border-color: var(--vscode-focusBorder, #007acc);
     }
 
-    .permission-btn.always-allow {
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
+    .permission-option:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -1px;
     }
 
-    .permission-btn.always-allow:hover {
-      background: var(--vscode-button-secondaryHoverBackground);
+    .permission-option .option-number {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      flex-shrink: 0;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
     }
 
-    .permission-shortcuts {
-      font-size: 10px;
+    .permission-option.approve-option .option-number {
+      background: rgba(34, 197, 94, 0.2);
+      color: var(--vscode-charts-green, #22c55e);
+    }
+
+    .permission-option.approve-option:hover {
+      background: rgba(34, 197, 94, 0.08);
+      border-color: var(--vscode-charts-green, #22c55e);
+    }
+
+    .permission-custom-input {
+      display: flex;
+      gap: 8px;
+      padding: 0 16px 12px;
+    }
+
+    .permission-custom-input input {
+      flex: 1;
+      padding: 7px 10px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      font-size: 12px;
+      outline: none;
+    }
+
+    .permission-custom-input input:focus {
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .permission-custom-input input::placeholder {
+      color: var(--vscode-input-placeholderForeground);
+    }
+
+    .permission-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      font-size: 11px;
       color: var(--vscode-descriptionForeground);
-      margin-left: auto;
+      border-top: 1px solid var(--vscode-panel-border);
     }
 
-    .permission-shortcuts kbd {
-      background: var(--vscode-keybindingLabel-background, rgba(128,128,128,0.2));
-      border: 1px solid var(--vscode-keybindingLabel-border, rgba(128,128,128,0.3));
-      border-radius: 3px;
-      padding: 1px 4px;
-      font-family: var(--vscode-editor-font-family);
-      font-size: 10px;
+    .permission-timer {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .permission-timer.warning {
+      color: var(--vscode-charts-orange);
+    }
+
+    .permission-timer.critical {
+      color: var(--vscode-charts-red);
+      animation: pulse 0.5s infinite;
+    }
+
+    .permission-paused-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--vscode-charts-green, #22c55e);
+      margin-right: 4px;
+      vertical-align: middle;
     }
 
     /* Semi-autonomous mode styles */
     .permission-card.semi-autonomous .permission-timer {
-      background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(168, 85, 247, 0.2));
       color: var(--vscode-charts-blue, #6366f1);
       font-weight: 600;
-      border: 1px solid rgba(99, 102, 241, 0.3);
     }
 
     .permission-card.semi-autonomous .permission-timer.warning {
-      background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(168, 85, 247, 0.2));
       color: var(--vscode-charts-orange);
-      border-color: rgba(245, 158, 11, 0.3);
     }
 
     .permission-card.semi-autonomous .permission-timer.critical {
-      background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(168, 85, 247, 0.2));
       color: var(--vscode-charts-red);
-      border-color: rgba(239, 68, 68, 0.3);
       animation: pulse 0.5s infinite;
     }
 
@@ -5228,6 +5705,11 @@ function getStyles(): string {
       color: var(--vscode-descriptionForeground);
       font-size: 11px;
       margin-top: 2px;
+    }
+
+    /* Legacy compat — keep old class names mapped */
+    .permission-actions {
+      display: none;
     }
 
     .auq-semi-auto-timer {
@@ -5274,18 +5756,21 @@ function getStyles(): string {
        Plan Option Selection Cards
        ======================================== */
     .plan-options-container {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      margin: 16px 0;
-      padding: 0 4px;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      margin: 12px 0;
+      overflow: hidden;
+      animation: fadeSlideIn 0.3s ease forwards;
     }
 
     .plan-options-header {
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 4px;
+      padding: 12px 16px;
+      background: var(--vscode-sideBar-background);
+      border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
     }
 
     .plan-options-title {
@@ -5300,47 +5785,46 @@ function getStyles(): string {
     }
 
     .plan-option-card {
-      background: var(--vscode-editor-background);
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 10px;
-      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      padding: 12px 16px;
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: all 0.12s ease;
       position: relative;
-      overflow: hidden;
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
+    .plan-option-card:last-child {
+      border-bottom: none;
     }
 
     .plan-option-card:hover {
-      border-color: var(--vscode-focusBorder);
-      transform: translateY(-2px);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      background: var(--vscode-list-hoverBackground);
     }
 
     .plan-option-card:focus {
       outline: none;
-      border-color: var(--vscode-focusBorder);
-      box-shadow: 0 0 0 2px var(--vscode-focusBorder);
+      background: var(--vscode-list-hoverBackground);
     }
 
     .plan-option-card.selected {
-      border-color: var(--vscode-charts-green, #22c55e);
-      background: rgba(34, 197, 94, 0.05);
+      background: rgba(34, 197, 94, 0.06);
     }
 
     .plan-option-card.selected::after {
       content: '\\2713';
       position: absolute;
-      top: 10px;
-      right: 10px;
-      width: 24px;
-      height: 24px;
+      top: 12px;
+      right: 16px;
+      width: 22px;
+      height: 22px;
       background: var(--vscode-charts-green, #22c55e);
       color: white;
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 14px;
+      font-size: 13px;
       font-weight: bold;
     }
 
@@ -5351,10 +5835,35 @@ function getStyles(): string {
       margin-bottom: 10px;
     }
 
-    .plan-option-icon {
-      font-size: 20px;
-      line-height: 1;
+    .plan-option-number {
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
       flex-shrink: 0;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+    }
+
+    .plan-option-card.selected .plan-option-number {
+      background: rgba(34, 197, 94, 0.2);
+      color: var(--vscode-charts-green, #22c55e);
+    }
+
+    .plan-option-chevron {
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+      flex-shrink: 0;
+      transition: transform 0.2s ease;
+      opacity: 0.6;
+    }
+
+    .plan-option-card:not(.plan-option-collapsed) .plan-option-chevron {
+      transform: rotate(90deg);
     }
 
     .plan-option-title-area {
@@ -5453,8 +5962,8 @@ function getStyles(): string {
       align-items: center;
       justify-content: flex-end;
       gap: 8px;
-      margin-top: 12px;
-      padding-top: 12px;
+      margin-top: 10px;
+      padding-top: 10px;
       border-top: 1px solid var(--vscode-panel-border);
     }
 
@@ -5494,6 +6003,7 @@ function getStyles(): string {
       transition: max-height 0.3s ease;
     }
 
+    .plan-option-collapsed .plan-option-summary,
     .plan-option-collapsed .plan-option-proscons,
     .plan-option-collapsed .plan-option-actions,
     .plan-option-collapsed .plan-custom-instructions {
@@ -5817,6 +6327,21 @@ function getStyles(): string {
 
     .auq-check {
       margin-right: 6px;
+    }
+
+    .auq-option-number {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      flex-shrink: 0;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      margin-top: 1px;
     }
 
     .ask-user-question-container.submitted {
@@ -6866,6 +7391,68 @@ function getStyles(): string {
     .edit-report-btn-revert.failed {
       border-color: var(--vscode-editorError-foreground, #f85149);
       color: var(--vscode-editorError-foreground, #f85149);
+    }
+
+    /* Init Loading Overlay */
+    .init-loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--vscode-sideBar-background);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200000;
+      opacity: 1;
+      transition: opacity 0.3s ease-out;
+    }
+    .init-loading-overlay.fade-out {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .init-loading-overlay.hidden {
+      display: none;
+    }
+    .init-loading-content {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+    .init-loading-logo {
+      width: 56px;
+      height: 56px;
+      opacity: 0.9;
+    }
+    .init-loading-spinner {
+      width: 32px;
+      height: 32px;
+      position: relative;
+    }
+    .init-spinner-ring {
+      width: 32px;
+      height: 32px;
+      border: 2.5px solid var(--vscode-widget-border, rgba(255,255,255,0.1));
+      border-top-color: var(--vscode-progressBar-background, #0078d4);
+      border-radius: 50%;
+      animation: initSpin 0.8s linear infinite;
+    }
+    @keyframes initSpin {
+      to { transform: rotate(360deg); }
+    }
+    .init-loading-text {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--vscode-foreground);
+      opacity: 0.9;
+    }
+    .init-loading-subtext {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground, rgba(255,255,255,0.5));
+      margin-top: -8px;
     }
 
     /* Setup Overlay Styles */
@@ -8001,7 +8588,7 @@ function getStyles(): string {
 
     /* ===== Active Mode Panel ===== */
     .active-mode-strip {
-      border-bottom: 1px solid var(--vscode-panel-border);
+      border-bottom: 2px solid var(--vscode-focusBorder);
       background: var(--vscode-sideBar-background);
       font-size: 12px;
     }
@@ -8235,10 +8822,184 @@ function getStyles(): string {
     .channel-action-card .channel-action-status.waiting {
       color: var(--vscode-editorInfo-foreground, #3794ff);
     }
+
+    /* ========================================
+       Responsive: Narrow sidebar panel (<=500px)
+       ======================================== */
+    @media (max-width: 500px) {
+      /* Messages area: tighter padding */
+      .messages {
+        padding: 8px;
+      }
+
+      /* Welcome container: reduce spacing */
+      .welcome-container {
+        padding: 12px;
+      }
+
+      /* Welcome header: compact */
+      .welcome-header {
+        margin-bottom: 12px;
+      }
+
+      .welcome-logo {
+        width: 48px;
+        height: 48px;
+        margin-bottom: 8px;
+      }
+
+      .welcome-header h2 {
+        font-size: 15px;
+        margin-bottom: 4px;
+      }
+
+      .welcome-header p {
+        font-size: 11px;
+      }
+
+      /* Welcome suggestions: 2 columns instead of 3 */
+      .welcome-suggestions {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+      }
+
+      /* Welcome cards: more compact */
+      .welcome-card {
+        padding: 10px 8px;
+      }
+
+      .welcome-card-icon {
+        width: 28px;
+        height: 28px;
+        margin-bottom: 6px;
+      }
+
+      .welcome-card-icon img {
+        width: 22px;
+        height: 22px;
+      }
+
+      .welcome-card-title {
+        font-size: 10px;
+        margin-bottom: 2px;
+      }
+
+      .welcome-card-desc {
+        font-size: 8px;
+        line-height: 1.2;
+      }
+
+      /* Quick actions: single column */
+      .quick-actions {
+        grid-template-columns: 1fr;
+        padding: 8px;
+        gap: 6px;
+        max-height: 220px;
+      }
+
+      /* Suggestion cards: compact layout */
+      .suggestion-card {
+        padding: 8px;
+        gap: 8px;
+      }
+
+      .suggestion-icon {
+        width: 26px;
+        height: 26px;
+        font-size: 13px;
+      }
+
+      .suggestion-title {
+        font-size: 11px;
+      }
+
+      .suggestion-description {
+        font-size: 9px;
+        -webkit-line-clamp: 1;
+      }
+
+      /* Input area: tighter padding */
+      .input-area {
+        padding: 6px 8px 8px;
+      }
+
+      /* Quick actions header: tighter */
+      .quick-actions-header {
+        padding: 4px 8px;
+      }
+
+      /* Message spacing: tighter */
+      .message {
+        margin-bottom: 12px;
+      }
+
+      /* GitHub star badge: smaller in sidebar */
+      .github-star-badge {
+        margin-top: 6px;
+        padding: 3px 8px;
+        font-size: 10px;
+      }
+    }
+
+    /* ========================================
+       Responsive: Very narrow sidebar (<=350px)
+       ======================================== */
+    @media (max-width: 350px) {
+      /* Even tighter welcome container */
+      .welcome-container {
+        padding: 8px;
+      }
+
+      /* Welcome suggestions: single scrollable column */
+      .welcome-suggestions {
+        grid-template-columns: 1fr;
+        gap: 6px;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+
+      /* Welcome cards: horizontal row layout */
+      .welcome-card {
+        flex-direction: row;
+        text-align: left;
+        padding: 8px;
+        gap: 8px;
+      }
+
+      .welcome-card-icon {
+        margin-bottom: 0;
+        flex-shrink: 0;
+      }
+
+      .welcome-card-desc {
+        display: none;
+      }
+
+      /* Further reduce logo */
+      .welcome-logo {
+        width: 36px;
+        height: 36px;
+        margin-bottom: 6px;
+      }
+
+      .welcome-header h2 {
+        font-size: 14px;
+      }
+
+      /* Even tighter input area */
+      .input-area {
+        padding: 4px 6px 6px;
+      }
+
+      /* Messages padding */
+      .messages {
+        padding: 6px;
+      }
+    }
   `;
 }
 
-function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string, string>, claudeLogoUri: string, openaiLogoLightUri: string, openaiLogoDarkUri: string, geminiLogoUri: string, clineLogoUri: string, copilotLogoUri: string, cursorLogoUri: string, openclawLogoUri: string, version: string): string {
+function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string, string>, claudeLogoUri: string, openaiLogoLightUri: string, openaiLogoDarkUri: string, geminiLogoUri: string, clineLogoUri: string, copilotLogoUri: string, cursorLogoUri: string, openclawLogoUri: string, opencodeLogoUri: string, ollamaLogoUri: string, localaiLogoUri: string, qwenLogoUri: string, version: string): string {
   return `
     (function() {
       const vscode = acquireVsCodeApi();
@@ -8254,6 +9015,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var COPILOT_LOGO = '${copilotLogoUri}';
       var CURSOR_LOGO = '${cursorLogoUri}';
       var OPENCLAW_LOGO = '${openclawLogoUri}';
+      var OPENCODE_LOGO = '${opencodeLogoUri}';
+      var OLLAMA_LOGO = '${ollamaLogoUri}';
+      var LOCALAI_LOGO = '${localaiLogoUri}';
+      var QWEN_LOGO = '${qwenLogoUri}';
       var MYSTI_LOGO = '${logoUri}';
 
       // Theme detection for OpenAI logo
@@ -8493,7 +9258,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         workspacePath: '',  // Workspace root for relative path display
         settings: {
           mode: 'ask-before-edit',
-          thinkingLevel: 'medium',
+          thinkingLevel: 'none',
           accessLevel: 'ask-permission',
           contextMode: 'auto',
           model: 'claude-sonnet-4-5-20250929',
@@ -8591,7 +9356,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         'cline': { name: 'Cline', shortId: 'cline', color: '#F59E0B', logo: CLINE_LOGO },
         'github-copilot': { name: 'Copilot', shortId: 'copilot', color: '#6366F1', logo: COPILOT_LOGO },
         'cursor': { name: 'Cursor', shortId: 'cursor', color: '#00A3FF', logo: CURSOR_LOGO },
-        'openclaw': { name: 'OpenClaw', shortId: 'openclaw', color: '#E11D48', logo: OPENCLAW_LOGO }
+        'openclaw': { name: 'OpenClaw', shortId: 'openclaw', color: '#E11D48', logo: OPENCLAW_LOGO },
+        'opencode': { name: 'OpenCode', shortId: 'opencode', color: '#22C55E', logo: OPENCODE_LOGO },
+        'ollama': { name: 'Ollama', shortId: 'ollama', color: '#FFFFFF', logo: OLLAMA_LOGO },
+        'localai': { name: 'LocalAI', shortId: 'localai', color: '#06B6D4', logo: LOCALAI_LOGO },
+        'qwen-code': { name: 'Qwen', shortId: 'qwen', color: '#6C5CE7', logo: QWEN_LOGO }
       };
 
       // Helper to get agent logo (handles OpenAI theme switching)
@@ -8835,11 +9604,12 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
       function parseMentionsFromContent(content) {
         var mentions = [];
-        var regex = /@(\\S+)/g;
+        // M3: Refined regex — allows alphanumeric, hyphens, dots, slashes, underscores
+        var regex = /@([\\w\\-.\\/]+)/g;
         var match;
         while ((match = regex.exec(content)) !== null) {
           var word = match[1].toLowerCase();
-          // Check if it's an agent shortname
+          // M5: Check if it's a known agent shortname (not just any string)
           if (MENTION_SHORT_MAP[word]) {
             mentions.push({
               type: 'agent',
@@ -8849,13 +9619,17 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               endIndex: match.index + match[0].length
             });
           } else {
-            // Check if it matches a workspace file
+            // M4: File matching with path boundary check — require minimum 3 chars
+            // and match on path separator boundary or exact filename
+            if (word.length < 3) continue;
             var matchedFile = null;
             var files = state.workspaceFileCache || [];
             for (var i = 0; i < files.length; i++) {
-              var parts = files[i].replace(/\\\\/g, '/').split('/');
+              var normalized = files[i].replace(/\\\\/g, '/');
+              var parts = normalized.split('/');
               var fileName = (parts[parts.length - 1] || '').toLowerCase();
-              if (fileName === word || files[i].toLowerCase().endsWith(word)) {
+              // Exact full path, exact filename, OR path ending with /word
+              if (normalized.toLowerCase() === word || fileName === word || normalized.toLowerCase().endsWith('/' + word)) {
                 matchedFile = files[i];
                 break;
               }
@@ -9381,6 +10155,15 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
       // ========================================================================
 
+      // Dismiss the init loading overlay with a fade animation
+      function dismissInitLoading() {
+        var overlay = document.getElementById('init-loading-overlay');
+        if (overlay && !overlay.classList.contains('hidden')) {
+          overlay.classList.add('fade-out');
+          setTimeout(function() { overlay.classList.add('hidden'); }, 300);
+        }
+      }
+
       // Helper to send messages with panelId
       function postMessageWithPanelId(msg) {
         msg.panelId = state.panelId;
@@ -9426,6 +10209,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       const settingsPanel = document.getElementById('settings-panel');
       const aboutBtn = document.getElementById('about-btn');
       const aboutPanel = document.getElementById('about-panel');
+      const badgesBtn = document.getElementById('badges-btn');
+      const badgesPanel = document.getElementById('badges-panel');
       const newConversationBtn = document.getElementById('new-conversation-btn');
       const newTabBtn = document.getElementById('new-tab-btn');
       const modeSelect = document.getElementById('mode-select');
@@ -10061,13 +10846,39 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         console.error('[Mysti Webview] inputEl not found!');
       }
 
-      // Global keydown handler for permission cards
+      // Global keydown handler for permission cards and AUQ
       document.addEventListener('keydown', function(e) {
-        // Only handle when a permission card is focused
-        var focusedCard = document.activeElement;
-        if (focusedCard && focusedCard.classList.contains('permission-card')) {
-          if (handlePermissionKeyboard(e)) {
-            return;
+        // Skip if typing in an input/textarea
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+          return;
+        }
+
+        // Permission card shortcuts (1/2/3, Enter, Esc)
+        if (handlePermissionKeyboard(e)) {
+          return;
+        }
+
+        // AUQ number key shortcuts (1-9 to select options)
+        var auqContainer = document.querySelector('.ask-user-question-container:not(.submitted)');
+        if (auqContainer && e.key >= '1' && e.key <= '9') {
+          var optNum = parseInt(e.key);
+          var activePanel = auqContainer.querySelector('.auq-panel[style*="display: block"], .auq-panel:first-child');
+          if (activePanel) {
+            var targetOption = activePanel.querySelector('.auq-option[data-option-num="' + optNum + '"] input');
+            if (targetOption) {
+              e.preventDefault();
+              targetOption.checked = !targetOption.checked;
+              targetOption.dispatchEvent(new Event('change'));
+            }
+          }
+        }
+
+        // Enter to submit AUQ
+        if (auqContainer && e.key === 'Enter' && !e.shiftKey) {
+          var submitBtn = auqContainer.querySelector('.auq-submit-btn:not(:disabled)');
+          if (submitBtn) {
+            e.preventDefault();
+            submitBtn.click();
           }
         }
       });
@@ -10076,11 +10887,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         settingsPanel.classList.toggle('hidden');
         // Close other panels when settings opens
         var agentConfigPanel = document.getElementById('agent-config-panel');
-        if (agentConfigPanel && !settingsPanel.classList.contains('hidden')) {
-          agentConfigPanel.classList.add('hidden');
-        }
-        if (aboutPanel && !settingsPanel.classList.contains('hidden')) {
-          aboutPanel.classList.add('hidden');
+        if (!settingsPanel.classList.contains('hidden')) {
+          if (agentConfigPanel) { agentConfigPanel.classList.add('hidden'); }
+          if (aboutPanel) { aboutPanel.classList.add('hidden'); }
+          if (badgesPanel) { badgesPanel.classList.add('hidden'); }
         }
       });
 
@@ -10091,10 +10901,32 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           // Close other panels when about opens
           if (!aboutPanel.classList.contains('hidden')) {
             settingsPanel.classList.add('hidden');
+            if (badgesPanel) { badgesPanel.classList.add('hidden'); }
             var agentConfigPanel = document.getElementById('agent-config-panel');
-            if (agentConfigPanel) {
-              agentConfigPanel.classList.add('hidden');
+            if (agentConfigPanel) { agentConfigPanel.classList.add('hidden'); }
+          }
+        });
+      }
+
+      // Badges panel toggle
+      if (badgesBtn && badgesPanel) {
+        badgesBtn.addEventListener('click', function() {
+          badgesPanel.classList.toggle('hidden');
+          // Close other panels when badges opens
+          if (!badgesPanel.classList.contains('hidden')) {
+            settingsPanel.classList.add('hidden');
+            if (aboutPanel) { aboutPanel.classList.add('hidden'); }
+            var agentConfigPanel = document.getElementById('agent-config-panel');
+            if (agentConfigPanel) { agentConfigPanel.classList.add('hidden'); }
+            // Render instantly from cache, then refresh in background
+            if (cachedBadges && cachedBadgeCounts) {
+              updateBadgesUI(cachedBadges, cachedBadgeCounts);
+            } else {
+              // Show spinner while waiting for data
+              var sp = document.getElementById('badges-spinner');
+              if (sp) { sp.classList.remove('hidden'); }
             }
+            vscode.postMessage({ type: 'requestBadges' });
           }
         });
       }
@@ -10110,9 +10942,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           // Close other panels when config opens
           if (!agentConfigPanel.classList.contains('hidden')) {
             settingsPanel.classList.add('hidden');
-            if (aboutPanel) {
-              aboutPanel.classList.add('hidden');
-            }
+            if (aboutPanel) { aboutPanel.classList.add('hidden'); }
+            if (badgesPanel) { badgesPanel.classList.add('hidden'); }
           }
         });
       }
@@ -10502,6 +11333,14 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       newTabBtn.addEventListener('click', function() {
         postMessageWithPanelId({ type: 'openInNewTab' });
       });
+
+      // Export conversation button
+      var exportConversationBtn = document.getElementById('export-conversation-btn');
+      if (exportConversationBtn) {
+        exportConversationBtn.addEventListener('click', function() {
+          postMessageWithPanelId({ type: 'exportConversation' });
+        });
+      }
 
       // Manual compaction trigger via context usage pie chart click
       var contextUsageEl = document.getElementById('context-usage');
@@ -11002,7 +11841,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         // Count available providers
         var availableCount = 0;
-        ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw'].forEach(function(providerId) {
+        ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'].forEach(function(providerId) {
           if (providerAvailability[providerId] &&
               providerAvailability[providerId].available) {
             availableCount++;
@@ -11367,6 +12206,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             'github-copilot': 'Copilot',
             'cursor': 'Cursor',
             'openclaw': 'OpenClaw',
+            'opencode': 'OpenCode',
+            'ollama': 'Ollama',
+            'localai': 'LocalAI',
+            'qwen-code': 'Qwen',
             'brainstorm': 'Brainstorm'
           };
           agentNameEl.textContent = agentNames[state.activeAgent] || 'Claude';
@@ -11382,9 +12225,13 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               'github-copilot': COPILOT_LOGO,
               'cursor': CURSOR_LOGO,
               'openclaw': OPENCLAW_LOGO,
+              'opencode': OPENCODE_LOGO,
+              'ollama': OLLAMA_LOGO,
+              'localai': LOCALAI_LOGO,
+              'qwen-code': QWEN_LOGO,
               'brainstorm': MYSTI_LOGO
             };
-            img.src = agentLogos[state.activeAgent] || CLAUDE_LOGO;
+            img.src = agentLogos[state.activeAgent] || MYSTI_LOGO;
           }
         }
         // Sync settings provider dropdown (only for actual providers, not brainstorm)
@@ -11423,7 +12270,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         // Count available providers
         var availableCount = 0;
         var firstAvailable = null;
-        ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw'].forEach(function(providerId) {
+        ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'].forEach(function(providerId) {
           if (availability[providerId] && availability[providerId].available) {
             availableCount++;
             if (!firstAvailable) firstAvailable = providerId;
@@ -11807,6 +12654,17 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           case 'permissionExpired':
             handlePermissionExpired(message.payload);
             break;
+          case 'permissionDismissed':
+            // Remove all pending permission cards (new message superseded the old request)
+            document.querySelectorAll('.permission-card.pending').forEach(function(card) {
+              card.classList.remove('pending');
+              card.classList.add('expired');
+              var actionsEl = card.querySelector('.permission-actions');
+              if (actionsEl) {
+                actionsEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">Cancelled — new message sent</span>';
+              }
+            });
+            break;
           case 'semiAutonomousDecision':
             handleSemiAutonomousDecision(message.payload);
             break;
@@ -12159,6 +13017,53 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           case 'daemonStartResult':
             handleDaemonStartResult(message.payload);
             break;
+          case 'exportResult':
+            handleExportResult(message.payload);
+            break;
+          case 'triggerExport':
+            postMessageWithPanelId({ type: 'exportConversation' });
+            break;
+          case 'triggerImport':
+            postMessageWithPanelId({ type: 'importFromFile' });
+            break;
+          case 'badgeUnlocked': {
+            var badge = message.payload;
+            var toastIcon = document.getElementById('badge-toast-icon');
+            var toastTier = document.getElementById('badge-toast-tier');
+            var toastTitle = document.getElementById('badge-toast-title');
+            var toastSubtitle = document.getElementById('badge-toast-subtitle');
+            var toastEl = document.getElementById('badge-toast');
+            if (toastIcon && toastTier && toastTitle && toastSubtitle && toastEl) {
+              toastIcon.textContent = badge.icon;
+              toastTier.textContent = badge.tier;
+              toastTier.className = 'badge-toast-tier ' + badge.tier;
+              toastTitle.textContent = "You've been Mysting! " + badge.name;
+              toastSubtitle.textContent = badge.description;
+              toastEl.classList.add('show');
+              setTimeout(function() { toastEl.classList.remove('show'); }, 6000);
+            }
+            break;
+          }
+          case 'badgesUpdate': {
+            var data = message.payload;
+            updateBadgesUI(data.badges, data.counts);
+            // Also update stats
+            if (data.stats) {
+              var convEl = document.getElementById('stat-conversations');
+              var msgEl = document.getElementById('stat-messages');
+              var brainEl = document.getElementById('stat-brainstorms');
+              var streakEl = document.getElementById('stat-streak');
+              if (convEl) convEl.textContent = String(data.stats.totalConversations || 0);
+              if (msgEl) msgEl.textContent = String(data.stats.totalMessages || 0);
+              if (brainEl) brainEl.textContent = String(data.stats.totalBrainstorms || 0);
+              if (streakEl) streakEl.textContent = String(data.stats.dayStreak || 0);
+            }
+            break;
+          }
+          case 'badgeShareCopied': {
+            showExportToast('Badge share text copied to clipboard!');
+            break;
+          }
         }
       }
 
@@ -12268,6 +13173,132 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             setupActiveModeListeners();
           }
         }
+      }
+
+      // ========================================
+      // Export / Copy Handlers
+      // ========================================
+
+      function handleExportResult(payload) {
+        var toast = document.getElementById('export-toast');
+        if (!toast) return;
+        if (payload && payload.success) {
+          toast.textContent = 'Copied to clipboard!';
+          toast.classList.add('visible');
+          setTimeout(function() {
+            toast.classList.remove('visible');
+          }, 2000);
+        } else {
+          toast.textContent = 'Export failed';
+          toast.classList.add('visible');
+          setTimeout(function() {
+            toast.classList.remove('visible');
+          }, 2000);
+        }
+      }
+
+      // Cache badge data for instant panel rendering
+      var cachedBadges = null;
+      var cachedBadgeCounts = null;
+
+      function updateBadgesUI(badges, counts) {
+        // Update cache
+        cachedBadges = badges;
+        cachedBadgeCounts = counts;
+
+        var counterEl = document.getElementById('badge-counter');
+        if (counterEl) {
+          counterEl.textContent = counts.unlocked + '/' + counts.total;
+        }
+
+        // Hide spinner once data arrives
+        var spinner = document.getElementById('badges-spinner');
+        if (spinner) { spinner.classList.add('hidden'); }
+
+        var grid = document.getElementById('badges-grid');
+        if (!grid) { return; }
+        grid.innerHTML = '';
+
+        for (var i = 0; i < badges.length; i++) {
+          var b = badges[i];
+          var item = document.createElement('div');
+          item.className = 'badge-item' + (b.unlocked ? '' : ' locked');
+
+          var icon = document.createElement('span');
+          icon.className = 'badge-icon';
+          icon.textContent = b.icon;
+          item.appendChild(icon);
+
+          var name = document.createElement('span');
+          name.className = 'badge-name';
+          name.textContent = b.name;
+          item.appendChild(name);
+
+          // Progress bar for locked badges
+          if (!b.unlocked && b.progressMax && b.progressMax > 0) {
+            var bar = document.createElement('div');
+            bar.className = 'badge-progress-bar';
+            var fill = document.createElement('div');
+            fill.className = 'badge-progress-fill ' + b.tier;
+            fill.style.width = Math.min(100, Math.round((b.progress || 0) / b.progressMax * 100)) + '%';
+            bar.appendChild(fill);
+            item.appendChild(bar);
+          }
+
+          // Rich tooltip
+          var tooltip = document.createElement('div');
+          tooltip.className = 'badge-tooltip';
+
+          var titleRow = document.createElement('div');
+          titleRow.className = 'badge-tooltip-title';
+          titleRow.textContent = b.name;
+          var tierTag = document.createElement('span');
+          tierTag.className = 'badge-tooltip-tier ' + b.tier;
+          tierTag.textContent = b.tier;
+          titleRow.appendChild(tierTag);
+          tooltip.appendChild(titleRow);
+
+          var howTo = document.createElement('div');
+          howTo.className = 'badge-tooltip-howto';
+          howTo.textContent = b.howTo || b.description;
+          tooltip.appendChild(howTo);
+
+          if (b.unlocked) {
+            var unlockedLine = document.createElement('div');
+            unlockedLine.className = 'badge-tooltip-unlocked';
+            var d = new Date(b.unlockedAt);
+            unlockedLine.textContent = 'Unlocked ' + d.toLocaleDateString() + ' — click to share';
+            tooltip.appendChild(unlockedLine);
+          } else if (b.progressMax && b.progressMax > 0) {
+            var progressLine = document.createElement('div');
+            progressLine.className = 'badge-tooltip-progress';
+            progressLine.textContent = 'Progress: ' + (b.progress || 0) + ' / ' + b.progressMax;
+            tooltip.appendChild(progressLine);
+          }
+
+          item.appendChild(tooltip);
+
+          // Share button for unlocked badges
+          if (b.unlocked) {
+            (function(badgeId) {
+              item.addEventListener('click', function() {
+                postMessageWithPanelId({ type: 'getBadgeShareText', payload: { badgeId: badgeId } });
+              });
+            })(b.id);
+          }
+
+          grid.appendChild(item);
+        }
+      }
+
+      function showExportToast(text) {
+        var toast = document.getElementById('export-toast');
+        if (!toast) return;
+        toast.textContent = text;
+        toast.classList.add('visible');
+        setTimeout(function() {
+          toast.classList.remove('visible');
+        }, 2000);
       }
 
       function formatTimeAgo(timestamp) {
@@ -12526,6 +13557,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       // ========================================
 
       function handleShowWizard(payload) {
+        dismissInitLoading();
         state.wizard.visible = true;
         state.wizard.providers = payload.providers || [];
         state.wizard.npmAvailable = payload.npmAvailable;
@@ -14042,7 +15074,12 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       }
 
       function initializeState(payload) {
+        dismissInitLoading();
+        var savedAgentSettings = state.agentSettings;
         state = Object.assign({}, state, payload);
+        if (payload.agentSettings) {
+          state.agentSettings = Object.assign({}, savedAgentSettings, payload.agentSettings);
+        }
         modeSelect.value = state.settings.mode;
         thinkingSelect.value = state.settings.thinkingLevel;
         accessSelect.value = state.settings.accessLevel;
@@ -14166,6 +15203,47 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         // Preload workspace files for @-mention autocomplete
         postMessageWithPanelId({ type: 'getWorkspaceFiles' });
+
+        // Initialize GitHub star count badge
+        if (state.githubStarCount && state.githubStarCount > 0) {
+          var starBadge = document.getElementById('github-star-badge');
+          var starCountEl = document.getElementById('github-star-count');
+          if (starBadge && starCountEl) {
+            starCountEl.textContent = state.githubStarCount >= 1000
+              ? (state.githubStarCount / 1000).toFixed(1) + 'K'
+              : String(state.githubStarCount);
+            starBadge.style.display = 'inline-flex';
+          }
+        }
+
+        // Usage stats
+        if (state.usageStats) {
+          var stats = state.usageStats;
+          var convEl = document.getElementById('stat-conversations');
+          var msgEl = document.getElementById('stat-messages');
+          var brainEl = document.getElementById('stat-brainstorms');
+          var streakEl = document.getElementById('stat-streak');
+          if (convEl) convEl.textContent = String(stats.totalConversations || 0);
+          if (msgEl) msgEl.textContent = String(stats.totalMessages || 0);
+          if (brainEl) brainEl.textContent = String(stats.totalBrainstorms || 0);
+          if (streakEl) streakEl.textContent = String(stats.dayStreak || 0);
+        }
+
+        // Badges
+        if (state.badges && state.badgeCounts) {
+          updateBadgesUI(state.badges, state.badgeCounts);
+        }
+
+        // Share on X button handler
+        var shareBtn = document.getElementById('share-on-x');
+        if (shareBtn) {
+          shareBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            var tweetText = encodeURIComponent("I've been Mysting \u2014 8 AI agents brainstorm together in VS Code. Claude, Gemini, and Copilot debate & synthesize solutions. Try it: https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti #Mysting");
+            var tweetUrl = 'https://twitter.com/intent/tweet?text=' + tweetText;
+            postMessageWithPanelId({ type: 'openExternal', payload: { url: tweetUrl } });
+          });
+        }
       }
 
       // ============================================================================
@@ -14356,7 +15434,13 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (msg.role === 'assistant') {
           html += '<span class="message-model-info">' + getModelDisplayName(state.settings.model) + '</span>';
         }
-        html += '</div></div>';
+        html += '</div>';
+        if (msg.role === 'assistant') {
+          html += '<button class="message-copy-btn" data-message-id="' + msg.id + '" title="Copy message as Markdown">' +
+            '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/></svg>' +
+            '</button>';
+        }
+        html += '</div>';
 
         // Render attachment thumbnails for user messages
         if (msg.attachments && msg.attachments.length > 0) {
@@ -14875,6 +15959,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         card.dataset.id = request.id;
         card.tabIndex = 0;
 
+        // Build question-framed title
+        var questionTitle = buildPermissionQuestion(request);
+
+        // Timer
         var timeRemaining = request.expiresAt > 0 ? Math.max(0, request.expiresAt - Date.now()) : 0;
         var timerClass = timeRemaining > 0 && timeRemaining < 10000 ? 'critical' :
                          timeRemaining > 0 && timeRemaining < 20000 ? 'warning' : '';
@@ -14884,40 +15972,44 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         } else if (request.expiresAt > 0) {
           timerText = formatTimeRemaining(timeRemaining);
         } else {
-          timerText = 'No timeout';
+          timerText = '';
         }
 
-        var riskClass = request.details.riskLevel || 'medium';
-        var riskLabel = riskClass.charAt(0).toUpperCase() + riskClass.slice(1);
+        // Paused indicator
+        var pausedHtml = request.details.suspended
+          ? '<span><span class="permission-paused-dot"></span>Paused</span>'
+          : '';
 
         card.innerHTML =
-          '<div class="permission-header">' +
-            '<div class="permission-header-left">' +
-              '<div class="permission-icon">🛡️</div>' +
-              '<span class="permission-title">Permission Required</span>' +
-              '<span class="permission-risk ' + riskClass + '">' + riskLabel + '</span>' +
-            '</div>' +
-            '<span class="permission-timer ' + timerClass + '" data-expires="' + request.expiresAt + '">' + timerText + '</span>' +
+          '<div class="permission-question">' + escapeHtml(questionTitle) + '</div>' +
+          '<div class="permission-details-toggle" data-target="details-' + request.id + '">Show details</div>' +
+          '<div class="permission-details" id="details-' + request.id + '">' +
+            renderPermissionDetails(request) +
           '</div>' +
-          '<div class="permission-body">' +
-            '<div class="permission-description">' +
-              'Mysti wants to: <strong>' + escapeHtml(request.title) + '</strong>' +
-            '</div>' +
-            '<div class="permission-details">' +
-              renderPermissionDetails(request) +
-            '</div>' +
+          '<div class="permission-options">' +
+            '<button class="permission-option approve-option" data-action="approve">' +
+              '<span class="option-number">1</span>' +
+              '<span>Yes</span>' +
+            '</button>' +
+            '<button class="permission-option" data-action="always-allow">' +
+              '<span class="option-number">2</span>' +
+              "<span>Yes, and don't ask again this session</span>" +
+            '</button>' +
+            '<button class="permission-option" data-action="deny">' +
+              '<span class="option-number">3</span>' +
+              '<span>No</span>' +
+            '</button>' +
           '</div>' +
-          '<div class="permission-actions">' +
-            '<button class="permission-btn approve" data-action="approve">Approve</button>' +
-            '<button class="permission-btn deny" data-action="deny">Deny</button>' +
-            '<button class="permission-btn always-allow" data-action="always-allow">Always Allow (Session)</button>' +
-            '<span class="permission-shortcuts">' +
-              '<kbd>Enter</kbd> Approve · <kbd>Esc</kbd> Deny · <kbd>Tab</kbd> Always' +
-            '</span>' +
+          '<div class="permission-custom-input">' +
+            '<input type="text" placeholder="Tell Mysti what to do instead..." data-request-id="' + request.id + '" />' +
+          '</div>' +
+          '<div class="permission-footer">' +
+            '<span>Esc to cancel' + (pausedHtml ? ' · ' : '') + pausedHtml + '</span>' +
+            (timerText ? '<span class="permission-timer ' + timerClass + '" data-expires="' + request.expiresAt + '">' + timerText + '</span>' : '') +
           '</div>';
 
-        // Add click handlers to buttons
-        card.querySelectorAll('.permission-btn').forEach(function(btn) {
+        // Add click handlers to option buttons
+        card.querySelectorAll('.permission-option').forEach(function(btn) {
           btn.addEventListener('click', function(e) {
             e.stopPropagation();
             var action = btn.dataset.action;
@@ -14925,7 +16017,69 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           });
         });
 
+        // Details toggle
+        var toggle = card.querySelector('.permission-details-toggle');
+        if (toggle) {
+          toggle.addEventListener('click', function() {
+            var details = card.querySelector('.permission-details');
+            if (details) {
+              var isExpanded = details.classList.contains('expanded');
+              details.classList.toggle('expanded');
+              toggle.textContent = isExpanded ? 'Show details' : 'Hide details';
+            }
+          });
+        }
+
+        // Custom instruction input
+        var customInput = card.querySelector('.permission-custom-input input');
+        if (customInput) {
+          customInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && customInput.value.trim()) {
+              e.preventDefault();
+              e.stopPropagation();
+              // Deny the current request and send custom instruction as new message
+              handlePermissionAction(request.id, 'deny');
+              postMessageWithPanelId({
+                type: 'permissionCustomInstruction',
+                payload: { text: customInput.value.trim() }
+              });
+            }
+          });
+          // Prevent card-level keyboard shortcuts when typing
+          customInput.addEventListener('keydown', function(e) {
+            e.stopPropagation();
+          });
+        }
+
         return card;
+      }
+
+      function buildPermissionQuestion(request) {
+        var toolName = request.details.toolName || request.title || '';
+        var filePath = request.details.filePath || '';
+
+        // Map tool names to question-framed titles
+        if (toolName.toLowerCase().includes('edit') || toolName.toLowerCase().includes('write')) {
+          if (filePath) {
+            return 'Allow write to ' + makeRelativePath(filePath) + '?';
+          }
+          return 'Allow file write?';
+        }
+        if (toolName.toLowerCase().includes('bash') || toolName.toLowerCase().includes('command')) {
+          var cmd = request.details.command || '';
+          if (cmd) {
+            return 'Allow ' + cmd.substring(0, 60) + (cmd.length > 60 ? '...' : '') + '?';
+          }
+          return 'Allow command execution?';
+        }
+        if (toolName.toLowerCase().includes('read')) {
+          if (filePath) {
+            return 'Allow read of ' + makeRelativePath(filePath) + '?';
+          }
+          return 'Allow file read?';
+        }
+        // Fallback
+        return 'Allow ' + escapeHtml(toolName || request.title) + '?';
       }
 
       function renderPermissionDetails(request) {
@@ -15046,6 +16200,18 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           timerEl.textContent = payload.behavior === 'auto-accept' ? 'Auto-approved' : 'Expired';
         }
 
+        // Hide options and custom input, show status in footer
+        var optionsEl = card.querySelector('.permission-options');
+        if (optionsEl) { optionsEl.style.display = 'none'; }
+        var customEl = card.querySelector('.permission-custom-input');
+        if (customEl) { customEl.style.display = 'none'; }
+        var footerEl = card.querySelector('.permission-footer');
+        if (footerEl) {
+          footerEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">' +
+            (payload.behavior === 'auto-accept' ? 'Auto-approved' : 'Auto-denied') +
+            ' (timeout)</span>';
+        }
+        // Legacy fallback
         var actionsEl = card.querySelector('.permission-actions');
         if (actionsEl) {
           actionsEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">Action was ' +
@@ -15196,12 +16362,33 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
       // Keyboard shortcuts for permission cards
       function handlePermissionKeyboard(e) {
+        // Check if typing in custom input — don't intercept
+        if (e.target && e.target.closest && e.target.closest('.permission-custom-input')) {
+          return false;
+        }
+
         var focusedCard = document.querySelector('.permission-card:focus');
+        // Also check for any pending permission card (for global shortcuts)
+        if (!focusedCard) {
+          focusedCard = document.querySelector('.permission-card.pending');
+        }
         if (!focusedCard) return false;
 
         var requestId = focusedCard.dataset.id;
 
         switch(e.key) {
+          case '1':
+            e.preventDefault();
+            handlePermissionAction(requestId, 'approve');
+            return true;
+          case '2':
+            e.preventDefault();
+            handlePermissionAction(requestId, 'always-allow');
+            return true;
+          case '3':
+            e.preventDefault();
+            handlePermissionAction(requestId, 'deny');
+            return true;
           case 'Enter':
             e.preventDefault();
             handlePermissionAction(requestId, 'approve');
@@ -15210,13 +16397,6 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             e.preventDefault();
             handlePermissionAction(requestId, 'deny');
             return true;
-          case 'Tab':
-            if (!e.shiftKey) {
-              e.preventDefault();
-              handlePermissionAction(requestId, 'always-allow');
-              return true;
-            }
-            break;
         }
         return false;
       }
@@ -15263,14 +16443,17 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var header = document.createElement('div');
         header.className = 'plan-options-header';
         header.innerHTML =
-          '<span class="plan-options-title">Select an approach:</span>' +
-          '<span class="plan-options-hint">Click to proceed with your preferred option</span>';
+          '<span class="plan-options-title">\uD83D\uDCCB Select an approach</span>' +
+          '<span class="plan-options-hint">Choose how to proceed</span>';
 
         // Add dismiss button
         var skipBtn = document.createElement('button');
         skipBtn.className = 'plan-options-skip-btn';
-        skipBtn.textContent = 'Dismiss';
-        skipBtn.style.cssText = 'background: none; border: 1px solid var(--vscode-panel-border); color: var(--vscode-descriptionForeground); padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-left: auto;';
+        skipBtn.textContent = '\u2715';
+        skipBtn.title = 'Dismiss';
+        skipBtn.style.cssText = 'background: none; border: none; color: var(--vscode-descriptionForeground); padding: 4px; cursor: pointer; font-size: 14px; margin-left: auto; opacity: 0.6; line-height: 1;';
+        skipBtn.onmouseenter = function() { skipBtn.style.opacity = '1'; };
+        skipBtn.onmouseleave = function() { skipBtn.style.opacity = '0.6'; };
         skipBtn.onclick = function() {
           var planId = container.getAttribute('data-synthetic-plan-id') || '';
           postMessageWithPanelId({
@@ -15294,7 +16477,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       // Create a single plan option card
       function createPlanOptionCard(option, messageId, index) {
         var card = document.createElement('div');
-        card.className = 'plan-option-card';
+        card.className = 'plan-option-card plan-option-collapsed';
         card.setAttribute('data-id', option.id);
         card.setAttribute('data-color', option.color || 'blue');
         card.setAttribute('tabindex', '0');
@@ -15327,7 +16510,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         card.innerHTML =
           '<div class="plan-option-header">' +
-            '<div class="plan-option-icon">' + (option.icon || '📋') + '</div>' +
+            '<div class="plan-option-number">' + (index + 1) + '</div>' +
             '<div class="plan-option-title-area">' +
               '<div class="plan-option-title">' +
                 escapeHtml(option.title) +
@@ -15337,6 +16520,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               '</div>' +
               '<div class="plan-option-summary">' + escapeHtml(option.summary || '') + '</div>' +
             '</div>' +
+            '<span class="plan-option-chevron">\u25B8</span>' +
           '</div>' +
           prosConsHtml +
           '<div class="plan-option-actions">' +
@@ -15574,6 +16758,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         submitBtn.disabled = true;
         submitBtn.onclick = function() { submitAuqAnswers(container, toolCallId); };
 
+        var submitHint = document.createElement('span');
+        submitHint.style.cssText = 'font-size: 11px; color: var(--vscode-descriptionForeground); margin-right: auto; align-self: center;';
+        submitHint.textContent = '1-9 to select · Enter to submit';
+
+        footer.appendChild(submitHint);
         footer.appendChild(skipBtn);
         footer.appendChild(submitBtn);
         container.appendChild(footer);
@@ -15601,9 +16790,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var inputName = 'auq_' + index;
 
         if (hasOptions) {
-          question.options.forEach(function(opt) {
+          question.options.forEach(function(opt, optIdx) {
             var optionLabel = document.createElement('label');
             optionLabel.className = 'auq-option';
+            optionLabel.setAttribute('data-option-num', String(optIdx + 1));
 
             var input = document.createElement('input');
             input.type = inputType;
@@ -15614,6 +16804,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               handleAuqOptionChange(container, question, index, inputType);
             };
 
+            // Number badge
+            var numBadge = document.createElement('span');
+            numBadge.className = 'auq-option-number';
+            numBadge.textContent = String(optIdx + 1);
+
             var optContent = document.createElement('div');
             optContent.className = 'auq-option-content';
             optContent.innerHTML =
@@ -15621,6 +16816,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               (opt.description ? '<div class="auq-option-desc">' + escapeHtml(opt.description) + '</div>' : '');
 
             optionLabel.appendChild(input);
+            optionLabel.appendChild(numBadge);
             optionLabel.appendChild(optContent);
             optionsDiv.appendChild(optionLabel);
           });
@@ -15873,15 +17069,12 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           var card = document.createElement('button');
           card.className = 'suggestion-card';
           card.setAttribute('data-color', s.color || 'blue');
-          card.style.animationDelay = (i * 0.08) + 's';
-          card.title = s.message;
+          card.style.animationDelay = (i * 0.06) + 's';
+          card.title = s.description || s.message;
 
           card.innerHTML =
-            '<div class="suggestion-icon">' + (s.icon || '💡') + '</div>' +
-            '<div class="suggestion-content">' +
-              '<div class="suggestion-title">' + escapeHtml(s.title) + '</div>' +
-              '<div class="suggestion-description">' + escapeHtml(s.description) + '</div>' +
-            '</div>';
+            '<span class="suggestion-icon">' + (s.icon || '💡') + '</span>' +
+            '<span class="suggestion-title">' + escapeHtml(s.title) + '</span>';
 
           card.onclick = function() {
             postMessageWithPanelId({ type: 'executeSuggestion', payload: s });
@@ -15958,7 +17151,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       }
 
       function clearMessages() {
-        messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Mysti" class="welcome-logo" /><h2>Welcome to Mysti</h2><p>Your AI coding team. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div></div>';
+        messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Mysti" class="welcome-logo" /><h2>Welcome to Mysti</h2><p>Your AI coding team. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div><div class="welcome-spread"><h3>Spread the Word</h3><div class="about-links spread-links"><a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> Star on GitHub</a><a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti&ssr=false#review-details" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.254.008.045-.236 2.101-.574.028.166-.978 4.607z"/><circle cx="8" cy="4.5" r="1"/></svg> Rate on Marketplace</a><a id="share-on-x" href="#" class="spread-link" title="Share on X / Twitter"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Share on X</a></div></div></div>';
         renderWelcomeSuggestions();
         // Reset all streaming buffers
         currentResponse = '';
@@ -17112,6 +18305,25 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             copyBtn.classList.add('copied');
             setTimeout(function() {
               copyBtn.classList.remove('copied');
+            }, 1500);
+          }
+          return;
+        }
+
+        // Handle message copy button click (copy as Markdown with watermark)
+        var msgCopyBtn = e.target.closest('.message-copy-btn');
+        if (msgCopyBtn) {
+          e.stopPropagation();
+          var messageId = msgCopyBtn.dataset.messageId;
+          if (messageId) {
+            postMessageWithPanelId({
+              type: 'copyMessageMarkdown',
+              payload: { messageId: messageId }
+            });
+            // Visual feedback
+            msgCopyBtn.classList.add('copied');
+            setTimeout(function() {
+              msgCopyBtn.classList.remove('copied');
             }, 1500);
           }
           return;

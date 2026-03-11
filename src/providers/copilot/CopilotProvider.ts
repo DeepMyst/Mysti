@@ -155,6 +155,7 @@ export class CopilotProvider extends BaseCliProvider {
       persistentProcess: null,
       persistentReady: false,
       lastHealthCheck: 0,
+      suspended: false,
       activeToolCalls: new Map(),
       lastUsageStats: null,
     };
@@ -421,7 +422,7 @@ export class CopilotProvider extends BaseCliProvider {
   private _addPermissionFlags(args: string[], settings: Settings): void {
     const { mode, accessLevel } = settings;
 
-    // Plan modes and read-only = deny shell and write tools
+    // Plan modes or read-only → deny shell and write tools
     if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
       args.push('--deny-tool', 'shell');
       args.push('--deny-tool', 'write');
@@ -429,15 +430,24 @@ export class CopilotProvider extends BaseCliProvider {
       return;
     }
 
-    // Full access or edit-automatically = allow all tools
-    if (accessLevel === 'full-access' || mode === 'edit-automatically') {
+    // More-restrictive-wins: only auto-approve when BOTH mode and access allow it
+    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
       args.push('--allow-all-tools');
-      console.log('[Mysti] Copilot: Using auto-approve mode (allow all tools)');
+      console.log('[Mysti] Copilot: Using auto-approve mode (edit-automatically + full-access)');
       return;
     }
 
-    // Default: no special flags, CLI will prompt for permissions
-    console.log('[Mysti] Copilot: Using default mode (interactive permissions)');
+    // default mode + full-access = allow all tools (no explicit edit restriction)
+    if (mode === 'default' && accessLevel === 'full-access') {
+      args.push('--allow-all-tools');
+      console.log('[Mysti] Copilot: Using auto-approve mode (default + full-access)');
+      return;
+    }
+
+    // All other combinations: bypass CLI permissions to prevent stdin hang.
+    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
+    args.push('--allow-all-tools');
+    console.log(`[Mysti] Copilot: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**

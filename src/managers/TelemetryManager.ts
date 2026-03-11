@@ -160,6 +160,69 @@ export class TelemetryManager {
   }
 
   /**
+   * Track walkthrough step completed
+   */
+  trackWalkthroughCompleted(stepId: string): void {
+    this.sendEvent('walkthrough.completed', { stepId });
+  }
+
+  /**
+   * Track conversation exported (clipboard copy or file save)
+   */
+  trackConversationExported(format: string): void {
+    this.sendEvent('conversation.exported', { format });
+  }
+
+  /**
+   * Track a social share action
+   */
+  trackShareAction(target: string): void {
+    this.sendEvent('share.action', { target });
+  }
+
+  /**
+   * Track review prompt shown at milestone
+   */
+  trackReviewPromptShown(milestone: number): void {
+    this.sendEvent('review.promptShown', { milestone: String(milestone) });
+  }
+
+  /**
+   * Track review prompt user action
+   */
+  trackReviewPromptAction(action: string): void {
+    this.sendEvent('review.promptAction', { action });
+  }
+
+  /**
+   * Track CodeLens action clicked
+   */
+  trackCodeLensClicked(action: string): void {
+    this.sendEvent('codelens.clicked', { action });
+  }
+
+  /**
+   * Track badge/achievement unlocked
+   */
+  trackBadgeUnlocked(badgeId: string, tier: string): void {
+    this.sendEvent('badge.unlocked', { badgeId, tier });
+  }
+
+  /**
+   * Track workspace recommendation prompt result
+   */
+  trackWorkspaceRecommendation(action: 'prompted' | 'accepted' | 'declined'): void {
+    this.sendEvent('workspace.recommendation', { action });
+  }
+
+  /**
+   * Track conversation imported from file
+   */
+  trackConversationImported(format: string): void {
+    this.sendEvent('conversation.imported', { format });
+  }
+
+  /**
    * Check if telemetry is enabled
    */
   isEnabled(): boolean {

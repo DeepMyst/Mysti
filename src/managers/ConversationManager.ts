@@ -13,6 +13,7 @@
 
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
+import * as zlib from 'zlib';
 import type { Conversation, Message, ContextItem, Attachment, OperationMode, ProviderType, AgentConfiguration } from '../types';
 
 export class ConversationManager {
@@ -277,6 +278,316 @@ export class ConversationManager {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Export a conversation as Markdown with Mysti attribution watermark.
+   * Returns empty string if conversation not found.
+   */
+  public exportToMarkdown(conversationId: string): string {
+    const conversation = this._conversations.get(conversationId);
+    if (!conversation) {
+      return '';
+    }
+
+    const lines: string[] = [];
+
+    // Title header
+    lines.push(`# ${conversation.title}`);
+    lines.push('');
+
+    // Metadata
+    lines.push(`> Provider: ${conversation.provider} | Model: ${conversation.model}`);
+    lines.push('');
+
+    // Messages
+    for (const message of conversation.messages) {
+      if (message.role === 'user') {
+        lines.push('### User');
+      } else if (message.role === 'assistant') {
+        lines.push('### Assistant');
+      } else {
+        lines.push(`### ${message.role}`);
+      }
+      lines.push('');
+      lines.push(message.content);
+      lines.push('');
+    }
+
+    // Footer watermark
+    lines.push('---');
+    lines.push('');
+    lines.push('*I was Mysting — built with [Mysti](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti), the multi-agent AI coding assistant*');
+    lines.push('');
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Export a single message as Markdown with Mysti attribution watermark.
+   * Returns empty string if message not found.
+   */
+  public exportMessageToMarkdown(conversationId: string, messageId: string): string {
+    const conversation = this._conversations.get(conversationId);
+    if (!conversation) {
+      return '';
+    }
+
+    const message = conversation.messages.find(m => m.id === messageId);
+    if (!message) {
+      return '';
+    }
+
+    const lines: string[] = [];
+
+    // Message header
+    if (message.role === 'user') {
+      lines.push('### User');
+    } else if (message.role === 'assistant') {
+      lines.push('### Assistant');
+    } else {
+      lines.push(`### ${message.role}`);
+    }
+    lines.push('');
+    lines.push(message.content);
+    lines.push('');
+
+    // Footer watermark
+    lines.push('---');
+    lines.push('');
+    lines.push('*I was Mysting — built with [Mysti](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti), the multi-agent AI coding assistant*');
+    lines.push('');
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Export a conversation as a full-fidelity .mysti.json file.
+   * Returns the JSON string for the conversation.
+   */
+  public exportToJson(conversationId: string): string {
+    const conversation = this._conversations.get(conversationId);
+    if (!conversation) {
+      return '';
+    }
+    const exportData = {
+      format: 'mysti',
+      version: 1,
+      exportedAt: Date.now(),
+      conversation: {
+        ...conversation,
+        messages: conversation.messages.map(m => ({
+          ...m,
+          // Strip large base64 data from attachments
+          attachments: m.attachments?.map(a => ({ ...a, base64Data: undefined }))
+        }))
+      }
+    };
+    return JSON.stringify(exportData, null, 2);
+  }
+
+  /**
+   * Import a conversation from file content. Auto-detects format:
+   * - .mysti.json: Full Mysti conversation format
+   * - .jsonl: OpenClaw JSONL format (best-effort)
+   * - Generic .json with messages[] array
+   * Returns the imported conversation or null on failure.
+   */
+  public importFromContent(content: string, fileName: string): Conversation | null {
+    try {
+      if (fileName.endsWith('.jsonl')) {
+        return this._importFromJsonl(content);
+      }
+
+      const parsed = JSON.parse(content);
+
+      // Mysti format
+      if (parsed.format === 'mysti' && parsed.conversation) {
+        return this._importMystiJson(parsed.conversation);
+      }
+
+      // Generic messages array
+      if (parsed.messages && Array.isArray(parsed.messages)) {
+        return this._importGenericJson(parsed);
+      }
+
+      // Try as conversation object directly
+      if (parsed.id && parsed.title && Array.isArray(parsed.messages)) {
+        return this._importMystiJson(parsed);
+      }
+
+      console.log('[Mysti] Import: Unrecognized format');
+      return null;
+    } catch (error) {
+      console.error('[Mysti] Import failed:', error);
+      return null;
+    }
+  }
+
+  private _importMystiJson(data: Partial<Conversation>): Conversation | null {
+    const conversation: Conversation = {
+      id: this._generateId(),
+      title: data.title || 'Imported Conversation',
+      messages: (data.messages || []).map(m => ({
+        id: m.id || this._generateId(),
+        role: m.role || 'assistant',
+        content: m.content || '',
+        timestamp: m.timestamp || Date.now(),
+        context: m.context,
+        attachments: m.attachments,
+        thinking: m.thinking,
+        toolCalls: m.toolCalls
+      })),
+      createdAt: data.createdAt || Date.now(),
+      updatedAt: Date.now(),
+      mode: data.mode || 'ask-before-edit',
+      model: data.model || 'unknown',
+      provider: (data.provider || 'imported') as ProviderType,
+      agentConfig: data.agentConfig
+    };
+
+    this._conversations.set(conversation.id, conversation);
+    this._currentConversationId = conversation.id;
+    this._saveConversations();
+    return conversation;
+  }
+
+  private _importGenericJson(data: { messages: Array<{ role?: string; content?: string }> }): Conversation | null {
+    const messages: Message[] = data.messages.map(m => ({
+      id: this._generateId(),
+      role: (m.role === 'user' || m.role === 'assistant' || m.role === 'system') ? m.role : 'assistant',
+      content: m.content || '',
+      timestamp: Date.now()
+    }));
+
+    const conversation: Conversation = {
+      id: this._generateId(),
+      title: 'Imported Conversation',
+      messages,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      mode: 'ask-before-edit' as OperationMode,
+      model: 'unknown',
+      provider: 'claude-code' as ProviderType
+    };
+
+    this._conversations.set(conversation.id, conversation);
+    this._currentConversationId = conversation.id;
+    this._saveConversations();
+    return conversation;
+  }
+
+  /**
+   * Export conversation as a compact base64 string for deep link sharing.
+   * Compresses with zlib to keep URIs small. Only includes last 10 messages.
+   */
+  public exportToShareable(conversationId: string): string {
+    const conversation = this._conversations.get(conversationId);
+    if (!conversation) {
+      return '';
+    }
+    const shareData = {
+      t: conversation.title,
+      p: conversation.provider,
+      m: conversation.messages.slice(-10).map(m => ({
+        r: m.role === 'user' ? 'u' : 'a',
+        c: m.content.slice(0, 2000),
+      }))
+    };
+    const json = JSON.stringify(shareData);
+    const compressed = zlib.deflateSync(Buffer.from(json));
+    return compressed.toString('base64url');
+  }
+
+  /**
+   * Import conversation from a shareable base64 deep link payload.
+   */
+  public importFromShareable(data: string): Conversation | null {
+    try {
+      const compressed = Buffer.from(data, 'base64url');
+      const json = zlib.inflateSync(compressed).toString('utf-8');
+      const shareData = JSON.parse(json);
+
+      const messages: Message[] = (shareData.m || []).map((m: { r: string; c: string }) => ({
+        id: this._generateId(),
+        role: m.r === 'u' ? 'user' as const : 'assistant' as const,
+        content: m.c,
+        timestamp: Date.now()
+      }));
+
+      if (messages.length === 0) {
+        return null;
+      }
+
+      const conversation: Conversation = {
+        id: this._generateId(),
+        title: shareData.t || 'Shared Conversation',
+        messages,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        mode: 'ask-before-edit' as OperationMode,
+        model: 'unknown',
+        provider: (shareData.p || 'claude-code') as ProviderType
+      };
+
+      this._conversations.set(conversation.id, conversation);
+      this._currentConversationId = conversation.id;
+      this._saveConversations();
+      return conversation;
+    } catch (e) {
+      console.log('[Mysti] Failed to import shareable conversation:', e);
+      return null;
+    }
+  }
+
+  private _importFromJsonl(content: string): Conversation | null {
+    const lines = content.split('\n').filter(l => l.trim());
+    const messages: Message[] = [];
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        // OpenClaw JSONL format: { type, message, role }
+        if (entry.message && entry.role) {
+          messages.push({
+            id: this._generateId(),
+            role: entry.role === 'human' ? 'user' : entry.role === 'assistant' ? 'assistant' : 'system',
+            content: typeof entry.message === 'string' ? entry.message : JSON.stringify(entry.message),
+            timestamp: entry.timestamp || Date.now()
+          });
+        } else if (entry.content) {
+          // Generic JSONL with content field
+          messages.push({
+            id: this._generateId(),
+            role: (entry.role === 'user' || entry.role === 'assistant') ? entry.role : 'assistant',
+            content: typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content),
+            timestamp: entry.timestamp || Date.now()
+          });
+        }
+      } catch {
+        // Skip unparseable lines
+      }
+    }
+
+    if (messages.length === 0) {
+      return null;
+    }
+
+    const conversation: Conversation = {
+      id: this._generateId(),
+      title: 'Imported Conversation',
+      messages,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      mode: 'ask-before-edit' as OperationMode,
+      model: 'unknown',
+      provider: 'claude-code' as ProviderType
+    };
+
+    this._conversations.set(conversation.id, conversation);
+    this._currentConversationId = conversation.id;
+    this._saveConversations();
+    return conversation;
   }
 
   private _generateId(): string {

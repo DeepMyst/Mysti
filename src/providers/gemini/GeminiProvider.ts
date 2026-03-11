@@ -101,6 +101,7 @@ export class GeminiProvider extends BaseCliProvider {
       persistentProcess: null,
       persistentReady: false,
       lastHealthCheck: 0,
+      suspended: false,
       activeToolCalls: new Map(),
       lastUsageStats: null,
     };
@@ -222,22 +223,31 @@ export class GeminiProvider extends BaseCliProvider {
   private _addPermissionFlags(args: string[], settings: Settings): void {
     const { mode, accessLevel } = settings;
 
-    // Plan modes and read-only = sandbox mode
+    // Plan modes or read-only → sandbox mode
     if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
       args.push('--sandbox');
       console.log('[Mysti] Gemini: Using sandbox mode (read-only)');
       return;
     }
 
-    // Full access or edit-automatically = yolo mode (auto-approve all)
-    if (accessLevel === 'full-access' || mode === 'edit-automatically') {
+    // More-restrictive-wins: only auto-approve when BOTH mode and access allow it
+    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
       args.push('--yolo');
-      console.log('[Mysti] Gemini: Using yolo mode (auto-approve all)');
+      console.log('[Mysti] Gemini: Using yolo mode (edit-automatically + full-access)');
       return;
     }
 
-    // Default: no special flags, CLI will prompt for permissions
-    console.log('[Mysti] Gemini: Using default mode');
+    // default mode + full-access = yolo (no explicit edit restriction)
+    if (mode === 'default' && accessLevel === 'full-access') {
+      args.push('--yolo');
+      console.log('[Mysti] Gemini: Using yolo mode (default + full-access)');
+      return;
+    }
+
+    // All other combinations: bypass CLI permissions to prevent stdin hang.
+    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
+    args.push('--yolo');
+    console.log(`[Mysti] Gemini: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**

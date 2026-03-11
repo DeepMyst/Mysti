@@ -325,6 +325,10 @@ export interface ICliProvider {
   clearSession(panelId?: string): void;
   hasSession(panelId?: string): boolean;
   getSessionId(panelId?: string): string | null;
+
+  // Process suspension (SIGSTOP/SIGCONT for pre-execution permission enforcement)
+  suspendProcess(panelId?: string): boolean;
+  resumeProcess(panelId?: string): boolean;
   getStoredUsage?(panelId?: string): { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null;
 
   // Utility
@@ -335,6 +339,10 @@ export interface ICliProvider {
 
   // Slash command menu: provider-specific commands
   getSlashCommands?(panelId?: string): SlashCommandDefinition[];
+
+  // Persistent process management
+  preSpawnPersistentProcess?(panelId: string, settings: Settings): Promise<void>;
+  disposePersistentProcess?(panelId?: string): void;
 }
 
 /**

@@ -29,7 +29,8 @@ const ICONS = ['💡', '🔧', '📝', '🚀', '✨', '🎯'];
 export class SuggestionManager {
   private _extensionContext: vscode.ExtensionContext;
   private _currentProcess: ChildProcess | null = null;
-  private _warmProcess: ChildProcess | null = null;
+  private _warmProcessPool: ChildProcess[] = [];
+  private readonly _poolSize = 2;
   private _claudePath: string;
   private _isSpawning: boolean = false;
 
@@ -48,39 +49,42 @@ export class SuggestionManager {
    * This eliminates the ~500ms spawn overhead from the critical path
    */
   private _spawnWarmProcess(): void {
-    if (this._isSpawning || this._warmProcess) {
+    if (this._isSpawning || this._warmProcessPool.length >= this._poolSize) {
       return;
     }
 
     this._isSpawning = true;
 
     try {
-      this._warmProcess = spawn(this._claudePath, [
-        '--print',
-        '--output-format', 'text',
-        '--model', 'claude-haiku-4-5-20251001'
-      ], {
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
+      while (this._warmProcessPool.length < this._poolSize) {
+        const proc = spawn(this._claudePath, [
+          '--print',
+          '--output-format', 'text',
+          '--model', 'claude-haiku-4-5-20251001'
+        ], {
+          stdio: ['pipe', 'pipe', 'pipe']
+        });
 
-      // Handle process errors - respawn on failure
-      this._warmProcess.on('error', (err) => {
-        console.error('[Mysti] Suggestion warm process error:', err);
-        this._warmProcess = null;
-        this._isSpawning = false;
-      });
+        const index = this._warmProcessPool.length;
 
-      // Handle unexpected close
-      this._warmProcess.on('close', (code) => {
-        if (code !== 0 && code !== null) {
-          console.log('[Mysti] Suggestion warm process closed with code:', code);
-        }
-        this._warmProcess = null;
-        this._isSpawning = false;
-      });
+        proc.on('error', (err) => {
+          console.error('[Mysti] Suggestion warm process error:', err);
+          this._warmProcessPool = this._warmProcessPool.filter(p => p !== proc);
+        });
+
+        proc.on('close', (code) => {
+          if (code !== 0 && code !== null) {
+            console.log('[Mysti] Suggestion warm process closed with code:', code);
+          }
+          this._warmProcessPool = this._warmProcessPool.filter(p => p !== proc);
+        });
+
+        this._warmProcessPool.push(proc);
+        console.log(`[Mysti] Suggestion warm process ${index + 1}/${this._poolSize} spawned`);
+      }
 
       this._isSpawning = false;
-      console.log('[Mysti] Suggestion warm process spawned and ready');
+      console.log(`[Mysti] Suggestion warm pool ready (${this._warmProcessPool.length}/${this._poolSize})`);
     } catch (error) {
       console.error('[Mysti] Failed to spawn suggestion warm process:', error);
       this._isSpawning = false;
@@ -127,10 +131,9 @@ Title:`;
     return new Promise((resolve) => {
       let proc: ChildProcess | null = null;
 
-      if (this._warmProcess) {
-        proc = this._warmProcess;
-        this._warmProcess = null;
-        console.log('[Mysti] Using warm process for title generation');
+      if (this._warmProcessPool.length > 0) {
+        proc = this._warmProcessPool.shift()!;
+        console.log(`[Mysti] Using warm process for title generation (${this._warmProcessPool.length} remaining)`);
       } else {
         console.log('[Mysti] Spawning new process for title generation');
         proc = spawn(this._claudePath, [
@@ -196,10 +199,9 @@ Return ONLY JSON array, no other text.`;
       // Use warm process if available
       let proc: ChildProcess | null = null;
 
-      if (this._warmProcess) {
-        proc = this._warmProcess;
-        this._warmProcess = null;
-        console.log('[Mysti] Using warm process for suggestions');
+      if (this._warmProcessPool.length > 0) {
+        proc = this._warmProcessPool.shift()!;
+        console.log(`[Mysti] Using warm process for suggestions (${this._warmProcessPool.length} remaining)`);
       } else {
         // Fall back to spawning a new process
         console.log('[Mysti] No warm process, spawning new one for suggestions');
@@ -214,6 +216,7 @@ Return ONLY JSON array, no other text.`;
 
       let output = '';
       let stderr = '';
+      let settled = false;
 
       proc.stdin?.write(prompt);
       proc.stdin?.end();
@@ -226,50 +229,64 @@ Return ONLY JSON array, no other text.`;
         stderr += data.toString();
       });
 
-      // Timeout after 10 seconds (faster model = shorter timeout)
+      const tryParseSuggestions = (): QuickActionSuggestion[] | null => {
+        try {
+          const jsonMatch = output.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            return parsed.map((item: Record<string, unknown>, i: number) => ({
+              id: `suggestion-${Date.now()}-${i}`,
+              title: String(item.title || 'Suggestion'),
+              description: String(item.description || ''),
+              message: String(item.prompt || item.title || ''),
+              icon: ICONS[i % ICONS.length],
+              color: COLORS[i % COLORS.length]
+            })).slice(0, 6);
+          }
+        } catch { /* partial JSON, not parseable */ }
+        return null;
+      };
+
+      // Timeout after 20 seconds
       const timeout = setTimeout(() => {
-        console.error('[Mysti] Suggestion generation timed out after 10s');
+        console.warn('[Mysti] Suggestion generation timed out after 20s');
+        settled = true;
+        // Try to use partial output before giving up
+        if (output.trim()) {
+          const suggestions = tryParseSuggestions();
+          if (suggestions && suggestions.length > 0) {
+            console.log('[Mysti] Recovered suggestions from partial output');
+            resolve(suggestions);
+            proc?.kill('SIGTERM');
+            return;
+          }
+        }
         proc?.kill('SIGTERM');
         reject(new Error('Timeout'));
-      }, 10000);
+      }, 20000);
 
       proc.on('close', (code) => {
         clearTimeout(timeout);
         this._currentProcess = null;
-
-        // Immediately respawn for next request
         this._spawnWarmProcess();
+
+        if (settled) { return; } // Already handled by timeout
 
         console.log('[Mysti] Claude exited with code:', code);
         if (stderr) {
           console.error('[Mysti] Claude stderr:', stderr);
         }
 
-        if (code === 0 && output.trim()) {
-          try {
-            const jsonMatch = output.match(/\[[\s\S]*\]/);
-            if (jsonMatch) {
-              const parsed = JSON.parse(jsonMatch[0]);
-              const suggestions: QuickActionSuggestion[] = parsed.map((item: Record<string, unknown>, i: number) => ({
-                id: `suggestion-${Date.now()}-${i}`,
-                title: String(item.title || 'Suggestion'),
-                description: String(item.description || ''),
-                message: String(item.prompt || item.title || ''),
-                icon: ICONS[i % ICONS.length],
-                color: COLORS[i % COLORS.length]
-              }));
-              console.log('[Mysti] Generated suggestions:', suggestions.map(s => s.title));
-              resolve(suggestions.slice(0, 6));
-              return;
-            } else {
-              console.error('[Mysti] No JSON array found in output:', output.substring(0, 200));
-            }
-          } catch (e) {
-            console.error('[Mysti] Failed to parse suggestions JSON:', e);
-            console.error('[Mysti] Raw output:', output.substring(0, 500));
+        if (output.trim()) {
+          const suggestions = tryParseSuggestions();
+          if (suggestions && suggestions.length > 0) {
+            console.log('[Mysti] Generated suggestions:', suggestions.map(s => s.title));
+            resolve(suggestions);
+            return;
           }
+          console.error('[Mysti] No valid JSON array in output:', output.substring(0, 200));
         } else {
-          console.error('[Mysti] Claude failed - code:', code, 'output length:', output.length);
+          console.error('[Mysti] Claude failed - code:', code, 'no output');
         }
         reject(new Error(`Failed to parse (code: ${code})`));
       });
@@ -277,8 +294,8 @@ Return ONLY JSON array, no other text.`;
       proc.on('error', (err) => {
         clearTimeout(timeout);
         this._currentProcess = null;
-        // Respawn on error
         this._spawnWarmProcess();
+        if (settled) { return; }
         console.error('[Mysti] Spawn error:', err);
         reject(err);
       });
@@ -301,10 +318,10 @@ Return ONLY JSON array, no other text.`;
    */
   public dispose(): void {
     this.cancelGeneration();
-    if (this._warmProcess) {
-      this._warmProcess.kill('SIGTERM');
-      this._warmProcess = null;
+    for (const proc of this._warmProcessPool) {
+      proc.kill('SIGTERM');
     }
+    this._warmProcessPool = [];
   }
 
   private _findClaudeCliPath(): string {

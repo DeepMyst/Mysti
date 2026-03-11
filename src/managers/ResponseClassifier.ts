@@ -33,10 +33,58 @@ const PLAN_ICONS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️
 export class ResponseClassifier {
   private _claudePath: string;
   private _currentProcess: ChildProcess | null = null;
+  private _warmProcessPool: ChildProcess[] = [];
+  private readonly _poolSize = 2;
+  private _isSpawning: boolean = false;
 
   constructor() {
     this._claudePath = this._findClaudeCliPath();
+    this._spawnWarmProcess();
     console.log('[Mysti] ResponseClassifier initialized with CLI path:', this._claudePath);
+  }
+
+  /**
+   * Pre-spawn a Claude CLI process ready for classification
+   */
+  private _spawnWarmProcess(): void {
+    if (this._isSpawning || this._warmProcessPool.length >= this._poolSize) {
+      return;
+    }
+
+    this._isSpawning = true;
+
+    try {
+      while (this._warmProcessPool.length < this._poolSize) {
+        const proc = spawn(this._claudePath, [
+          '--print',
+          '--output-format', 'text',
+          '--model', 'claude-haiku-4-5-20251001'
+        ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+        const index = this._warmProcessPool.length;
+
+        proc.on('error', (err) => {
+          console.error('[Mysti] Classifier warm process error:', err);
+          this._warmProcessPool = this._warmProcessPool.filter(p => p !== proc);
+        });
+
+        proc.on('close', (code) => {
+          if (code !== 0 && code !== null) {
+            console.log('[Mysti] Classifier warm process closed with code:', code);
+          }
+          this._warmProcessPool = this._warmProcessPool.filter(p => p !== proc);
+        });
+
+        this._warmProcessPool.push(proc);
+        console.log(`[Mysti] Classifier warm process ${index + 1}/${this._poolSize} spawned`);
+      }
+
+      this._isSpawning = false;
+      console.log(`[Mysti] Classifier warm pool ready (${this._warmProcessPool.length}/${this._poolSize})`);
+    } catch (error) {
+      console.error('[Mysti] Failed to spawn classifier warm process:', error);
+      this._isSpawning = false;
+    }
   }
 
   /**
@@ -154,12 +202,19 @@ Classification Rules:
 Return ONLY the JSON object, nothing else.`;
 
     return new Promise((resolve) => {
-      console.log('[Mysti] Spawning process for classification');
-      const proc = spawn(this._claudePath, [
-        '--print',
-        '--output-format', 'text',
-        '--model', 'claude-haiku-4-5-20251001'
-      ], { stdio: ['pipe', 'pipe', 'pipe'] });
+      let proc: ChildProcess | null = null;
+
+      if (this._warmProcessPool.length > 0) {
+        proc = this._warmProcessPool.shift()!;
+        console.log(`[Mysti] Using warm process for classification (${this._warmProcessPool.length} remaining)`);
+      } else {
+        console.log('[Mysti] No warm process, spawning new one for classification');
+        proc = spawn(this._claudePath, [
+          '--print',
+          '--output-format', 'text',
+          '--model', 'claude-haiku-4-5-20251001'
+        ], { stdio: ['pipe', 'pipe', 'pipe'] });
+      }
 
       this._currentProcess = proc;
 
@@ -177,18 +232,19 @@ Return ONLY the JSON object, nothing else.`;
         stderr += data.toString();
       });
 
-      // Timeout after 15 seconds (increased from 8)
+      // Timeout after 20 seconds
       const timeout = setTimeout(() => {
-        console.error('[Mysti] Classification timed out after 15s');
+        console.warn('[Mysti] Classification timed out after 20s');
         proc?.kill('SIGTERM');
         resolve({ questions: [], planOptions: [], context: content });
-      }, 15000);
+      }, 20000);
 
       proc.on('close', (code) => {
         clearTimeout(timeout);
         this._currentProcess = null;
+        this._spawnWarmProcess();
 
-        if (code === 0 && output.trim()) {
+        if (output.trim()) {
           try {
             const parsed = this._parseResponse(output, content);
             console.log('[Mysti] Classification result:', {
@@ -210,6 +266,7 @@ Return ONLY the JSON object, nothing else.`;
       proc.on('error', (err) => {
         clearTimeout(timeout);
         this._currentProcess = null;
+        this._spawnWarmProcess();
         console.error('[Mysti] Spawn error:', err);
         resolve({ questions: [], planOptions: [], context: content });
       });
@@ -283,6 +340,10 @@ Return ONLY the JSON object, nothing else.`;
    */
   dispose(): void {
     this.cancel();
+    for (const proc of this._warmProcessPool) {
+      proc.kill('SIGTERM');
+    }
+    this._warmProcessPool = [];
   }
 
   /**

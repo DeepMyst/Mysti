@@ -93,6 +93,7 @@ export class ManusProvider extends BaseCliProvider {
       persistentProcess: null,
       persistentReady: false,
       lastHealthCheck: 0,
+      suspended: false,
       abortController: null,
       currentTaskId: null,
     };
@@ -196,7 +197,7 @@ export class ManusProvider extends BaseCliProvider {
 
     const session = this._getSession(panelId) as ManusSessionState;
 
-    // Build prompt using inherited method
+    // Build prompt using inherited method (includes addModeInstructions via base class)
     const fullPrompt = await this.buildPromptAsync(
       content, context, conversation, settings, persona, agentConfig,
     );

@@ -27,6 +27,7 @@ import type {
   DiscussionRole,
   PersonaType
 } from '../types';
+import { BRAINSTORM_SILENCE_TIMEOUT_MS } from '../constants';
 
 /**
  * Agent color and icon definitions
@@ -66,6 +67,26 @@ const AGENT_STYLES: Record<AgentType, { color: string; icon: string; displayName
     color: '#E11D48', // Rose
     icon: '🔴',
     displayName: 'OpenClaw'
+  },
+  'opencode': {
+    color: '#22C55E', // Green
+    icon: '🟩',
+    displayName: 'OpenCode'
+  },
+  'ollama': {
+    color: '#FFFFFF', // White
+    icon: '🦙',
+    displayName: 'Ollama'
+  },
+  'localai': {
+    color: '#06B6D4', // Cyan
+    icon: '🏠',
+    displayName: 'LocalAI'
+  },
+  'qwen-code': {
+    color: '#6C5CE7', // Purple
+    icon: '🟪',
+    displayName: 'Qwen'
   }
 };
 
@@ -131,7 +152,11 @@ export class BrainstormManager {
       'cline': 'cline',
       'github-copilot': 'copilot',
       'cursor': 'cursor',
-      'openclaw': 'openclaw'
+      'openclaw': 'openclaw',
+      'opencode': 'opencode',
+      'ollama': 'ollama',
+      'localai': 'localai',
+      'qwen-code': 'qwenCode'
     };
     const agentKey = agentKeyMap[agentId] || 'claude';
 
@@ -149,22 +174,27 @@ export class BrainstormManager {
    */
   private async _validateProviderAvailability(
     selectedProviders: AgentType[]
-  ): Promise<{ available: AgentType[]; unavailable: AgentType[] }> {
+  ): Promise<{ available: AgentType[]; unavailable: AgentType[]; unavailableReasons: Map<AgentType, string> }> {
     const available: AgentType[] = [];
     const unavailable: AgentType[] = [];
-
-    const availableProviders = await this._providerManager.getAvailableProviders();
-    const availableNames = new Set(availableProviders.map(p => p.name));
+    const unavailableReasons = new Map<AgentType, string>();
 
     for (const providerId of selectedProviders) {
-      if (availableNames.has(providerId)) {
-        available.push(providerId);
-      } else {
+      const status = await this._providerManager.getProviderStatus(providerId);
+      if (!status || !status.found) {
         unavailable.push(providerId);
+        const hint = status?.installCommand ? ` Install with: ${status.installCommand}` : '';
+        unavailableReasons.set(providerId, `${providerId} CLI is not installed.${hint}`);
+      } else if (!status.authenticated) {
+        // B2: Check authentication — installed but not authenticated
+        unavailable.push(providerId);
+        unavailableReasons.set(providerId, `${providerId} is installed but not authenticated. Please run the CLI manually to complete authentication.`);
+      } else {
+        available.push(providerId);
       }
     }
 
-    return { available, unavailable };
+    return { available, unavailable, unavailableReasons };
   }
 
   /**
@@ -212,17 +242,29 @@ export class BrainstormManager {
     const sessionId = panelId || 'default';
     const brainstormConfig = this._getConfig();
 
-    // Validate provider availability
-    const { available, unavailable } = await this._validateProviderAvailability(brainstormConfig.agents);
+    // B8: Validate no duplicate agents
+    if (brainstormConfig.agents[0] === brainstormConfig.agents[1]) {
+      yield {
+        type: 'agent_error',
+        content: `Brainstorm mode requires 2 different providers. "${brainstormConfig.agents[0]}" is selected for both agents. Please choose a different provider for one of the agents in Settings > Mysti > Brainstorm.`
+      };
+      yield { type: 'done' };
+      return;
+    }
+
+    // Validate provider availability and authentication
+    const { available, unavailable, unavailableReasons } = await this._validateProviderAvailability(brainstormConfig.agents);
 
     if (unavailable.length > 0) {
-      console.warn(`[Mysti] Brainstorm: Unavailable providers: ${unavailable.join(', ')}`);
+      const reasons = unavailable.map(id => unavailableReasons.get(id) || id).join('; ');
+      console.warn(`[Mysti] Brainstorm: Unavailable providers: ${reasons}`);
     }
 
     if (available.length < 2) {
+      const reasons = unavailable.map(id => unavailableReasons.get(id) || id).join('\n');
       yield {
         type: 'agent_error',
-        content: `Brainstorm mode requires at least 2 available providers. Currently available: ${available.length}. Unavailable: ${unavailable.join(', ')}.`
+        content: `Brainstorm mode requires at least 2 available providers. Currently available: ${available.length}.\n${reasons}`
       };
       yield { type: 'done' };
       return;
@@ -731,8 +773,8 @@ export class BrainstormManager {
       // Parse convergence score from facilitator summary
       if (config.autoConverge) {
         const convergence = this._assessConvergence(sessionId, round);
-        // Try to extract facilitator's convergence score
-        const scoreMatch = facilitatorSummary.match(/Convergence Score:\s*(\d+)\s*\/\s*10/i);
+        // B5: Broadened regex to match common convergence score phrasings
+        const scoreMatch = facilitatorSummary.match(/(?:convergence|consensus|agreement)\s*(?:score|level|rating)?:?\s*(\d+)\s*\/\s*10/i);
         if (scoreMatch) {
           convergence.overallConvergence = parseInt(scoreMatch[1], 10) / 10;
           if (convergence.overallConvergence >= 0.7) {
@@ -790,6 +832,27 @@ export class BrainstormManager {
   }
 
   /**
+   * B1: Iterate an async generator with a resettable silence timeout.
+   * If no chunk is received for `timeoutMs`, rejects with an error.
+   */
+  private async *_iterateWithSilenceTimeout<T>(
+    generator: AsyncGenerator<T>,
+    timeoutMs: number = BRAINSTORM_SILENCE_TIMEOUT_MS
+  ): AsyncGenerator<T> {
+    const iterator = generator[Symbol.asyncIterator]();
+    while (true) {
+      const result = await Promise.race([
+        iterator.next(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Agent silent for ${Math.round(timeoutMs / 1000)}s — aborting`)), timeoutMs)
+        )
+      ]);
+      if (result.done) { return; }
+      yield result.value;
+    }
+  }
+
+  /**
    * Stream response from a single agent
    */
   private async *_streamAgentResponse(
@@ -815,7 +878,8 @@ export class BrainstormManager {
       );
 
       let agentUsage: import('../types').UsageStats | undefined;
-      for await (const chunk of stream) {
+      // B1: Wrap with silence-based timeout
+      for await (const chunk of this._iterateWithSilenceTimeout(stream)) {
         if (chunk.type === 'text' && chunk.content) {
           agentResponse.content += chunk.content;
           yield {
@@ -883,7 +947,8 @@ export class BrainstormManager {
         sessionId
       );
 
-      for await (const chunk of stream) {
+      // B1: Wrap with silence-based timeout
+      for await (const chunk of this._iterateWithSilenceTimeout(stream)) {
         if (chunk.type === 'text' && chunk.content) {
           yield {
             type: 'discussion_text',
@@ -944,10 +1009,15 @@ export class BrainstormManager {
 
       session.unifiedSolution = synthesis;
     } catch (error) {
-      // Synthesis fallback: try the other agent
+      // B3: Notify UI before attempting fallback
       console.warn(`[Mysti] Brainstorm: Synthesis agent ${synthesisAgentId} failed, trying fallback`);
       const fallbackAgent = session.agents.find(a => a.id !== synthesisAgentId);
       if (fallbackAgent) {
+        yield {
+          type: 'synthesis_fallback',
+          agentId: fallbackAgent.id,
+          content: `Primary synthesis agent (${synthesisAgentId}) failed. Retrying with ${fallbackAgent.displayName}...`
+        };
         try {
           const fallbackStream = this._providerManager.sendMessageToProvider(
             fallbackAgent.id,
@@ -1467,8 +1537,15 @@ Your updated recommendation incorporating insights from the facilitator summary.
     let disagreementCount = 0;
     const positionStability = new Map<AgentType, number>();
 
+    // B6: Guard against empty contributions — skip assessment if any contribution is empty
+    let hasEmptyContribution = false;
+
     if (lastRound) {
       for (const [agentId, contribution] of lastRound.contributions.entries()) {
+        if (!contribution.trim()) {
+          hasEmptyContribution = true;
+          continue;
+        }
         const lower = contribution.toLowerCase();
 
         // Count agreement/disagreement signals
@@ -1488,7 +1565,7 @@ Your updated recommendation incorporating insights from the facilitator summary.
         if (session.discussionRounds.length >= 2) {
           const prevRound = session.discussionRounds[session.discussionRounds.length - 2];
           const prevContribution = prevRound.contributions.get(agentId);
-          if (prevContribution) {
+          if (prevContribution && prevContribution.trim()) {
             positionStability.set(agentId, this._calculateTextSimilarity(prevContribution, contribution));
           }
         }
@@ -1496,7 +1573,8 @@ Your updated recommendation incorporating insights from the facilitator summary.
     }
 
     const total = agreementCount + disagreementCount;
-    const agreementRatio = total > 0 ? agreementCount / total : 0.5;
+    // B6: If any contribution was empty, use neutral ratio to avoid false convergence
+    const agreementRatio = hasEmptyContribution ? 0.5 : (total > 0 ? agreementCount / total : 0.5);
 
     const stabilityValues = Array.from(positionStability.values());
     const avgStability = stabilityValues.length > 0
@@ -1506,12 +1584,32 @@ Your updated recommendation incorporating insights from the facilitator summary.
     const overallConvergence = (agreementRatio * 0.6) + (avgStability * 0.4);
 
     let recommendation: 'continue' | 'converged' | 'stalled' = 'continue';
-    if (agreementRatio >= 0.7 && avgStability >= 0.8) {
+    if (!hasEmptyContribution && agreementRatio >= 0.7 && avgStability >= 0.8) {
       recommendation = 'converged';
     } else if (session.convergenceHistory.length >= 2) {
       const prevConvergence = session.convergenceHistory[session.convergenceHistory.length - 1];
+      // Original stall detection: no improvement and low stability
       if (prevConvergence.overallConvergence >= overallConvergence && avgStability < 0.3) {
         recommendation = 'stalled';
+      }
+      // B4: Detect oscillation — round N similar to round N-2 but different from N-1
+      if (recommendation === 'continue' && session.discussionRounds.length >= 3) {
+        const twoRoundsAgo = session.discussionRounds[session.discussionRounds.length - 3];
+        let oscillating = true;
+        for (const [agentId, contribution] of lastRound.contributions.entries()) {
+          const oldContribution = twoRoundsAgo.contributions.get(agentId);
+          if (oldContribution && contribution.trim() && oldContribution.trim()) {
+            const similarity = this._calculateTextSimilarity(oldContribution, contribution);
+            if (similarity < 0.7) { oscillating = false; break; }
+          } else {
+            oscillating = false;
+            break;
+          }
+        }
+        if (oscillating) {
+          console.log(`[Mysti] Brainstorm: Oscillation detected at round ${round} — positions match round ${round - 2}`);
+          recommendation = 'stalled';
+        }
       }
     }
 
@@ -1528,10 +1626,15 @@ Your updated recommendation incorporating insights from the facilitator summary.
 
   /**
    * Simple text similarity using word overlap (Jaccard-like)
+   * B7: Use stopword list instead of aggressive length filter to preserve meaningful short words
    */
+  private static readonly _stopwords = new Set([
+    'a', 'an', 'the', 'is', 'it', 'in', 'on', 'at', 'to', 'of', 'or', 'and', 'by', 'as', 'if', 'be', 'do', 'so', 'we', 'he', 'me', 'my', 'up', 'am'
+  ]);
+
   private _calculateTextSimilarity(textA: string, textB: string): number {
-    const wordsA = new Set(textA.toLowerCase().split(/\s+/).filter(w => w.length > 3));
-    const wordsB = new Set(textB.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+    const wordsA = new Set(textA.toLowerCase().split(/\s+/).filter(w => w.length > 1 && !BrainstormManager._stopwords.has(w)));
+    const wordsB = new Set(textB.toLowerCase().split(/\s+/).filter(w => w.length > 1 && !BrainstormManager._stopwords.has(w)));
 
     if (wordsA.size === 0 && wordsB.size === 0) {return 1;}
     if (wordsA.size === 0 || wordsB.size === 0) {return 0;}
@@ -1623,7 +1726,11 @@ Your updated recommendation incorporating insights from the facilitator summary.
     const session = this._panelSessions.get(sessionId);
     if (session) {
       console.log('[Mysti] Brainstorm: Cancelling session for panel', sessionId);
+      // B9: Cancel the main session process AND each agent's process
       this._providerManager.cancelRequest(sessionId);
+      for (const agent of session.agents) {
+        this._providerManager.cancelRequest(`${sessionId}-brainstorm-${agent.id}`);
+      }
       session.phase = 'complete';
     }
   }

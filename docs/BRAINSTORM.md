@@ -33,7 +33,7 @@ Your Request
 
 ## Selecting Your Team
 
-Choose any 2 of 7 available agents in the settings panel:
+Choose any 2 of 12 available agents in the settings panel:
 
 | Agent | Provider | Color |
 |-------|----------|-------|
@@ -194,6 +194,15 @@ Brainstorm Mode is designed to be resilient:
 - If both agents fail on synthesis, raw responses are concatenated
 - Discussion errors are reported but don't halt the process
 - Each agent's stream is independent — one agent timing out doesn't affect the other
+
+## Stability Features (v0.4.0)
+
+- **Silence-based timeout**: If an agent stops producing output for 90 seconds, it's aborted — no more infinite waits
+- **Auth pre-check**: Provider authentication is validated before brainstorm starts, with clear error messages
+- **Synthesis fallback**: If the primary synthesis agent fails, a fallback agent is tried with UI feedback
+- **Oscillation detection**: Detects when agents flip-flop between positions (round N matches round N-2)
+- **Duplicate agent guard**: Prevents selecting the same agent twice
+- **Cancel propagation**: Cancelling a brainstorm session stops all sub-processes immediately
 
 ## Tips
 

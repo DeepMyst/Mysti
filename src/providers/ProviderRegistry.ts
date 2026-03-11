@@ -20,6 +20,10 @@ import { ClineProvider } from './cline/ClineProvider';
 import { CopilotProvider } from './copilot/CopilotProvider';
 import { CursorProvider } from './cursor/CursorProvider';
 import { OpenClawProvider } from './openclaw/OpenClawProvider';
+import { OpenCodeProvider } from './opencode/OpenCodeProvider';
+import { OllamaProvider } from './ollama/OllamaProvider';
+import { LocalAIProvider } from './localai/LocalAIProvider';
+import { QwenCodeProvider } from './qwen/QwenCodeProvider';
 
 /**
  * Registry for managing CLI providers
@@ -73,6 +77,26 @@ export class ProviderRegistry {
     const openclaw = new OpenClawProvider(this._extensionContext);
     this._providers.set(openclaw.id, openclaw);
     console.log(`[Mysti] Registered provider: ${openclaw.displayName}`);
+
+    // Register OpenCode
+    const opencode = new OpenCodeProvider(this._extensionContext);
+    this._providers.set(opencode.id, opencode);
+    console.log(`[Mysti] Registered provider: ${opencode.displayName}`);
+
+    // Register Ollama
+    const ollama = new OllamaProvider(this._extensionContext);
+    this._providers.set(ollama.id, ollama);
+    console.log(`[Mysti] Registered provider: ${ollama.displayName}`);
+
+    // Register LocalAI
+    const localai = new LocalAIProvider(this._extensionContext);
+    this._providers.set(localai.id, localai);
+    console.log(`[Mysti] Registered provider: ${localai.displayName}`);
+
+    // Register Qwen Code
+    const qwen = new QwenCodeProvider(this._extensionContext);
+    this._providers.set(qwen.id, qwen);
+    console.log(`[Mysti] Registered provider: ${qwen.displayName}`);
 
   }
 

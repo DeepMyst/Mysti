@@ -2,6 +2,82 @@
 
 All notable changes to the Mysti extension will be documented in this file.
 
+## [0.4.0] - March 2026
+
+### Added
+
+- **OpenCode Provider**: Multi-backend coding agent supporting Anthropic, OpenAI, Google, Groq — closes #25
+  - CLI: `opencode run --format json --thinking`
+  - Uses configured default model (no hardcoded model list)
+  - Agents: `build` (full access) and `plan` (read-only)
+  - Session resume via `--session <id>`
+- **Qwen Code Provider**: Alibaba's AI coding CLI agent
+  - Same streaming protocol as Claude Code (stream-json NDJSON)
+  - Approval modes: plan, default, auto-edit, yolo
+  - Auth error detection with guided authentication UI
+  - Models: Qwen3 Coder, Qwen3 Coder Plus
+- **Ollama Provider**: Local LLM inference via Ollama CLI — closes #24
+- **LocalAI Provider**: Self-hosted AI model provider — closes #24
+- **Provider Logos**: Authentic logos with transparent backgrounds for OpenCode, Ollama, LocalAI, Qwen Code
+- **Test Infrastructure**: 360 automated tests via vitest with mock provider system
+- **Brainstorm Stability** (18 fixes):
+  - Silence-based timeout — agents aborted after 90s of no output (B1)
+  - Auth pre-check — validates provider authentication before starting (B2)
+  - Synthesis fallback feedback — UI shows "retrying with [agent]..." on failure (B3)
+  - Oscillation detection — catches flip-flopping discussion positions (B4)
+  - Convergence regex broadening — handles varied score phrasings (B5)
+  - Duplicate agent validation — prevents selecting same agent twice (B8)
+  - Cancel propagation — stops all sub-processes on cancel (B9)
+- **@-Mention Stability**:
+  - Sub-agent question timeout — auto-skips after 5 minutes (M1)
+  - Max mentions per message — caps at 5 mentions (M2)
+  - File resolution warnings — user sees when file mentions fail (M7)
+  - Retry process cleanup — cancels previous attempt before retry (M8)
+  - Full-path file mention matching — `@src/utils.ts` now resolves correctly
+- **New Managers**: CommitSignatureManager, EngagementManager, ProjectContextManager, TeamPresenceManager
+- **Editor Integration**: MystiCodeLensProvider, MystiFileDecorationProvider
+- **Permission Classifier**: Utility for categorizing CLI operations
+
+### Fixed
+
+- Windows `spawn EINVAL` error — auto-enable `shell: true` on Windows + `mysti.useShellForCli` setting — closes #14
+- Brainstorm ignores `mysti.codexPath` — now uses shared provider instance with `_getConfiguredCliPath()` — closes #26
+- Mention parsing regex too broad — refined to `/@([\w\-./]+)/` (M3)
+- File mention matching too greedy — requires 3+ chars and path boundary (M4)
+- Invalid agent mentions produce confusing errors — validates against known agents (M5)
+- Empty discussion contributions causing false convergence (B6)
+- Text similarity filter dropping short meaningful words like "not", "bug" (B7)
+- Qwen Code: Removed invalid `--verbose` CLI flag
+- Qwen Code: Fixed bare `-p` flag usage (prompt delivered via stdin)
+- Qwen Code: Fixed approval mode values (lowercase: plan/auto-edit/yolo)
+- OpenCode: Fixed `[object Object]` error display for non-string error objects
+- OpenCode: Removed hardcoded model list causing "Model not found" errors
+- BaseCliProvider: Hardened error handling for non-Error thrown objects
+- New providers now correctly appear in all UI dropdowns, agent menus, and brainstorm selectors
+- Fixed agent selection display showing Claude when selecting new providers
+
+### Changed
+
+- Provider count increased to 12 (was 7): added OpenCode, Qwen Code, Ollama, LocalAI, Manus
+- Brainstorm discussion more resilient with convergence guards and silence timeout
+- @-mention system more robust with limits, timeouts, and validation
+
+### New Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mysti.opencodePath` | `opencode` | Path to OpenCode CLI |
+| `mysti.opencodeModel` | `` | Custom OpenCode model |
+| `mysti.qwenCodePath` | `qwen` | Path to Qwen Code CLI |
+| `mysti.qwenCodeModel` | `` | Custom Qwen model |
+| `mysti.ollamaPath` | `ollama` | Path to Ollama CLI |
+| `mysti.ollamaModel` | `` | Custom Ollama model |
+| `mysti.localaiPath` | `localai` | Path to LocalAI CLI |
+| `mysti.localaiModel` | `` | Custom LocalAI model |
+| `mysti.useShellForCli` | `false` | Run CLIs with shell (auto-enabled on Windows) |
+
+---
+
 ## [0.3.1] - February 2026
 
 ---

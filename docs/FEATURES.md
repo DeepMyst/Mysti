@@ -64,7 +64,7 @@ Each chat panel (sidebar or tab) maintains its own independent context. Adding a
 
 ## Providers
 
-Mysti supports 7 AI providers through their CLI interfaces. See [PROVIDERS.md](PROVIDERS.md) for complete setup guides.
+Mysti supports 12 AI providers through their CLI interfaces. See [PROVIDERS.md](PROVIDERS.md) for complete setup guides.
 
 | Provider | Best For |
 |----------|----------|

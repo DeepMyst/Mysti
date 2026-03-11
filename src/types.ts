@@ -15,11 +15,11 @@ export type OperationMode = 'default' | 'ask-before-edit' | 'edit-automatically'
 export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
 export type AccessLevel = 'read-only' | 'ask-permission' | 'full-access';
 export type ContextMode = 'auto' | 'manual';
-export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw';
+export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code';
 export type AutocompleteType = 'sentence' | 'paragraph' | 'message';
 
 // Agent and Brainstorm types
-export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw';
+export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code';
 export type PersonaType = 'neutral' | 'architect' | 'pragmatist' | 'engineer' | 'reviewer' | 'designer' | 'custom';
 export type BrainstormPhase = 'initial' | 'individual' | 'discussion' | 'synthesis' | 'complete';
 export type CollaborationStrategy = 'quick' | 'debate' | 'red-team' | 'perspectives' | 'delphi';
@@ -368,7 +368,7 @@ export interface BrainstormStreamChunk {
   type: 'agent_text' | 'agent_thinking' | 'agent_complete' | 'agent_error' |
         'discussion_text' | 'discussion_round_start' | 'discussion_error' |
         'convergence_update' |
-        'synthesis_text' | 'phase_change' | 'done';
+        'synthesis_text' | 'synthesis_fallback' | 'phase_change' | 'done';
   agentId?: AgentType;
   content?: string;
   phase?: BrainstormPhase;
@@ -424,7 +424,8 @@ export interface MentionStreamChunk {
         'subagent_tool_use' | 'subagent_tool_result' |
         'subagent_complete' | 'subagent_error' | 'subagent_retry' |
         'subagent_ask_user_question' |
-        'files_resolved' | 'main_tasks' | 'main_start';
+        'files_resolved' | 'file_resolution_warning' |
+        'mentions_truncated' | 'main_tasks' | 'main_start';
   agentId?: AgentType;
   content?: string;
   resolvedFiles?: ContextItem[];
@@ -492,6 +493,9 @@ export interface PermissionDetails {
 
   // Risk level indicator
   riskLevel: PermissionRiskLevel;
+
+  // Whether the CLI process was suspended via SIGSTOP (true = tool cannot execute until approved)
+  suspended?: boolean;
 }
 
 export interface PermissionRequest {

@@ -92,9 +92,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     supportsToolUse: true,
     supportsSessions: true,
     supportsNativeCompact: true,
-    // TODO: Enable after testing Claude CLI interactive mode with piped stdin.
-    // The infrastructure is ready — set to true once the REPL protocol is verified.
-    // supportsPersistentProcess: true,
+    supportsPersistentProcess: true,
     supportsImages: true,
     supportsFileAttachments: true,
     supportsAutoInstall: true
@@ -214,6 +212,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       persistentProcess: null,
       persistentReady: false,
       lastHealthCheck: 0,
+      suspended: false,
       activeToolCalls: new Map(),
       lastUsageStats: null,
       hasStreamedText: false,
@@ -233,12 +232,16 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     // This ensures proper enforcement at the CLI level
     this._addPermissionFlags(args, settings);
 
+    // Always use --print for single-shot (non-interactive) mode.
+    // Without --print, the CLI enters interactive REPL mode which doesn't work
+    // with piped stdin (we write the prompt and close stdin immediately).
+    args.push('--print');
+
     // Session handling - resume existing session or start new
     if (session.sessionId) {
       args.push('--resume', session.sessionId);
       console.log('[Mysti] Claude: Continuing session:', session.sessionId);
     } else {
-      args.push('--print');
       console.log('[Mysti] Claude: Starting new session');
     }
 
@@ -263,30 +266,52 @@ export class ClaudeCodeProvider extends BaseCliProvider {
 
   /**
    * Build CLI args for persistent (interactive) mode.
-   * Omits --print so the CLI stays alive as an interactive REPL.
-   * Always uses --resume to maintain conversation context.
+   * Uses --input-format stream-json so the CLI accepts structured JSON on stdin
+   * (unlike plain interactive REPL mode which doesn't work with piped stdin).
+   * The process stays alive and accepts new messages as JSON lines on stdin.
    */
   protected buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] | null {
     const args: string[] = [
       '--output-format', 'stream-json',
+      '--input-format', 'stream-json',
       '--include-partial-messages',
       '--verbose',
     ];
 
     this._addPermissionFlags(args, settings);
 
-    // Always use --resume for persistent sessions so context carries over
+    // Use --resume to continue an existing session
     if (session.sessionId) {
       args.push('--resume', session.sessionId);
     }
-    // No --print flag — this keeps the CLI alive in interactive mode
 
     const effectiveModel = this._getEffectiveModel(settings);
     if (effectiveModel) {
       args.push('--model', effectiveModel);
     }
 
+    // Inject system context at spawn time (only way to set system prompt for persistent process)
+    if (session.channelSystemContext) {
+      args.push('--append-system-prompt', session.channelSystemContext);
+    }
+
     return args;
+  }
+
+  /**
+   * Format a prompt for the persistent process using --input-format stream-json.
+   * Claude CLI expects JSON messages on stdin:
+   * {"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}
+   */
+  protected _formatPersistentInput(prompt: string, _session: PanelSessionState): string {
+    const message = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: prompt }]
+      }
+    };
+    return JSON.stringify(message) + '\n';
   }
 
   /**
@@ -322,59 +347,29 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   private _addPermissionFlags(args: string[], settings: Settings): void {
     const { mode, accessLevel } = settings;
 
-    // Quick Plan - read-only, Mysti adds quick plan instruction via prompt
-    if (mode === 'quick-plan') {
+    // Plan modes → always read-only regardless of access level
+    if (mode === 'quick-plan' || mode === 'detailed-plan') {
       args.push('--permission-mode', 'plan');
-      console.log('[Mysti] Claude: Using quick plan mode (read-only)');
+      console.log(`[Mysti] Claude: Using plan mode (${mode})`);
       return;
     }
 
-    // Detailed Plan - read-only, uses CLI's native multi-plan behavior
-    if (mode === 'detailed-plan') {
-      args.push('--permission-mode', 'plan');
-      console.log('[Mysti] Claude: Using detailed plan mode (read-only)');
-      return;
-    }
-
-    // Read-only access level enforces plan mode regardless of operation mode
+    // Read-only access level → plan mode regardless of operation mode
     if (accessLevel === 'read-only') {
       args.push('--permission-mode', 'plan');
       console.log('[Mysti] Claude: Using plan mode (read-only access level)');
       return;
     }
 
-    // edit-automatically + full-access = bypass all permissions
-    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
-      args.push('--dangerously-skip-permissions');
-      args.push('--permission-mode', 'bypassPermissions');
-      console.log('[Mysti] Claude: Bypassing all permissions (edit-automatically + full-access)');
-      return;
-    }
-
-    // edit-automatically + ask-permission = bypass permissions (auto-approve)
-    if (mode === 'edit-automatically' && accessLevel === 'ask-permission') {
-      args.push('--permission-mode', 'bypassPermissions');
-      console.log('[Mysti] Claude: Using bypass mode (edit-automatically + ask-permission)');
-      return;
-    }
-
-    // ask-before-edit + full-access = bypass permissions
-    if (mode === 'ask-before-edit' && accessLevel === 'full-access') {
-      args.push('--permission-mode', 'bypassPermissions');
-      console.log('[Mysti] Claude: Using bypass mode (ask-before-edit + full-access)');
-      return;
-    }
-
-    // ask-before-edit + ask-permission = default mode (CLI prompts for permissions)
-    if (mode === 'ask-before-edit' && accessLevel === 'ask-permission') {
-      args.push('--permission-mode', 'default');
-      console.log('[Mysti] Claude: Using default mode (CLI will prompt for permissions)');
-      return;
-    }
-
-    // Default mode or fallback - normal operation
-    args.push('--permission-mode', 'default');
-    console.log('[Mysti] Claude: Using default mode');
+    // All non-plan/non-read-only modes: bypass CLI-level permissions with --dangerously-skip-permissions.
+    // Claude CLI's interactive permission prompt tries to read from stdin, which is already closed
+    // (we pipe the prompt and call stdin.end()). This causes the process to hang or crash.
+    // The stream-level tool-use gate in ChatViewProvider intercepts tool_use events and shows
+    // permission cards in the webview UI for user approval when settings require it.
+    // IMPORTANT: Use ONLY --dangerously-skip-permissions. Do NOT combine with --permission-mode
+    // bypassPermissions — the two flags conflict and can cause exit code null.
+    args.push('--dangerously-skip-permissions');
+    console.log(`[Mysti] Claude: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**
@@ -569,23 +564,14 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         return null;
       }
 
-      // Handle assistant complete message - extract tool results
+      // Handle assistant complete message.
+      // IMPORTANT: Do NOT emit tool_use from the 'assistant' event. The 'assistant' event
+      // contains the full message (including tool_use with input) and arrives BEFORE
+      // content_block_stop in the stream. content_block_stop already emits the authoritative
+      // tool_use chunk from accumulated input_json_delta data. Emitting here too would
+      // cause double-gating in the permission gate (two SIGSTOP/SIGCONT cycles per tool),
+      // leading to "No response received from CLI" errors.
       if (data.type === 'assistant') {
-        if (data.message?.content) {
-          for (const block of data.message.content) {
-            if (block.type === 'tool_use') {
-              return {
-                type: 'tool_use',
-                toolCall: {
-                  id: block.id || '',
-                  name: block.name || '',
-                  input: block.input || {},
-                  status: 'running'
-                }
-              };
-            }
-          }
-        }
         return null;
       }
 

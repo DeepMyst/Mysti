@@ -71,6 +71,13 @@ export const LOCAL_CLI_PREFIX = '.mysti/cli';            // Fallback user-local 
  */
 export const SUBAGENT_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour for sub-agent tasks
 export const SUBAGENT_MAX_RETRIES = 1;             // Auto-retry once, then manual
+export const SUBAGENT_QUESTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for user to answer sub-agent question
+export const MAX_MENTIONS_PER_MESSAGE = 5;         // Maximum @-mentions per user message
+
+/**
+ * Brainstorm mode constants
+ */
+export const BRAINSTORM_SILENCE_TIMEOUT_MS = 90 * 1000; // 90s silence before aborting an agent stream
 
 /**
  * Compaction system constants
