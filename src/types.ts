@@ -1353,3 +1353,186 @@ export interface VisualTestTrigger {
   elementSelector?: string;
   showDashboard?: boolean;
 }
+
+// ============================================================================
+// Canvas Types
+// ============================================================================
+
+export type CanvasToolType = 'select' | 'pencil' | 'text' | 'comment' | 'frame' | 'image' | 'pan';
+export type ImageGenerationProvider = 'gpt-image-1.5' | 'gpt-image-1' | 'gpt-image-1-mini' | 'nano-banana' | 'nano-banana-pro' | 'none';
+export type VideoGenerationProvider = 'sora' | 'veo' | 'none';
+
+export interface CanvasObjectSummary {
+  id: string;
+  type: 'path' | 'text' | 'comment' | 'image' | 'frame' | 'group';
+  position: { left: number; top: number };
+  size: { width: number; height: number };
+  content?: string;
+  label?: string;
+  description?: string;
+  metadata?: Record<string, string>;
+  imagePath?: string;
+  children?: string[];
+}
+
+export interface CanvasSession {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  canvasJson: string;
+  assetPaths: string[];
+  linkedChatPanelId?: string;
+}
+
+export interface CanvasSnapshot {
+  imageBase64: string;
+  sceneDescription: string;
+  objects: CanvasObjectSummary[];
+  selectedRegion?: {
+    imageBase64: string;
+    objects: CanvasObjectSummary[];
+    bounds: { left: number; top: number; width: number; height: number };
+  };
+  elementSelection?: ElementSelection;
+}
+
+export interface CanvasPromptRequest {
+  canvasId: string;
+  prompt: string;
+  snapshot: CanvasSnapshot;
+  selectedObjectIds?: string[];
+  action: 'reimagine' | 'prompt' | 'generate-draft';
+}
+
+export interface ReimaginationResult {
+  variants: Array<{
+    id: string;
+    imageBase64: string;
+    description: string;
+  }>;
+}
+
+export type CanvasUnifiedAction = 'render' | 'generate' | 'reimagine' | 'video' | 'prompt' | 'page' | 'section' | 'component' | 'website' | 'svg' | 'code' | 'edit-element' | 'edit-layout';
+
+export interface CanvasRenderRequest {
+  canvasId: string;
+  url?: string;
+  selector?: string;
+  autoDetect: boolean;
+}
+
+export interface CanvasUnifiedParsed {
+  action: CanvasUnifiedAction;
+  argument: string;
+}
+
+export type CanvasStreamChunkType =
+  | 'canvas_reimagine_started'
+  | 'canvas_reimagine_variant'
+  | 'canvas_reimagine_complete'
+  | 'canvas_prompt_response'
+  | 'canvas_draft_started'
+  | 'canvas_draft_progress'
+  | 'canvas_draft_complete'
+  | 'canvas_render_started'
+  | 'canvas_render_progress'
+  | 'canvas_render_complete'
+  | 'canvas_video_started'
+  | 'canvas_video_progress'
+  | 'canvas_video_complete'
+  | 'canvas_layout_started'
+  | 'canvas_layout_progress'
+  | 'canvas_layout_complete'
+  | 'canvas_batch_started'
+  | 'canvas_batch_frame_started'
+  | 'canvas_batch_frame_complete'
+  | 'canvas_batch_complete'
+  | 'canvas_website_started'
+  | 'canvas_website_page_started'
+  | 'canvas_website_complete'
+  | 'canvas_svg_started'
+  | 'canvas_svg_progress'
+  | 'canvas_svg_complete'
+  | 'canvas_code_started'
+  | 'canvas_code_progress'
+  | 'canvas_code_complete'
+  | 'canvas_props_extracted'
+  | 'canvas_component_render_progress'
+  | 'canvas_component_render_complete'
+  | 'canvas_integrate_started'
+  | 'canvas_integrate_progress'
+  | 'canvas_integrate_complete'
+  | 'canvas_element_edit_started'
+  | 'canvas_element_edit_complete'
+  | 'canvas_error';
+
+export interface CanvasStreamChunk {
+  type: CanvasStreamChunkType;
+  canvasId: string;
+  variant?: { id: string; imageBase64: string; description: string };
+  content?: string;
+  progress?: number;
+  error?: string;
+  imageBase64?: string;
+  videoBase64?: string;
+  mimeType?: string;
+  durationSeconds?: number;
+  label?: string;
+  url?: string;
+  frames?: Array<{ left: number; top: number; width: number; height: number; label: string; description?: string; metadata?: Record<string, string> }>;
+  frameId?: string;
+  frameIndex?: number;
+  totalFrames?: number;
+  pageIndex?: number;
+  totalPages?: number;
+  pageName?: string;
+  pages?: Array<{
+    name: string;
+    description: string;
+    frames: Array<{ left: number; top: number; width: number; height: number; label: string; description?: string; metadata?: Record<string, string> }>;
+  }>;
+  svgMarkup?: string;
+  generatedFiles?: Array<{ filePath: string; fileName: string; fileType: 'component' | 'story' | 'styles'; content: string }>;
+  componentProps?: ComponentProp[];
+  framework?: 'react' | 'vue' | 'html';
+  componentName?: string;
+  objectId?: string;
+}
+
+export interface ComponentProp {
+  id: string;
+  name: string;
+  type: 'color' | 'text' | 'number' | 'enum' | 'boolean';
+  value: string;
+  options?: string[];
+  category: 'colors' | 'typography' | 'spacing' | 'content' | 'layout';
+}
+
+export interface GeneratedFile {
+  filePath: string;
+  fileName: string;
+  fileType: 'component' | 'story' | 'styles';
+  content: string;
+}
+
+export interface ElementSelection {
+  objectId: string;
+  selectorPath: string;
+  tagName: string;
+  textContent: string;
+  computedStyles: Record<string, string>;
+  componentSource: string;
+  componentName: string;
+  framework: string;
+  domSnapshot: string;
+}
+
+export interface ElementEditPayload {
+  canvasId: string;
+  objectId: string;
+  componentName: string;
+  framework: string;
+  edits: Array<{ selectorPath: string; property: string; value: string }>;
+  currentCode: string;
+}

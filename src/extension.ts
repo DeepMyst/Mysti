@@ -34,6 +34,7 @@ import { MystiFileDecorationProvider } from './providers/MystiFileDecorationProv
 import { MystiCodeLensProvider } from './providers/MystiCodeLensProvider';
 import { ProjectContextManager } from './managers/ProjectContextManager';
 import { VisualTestManager } from './managers/VisualTestManager';
+import { CanvasManager } from './managers/CanvasManager';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -55,6 +56,7 @@ let teamPresenceManager: TeamPresenceManager;
 let fileDecorationProvider: MystiFileDecorationProvider;
 let projectContextManager: ProjectContextManager;
 let visualTestManager: VisualTestManager;
+let canvasManager: CanvasManager;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('Mysti extension is now active');
@@ -118,6 +120,16 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize visual test manager
   visualTestManager = new VisualTestManager(context);
 
+  // Initialize canvas manager
+  canvasManager = new CanvasManager(context);
+
+  // Invalidate canvas project profile cache on workspace folder change
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      CanvasManager.invalidateProjectProfileCache();
+    })
+  );
+
   // Initialize slash command manager
   const slashCommandManager = new SlashCommandManager({
     providerManager,
@@ -148,7 +160,8 @@ export async function activate(context: vscode.ExtensionContext) {
     activeModeManager,
     engagementManager,
     projectContextManager,
-    visualTestManager
+    visualTestManager,
+    canvasManager
   );
 
   // Register the webview provider
@@ -343,6 +356,13 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.openVisualTestDashboard', () => {
       chatViewProvider.openVisualTestDashboard();
+    })
+  );
+
+  // Open Canvas command
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.openCanvas', () => {
+      chatViewProvider.openCanvas();
     })
   );
 

@@ -86,6 +86,7 @@ export class SlashCommandManager {
     'memory': 'cmd:memory',
     'rules': 'cmd:rules',
     'visual-test': 'cmd:visual-test',
+    'canvas': 'cmd:canvas',
   };
 
   constructor(deps: SlashCommandManagerDeps) {
@@ -280,6 +281,12 @@ export class SlashCommandManager {
       case 'cmd:visual-test': {
         // Open the visual test dashboard in a separate editor tab
         callbacks.postToPanel(panelId, { type: 'openVisualTestDashboard' });
+        return;
+      }
+
+      case 'cmd:canvas': {
+        // Open the canvas in a separate editor tab
+        callbacks.postToPanel(panelId, { type: 'openCanvas' });
         return;
       }
 
@@ -583,6 +590,16 @@ export class SlashCommandManager {
         provider: 'all',
         action: 'execute',
         keywords: ['visual', 'test', 'screenshot', 'browser', 'playwright', 'ui'],
+      },
+      {
+        id: 'cmd:canvas',
+        label: '/canvas',
+        description: 'Open infinite canvas for drawing, annotating, and AI design',
+        section: 'commands',
+        icon: 'paintcan',
+        provider: 'all',
+        action: 'execute',
+        keywords: ['canvas', 'draw', 'design', 'annotate', 'mockup', 'reimagine', 'image'],
       },
       {
         id: 'cmd:export',

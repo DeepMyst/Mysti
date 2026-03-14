@@ -163,6 +163,11 @@
         "command": "mysti.openVisualTestDashboard",
         "title": "Open Visual Test Dashboard",
         "category": "Mysti"
+      },
+      {
+        "command": "mysti.openCanvas",
+        "title": "Open Canvas",
+        "category": "Mysti"
       }
     ],
     "menus": {
@@ -1164,6 +1169,64 @@
           "type": "string",
           "default": "localhost:\\d+|ready in|compiled successfully|VITE|started server on",
           "description": "Regex pattern to detect when dev server is ready (matched against stdout)"
+        },
+        "mysti.canvas.imageGenerationProvider": {
+          "type": "string",
+          "enum": [
+            "gpt-image-1.5",
+            "gpt-image-1",
+            "gpt-image-1-mini",
+            "nano-banana",
+            "nano-banana-pro",
+            "none"
+          ],
+          "enumDescriptions": [
+            "OpenAI GPT Image 1.5 — best quality, fastest",
+            "OpenAI GPT Image 1 — great quality",
+            "OpenAI GPT Image 1 Mini — budget-friendly",
+            "Google Gemini 3.1 Flash — fast, free tier",
+            "Google Gemini 3 Pro — highest quality",
+            "Disabled"
+          ],
+          "default": "none",
+          "description": "Image generation provider for Canvas reimagination and draft features"
+        },
+        "mysti.canvas.videoGenerationProvider": {
+          "type": "string",
+          "enum": [
+            "sora",
+            "veo",
+            "none"
+          ],
+          "enumDescriptions": [
+            "OpenAI Sora 2 — high quality video generation",
+            "Google Veo 3.1 — Google's video generation model",
+            "Disabled"
+          ],
+          "default": "none",
+          "description": "Video generation provider for Canvas /video command"
+        },
+        "mysti.canvas.openaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API key for GPT Image and Sora video generation"
+        },
+        "mysti.canvas.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Google Gemini API key for image and Veo video generation"
+        },
+        "mysti.canvas.autoSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-save canvas on every modification"
+        },
+        "mysti.canvas.defaultVariantCount": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 6,
+          "description": "Number of variants to generate for reimagination"
         }
       }
     },
@@ -1193,6 +1256,11 @@
         "command": "mysti.toggleAutonomous",
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a"
+      },
+      {
+        "command": "mysti.openCanvas",
+        "key": "ctrl+shift+d",
+        "mac": "cmd+shift+d"
       }
     ],
     "walkthroughs": [

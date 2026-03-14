@@ -38,6 +38,13 @@ import { VisualTestManager } from '../managers/VisualTestManager';
 import { ChannelBridge } from '../managers/ChannelBridge';
 import { getWebviewContent } from '../webview/webviewContent';
 import { getVisualTestDashboardContent } from '../webview/visualTestDashboardContent';
+import { getCanvasContent } from '../webview/canvasContent';
+import { CanvasManager } from '../managers/CanvasManager';
+import { ImageGenerationService } from '../services/ImageGenerationService';
+import { VideoGenerationService } from '../services/VideoGenerationService';
+import { BrowserManager } from '../services/BrowserManager';
+import { ScreenshotService } from '../services/ScreenshotService';
+import { DevServerManager } from '../managers/DevServerManager';
 import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualTestTrigger, VisualTestStreamChunk } from '../types';
 import { AUTONOMOUS_CONTINUATION_DELAY_MS, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
@@ -90,6 +97,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _projectContextManager: ProjectContextManager;
   private _visualTestManager: VisualTestManager;
   private _channelBridge: ChannelBridge;
+  // Canvas tracking
+  private _canvasManager: CanvasManager;
+  private _imageGenService: ImageGenerationService;
+  private _videoGenService: VideoGenerationService;
+  private _codeGenService: any; // Lazy-loaded CodeGenerationService
+  private _canvasBrowserManager: BrowserManager = new BrowserManager();
+  private _canvasScreenshotService: ScreenshotService = new ScreenshotService();
+  private _canvasDevServerManager: DevServerManager = new DevServerManager();
+  private _canvasPanelId: string | null = null;
+  private _canvasChatOrigin: string | null = null;
   // Visual test dashboard tracking
   private _vtDashboardPanelId: string | null = null;
   private _vtDashboardChatOrigin: string | null = null;
@@ -150,7 +167,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     activeModeManager: ActiveModeManager,
     engagementManager: EngagementManager,
     projectContextManager: ProjectContextManager,
-    visualTestManager: VisualTestManager
+    visualTestManager: VisualTestManager,
+    canvasManager: CanvasManager
   ) {
     this._extensionUri = extensionUri;
     this._extensionContext = extensionContext;
@@ -171,6 +189,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._engagementManager = engagementManager;
     this._projectContextManager = projectContextManager;
     this._visualTestManager = visualTestManager;
+    this._canvasManager = canvasManager;
+    this._imageGenService = new ImageGenerationService();
+    this._videoGenService = new VideoGenerationService();
     this._channelBridge = new ChannelBridge(activeModeManager);
     this._planOptionManager = new PlanOptionManager();
     this._mentionRouter = new MentionRouter(this._providerManager);
@@ -1720,6 +1741,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         {
           const panelId = msg.panelId;
           this.openVisualTestDashboard(undefined, panelId);
+        }
+        break;
+
+      case 'openCanvas':
+        {
+          const panelId = msg.panelId;
+          this.openCanvas(undefined, panelId);
         }
         break;
 
@@ -4984,6 +5012,808 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (state.settingsOverrides.model) { settings.model = state.settingsOverrides.model; }
     }
     return settings;
+  }
+
+  // ========================================================================
+  // Canvas
+  // ========================================================================
+
+  /**
+   * Open the Canvas in a separate editor tab.
+   */
+  public openCanvas(sessionId?: string, originPanelId?: string): string {
+    // If canvas already open, focus it
+    if (this._canvasPanelId) {
+      const existing = this._panelStates.get(this._canvasPanelId);
+      if (existing?.panel) {
+        existing.panel.reveal();
+        return this._canvasPanelId;
+      }
+    }
+
+    const panelId = `canvas-${Date.now()}`;
+    const panel = vscode.window.createWebviewPanel(
+      'mysti.canvas',
+      'Mysti Canvas',
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        localResourceRoots: [this._extensionUri],
+        retainContextWhenHidden: true
+      }
+    );
+
+    panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
+    const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
+    panel.webview.html = getCanvasContent(panel.webview, this._extensionUri, version);
+
+    // Track canvas panel
+    this._canvasPanelId = panelId;
+    this._canvasChatOrigin = originPanelId || null;
+
+    // Register in panel states
+    this._panelStates.set(panelId, {
+      id: panelId,
+      webview: panel.webview,
+      panel,
+      currentConversationId: null,
+      isSidebar: false
+    });
+
+    // Wire messages
+    panel.webview.onDidReceiveMessage(
+      async (msg: any) => this._handleCanvasMessage(msg, panelId)
+    );
+
+    // Cleanup on dispose
+    panel.onDidDispose(() => {
+      this._canvasBrowserManager.close(panelId).catch(() => {});
+      this._canvasDevServerManager.stop(panelId).catch(() => {});
+      this._canvasPanelId = null;
+      this._canvasChatOrigin = null;
+      this._panelStates.delete(panelId);
+    });
+
+    // If sessionId provided, load that session; otherwise wait for canvasReady
+    if (sessionId) {
+      this._canvasManager.loadSession(sessionId).then(async session => {
+        if (session) {
+          session.canvasJson = await this._canvasManager.rehydrateAssets(session.canvasJson);
+          panel.webview.postMessage({ type: 'canvasLoad', payload: session });
+        }
+      });
+    }
+
+    return panelId;
+  }
+
+  /**
+   * Handle messages from the Canvas webview.
+   */
+  private async _handleCanvasMessage(msg: any, canvasPanelId: string): Promise<void> {
+    switch (msg.type) {
+      case 'canvasReady': {
+        // Resume the most recent session, or create a new one
+        let session = await this._canvasManager.getLatestSession();
+        if (session) {
+          // Rehydrate asset:// references back to data URIs for the webview
+          session.canvasJson = await this._canvasManager.rehydrateAssets(session.canvasJson);
+        } else {
+          session = this._canvasManager.createSession('Untitled Canvas');
+          await this._canvasManager.saveSession(session);
+        }
+        this._postToPanel(canvasPanelId, { type: 'canvasLoad', payload: session } as any);
+        break;
+      }
+
+      case 'canvasSave': {
+        const payload = msg.payload;
+        if (payload?.id) {
+          const existing = await this._canvasManager.loadSession(payload.id);
+          if (existing) {
+            existing.canvasJson = payload.canvasJson;
+            this._canvasManager.debouncedSave(existing);
+          }
+        }
+        break;
+      }
+
+      case 'canvasPrompt': {
+        const request = msg.payload;
+        if (!request) { break; }
+        const settings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+        // Build snapshot from webview data
+        const snapshot = this._canvasManager.buildSnapshot(
+          request.snapshot?._canvasJson || {},
+          request.snapshot?.imageBase64 || '',
+          request.snapshot?.selectedRegion
+        );
+        request.snapshot = snapshot;
+        try {
+          const stream = this._canvasManager.promptFrame(request, this._providerManager, settings);
+          for await (const chunk of stream) {
+            this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+          }
+        } catch (err: any) {
+          this._postToPanel(canvasPanelId, {
+            type: 'canvasStreamChunk',
+            payload: { type: 'canvas_error', canvasId: request.canvasId, error: err.message }
+          } as any);
+        }
+        break;
+      }
+
+      case 'canvasReimagine': {
+        const request = msg.payload;
+        if (!request) { break; }
+        if (!this._imageGenService.isAvailable) {
+          this._postToPanel(canvasPanelId, { type: 'canvasShowConfig' } as any);
+          break;
+        }
+        const settings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+        const snapshot = this._canvasManager.buildSnapshot(
+          request.snapshot?._canvasJson || {},
+          request.snapshot?.imageBase64 || '',
+          request.snapshot?.selectedRegion
+        );
+        request.snapshot = snapshot;
+        try {
+          const projectContext = await CanvasManager.buildProjectContext(
+            this._providerManager, settings, this._projectContextManager
+          );
+          const stream = this._canvasManager.reimagine(request, this._providerManager, this._imageGenService, settings, projectContext);
+          for await (const chunk of stream) {
+            this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+          }
+        } catch (err: any) {
+          this._postToPanel(canvasPanelId, {
+            type: 'canvasStreamChunk',
+            payload: { type: 'canvas_error', canvasId: request.canvasId, error: err.message }
+          } as any);
+        }
+        break;
+      }
+
+      case 'canvasGenerateDraft': {
+        const { canvasId, prompt, snapshot } = msg.payload || {};
+        if (!prompt) { break; }
+        if (!this._imageGenService.isAvailable) {
+          this._postToPanel(canvasPanelId, { type: 'canvasShowConfig' } as any);
+          break;
+        }
+        try {
+          const draftSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+          const frameBounds = snapshot?.selectedRegion?.bounds;
+          const projectContext = await CanvasManager.buildProjectContext(
+            this._providerManager, draftSettings, this._projectContextManager
+          );
+          const selectionDesc = snapshot?.selectedRegion?.objects?.length
+            ? snapshot.selectedRegion.objects.map((o: any) =>
+                `${o.type}${o.content ? `: "${o.content}"` : ''} (${o.size.width}x${o.size.height})`
+              ).join(', ')
+            : '';
+          const stream = this._canvasManager.generateDraft(
+            canvasId || '', prompt, this._imageGenService,
+            this._providerManager, draftSettings,
+            frameBounds, projectContext, selectionDesc,
+            snapshot?.selectedRegion?.imageBase64,
+            snapshot?.selectedRegion?.objects
+          );
+          for await (const chunk of stream) {
+            this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+          }
+        } catch (err: any) {
+          this._postToPanel(canvasPanelId, {
+            type: 'canvasStreamChunk',
+            payload: { type: 'canvas_error', canvasId: canvasId || '', error: err.message }
+          } as any);
+        }
+        break;
+      }
+
+      case 'canvasBatchGenerate': {
+        const { canvasId: batchCanvasId, frames: batchFrames, snapshot: batchSnapshot } = (msg.payload || {}) as any;
+        if (!batchFrames?.length) { break; }
+        if (!this._imageGenService.isAvailable) {
+          this._postToPanel(canvasPanelId, { type: 'canvasShowConfig' } as any);
+          break;
+        }
+        const batchSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+        try {
+          const projectContext = await CanvasManager.buildProjectContext(
+            this._providerManager, batchSettings, this._projectContextManager
+          );
+          const parsedSnapshot = this._canvasManager.buildSnapshot(
+            batchSnapshot?._canvasJson || {},
+            batchSnapshot?.imageBase64 || '',
+            batchSnapshot?.selectedRegion
+          );
+          const regionImageBase64 = parsedSnapshot.selectedRegion?.imageBase64;
+          const stream = this._canvasManager.generateBatchContent(
+            batchCanvasId, batchFrames,
+            this._imageGenService, this._videoGenService,
+            this._providerManager, batchSettings,
+            projectContext, regionImageBase64,
+            parsedSnapshot.selectedRegion?.objects
+          );
+          for await (const chunk of stream) {
+            this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+          }
+        } catch (err: any) {
+          this._postToPanel(canvasPanelId, {
+            type: 'canvasStreamChunk',
+            payload: { type: 'canvas_error', canvasId: batchCanvasId, error: err.message }
+          } as any);
+        }
+        break;
+      }
+
+      case 'canvasImportScreenshot':
+      case 'canvasUnifiedPrompt': {
+        const payload = msg.payload || {};
+        const text = payload.text || '';
+        const canvasId = payload.canvasId || '';
+        const parsed = CanvasManager.parseUnifiedPrompt(text);
+
+        switch (parsed.action) {
+          case 'render': {
+            try {
+              const stream = this._canvasManager.renderPage(
+                canvasId,
+                canvasPanelId,
+                parsed.argument,
+                this._canvasBrowserManager,
+                this._canvasScreenshotService,
+                this._canvasDevServerManager
+              );
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'generate': {
+            if (!this._imageGenService.isAvailable) {
+              this._postToPanel(canvasPanelId, { type: 'canvasShowConfig' } as any);
+              break;
+            }
+            try {
+              const genSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+              const snapshot = this._canvasManager.buildSnapshot(
+                payload.snapshot?._canvasJson || {},
+                payload.snapshot?.imageBase64 || '',
+                payload.snapshot?.selectedRegion
+              );
+              const frameBounds = snapshot.selectedRegion?.bounds;
+              const selectionDesc = snapshot.selectedRegion?.objects?.length
+                ? snapshot.selectedRegion.objects.map(o =>
+                    `${o.type}${o.content ? `: "${o.content}"` : ''}${o.label ? ` [${o.label}]` : ''} (${o.size.width}x${o.size.height})`
+                  ).join(', ')
+                : '';
+              const projectContext = await CanvasManager.buildProjectContext(
+                this._providerManager, genSettings, this._projectContextManager
+              );
+              const regionImageBase64 = snapshot.selectedRegion?.imageBase64;
+              const stream = this._canvasManager.generateDraft(
+                canvasId, parsed.argument, this._imageGenService,
+                this._providerManager, genSettings,
+                frameBounds, projectContext, selectionDesc, regionImageBase64,
+                snapshot.selectedRegion?.objects
+              );
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'reimagine': {
+            if (!this._imageGenService.isAvailable) {
+              this._postToPanel(canvasPanelId, { type: 'canvasShowConfig' } as any);
+              break;
+            }
+            const settings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+            const snapshot = this._canvasManager.buildSnapshot(
+              payload.snapshot?._canvasJson || {},
+              payload.snapshot?.imageBase64 || '',
+              payload.snapshot?.selectedRegion
+            );
+            const request = {
+              canvasId,
+              prompt: parsed.argument,
+              snapshot,
+              selectedObjectIds: payload.selectedObjectIds,
+              action: 'reimagine' as const,
+            };
+            try {
+              const projectContext = await CanvasManager.buildProjectContext(
+                this._providerManager, settings, this._projectContextManager
+              );
+              const stream = this._canvasManager.reimagine(request, this._providerManager, this._imageGenService, settings, projectContext);
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'video': {
+            if (!this._videoGenService.isAvailable) {
+              this._postToPanel(canvasPanelId, { type: 'canvasShowConfig' } as any);
+              break;
+            }
+            try {
+              const vidSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+              const snapshot = this._canvasManager.buildSnapshot(
+                payload.snapshot?._canvasJson || {},
+                payload.snapshot?.imageBase64 || '',
+                payload.snapshot?.selectedRegion
+              );
+              const frameBounds = snapshot.selectedRegion?.bounds;
+              const selectionDesc = snapshot.selectedRegion?.objects?.length
+                ? snapshot.selectedRegion.objects.map(o =>
+                    `${o.type}${o.content ? `: "${o.content}"` : ''}${o.label ? ` [${o.label}]` : ''} (${o.size.width}x${o.size.height})`
+                  ).join(', ')
+                : '';
+              const projectContext = await CanvasManager.buildProjectContext(
+                this._providerManager, vidSettings, this._projectContextManager
+              );
+              const regionImageBase64 = snapshot.selectedRegion?.imageBase64;
+              const stream = this._canvasManager.generateVideo(
+                canvasId, parsed.argument, this._videoGenService,
+                this._providerManager, vidSettings,
+                frameBounds, projectContext, selectionDesc, regionImageBase64,
+                snapshot.selectedRegion?.objects
+              );
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'page':
+          case 'section':
+          case 'component': {
+            const layoutSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+            try {
+              const projectContext = await CanvasManager.buildProjectContext(
+                this._providerManager, layoutSettings, this._projectContextManager
+              );
+              const snapshot = this._canvasManager.buildSnapshot(
+                payload.snapshot?._canvasJson || {},
+                payload.snapshot?.imageBase64 || '',
+                payload.snapshot?.selectedRegion
+              );
+              const frameBounds = snapshot.selectedRegion?.bounds;
+              const selectionDesc = snapshot.selectedRegion?.objects?.length
+                ? snapshot.selectedRegion.objects.map((o: any) =>
+                    `${o.type}${o.content ? `: "${o.content}"` : ''}${o.label ? ` [${o.label}]` : ''}${o.description ? ` — ${o.description}` : ''} (${o.size.width}x${o.size.height})`
+                  ).join(', ')
+                : '';
+              const regionImageBase64 = snapshot.selectedRegion?.imageBase64;
+
+              const stream = this._canvasManager.generateLayout(
+                canvasId, parsed.action as 'page' | 'section' | 'component',
+                parsed.argument, this._providerManager, layoutSettings,
+                projectContext, frameBounds, selectionDesc, regionImageBase64,
+                snapshot.selectedRegion?.objects
+              );
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'website': {
+            try {
+              const websiteSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+              const websiteSnapshot = this._canvasManager.buildSnapshot(
+                payload.snapshot?._canvasJson || {},
+                payload.snapshot?.imageBase64 || '',
+                payload.snapshot?.selectedRegion
+              );
+              const projectContext = await CanvasManager.buildProjectContext(
+                this._providerManager, websiteSettings, this._projectContextManager
+              );
+              const stream = this._canvasManager.generateWebsite(
+                canvasId, parsed.argument, this._providerManager, websiteSettings,
+                projectContext, websiteSnapshot.selectedRegion?.imageBase64,
+                websiteSnapshot.selectedRegion?.objects
+              );
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'svg': {
+            try {
+              if (!this._imageGenService.isVisionAvailable) {
+                this._postToPanel(canvasPanelId, {
+                  type: 'canvasStreamChunk',
+                  payload: { type: 'canvas_error', canvasId, error: 'Configure a Gemini or OpenAI API key to use SVG conversion' }
+                } as any);
+                break;
+              }
+              const svgSnapshot = this._canvasManager.buildSnapshot(
+                payload.snapshot?._canvasJson || {},
+                payload.snapshot?.imageBase64 || '',
+                payload.snapshot?.selectedRegion
+              );
+              const regionImage = svgSnapshot.selectedRegion?.imageBase64;
+              if (!regionImage) {
+                this._postToPanel(canvasPanelId, {
+                  type: 'canvasStreamChunk',
+                  payload: { type: 'canvas_error', canvasId, error: 'Select an image to convert to SVG' }
+                } as any);
+                break;
+              }
+              const stream = this._canvasManager.convertToSvg(
+                canvasId, regionImage, parsed.argument,
+                this._imageGenService,
+                svgSnapshot.selectedRegion?.bounds,
+                svgSnapshot.selectedRegion?.objects?.[0]?.metadata
+              );
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'code': {
+            try {
+              if (!this._imageGenService.isVisionAvailable) {
+                this._postToPanel(canvasPanelId, {
+                  type: 'canvasStreamChunk',
+                  payload: { type: 'canvas_error', canvasId, error: 'Configure a Gemini or OpenAI API key to use code generation' }
+                } as any);
+                break;
+              }
+              const codeSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+              const codeSnapshot = this._canvasManager.buildSnapshot(
+                payload.snapshot?._canvasJson || {},
+                payload.snapshot?.imageBase64 || '',
+                payload.snapshot?.selectedRegion
+              );
+              const projectContext = await CanvasManager.buildProjectContext(
+                this._providerManager, codeSettings, this._projectContextManager, this._imageGenService
+              );
+              // Determine SVG markup or image from selected region
+              const selectedObj = codeSnapshot.selectedRegion?.objects?.[0];
+              const regionImage = codeSnapshot.selectedRegion?.imageBase64;
+              // Check if the selected object has SVG content stored (group type from SVG)
+              const svgContent = selectedObj?.content && selectedObj.content.startsWith('<svg') ? selectedObj.content : null;
+
+              if (!this._codeGenService) {
+                const { CodeGenerationService } = await import('../services/CodeGenerationService');
+                this._codeGenService = new CodeGenerationService();
+              }
+
+              const stream = this._canvasManager.generateCode(
+                canvasId,
+                svgContent,
+                regionImage || null,
+                parsed.argument,
+                this._codeGenService,
+                this._imageGenService,
+                selectedObj?.label,
+                selectedObj?.metadata,
+                projectContext
+              );
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'edit-element':
+          case 'edit-layout': {
+            try {
+              if (!this._imageGenService?.isVisionAvailable) {
+                this._postToPanel(canvasPanelId, {
+                  type: 'canvasStreamChunk',
+                  payload: { type: 'canvas_error', canvasId, error: 'Configure a Gemini or OpenAI API key for element editing' }
+                } as any);
+                break;
+              }
+              const elementSelection = payload.snapshot?.elementSelection;
+              if (!elementSelection?.componentSource) {
+                this._postToPanel(canvasPanelId, {
+                  type: 'canvasStreamChunk',
+                  payload: { type: 'canvas_error', canvasId, error: 'Select an element within a component to edit' }
+                } as any);
+                break;
+              }
+              if (!this._codeGenService) {
+                const { CodeGenerationService } = await import('../services/CodeGenerationService');
+                this._codeGenService = new CodeGenerationService();
+              }
+              const editStream = this._canvasManager.editElement(
+                canvasId,
+                parsed.argument,
+                elementSelection,
+                this._imageGenService,
+                this._codeGenService,
+                parsed.action as 'edit-element' | 'edit-layout'
+              );
+              for await (const chunk of editStream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'prompt':
+          default: {
+            const settings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+            const snapshot = this._canvasManager.buildSnapshot(
+              payload.snapshot?._canvasJson || {},
+              payload.snapshot?.imageBase64 || '',
+              payload.snapshot?.selectedRegion
+            );
+            const request = {
+              canvasId,
+              prompt: parsed.argument,
+              snapshot,
+              selectedObjectIds: payload.selectedObjectIds,
+              action: 'prompt' as const,
+            };
+            try {
+              const stream = this._canvasManager.promptFrame(request, this._providerManager, settings);
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+        }
+        break;
+      }
+
+      case 'canvasSendToChat': {
+        const snapshot = msg.payload?.snapshot;
+        if (snapshot && this._canvasChatOrigin) {
+          // Inject canvas context into chat as a message
+          this._postToPanel(this._canvasChatOrigin, {
+            type: 'canvasContext',
+            payload: {
+              imageBase64: snapshot.imageBase64,
+              sceneDescription: snapshot.sceneDescription || 'Canvas snapshot',
+            }
+          } as any);
+        }
+        break;
+      }
+
+      case 'canvasExport': {
+        const dataUrl = msg.payload?.imageDataUrl;
+        if (dataUrl) {
+          const uri = await vscode.window.showSaveDialog({
+            filters: { 'PNG Image': ['png'] },
+            defaultUri: vscode.Uri.file('canvas-export.png'),
+          });
+          if (uri) {
+            const base64 = dataUrl.replace(/^data:image\/png;base64,/, '');
+            const buffer = Buffer.from(base64, 'base64');
+            await vscode.workspace.fs.writeFile(uri, buffer);
+            vscode.window.showInformationMessage(`Canvas exported to ${uri.fsPath}`);
+          }
+        }
+        break;
+      }
+
+      case 'canvasUpdateProps': {
+        const propPayload = msg.payload || {};
+        if (propPayload.modifiedProps && propPayload.componentName) {
+          try {
+            if (!this._codeGenService) {
+              const { CodeGenerationService } = await import('../services/CodeGenerationService');
+              this._codeGenService = new CodeGenerationService();
+            }
+            const propSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+            const stream = this._codeGenService.regenerateWithProps({
+              svgMarkup: propPayload.svgMarkup || '',
+              modifiedProps: propPayload.modifiedProps,
+              framework: propPayload.framework || 'react',
+              componentName: propPayload.componentName,
+              imageService: this._imageGenService,
+            });
+            for await (const chunk of stream) {
+              if (chunk.type === 'complete' && chunk.files) {
+                const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                if (workspaceRoot) {
+                  await this._codeGenService.writeToWorkspace(chunk.files, workspaceRoot);
+                }
+                this._postToPanel(canvasPanelId, {
+                  type: 'canvasStreamChunk',
+                  payload: { type: 'canvas_props_extracted', canvasId: propPayload.canvasId || '', generatedFiles: chunk.files }
+                } as any);
+              }
+            }
+          } catch (err: any) {
+            this._postToPanel(canvasPanelId, {
+              type: 'canvasStreamChunk',
+              payload: { type: 'canvas_error', canvasId: propPayload.canvasId || '', error: err.message }
+            } as any);
+          }
+        }
+        break;
+      }
+
+      case 'canvasIntegrateComponent': {
+        const intPayload = msg.payload || {};
+        if (intPayload.codeFiles && intPayload.componentName) {
+          try {
+            const intSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+            const stream = this._canvasManager.integrateComponent(
+              intPayload.canvasId || '',
+              intPayload.codeFiles,
+              intPayload.componentName,
+              intPayload.framework || 'react',
+              this._providerManager,
+              intSettings,
+              this._canvasChatOrigin || this._sidebarId
+            );
+            for await (const chunk of stream) {
+              this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+            }
+          } catch (err: any) {
+            this._postToPanel(canvasPanelId, {
+              type: 'canvasStreamChunk',
+              payload: { type: 'canvas_error', canvasId: intPayload.canvasId || '', error: err.message }
+            } as any);
+          }
+        }
+        break;
+      }
+
+      case 'canvasElementEdits': {
+        const editPayload = msg.payload || {};
+        if (editPayload.currentCode && editPayload.edits?.length) {
+          try {
+            if (!this._imageGenService?.isVisionAvailable) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId: editPayload.canvasId || '', error: 'Configure a Gemini or OpenAI API key for element editing' }
+              } as any);
+              break;
+            }
+            const stream = this._canvasManager.applyElementEdits(
+              editPayload.canvasId || '',
+              editPayload,
+              this._imageGenService
+            );
+            for await (const chunk of stream) {
+              this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+            }
+          } catch (err: any) {
+            this._postToPanel(canvasPanelId, {
+              type: 'canvasStreamChunk',
+              payload: { type: 'canvas_error', canvasId: editPayload.canvasId || '', error: err.message }
+            } as any);
+          }
+        }
+        break;
+      }
+
+      case 'canvasRenderComponent': {
+        const renderPayload = msg.payload || {};
+        if (renderPayload.html && renderPayload.objectId) {
+          try {
+            // Write temp HTML file and capture screenshot
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (workspaceRoot) {
+              const tmpDir = path.join(workspaceRoot, '.mysti', 'tmp');
+              const tmpDirUri = vscode.Uri.file(tmpDir);
+              try { await vscode.workspace.fs.createDirectory(tmpDirUri); } catch { /* exists */ }
+
+              const tmpFile = path.join(tmpDir, `component-preview-${Date.now()}.html`);
+              const tmpUri = vscode.Uri.file(tmpFile);
+              await vscode.workspace.fs.writeFile(tmpUri, Buffer.from(renderPayload.html, 'utf-8'));
+
+              // Use ScreenshotService if available, otherwise return the HTML as a placeholder
+              // For now, send a progress message — the webview iframe approach handles rendering client-side
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: {
+                  type: 'canvas_component_render_progress',
+                  canvasId: renderPayload.canvasId || '',
+                  content: 'Component HTML written — rendering preview...',
+                  progress: 50,
+                }
+              } as any);
+
+              // Clean up temp file after a delay
+              setTimeout(() => {
+                try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+              }, 30000);
+            }
+          } catch (err: any) {
+            console.log(`[Mysti] Canvas: Component render failed: ${err.message}`);
+          }
+        }
+        break;
+      }
+
+      case 'canvasSaveConfig': {
+        const { provider, apiKey } = msg.payload || {};
+        if (provider && apiKey) {
+          const config = vscode.workspace.getConfiguration('mysti');
+          // Determine if this is a video or image provider
+          const isVideoProvider = provider === 'sora' || provider === 'veo';
+          if (isVideoProvider) {
+            await config.update('canvas.videoGenerationProvider', provider, true);
+          } else {
+            await config.update('canvas.imageGenerationProvider', provider, true);
+          }
+          // Save the API key to the appropriate setting
+          if (provider === 'gpt-image-1.5' || provider === 'gpt-image-1' || provider === 'gpt-image-1-mini' || provider === 'sora') {
+            await config.update('canvas.openaiApiKey', apiKey, true);
+          } else {
+            await config.update('canvas.geminiApiKey', apiKey, true);
+          }
+          // Notify canvas that config is saved
+          this._postToPanel(canvasPanelId, { type: 'canvasConfigSaved', payload: { provider } } as any);
+        }
+        break;
+      }
+    }
   }
 
   /**

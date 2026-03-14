@@ -118,3 +118,22 @@ export const VISUAL_TEST_SCREENSHOT_WAIT_MS = 1000; // Wait for page to settle b
 export const VISUAL_TEST_SERVER_KILL_GRACE_MS = 5000; // 5 seconds before SIGKILL
 export const VISUAL_TEST_HOT_RELOAD_WAIT_MS = 2000; // Wait for hot-reload after code changes
 export const VISUAL_TEST_DEFAULT_VIEWPORT = { width: 1280, height: 720 };
+
+/**
+ * Canvas constants
+ */
+export const CANVAS_AUTOSAVE_DEBOUNCE_MS = 500;
+export const CANVAS_MAX_VARIANTS = 4;
+export const CANVAS_IMAGE_QUALITY = 0.9;
+export const CANVAS_MAX_ASSET_SIZE_MB = 10;
+export const CANVAS_DIR = '.mysti/canvas';
+export const CANVAS_ASSETS_DIR = '.mysti/canvas/assets';
+export const CANVAS_RENDER_TIMEOUT_MS = 30_000;
+export const CANVAS_RENDER_DEFAULT_VIEWPORT = { width: 1280, height: 800 };
+export const CANVAS_VIDEO_POLL_INTERVAL_MS = 3_000;
+export const CANVAS_VIDEO_POLL_MAX_MS = 120_000;
+export const CANVAS_VIDEO_DEFAULT_DURATION_S = 8; // Veo accepts 4, 6, or 8 only
+export const CANVAS_BATCH_CONCURRENCY = 3;
+export const CANVAS_ASSET_REF_PREFIX = 'asset://';
+export const CANVAS_CODE_DEFAULT_FRAMEWORK = 'react';
+export const CANVAS_CODE_OUTPUT_DIR = 'src/components';

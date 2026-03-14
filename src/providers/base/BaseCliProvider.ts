@@ -633,6 +633,9 @@ export abstract class BaseCliProvider implements ICliProvider {
     // so that cancellation (which nulls session.process) signals our loop to stop
     session.process = proc;
 
+    // Prepare attachments (write temp files, set filePaths) — mirrors single-shot path
+    const attachmentCleanup = await this.prepareAttachments(attachments, []);
+
     // Persistent process always has a session — skip conversation history
     const effectiveConversation = session.sessionId ? null : conversation;
     const _ptPrompt0 = Date.now();
@@ -650,6 +653,11 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     // Read stdout using event listeners (NOT `for await` which destroys the stream on return)
     yield* this._readUntilBoundary(proc, session);
+
+    // Clean up temp attachment files
+    if (attachmentCleanup) {
+      await attachmentCleanup();
+    }
   }
 
   /**

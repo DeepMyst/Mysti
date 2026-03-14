@@ -709,6 +709,12 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
             <path d="M2 4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-1.172a2 2 0 0 1-1.414-.586l-.828-.828A2 2 0 0 0 9.172 2H6.828a2 2 0 0 0-1.414.586l-.828.828A2 2 0 0 1 3.172 4H2zm.5 2a.5.5 0 1 1 0-1 .5.5 0 0 1 0 1zm9 2.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0z"/>
           </svg>
         </button>
+        <button id="canvas-btn" class="toolbar-btn" title="Canvas — infinite drawing + AI design workspace">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5L13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5z"/>
+          </svg>
+          <span style="font-size:10px">Canvas</span>
+        </button>
         <div class="toolbar-spacer"></div>
         <button id="agent-select-btn" class="toolbar-btn agent-btn" title="Select AI agent">
           <span id="agent-icon" class="agent-icon"><img src="${claudeLogoUri}" alt="" /></span>
@@ -13274,6 +13280,16 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             break;
         }
       }
+
+      // Wire up canvas button → opens canvas in separate tab
+      (function() {
+        var canvasBtn = document.getElementById('canvas-btn');
+        if (canvasBtn) {
+          canvasBtn.addEventListener('click', function() {
+            postMessageWithPanelId({ type: 'openCanvas' });
+          });
+        }
+      })();
 
       // Wire up visual test button → opens dashboard in separate tab
       (function() {
