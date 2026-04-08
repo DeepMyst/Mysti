@@ -4,6 +4,7 @@
 import type { PanelSessionState } from '../../src/providers/base/BaseCliProvider';
 import type { ClaudeSessionState } from '../../src/providers/claude/ClaudeCodeProvider';
 import type { QwenSessionState } from '../../src/providers/qwen/QwenCodeProvider';
+import type { MiniMaxSessionState } from '../../src/providers/minimax/MiniMaxProvider';
 
 // Re-export session state types for provider-specific fields
 // Some providers don't export their session type, so we define compatible objects inline.
@@ -101,6 +102,14 @@ export function createOpenCodeSession(panelId = 'test-panel') {
     ...baseSession(panelId),
     activeToolCalls: new Map<string, { id: string; name: string; input: Record<string, unknown> }>(),
     completedToolCalls: new Set<string>(),
+    lastUsageStats: null,
+  };
+}
+
+export function createMiniMaxSession(panelId = 'test-panel'): MiniMaxSessionState {
+  return {
+    ...baseSession(panelId),
+    abortController: null,
     lastUsageStats: null,
   };
 }
