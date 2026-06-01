@@ -32,6 +32,7 @@ import {
 const GLOBAL_STATE_KEY = 'mysti.autonomousMemory';
 const MEMORY_DIR_NAME = 'memory';
 const PROJECT_MEMORY_MAX_LINES = 200;
+const PROJECT_MEMORY_KEY_SCHEMA = 'mysti-project-memory-v2';
 
 interface MemoryStore {
   entries: MemoryEntry[];
@@ -282,7 +283,7 @@ export class MemoryManager {
    * Creates ~/.mysti/projects/<hash>/memory/ directory and loads MEMORY.md.
    */
   initProjectMemory(workspacePath: string): void {
-    const hash = crypto.createHash('sha256').update(workspacePath).digest('hex').substring(0, 12);
+    const hash = this._getProjectMemoryHash(workspacePath);
     const homeDir = process.env.HOME || process.env.USERPROFILE || '';
     this._projectMemoryDir = path.join(homeDir, '.mysti', 'projects', hash, 'memory');
 
@@ -408,6 +409,23 @@ export class MemoryManager {
     }
 
     this.writeProjectMemory(content);
+  }
+
+  private _getProjectMemoryHash(workspacePath: string): string {
+    const canonicalWorkspacePath = this._getCanonicalWorkspacePath(workspacePath);
+    const payload = JSON.stringify({
+      schema: PROJECT_MEMORY_KEY_SCHEMA,
+      canonicalWorkspacePath,
+    });
+    return crypto.createHash('sha256').update(payload).digest('hex');
+  }
+
+  private _getCanonicalWorkspacePath(workspacePath: string): string {
+    try {
+      return fs.realpathSync.native(workspacePath);
+    } catch {
+      return path.resolve(workspacePath);
+    }
   }
 
   private _loadProjectMemory(): void {
