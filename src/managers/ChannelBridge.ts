@@ -66,6 +66,11 @@ export interface QueuedChannelMessage {
   timestamp: number;
 }
 
+type PendingAskMatchResult =
+  | { status: 'matched'; ask: PendingAsk }
+  | { status: 'ambiguous'; count: number }
+  | { status: 'none' };
+
 /** A contact that Mysti has initiated a conversation with */
 interface TrackedContact {
   /** Normalized identifier (lowercase name or E.164 phone) */
@@ -695,8 +700,13 @@ RULES:
     const sender = event.sender;
 
     // First, check if this reply matches a pending outbound ask
-    const matchedAsk = this._tryMatchPendingAsk(channelId, channelType, content, sender);
-    if (matchedAsk) {
+    const askMatch = this._tryMatchPendingAsk(channelId, channelType, content, sender);
+    if (askMatch.status === 'ambiguous') {
+      console.log(`[Mysti] ChannelBridge: Ignoring ambiguous ${channelType} reply; ${askMatch.count} pending asks match this channel/sender`);
+      return;
+    }
+    if (askMatch.status === 'matched') {
+      const matchedAsk = askMatch.ask;
       // Auto-trigger Claude with the reply if agent is idle
       if (this._delegate) {
         const panelId = matchedAsk.panelId;
@@ -758,36 +768,43 @@ RULES:
     this._delegate.injectChannelMessage(panelId, channelName, content, sender);
   }
 
-  private _tryMatchPendingAsk(channelId: string, channelType: string, content: string, sender?: string): PendingAsk | null {
-    // Search all panels for a matching pending ask
-    for (const [_panelId, asks] of this._pendingAsks) {
-      const channelAsks = asks.filter(a =>
+  private _tryMatchPendingAsk(channelId: string, channelType: string, content: string, sender?: string): PendingAskMatchResult {
+    // Search all panels, but only bind replies when there is exactly one valid ask.
+    const channelAsks: PendingAsk[] = [];
+    for (const asks of this._pendingAsks.values()) {
+      channelAsks.push(...asks.filter(a =>
         !a.reply && (a.channelId === channelId || a.channel === channelType)
-      );
-      if (channelAsks.length === 0) { continue; }
-
-      // Prefer sender-aware matching when both sender and ask.to are available
-      if (sender) {
-        const senderLower = sender.toLowerCase();
-        const senderMatch = channelAsks.find(a =>
-          a.to && senderLower.includes(a.to.toLowerCase())
-        );
-        if (senderMatch) {
-          senderMatch.reply = content;
-          senderMatch.repliedAt = Date.now();
-          console.log(`[Mysti] ChannelBridge: Matched reply from '${sender}' to ask '${senderMatch.askId}'`);
-          return senderMatch;
-        }
-      }
-
-      // Fall back to oldest channel-only match
-      const fallback = channelAsks[0];
-      fallback.reply = content;
-      fallback.repliedAt = Date.now();
-      console.log(`[Mysti] ChannelBridge: Matched reply to ask '${fallback.askId}' from ${channelType} (channel-only match)`);
-      return fallback;
+      ));
     }
-    return null;
+    if (channelAsks.length === 0) { return { status: 'none' }; }
+
+    // Prefer sender-aware matching when both sender and ask.to are available.
+    if (sender) {
+      const senderLower = sender.toLowerCase();
+      const senderMatches = channelAsks.filter(a =>
+        a.to && senderLower.includes(a.to.toLowerCase())
+      );
+      if (senderMatches.length === 1) {
+        return { status: 'matched', ask: this._markPendingAskReplied(senderMatches[0], content, sender) };
+      }
+      if (senderMatches.length > 1) {
+        return { status: 'ambiguous', count: senderMatches.length };
+      }
+    }
+
+    if (channelAsks.length === 1) {
+      return { status: 'matched', ask: this._markPendingAskReplied(channelAsks[0], content) };
+    }
+
+    return { status: 'ambiguous', count: channelAsks.length };
+  }
+
+  private _markPendingAskReplied(ask: PendingAsk, content: string, sender?: string): PendingAsk {
+    ask.reply = content;
+    ask.repliedAt = Date.now();
+    const from = sender ? ` from '${sender}'` : '';
+    console.log(`[Mysti] ChannelBridge: Matched reply${from} to ask '${ask.askId}'`);
+    return ask;
   }
 
   private _resolveChannelId(channelTypeOrId: string): string | null {
