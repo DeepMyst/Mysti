@@ -110,6 +110,14 @@ export class CursorProvider extends BaseCliProvider {
 		supportsToolUse: true,
 		supportsSessions: false,
 		supportsAutoInstall: false,
+		// Plan 02 Phase 1 capability matrix
+		thinkingStyle: 'none',
+		thinkingLevelEffective: false,
+		planMode: 'detected',
+		sessionKind: 'none',  // stateless: history discarded, fabricated session IDs (F7/B8)
+		emitsToolResults: true,
+		emitsUsage: true,
+		modelSelection: 'full',
 	};
 
 	protected _createSession(panelId: string): CursorSessionState {

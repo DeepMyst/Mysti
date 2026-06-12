@@ -135,6 +135,14 @@ export class ClineProvider extends BaseCliProvider {
 		supportsToolUse: true,
 		supportsSessions: true,
 		supportsAutoInstall: true,
+		// Plan 02 Phase 1 capability matrix
+		thinkingStyle: 'complete-blocks',  // say:"reasoning" blocks arrive whole
+		thinkingLevelEffective: true,      // levels map to real CLI behavior
+		planMode: 'detected',
+		sessionKind: 'prompt-history',     // no actual resume — history replayed into the prompt
+		emitsToolResults: true,
+		emitsUsage: true,
+		modelSelection: 'none',            // model configured via cline CLI config; dropdown is a no-op (F18)
 	};
 
 	// ============================================================================

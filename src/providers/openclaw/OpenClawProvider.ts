@@ -81,6 +81,15 @@ export class OpenClawProvider extends BaseCliProvider {
     supportsToolUse: true,
     supportsSessions: true,
     supportsAutoInstall: false,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'complete-blocks',
+    thinkingLevelEffective: false,  // --thinking flag exists but Mysti's level setting maps 1:1 only via prompt
+    planMode: 'detected',
+    sessionKind: 'cli-resume',      // gateway sessionKey continuity (key is locally generated — Plan 02 Phase 5 caveat)
+    emitsToolResults: true,
+    emitsUsage: false,              // done.usage never supplied — footer "n/a", compaction disabled
+    modelSelection: 'none',         // model configured via openclaw config; dropdown is a no-op (F18)
+    supportsChannels: true,         // gateway channel delegation (C4)
   };
 
   private _gateway: OpenClawGateway;

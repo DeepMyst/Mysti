@@ -11,6 +11,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { ProviderType } from './types';
+
+/**
+ * Provider defaults (Plan 02 Phase 2, C5)
+ *
+ * The single fallback provider id used wherever a provider can't be resolved
+ * from settings or the registry. Replaces scattered 'claude-code' literals in
+ * ChatViewProvider/ProviderManager — change the default in exactly one place.
+ */
+export const DEFAULT_PROVIDER: ProviderType = 'claude-code';
+
 /**
  * Process management constants
  */

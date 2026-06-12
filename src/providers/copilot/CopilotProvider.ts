@@ -147,9 +147,19 @@ export class CopilotProvider extends BaseCliProvider {
   readonly capabilities: ProviderCapabilities = {
     supportsStreaming: true,
     supportsThinking: false,
-    supportsToolUse: true,
+    // Flag/reality alignment (Plan 02 Phase 1): the Copilot CLI emits plain
+    // text — no tool events ever fire, so no tool cards / permission gating.
+    supportsToolUse: false,
     supportsSessions: true,
-    supportsAutoInstall: true
+    supportsAutoInstall: true,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'none',
+    thinkingLevelEffective: false,
+    planMode: 'detected',
+    sessionKind: 'prompt-history',  // fabricated --resume IDs (F4/B5) — honest value until Plan 00 Batch 2.4 lands
+    emitsToolResults: false,        // plain-text output: no tool events at all
+    emitsUsage: true,
+    modelSelection: 'full'
   };
 
   protected _createSession(panelId: string): CopilotSessionState {

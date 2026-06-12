@@ -100,7 +100,15 @@ export class LocalAIProvider extends BaseCliProvider {
     supportsToolUse: true,
     supportsSessions: false,
     supportsImages: false,
-    supportsAutoInstall: false
+    supportsAutoInstall: false,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'none',
+    thinkingLevelEffective: false,
+    planMode: 'detected',
+    sessionKind: 'none',           // stateless HTTP requests
+    emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
+    emitsUsage: true,
+    modelSelection: 'custom-only'  // models live on the user's LocalAI server
   };
 
   protected _createSession(panelId: string): LocalAISessionState {

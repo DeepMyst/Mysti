@@ -104,7 +104,15 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     supportsPersistentProcess: true,
     supportsImages: true,
     supportsFileAttachments: true,
-    supportsAutoInstall: true
+    supportsAutoInstall: true,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'streamed',     // incremental thinking deltas
+    thinkingLevelEffective: true,  // levels map to real token budgets (getThinkingTokens)
+    planMode: 'native',            // sole emitter of exit_plan_mode
+    sessionKind: 'cli-resume',     // --resume with CLI-issued session IDs
+    emitsToolResults: true,
+    emitsUsage: true,
+    modelSelection: 'full'
   };
 
   async discoverCli(): Promise<CliDiscoveryResult> {

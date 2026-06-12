@@ -15,6 +15,7 @@ import * as vscode from 'vscode';
 import { v4 as uuidv4 } from 'uuid';
 import { ProviderManager } from './ProviderManager';
 import type { PersonaConfig } from '../providers/base/IProvider';
+import { getProviderDisplayMeta } from '../providers/base/ProviderManifest';
 import type {
   ContextItem,
   Settings,
@@ -30,65 +31,26 @@ import type {
 import { BRAINSTORM_SILENCE_TIMEOUT_MS } from '../constants';
 
 /**
- * Agent color and icon definitions
+ * Brainstorm-specific emoji badges per agent. Display identity
+ * (name/color) comes from the Provider Manifest (Plan 02 Phase 1) —
+ * only this brainstorm styling stays local.
  */
-const AGENT_STYLES: Record<AgentType, { color: string; icon: string; displayName: string }> = {
-  'claude-code': {
-    color: '#8B5CF6', // Purple
-    icon: '🟣',
-    displayName: 'Claude'
-  },
-  'openai-codex': {
-    color: '#10B981', // Green
-    icon: '🟢',
-    displayName: 'Codex'
-  },
-  'google-gemini': {
-    color: '#4285F4', // Google Blue
-    icon: '🔵',
-    displayName: 'Gemini'
-  },
-  'cline': {
-    color: '#F59E0B', // Amber
-    icon: '🟠',
-    displayName: 'Cline'
-  },
-  'github-copilot': {
-    color: '#6366F1', // Indigo
-    icon: '🟡',
-    displayName: 'Copilot'
-  },
-  'cursor': {
-    color: '#00A3FF', // Cursor Blue
-    icon: '🔷',
-    displayName: 'Cursor'
-  },
-  'openclaw': {
-    color: '#E11D48', // Rose
-    icon: '🔴',
-    displayName: 'OpenClaw'
-  },
-  'opencode': {
-    color: '#22C55E', // Green
-    icon: '🟩',
-    displayName: 'OpenCode'
-  },
-  'ollama': {
-    color: '#FFFFFF', // White
-    icon: '🦙',
-    displayName: 'Ollama'
-  },
-  'localai': {
-    color: '#06B6D4', // Cyan
-    icon: '🏠',
-    displayName: 'LocalAI'
-  },
-  'qwen-code': {
-    color: '#6C5CE7', // Purple
-    icon: '🟪',
-    displayName: 'Qwen'
-  }
+const AGENT_BRAINSTORM_ICONS: Record<AgentType, string> = {
+  'claude-code': '🟣',
+  'openai-codex': '🟢',
+  'google-gemini': '🔵',
+  'cline': '🟠',
+  'github-copilot': '🟡',
+  'cursor': '🔷',
+  'openclaw': '🔴',
+  'opencode': '🟩',
+  'ollama': '🦙',
+  'localai': '🏠',
+  'qwen-code': '🟪'
 };
+
+const FALLBACK_AGENT_COLOR = '#888888';
+const FALLBACK_AGENT_ICON = '🤖';
 
 /**
  * BrainstormManager - Orchestrates multi-agent team collaboration
@@ -118,8 +80,8 @@ export class BrainstormManager {
     const config = vscode.workspace.getConfiguration('mysti');
     // Read user-selected agents from settings (pick 2 of 7)
     const selectedAgents = config.get<AgentType[]>('brainstorm.agents', ['claude-code', 'openai-codex']);
-    // Ensure we have exactly 2 valid agents
-    const validAgents = selectedAgents.filter(a => AGENT_STYLES[a]).slice(0, 2);
+    // Ensure we have exactly 2 valid agents (validated against the manifest's display registry)
+    const validAgents = selectedAgents.filter(a => !!getProviderDisplayMeta(a)).slice(0, 2);
     const agents = validAgents.length === 2 ? validAgents : ['claude-code', 'openai-codex'] as AgentType[];
 
     // Support new strategy setting with backward compat for old discussionMode
@@ -201,13 +163,17 @@ export class BrainstormManager {
    * Build agent configurations for the session
    */
   private _buildAgentConfigs(agentIds: AgentType[]): AgentConfig[] {
-    return agentIds.map(id => ({
-      id,
-      displayName: AGENT_STYLES[id].displayName,
-      color: AGENT_STYLES[id].color,
-      icon: AGENT_STYLES[id].icon,
-      persona: this._getPersonaConfig(id)
-    }));
+    return agentIds.map(id => {
+      // Display identity from the Provider Manifest (Plan 02 Phase 1)
+      const meta = getProviderDisplayMeta(id);
+      return {
+        id,
+        displayName: meta?.displayName ?? id,
+        color: meta?.color ?? FALLBACK_AGENT_COLOR,
+        icon: AGENT_BRAINSTORM_ICONS[id] ?? FALLBACK_AGENT_ICON,
+        persona: this._getPersonaConfig(id)
+      };
+    });
   }
 
   /**

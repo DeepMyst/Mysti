@@ -84,6 +84,13 @@ export interface FileChangeInfo {
   diffLines: DiffLine[];
 }
 
+/**
+ * ACP-style semantic tool kind (Plan 02): lets the webview render one
+ * icon/card system instead of inferring from raw per-CLI tool names.
+ * Populated at parse time by each provider (Plan 02 Phase 3).
+ */
+export type ToolCallKind = 'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute' | 'think' | 'fetch' | 'other';
+
 export interface ToolCall {
   id: string;
   name: string;
@@ -91,6 +98,8 @@ export interface ToolCall {
   output?: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   fileChange?: FileChangeInfo;
+  /** Semantic kind for provider-agnostic rendering (optional until Phase 3 stamps it) */
+  kind?: ToolCallKind;
 }
 
 export interface Conversation {
@@ -186,6 +195,54 @@ export interface WebviewMessage {
   type: string;
   payload?: unknown;
 }
+
+// ============================================================================
+// Typed webview message contracts (Plan 02 Phase 1)
+// New extension→webview messages get compile-time shapes; legacy messages
+// stay on the loose WebviewMessage type until the full discriminated-union
+// migration (Plan 02 Open Question 6).
+// ============================================================================
+
+/**
+ * Provider Manifest payload — posted inside `initialState` (as
+ * `payload.providerManifest`) and as the full payload of `manifestUpdated`.
+ * schemaVersion guards cached webviews against message-shape skew.
+ */
+export interface ProviderManifestPayload {
+  schemaVersion: number;
+  providers: import('./providers/base/IProvider').ProviderManifestEntry[];
+}
+
+export interface ManifestUpdatedMessage {
+  type: 'manifestUpdated';
+  payload: ProviderManifestPayload;
+}
+
+/** Streaming heartbeat phase (Plan 02 Phase 7, GitHub #31) */
+export type StreamStatusPhase = 'waiting-first-token' | 'thinking' | 'tool-running' | 'generating';
+
+/**
+ * Heartbeat posted by the extension while a stream is silent (>10s) so the
+ * user always sees that something is happening.
+ */
+export interface StreamStatusPayload {
+  panelId: string;
+  phase: StreamStatusPhase;
+  /** Milliseconds since the last chunk arrived */
+  silentMs: number;
+  /** Milliseconds since the stream started */
+  elapsedMs: number;
+  /** Set when phase === 'tool-running' */
+  toolName?: string;
+}
+
+export interface StreamStatusMessage {
+  type: 'streamStatus';
+  payload: StreamStatusPayload;
+}
+
+/** Union of the new, strictly-typed extension→webview messages */
+export type TypedWebviewMessage = ManifestUpdatedMessage | StreamStatusMessage;
 
 export interface ProviderConfig {
   name: string;
@@ -366,6 +423,7 @@ export interface BrainstormSession {
 // Streaming chunk for brainstorm mode
 export interface BrainstormStreamChunk {
   type: 'agent_text' | 'agent_thinking' | 'agent_complete' | 'agent_error' |
+        'agent_status' |
         'discussion_text' | 'discussion_round_start' | 'discussion_error' |
         'convergence_update' |
         'synthesis_text' | 'synthesis_fallback' | 'phase_change' | 'done';
@@ -377,6 +435,10 @@ export interface BrainstormStreamChunk {
   roundNumber?: number;
   convergence?: ConvergenceMetrics;
   strategy?: CollaborationStrategy;
+  /** agent_status (Plan 02 Phase 7 warn-then-wait): how long the agent has been silent */
+  silentMs?: number;
+  /** agent_status: total elapsed time for the agent's turn */
+  elapsedMs?: number;
 }
 
 // ============================================================================

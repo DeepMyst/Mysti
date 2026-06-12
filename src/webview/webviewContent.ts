@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { PROVIDER_MANIFEST_SCHEMA_VERSION } from '../providers/base/ProviderManifest';
 
 export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri, version: string = '0.0.0'): string {
   const nonce = getNonce();
@@ -169,21 +170,14 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
           <option value="medium">Medium</option>
           <option value="high">High</option>
         </select>
+        <div class="settings-hint hidden" id="thinking-advisory-hint">Advisory only — this agent shows its thinking but does not enforce the selected level.</div>
       </div>
       <div class="settings-section">
         <label class="settings-label">Agent</label>
+        <!-- W9: provider options are rendered from state.providerManifest
+             (renderProviderSelectOptions); only the brainstorm pseudo-agent
+             is static. -->
         <select id="provider-select" class="select">
-          <option value="claude-code">Claude Code</option>
-          <option value="cursor">Cursor</option>
-          <option value="openai-codex">OpenAI Codex</option>
-          <option value="google-gemini">Gemini</option>
-          <option value="github-copilot">GitHub Copilot</option>
-          <option value="openclaw">OpenClaw</option>
-          <option value="cline">Cline</option>
-          <option value="opencode">OpenCode</option>
-          <option value="ollama">Ollama</option>
-          <option value="localai">LocalAI</option>
-          <option value="qwen-code">Qwen Code</option>
           <option value="brainstorm">Brainstorm</option>
         </select>
       </div>
@@ -196,93 +190,16 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <input type="text" id="custom-model-input" class="input" placeholder="Enter model name (e.g. claude-sonnet-4-5-20250929)" maxlength="128" />
         <div id="custom-model-error" class="settings-hint" style="color: var(--vscode-errorForeground); display: none;"></div>
       </div>
-      <div id="codex-settings-section" class="settings-section hidden">
-        <label class="settings-label">Codex Profile</label>
-        <input type="text" id="codex-profile-input" class="input" placeholder="Profile from ~/.codex/config.toml" maxlength="64" />
-        <div id="codex-profile-error" class="settings-hint" style="color: var(--vscode-errorForeground); display: none;"></div>
-      </div>
+      <!-- W4: provider-specific settings sections are rendered declaratively
+           from the manifest entry's settingsSections
+           (renderProviderSettingsSections). -->
+      <div id="provider-settings-sections"></div>
       <div class="settings-section hidden" id="brainstorm-agents-section">
         <label class="settings-label">Brainstorm Agents</label>
         <div class="settings-hint">Select 2 agents for brainstorm mode</div>
-        <div class="brainstorm-agent-selector">
-          <label class="brainstorm-agent-option" data-agent="claude-code">
-            <input type="checkbox" name="brainstorm-agent" value="claude-code" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #8B5CF6;"></span>
-              <span class="brainstorm-agent-name">Claude</span>
-            </span>
-          </label>
-          <label class="brainstorm-agent-option" data-agent="openai-codex">
-            <input type="checkbox" name="brainstorm-agent" value="openai-codex" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #10B981;"></span>
-              <span class="brainstorm-agent-name">Codex</span>
-            </span>
-          </label>
-          <label class="brainstorm-agent-option" data-agent="google-gemini">
-            <input type="checkbox" name="brainstorm-agent" value="google-gemini" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #4285F4;"></span>
-              <span class="brainstorm-agent-name">Gemini</span>
-            </span>
-          </label>
-          <label class="brainstorm-agent-option" data-agent="cline">
-            <input type="checkbox" name="brainstorm-agent" value="cline" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #F59E0B;"></span>
-              <span class="brainstorm-agent-name">Cline</span>
-            </span>
-          </label>
-          <label class="brainstorm-agent-option" data-agent="github-copilot">
-            <input type="checkbox" name="brainstorm-agent" value="github-copilot" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #6366F1;"></span>
-              <span class="brainstorm-agent-name">Copilot</span>
-            </span>
-          </label>
-          <label class="brainstorm-agent-option" data-agent="cursor">
-            <input type="checkbox" name="brainstorm-agent" value="cursor" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #00A3FF;"></span>
-              <span class="brainstorm-agent-name">Cursor</span>
-            </span>
-          </label>
-          <label class="brainstorm-agent-option" data-agent="openclaw">
-            <input type="checkbox" name="brainstorm-agent" value="openclaw" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #E11D48;"></span>
-              <span class="brainstorm-agent-name">OpenClaw</span>
-            </span>
-          </label>
-          <label class="brainstorm-agent-option" data-agent="opencode">
-            <input type="checkbox" name="brainstorm-agent" value="opencode" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #22C55E;"></span>
-              <span class="brainstorm-agent-name">OpenCode</span>
-            </span>
-          </label>
-          <label class="brainstorm-agent-option" data-agent="ollama">
-            <input type="checkbox" name="brainstorm-agent" value="ollama" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #FFFFFF;"></span>
-              <span class="brainstorm-agent-name">Ollama</span>
-            </span>
-          </label>
-          <label class="brainstorm-agent-option" data-agent="localai">
-            <input type="checkbox" name="brainstorm-agent" value="localai" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #06B6D4;"></span>
-              <span class="brainstorm-agent-name">LocalAI</span>
-            </span>
-          </label>
-          <label class="brainstorm-agent-option" data-agent="qwen-code">
-            <input type="checkbox" name="brainstorm-agent" value="qwen-code" />
-            <span class="brainstorm-agent-chip">
-              <span class="brainstorm-agent-dot" style="background: #6C5CE7;"></span>
-              <span class="brainstorm-agent-name">Qwen</span>
-            </span>
-          </label>
-        </div>
+        <!-- W9/W10: brainstorm agent options are rendered from
+             state.providerManifest (renderBrainstormAgentOptions). -->
+        <div class="brainstorm-agent-selector" id="brainstorm-agent-selector"></div>
         <div class="brainstorm-agent-error hidden" id="brainstorm-agent-error">
           Please select exactly 2 agents
         </div>
@@ -832,6 +749,10 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     </div>
 
     <!-- Agent selection menu -->
+    <!-- mysti:provider-literals:allow-start — static bootstrap markup rendered
+         before the provider manifest arrives; identity (labels/logos) is
+         refreshed from the manifest at runtime (updateAgentMenuSelection /
+         updateThemeAwareLogos). -->
     <div id="agent-menu" class="agent-menu hidden">
       <div class="agent-menu-header">Select Agent</div>
       <div class="agent-menu-item selected" data-agent="claude-code">
@@ -844,7 +765,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <span class="agent-item-name">Cursor</span>
       </div>
       <div class="agent-menu-item" data-agent="openai-codex">
-        <span class="agent-item-icon"><img class="openai-logo" src="${openaiLogoDarkUri}" alt="" /></span>
+        <span class="agent-item-icon"><img class="openai-logo" data-agent-logo="openai-codex" src="${openaiLogoDarkUri}" alt="" /></span>
         <span class="agent-item-name">OpenAI Codex</span>
       </div>
       <div class="agent-menu-item" data-agent="google-gemini">
@@ -886,6 +807,8 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <span class="agent-item-desc">Both agents collaborate</span>
       </div>
     </div>
+    <!-- mysti:provider-literals:allow-end -->
+
   </div>
 
   <!-- Setup Overlay (legacy - kept for backward compatibility) -->
@@ -931,6 +854,9 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
       </div>
 
       <!-- Provider Cards -->
+      <!-- mysti:provider-literals:allow-start — static setup-wizard bootstrap
+           cards shown before initialState/manifest exists (the wizard replaces
+           initialState entirely). Runtime identity comes from the manifest. -->
       <div class="wizard-providers">
         <!-- Claude Code -->
         <div class="provider-card" data-provider="claude-code">
@@ -956,7 +882,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         <!-- OpenAI Codex -->
         <div class="provider-card" data-provider="openai-codex">
           <div class="provider-card-header">
-            <img src="${openaiLogoDarkUri}" alt="OpenAI" class="provider-logo openai-logo" />
+            <img src="${openaiLogoDarkUri}" alt="OpenAI" class="provider-logo openai-logo" data-agent-logo="openai-codex" />
             <div class="provider-info">
               <h3>OpenAI Codex</h3>
               <span class="provider-status" data-status="unknown">Checking...</span>
@@ -1080,6 +1006,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
         </div>
 
       </div>
+      <!-- mysti:provider-literals:allow-end -->
 
       <!-- Auth Options Modal (for Gemini) -->
       <div id="auth-options-modal" class="auth-options-modal hidden">
@@ -9070,17 +8997,36 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var QWEN_LOGO = '${qwenLogoUri}';
       var MYSTI_LOGO = '${logoUri}';
 
-      // Theme detection for OpenAI logo
+      // Theme detection for theme-aware provider logos
       function isDarkTheme() {
         return document.body.classList.contains('vscode-dark') ||
                document.body.classList.contains('vscode-high-contrast');
       }
 
-      function getOpenAILogo() {
-        return isDarkTheme() ? OPENAI_LOGO_DARK : OPENAI_LOGO_LIGHT;
-      }
+      // Plan 02 Phase 2: provider manifest schema this webview build was
+      // generated against. Payloads with a different schemaVersion are
+      // ignored (a cached webview must not trust an incompatible shape).
+      var EXPECTED_MANIFEST_SCHEMA_VERSION = ${PROVIDER_MANIFEST_SCHEMA_VERSION};
 
-      var OPENAI_LOGO = getOpenAILogo();
+      // Manifest entries carry icon paths relative to the extension's
+      // resources/ folder; the webview can only use pre-resolved webview
+      // URIs, so this map translates manifest icon paths to the URIs
+      // injected at HTML-generation time. Keyed by asset path — NOT by
+      // provider id — so render logic stays provider-name free.
+      var LOGO_BY_ICON_PATH = {
+        'icons/Claude.png': CLAUDE_LOGO,
+        'icons/openai.svg': OPENAI_LOGO_LIGHT,
+        'icons/openai_white.png': OPENAI_LOGO_DARK,
+        'icons/gemini.png.webp': GEMINI_LOGO,
+        'icons/cline.png': CLINE_LOGO,
+        'icons/copilot.png': COPILOT_LOGO,
+        'icons/cursor.png': CURSOR_LOGO,
+        'icons/openclaw.png': OPENCLAW_LOGO,
+        'icons/opencode.png': OPENCODE_LOGO,
+        'icons/ollama.png': OLLAMA_LOGO,
+        'icons/localai.png': LOCALAI_LOGO,
+        'icons/qwen.png': QWEN_LOGO
+      };
 
       // Mermaid lazy loading
       var mermaidLoaded = false;
@@ -9311,8 +9257,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           accessLevel: 'ask-permission',
           contextMode: 'auto',
           model: 'claude-sonnet-4-5-20250929',
-          provider: 'claude-code'
+          provider: 'claude-code' // mysti:provider-literals:allow-line — bootstrap default, replaced by initialState
         },
+        // Plan 02 Phase 2: capability manifest (ProviderManifestPayload) —
+        // delivered on initialState and refreshed via 'manifestUpdated'.
+        providerManifest: null,
         context: [],
         attachments: [],
         messages: [],
@@ -9331,7 +9280,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           percentage: 0
         },
         // Brainstorm mode state
-        activeAgent: 'claude-code',
+        activeAgent: 'claude-code', // mysti:provider-literals:allow-line — bootstrap default, replaced by initialState
         brainstormSession: null,
         brainstormPhase: null,
         brainstormStrategy: null,
@@ -9362,8 +9311,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           maxTokenBudget: 0,
           showSuggestions: true
         },
-        // Brainstorm agent selection (which 2 of 3 agents to use)
-        brainstormAgents: ['claude-code', 'openai-codex'],
+        // Brainstorm agent selection (which 2 agents to use)
+        brainstormAgents: ['claude-code', 'openai-codex'], // mysti:provider-literals:allow-line — bootstrap default, replaced by initialState
         // Provider availability for brainstorm section
         providerAvailability: {},
         // Setup state (legacy)
@@ -9397,43 +9346,258 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
       };
 
-      // Agent display configuration for brainstorm UI
-      var AGENT_DISPLAY = {
-        'claude-code': { name: 'Claude', shortId: 'claude', color: '#8B5CF6', logo: CLAUDE_LOGO },
-        'openai-codex': { name: 'Codex', shortId: 'codex', color: '#10B981', logo: null }, // Uses getOpenAILogo() for theme support
-        'google-gemini': { name: 'Gemini', shortId: 'gemini', color: '#4285F4', logo: GEMINI_LOGO },
-        'cline': { name: 'Cline', shortId: 'cline', color: '#F59E0B', logo: CLINE_LOGO },
-        'github-copilot': { name: 'Copilot', shortId: 'copilot', color: '#6366F1', logo: COPILOT_LOGO },
-        'cursor': { name: 'Cursor', shortId: 'cursor', color: '#00A3FF', logo: CURSOR_LOGO },
-        'openclaw': { name: 'OpenClaw', shortId: 'openclaw', color: '#E11D48', logo: OPENCLAW_LOGO },
-        'opencode': { name: 'OpenCode', shortId: 'opencode', color: '#22C55E', logo: OPENCODE_LOGO },
-        'ollama': { name: 'Ollama', shortId: 'ollama', color: '#FFFFFF', logo: OLLAMA_LOGO },
-        'localai': { name: 'LocalAI', shortId: 'localai', color: '#06B6D4', logo: LOCALAI_LOGO },
-        'qwen-code': { name: 'Qwen', shortId: 'qwen', color: '#6C5CE7', logo: QWEN_LOGO }
-      };
+      // ========================================================================
+      // Provider manifest accessors (Plan 02 Phase 2)
+      //
+      // The webview renders from the capability manifest shipped by the
+      // extension (state.providerManifest) — never from provider-name
+      // literals. A provider id only selects display identity (name, color,
+      // logo, shortId) from its manifest entry.
+      // ========================================================================
 
-      // Helper to get agent logo (handles OpenAI theme switching)
-      function getAgentLogo(agentId) {
-        if (agentId === 'openai-codex') {
-          return getOpenAILogo();
+      function getManifestEntry(providerId) {
+        var manifest = state.providerManifest;
+        if (!manifest || !manifest.providers) return undefined;
+        for (var i = 0; i < manifest.providers.length; i++) {
+          if (manifest.providers[i].id === providerId) return manifest.providers[i];
         }
-        return AGENT_DISPLAY[agentId] ? AGENT_DISPLAY[agentId].logo : '';
+        return undefined;
       }
 
-      // Helper to get short ID for an agent
+      // Ordered provider ids — manifest first, providerAvailability keys as a
+      // pre-manifest fallback (wizard mode posts availability before any
+      // initialState).
+      function getManifestProviderIds() {
+        var manifest = state.providerManifest;
+        if (manifest && manifest.providers && manifest.providers.length > 0) {
+          return manifest.providers.map(function(p) { return p.id; });
+        }
+        return Object.keys(state.providerAvailability || {});
+      }
+
+      // Thinking render shape for an agent ('streamed' | 'complete-blocks' |
+      // 'none'); undefined when the manifest has no entry for the id.
+      function getThinkingStyle(providerId) {
+        var entry = getManifestEntry(providerId);
+        if (!entry || !entry.capabilities) return undefined;
+        return entry.capabilities.thinkingStyle || 'none';
+      }
+
+      // Resolve a manifest entry's logo to a webview URI, honoring
+      // theme-aware logos (entry.iconDark in dark themes).
+      function getEntryLogo(entry) {
+        if (!entry) return '';
+        if (entry.themeAwareLogo && entry.iconDark && isDarkTheme()) {
+          return LOGO_BY_ICON_PATH[entry.iconDark] || LOGO_BY_ICON_PATH[entry.icon] || '';
+        }
+        return LOGO_BY_ICON_PATH[entry.icon] || '';
+      }
+
+      function getAgentLogo(agentId) {
+        return getEntryLogo(getManifestEntry(agentId));
+      }
+
       function getAgentShortId(agentId) {
-        return AGENT_DISPLAY[agentId] ? AGENT_DISPLAY[agentId].shortId : agentId;
+        var entry = getManifestEntry(agentId);
+        return entry ? entry.shortId : agentId;
+      }
+
+      // Display identity bundle with safe fallbacks for unknown ids /
+      // pre-manifest renders (shape matches the old AGENT_DISPLAY entries).
+      function getAgentDisplay(agentId) {
+        var entry = getManifestEntry(agentId);
+        if (entry) {
+          return { name: entry.displayName, shortId: entry.shortId, color: entry.color, logo: getEntryLogo(entry) };
+        }
+        return { name: agentId, shortId: agentId, color: '#888', logo: '' };
+      }
+
+      // W10: brainstorm default pair = first two manifest providers.
+      function defaultBrainstormPair() {
+        return getManifestProviderIds().slice(0, 2);
       }
 
       // ========================================================================
       // @-Mention system functions
       // ========================================================================
 
-      // Build reverse map: shortId -> providerId
+      // Reverse map: shortId -> providerId (rebuilt from the manifest by
+      // applyProviderManifest).
       var MENTION_SHORT_MAP = {};
-      Object.keys(AGENT_DISPLAY).forEach(function(id) {
-        MENTION_SHORT_MAP[AGENT_DISPLAY[id].shortId] = id;
-      });
+      function rebuildMentionShortMap() {
+        MENTION_SHORT_MAP = {};
+        var manifest = state.providerManifest;
+        var providers = (manifest && manifest.providers) || [];
+        providers.forEach(function(p) {
+          MENTION_SHORT_MAP[p.shortId] = p.id;
+        });
+      }
+
+      // ========================================================================
+      // Manifest-driven UI builders (Plan 02 Phase 2 — W4/W9/W10)
+      // ========================================================================
+
+      function manifestFingerprint() {
+        var manifest = state.providerManifest;
+        var providers = (manifest && manifest.providers) || [];
+        return providers.map(function(p) {
+          return p.id + '|' + p.displayName + '|' + p.color;
+        }).join(',');
+      }
+
+      // W9: settings "Agent" dropdown options come from the manifest; only
+      // the brainstorm pseudo-agent is appended statically.
+      function renderProviderSelectOptions() {
+        if (!providerSelect) return;
+        var manifest = state.providerManifest;
+        var providers = (manifest && manifest.providers) || [];
+        if (providers.length === 0) return; // keep bootstrap markup until the manifest arrives
+        var fingerprint = manifestFingerprint();
+        if (providerSelect.dataset.manifestFingerprint === fingerprint) return;
+        providerSelect.dataset.manifestFingerprint = fingerprint;
+        var html = providers.map(function(p) {
+          return '<option value="' + p.id + '">' + escapeHtml(p.displayName) + '</option>';
+        }).join('');
+        html += '<option value="brainstorm">Brainstorm</option>';
+        providerSelect.innerHTML = html;
+        var desired = (state.settings && state.settings.provider) || (state.activeAgent !== 'brainstorm' ? state.activeAgent : null);
+        if (desired) providerSelect.value = desired;
+      }
+
+      // W9/W10: brainstorm agent checkboxes come from the manifest.
+      function renderBrainstormAgentOptions() {
+        var selector = document.getElementById('brainstorm-agent-selector');
+        if (!selector) return;
+        var manifest = state.providerManifest;
+        var providers = (manifest && manifest.providers) || [];
+        if (providers.length === 0) return;
+        var fingerprint = manifestFingerprint();
+        if (selector.dataset.manifestFingerprint === fingerprint) return;
+        selector.dataset.manifestFingerprint = fingerprint;
+        selector.innerHTML = providers.map(function(p) {
+          return '<label class="brainstorm-agent-option" data-agent="' + p.id + '">' +
+            '<input type="checkbox" name="brainstorm-agent" value="' + p.id + '" />' +
+            '<span class="brainstorm-agent-chip">' +
+              '<span class="brainstorm-agent-dot" style="background: ' + p.color + ';"></span>' +
+              '<span class="brainstorm-agent-name">' + escapeHtml(p.displayName) + '</span>' +
+            '</span>' +
+          '</label>';
+        }).join('');
+        // Re-bind the live NodeList + change handlers (the old nodes are gone)
+        brainstormAgentCheckboxes = document.querySelectorAll('input[name="brainstorm-agent"]');
+        brainstormAgentCheckboxes.forEach(function(cb) {
+          cb.addEventListener('change', updateBrainstormAgentSelection);
+        });
+        if (state.brainstormAgents) {
+          updateBrainstormAgentsUI();
+        }
+      }
+
+      // W4: declarative provider settings sections (replaces the hard-coded
+      // codexSettingsSection). Renders each manifest settingsSections item;
+      // values come from state.providerSettings keyed by settingKey, writes
+      // go through updateSettings with the settingKey as payload key.
+      function renderProviderSettingsSections(providerId) {
+        var container = document.getElementById('provider-settings-sections');
+        if (!container) return;
+        container.innerHTML = '';
+        var entry = getManifestEntry(providerId);
+        var sections = (entry && entry.settingsSections) || [];
+        sections.forEach(function(section) {
+          var wrap = document.createElement('div');
+          wrap.className = 'settings-section';
+          var label = document.createElement('label');
+          label.className = 'settings-label';
+          label.textContent = section.label || section.id;
+          wrap.appendChild(label);
+
+          if (section.type === 'note') {
+            var note = document.createElement('div');
+            note.className = 'settings-hint';
+            note.textContent = section.description || '';
+            wrap.appendChild(note);
+            container.appendChild(wrap);
+            return;
+          }
+
+          // The extension only persists keys it ships values for (today:
+          // codexProfile). Until the extension exposes a value for this
+          // settingKey, render read-only and point at VS Code settings —
+          // never a control whose writes silently vanish.
+          var persistable = !!(section.settingKey && state.providerSettings &&
+            Object.prototype.hasOwnProperty.call(state.providerSettings, section.settingKey));
+          var savedValue = persistable ? (state.providerSettings[section.settingKey] || '') : '';
+
+          var control;
+          if (section.type === 'select') {
+            control = document.createElement('select');
+            control.className = 'select';
+            (section.options || []).forEach(function(opt) {
+              var o = document.createElement('option');
+              o.value = opt.value;
+              o.textContent = opt.label;
+              control.appendChild(o);
+            });
+            if (savedValue) control.value = savedValue;
+          } else {
+            control = document.createElement('input');
+            control.type = section.type === 'number' ? 'number' : 'text';
+            control.className = 'input';
+            if (section.placeholder) control.placeholder = section.placeholder;
+            control.value = savedValue;
+            control.maxLength = 256;
+          }
+
+          var errorEl = document.createElement('div');
+          errorEl.className = 'settings-hint';
+          errorEl.style.color = 'var(--vscode-errorForeground)';
+          errorEl.style.display = 'none';
+
+          if (persistable) {
+            control.addEventListener('change', function() {
+              var raw = (control.value || '').trim();
+              var value = (section.type === 'number' && raw !== '') ? Number(raw) : raw;
+              if (section.type === 'number' && raw !== '' && isNaN(value)) {
+                control.style.borderColor = 'var(--vscode-errorForeground)';
+                errorEl.textContent = 'Must be a number';
+                errorEl.style.display = 'block';
+                return;
+              }
+              control.style.borderColor = '';
+              errorEl.style.display = 'none';
+              state.providerSettings[section.settingKey] = value;
+              var payload = {};
+              payload[section.settingKey] = value;
+              postMessageWithPanelId({ type: 'updateSettings', payload: payload });
+            });
+          } else {
+            control.disabled = true;
+            control.title = 'Set "mysti.' + (section.settingKey || '') + '" in VS Code Settings';
+          }
+
+          wrap.appendChild(control);
+          wrap.appendChild(errorEl);
+
+          var hintText = section.description || '';
+          if (!persistable && section.settingKey) {
+            hintText = (hintText ? hintText + ' ' : '') + 'Configure via VS Code settings: mysti.' + section.settingKey + '.';
+          }
+          if (hintText) {
+            var hint = document.createElement('div');
+            hint.className = 'settings-hint';
+            hint.textContent = hintText;
+            wrap.appendChild(hint);
+          }
+          container.appendChild(wrap);
+        });
+      }
+
+      // Apply a (new) manifest to every manifest-derived UI surface.
+      function applyProviderManifest() {
+        rebuildMentionShortMap();
+        renderProviderSelectOptions();
+        renderBrainstormAgentOptions();
+      }
 
       // Fuzzy match scorer: returns a score (higher = better) or -1 for no match.
       // Prefers: starts-with > word-boundary match > contains > fuzzy character match
@@ -9507,23 +9671,23 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var agentsHeader = mentionMenu ? mentionMenu.querySelector('.mention-menu-header') : null;
         if (!mentionMenu || !agentsList || !filesList) return;
 
-        // Build and score agent items
+        // Build and score agent items (from the provider manifest)
         var scoredAgents = [];
-        Object.keys(AGENT_DISPLAY).forEach(function(id) {
-          var info = AGENT_DISPLAY[id];
+        var manifestProviders = (state.providerManifest && state.providerManifest.providers) || [];
+        manifestProviders.forEach(function(entry) {
           // Score against display name, short name, and full id
           var bestScore = Math.max(
-            fuzzyScore(info.name, query),
-            fuzzyScore(info.shortId, query),
-            fuzzyScore(id, query)
+            fuzzyScore(entry.displayName, query),
+            fuzzyScore(entry.shortId, query),
+            fuzzyScore(entry.id, query)
           );
           if (bestScore >= 0) {
             scoredAgents.push({
               type: 'agent',
-              value: id,
-              displayName: info.name,
-              shortName: info.shortId,
-              logo: getAgentLogo(id),
+              value: entry.id,
+              displayName: entry.displayName,
+              shortName: entry.shortId,
+              logo: getEntryLogo(entry),
               score: bestScore
             });
           }
@@ -9572,8 +9736,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
         agentsList.innerHTML = scoredAgents.map(function(item, idx) {
           var logoHtml = item.logo
-            ? '<img class="mention-icon" src="' + item.logo + '" alt="" />'
-            : '<span class="mention-file-icon">' + (AGENT_DISPLAY[item.value] ? AGENT_DISPLAY[item.value].shortId[0].toUpperCase() : '?') + '</span>';
+            ? '<img class="mention-icon" data-agent-logo="' + item.value + '" src="' + item.logo + '" alt="" />'
+            : '<span class="mention-file-icon">' + (item.shortName ? item.shortName[0].toUpperCase() : '?') + '</span>';
           var nameHtml = highlightMatch(item.displayName, query);
           return '<div class="mention-menu-item' + (idx === state.mentionMenuIndex ? ' selected' : '') + '" data-index="' + idx + '" data-type="agent" data-value="' + item.value + '">'
             + logoHtml
@@ -9700,8 +9864,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       // Sub-agent card rendering
       function handleSubAgentStarted(payload) {
         var agentId = payload.agentId;
-        var agentInfo = AGENT_DISPLAY[agentId] || { name: agentId, color: '#888', shortId: agentId };
-        var logoSrc = getAgentLogo(agentId);
+        var agentInfo = getAgentDisplay(agentId);
+        var logoSrc = agentInfo.logo;
         var messagesEl = document.getElementById('messages');
         if (!messagesEl) return;
 
@@ -9710,7 +9874,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         card.id = 'subagent-' + getAgentShortId(agentId);
 
         var logoHtml = logoSrc
-          ? '<img src="' + logoSrc + '" alt="" class="subagent-logo" />'
+          ? '<img src="' + logoSrc + '" alt="" class="subagent-logo" data-agent-logo="' + agentId + '" />'
           : '<span style="font-size:18px;">' + (agentInfo.shortId ? agentInfo.shortId[0].toUpperCase() : '?') + '</span>';
 
         card.innerHTML =
@@ -10165,7 +10329,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             banner.appendChild(arrow);
           }
 
-          var agentInfo = AGENT_DISPLAY[task.agent] || { name: task.agent };
+          var agentInfo = getAgentDisplay(task.agent);
           var pill = document.createElement('span');
           pill.className = 'mention-task-pill pending';
           pill.id = 'mention-task-pill-' + index;
@@ -10387,9 +10551,6 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       const customModelSection = document.getElementById('custom-model-section');
       const customModelInput = document.getElementById('custom-model-input');
       const customModelError = document.getElementById('custom-model-error');
-      const codexSettingsSection = document.getElementById('codex-settings-section');
-      const codexProfileInput = document.getElementById('codex-profile-input');
-      const codexProfileError = document.getElementById('codex-profile-error');
       const providerSelect = document.getElementById('provider-select');
       const accessSelect = document.getElementById('access-select');
       const contextModeBtn = document.getElementById('context-mode-btn');
@@ -10641,14 +10802,17 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
   }
 ];
 
-      // Helper to get provider-specific message from suggestion
+      // Helper to get provider-specific message from suggestion.
+      // W8: suggestion data may key messages by full provider id OR by the
+      // manifest shortId (legacy payloads) — match both via the manifest
+      // instead of a hard-coded alias map.
       function getProviderMessage(suggestion, currentProvider) {
         // New format: messages array with provider-specific entries
         if (suggestion.messages && Array.isArray(suggestion.messages)) {
+          var entry = getManifestEntry(currentProvider);
+          var shortId = entry ? entry.shortId : currentProvider;
           var found = suggestion.messages.find(function(m) {
-            return m.provider === currentProvider ||
-                   (currentProvider === 'claude-code' && m.provider === 'claude') ||
-                   (currentProvider === 'openai-codex' && m.provider === 'codex');
+            return m.provider === currentProvider || m.provider === shortId;
           });
           if (found) return found.message;
           // Fallback to first message if provider not found
@@ -11664,23 +11828,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
       });
 
-      // Codex profile input handler
-      codexProfileInput.addEventListener('change', function() {
-        var val = codexProfileInput.value.trim();
-        if (!val) {
-          postMessageWithPanelId({ type: 'updateSettings', payload: { codexProfile: '' } });
-          codexProfileError.style.display = 'none';
-          codexProfileInput.style.borderColor = '';
-        } else if (/^[a-zA-Z0-9][a-zA-Z0-9._\\-]*$/.test(val) && val.length <= 64) {
-          postMessageWithPanelId({ type: 'updateSettings', payload: { codexProfile: val } });
-          codexProfileError.style.display = 'none';
-          codexProfileInput.style.borderColor = '';
-        } else {
-          codexProfileInput.style.borderColor = 'var(--vscode-errorForeground)';
-          codexProfileError.textContent = 'Invalid profile name';
-          codexProfileError.style.display = 'block';
-        }
-      });
+      // W4: provider-specific inputs (Codex profile, endpoints, ...) are
+      // rendered + bound by renderProviderSettingsSections from the manifest.
 
       accessSelect.addEventListener('change', function() {
         state.settings.accessLevel = accessSelect.value;
@@ -11931,7 +12080,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         });
       }
 
-      // Brainstorm agent selection handlers
+      // Brainstorm agent selection handlers. The checkbox NodeList is
+      // re-assigned by renderBrainstormAgentOptions whenever the manifest
+      // (re)builds the options — it is empty until the manifest arrives.
       var brainstormAgentSection = document.getElementById('brainstorm-agents-section');
       var brainstormAgentCheckboxes = document.querySelectorAll('input[name="brainstorm-agent"]');
       var brainstormAgentError = document.getElementById('brainstorm-agent-error');
@@ -11968,9 +12119,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         });
       }
 
-      brainstormAgentCheckboxes.forEach(function(cb) {
-        cb.addEventListener('change', updateBrainstormAgentSelection);
-      });
+      // (change handlers are attached by renderBrainstormAgentOptions when
+      // the options are built from the manifest)
 
       // Brainstorm strategy selector handler
       var brainstormStrategySelect = document.getElementById('brainstorm-strategy-select');
@@ -12007,9 +12157,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         var providerAvailability = state.providerAvailability || {};
 
-        // Count available providers
+        // Count available providers (W9: ids come from the manifest)
         var availableCount = 0;
-        ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'].forEach(function(providerId) {
+        getManifestProviderIds().forEach(function(providerId) {
           if (providerAvailability[providerId] &&
               providerAvailability[providerId].available) {
             availableCount++;
@@ -12085,7 +12235,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           updateModelsForProvider(newProvider);
         }
 
-        // Hide thinking section for Gemini (doesn't support thinking tokens)
+        // W1: thinking selector visibility is capability-driven
         updateThinkingSectionVisibility(newProvider);
 
         // Show/hide strategy indicator chip for brainstorm
@@ -12095,12 +12245,22 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         postMessageWithPanelId({ type: 'updateSettings', payload: { provider: newProvider } });
       });
 
-      // Function to show/hide thinking section based on provider
+      // W1: show/hide the thinking selector from capabilities — hidden when
+      // the provider never emits thinking (thinkingStyle 'none'); shown with
+      // an advisory hint when it emits thinking but doesn't enforce the
+      // selected level (thinkingLevelEffective false). Unknown ids (the
+      // brainstorm pseudo-agent, pre-manifest renders) keep it visible.
       function updateThinkingSectionVisibility(provider) {
         var thinkingSection = document.getElementById('thinking-section');
-        if (thinkingSection) {
-          // Gemini doesn't support thinking tokens, hide the section
-          thinkingSection.style.display = (provider === 'google-gemini') ? 'none' : 'block';
+        if (!thinkingSection) return;
+        var entry = getManifestEntry(provider);
+        var caps = entry && entry.capabilities;
+        var hidden = !!(caps && caps.thinkingStyle === 'none');
+        thinkingSection.style.display = hidden ? 'none' : 'block';
+        var advisoryHint = document.getElementById('thinking-advisory-hint');
+        if (advisoryHint) {
+          var advisory = !hidden && !!caps && caps.thinkingLevelEffective === false;
+          advisoryHint.classList.toggle('hidden', !advisory);
         }
       }
 
@@ -12333,14 +12493,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           customModelInput.style.borderColor = '';
         }
 
-        // Show/hide Codex settings section
-        if (codexSettingsSection) {
-          if (providerId === 'openai-codex') {
-            codexSettingsSection.classList.remove('hidden');
-          } else {
-            codexSettingsSection.classList.add('hidden');
-          }
-        }
+        // W4: render this provider's declarative settings sections
+        renderProviderSettingsSections(providerId);
       }
 
       function updateAgentMenuSelection() {
@@ -12362,44 +12516,19 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             if (badge) badge.remove();
           }
         });
-        // Update agent button label and icon
+        // Update agent button label and icon (W6: identity from the manifest;
+        // 'brainstorm' is a pseudo-agent with Mysti branding)
         var agentNameEl = document.getElementById('agent-name');
         var agentIconEl = document.getElementById('agent-icon');
+        var isBrainstorm = state.activeAgent === 'brainstorm';
         if (agentNameEl) {
-          var agentNames = {
-            'claude-code': 'Claude',
-            'openai-codex': 'Codex',
-            'google-gemini': 'Gemini',
-            'cline': 'Cline',
-            'github-copilot': 'Copilot',
-            'cursor': 'Cursor',
-            'openclaw': 'OpenClaw',
-            'opencode': 'OpenCode',
-            'ollama': 'Ollama',
-            'localai': 'LocalAI',
-            'qwen-code': 'Qwen',
-            'brainstorm': 'Brainstorm'
-          };
-          agentNameEl.textContent = agentNames[state.activeAgent] || 'Claude';
+          agentNameEl.textContent = isBrainstorm ? 'Brainstorm' : getAgentDisplay(state.activeAgent).name;
         }
         if (agentIconEl) {
           var img = agentIconEl.querySelector('img');
           if (img) {
-            var agentLogos = {
-              'claude-code': CLAUDE_LOGO,
-              'openai-codex': getOpenAILogo(),
-              'google-gemini': GEMINI_LOGO,
-              'cline': CLINE_LOGO,
-              'github-copilot': COPILOT_LOGO,
-              'cursor': CURSOR_LOGO,
-              'openclaw': OPENCLAW_LOGO,
-              'opencode': OPENCODE_LOGO,
-              'ollama': OLLAMA_LOGO,
-              'localai': LOCALAI_LOGO,
-              'qwen-code': QWEN_LOGO,
-              'brainstorm': MYSTI_LOGO
-            };
-            img.src = agentLogos[state.activeAgent] || MYSTI_LOGO;
+            var logo = isBrainstorm ? MYSTI_LOGO : getAgentLogo(state.activeAgent);
+            img.src = logo || MYSTI_LOGO;
           }
         }
         // Sync settings provider dropdown (only for actual providers, not brainstorm)
@@ -12408,20 +12537,27 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
       }
 
-      // Update all OpenAI logos based on current theme
-      function updateOpenAILogos() {
-        var logo = getOpenAILogo();
-        document.querySelectorAll('.openai-logo').forEach(function(img) {
-          img.src = logo;
-        });
-        // Also update toolbar icon if currently showing OpenAI
-        if (state.activeAgent === 'openai-codex') {
-          var agentIconEl = document.getElementById('agent-icon');
-          if (agentIconEl) {
-            var img = agentIconEl.querySelector('img');
-            if (img) img.src = logo;
+      // W7: refresh every theme-aware provider logo from the manifest
+      // (entries with themeAwareLogo swap icon/iconDark with the theme).
+      // Rendered logos carry data-agent-logo="<providerId>".
+      function updateThemeAwareLogos() {
+        var providers = (state.providerManifest && state.providerManifest.providers) || [];
+        providers.forEach(function(entry) {
+          if (!entry.themeAwareLogo) return;
+          var logo = getEntryLogo(entry);
+          if (!logo) return;
+          document.querySelectorAll('img[data-agent-logo="' + entry.id + '"]').forEach(function(img) {
+            img.src = logo;
+          });
+          // Also update the toolbar icon if it currently shows this agent
+          if (state.activeAgent === entry.id) {
+            var agentIconEl = document.getElementById('agent-icon');
+            if (agentIconEl) {
+              var img = agentIconEl.querySelector('img');
+              if (img) img.src = logo;
+            }
           }
-        }
+        });
       }
 
       /**
@@ -12435,10 +12571,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         var availability = state.providerAvailability;
 
-        // Count available providers
+        // Count available providers (W9: ids come from the manifest)
         var availableCount = 0;
         var firstAvailable = null;
-        ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'].forEach(function(providerId) {
+        getManifestProviderIds().forEach(function(providerId) {
           if (availability[providerId] && availability[providerId].available) {
             availableCount++;
             if (!firstAvailable) firstAvailable = providerId;
@@ -12579,7 +12715,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var themeObserver = new MutationObserver(function(mutations) {
         mutations.forEach(function(mutation) {
           if (mutation.attributeName === 'class') {
-            updateOpenAILogos();
+            updateThemeAwareLogos();
           }
         });
       });
@@ -12741,8 +12877,38 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             break;
           case 'providerSwitched':
             if (message.payload && message.payload.provider) {
-              var switchedInfo = AGENT_DISPLAY[message.payload.provider];
-              showToast('Switched to ' + (switchedInfo ? switchedInfo.name : message.payload.provider), 'info');
+              var switchedEntry = getManifestEntry(message.payload.provider);
+              showToast('Switched to ' + (switchedEntry ? switchedEntry.displayName : message.payload.provider), 'info');
+            }
+            break;
+
+          case 'settingsError':
+            // Extension-side validation failures for settings writes (e.g. an
+            // invalid Codex profile name posted via a W4 settings section).
+            if (message.payload && message.payload.error) {
+              showToast(message.payload.error, 'error');
+            }
+            break;
+
+          case 'manifestUpdated':
+            // Plan 02 Phase 2: the extension re-broadcasts the capability
+            // manifest on provider availability changes and on changes to
+            // manifest-affecting settings. Payload IS the
+            // ProviderManifestPayload ({ schemaVersion, providers }).
+            if (message.payload && message.payload.providers) {
+              if (message.payload.schemaVersion !== EXPECTED_MANIFEST_SCHEMA_VERSION) {
+                console.warn('[Mysti Webview] Ignoring manifestUpdated with unexpected schemaVersion:', message.payload.schemaVersion);
+                break;
+              }
+              state.providerManifest = message.payload;
+              applyProviderManifest();
+              if (state.settings && state.settings.provider) {
+                renderProviderSettingsSections(state.settings.provider);
+                updateThinkingSectionVisibility(state.settings.provider);
+              }
+              updateAgentMenuSelection();
+              updateThemeAwareLogos();
+              updateProviderAvailability();
             }
             break;
 
@@ -14619,16 +14785,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
       }
 
+      // W5: install-modal icons come from the manifest (covers every
+      // registered provider, theme-aware where declared).
       function getProviderIconUri(providerId) {
-        var icons = {
-          'claude-code': CLAUDE_LOGO,
-          'openai-codex': getOpenAILogo(),
-          'google-gemini': GEMINI_LOGO,
-          'github-copilot': COPILOT_LOGO,
-          'cursor': CURSOR_LOGO,
-          'openclaw': OPENCLAW_LOGO
-        };
-        return icons[providerId] || '';
+        return getAgentLogo(providerId);
       }
 
       // Setup install modal event listeners
@@ -14846,7 +15006,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           quickActionsContainer.classList.add('ai-running');
         }
 
-        var agents = state.brainstormAgents || ['claude-code', 'openai-codex'];
+        var agents = state.brainstormAgents || defaultBrainstormPair();
         var strategy = payload.strategy || state.brainstormStrategy || 'quick';
         var hasDiscussion = strategy !== 'quick';
 
@@ -14855,15 +15015,14 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         // Build agent message blocks (full-width, chat-style)
         var agentMessagesHtml = agents.map(function(agentId) {
-          var agentInfo = AGENT_DISPLAY[agentId] || { name: agentId, shortId: agentId, color: '#888', logo: '' };
-          var logoSrc = getAgentLogo(agentId);
-          var logoClass = agentId === 'openai-codex' ? 'brainstorm-agent-role-logo openai-logo' : 'brainstorm-agent-role-logo';
+          var agentInfo = getAgentDisplay(agentId);
+          var logoSrc = agentInfo.logo;
 
           return '<div class="brainstorm-agent-message" data-agent="' + agentId + '" style="--agent-color: ' + agentInfo.color + ';">' +
             '<div class="brainstorm-agent-message-header">' +
               '<div class="brainstorm-agent-role-container">' +
                 '<span class="brainstorm-agent-role">' +
-                  '<img src="' + logoSrc + '" alt="' + agentInfo.name + '" class="' + logoClass + '" />' +
+                  '<img src="' + logoSrc + '" alt="' + agentInfo.name + '" class="brainstorm-agent-role-logo" data-agent-logo="' + agentId + '" />' +
                   '<span style="color: ' + agentInfo.color + ';">' + agentInfo.name + '</span>' +
                 '</span>' +
               '</div>' +
@@ -14916,8 +15075,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (chunkType === 'thinking') {
           var thinkingIcon = '<span class="thinking-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg></span>';
 
-          // Non-Claude agents send complete thoughts - create separate blocks
-          if (agentId !== 'claude-code') {
+          // Capability-driven (W3): 'streamed' thinkers accumulate into one
+          // collapsible block; everything else sends complete thoughts that
+          // render as separate blocks.
+          if (getThinkingStyle(agentId) !== 'streamed') {
             var thinkingEl2 = document.createElement('div');
             thinkingEl2.className = 'thinking-block';
             thinkingEl2.innerHTML = thinkingIcon + '<span class="thinking-content">' + escapeHtml(content) + '</span>';
@@ -15073,9 +15234,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var msgEl = document.getElementById(msgId);
 
         if (!msgEl) {
-          var agentInfo = AGENT_DISPLAY[agentId] || { name: agentId, shortId: agentId, color: '#888' };
-          var logoSrc = getAgentLogo(agentId);
-          var logoClass = agentId === 'openai-codex' ? 'discussion-bubble-logo openai-logo' : 'discussion-bubble-logo';
+          var agentInfo = getAgentDisplay(agentId);
+          var logoSrc = agentInfo.logo;
 
           msgEl = document.createElement('div');
           msgEl.className = 'discussion-bubble ' + alignment;
@@ -15083,7 +15243,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           msgEl.style.setProperty('--agent-color', agentInfo.color);
           msgEl.innerHTML =
             '<div class="discussion-bubble-header">' +
-              '<img src="' + logoSrc + '" alt="' + agentInfo.name + '" class="' + logoClass + '" />' +
+              '<img src="' + logoSrc + '" alt="' + agentInfo.name + '" class="discussion-bubble-logo" data-agent-logo="' + agentId + '" />' +
               '<span class="discussion-bubble-name">' + agentInfo.name + '</span>' +
               (role ? '<span class="discussion-bubble-role ' + role + '">' + role.replace('-', ' ') + '</span>' : '') +
             '</div>' +
@@ -15135,7 +15295,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var bubblesContainer = document.getElementById('brainstorm-discussion-bubbles-' + state.brainstormSession);
         if (!bubblesContainer) return;
 
-        var agentInfo = AGENT_DISPLAY[payload.agentId] || { name: payload.agentId };
+        var agentInfo = getAgentDisplay(payload.agentId);
         var errorEl = document.createElement('div');
         errorEl.className = 'brainstorm-error';
         errorEl.innerHTML = '<span class="error-icon">&#9888;&#65039;</span> ' + escapeHtml(agentInfo.name) + ' encountered an error: ' + escapeHtml(payload.error || 'Unknown error');
@@ -15358,6 +15518,17 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (payload.agentSettings) {
           state.agentSettings = Object.assign({}, savedAgentSettings, payload.agentSettings);
         }
+
+        // Plan 02 Phase 2: only trust a manifest whose schema matches the
+        // one this webview build was generated against.
+        if (state.providerManifest && state.providerManifest.schemaVersion !== EXPECTED_MANIFEST_SCHEMA_VERSION) {
+          console.warn('[Mysti Webview] Ignoring provider manifest with unexpected schemaVersion:', state.providerManifest.schemaVersion);
+          state.providerManifest = null;
+        }
+        // Build every manifest-derived surface (provider dropdown, brainstorm
+        // options, mention short-id map) before values are applied below.
+        applyProviderManifest();
+
         modeSelect.value = state.settings.mode;
         thinkingSelect.value = state.settings.thinkingLevel;
         accessSelect.value = state.settings.accessLevel;
@@ -15372,7 +15543,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (state.settings.provider) {
           providerSelect.value = state.settings.provider;
           state.activeAgent = state.settings.provider;
-          // Update thinking section visibility for Gemini
+          // W1: thinking selector visibility is capability-driven
           updateThinkingSectionVisibility(state.settings.provider);
           // Show strategy chip if brainstorm is active
           updateStrategyIndicatorVisibility(state.settings.provider);
@@ -15397,23 +15568,13 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           customModelInput.value = state.providerSettings.customModel;
         }
 
-        // Restore Codex profile
-        if (state.providerSettings && state.providerSettings.codexProfile && codexProfileInput) {
-          codexProfileInput.value = state.providerSettings.codexProfile;
-        }
-
-        // Show Codex settings for Codex provider
-        if (codexSettingsSection) {
-          if (state.settings.provider === 'openai-codex') {
-            codexSettingsSection.classList.remove('hidden');
-          } else {
-            codexSettingsSection.classList.add('hidden');
-          }
-        }
+        // W4: render the selected provider's declarative settings sections
+        // (values restored from state.providerSettings by settingKey)
+        renderProviderSettingsSections(state.settings.provider);
 
         // Update agent menu to match settings
         updateAgentMenuSelection();
-        updateOpenAILogos();
+        updateThemeAwareLogos();
 
         // Update provider availability (disable unavailable providers)
         updateProviderAvailability();
@@ -15845,8 +16006,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var thinkingIcon = '<span class="thinking-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg></span>';
 
         if (thinking && messageBody) {
-          // Codex sends complete thoughts - create separate blocks
-          if (state.settings.provider === 'openai-codex') {
+          // Capability-driven (W2): 'complete-blocks' thinkers (Codex, Cline,
+          // Qwen, OpenCode, OpenClaw) send whole thoughts — render each as a
+          // separate block; 'streamed' thinkers accumulate into one
+          // collapsible block.
+          if (getThinkingStyle(state.settings.provider) === 'complete-blocks') {
             var thinkingEl = document.createElement('div');
             thinkingEl.className = 'thinking-block';
             thinkingEl.innerHTML = thinkingIcon + '<span class="thinking-content">' + escapeHtml(thinking) + '</span>';

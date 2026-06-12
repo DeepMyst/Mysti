@@ -19,6 +19,8 @@ import type {
   Conversation,
   StreamChunk,
   ProviderConfig,
+  ProviderType,
+  ModelInfo,
   DeveloperPersonaId,
   SkillId,
   DeveloperPersona,
@@ -49,6 +51,38 @@ export interface AuthConfig {
 }
 
 /**
+ * How a provider emits thinking output (Plan 02 Phase 1).
+ * - 'streamed': incremental thinking deltas appended to one block (Claude)
+ * - 'complete-blocks': whole reasoning blocks arrive at once (Codex, Cline, Qwen, OpenCode, OpenClaw)
+ * - 'none': provider never emits thinking chunks
+ */
+export type ThinkingStyle = 'streamed' | 'complete-blocks' | 'none';
+
+/**
+ * Plan-mode support level.
+ * - 'native': CLI has a real plan mode (Claude's exit_plan_mode)
+ * - 'detected': plan options are AI-detected from response text (PlanOptionManager — universal)
+ * - 'none': no plan affordances at all
+ */
+export type PlanModeSupport = 'native' | 'detected' | 'none';
+
+/**
+ * How conversation continuity actually works for a provider.
+ * - 'cli-resume': the CLI/backend resumes a real session by ID
+ * - 'prompt-history': we replay the last MAX_CONVERSATION_MESSAGES into the prompt
+ * - 'none': stateless — each message stands alone
+ */
+export type SessionKind = 'cli-resume' | 'prompt-history' | 'none';
+
+/**
+ * Model-dropdown semantics for the UI.
+ * - 'full': dropdown of known models, selection is honored
+ * - 'custom-only': no meaningful static list; only a custom model text field applies
+ * - 'none': model is configured outside Mysti (CLI config) — hide the dropdown
+ */
+export type ModelSelectionMode = 'full' | 'custom-only' | 'none';
+
+/**
  * Provider capabilities - what each provider supports
  */
 export interface ProviderCapabilities {
@@ -60,8 +94,86 @@ export interface ProviderCapabilities {
   supportsPersistentProcess?: boolean;
   supportsImages?: boolean;
   supportsFileAttachments?: boolean;
+  /**
+   * Kept for now: Open Question 4 in plans/02-unified-chat-experience.md
+   * (wire it to gate visual-testing UI per provider, or delete it) is
+   * unresolved. Still never set by providers nor read by render logic.
+   */
   supportsVisualTesting?: boolean;
   supportsAutoInstall: boolean;
+
+  // --- Plan 02 Phase 1: capability-driven rendering fields ---
+  /** How thinking output is emitted (kills provider-name forks W1/W2/W3) */
+  thinkingStyle: ThinkingStyle;
+  /** True only where the thinking-level setting maps to real CLI behavior (Claude, Cline) */
+  thinkingLevelEffective: boolean;
+  /** Plan-mode support level */
+  planMode: PlanModeSupport;
+  /** Honest session/continuity semantics */
+  sessionKind: SessionKind;
+  /** False where tool_use is emitted but tool_result never follows (Ollama/LocalAI) or no tool events fire (Copilot) */
+  emitsToolResults: boolean;
+  /** False where done.usage is never supplied (OpenClaw) — footer shows "n/a", context bar resets */
+  emitsUsage: boolean;
+  /** Model-dropdown semantics (kills silent no-op dropdowns, F18) */
+  modelSelection: ModelSelectionMode;
+  /** OpenClaw gateway channel delegation (C4) */
+  supportsChannels?: boolean;
+}
+
+// ============================================================================
+// Provider Manifest (Plan 02 Phase 1) — serializable per-provider record
+// shipped to the webview so render logic keys on capabilities, not names.
+// ============================================================================
+
+export type ProviderSettingsFieldType = 'text' | 'number' | 'select' | 'note';
+
+/**
+ * Declarative provider-specific settings section rendered by the webview
+ * (replaces the hard-coded codexSettingsSection, seam W4).
+ */
+export interface ProviderSettingsSection {
+  /** Unique id within the provider's sections */
+  id: string;
+  /** Field label shown in the settings panel */
+  label: string;
+  /** Input type; 'note' renders read-only explanatory text */
+  type: ProviderSettingsFieldType;
+  /** Backing setting key under the `mysti.` namespace (e.g. 'codexProfile') */
+  settingKey?: string;
+  /** Placeholder / default-value hint for text inputs */
+  placeholder?: string;
+  /** Help text shown under the field (or the body of a 'note') */
+  description?: string;
+  /** Options for 'select' fields */
+  options?: Array<{ value: string; label: string }>;
+}
+
+/**
+ * One serializable manifest record per registered provider.
+ * Built by buildProviderManifest() in src/providers/base/ProviderManifest.ts.
+ */
+export interface ProviderManifestEntry {
+  id: ProviderType;
+  displayName: string;
+  /** Short alias used by @-mentions and compact UI ('claude', 'codex', ...) */
+  shortId: string;
+  /** Accent color (hex) */
+  color: string;
+  /** Logo asset path relative to the extension's resources/ directory */
+  icon: string;
+  /** Dark-theme logo variant (only when themeAwareLogo is true) */
+  iconDark?: string;
+  /** True when the logo must swap with the editor theme (OpenAI logo case, seam W7) */
+  themeAwareLogo?: boolean;
+  capabilities: ProviderCapabilities;
+  /** Whatever the registry returns today — Plan 01 swaps in runtime-discovered lists here */
+  models: ModelInfo[];
+  defaultModel: string;
+  /** Single source for the per-provider custom-model setting key (fixes C1 drift) */
+  customModelSettingKey: string;
+  /** Declarative provider-specific settings sections (kills W4) */
+  settingsSections: ProviderSettingsSection[];
 }
 
 /**

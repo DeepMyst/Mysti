@@ -90,7 +90,15 @@ export class GeminiProvider extends BaseCliProvider {
     supportsToolUse: true,
     supportsSessions: true,
     supportsImages: false,
-    supportsAutoInstall: true
+    supportsAutoInstall: true,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'none',
+    thinkingLevelEffective: false,
+    planMode: 'detected',
+    sessionKind: 'cli-resume',
+    emitsToolResults: true,
+    emitsUsage: true,
+    modelSelection: 'full'
   };
 
   protected _createSession(panelId: string): GeminiSessionState {

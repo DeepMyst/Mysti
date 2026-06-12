@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ProviderManager } from './ProviderManager';
+import { getProviderDisplayName } from '../providers/base/ProviderManifest';
 import { SUBAGENT_TIMEOUT_MS, SUBAGENT_MAX_RETRIES, SUBAGENT_QUESTION_TIMEOUT_MS } from '../constants';
 import type {
   ContextItem,
@@ -29,18 +30,9 @@ import type {
   SubAgentQuestionCallback
 } from '../types';
 
-/**
- * Agent display names for prompts and UI
- */
-const AGENT_DISPLAY_NAMES: Record<string, string> = {
-  'claude-code': 'Claude',
-  'openai-codex': 'Codex',
-  'google-gemini': 'Gemini',
-  'cline': 'Cline',
-  'github-copilot': 'Copilot',
-  'cursor': 'Cursor',
-  'openclaw': 'OpenClaw'
-};
+// Agent display names come from the Provider Manifest (Plan 02 Phase 1) via
+// getProviderDisplayName() — the local 7-entry map (which silently missed
+// opencode/ollama/localai/qwen-code) is gone.
 
 /**
  * MentionRouter - Handles @-mention parsing, task list generation, and sequential task execution
@@ -102,7 +94,7 @@ export class MentionRouter {
 
     console.log(`[Mysti] MentionRouter: Generated ${taskList.tasks.length} task(s) (confidence: ${taskList.confidence})`);
     for (const task of taskList.tasks) {
-      const displayName = AGENT_DISPLAY_NAMES[task.agent] || task.agent;
+      const displayName = getProviderDisplayName(task.agent);
       console.log(`[Mysti]   Task ${task.order}: [${displayName}] ${task.taskType} - ${task.task}`);
     }
 
@@ -177,12 +169,12 @@ export class MentionRouter {
 
     for (const [agentId, response] of responses) {
       if (response.status === 'complete' && response.content) {
-        const displayName = AGENT_DISPLAY_NAMES[agentId] || agentId;
+        const displayName = getProviderDisplayName(agentId);
         contextBlock += `\n--- Sub-agent response from ${displayName} ---\n`;
         contextBlock += response.content;
         contextBlock += `\n--- End ${displayName} response ---\n`;
       } else if (response.status === 'error') {
-        failedAgents.push(AGENT_DISPLAY_NAMES[agentId] || agentId);
+        failedAgents.push(getProviderDisplayName(agentId));
       }
     }
 
@@ -299,12 +291,12 @@ export class MentionRouter {
     panelId: string
   ): Promise<MentionTaskList> {
     const mentionedAgents = agentMentions.map(m => {
-      const displayName = AGENT_DISPLAY_NAMES[m.value] || m.value;
+      const displayName = getProviderDisplayName(m.value);
       return `${m.value} (${displayName})`;
     }).join(', ');
 
     const mainProvider = settings.provider;
-    const mainDisplayName = AGENT_DISPLAY_NAMES[mainProvider] || mainProvider;
+    const mainDisplayName = getProviderDisplayName(mainProvider);
 
     const prompt = [
       'Generate an ordered task list for this user message containing @-mentions.',
@@ -410,7 +402,7 @@ export class MentionRouter {
     // Check provider availability
     const providerStatus = await this._providerManager.getProviderStatus(agentId);
     if (providerStatus && !providerStatus.found) {
-      const displayName = AGENT_DISPLAY_NAMES[agentId] || agentId;
+      const displayName = getProviderDisplayName(agentId);
       yield {
         type: 'subagent_error',
         agentId,
@@ -662,7 +654,7 @@ export class MentionRouter {
     formatted += 'The following agents have already completed their tasks. Use their output if your task depends on it.\n\n';
 
     for (const [agentId, content] of responses) {
-      const displayName = AGENT_DISPLAY_NAMES[agentId] || agentId;
+      const displayName = getProviderDisplayName(agentId);
       formatted += `### ${displayName} output\n\n${content}\n\n`;
     }
 

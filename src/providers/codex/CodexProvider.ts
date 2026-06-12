@@ -145,7 +145,15 @@ export class CodexProvider extends BaseCliProvider {
     supportsToolUse: true,
     supportsSessions: true,  // Can resume sessions with `codex exec resume`
     supportsImages: false,
-    supportsAutoInstall: true
+    supportsAutoInstall: true,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'complete-blocks',  // whole 'reasoning' blocks per event
+    thinkingLevelEffective: false,     // getThinkingTokens returns undefined
+    planMode: 'detected',
+    sessionKind: 'prompt-history',     // no actual resume today (F15) — history replayed into the prompt
+    emitsToolResults: true,
+    emitsUsage: true,
+    modelSelection: 'full'
   };
 
   // ============================================================================

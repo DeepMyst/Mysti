@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { DEFAULT_PROVIDER } from '../constants';
 import type { ProviderManager } from './ProviderManager';
 import type { ContextManager } from './ContextManager';
 import type { ConversationManager } from './ConversationManager';
@@ -43,6 +44,12 @@ export interface SlashCommandCallbacks {
   updateSettings: (settings: Record<string, unknown>, panelId?: string) => Promise<void>;
   getPanelProvider: (panelId: string) => string;
   getPanelModel: (panelId: string) => string;
+  /**
+   * Provider-neutral manual compaction (Plan 02 Phase 2, C7) — routes through
+   * CompactionManager, which picks native-cli vs client-summarize from the
+   * provider's supportsNativeCompact capability.
+   */
+  executeManualCompaction: (panelId: string) => Promise<void>;
 }
 
 /**
@@ -78,7 +85,10 @@ export class SlashCommandManager {
     'brainstorm': 'cmd:brainstorm',
     'exit-plan-mode': 'cmd:exit-plan',
     'exit-plan': 'cmd:exit-plan',
-    'compact': 'claude:compact',
+    // C7: /compact is provider-neutral — CompactionManager branches on the
+    // provider's supportsNativeCompact capability, so non-Claude providers
+    // get client-side summarization instead of a Claude-only CLI passthrough.
+    'compact': 'cmd:compact',
     'export': 'cmd:export',
     'import': 'cmd:import',
     'share': 'cmd:share',
@@ -208,7 +218,8 @@ export class SlashCommandManager {
 
       case 'provider:switch': {
         if (trimmedArgs) {
-          const agents = ['claude-code', 'openai-codex', 'google-gemini', 'github-copilot', 'cursor', 'cline', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'];
+          // C2: derive ids from the registry, never a hard-coded list
+          const agents: string[] = this._providerManager.getAllProviderIds();
           if (agents.includes(trimmedArgs)) {
             return this._applyProviderSwitch(trimmedArgs, panelId, callbacks);
           }
@@ -232,7 +243,13 @@ export class SlashCommandManager {
         return 'Conversation and session cleared';
 
       case 'cmd:help':
-        return this._getHelpText(panelId, callbacks);
+        return this._getHelpText();
+
+      case 'cmd:compact':
+        // C7: fire-and-forget — compaction progress/result is reported via
+        // 'compactionStatus' cards posted by the compaction pipeline itself.
+        void callbacks.executeManualCompaction(panelId);
+        return 'Compacting conversation...';
 
       case 'cmd:brainstorm': {
         const currentProvider = callbacks.getPanelProvider(panelId);
@@ -243,9 +260,9 @@ export class SlashCommandManager {
           callbacks.postToPanel(panelId, { type: 'agentChanged', payload: { agent: 'brainstorm' } });
           return 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.';
         } else if (trimmedArgs === 'off' || trimmedArgs === 'disable') {
-          await callbacks.updateSettings({ provider: 'claude-code' }, panelId);
-          callbacks.postToPanel(panelId, { type: 'agentChanged', payload: { agent: 'claude-code' } });
-          return 'Brainstorm mode disabled. Using Claude Code.';
+          await callbacks.updateSettings({ provider: DEFAULT_PROVIDER }, panelId);
+          callbacks.postToPanel(panelId, { type: 'agentChanged', payload: { agent: DEFAULT_PROVIDER } });
+          return `Brainstorm mode disabled. Using ${this._getProviderDisplayName(DEFAULT_PROVIDER)}.`;
         } else if (trimmedArgs === 'status') {
           return isBrainstormActive
             ? 'Brainstorm mode is ON. Multiple agents will collaborate.'
@@ -253,12 +270,12 @@ export class SlashCommandManager {
         }
 
         // Toggle if no args
-        const newProvider = isBrainstormActive ? 'claude-code' : 'brainstorm';
+        const newProvider = isBrainstormActive ? DEFAULT_PROVIDER : 'brainstorm';
         await callbacks.updateSettings({ provider: newProvider }, panelId);
         callbacks.postToPanel(panelId, { type: 'agentChanged', payload: { agent: newProvider } });
         return newProvider === 'brainstorm'
           ? 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.'
-          : 'Brainstorm mode disabled. Using Claude Code.';
+          : `Brainstorm mode disabled. Using ${this._getProviderDisplayName(DEFAULT_PROVIDER)}.`;
       }
 
       case 'cmd:exit-plan': {
@@ -974,9 +991,10 @@ export class SlashCommandManager {
     return `Switched to ${agentName}`;
   }
 
-  private _getHelpText(panelId: string, callbacks: SlashCommandCallbacks): string {
-    const activeProvider = callbacks.getPanelProvider(panelId);
-    let text = 'Available commands:\n' +
+  private _getHelpText(): string {
+    // C7: /compact is listed unconditionally — it works on every provider
+    // (native CLI compact or client-side summarization).
+    return 'Available commands:\n' +
       '/clear - Clear conversation and session\n' +
       '/help - Show this help message\n' +
       '/context - Show current context items\n' +
@@ -984,11 +1002,7 @@ export class SlashCommandManager {
       '/exit-plan-mode - Exit plan mode\n' +
       '/model [model] - Show/change AI model\n' +
       '/agent [agent] - Switch provider\n' +
-      '/brainstorm [on|off|status] - Toggle brainstorm mode';
-
-    if (activeProvider === 'claude-code') {
-      text += '\n/compact - Compact conversation context';
-    }
-    return text;
+      '/brainstorm [on|off|status] - Toggle brainstorm mode\n' +
+      '/compact - Compact conversation context';
   }
 }

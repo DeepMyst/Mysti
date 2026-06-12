@@ -76,7 +76,17 @@ export class QwenCodeProvider extends BaseCliProvider {
     supportsToolUse: true,
     supportsSessions: true,
     supportsImages: false,
-    supportsAutoInstall: true
+    supportsAutoInstall: true,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'complete-blocks',
+    thinkingLevelEffective: false,
+    planMode: 'detected',
+    // F8 caveat: `--continue` resumes the globally-latest session (cross-panel
+    // bleed) — value stays 'cli-resume' until Plan 00 Batch 1.3 fixes it.
+    sessionKind: 'cli-resume',
+    emitsToolResults: true,
+    emitsUsage: true,
+    modelSelection: 'full'
   };
 
   // --- Discovery ---

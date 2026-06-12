@@ -68,7 +68,15 @@ export class OpenCodeProvider extends BaseCliProvider {
     supportsToolUse: true,
     supportsSessions: true,
     supportsImages: false,
-    supportsAutoInstall: true
+    supportsAutoInstall: true,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'complete-blocks',
+    thinkingLevelEffective: false,
+    planMode: 'detected',
+    sessionKind: 'cli-resume',
+    emitsToolResults: true,
+    emitsUsage: true,
+    modelSelection: 'custom-only'  // provider/model free-form — no meaningful static dropdown
   };
 
   protected _createSession(panelId: string): OpenCodeSessionState {

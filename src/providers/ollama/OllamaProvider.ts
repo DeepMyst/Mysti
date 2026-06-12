@@ -111,8 +111,18 @@ export class OllamaProvider extends BaseCliProvider {
     supportsThinking: false,
     supportsToolUse: true,
     supportsSessions: false,
-    supportsImages: true,
-    supportsAutoInstall: false
+    // Flag/reality alignment (Plan 02 Phase 1): attachments are dropped
+    // before the request (Plan 00 Batch 3.5 owns wiring real image support).
+    supportsImages: false,
+    supportsAutoInstall: false,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'none',
+    thinkingLevelEffective: false,
+    planMode: 'detected',
+    sessionKind: 'none',           // stateless HTTP requests
+    emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
+    emitsUsage: true,
+    modelSelection: 'custom-only'  // models live on the user's Ollama server
   };
 
   protected _createSession(panelId: string): OllamaSessionState {

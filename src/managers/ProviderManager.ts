@@ -25,9 +25,10 @@ import type {
   StreamChunk,
   ProviderConfig,
   ModelInfo,
-  AgentConfiguration
+  AgentConfiguration,
+  ProviderType
 } from '../types';
-import { PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
+import { DEFAULT_PROVIDER, PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
 
 /**
  * ProviderManager - Facade over the ProviderRegistry
@@ -79,10 +80,10 @@ export class ProviderManager {
     const provider = this._registry.get(id);
 
     if (!provider) {
-      // Fallback to claude-code if requested provider not found
-      const fallback = this._registry.get('claude-code');
+      // Fallback to the default provider if requested provider not found
+      const fallback = this._registry.get(DEFAULT_PROVIDER);
       if (fallback) {
-        console.warn(`[Mysti] Provider ${id} not found, falling back to claude-code`);
+        console.warn(`[Mysti] Provider ${id} not found, falling back to ${DEFAULT_PROVIDER}`);
         return fallback;
       }
       throw new Error(`Provider not found: ${id}`);
@@ -96,7 +97,7 @@ export class ProviderManager {
    */
   private _getDefaultProviderId(): string {
     const config = vscode.workspace.getConfiguration('mysti');
-    return config.get<string>('defaultProvider', 'claude-code');
+    return config.get<string>('defaultProvider', DEFAULT_PROVIDER);
   }
 
   // Public API
@@ -127,6 +128,15 @@ export class ProviderManager {
    */
   public getAllProviders(): ICliProvider[] {
     return this._registry.getAll();
+  }
+
+  /**
+   * Get all registered provider ids (Plan 02 Phase 2, C2).
+   * Replaces the hard-coded 11-element `allAgentIds` arrays — adding a
+   * provider to the registry makes it show up here automatically.
+   */
+  public getAllProviderIds(): ProviderType[] {
+    return this._registry.getAll().map(p => p.id as ProviderType);
   }
 
   /**

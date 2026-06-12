@@ -82,6 +82,15 @@ export class ManusProvider extends BaseCliProvider {
     supportsToolUse: false,
     supportsSessions: true,
     supportsAutoInstall: false,
+    // Plan 02 Phase 1 capability matrix — DORMANT provider (unregistered;
+    // Plan 02 Open Question 1 decides revive-or-delete). Conservative values.
+    thinkingStyle: 'none',
+    thinkingLevelEffective: false,
+    planMode: 'detected',
+    sessionKind: 'none',
+    emitsToolResults: false,
+    emitsUsage: false,
+    modelSelection: 'full',
   };
 
   protected _createSession(panelId: string): ManusSessionState {

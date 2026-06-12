@@ -46,8 +46,14 @@ import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
 import { DevServerManager } from '../managers/DevServerManager';
 import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualTestTrigger, VisualTestStreamChunk } from '../types';
-import { AUTONOMOUS_CONTINUATION_DELAY_MS, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
+import { AUTONOMOUS_CONTINUATION_DELAY_MS, DEFAULT_PROVIDER, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
+import {
+  buildProviderManifestPayload,
+  getCustomModelSettingKey,
+  getManifestAffectingSettingKeys
+} from './base/ProviderManifest';
+import type { ProviderManifestPayload } from '../types';
 import { validateModelName, validateProfileName } from '../utils/validation';
 import { classifyToolAction, shouldGateToolUse } from '../utils/permissionClassifier';
 import { PerfTracker } from '../utils/PerfTracker';
@@ -234,7 +240,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'providerAvailability',
         payload: { providerAvailability: this._buildProviderAvailability(status) }
       });
+      // Plan 02 Phase 1: availability changes ride the same event — re-ship
+      // the Provider Manifest so cached webviews stay in sync.
+      this._broadcastManifestUpdated();
     });
+
+    // Plan 02 Phase 1: re-broadcast the manifest when a setting backing a
+    // declared provider settings section changes (endpoints, gateway URL,
+    // Codex profile, Cursor API key).
+    const manifestSettingIds = getManifestAffectingSettingKeys().map((key) => `mysti.${key}`);
+    extensionContext.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (manifestSettingIds.some((id) => e.affectsConfiguration(id))) {
+          this._broadcastManifestUpdated();
+        }
+      })
+    );
 
     // Subscribe to ActiveModeManager events and broadcast to all panels
     this._activeModeManager.onStatusChanged(status => {
@@ -351,13 +372,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _getPanelProvider(panelId: string): string {
     const panelState = this._panelStates.get(panelId);
     const provider = panelState?.settingsOverrides?.provider
-      || vscode.workspace.getConfiguration('mysti').get<string>('defaultProvider', 'claude-code');
-    // Validate provider exists in registry; fall back to claude-code if stale/removed
+      || vscode.workspace.getConfiguration('mysti').get<string>('defaultProvider', DEFAULT_PROVIDER);
+    // Validate provider exists in registry; fall back to the default if stale/removed
     if (provider && this._providerManager.getProvider(provider)) {
       return provider;
     }
-    console.warn(`[Mysti] Provider '${provider}' not found in registry, falling back to claude-code`);
-    return 'claude-code';
+    console.warn(`[Mysti] Provider '${provider}' not found in registry, falling back to ${DEFAULT_PROVIDER}`);
+    return DEFAULT_PROVIDER;
+  }
+
+  /**
+   * Id of the provider that handles channel delegation, derived from
+   * `capabilities.supportsChannels` (Plan 02 Phase 2, C4) — undefined when
+   * no registered provider supports channels.
+   */
+  private _getChannelProviderId(): string | undefined {
+    return this._providerManager.getAllProviders()
+      .find(p => p.capabilities.supportsChannels)?.id;
   }
 
   /**
@@ -484,21 +515,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       provider: selectedProvider
     };
 
-    // Read provider-specific custom model and profile settings
-    const providerModelKeys: Record<string, string> = {
-      'claude-code': 'claudeCodeModel',
-      'openai-codex': 'codexModel',
-      'google-gemini': 'geminiModel',
-      'cline': 'clineModel',
-      'github-copilot': 'copilotModel',
-      'cursor': 'cursorModel',
-      'openclaw': 'openclawModel',
-      'opencode': 'opencodeModel',
-      'ollama': 'ollamaModel',
-      'localai': 'localaiModel',
-      'qwen-code': 'qwenCodeModel'
-    };
-    const customModelKey = providerModelKeys[selectedProvider];
+    // Read provider-specific custom model and profile settings.
+    // Plan 02 Phase 1: key comes from the Provider Manifest module (single
+    // source replacing the duplicated providerModelKeys maps, C1).
+    const customModelKey = getCustomModelSettingKey(selectedProvider);
     const providerSettings = {
       customModel: customModelKey ? config.get<string>(customModelKey, '') : '',
       codexProfile: config.get<string>('codexProfile', '')
@@ -571,6 +591,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         conversation,
         providers,
         providerAvailability,
+        // Plan 02 Phase 1: capability manifest — the webview renders from
+        // capabilities, never from provider-name literals (Phase 2 consumes).
+        providerManifest: this._buildManifestPayload(),
         slashCommands: [], // Slash commands are now fetched on-demand via requestSlashCommands
         quickActions: this._getQuickActions(),
         workspacePath,
@@ -626,6 +649,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       };
     }
     return availability;
+  }
+
+  /**
+   * Plan 02 Phase 1: build the Provider Manifest payload from the live
+   * registry (capabilities + models + display metadata + settings sections).
+   */
+  private _buildManifestPayload(): ProviderManifestPayload {
+    return buildProviderManifestPayload(this._providerManager.getRegistry());
+  }
+
+  /**
+   * Plan 02 Phase 1: push a fresh manifest to every open panel — called on
+   * provider availability changes and manifest-relevant setting changes.
+   */
+  private _broadcastManifestUpdated(): void {
+    this._broadcastToAll({
+      type: 'manifestUpdated',
+      payload: this._buildManifestPayload()
+    });
   }
 
   private async _handleMessage(message: WebviewMessage) {
@@ -703,8 +745,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this._providerManager.cancelRequest(panelId);
             this._brainstormManager.cancelSession(panelId);
             // Cancel any running sub-agent processes from @-mentions
-            const allAgentIds: AgentType[] = ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'];
-            this._mentionRouter.cancelSubAgents(panelId, allAgentIds);
+            // (C2: derive ids from the registry, never a hard-coded list)
+            this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
             // Resolve any pending sub-agent questions with null (skip)
             this._cancelPendingSubAgentQuestions(panelId);
             // Notify webview to reset UI state
@@ -932,8 +974,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._cancelledPanels.add(panelId);
           this._providerManager.cancelRequest(panelId);
           this._brainstormManager.cancelSession(panelId);
-          const allAgentIds: AgentType[] = ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'];
-          this._mentionRouter.cancelSubAgents(panelId, allAgentIds);
+          // C2: derive ids from the registry, never a hard-coded list
+          this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
           this._cancelPendingSubAgentQuestions(panelId);
 
           this._providerManager.clearSession(panelId);  // Clear provider session for this panel
@@ -989,7 +1031,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               payload: {
                 type: 'shutdown-blocked',
                 panelId,
-                providerId: 'claude-code',
+                // C3: report the panel's actual provider, not a hard-coded id
+                providerId: this._getPanelProvider(panelId),
                 detail: result.reason,
                 childPids: result.childPids,
               }
@@ -1006,54 +1049,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'manualCompact':
-        {
-          const panelId = msg.panelId;
-          const panelState = this._panelStates.get(panelId);
-          const conversation = panelState?.currentConversationId
-            ? this._conversationManager.getConversation(panelState.currentConversationId)
-            : null;
-
-          const config = vscode.workspace.getConfiguration('mysti');
-          const provider = this._getPanelProvider(panelId) as Settings['provider'];
-          const model = this._getPanelModel(panelId);
-          const contextWindow = this._providerManager.getModelContextWindow(provider, model);
-
-          if (!conversation || conversation.messages.length < 2) {
-            this._postToPanel(panelId, {
-              type: 'compactionStatus',
-              payload: {
-                status: 'error',
-                strategy: this._compactionManager.getStrategy(provider, this._providerManager),
-                beforeTokens: 0,
-                contextWindow,
-                threshold: this._compactionManager.getThreshold(),
-                error: 'Not enough conversation history to compact',
-              } as CompactionEvent,
-            });
-            break;
-          }
-
-          const settings: Settings = {
-            mode: config.get('defaultMode', 'default') as Settings['mode'],
-            thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
-            accessLevel: config.get('defaultAccessLevel', 'ask-permission') as Settings['accessLevel'],
-            contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
-            model,
-            provider,
-          };
-
-          // Build usage from CompactionManager's tracked data
-          const tracked = this._compactionManager.getUsage(panelId);
-          const usage: UsageStats = {
-            input_tokens: tracked?.totalInputTokens || 0,
-            output_tokens: tracked?.totalOutputTokens || 0,
-            cache_read_input_tokens: tracked?.totalCacheReadTokens || 0,
-            cache_creation_input_tokens: tracked?.totalCacheCreationTokens || 0,
-          };
-
-          console.log(`[Mysti] Manual compaction requested for panel ${panelId}`);
-          this._executeCompaction(panelId, settings, conversation, usage, contextWindow);
-        }
+        this._handleManualCompact(msg.panelId);
         break;
 
       case 'requestPermission':
@@ -1075,7 +1071,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (customText) {
             // The permission deny was already handled — now send the custom instruction as a new message
             const ciConfig = vscode.workspace.getConfiguration('mysti');
-            const ciProvider = ciConfig.get<string>('defaultProvider', 'claude-code') as Settings['provider'];
+            const ciProvider = ciConfig.get<string>('defaultProvider', DEFAULT_PROVIDER) as Settings['provider'];
             const ciSettings: Settings = {
               mode: ciConfig.get('defaultMode', 'default') as Settings['mode'],
               thinkingLevel: ciConfig.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
@@ -1959,7 +1955,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       console.log('[Mysti] team.json already exists, skipping');
     } catch {
       const config = vscode.workspace.getConfiguration('mysti');
-      const provider = config.get<string>('defaultProvider', 'claude-code');
+      const provider = config.get<string>('defaultProvider', DEFAULT_PROVIDER);
       const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
       const teamData = {
         teamName: projectName,
@@ -2969,11 +2965,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     payload: { action: 'ask', channel: action.channel, to: action.to, askId: action.askId, success: ok }
                   });
                 } else if (action.type === 'delegate') {
-                  const ok = await this._channelBridge.executeDelegate(action);
-                  this._postToPanel(panelId, {
-                    type: 'channelAction',
-                    payload: { action: 'delegate', channel: 'openclaw', success: ok }
-                  });
+                  // C4: channel delegation is a capability, not a provider
+                  // name — route to whichever registered provider declares
+                  // supportsChannels (today: OpenClaw's gateway daemon).
+                  const channelProviderId = this._getChannelProviderId();
+                  if (channelProviderId) {
+                    const ok = await this._channelBridge.executeDelegate(action);
+                    this._postToPanel(panelId, {
+                      type: 'channelAction',
+                      payload: { action: 'delegate', channel: channelProviderId, success: ok }
+                    });
+                  } else {
+                    console.warn('[Mysti] Channel delegate marker detected, but no registered provider supports channels — skipping');
+                  }
                 }
               }
             }
@@ -3347,6 +3351,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Execute compaction for a panel when token usage exceeds the threshold.
    * Runs asynchronously to avoid blocking the response flow.
    */
+  /**
+   * Provider-neutral manual compaction entry point (Plan 02 Phase 2, C7).
+   *
+   * Reached from both the webview's 'manualCompact' message and the /compact
+   * slash command ('cmd:compact'). Delegates to _executeCompaction, whose
+   * strategy comes from CompactionManager (native-cli when the provider
+   * declares supportsNativeCompact, client-summarize otherwise).
+   */
+  private async _handleManualCompact(panelId: string): Promise<void> {
+    const panelState = this._panelStates.get(panelId);
+    const conversation = panelState?.currentConversationId
+      ? this._conversationManager.getConversation(panelState.currentConversationId)
+      : null;
+
+    const config = vscode.workspace.getConfiguration('mysti');
+    const provider = this._getPanelProvider(panelId) as Settings['provider'];
+    const model = this._getPanelModel(panelId);
+    const contextWindow = this._providerManager.getModelContextWindow(provider, model);
+
+    if (!conversation || conversation.messages.length < 2) {
+      this._postToPanel(panelId, {
+        type: 'compactionStatus',
+        payload: {
+          status: 'error',
+          strategy: this._compactionManager.getStrategy(provider, this._providerManager),
+          beforeTokens: 0,
+          contextWindow,
+          threshold: this._compactionManager.getThreshold(),
+          error: 'Not enough conversation history to compact',
+        } as CompactionEvent,
+      });
+      return;
+    }
+
+    const settings: Settings = {
+      mode: config.get('defaultMode', 'default') as Settings['mode'],
+      thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
+      accessLevel: config.get('defaultAccessLevel', 'ask-permission') as Settings['accessLevel'],
+      contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
+      model,
+      provider,
+    };
+
+    // Build usage from CompactionManager's tracked data
+    const tracked = this._compactionManager.getUsage(panelId);
+    const usage: UsageStats = {
+      input_tokens: tracked?.totalInputTokens || 0,
+      output_tokens: tracked?.totalOutputTokens || 0,
+      cache_read_input_tokens: tracked?.totalCacheReadTokens || 0,
+      cache_creation_input_tokens: tracked?.totalCacheCreationTokens || 0,
+    };
+
+    console.log(`[Mysti] Manual compaction requested for panel ${panelId}`);
+    await this._executeCompaction(panelId, settings, conversation, usage, contextWindow);
+  }
+
   private async _executeCompaction(
     panelId: string,
     settings: Settings,
@@ -3755,25 +3815,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    // Handle custom model updates per provider
+    // Handle custom model updates per provider.
+    // Plan 02 Phase 2 (C1): the setting key comes from the Provider Manifest —
+    // the same lookup the read side uses in _sendInitialState — replacing the
+    // duplicated write-side providerModelKeys map whose drift silently
+    // dropped 'qwen-code' custom models.
     const settingsAny = settings as Record<string, unknown>;
     if ('customModel' in settingsAny) {
       const customModel = settingsAny['customModel'] as string;
-      const provider = settings.provider || config.get<string>('defaultProvider', 'claude-code');
-      const providerModelKeys: Record<string, string> = {
-        'claude-code': 'claudeCodeModel',
-        'openai-codex': 'codexModel',
-        'google-gemini': 'geminiModel',
-        'cline': 'clineModel',
-        'github-copilot': 'copilotModel',
-        'cursor': 'cursorModel',
-        'openclaw': 'openclawModel',
-        'opencode': 'opencodeModel',
-        'ollama': 'ollamaModel',
-        'localai': 'localaiModel',
-        'qwen-code': 'qwenCodeModel'
-      };
-      const settingKey = providerModelKeys[provider];
+      const provider = settings.provider || config.get<string>('defaultProvider', DEFAULT_PROVIDER);
+      const settingKey = getCustomModelSettingKey(provider);
       if (settingKey) {
         if (!customModel) {
           // Empty string clears the custom model
@@ -3824,8 +3875,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Handle brainstorm agent selection
     if ('brainstorm.agents' in settingsAny) {
       const agents = settingsAny['brainstorm.agents'] as string[];
-      // Validate: exactly 2 agents from valid set
-      const validAgents = ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'];
+      // Validate: exactly 2 agents from the registry (C2 — no hard-coded list)
+      const validAgents: string[] = this._providerManager.getAllProviderIds();
       const filtered = agents.filter(a => validAgents.includes(a));
       if (filtered.length === 2) {
         await config.update('brainstorm.agents', filtered, vscode.ConfigurationTarget.Global);
@@ -3986,6 +4037,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._handleUpdateSettings(settings as Partial<Settings>, pid),
       getPanelProvider: (pid: string) => this._getPanelProvider(pid),
       getPanelModel: (pid: string) => this._getPanelModel(pid),
+      // C7: provider-neutral /compact — CompactionManager picks native-cli
+      // vs client-summarize from the provider's supportsNativeCompact flag.
+      executeManualCompaction: (pid: string) => this._handleManualCompact(pid),
     };
   }
 
@@ -5158,7 +5212,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const config = vscode.workspace.getConfiguration('mysti');
     // Build base settings from config (simplified — the real settings resolution is in _handleMessage)
     const settings: Settings = {
-      provider: config.get('provider', 'claude-code') as any,
+      provider: config.get('provider', DEFAULT_PROVIDER) as any,
       model: config.get('model', ''),
       mode: config.get('mode', 'default') as any,
       thinkingLevel: config.get('thinkingLevel', 'none') as any,
@@ -6288,7 +6342,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // If no provider is ready, try auto-setup for the default provider
     if (!anyReady) {
       const config = vscode.workspace.getConfiguration('mysti');
-      const defaultProvider = config.get<string>('defaultProvider', 'claude-code');
+      const defaultProvider = config.get<string>('defaultProvider', DEFAULT_PROVIDER);
       await this._runAutoSetup(defaultProvider, panelId);
     }
   }
