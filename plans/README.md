@@ -4,7 +4,11 @@ Date: 2026-06-12 · Produced by a 63-agent review workflow (5 code reviewers, 6 
 
 Detailed research reports backing these plans: [plans/research/](research/) (11 reports: providers, core managers, collab managers, webview/chat, canvas, performance, GitHub triage, model discovery, DeepMyst MCP connections, DeepMyst presentation/canvas, unified-chat UX). Plan files referencing `/tmp/mysti-planning/research/` paths resolve to this directory.
 
-> **Execution log** — 2026-06-12: Plan 00 Batch 1 complete. Local fixes in working tree (B1/B2/B6/B9/B15, #31 timer leak, #32 model entry, #39 stopgap) — verified: tsc clean, lint clean, 518/522 tests (4 pre-existing Canvas v2 failures, owned by Plan 05 Phase 0), webpack OK. GitHub: PR #43 merged; #45 landed as #48; #47 landed as #49 (+legacy-dir migration); issues #42/#44/#46/#36/#41 closed; PR #38 closed; #39 needs-info posted.
+> **Execution log** — 2026-06-12:
+> - **Plan 00 Batch 1 complete.** Local fixes committed (B1/B2/B6/B9/B15, #31 timer leak, #32 model entry, #39 stopgap). GitHub: PR #43 merged; #45 landed as #48; #47 landed as #49 (+legacy-dir migration); issues #42/#44/#46/#36/#41 closed; PR #38 closed; #39 needs-info posted.
+> - **Plan 03 Phases 1, 2, 3a, 3b complete.** PerfTracker + `mysti.debug.performanceLogging` + `perf:sizes`; backgrounded parallel provider init with whenReady; memoized platform walks; Ollama/LocalAI probe TTL; exact-file activationEvents; CliDiscoveryService cache (no serial probing on panel open); icons 30.1MB→314KB; **VSIX 32.27MB→3.73MB**. Baselines in `perf-baselines.md` (runtime rows still need one F5 session).
+> - **Plan 02 Phases 1, 2, 3 complete.** Provider Manifest (capability-driven UI, lying flags fixed); full de-branding W1-W10/C1-C7 with `check-provider-literals.js` CI guard (runs first in `npm run lint`); normalized message anatomy (persisted provider/model/toolCalls/thinking/segments, replay-exact restore); stream conformance (exactly-one-done, Qwen dup-tool removed, Codex bold≠thinking, Cursor rejected→failed, kind stamping via `src/utils/toolNames.ts`); exit_plan_mode wired. Known follow-up: W4 settings sections read-only until initialState ships their values (Phase 4).
+> - **Next:** Plan 03 Phase 3c Step 1 (mechanical webview extraction — in progress); Step 2 (TS modularization) gated on an interactive F5 smoke test + runtime baseline capture.
 
 ## The Plans
 
