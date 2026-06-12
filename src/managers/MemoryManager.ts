@@ -32,6 +32,7 @@ import {
 const GLOBAL_STATE_KEY = 'mysti.autonomousMemory';
 const MEMORY_DIR_NAME = 'memory';
 const PROJECT_MEMORY_MAX_LINES = 200;
+const PROJECT_MEMORY_KEY_SCHEMA = 'mysti-project-memory-v2';
 
 interface MemoryStore {
   entries: MemoryEntry[];
@@ -282,9 +283,11 @@ export class MemoryManager {
    * Creates ~/.mysti/projects/<hash>/memory/ directory and loads MEMORY.md.
    */
   initProjectMemory(workspacePath: string): void {
-    const hash = crypto.createHash('sha256').update(workspacePath).digest('hex').substring(0, 12);
+    const hash = this._getProjectMemoryHash(workspacePath);
     const homeDir = process.env.HOME || process.env.USERPROFILE || '';
-    this._projectMemoryDir = path.join(homeDir, '.mysti', 'projects', hash, 'memory');
+    const projectsDir = path.join(homeDir, '.mysti', 'projects');
+    this._migrateLegacyProjectMemory(projectsDir, workspacePath, hash);
+    this._projectMemoryDir = path.join(projectsDir, hash, 'memory');
 
     try {
       fs.mkdirSync(this._projectMemoryDir, { recursive: true });
@@ -408,6 +411,42 @@ export class MemoryManager {
     }
 
     this.writeProjectMemory(content);
+  }
+
+  private _getProjectMemoryHash(workspacePath: string): string {
+    const canonicalWorkspacePath = this._getCanonicalWorkspacePath(workspacePath);
+    const payload = JSON.stringify({
+      schema: PROJECT_MEMORY_KEY_SCHEMA,
+      canonicalWorkspacePath,
+    });
+    return crypto.createHash('sha256').update(payload).digest('hex');
+  }
+
+  private _getCanonicalWorkspacePath(workspacePath: string): string {
+    try {
+      return fs.realpathSync.native(workspacePath);
+    } catch {
+      return path.resolve(workspacePath);
+    }
+  }
+
+  /**
+   * One-time migration: before the v2 key schema, project dirs were keyed by
+   * sha256(<literal workspace path>).substring(0, 12). Rename such a dir to the
+   * new canonical hash so existing project memory is not orphaned.
+   */
+  private _migrateLegacyProjectMemory(projectsDir: string, workspacePath: string, newHash: string): void {
+    try {
+      const legacyHash = crypto.createHash('sha256').update(workspacePath).digest('hex').substring(0, 12);
+      if (legacyHash === newHash) { return; }
+      const legacyDir = path.join(projectsDir, legacyHash);
+      const newDir = path.join(projectsDir, newHash);
+      if (!fs.existsSync(legacyDir) || fs.existsSync(newDir)) { return; }
+      fs.renameSync(legacyDir, newDir);
+      console.log(`[Mysti] Migrated legacy project memory ${legacyHash} -> ${newHash.substring(0, 12)}…`);
+    } catch (error) {
+      console.warn('[Mysti] Legacy project memory migration failed:', error);
+    }
   }
 
   private _loadProjectMemory(): void {
