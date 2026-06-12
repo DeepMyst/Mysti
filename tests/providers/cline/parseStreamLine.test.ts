@@ -120,7 +120,7 @@ describe('ClineProvider.parseStreamLine', () => {
       const result = provider.parseStreamLine(line, session);
       expect(result).toEqual({
         type: 'tool_use',
-        toolCall: { id: 'tool_1', name: 'ReadFile', input: { path: '/src/main.ts' }, status: 'running' },
+        toolCall: { id: 'tool_1', name: 'ReadFile', input: { path: '/src/main.ts' }, status: 'running', kind: 'read' },
       });
 
       // Duplicate should be skipped after completion

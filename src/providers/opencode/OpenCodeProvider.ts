@@ -28,7 +28,7 @@ import type {
   AuthStatus
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
-import { normalizeToolName } from '../../utils/permissionClassifier';
+import { normalizeToolName, toolKind } from '../../utils/toolNames';
 
 /**
  * Per-panel session state for OpenCode, extending base with tool call tracking.
@@ -328,7 +328,8 @@ export class OpenCodeProvider extends BaseCliProvider {
                     id: toolId,
                     name: toolName,
                     input: part.input || {},
-                    status: 'running'
+                    status: 'running',
+                    kind: toolKind(toolName)
                   }
                 };
               }
@@ -401,7 +402,8 @@ export class OpenCodeProvider extends BaseCliProvider {
               id: toolId,
               name: toolName,
               input: params,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(toolName)
             }
           };
         }

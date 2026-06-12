@@ -71,7 +71,7 @@ describe('OpenClawProvider.parseStreamLine', () => {
       const result = provider.parseStreamLine(line, session);
       expect(result).toEqual({
         type: 'tool_use',
-        toolCall: { id: 'tool_1', name: 'read', input: { path: '/src/main.ts' }, status: 'running' },
+        toolCall: { id: 'tool_1', name: 'read', input: { path: '/src/main.ts' }, status: 'running', kind: 'read' },
       });
     });
 
@@ -144,16 +144,18 @@ describe('OpenClawProvider.parseStreamLine', () => {
   });
 
   describe('done events', () => {
-    it('should parse done event', () => {
-      expect(provider.parseStreamLine(JSON.stringify({ type: 'done' }), session)).toEqual({ type: 'done' });
+    // Plan 02 Phase 3: parser-level done is swallowed — _sendViaCli /
+    // _sendViaGateway emit the single authoritative done after the stream ends.
+    it('should NOT emit a parser-level done for done event', () => {
+      expect(provider.parseStreamLine(JSON.stringify({ type: 'done' }), session)).toBeNull();
     });
 
-    it('should parse complete event', () => {
-      expect(provider.parseStreamLine(JSON.stringify({ type: 'complete' }), session)).toEqual({ type: 'done' });
+    it('should NOT emit a parser-level done for complete event', () => {
+      expect(provider.parseStreamLine(JSON.stringify({ type: 'complete' }), session)).toBeNull();
     });
 
-    it('should parse end event', () => {
-      expect(provider.parseStreamLine(JSON.stringify({ type: 'end' }), session)).toEqual({ type: 'done' });
+    it('should NOT emit a parser-level done for end event', () => {
+      expect(provider.parseStreamLine(JSON.stringify({ type: 'end' }), session)).toBeNull();
     });
   });
 

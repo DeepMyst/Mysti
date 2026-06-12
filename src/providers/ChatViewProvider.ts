@@ -45,7 +45,7 @@ import { VideoGenerationService } from '../services/VideoGenerationService';
 import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
 import { DevServerManager } from '../managers/DevServerManager';
-import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualTestTrigger, VisualTestStreamChunk } from '../types';
+import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, MessageSegment, MessageThinking, MessageThinkingStyle, ToolCall, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualTestTrigger, VisualTestStreamChunk } from '../types';
 import { AUTONOMOUS_CONTINUATION_DELAY_MS, DEFAULT_PROVIDER, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
 import {
@@ -65,6 +65,13 @@ import { PerfTracker } from '../utils/PerfTracker';
 interface WebviewMessageWithPanel extends WebviewMessage {
   panelId: string;
 }
+
+/**
+ * Max characters read from an exit_plan_mode plan file before it is routed
+ * into the plan-selection flow (Plan 02 Phase 3.5) — the plan content becomes
+ * part of the follow-up prompt on approval, so it must stay bounded.
+ */
+const EXIT_PLAN_FILE_MAX_CHARS = 20000;
 
 interface PanelState {
   id: string;
@@ -2905,6 +2912,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._vtTriggeredThisResponse = false;
       let lastUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined;
 
+      // Plan 02 Phase 3: accumulate render-relevant structure extension-side
+      // so the persisted assistant message (done handler) can be replayed by
+      // the webview exactly as it streamed. Tool calls are keyed by id —
+      // Claude emits two tool_use chunks per tool (content_block_start with
+      // empty input, content_block_stop with full input), which must merge
+      // into one persisted entry/segment.
+      const responseToolCalls = new Map<string, ToolCall>();
+      const responseSegments: MessageSegment[] = [];
+      const appendContentSegment = (type: 'text' | 'thinking', content: string) => {
+        if (!content) { return; }
+        const last = responseSegments[responseSegments.length - 1];
+        if (last && last.type !== 'tool' && last.type === type) {
+          last.content += content;
+        } else {
+          responseSegments.push({ type, content });
+        }
+      };
+      // Native plan moment (Claude exit_plan_mode) recorded mid-stream,
+      // routed into the plan-selection flow from the done handler.
+      let pendingExitPlan: { planFilePath: string | null } | null = null;
+
       // Send context window info when starting
       this._postToPanel(panelId, {
         type: 'contextWindowInfo',
@@ -2931,6 +2959,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         switch (chunk.type) {
           case 'text': {
             assistantContent += chunk.content || '';
+            appendContentSegment('text', chunk.content || '');
             const textPayload: { type: string; content?: string; perfSentAt?: number } = {
               type: 'text',
               content: chunk.content
@@ -3014,6 +3043,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           case 'thinking':
             thinkingContent += chunk.content || '';
+            appendContentSegment('thinking', chunk.content || '');
             this._postToPanel(panelId, {
               type: 'responseChunk',
               payload: { type: 'thinking', content: chunk.content }
@@ -3075,6 +3105,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 }
               }
             }
+            // Plan 02 Phase 3: accumulate for persistence. Merge duplicate
+            // emissions for the same tool id (Claude's start/stop pair) into
+            // a single tool call + a single ordered segment.
+            if (chunk.toolCall) {
+              const tracked = responseToolCalls.get(chunk.toolCall.id);
+              if (tracked) {
+                if (hasInput) { tracked.input = chunk.toolCall.input; }
+                tracked.status = chunk.toolCall.status;
+                if (chunk.toolCall.fileChange) { tracked.fileChange = chunk.toolCall.fileChange; }
+                if (chunk.toolCall.kind) { tracked.kind = chunk.toolCall.kind; }
+              } else {
+                responseToolCalls.set(chunk.toolCall.id, { ...chunk.toolCall });
+                responseSegments.push({ type: 'tool', toolCallId: chunk.toolCall.id });
+              }
+            }
             this._postToPanel(panelId, {
               type: 'toolUse',
               payload: chunk.toolCall
@@ -3094,10 +3139,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
 
           case 'tool_result':
+            // Plan 02 Phase 3: resolve the tracked tool call for persistence
+            if (chunk.toolCall) {
+              const resolved = responseToolCalls.get(chunk.toolCall.id);
+              if (resolved) {
+                if (chunk.toolCall.output !== undefined) { resolved.output = chunk.toolCall.output; }
+                resolved.status = chunk.toolCall.status || 'completed';
+              }
+            }
             this._postToPanel(panelId, {
               type: 'toolResult',
               payload: chunk.toolCall
             });
+            break;
+
+          case 'exit_plan_mode':
+            // Plan 02 Phase 3.5: Claude's native plan moment (ExitPlanMode
+            // tool). Record it here; the plan card is posted from the done
+            // handler once the assistant message has been persisted, because
+            // the webview attaches plan cards to a message element by id.
+            console.log('[Mysti] exit_plan_mode chunk received, plan file:', chunk.planFilePath);
+            pendingExitPlan = { planFilePath: chunk.planFilePath ?? null };
             break;
 
           case 'error':
@@ -3202,13 +3264,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             } else {
               console.log('[Mysti] Done chunk has NO usage');
             }
+            // Plan 02 Phase 3: persist render-relevant structure with the
+            // message — provider/model attribution, resolved tool calls,
+            // structured thinking, and ordered segments for exact replay.
+            // Any tool call the stream never resolved is marked completed so
+            // restored messages don't show eternal spinners (providers with
+            // emitsToolResults=false never send tool_result).
+            const persistedToolCalls = Array.from(responseToolCalls.values()).map(tc =>
+              (tc.status === 'pending' || tc.status === 'running')
+                ? { ...tc, status: 'completed' as const }
+                : tc
+            );
+            const thinkingStyle = this._getThinkingStyleForProvider(effectiveSettings.provider);
+            const persistedThinking: string | MessageThinking | undefined = thinkingContent
+              ? (thinkingStyle ? { style: thinkingStyle, content: thinkingContent } : thinkingContent)
+              : undefined;
             const assistantMessage = this._conversationManager.addMessageToConversation(
               conversationId,
               'assistant',
               assistantContent,
               undefined,
               undefined,
-              thinkingContent
+              persistedThinking,
+              {
+                provider: effectiveSettings.provider,
+                model: effectiveSettings.model,
+                toolCalls: persistedToolCalls.length > 0 ? persistedToolCalls : undefined,
+                segments: responseSegments.length > 0 ? responseSegments : undefined
+              }
             );
             console.log('[Mysti] Sending responseComplete with usage:', lastUsage);
             this._postToPanel(panelId, {
@@ -3280,6 +3363,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               } else {
                 this._compactionManager.recordUsage(panelId, lastUsage, contextWindow);
               }
+            }
+
+            // Plan 02 Phase 3.5: native plan moment (exit_plan_mode) routes
+            // into the existing plan-selection flow. This marks the panel in
+            // _pendingPlanSelections, which suppresses the AI plan-detection
+            // and suggestion pass below and blocks autonomous continuation
+            // until the user (or autonomous auto-select) picks.
+            if (pendingExitPlan) {
+              await this._handleExitPlanMode(pendingExitPlan.planFilePath, assistantMessage, panelId);
+              pendingExitPlan = null;
             }
 
             // Skip plan options and suggestions if there's a pending AskUserQuestion or plan selection
@@ -4567,7 +4660,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     messageId: string,
     originalQuery: string,
     metaQuestions: ClarifyingQuestion[] | undefined,
-    panelId: string
+    panelId: string,
+    origin?: { source: 'exit-plan-mode'; planFilePath: string | null }
   ): Promise<void> {
     const syntheticPlanId = `plan-${messageId}-${Date.now()}`;
 
@@ -4605,10 +4699,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._pendingPlanSelections.add(panelId);
     this._pendingPlanData.set(syntheticPlanId, { options, messageId, originalQuery });
 
-    // Send plan options to webview (existing rendering)
-    const planPayload: { options: PlanOption[]; messageId: string; originalQuery: string; syntheticPlanId: string; metaQuestions?: ClarifyingQuestion[] } = { options, messageId, originalQuery, syntheticPlanId };
+    // Send plan options to webview (existing rendering). Native exit-plan
+    // routing (Plan 02 Phase 3.5) reuses this exact message shape, adding
+    // source/planFilePath so the renderer can label the card; the webview
+    // ignores fields it doesn't know.
+    const planPayload: { options: PlanOption[]; messageId: string; originalQuery: string; syntheticPlanId: string; metaQuestions?: ClarifyingQuestion[]; source?: string; planFilePath?: string | null } = { options, messageId, originalQuery, syntheticPlanId };
     if (metaQuestions && metaQuestions.length > 0) {
       planPayload.metaQuestions = metaQuestions;
+    }
+    if (origin) {
+      planPayload.source = origin.source;
+      planPayload.planFilePath = origin.planFilePath;
     }
     this._postToPanel(panelId, { type: 'planOptions', payload: planPayload });
 
@@ -4626,6 +4727,94 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._handleSemiAutonomousPlanTimeout(panelId, syntheticPlanId);
       }, timeout * 1000);
       this._semiAutoPlanTimeouts.set(syntheticPlanId, timeoutHandle);
+    }
+  }
+
+  /**
+   * Plan 02 Phase 3 — thinking style for per-message persistence.
+   * Returns the provider's declared thinkingStyle when it actually emits
+   * thinking ('streamed' / 'complete-blocks'), undefined otherwise — the
+   * done handler then falls back to the legacy plain-string thinking shape.
+   */
+  private _getThinkingStyleForProvider(provider: ProviderType): MessageThinkingStyle | undefined {
+    const instance = this._providerManager.getProviderInstance(provider);
+    const style = instance?.capabilities?.thinkingStyle;
+    return (style === 'streamed' || style === 'complete-blocks') ? style : undefined;
+  }
+
+  /**
+   * Plan 02 Phase 3.5 — route Claude's native exit_plan_mode into the
+   * existing plan-selection flow.
+   *
+   * Builds a single PlanOption from the plan file the CLI wrote (when
+   * planFilePath is present) or from the assistant's streamed response, then
+   * reuses _handleDetectedPlanOptions so the webview receives the same
+   * `planOptions` message it already renders — cards, planOptionSelected
+   * round trip, autonomous auto-select, and semi-autonomous timers all work
+   * unchanged. The payload additionally carries source: 'exit-plan-mode' and
+   * planFilePath for renderer labeling.
+   */
+  private async _handleExitPlanMode(
+    planFilePath: string | null,
+    assistantMessage: Message,
+    panelId: string
+  ): Promise<void> {
+    try {
+      let planContent = '';
+      if (planFilePath) {
+        try {
+          const resolved = path.isAbsolute(planFilePath)
+            ? planFilePath
+            : path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '', planFilePath);
+          if (fs.existsSync(resolved)) {
+            planContent = fs.readFileSync(resolved, 'utf-8').slice(0, EXIT_PLAN_FILE_MAX_CHARS);
+          } else {
+            console.log('[Mysti] exit_plan_mode plan file not found:', resolved);
+          }
+        } catch (readError) {
+          console.log('[Mysti] Failed to read exit_plan_mode plan file:', readError);
+        }
+      }
+      if (!planContent.trim()) {
+        // No plan file (or unreadable): the streamed response is the plan
+        planContent = assistantMessage.content;
+      }
+      if (!planContent.trim()) {
+        console.log('[Mysti] exit_plan_mode with no plan content — skipping plan card');
+        return;
+      }
+
+      const headingMatch = planContent.match(/^#{1,6}\s+(.+)$/m);
+      const title = headingMatch ? headingMatch[1].trim() : 'Implementation Plan';
+      const firstLine = planContent
+        .split('\n')
+        .map(line => line.trim())
+        .find(line => line.length > 0 && !line.startsWith('#'));
+      const summary = (firstLine || 'Plan ready for review.').slice(0, 200);
+
+      const option: PlanOption = {
+        id: `exit-plan-${assistantMessage.id}`,
+        title,
+        summary,
+        approach: planContent,
+        pros: [],
+        cons: [],
+        complexity: 'medium',
+        icon: '📋',
+        color: 'blue'
+      };
+
+      const originalQuery = this._lastUserMessage.get(panelId) || '';
+      await this._handleDetectedPlanOptions(
+        [option],
+        assistantMessage.id,
+        originalQuery,
+        undefined,
+        panelId,
+        { source: 'exit-plan-mode', planFilePath }
+      );
+    } catch (error) {
+      console.error('[Mysti] exit_plan_mode handling failed:', error);
     }
   }
 

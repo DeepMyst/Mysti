@@ -34,6 +34,7 @@ import type {
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
+import { toolKind } from '../../utils/toolNames';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
 
 export interface CopilotSessionState extends PanelSessionState {
@@ -540,7 +541,8 @@ export class CopilotProvider extends BaseCliProvider {
               id: data.tool_id,
               name: toolNameCopilot,
               input: paramsCopilot,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(toolNameCopilot)
             }
           };
         }

@@ -43,7 +43,7 @@ describe('QwenCodeProvider.parseStreamLine', () => {
       const result = provider.parseStreamLine(line, session);
       expect(result).toEqual({
         type: 'tool_use',
-        toolCall: { id: 'tool_1', name: 'Read', input: {}, status: 'running' },
+        toolCall: { id: 'tool_1', name: 'Read', input: {}, status: 'running', kind: 'read' },
       });
     });
 

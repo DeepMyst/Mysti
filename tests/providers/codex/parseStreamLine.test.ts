@@ -51,10 +51,12 @@ describe('CodexProvider.parseStreamLine', () => {
       expect(result?.content).toBe('Analyzing the codebase\n');
     });
 
-    it('should detect thinking from ** wrapped plain text', () => {
+    it('should NOT reclassify ** wrapped plain text as thinking (Plan 02 Phase 3)', () => {
+      // Bold markdown in agent text is body content; only reasoning items
+      // become thinking chunks.
       const result = provider.parseStreamLine('**Thinking about this**', session);
-      expect(result?.type).toBe('thinking');
-      expect(result?.content).toBe('Thinking about this\n');
+      expect(result?.type).toBe('text');
+      expect(result?.content).toBe('**Thinking about this**');
     });
   });
 
@@ -72,6 +74,7 @@ describe('CodexProvider.parseStreamLine', () => {
           name: 'Bash',
           input: { command: 'ls -la' },
           status: 'running',
+          kind: 'execute',
         },
       });
     });

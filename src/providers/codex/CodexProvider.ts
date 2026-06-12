@@ -34,6 +34,7 @@ import type {
 } from '../../types';
 import { validateModelName, validateProfileName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
+import { toolKind } from '../../utils/toolNames';
 
 /**
  * Per-panel session state for Codex, extending base with tool call tracking.
@@ -634,26 +635,19 @@ export class CodexProvider extends BaseCliProvider {
           return { type: 'error', content: event.message || event.error || 'Unknown error' };
 
         default:
-          // Try to extract content from unknown event types
+          // Try to extract content from unknown event types.
+          // Plan 02 Phase 3: never reclassify plain agent text as thinking —
+          // only reasoning items (handled in _parseCodexItem) yield thinking
+          // chunks. Bold ("**…**") agent text is legitimate markdown body.
           if (event.content || event.text || event.message) {
             const content = event.content || event.text || event.message;
-            // Check if content looks like thinking (starts and ends with **)
-            if (typeof content === 'string' && content.startsWith('**') && content.endsWith('**')) {
-              const thinking = content.replace(/^\*\*/, '').replace(/\*\*$/, '').trim() + '\n';
-              return { type: 'thinking', content: thinking };
-            }
             return { type: 'text', content };
           }
           return null;
       }
     } catch {
-      // If it's not JSON, treat as plain text output
+      // If it's not JSON, treat as plain text output (never thinking — see above)
       if (line.trim()) {
-        // Check if line looks like thinking (starts and ends with **)
-        if (line.startsWith('**') && line.endsWith('**')) {
-          const thinking = line.replace(/^\*\*/, '').replace(/\*\*$/, '').trim() + '\n';
-          return { type: 'thinking', content: thinking };
-        }
         return { type: 'text', content: line };
       }
     }
@@ -754,7 +748,8 @@ export class CodexProvider extends BaseCliProvider {
               id: toolId,
               name: toolName,
               input,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(toolName)
             }
           };
         }
@@ -833,7 +828,8 @@ export class CodexProvider extends BaseCliProvider {
               id: toolId,
               name: toolName,
               input,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(toolName)
             }
           };
         }
@@ -904,7 +900,8 @@ export class CodexProvider extends BaseCliProvider {
               id: fileId,
               name: toolName,
               input,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(toolName)
             }
           };
         }
@@ -955,7 +952,8 @@ export class CodexProvider extends BaseCliProvider {
               id: searchId,
               name: 'web_search',
               input: searchInput,
-              status: 'running'
+              status: 'running',
+              kind: toolKind('web_search')
             }
           };
         }
@@ -973,7 +971,10 @@ export class CodexProvider extends BaseCliProvider {
       }
 
       default: {
-        // Check if this is reasoning/thinking content in a different structure
+        // Check if this is reasoning/thinking content in a different structure.
+        // Plan 02 Phase 3: ONLY explicit reasoning items/fields become thinking
+        // chunks. The old "**…**"-wrapped-text heuristic misclassified bold
+        // markdown in plain agent text as thinking — removed.
         if (item.reasoning) {
           let thinking = item.reasoning;
           thinking = thinking.replace(/^\*\*/, '').replace(/\*\*$/, '').trim() + '\n';
@@ -983,21 +984,10 @@ export class CodexProvider extends BaseCliProvider {
         // Try to extract text content from unknown item types
         // Check delta first for streaming
         if (item.delta?.content) {
-          let content = item.delta.content;
-          // Check if content looks like thinking (starts and ends with **)
-          if (content.startsWith('**') && content.endsWith('**')) {
-            content = content.replace(/^\*\*/, '').replace(/\*\*$/, '').trim() + '\n';
-            return { type: 'thinking', content };
-          }
-          return { type: 'text', content };
+          return { type: 'text', content: item.delta.content };
         }
         const content = item.content || item.text || item.message;
         if (content && typeof content === 'string') {
-          // Check if content looks like thinking (starts and ends with **)
-          if (content.startsWith('**') && content.endsWith('**')) {
-            const thinking = content.replace(/^\*\*/, '').replace(/\*\*$/, '').trim() + '\n';
-            return { type: 'thinking', content: thinking };
-          }
           return { type: 'text', content };
         }
         return null;

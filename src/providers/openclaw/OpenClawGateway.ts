@@ -11,6 +11,7 @@
 import WebSocket from 'ws';
 import type { StreamChunk } from '../../types';
 import { OPENCLAW_GATEWAY_TIMEOUT_MS } from '../../constants';
+import { toolKind } from '../../utils/toolNames';
 
 /**
  * Options for sending an agent message via the Gateway
@@ -831,11 +832,12 @@ export class OpenClawGateway {
     }
 
     if (stream === 'lifecycle' && data) {
-      const phase = data.phase as string | undefined;
-      if (phase === 'end' || phase === 'complete') {
-        return { type: 'done' };
-      }
-      return null; // Ignore start/other lifecycle phases
+      // Lifecycle end is NOT surfaced as a done chunk: the provider's
+      // _sendViaGateway yields the single authoritative done after the
+      // generator finishes (Plan 02 Phase 3: exactly one done per response).
+      // Loop termination in sendAgentMessage is driven by the final Gateway
+      // response, not by this chunk.
+      return null;
     }
 
     // Chat delta events — skip to avoid duplicate text (agent events already provide deltas)
@@ -886,6 +888,7 @@ export class OpenClawGateway {
           name: (payload.name || payload.tool || 'unknown') as string,
           input: (payload.input || payload.arguments || {}) as Record<string, unknown>,
           status: 'running',
+          kind: toolKind((payload.name || payload.tool || '') as string),
         }
       };
     }
@@ -935,9 +938,10 @@ export class OpenClawGateway {
       };
     }
 
-    // Done/complete
+    // Done/complete — swallowed; see the lifecycle handler above
+    // (exactly one done per response, emitted by _sendViaGateway).
     if (eventType === 'done' || eventType === 'complete' || eventType === 'end') {
-      return { type: 'done' };
+      return null;
     }
 
     // Step completion — extract tool/text content instead of dropping

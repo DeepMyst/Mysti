@@ -58,6 +58,56 @@ export interface Attachment {
   size: number;
 }
 
+// ============================================================================
+// Persisted message anatomy (Plan 02 Phase 3)
+//
+// Restored conversations must replay through the same renderer as live
+// streams. To make that possible each assistant Message can carry:
+//   - provider/model  — per-message attribution (survives provider switches;
+//                       legacy messages fall back to Conversation.provider/model)
+//   - toolCalls       — the resolved tool cards (inputs/outputs capped at
+//                       persistence time, see ConversationManager)
+//   - thinking        — legacy plain string OR { style, content } so the
+//                       renderer picks the right thinking widget without
+//                       consulting the manifest
+//   - segments        — ordered render segments (below)
+//
+// ALL of these fields are optional: conversations persisted before this
+// change load unchanged.
+// ============================================================================
+
+/** Mirrors ProviderCapabilities.thinkingStyle minus 'none' (no thinking ⇒ no value). */
+export type MessageThinkingStyle = 'streamed' | 'complete-blocks';
+
+export interface MessageThinking {
+  /** How the provider streamed reasoning — drives the thinking widget shape. */
+  style: MessageThinkingStyle;
+  content: string;
+}
+
+/**
+ * One ordered render segment of an assistant message.
+ *
+ * Segments record the interleaving order in which content streamed so the
+ * webview can replay a restored message exactly as it appeared live:
+ *   - 'text'     — a contiguous run of body markdown (consecutive text chunks
+ *                  are merged into one segment)
+ *   - 'thinking' — a contiguous run of reasoning content (merged likewise)
+ *   - 'tool'     — a tool card, referenced by id into Message.toolCalls
+ *                  (exactly one segment per tool call, emitted at the
+ *                  position the tool_use first appeared in the stream)
+ *
+ * Invariants: concatenating all 'text' segment contents equals
+ * Message.content; concatenating all 'thinking' segment contents equals the
+ * message's thinking content; every 'tool' toolCallId resolves to an entry
+ * in Message.toolCalls. Messages without segments (legacy) render as one
+ * flat thinking block + body + tool list.
+ */
+export type MessageSegment =
+  | { type: 'text'; content: string }
+  | { type: 'thinking'; content: string }
+  | { type: 'tool'; toolCallId: string };
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -65,8 +115,19 @@ export interface Message {
   timestamp: number;
   context?: ContextItem[];
   attachments?: Attachment[];
-  thinking?: string;
+  /**
+   * Reasoning content. Legacy persisted conversations store a plain string;
+   * Plan 02 Phase 3 writes { style, content } when the provider's
+   * thinkingStyle is known. Renderers must handle both shapes.
+   */
+  thinking?: string | MessageThinking;
   toolCalls?: ToolCall[];
+  /** Provider that produced this message (assistant messages, Plan 02 Phase 3). */
+  provider?: ProviderType;
+  /** Model that produced this message (assistant messages, Plan 02 Phase 3). */
+  model?: string;
+  /** Ordered render segments for exact stream replay (see MessageSegment). */
+  segments?: MessageSegment[];
 }
 
 export interface DiffLine {
@@ -100,6 +161,13 @@ export interface ToolCall {
   fileChange?: FileChangeInfo;
   /** Semantic kind for provider-agnostic rendering (optional until Phase 3 stamps it) */
   kind?: ToolCallKind;
+  /**
+   * Set by ConversationManager at persistence time when input/output strings
+   * exceeded the storage cap and were cut (Plan 03 Phase 6 stopgap — see
+   * PERSISTED_TOOL_STRING_CAP in ConversationManager). Live-streamed tool
+   * calls never carry this flag.
+   */
+  truncated?: boolean;
 }
 
 export interface Conversation {

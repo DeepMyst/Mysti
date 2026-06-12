@@ -111,6 +111,7 @@ describe('ClaudeCodeProvider.parseStreamLine', () => {
           name: 'Read',
           input: {},
           status: 'running',
+          kind: 'read',
         },
       });
     });
@@ -181,6 +182,7 @@ describe('ClaudeCodeProvider.parseStreamLine', () => {
           name: 'Read',
           input: { file_path: '/src/main.ts' },
           status: 'running',
+          kind: 'read',
         },
       });
     });

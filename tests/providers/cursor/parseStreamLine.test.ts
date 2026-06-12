@@ -85,6 +85,7 @@ describe('CursorProvider.parseStreamLine', () => {
           name: 'Read',
           input: { path: '/src/main.ts' },
           status: 'running',
+          kind: 'read',
         },
       });
     });
@@ -200,9 +201,11 @@ describe('CursorProvider.parseStreamLine', () => {
   });
 
   describe('done events', () => {
-    it('should emit done on done event', () => {
+    // Plan 02 Phase 3: parser-level done is swallowed — sendMessage() emits
+    // the single authoritative done after the stream ends.
+    it('should NOT emit a parser-level done (sendMessage owns the single done)', () => {
       const line = JSON.stringify({ type: 'done' });
-      expect(provider.parseStreamLine(line, session)).toEqual({ type: 'done' });
+      expect(provider.parseStreamLine(line, session)).toBeNull();
     });
 
     it('should reset streamedTextLength on done', () => {

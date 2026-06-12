@@ -28,7 +28,7 @@ import type {
   AuthStatus
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
-import { normalizeToolName } from '../../utils/permissionClassifier';
+import { normalizeToolName, toolKind } from '../../utils/toolNames';
 
 /**
  * Per-panel session state for Gemini, extending base with tool call tracking.
@@ -359,7 +359,8 @@ export class GeminiProvider extends BaseCliProvider {
               id: data.tool_id,
               name: canonicalName,
               input: params,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(canonicalName)
             }
           };
         }

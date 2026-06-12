@@ -14,7 +14,38 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
 import * as zlib from 'zlib';
-import type { Conversation, Message, ContextItem, Attachment, OperationMode, ProviderType, AgentConfiguration } from '../types';
+import type { Conversation, Message, MessageSegment, MessageThinking, ContextItem, Attachment, OperationMode, ProviderType, AgentConfiguration, ToolCall } from '../types';
+
+/**
+ * Cap (in characters) for each persisted tool input string field and tool
+ * output, applied in addMessageToConversation.
+ *
+ * Stopgap: tool calls can carry very large inputs (e.g. a Write tool's full
+ * file content) and results; persisting them verbatim would bloat
+ * globalState, which round-trips through extension-host JSON storage on
+ * every save. Plan 03 Phase 6 redesigns conversation storage (moving large
+ * payloads out of globalState) — until then anything over this cap is cut
+ * and the ToolCall is flagged `truncated: true`.
+ */
+export const PERSISTED_TOOL_STRING_CAP = 4096;
+
+/**
+ * Hard ceiling for a whole serialized tool input after per-field truncation
+ * (guards against bloat hiding in nested objects/arrays). When exceeded, the
+ * input is replaced by a `{ _preview }` stub.
+ */
+const PERSISTED_TOOL_INPUT_MAX_JSON = PERSISTED_TOOL_STRING_CAP * 4;
+
+/**
+ * Optional render-relevant structure persisted with a message
+ * (Plan 02 Phase 3 — see the Message anatomy block in types.ts).
+ */
+export interface MessagePersistExtras {
+  provider?: ProviderType;
+  model?: string;
+  toolCalls?: ToolCall[];
+  segments?: MessageSegment[];
+}
 
 export class ConversationManager {
   private _conversations: Map<string, Conversation> = new Map();
@@ -161,6 +192,12 @@ export class ConversationManager {
   /**
    * Add a message to a specific conversation by ID
    * Used for per-panel message routing
+   *
+   * `thinking` accepts the legacy plain string or the structured
+   * { style, content } shape; `extras` carries the Plan 02 Phase 3
+   * render-relevant structure (provider/model/toolCalls/segments). Tool
+   * inputs/outputs are truncated to PERSISTED_TOOL_STRING_CAP before
+   * persisting (see the constant's comment).
    */
   public addMessageToConversation(
     conversationId: string | null | undefined,
@@ -168,7 +205,8 @@ export class ConversationManager {
     content: string,
     context?: ContextItem[],
     attachments?: Attachment[],
-    thinking?: string
+    thinking?: string | MessageThinking,
+    extras?: MessagePersistExtras
   ): Message {
     // Get the specific conversation or fall back to current
     let conversation: Conversation | null = null;
@@ -192,11 +230,79 @@ export class ConversationManager {
       thinking
     };
 
+    if (extras) {
+      if (extras.provider) { message.provider = extras.provider; }
+      if (extras.model) { message.model = extras.model; }
+      const sanitizedToolCalls = this._sanitizeToolCallsForStorage(extras.toolCalls);
+      if (sanitizedToolCalls) { message.toolCalls = sanitizedToolCalls; }
+      if (extras.segments && extras.segments.length > 0) { message.segments = extras.segments; }
+    }
+
     conversation.messages.push(message);
     conversation.updatedAt = Date.now();
 
     this._saveConversations();
     return message;
+  }
+
+  /**
+   * Truncate large tool inputs/outputs before they reach globalState.
+   *
+   * Per-field rule: any top-level string value of `input` longer than
+   * PERSISTED_TOOL_STRING_CAP chars is sliced to the cap; `output` likewise.
+   * If the serialized input is still oversized after that (nested bloat),
+   * the whole input is replaced with a `{ _preview }` stub. Any cut sets
+   * `truncated: true` on the persisted ToolCall so renderers can show a
+   * "truncated" hint. Stopgap until Plan 03 Phase 6 redesigns storage.
+   */
+  private _sanitizeToolCallsForStorage(toolCalls?: ToolCall[]): ToolCall[] | undefined {
+    if (!toolCalls || toolCalls.length === 0) {
+      return undefined;
+    }
+
+    return toolCalls.map(toolCall => {
+      let truncated = false;
+
+      let output = toolCall.output;
+      if (typeof output === 'string' && output.length > PERSISTED_TOOL_STRING_CAP) {
+        output = output.slice(0, PERSISTED_TOOL_STRING_CAP);
+        truncated = true;
+      }
+
+      let input = toolCall.input;
+      if (input && typeof input === 'object') {
+        const capped: Record<string, unknown> = {};
+        let changed = false;
+        for (const [key, value] of Object.entries(input)) {
+          if (typeof value === 'string' && value.length > PERSISTED_TOOL_STRING_CAP) {
+            capped[key] = value.slice(0, PERSISTED_TOOL_STRING_CAP);
+            truncated = true;
+            changed = true;
+          } else {
+            capped[key] = value;
+          }
+        }
+        try {
+          const serialized = JSON.stringify(capped);
+          if (serialized.length > PERSISTED_TOOL_INPUT_MAX_JSON) {
+            input = { _preview: serialized.slice(0, PERSISTED_TOOL_STRING_CAP) };
+            truncated = true;
+          } else if (changed) {
+            input = capped;
+          }
+        } catch {
+          // Circular/unserializable input would break globalState persistence
+          input = {};
+          truncated = true;
+        }
+      }
+
+      const sanitized: ToolCall = { ...toolCall, input, output };
+      if (truncated) {
+        sanitized.truncated = true;
+      }
+      return sanitized;
+    });
   }
 
   public updateMessage(messageId: string, updates: Partial<Message>): boolean {

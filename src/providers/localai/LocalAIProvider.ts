@@ -13,6 +13,7 @@
 
 import * as vscode from 'vscode';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { toolKind } from '../../utils/toolNames';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -367,7 +368,12 @@ export class LocalAIProvider extends BaseCliProvider {
               yield { type: 'text', content: delta.content };
             }
 
-            // Handle tool calls
+            // Handle tool calls.
+            // Tool-card resolution strategy (Plan 02 Phase 3): LocalAI never
+            // executes tools, so no tool_result is EVER emitted — and we must
+            // NOT fabricate one. The manifest declares emitsToolResults: false
+            // and the webview auto-resolves running tool cards for such
+            // providers when the response completes.
             if (delta?.tool_calls && Array.isArray(delta.tool_calls)) {
               for (const toolCall of delta.tool_calls) {
                 const fn = toolCall.function;
@@ -379,6 +385,7 @@ export class LocalAIProvider extends BaseCliProvider {
                       name: fn.name,
                       input: fn.arguments ? JSON.parse(fn.arguments) : {},
                       status: 'running',
+                      kind: toolKind(fn.name),
                     }
                   };
                 }

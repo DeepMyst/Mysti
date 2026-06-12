@@ -13,6 +13,7 @@
 
 import * as vscode from 'vscode';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { toolKind } from '../../utils/toolNames';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -337,7 +338,12 @@ export class OllamaProvider extends BaseCliProvider {
           try {
             const chunk = JSON.parse(line);
 
-            // Handle tool calls
+            // Handle tool calls.
+            // Tool-card resolution strategy (Plan 02 Phase 3): Ollama never
+            // executes tools, so no tool_result is EVER emitted — and we must
+            // NOT fabricate one. The manifest declares emitsToolResults: false
+            // and the webview auto-resolves running tool cards for such
+            // providers when the response completes.
             if (chunk.message?.tool_calls && Array.isArray(chunk.message.tool_calls)) {
               for (const toolCall of chunk.message.tool_calls) {
                 const fn = toolCall.function;
@@ -349,6 +355,7 @@ export class OllamaProvider extends BaseCliProvider {
                       name: fn.name || '',
                       input: fn.arguments || {},
                       status: 'running',
+                      kind: toolKind(fn.name || ''),
                     }
                   };
                 }

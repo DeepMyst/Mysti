@@ -15,7 +15,7 @@ import * as os from "os";
 import * as path from "path";
 import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from "../base/BaseCliProvider";
 import { validateModelName } from "../../utils/validation";
-import { normalizeToolName } from "../../utils/permissionClassifier";
+import { normalizeToolName, toolKind } from "../../utils/toolNames";
 import { getEnrichedEnv } from "../../utils/platform";
 import type {
 	CliDiscoveryResult,
@@ -468,6 +468,7 @@ export class CursorProvider extends BaseCliProvider {
 							name: toolName,
 							input,
 							status: "running",
+							kind: toolKind(toolName),
 						},
 					};
 				}
@@ -476,14 +477,19 @@ export class CursorProvider extends BaseCliProvider {
 					const active = cursorSession.activeToolCalls.get(toolId);
 					cursorSession.activeToolCalls.delete(toolId);
 
-					// Extract output from result.success or result.rejected
+					// Extract output from result.success or result.rejected.
+					// Plan 02 Phase 3: rejected results surface as status
+					// 'failed' so the webview tool card shows the rejection
+					// instead of a green "completed" check.
 					let output = "";
+					let rejected = false;
 					if (toolData?.result?.success !== undefined) {
 						output =
 							typeof toolData.result.success === "string"
 								? toolData.result.success
 								: JSON.stringify(toolData.result.success, null, 2);
 					} else if (toolData?.result?.rejected) {
+						rejected = true;
 						output =
 							typeof toolData.result.rejected === "string"
 								? toolData.result.rejected
@@ -497,7 +503,7 @@ export class CursorProvider extends BaseCliProvider {
 							name: active?.name || toolName,
 							input: active ? JSON.parse(active.inputJson) : input,
 							output,
-							status: "completed",
+							status: rejected ? "failed" : "completed",
 						},
 					};
 				}
@@ -531,10 +537,12 @@ export class CursorProvider extends BaseCliProvider {
 				};
 			}
 
-			// Done/complete events
+			// Done/complete events — reset turn state but do NOT emit a parser-level
+			// done: sendMessage() yields the single authoritative done (with usage)
+			// after the stream ends (Plan 02 Phase 3: exactly one done per response).
 			if (data.type === "done" || data.type === "complete") {
 				cursorSession.streamedTextLength = 0;
-				return { type: "done" };
+				return null;
 			}
 
 			// User echo events (Cursor echoes the prompt back) — skip

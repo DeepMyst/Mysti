@@ -28,7 +28,7 @@ import type {
   AuthStatus
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
-import { normalizeToolName } from '../../utils/permissionClassifier';
+import { normalizeToolName, toolKind } from '../../utils/toolNames';
 
 /**
  * Per-panel session state for Qwen Code provider.
@@ -314,7 +314,8 @@ export class QwenCodeProvider extends BaseCliProvider {
                 id: contentBlock.id || '',
                 name: canonicalName,
                 input: {},
-                status: 'running'
+                status: 'running',
+                kind: toolKind(canonicalName)
               }
             };
           }
@@ -342,7 +343,8 @@ export class QwenCodeProvider extends BaseCliProvider {
                 id: completedTool.id,
                 name: completedTool.name,
                 input: parsedInput,
-                status: 'running'
+                status: 'running',
+                kind: toolKind(completedTool.name)
               }
             };
           }
@@ -413,23 +415,12 @@ export class QwenCodeProvider extends BaseCliProvider {
         return null;
       }
 
-      // Handle assistant complete message - extract tool results
+      // Assistant complete-message events are intentionally NOT re-emitted as
+      // tool_use (Plan 02 Phase 3, research F16): every tool block already
+      // streams through content_block_start/stop above. The old branch only
+      // returned the FIRST tool block (dropping multi-tool turns) and
+      // double-emitted tool_use chunks, which double-fired the permission gate.
       if (data.type === 'assistant') {
-        if (data.message?.content) {
-          for (const block of data.message.content) {
-            if (block.type === 'tool_use') {
-              return {
-                type: 'tool_use',
-                toolCall: {
-                  id: block.id || '',
-                  name: normalizeToolName(block.name || ''),
-                  input: block.input || {},
-                  status: 'running'
-                }
-              };
-            }
-          }
-        }
         return null;
       }
 

@@ -33,6 +33,7 @@ import type {
 } from "../../types";
 import { PROCESS_KILL_GRACE_PERIOD_MS } from "../../constants";
 import { getEnrichedEnv } from "../../utils/platform";
+import { toolKind } from "../../utils/toolNames";
 
 /**
  * Extended per-panel session state for Cline-specific fields.
@@ -607,6 +608,7 @@ export class ClineProvider extends BaseCliProvider {
 					name: data.toolCall.name || "",
 					input: data.toolCall.input || {},
 					status: data.toolCall.status || "running",
+					kind: toolKind(data.toolCall.name || ""),
 				},
 			};
 		}

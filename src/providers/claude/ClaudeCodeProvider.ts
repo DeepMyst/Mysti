@@ -35,6 +35,7 @@ import type {
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
+import { toolKind } from '../../utils/toolNames';
 
 /**
  * Extended per-panel session state for Claude Code provider.
@@ -488,7 +489,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
                 id: contentBlock.id || '',
                 name: contentBlock.name || '',
                 input: {},
-                status: 'running'
+                status: 'running',
+                kind: toolKind(contentBlock.name || '')
               }
             };
           }
@@ -542,7 +544,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
                 id: completedTool.id,
                 name: completedTool.name,
                 input: parsedInput,
-                status: 'running'
+                status: 'running',
+                kind: toolKind(completedTool.name)
               }
             };
           }

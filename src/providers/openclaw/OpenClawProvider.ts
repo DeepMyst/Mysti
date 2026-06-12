@@ -29,6 +29,7 @@ import type {
   AgentConfiguration,
 } from '../../types';
 import { getEnrichedEnv, readOpenClawToken } from '../../utils/platform';
+import { toolKind } from '../../utils/toolNames';
 
 export interface OpenClawSessionState extends PanelSessionState {
   activeToolCalls: Map<string, { id: string; name: string; inputJson: string }>;
@@ -384,6 +385,7 @@ export class OpenClawProvider extends BaseCliProvider {
               name: toolName,
               input: data.input || data.arguments || {},
               status: 'running',
+              kind: toolKind(toolName),
             },
           };
         }
@@ -451,9 +453,11 @@ export class OpenClawProvider extends BaseCliProvider {
         };
       }
 
-      // Done/complete events
+      // Done/complete events — swallowed: _sendViaCli/_sendViaGateway yield the
+      // single authoritative done (with usage) after the stream ends
+      // (Plan 02 Phase 3: exactly one done per response).
       if (data.type === 'done' || data.type === 'complete' || data.type === 'end') {
-        return { type: 'done' };
+        return null;
       }
 
       return null;

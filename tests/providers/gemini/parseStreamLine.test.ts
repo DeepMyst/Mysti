@@ -55,6 +55,7 @@ describe('GeminiProvider.parseStreamLine', () => {
           name: 'Read',
           input: { path: '/src/main.ts' },
           status: 'running',
+          kind: 'read',
         },
       });
       expect(session.activeToolCalls.has('tool_1')).toBe(true);

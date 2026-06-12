@@ -2929,6 +2929,38 @@ function getStyles(): string {
       display: none;
     }
 
+    /* Unified message footer (Plan 02 Phase 3.4) */
+    .message-footer {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 6px;
+      padding-top: 4px;
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .message-footer-item {
+      display: inline-flex;
+      align-items: center;
+    }
+    .message-footer-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 6px;
+      border-radius: 8px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+    }
+
+    /* Tool card note (auto-resolved "result not reported" / "truncated") */
+    .tool-call-note {
+      font-size: 10px;
+      font-style: italic;
+      color: var(--vscode-descriptionForeground);
+      flex-shrink: 0;
+    }
+
     /* Suggestions container wrapper */
     .quick-actions-container {
       border-top: 1px solid var(--vscode-panel-border);
@@ -12790,8 +12822,6 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               currentResponse = '';
               currentThinking = '';
               contentSegmentIndex = 0;
-              claudeThinkingBuffer = '';
-              claudeFirstSentenceComplete = false;
             }
             showLoading();
             break;
@@ -12805,7 +12835,18 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             hideLoading();
             // Payload is { message, usage } - extract message for finalization
             var responsePayload = message.payload || {};
-            finalizeStreamingMessage(responsePayload.message || responsePayload);
+            var completedMessage = responsePayload.message || responsePayload;
+            var finalizedEl = finalizeStreamingMessage(completedMessage);
+            // Plan 02 Phase 3.4: unified footer (also auto-resolves running
+            // tool cards for providers that never stream tool_result)
+            if (finalizedEl) {
+              renderMessageFooter(
+                finalizedEl,
+                responsePayload.usage || null,
+                getMessageAttribution(completedMessage),
+                []
+              );
+            }
             // Update context usage from response
             // Total context = input_tokens + cache_read_input_tokens (cached context being used)
             if (responsePayload.usage) {
@@ -13052,6 +13093,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           case 'conversationChanged':
             clearMessages();
             resetContextUsage();
+            // Keep the conversation for legacy attribution fallback —
+            // messages without a per-message provider/model stamp fall back
+            // to the conversation's values (Plan 02 Phase 3.4).
+            state.conversation = message.payload || null;
             if (message.payload && message.payload.messages) {
               message.payload.messages.forEach(function(msg) { addMessage(msg); });
             }
@@ -14868,8 +14913,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       // ========================================
 
       var brainstormAgentTimeouts = {};
-      var brainstormThinkingBuffers = {};
-      var brainstormFirstSentenceFlags = {};
+      // Per-agent thinking state lives on each agent body's .thinking-zone
+      // element (Plan 02 Phase 3.4) — no agent-keyed buffers here.
 
       function buildProgressStepper(hasDiscussion, strategy) {
         var steps = [{ phase: 'individual', label: 'Individual' }];
@@ -14992,8 +15037,6 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         state.agentResponses = {};
         state.discussionContent = {};
         state.currentDiscussionRound = 0;
-        brainstormThinkingBuffers = {};
-        brainstormFirstSentenceFlags = {};
 
         // Set loading state for buttons only (no loading dots)
         state.isLoading = true;
@@ -15073,58 +15116,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         clearAgentTimeout(agentId);
 
         if (chunkType === 'thinking') {
-          var thinkingIcon = '<span class="thinking-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg></span>';
-
-          // Capability-driven (W3): 'streamed' thinkers accumulate into one
-          // collapsible block; everything else sends complete thoughts that
-          // render as separate blocks.
-          if (getThinkingStyle(agentId) !== 'streamed') {
-            var thinkingEl2 = document.createElement('div');
-            thinkingEl2.className = 'thinking-block';
-            thinkingEl2.innerHTML = thinkingIcon + '<span class="thinking-content">' + escapeHtml(content) + '</span>';
-            bodyEl.appendChild(thinkingEl2);
-          } else {
-            // Claude: Accumulate per-agent and create collapsible structure
-            if (!brainstormThinkingBuffers[agentId]) brainstormThinkingBuffers[agentId] = '';
-            brainstormThinkingBuffers[agentId] += content;
-
-            var thinkingEl2 = bodyEl.querySelector('.thinking-block.claude-thinking');
-            if (!thinkingEl2) {
-              thinkingEl2 = document.createElement('div');
-              thinkingEl2.className = 'thinking-block claude-thinking';
-              thinkingEl2.innerHTML = thinkingIcon +
-                '<span class="thinking-preview"></span>' +
-                '<span class="thinking-dots"></span>' +
-                '<div class="thinking-rest"></div>';
-              thinkingEl2.onclick = function() {
-                thinkingEl2.classList.toggle('expanded');
-              };
-              bodyEl.appendChild(thinkingEl2);
-            }
-
-            var previewSpan = thinkingEl2.querySelector('.thinking-preview');
-            var dotsSpan = thinkingEl2.querySelector('.thinking-dots');
-            var restDiv = thinkingEl2.querySelector('.thinking-rest');
-
-            if (!brainstormFirstSentenceFlags[agentId]) {
-              var sentenceEnd = findFirstSentenceEnd(brainstormThinkingBuffers[agentId]);
-              if (sentenceEnd !== -1) {
-                brainstormFirstSentenceFlags[agentId] = true;
-                var firstSentence = brainstormThinkingBuffers[agentId].substring(0, sentenceEnd).trim();
-                var rest = brainstormThinkingBuffers[agentId].substring(sentenceEnd).trim();
-                previewSpan.textContent = firstSentence;
-                dotsSpan.textContent = ' ...';
-                thinkingEl2.classList.add('collapsible');
-                if (rest) restDiv.textContent = rest;
-              } else {
-                previewSpan.textContent = brainstormThinkingBuffers[agentId];
-              }
-            } else {
-              var sentenceEnd = findFirstSentenceEnd(brainstormThinkingBuffers[agentId]);
-              var rest = brainstormThinkingBuffers[agentId].substring(sentenceEnd).trim();
-              restDiv.textContent = rest;
-            }
-          }
+          // Plan 02 Phase 3.4: brainstorm bubbles render the SAME unified
+          // thinking zone as main chat — the per-agent body element keeps
+          // the per-agent buffer state, so no agent-keyed maps needed.
+          renderThinkingZone(bodyEl, getThinkingStyle(agentId), content);
         } else {
           // Accumulate text content
           if (!state.agentResponses[agentId]) {
@@ -15146,11 +15141,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       function handleBrainstormAgentComplete(payload) {
         var agentId = payload.agentId;
 
-        // Reset per-agent thinking buffer
-        delete brainstormThinkingBuffers[agentId];
-        delete brainstormFirstSentenceFlags[agentId];
-
-        // Clear any remaining timeout
+        // Clear any remaining timeout (per-agent thinking state lives on the
+        // agent body's .thinking-zone element — nothing to reset here)
         clearAgentTimeout(agentId);
       }
 
@@ -15373,8 +15365,6 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         state.synthesisContent = '';
         state.discussionContent = {};
         state.currentDiscussionRound = 0;
-        brainstormThinkingBuffers = {};
-        brainstormFirstSentenceFlags = {};
 
         // Clear all agent timeouts
         Object.keys(brainstormAgentTimeouts).forEach(function(id) {
@@ -15871,12 +15861,17 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         div.className = 'message ' + msg.role;
         div.dataset.id = msg.id;
 
+        var attribution = getMessageAttribution(msg);
         var roleLabel = msg.role === 'assistant' ? 'Mysti' : msg.role;
         var html = '<div class="message-header">';
         html += '<div class="message-role-container">';
         html += '<span class="message-role ' + msg.role + '">' + roleLabel + '</span>';
         if (msg.role === 'assistant') {
-          html += '<span class="message-model-info">' + getModelDisplayName(state.settings.model) + '</span>';
+          // Per-message attribution (Plan 02 Phase 3.4): persisted
+          // provider/model stamp, NOT the currently selected provider
+          var attributionEntry = getManifestEntry(attribution.provider);
+          var attributionTitle = attributionEntry ? 'Generated by ' + attributionEntry.displayName : '';
+          html += '<span class="message-model-info" title="' + escapeHtml(attributionTitle) + '">' + getModelDisplayName(attribution.model) + '</span>';
         }
         html += '</div>';
         if (msg.role === 'assistant') {
@@ -15904,16 +15899,87 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           html += '</div>';
         }
 
-        if (msg.thinking) {
-          var thinkingIcon = '<span class="thinking-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg></span>';
-          html += '<div class="thinking-block">' + thinkingIcon + '<span class="thinking-content">' + escapeHtml(msg.thinking) + '</span></div>';
+        div.innerHTML = html;
+
+        if (msg.role === 'assistant') {
+          // Plan 02 Phase 3.4: replay the restored message through the SAME
+          // components used live — .message-body with interleaved thinking
+          // zone / content segments / tool cards, then the unified footer.
+          div.appendChild(buildRestoredMessageBody(msg));
+          renderMessageFooter(div, null, attribution, []);
+        } else {
+          var contentEl = document.createElement('div');
+          contentEl.className = 'message-content';
+          contentEl.innerHTML = formatContent(msg.content);
+          div.appendChild(contentEl);
         }
 
-        html += '<div class="message-content">' + formatContent(msg.content) + '</div>';
-
-        div.innerHTML = html;
         messagesEl.appendChild(div);
         messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      // Build a restored assistant message's .message-body by replaying
+      // persisted segments (exact stream order) — or, for legacy messages
+      // without segments, the flat shape: one thinking block + body + tool
+      // list. Same DOM as the live stream produces.
+      function buildRestoredMessageBody(msg) {
+        var body = document.createElement('div');
+        body.className = 'message-body';
+
+        var thinkingInfo = normalizeMessageThinking(msg.thinking);
+        var thinkingStyle = thinkingInfo ? thinkingInfo.style : 'complete-blocks';
+
+        var toolCallById = {};
+        (msg.toolCalls || []).forEach(function(call) {
+          if (call && call.id) toolCallById[call.id] = call;
+        });
+
+        if (msg.segments && msg.segments.length > 0) {
+          var segmentIndex = 0;
+          msg.segments.forEach(function(segment) {
+            if (!segment) return;
+            if (segment.type === 'thinking') {
+              // All thinking funnels into ONE zone anchored where thinking
+              // first appeared — identical to the live render.
+              renderThinkingZone(body, thinkingStyle, segment.content || '');
+            } else if (segment.type === 'text') {
+              if (!segment.content) return;
+              var segmentEl = document.createElement('div');
+              segmentEl.className = 'message-content content-segment-' + segmentIndex;
+              segmentIndex++;
+              segmentEl.innerHTML = formatContent(segment.content);
+              body.appendChild(segmentEl);
+            } else if (segment.type === 'tool') {
+              var call = toolCallById[segment.toolCallId];
+              if (call) {
+                body.appendChild(buildToolCallElement(call));
+                delete toolCallById[segment.toolCallId];
+              }
+            }
+          });
+          // Defensive: tool calls not referenced by any segment still render
+          (msg.toolCalls || []).forEach(function(call) {
+            if (call && call.id && toolCallById[call.id]) {
+              body.appendChild(buildToolCallElement(call));
+            }
+          });
+        } else {
+          // Legacy flat shape (no segments persisted)
+          if (thinkingInfo) {
+            renderThinkingZone(body, thinkingStyle, thinkingInfo.content);
+          }
+          if (msg.content) {
+            var flatContent = document.createElement('div');
+            flatContent.className = 'message-content';
+            flatContent.innerHTML = formatContent(msg.content);
+            body.appendChild(flatContent);
+          }
+          (msg.toolCalls || []).forEach(function(call) {
+            if (call) body.appendChild(buildToolCallElement(call));
+          });
+        }
+
+        return body;
       }
 
       function addSystemMessage(content) {
@@ -15932,9 +15998,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var previousTodoContents = new Set(); // Track previous todo content for completion detection
       var stuckTodoObservers = new Map(); // todoId -> IntersectionObserver
       var stuckTodos = new Map(); // todoId -> { originalEl, cloneEl }
-      var claudeThinkingBuffer = ''; // Buffer for Claude's streaming thinking chunks
-      var claudeFirstSentenceComplete = false; // Track if first sentence is done
-      // brainstormThinkingBuffers and brainstormFirstSentenceFlags are now per-agent (declared in brainstorm handlers section)
+      // Thinking buffers live on each message's .thinking-zone element
+      // (Plan 02 Phase 3.4 unified thinking zone) — no globals here.
 
       // Helper to detect first sentence end
       function findFirstSentenceEnd(text) {
@@ -16000,78 +16065,93 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         return streamingEl;
       }
 
+      // ======================================================================
+      // Unified thinking zone (Plan 02 Phase 3.4)
+      //
+      // ONE collapsible component for every provider and every surface (main
+      // chat, brainstorm bubbles, restored conversations). 'streamed'
+      // thinkers append raw deltas into the zone's buffer; 'complete-blocks'
+      // thinkers append whole thoughts as paragraphs — same widget, same
+      // collapse/preview behavior. Per-zone state lives on the element
+      // itself (_thinkingBuffer / _firstSentenceDone), so no global buffers
+      // and no per-agent maps.
+      // ======================================================================
+      function renderThinkingZone(containerEl, style, content) {
+        if (!containerEl || !content) return null;
+
+        var zone = containerEl.querySelector('.thinking-zone');
+        if (!zone) {
+          zone = document.createElement('div');
+          zone.className = 'thinking-block thinking-zone';
+
+          var icon = document.createElement('span');
+          icon.className = 'thinking-icon';
+          icon.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg>';
+          zone.appendChild(icon);
+
+          var preview = document.createElement('span');
+          preview.className = 'thinking-preview';
+          zone.appendChild(preview);
+
+          var dots = document.createElement('span');
+          dots.className = 'thinking-dots';
+          zone.appendChild(dots);
+
+          var rest = document.createElement('div');
+          rest.className = 'thinking-rest';
+          zone.appendChild(rest);
+
+          zone._thinkingBuffer = '';
+          zone._firstSentenceDone = false;
+          zone.onclick = function() {
+            zone.classList.toggle('expanded');
+          };
+          containerEl.appendChild(zone);
+        }
+
+        // 'complete-blocks' appends whole thoughts as paragraphs; 'streamed'
+        // appends raw deltas verbatim.
+        if (style === 'complete-blocks' && zone._thinkingBuffer) {
+          zone._thinkingBuffer += '\\n\\n' + content;
+        } else {
+          zone._thinkingBuffer += content;
+        }
+
+        var previewSpan = zone.querySelector('.thinking-preview');
+        var dotsSpan = zone.querySelector('.thinking-dots');
+        var restDiv = zone.querySelector('.thinking-rest');
+        var buffer = zone._thinkingBuffer;
+
+        if (!zone._firstSentenceDone) {
+          var sentenceEnd = findFirstSentenceEnd(buffer);
+          if (sentenceEnd !== -1) {
+            // First sentence complete — collapse the rest behind it
+            zone._firstSentenceDone = true;
+            previewSpan.textContent = buffer.substring(0, sentenceEnd).trim();
+            dotsSpan.textContent = ' ...';
+            zone.classList.add('collapsible');
+            var restText = buffer.substring(sentenceEnd).trim();
+            if (restText) {
+              restDiv.textContent = restText;
+            }
+          } else {
+            // Still streaming the first sentence
+            previewSpan.textContent = buffer;
+          }
+        } else {
+          var sentenceEnd2 = findFirstSentenceEnd(buffer);
+          restDiv.textContent = buffer.substring(sentenceEnd2).trim();
+        }
+        return zone;
+      }
+
       function appendThinkingBlock(thinking) {
         var streamingEl = getOrCreateStreamingMessage();
         var messageBody = streamingEl.querySelector('.message-body');
-        var thinkingIcon = '<span class="thinking-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg></span>';
-
         if (thinking && messageBody) {
-          // Capability-driven (W2): 'complete-blocks' thinkers (Codex, Cline,
-          // Qwen, OpenCode, OpenClaw) send whole thoughts — render each as a
-          // separate block; 'streamed' thinkers accumulate into one
-          // collapsible block.
-          if (getThinkingStyle(state.settings.provider) === 'complete-blocks') {
-            var thinkingEl = document.createElement('div');
-            thinkingEl.className = 'thinking-block';
-            thinkingEl.innerHTML = thinkingIcon + '<span class="thinking-content">' + escapeHtml(thinking) + '</span>';
-            messageBody.appendChild(thinkingEl);
-          } else {
-            // Claude: Accumulate and create collapsible structure
-            claudeThinkingBuffer += thinking;
-
-            var thinkingEl = messageBody.querySelector('.thinking-block.claude-thinking');
-            if (!thinkingEl) {
-              // Create the thinking block structure
-              thinkingEl = document.createElement('div');
-              thinkingEl.className = 'thinking-block claude-thinking';
-              thinkingEl.innerHTML = thinkingIcon +
-                '<span class="thinking-preview"></span>' +
-                '<span class="thinking-dots"></span>' +
-                '<div class="thinking-rest"></div>';
-              thinkingEl.onclick = function() {
-                thinkingEl.classList.toggle('expanded');
-              };
-              messageBody.appendChild(thinkingEl);
-            }
-
-            var previewSpan = thinkingEl.querySelector('.thinking-preview');
-            var dotsSpan = thinkingEl.querySelector('.thinking-dots');
-            var restDiv = thinkingEl.querySelector('.thinking-rest');
-
-            if (!claudeFirstSentenceComplete) {
-              // Still building first sentence
-              var sentenceEnd = findFirstSentenceEnd(claudeThinkingBuffer);
-              if (sentenceEnd !== -1) {
-                // First sentence complete!
-                claudeFirstSentenceComplete = true;
-                var firstSentence = claudeThinkingBuffer.substring(0, sentenceEnd).trim();
-                var rest = claudeThinkingBuffer.substring(sentenceEnd).trim();
-
-                previewSpan.textContent = firstSentence;
-                dotsSpan.textContent = ' ...';
-                thinkingEl.classList.add('collapsible');
-                if (rest) {
-                  restDiv.textContent = rest;
-                }
-              } else {
-                // Still streaming first sentence
-                previewSpan.textContent = claudeThinkingBuffer;
-              }
-            } else {
-              // First sentence done, update the rest section
-              var sentenceEnd = findFirstSentenceEnd(claudeThinkingBuffer);
-              var rest = claudeThinkingBuffer.substring(sentenceEnd).trim();
-              restDiv.textContent = rest;
-            }
-          }
+          renderThinkingZone(messageBody, getThinkingStyle(state.settings.provider), thinking);
         }
         messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-
-      function flushThinkingBuffer() {
-        // Reset the buffer and state - the thinking block stays as-is with its content
-        claudeThinkingBuffer = '';
-        claudeFirstSentenceComplete = false;
       }
 
       function updateCurrentContentSegment(content) {
@@ -16095,7 +16175,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       // Legacy function for backward compatibility
       function updateStreamingMessage(content, thinking) {
         if (thinking) {
-          updateThinkingBlock(thinking);
+          appendThinkingBlock(thinking);
         }
         if (content) {
           updateCurrentContentSegment(content);
@@ -16106,10 +16186,69 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         el.classList.toggle('expanded');
       }
 
-      function formatToolSummary(toolName, input) {
+      // ======================================================================
+      // Tool summary (Plan 02 Phase 3.4)
+      //
+      // Keys off the semantic ToolCall.kind stamped at parse time by every
+      // provider (source of truth: toolKind() in src/utils/toolNames.ts —
+      // the renderer never re-derives kinds from raw CLI names). The raw
+      // tool-name switch below remains as a fallback for legacy persisted
+      // tool calls that predate kind stamping, and for kinds whose inputs
+      // carry no recognizable summary fields.
+      //
+      // Accepts a ToolCall-shaped object: { name, input, kind? }.
+      // ======================================================================
+      function formatToolSummary(toolCall) {
+        if (!toolCall) return '';
+        var input = toolCall.input;
         if (!input) return '';
-        var name = toolName.toLowerCase();
+        var name = (toolCall.name || '').toLowerCase();
 
+        // 1) Kind-first: provider-agnostic summaries from the semantic kind.
+        //    Cases without a confident summary fall through to the raw-name
+        //    switch below.
+        switch (toolCall.kind) {
+          case 'execute':
+            if (input.description) return cleanPathsInString(input.description);
+            if (input.command) return cleanPathsInString(input.command);
+            break;
+          case 'read':
+          case 'edit':
+          case 'delete': {
+            var kindPath = input.file_path || input.notebook_path || input.path;
+            if (kindPath) return makeRelativePath(kindPath);
+            break;
+          }
+          case 'move': {
+            var movePath = input.file_path || input.path || input.source || input.old_path;
+            var moveDest = input.destination || input.new_path || input.newPath;
+            if (movePath && moveDest) return makeRelativePath(movePath) + ' \\u2192 ' + makeRelativePath(moveDest);
+            if (movePath) return makeRelativePath(movePath);
+            break;
+          }
+          case 'search': {
+            var kindPattern = input.pattern || input.query || '';
+            var kindDir = input.path ? makeRelativePath(input.path) : '';
+            if (kindPattern && kindDir) return kindPattern + ' in ' + kindDir;
+            if (kindPattern || kindDir) return kindPattern || kindDir;
+            break;
+          }
+          case 'fetch':
+            if (input.url) return input.url;
+            if (input.query) return input.query;
+            break;
+          case 'think':
+            if (input.todos && typeof input.todos.length === 'number') {
+              return input.todos.length + ' item' + (input.todos.length !== 1 ? 's' : '');
+            }
+            break;
+          default:
+            // No kind (legacy persisted call) or 'other' — raw-name fallback.
+            break;
+        }
+
+        // 2) Raw-name fallback (legacy tool calls without kind, and kinds
+        //    whose inputs had no recognizable fields).
         switch (name) {
           case 'bash':
             // Show description if available (often contains what the command does)
@@ -16153,17 +16292,95 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
       }
 
+      // ======================================================================
+      // Tool card component (Plan 02 Phase 3.4)
+      //
+      // ONE card builder shared by the live stream path (handleToolUse) and
+      // the restored-conversation replay (addMessage) so reloaded
+      // conversations render pixel-identical tool cards. Expand/copy clicks
+      // are event-delegated on messagesEl, so cards work in both paths
+      // without per-card listeners.
+      // ======================================================================
+      function buildToolCallElement(toolCall) {
+        // Use actual status from toolCall, default to 'running'
+        var toolStatus = toolCall.status || 'running';
+
+        var div = document.createElement('div');
+        div.className = 'tool-call ' + toolStatus;
+        div.dataset.id = toolCall.id;
+
+        // Format input for display
+        var inputStr = JSON.stringify(toolCall.input || {}, null, 2);
+        var summary = formatToolSummary(toolCall);
+        div.dataset.summary = summary;
+
+        // Chevron SVG for expand indicator
+        var chevronSvg = '<svg class="tool-call-chevron" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">' +
+          '<path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
+
+        // Spinner SVG for running state (also used for pending)
+        var spinnerSvg = '<svg class="tool-call-spinner" viewBox="0 0 16 16" width="12" height="12">' +
+          '<circle cx="8" cy="8" r="6" stroke="var(--vscode-charts-blue)" stroke-width="2" fill="none" stroke-dasharray="28" stroke-dashoffset="8" stroke-linecap="round"/></svg>';
+
+        // Copy icon SVG
+        var copySvg = '<svg class="tool-call-copy-icon" viewBox="0 0 16 16" fill="currentColor" width="14" height="14">' +
+          '<path d="M4 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6zM2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1H2z"/></svg>';
+
+        // Truncation note (persistence caps long input/output strings —
+        // ConversationManager PERSISTED_TOOL_STRING_CAP)
+        var truncatedNote = toolCall.truncated
+          ? '<span class="tool-call-note" title="Input/output were truncated for storage">truncated</span>'
+          : '';
+
+        div.innerHTML =
+          '<div class="tool-call-header">' +
+            spinnerSvg +
+            chevronSvg +
+            '<span class="tool-call-name">' + escapeHtml(toolCall.name) + '</span>' +
+            '<span class="tool-call-summary">' + escapeHtml(summary) + '</span>' +
+            truncatedNote +
+            '<span class="tool-call-status ' + toolStatus + '">' + toolStatus + '</span>' +
+            '<button class="tool-call-copy" title="Copy to clipboard">' + copySvg + '</button>' +
+          '</div>' +
+          '<div class="tool-call-details">' +
+            '<div class="tool-call-section">' +
+              '<div class="tool-call-label">Input</div>' +
+              '<pre class="tool-call-content">' + escapeHtml(inputStr) + '</pre>' +
+            '</div>' +
+            '<div class="tool-call-output-section" style="display:none;">' +
+              '<div class="tool-call-label">Output</div>' +
+              '<pre class="tool-call-output-content"></pre>' +
+            '</div>' +
+          '</div>';
+
+        // Output already known (restored messages) — show it
+        if (toolCall.output) {
+          var outputSection = div.querySelector('.tool-call-output-section');
+          var outputContent = div.querySelector('.tool-call-output-content');
+          if (outputSection && outputContent) {
+            outputSection.style.display = 'block';
+            outputContent.textContent = toolCall.output.substring(0, 1000) + (toolCall.output.length > 1000 ? '...' : '');
+          }
+        }
+
+        return div;
+      }
+
       function handleToolUse(toolCall) {
         // Store tool data for later lookup when result arrives
         // (tool_result events don't include name or input)
         if (toolCall.id && toolCall.name) {
           pendingToolData.set(toolCall.id, {
             name: toolCall.name,
-            input: toolCall.input || {}
+            input: toolCall.input || {},
+            kind: toolCall.kind
           });
         }
 
         // Check if this tool call already exists (update with complete input)
+        // — Claude/Qwen emit tool_use twice per tool (content_block_start
+        // with empty input, content_block_stop with parsed input, same id),
+        // so cards are upserted by id.
         var existingEl = messagesEl.querySelector('.tool-call[data-id="' + toolCall.id + '"]');
 
         if (existingEl) {
@@ -16176,7 +16393,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           // Update summary if we now have input
           var summaryEl = existingEl.querySelector('.tool-call-summary');
           if (summaryEl && toolCall.input) {
-            var summary = formatToolSummary(toolCall.name, toolCall.input);
+            var summary = formatToolSummary(toolCall);
             summaryEl.textContent = summary;
             existingEl.dataset.summary = summary;
           }
@@ -16193,52 +16410,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           currentResponse = '';
         }
 
-        // Use actual status from toolCall, default to 'running'
-        var toolStatus = toolCall.status || 'running';
-
-        var div = document.createElement('div');
-        div.className = 'tool-call ' + toolStatus;
-        div.dataset.id = toolCall.id;
-
-        // Format input for display
-        var inputStr = JSON.stringify(toolCall.input || {}, null, 2);
-        var summary = formatToolSummary(toolCall.name, toolCall.input);
-        div.dataset.summary = summary;
-
-        // Chevron SVG for expand indicator
-        var chevronSvg = '<svg class="tool-call-chevron" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">' +
-          '<path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
-
-        // Spinner SVG for running state (also used for pending)
-        var spinnerSvg = '<svg class="tool-call-spinner" viewBox="0 0 16 16" width="12" height="12">' +
-          '<circle cx="8" cy="8" r="6" stroke="var(--vscode-charts-blue)" stroke-width="2" fill="none" stroke-dasharray="28" stroke-dashoffset="8" stroke-linecap="round"/></svg>';
-
-        // Copy icon SVG
-        var copySvg = '<svg class="tool-call-copy-icon" viewBox="0 0 16 16" fill="currentColor" width="14" height="14">' +
-          '<path d="M4 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6zM2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1H2z"/></svg>';
-
-        div.innerHTML =
-          '<div class="tool-call-header">' +
-            spinnerSvg +
-            chevronSvg +
-            '<span class="tool-call-name">' + escapeHtml(toolCall.name) + '</span>' +
-            '<span class="tool-call-summary">' + escapeHtml(summary) + '</span>' +
-            '<span class="tool-call-status ' + toolStatus + '">' + toolStatus + '</span>' +
-            '<button class="tool-call-copy" title="Copy to clipboard">' + copySvg + '</button>' +
-          '</div>' +
-          '<div class="tool-call-details">' +
-            '<div class="tool-call-section">' +
-              '<div class="tool-call-label">Input</div>' +
-              '<pre class="tool-call-content">' + escapeHtml(inputStr) + '</pre>' +
-            '</div>' +
-            '<div class="tool-call-output-section" style="display:none;">' +
-              '<div class="tool-call-label">Output</div>' +
-              '<pre class="tool-call-output-content"></pre>' +
-            '</div>' +
-          '</div>';
-
         // Append tool call directly to message body (interleaved with content segments)
-        messageBody.appendChild(div);
+        messageBody.appendChild(buildToolCallElement(toolCall));
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 
@@ -16868,15 +17041,24 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       // ========================================
 
       // Render plan options as interactive cards
-      function renderPlanOptions(options, messageId, originalQuery, metaQuestions, syntheticPlanId) {
+      function renderPlanOptions(options, messageId, originalQuery, metaQuestions, syntheticPlanId, origin) {
         if (!options || options.length === 0) return null;
 
+        // Plan 02 Phase 3.5: native plan moments (exit_plan_mode) reuse this
+        // exact card path — origin = { source: 'exit-plan-mode',
+        // planFilePath: string|null } labels the card; everything else
+        // (selection round trip, semi-auto timer, dismiss) is unchanged.
+        var isNativePlan = !!(origin && origin.source === 'exit-plan-mode');
+
         var container = document.createElement('div');
-        container.className = 'plan-options-container';
+        container.className = 'plan-options-container' + (isNativePlan ? ' native-plan' : '');
         container.setAttribute('data-message-id', messageId);
         container.setAttribute('data-original-query', originalQuery || '');
         if (syntheticPlanId) {
           container.setAttribute('data-synthetic-plan-id', syntheticPlanId);
+        }
+        if (isNativePlan) {
+          container.setAttribute('data-plan-source', origin.source);
         }
 
         // Render meta-questions if present (informational only)
@@ -16904,9 +17086,18 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         var header = document.createElement('div');
         header.className = 'plan-options-header';
-        header.innerHTML =
-          '<span class="plan-options-title">\uD83D\uDCCB Select an approach</span>' +
-          '<span class="plan-options-hint">Choose how to proceed</span>';
+        if (isNativePlan) {
+          var planFileHint = origin.planFilePath
+            ? makeRelativePath(origin.planFilePath)
+            : 'Review and approve to continue';
+          header.innerHTML =
+            '<span class="plan-options-title">\uD83D\uDCCB Plan ready for review</span>' +
+            '<span class="plan-options-hint" title="' + escapeHtml(origin.planFilePath || '') + '">' + escapeHtml(planFileHint) + '</span>';
+        } else {
+          header.innerHTML =
+            '<span class="plan-options-title">\uD83D\uDCCB Select an approach</span>' +
+            '<span class="plan-options-hint">Choose how to proceed</span>';
+        }
 
         // Add dismiss button
         var skipBtn = document.createElement('button');
@@ -17085,13 +17276,17 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           var existing = messageEl.querySelector('.plan-options-container');
           if (existing) existing.remove();
 
-          // Add new plan options (with optional meta-questions)
+          // Add new plan options (with optional meta-questions). Native
+          // exit-plan moments (Plan 02 Phase 3.5) carry the ADDITIVE
+          // source/planFilePath fields on the same payload — pass them
+          // through so the card is labeled as a native plan.
           var planContainer = renderPlanOptions(
             payload.options,
             payload.messageId,
             payload.originalQuery,
             payload.metaQuestions,
-            payload.syntheticPlanId
+            payload.syntheticPlanId,
+            payload.source ? { source: payload.source, planFilePath: payload.planFilePath || null } : undefined
           );
           if (planContainer) {
             messageEl.appendChild(planContainer);
@@ -17474,8 +17669,6 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         currentResponse = '';
         currentThinking = '';
         contentSegmentIndex = 0;
-        claudeThinkingBuffer = ''; // Reset Claude thinking buffer
-        claudeFirstSentenceComplete = false;
         var loading = messagesEl.querySelector('.loading');
         if (loading) loading.remove();
 
@@ -17546,12 +17739,133 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         });
       }
 
+      // ======================================================================
+      // Per-message attribution + footer (Plan 02 Phase 3.4)
+      // ======================================================================
+
+      // Message.thinking is a plain string in legacy conversations and
+      // { style, content } from Plan 02 Phase 3 onwards — normalize to the
+      // object shape. Legacy strings replay as one complete block.
+      function normalizeMessageThinking(thinking) {
+        if (!thinking) return null;
+        if (typeof thinking === 'string') {
+          return thinking.trim() ? { style: 'complete-blocks', content: thinking } : null;
+        }
+        if (!thinking.content) return null;
+        return {
+          style: thinking.style === 'streamed' ? 'streamed' : 'complete-blocks',
+          content: thinking.content
+        };
+      }
+
+      // Attribution for a message: the PERSISTED per-message provider/model
+      // stamp wins; legacy messages fall back to the conversation's
+      // provider/model, then to the live settings (fixes stale model chips
+      // after switching providers).
+      function getMessageAttribution(msg) {
+        var conv = state.conversation || {};
+        return {
+          provider: (msg && msg.provider) || conv.provider || (state.settings && state.settings.provider) || null,
+          model: (msg && msg.model) || conv.model || (state.settings && state.settings.model) || ''
+        };
+      }
+
+      // Update an existing message header's model chip from the message's
+      // persisted attribution (live path: called at finalize, when the
+      // persisted message — including any @-mention provider switch — is
+      // known).
+      function updateMessageAttributionChip(messageEl, msg) {
+        if (!messageEl) return;
+        var chip = messageEl.querySelector('.message-model-info');
+        if (!chip) return;
+        var attribution = getMessageAttribution(msg);
+        var entry = getManifestEntry(attribution.provider);
+        chip.textContent = getModelDisplayName(attribution.model);
+        chip.title = entry ? 'Generated by ' + entry.displayName : '';
+      }
+
+      // Tool cards auto-resolve when the provider never streams tool_result
+      // (manifest emitsToolResults === false: the provider emits tool_use
+      // only). Unknown providers / missing manifest -> false (leave cards to
+      // the stream).
+      function shouldAutoResolveToolCards(providerId) {
+        var entry = getManifestEntry(providerId);
+        if (!entry || !entry.capabilities) return false;
+        return entry.capabilities.emitsToolResults === false;
+      }
+
+      // Mark still-running/pending tool cards inside a finished message as
+      // completed with a "not reported" note — never an eternal spinner.
+      function autoResolveRunningToolCards(messageEl) {
+        if (!messageEl) return;
+        var cards = messageEl.querySelectorAll('.tool-call.running, .tool-call.pending');
+        cards.forEach(function(card) {
+          card.classList.remove('running');
+          card.classList.remove('pending');
+          card.classList.add('completed');
+          var statusEl = card.querySelector('.tool-call-status');
+          if (statusEl) {
+            statusEl.className = 'tool-call-status completed';
+            statusEl.textContent = 'completed';
+            statusEl.title = 'This agent does not report tool results';
+          }
+          var header = card.querySelector('.tool-call-header');
+          if (header && !card.querySelector('.tool-call-note')) {
+            var note = document.createElement('span');
+            note.className = 'tool-call-note';
+            note.textContent = 'result not reported';
+            note.title = 'This agent does not report tool results';
+            var statusRef = header.querySelector('.tool-call-status');
+            if (statusRef) {
+              header.insertBefore(note, statusRef);
+            } else {
+              header.appendChild(note);
+            }
+          }
+        });
+      }
+
+      // ONE message footer used by live done handling AND restored
+      // messages. usage: { input_tokens, output_tokens, ... } | null.
+      // sessionInfo: { provider, model, sessionId? } | null — provider
+      // drives the emitsToolResults auto-resolve. degradationPills:
+      // string[] rendered verbatim (Phase 4 computes the real pills).
+      function renderMessageFooter(messageEl, usage, sessionInfo, degradationPills) {
+        if (!messageEl) return null;
+
+        var providerId = sessionInfo && sessionInfo.provider;
+        if (shouldAutoResolveToolCards(providerId)) {
+          autoResolveRunningToolCards(messageEl);
+        }
+
+        var existing = messageEl.querySelector('.message-footer');
+        if (existing) existing.remove();
+
+        var parts = [];
+        if (usage && (usage.input_tokens || usage.output_tokens)) {
+          parts.push('<span class="message-footer-item message-footer-tokens" title="Tokens in / out">' +
+            (usage.input_tokens || 0) + ' in \\u00b7 ' + (usage.output_tokens || 0) + ' out</span>');
+        }
+        if (sessionInfo && sessionInfo.sessionId) {
+          var shortSession = String(sessionInfo.sessionId).substring(0, 8);
+          parts.push('<span class="message-footer-item message-footer-session" title="Session ' + escapeHtml(String(sessionInfo.sessionId)) + '">session ' + escapeHtml(shortSession) + '</span>');
+        }
+        (degradationPills || []).forEach(function(pill) {
+          parts.push('<span class="message-footer-pill">' + escapeHtml(pill) + '</span>');
+        });
+
+        if (parts.length === 0) return null;
+
+        var footer = document.createElement('div');
+        footer.className = 'message-footer';
+        footer.innerHTML = parts.join('');
+        messageEl.appendChild(footer);
+        return footer;
+      }
+
       function finalizeStreamingMessage(msg) {
         var streamingEl = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
         if (streamingEl) {
-          // Reset the Claude thinking buffer
-          flushThinkingBuffer();
-
           // Remove streaming class from thinking block
           var streamingThinking = streamingEl.querySelector('.thinking-block.streaming-thinking');
           if (streamingThinking) {
@@ -17560,6 +17874,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
           streamingEl.classList.remove('streaming');
           streamingEl.dataset.id = msg.id;
+
+          // Per-message attribution chip from the persisted provider/model
+          // (post-@-mention-switch values, not the dropdown selection)
+          updateMessageAttributionChip(streamingEl, msg);
 
           // Re-render all content segments with final markdown
           var messageBody = streamingEl.querySelector('.message-body');
@@ -17572,6 +17890,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             // For multiple segments, leave them as-is (already rendered during streaming)
           }
         }
+        return streamingEl;
       }
 
       function showError(error) {
@@ -17619,10 +17938,6 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         currentResponse = '';
         currentThinking = '';
         contentSegmentIndex = 0;
-        claudeThinkingBuffer = '';
-        claudeFirstSentenceComplete = false;
-        brainstormThinkingBuffers = {};
-        brainstormFirstSentenceFlags = {};
       }
 
       function updateContext(context) {

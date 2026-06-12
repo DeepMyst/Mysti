@@ -262,7 +262,10 @@ describe('Qwen tool-name conformance', () => {
     }
   );
 
-  it('assistant-message tool_use blocks are normalized too', () => {
+  // Plan 02 Phase 3: the assistant-event duplicate emission branch was removed
+  // (it dropped multi-tool turns and double-fired the permission gate). The
+  // content_block_start path is the sole, normalized emission point.
+  it('assistant-message tool_use blocks are NOT re-emitted (content_block_start is the sole emission point)', () => {
     const chunk = provider.parseStreamLine(JSON.stringify({
       type: 'assistant',
       message: {
@@ -271,9 +274,12 @@ describe('Qwen tool-name conformance', () => {
         ],
       },
     }), session);
-    expect(chunk?.type).toBe('tool_use');
-    expect(chunk!.toolCall!.name).toBe('Bash');
-    expectClassification(chunk!.toolCall!.name, 'bash-command');
+    expect(chunk).toBeNull();
+
+    // The same tool streaming via content_block_start still emits normalized
+    const emitted = emitFromBlockStart('run_shell_command', 3);
+    expect(emitted).toBe('Bash');
+    expectClassification(emitted, 'bash-command');
   });
 
   it('gates unknown native tool names (fail closed)', () => {
