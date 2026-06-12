@@ -10219,6 +10219,125 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         vscode.postMessage(msg);
       }
 
+      // ========================================================================
+      // Perf instrumentation (Plan 03 Phase 1) — gated by the
+      // mysti.debug.performanceLogging setting, delivered via the initialState
+      // payload (payload.performanceLogging). When disabled, the per-chunk
+      // cost in handleResponseChunk is a single boolean check — no
+      // allocations, no timers, no ring buffer. Coarse signals (uiReady,
+      // firstChunkRendered) are posted regardless of the flag so the
+      // extension's always-on coarse measures (panel.timeToUsable,
+      // send.ttftRender) keep working.
+      // ========================================================================
+
+      var PERF_SAMPLE_BUFFER_CAP = 2000;
+      var perfState = {
+        enabled: false,
+        samples: null,    // ring buffer (allocated lazily on first sample)
+        index: 0,         // next write position
+        count: 0,         // valid entries (<= PERF_SAMPLE_BUFFER_CAP)
+        chunkCount: 0,    // chunks handled during the current response
+        heapTimer: null,  // 60s heap sampling interval id
+        uiReadySent: false
+      };
+
+      // Enable/disable the harness. Heap is sampled immediately on enable
+      // (the "init" sample), then every 60s while enabled. Disabling clears
+      // the interval (the only teardown path this webview has — there is no
+      // unload handler; VS Code destroys the whole JS context on dispose)
+      // and drops the ring buffer.
+      function perfSetEnabled(on) {
+        on = !!on;
+        if (on === perfState.enabled) return;
+        perfState.enabled = on;
+        if (on) {
+          perfPostHeapSample();
+          if (!perfState.heapTimer) {
+            perfState.heapTimer = setInterval(perfPostHeapSample, 60000);
+          }
+        } else {
+          if (perfState.heapTimer) {
+            clearInterval(perfState.heapTimer);
+            perfState.heapTimer = null;
+          }
+          perfState.samples = null;
+          perfState.index = 0;
+          perfState.count = 0;
+          perfState.chunkCount = 0;
+        }
+      }
+
+      // Record one handleResponseChunk body duration into the ring buffer.
+      // Only called when perfState.enabled is true.
+      function perfRecordChunk(ms) {
+        if (!perfState.samples) perfState.samples = [];
+        perfState.samples[perfState.index] = ms;
+        perfState.index = (perfState.index + 1) % PERF_SAMPLE_BUFFER_CAP;
+        if (perfState.count < PERF_SAMPLE_BUFFER_CAP) perfState.count++;
+        perfState.chunkCount++;
+      }
+
+      // Nearest-rank percentile over an ascending-sorted array. Mirrors
+      // PerfTracker.percentile on the extension side (p clamped to [0,100],
+      // idx = min(n-1, max(0, ceil(p/100*n)-1))).
+      function perfPercentile(sortedAscending, p) {
+        var n = sortedAscending.length;
+        if (n === 0) return 0;
+        var clamped = Math.min(100, Math.max(0, p));
+        var rank = Math.ceil((clamped / 100) * n) - 1;
+        var idx = Math.min(n - 1, Math.max(0, rank));
+        return sortedAscending[idx];
+      }
+
+      // Chromium-only API in the webview; undefined elsewhere.
+      function perfHeapUsed() {
+        return (typeof performance !== 'undefined' && performance.memory)
+          ? performance.memory.usedJSHeapSize
+          : undefined;
+      }
+
+      // Per-response summary posted on responseComplete (only when enabled).
+      function perfBuildReport() {
+        var sorted = perfState.samples
+          ? perfState.samples.slice(0, perfState.count).sort(function(a, b) { return a - b; })
+          : [];
+        return {
+          type: 'perfReport',
+          reason: 'done',
+          chunkCount: perfState.chunkCount,
+          p50: perfPercentile(sorted, 50),
+          p95: perfPercentile(sorted, 95),
+          max: sorted.length ? sorted[sorted.length - 1] : 0,
+          heapUsed: perfHeapUsed()
+        };
+      }
+
+      // Heap-only report (enable-time init sample + 60s interval).
+      function perfPostHeapSample() {
+        var heap = perfHeapUsed();
+        if (typeof heap === 'number') {
+          postMessageWithPanelId({ type: 'perfReport', reason: 'heap', heapUsed: heap });
+        }
+      }
+
+      // Coarse send.ttftRender round-trip: posted in the rAF after the first
+      // text chunk of a response painted, regardless of the enabled flag.
+      function perfPostFirstChunkRendered(sentAt) {
+        requestAnimationFrame(function() {
+          postMessageWithPanelId({ type: 'perfMark', name: 'firstChunkRendered', sentAt: sentAt });
+        });
+      }
+
+      // Coarse panel.timeToUsable: posted once, in the rAF after the initial
+      // initialState render, regardless of the enabled flag.
+      function perfPostUiReady() {
+        if (perfState.uiReadySent) return;
+        perfState.uiReadySent = true;
+        requestAnimationFrame(function() {
+          postMessageWithPanelId({ type: 'uiReady' });
+        });
+      }
+
       // Helper to convert absolute paths to relative paths
       function makeRelativePath(absolutePath) {
         if (!absolutePath || !state.workspacePath) return absolutePath;
@@ -12523,6 +12642,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             addMessage(message.payload);
             break;
           case 'responseStarted':
+            // Perf: per-response chunk counter (ring buffer keeps rolling
+            // across responses — "last 2000 samples").
+            if (perfState.enabled) perfState.chunkCount = 0;
             // Clean up any incomplete streaming message from previous request
             var oldStreaming = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
             if (oldStreaming) {
@@ -12541,6 +12663,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             handleResponseChunk(message.payload);
             break;
           case 'responseComplete':
+            // Perf: post the per-response chunk-cost summary + heap sample
+            // ("done" report). No-op (single boolean check) when disabled.
+            if (perfState.enabled) postMessageWithPanelId(perfBuildReport());
             hideLoading();
             // Payload is { message, usage } - extract message for finalization
             var responsePayload = message.payload || {};
@@ -15210,6 +15335,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
       function initializeState(payload) {
         dismissInitLoading();
+        // Perf: the mysti.debug.performanceLogging flag rides the
+        // initialState payload (starts/stops heap sampling + chunk timing).
+        perfSetEnabled(!!payload.performanceLogging);
         var savedAgentSettings = state.agentSettings;
         state = Object.assign({}, state, payload);
         if (payload.agentSettings) {
@@ -15379,6 +15507,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             postMessageWithPanelId({ type: 'openExternal', payload: { url: tweetUrl } });
           });
         }
+
+        // Perf: signal time-to-usable after the initial render has painted.
+        // Posted UNCONDITIONALLY (panel.timeToUsable is a coarse always-on
+        // measure), once per webview lifetime.
+        perfPostUiReady();
       }
 
       // ============================================================================
@@ -15635,6 +15768,21 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       }
 
       function handleResponseChunk(chunk) {
+        // Perf gate: disabled path is a single boolean check plus one
+        // property read for the once-per-response perfSentAt stamp (needed
+        // for the always-on coarse send.ttftRender measure).
+        if (!perfState.enabled) {
+          handleResponseChunkBody(chunk);
+          if (chunk.perfSentAt) perfPostFirstChunkRendered(chunk.perfSentAt);
+          return;
+        }
+        var perfT0 = performance.now();
+        handleResponseChunkBody(chunk);
+        perfRecordChunk(performance.now() - perfT0);
+        if (chunk.perfSentAt) perfPostFirstChunkRendered(chunk.perfSentAt);
+      }
+
+      function handleResponseChunkBody(chunk) {
         console.log('[Mysti Webview] Received chunk:', JSON.stringify(chunk));
         if (chunk.type === 'text') {
           currentResponse += chunk.content;

@@ -36,6 +36,7 @@ import { ProjectContextManager } from './managers/ProjectContextManager';
 import { VisualTestManager } from './managers/VisualTestManager';
 import { CanvasManager } from './managers/CanvasManager';
 import { StitchService } from './services/StitchService';
+import { PerfTracker } from './utils/PerfTracker';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -60,7 +61,18 @@ let visualTestManager: VisualTestManager;
 let canvasManager: CanvasManager;
 
 export async function activate(context: vscode.ExtensionContext) {
+  PerfTracker.mark('activation.start');
+  const perfConfigListener = PerfTracker.init();
+  if (perfConfigListener) {
+    context.subscriptions.push(perfConfigListener);
+  }
+
   console.log('Mysti extension is now active');
+
+  // Manager construction block (telemetry through ChatViewProvider).
+  // Note: the measure includes the awaited provider init below — the
+  // 'activation.providerInit' sub-measure isolates that portion.
+  PerfTracker.mark('activation.managerConstruction.start');
 
   // Initialize telemetry first
   telemetryManager = new TelemetryManager(context);
@@ -79,7 +91,9 @@ export async function activate(context: vscode.ExtensionContext) {
   permissionManager = new PermissionManager(initialAccessLevel);
 
   // Initialize providers (async)
+  PerfTracker.mark('activation.providerInit.start');
   await providerManager.initialize();
+  PerfTracker.measure('activation.providerInit', 'activation.providerInit.start');
 
   // Initialize brainstorm manager
   brainstormManager = new BrainstormManager(context, providerManager);
@@ -166,6 +180,8 @@ export async function activate(context: vscode.ExtensionContext) {
     visualTestManager,
     canvasManager
   );
+
+  PerfTracker.measure('activation.managerConstruction', 'activation.managerConstruction.start');
 
   // Register the webview provider
   context.subscriptions.push(
@@ -529,6 +545,12 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     })
   );
+
+  // Activation complete — coarse measure, always recorded and logged
+  PerfTracker.measure('activation.total', 'activation.start');
+  if (PerfTracker.isEnabled()) {
+    PerfTracker.sample('heap.ext', process.memoryUsage().heapUsed);
+  }
 }
 
 /** Add Mysti to .vscode/extensions.json workspace recommendations */

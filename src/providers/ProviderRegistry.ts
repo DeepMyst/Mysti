@@ -13,6 +13,7 @@
 
 import * as vscode from 'vscode';
 import type { ICliProvider } from './base/IProvider';
+import { PerfTracker } from '../utils/PerfTracker';
 import { ClaudeCodeProvider } from './claude/ClaudeCodeProvider';
 import { CodexProvider } from './codex/CodexProvider';
 import { GeminiProvider } from './gemini/GeminiProvider';
@@ -110,13 +111,33 @@ export class ProviderRegistry {
 
     console.log('[Mysti] Initializing all providers...');
 
+    // Per-provider init timing — gated so the disabled path does no extra work
+    const perfEnabled = PerfTracker.isEnabled();
+    const initDurations: Array<{ id: string; ms: number }> | undefined =
+      perfEnabled ? [] : undefined;
+
     for (const provider of this._providers.values()) {
+      const startedAt = perfEnabled ? Date.now() : 0;
       try {
         await provider.initialize();
         console.log(`[Mysti] Initialized provider: ${provider.displayName}`);
       } catch (error) {
         console.error(`[Mysti] Failed to initialize provider ${provider.displayName}:`, error);
       }
+      if (initDurations) {
+        const ms = Date.now() - startedAt;
+        PerfTracker.sample(`provider.init.${provider.id}`, ms);
+        initDurations.push({ id: provider.id, ms });
+      }
+    }
+
+    if (initDurations && initDurations.length > 0) {
+      const slowest = [...initDurations]
+        .sort((a, b) => b.ms - a.ms)
+        .slice(0, 3)
+        .map((d) => `${d.id}=${d.ms.toFixed(1)}ms`)
+        .join(', ');
+      console.log(`[Mysti][perf] provider.init slowest: ${slowest}`);
     }
 
     this._initialized = true;

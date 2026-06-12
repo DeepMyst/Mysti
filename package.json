@@ -1014,6 +1014,11 @@
           "default": false,
           "description": "Pass --verbose flag to CLI providers (Claude Code, Cline). Adds extra diagnostic output but may slow responses. Only enable for debugging."
         },
+        "mysti.debug.performanceLogging": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Log detailed performance instrumentation to the Debug Console with the `[Mysti][perf]` prefix: activation and provider-init timings, panel time-to-usable, time-to-first-token, per-chunk render cost percentiles, and heap samples. When off, only a few coarse timings (activation, panel ready, first token) are recorded. Only enable when diagnosing performance issues."
+        },
         "mysti.autonomous.safetyMode": {
           "type": "string",
           "default": "balanced",
@@ -1429,7 +1434,8 @@
     "test:watch": "vitest",
     "sync-agents": "node scripts/sync-agents.js",
     "sync-agents:force": "node scripts/sync-agents.js --force",
-    "fetch-stargazers": "node scripts/fetch-stargazers.js"
+    "fetch-stargazers": "node scripts/fetch-stargazers.js",
+    "perf:sizes": "node scripts/perf-sizes.js"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

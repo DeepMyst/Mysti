@@ -50,6 +50,7 @@ import { AUTONOMOUS_CONTINUATION_DELAY_MS, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } f
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
 import { validateModelName, validateProfileName } from '../utils/validation';
 import { classifyToolAction, shouldGateToolUse } from '../utils/permissionClassifier';
+import { PerfTracker } from '../utils/PerfTracker';
 
 /**
  * Extended message type that includes the panelId field sent by the webview
@@ -113,6 +114,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _vtTriggeredThisResponse: boolean = false;
   // Per-panel cancel tracking for isolated cancellation
   private _cancelledPanels: Set<string> = new Set();
+  // Perf (Plan 03 Phase 1): panels whose webview has not yet posted `uiReady`.
+  // Guards `panel.timeToUsable` against duplicate/stale `uiReady` messages.
+  private _pendingUiReadyPanels: Set<string> = new Set();
   // Track which panels have an active stream (for ChannelBridge inbound routing)
   private _runningPanels: Set<string> = new Set();
   // Track most recently active panel for channel message routing
@@ -370,6 +374,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
   ) {
+    // Perf: panel.timeToUsable (coarse, always-on) = resolveWebviewView entry
+    // → webview posts `uiReady` (first rAF after its initial render).
+    PerfTracker.mark(`panel.resolveStart.${this._sidebarId}`);
+    this._pendingUiReadyPanels.add(this._sidebarId);
+
     this._view = webviewView;
 
     webviewView.webview.options = {
@@ -552,7 +561,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         githubStarCount: await this._getGithubStarCount(),
         usageStats: this._engagementManager.getUsageStats(),
         badges: this._engagementManager.getAllBadges(),
-        badgeCounts: this._engagementManager.getUnlockedCount()
+        badgeCounts: this._engagementManager.getUnlockedCount(),
+        // Perf (Plan 03 Phase 1): enables the webview-side perf harness
+        // (chunk ring buffer, heap sampling). Coarse marks (uiReady,
+        // firstChunkRendered) are posted regardless of this flag.
+        performanceLogging: config.get<boolean>('debug.performanceLogging', false)
       }
     });
 
@@ -1801,6 +1814,74 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         }
         break;
+
+      // === Perf instrumentation (Plan 03 Phase 1) ===
+
+      case 'uiReady':
+        // Posted unconditionally by the webview after its initial render's
+        // rAF. Completes the coarse panel.timeToUsable measure started at
+        // resolveWebviewView entry. The pending-set guard ignores stale or
+        // duplicate uiReady posts (and panels we never marked, e.g. tabs).
+        if (this._pendingUiReadyPanels.delete(msg.panelId)) {
+          PerfTracker.measure('panel.timeToUsable', `panel.resolveStart.${msg.panelId}`);
+        }
+        break;
+
+      case 'perfMark':
+        {
+          // {type:'perfMark', name:'firstChunkRendered', sentAt} — posted by
+          // the webview inside the rAF after the first text chunk painted.
+          // Recording via measure() against the mark set when perfSentAt was
+          // attached yields the same quantity as Date.now() - sentAt (both
+          // ends captured at the same instants), on the monotonic clock.
+          const pm = msg as unknown as { name?: string; sentAt?: number; panelId: string };
+          if (pm.name === 'firstChunkRendered') {
+            PerfTracker.measure('send.ttftRender', `send.firstChunkSent.${msg.panelId}`);
+          }
+        }
+        break;
+
+      case 'perfReport':
+        {
+          // Webview perf harness reports: heap-only samples (reason:'heap',
+          // at init/60s) and per-response summaries on done (chunkCount/p50/
+          // p95/max/heapUsed). Only sent when performanceLogging is enabled.
+          const pr = msg as unknown as {
+            reason?: string;
+            chunkCount?: number;
+            p50?: number;
+            p95?: number;
+            max?: number;
+            heapUsed?: number;
+            panelId: string;
+          };
+          if (typeof pr.heapUsed === 'number' && isFinite(pr.heapUsed)) {
+            PerfTracker.sample('heap.webview', pr.heapUsed);
+          }
+          if (pr.reason !== 'heap') {
+            console.log(
+              `[Mysti][perf] webview report (${msg.panelId}): ` +
+              `chunks=${pr.chunkCount ?? 0} ` +
+              `p50=${typeof pr.p50 === 'number' ? pr.p50.toFixed(1) : 'n/a'}ms ` +
+              `p95=${typeof pr.p95 === 'number' ? pr.p95.toFixed(1) : 'n/a'}ms ` +
+              `max=${typeof pr.max === 'number' ? pr.max.toFixed(1) : 'n/a'}ms ` +
+              `heapUsed=${typeof pr.heapUsed === 'number' ? pr.heapUsed : 'n/a'}`
+            );
+            if (typeof pr.p95 === 'number' && isFinite(pr.p95)) {
+              PerfTracker.sample('render.chunk.p95', pr.p95);
+            }
+            // Forward coarse aggregate numbers through the existing
+            // telemetry opt-in gate (trackPerf drops absent/non-finite).
+            const perfSnapshot = PerfTracker.report();
+            this._telemetryManager.trackPerf({
+              activationMs: perfSnapshot.measures['activation.total'],
+              ttftMs: perfSnapshot.measures['send.ttftRender'],
+              chunkP95: pr.p95,
+              panelUsableMs: perfSnapshot.measures['panel.timeToUsable']
+            });
+          }
+        }
+        break;
     }
   }
 
@@ -2358,8 +2439,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    const _t0 = Date.now();
-    console.log(`[Mysti] ⏱️ _handleSendMessage START for panel ${panelId}`);
+    // Perf (Plan 03 Phase 1): formalized send-path timing. The mark is
+    // panel-scoped so concurrent sends on different panels don't clobber
+    // each other. Detailed measures below only log/store when
+    // mysti.debug.performanceLogging is enabled.
+    const _sendStartMark = `send.start.${panelId}`;
+    PerfTracker.mark(_sendStartMark);
 
     // Clear cancel flag for this panel
     this._cancelledPanels.delete(panelId);
@@ -2416,7 +2501,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._lifecycleManager.touchSession(panelId);
     this._lifecycleManager.markBusy(panelId);
 
-    console.log(`[Mysti] ⏱️ Setup done in ${Date.now() - _t0}ms, entering try block`);
+    PerfTracker.measure('send.setup', _sendStartMark);
 
     // Stream response from provider
     try {
@@ -2452,7 +2537,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             payload: { message: `Too many @-mentions (${agentMentionCount}). Only the first ${MAX_MENTIONS_PER_MESSAGE} agent mentions will be processed.` }
           });
         }
-        console.log(`[Mysti] ⏱️ Starting mention processing at ${Date.now() - _t0}ms`);
+        PerfTracker.measure('send.mentionStart', _sendStartMark);
         console.log('[Mysti] Processing mentions:', effectiveMentions.length, 'mentions for panel:', panelId);
         const subAgentResponses = new Map<AgentType, SubAgentResponse>();
 
@@ -2729,7 +2814,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
-      console.log(`[Mysti] ⏱️ Pre-processing done in ${Date.now() - _t0}ms`);
+      PerfTracker.measure('send.preprocess', _sendStartMark);
 
       // Set channel context + project context as system instructions (injected at top of prompt by buildPromptAsync)
       const _tCtx = Date.now();
@@ -2765,7 +2850,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._channelBridge.resetForNewResponse(panelId);
       this._lastActivePanelId = panelId;
 
-      console.log(`[Mysti] ⏱️ Context built in ${Date.now() - _t0}ms, calling sendMessage...`);
+      PerfTracker.measure('send.contextBuilt', _sendStartMark);
       const stream = this._providerManager.sendMessage(
         enrichedContent,
         enrichedContext,
@@ -2791,21 +2876,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
 
       this._runningPanels.add(panelId);
-      let _firstChunkLogged = false;
+      let _firstChunkSeen = false;
+      let _firstTextChunkSent = false;
       for await (const chunk of stream) {
-        if (!_firstChunkLogged) {
-          console.log(`[Mysti] ⏱️ First stream chunk (${chunk.type}) in ${Date.now() - _t0}ms`);
-          _firstChunkLogged = true;
+        if (!_firstChunkSeen) {
+          _firstChunkSeen = true;
+          // Extension-side TTFT: send entry → first stream chunk received.
+          const ttftExtMs = PerfTracker.measure('send.ttftExtension', _sendStartMark);
+          if (ttftExtMs >= 0) {
+            PerfTracker.sample('send.ttftExtension', ttftExtMs);
+          }
         }
         // Check if THIS panel's request was cancelled
         if (this._cancelledPanels.has(panelId)) {break;}
 
         switch (chunk.type) {
-          case 'text':
+          case 'text': {
             assistantContent += chunk.content || '';
+            const textPayload: { type: string; content?: string; perfSentAt?: number } = {
+              type: 'text',
+              content: chunk.content
+            };
+            if (!_firstTextChunkSent) {
+              _firstTextChunkSent = true;
+              // First text chunk of this response: stamp wall-clock send time
+              // (echoed back by the webview's firstChunkRendered perfMark) and
+              // set the monotonic mark that send.ttftRender measures from.
+              textPayload.perfSentAt = Date.now();
+              PerfTracker.mark(`send.firstChunkSent.${panelId}`);
+            }
             this._postToPanel(panelId, {
               type: 'responseChunk',
-              payload: { type: 'text', content: chunk.content }
+              payload: textPayload
             });
 
             // Detect completed channel markers and execute send/ask actions
@@ -2862,6 +2964,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
             }
             break;
+          }
 
           case 'thinking':
             thinkingContent += chunk.content || '';
