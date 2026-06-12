@@ -36,6 +36,7 @@ import { ProjectContextManager } from './managers/ProjectContextManager';
 import { VisualTestManager } from './managers/VisualTestManager';
 import { CanvasManager } from './managers/CanvasManager';
 import { StitchService } from './services/StitchService';
+import { CliDiscoveryService } from './services/CliDiscoveryService';
 import { PerfTracker } from './utils/PerfTracker';
 
 let chatViewProvider: ChatViewProvider;
@@ -46,6 +47,7 @@ let suggestionManager: SuggestionManager;
 let brainstormManager: BrainstormManager;
 let permissionManager: PermissionManager;
 let setupManager: SetupManager;
+let cliDiscoveryService: CliDiscoveryService;
 let telemetryManager: TelemetryManager;
 let memoryManager: MemoryManager;
 let autonomousManager: AutonomousManager;
@@ -83,6 +85,13 @@ export async function activate(context: vscode.ExtensionContext) {
   contextManager = new ContextManager(context);
   conversationManager = new ConversationManager(context);
   providerManager = new ProviderManager(context);
+
+  // Plan 03 Phase 3a: cached CLI discovery. Constructed BEFORE the
+  // background provider init below so it seeds from every onProviderReady
+  // event — panel opens then read warm statuses instead of re-probing.
+  cliDiscoveryService = new CliDiscoveryService(providerManager);
+  context.subscriptions.push(cliDiscoveryService);
+
   suggestionManager = new SuggestionManager(context);
 
   // Get initial access level from configuration
@@ -109,8 +118,9 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize brainstorm manager
   brainstormManager = new BrainstormManager(context, providerManager);
 
-  // Initialize setup manager for CLI auto-setup
-  setupManager = new SetupManager(context, providerManager);
+  // Initialize setup manager for CLI auto-setup (reads CLI/auth status
+  // through the discovery cache — Plan 03 Phase 3a)
+  setupManager = new SetupManager(context, providerManager, cliDiscoveryService);
 
   // Initialize memory, autonomous, and compaction managers
   memoryManager = new MemoryManager(context);

@@ -22,7 +22,7 @@ import { BrainstormManager } from '../managers/BrainstormManager';
 import { MentionRouter } from '../managers/MentionRouter';
 import { PermissionManager } from '../managers/PermissionManager';
 import { PlanOptionManager } from '../managers/PlanOptionManager';
-import { SetupManager } from '../managers/SetupManager';
+import { SetupManager, type WizardStatusResult } from '../managers/SetupManager';
 import { TelemetryManager } from '../managers/TelemetryManager';
 import { AgentLoader } from '../managers/AgentLoader';
 import { AgentContextManager } from '../managers/AgentContextManager';
@@ -225,6 +225,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       (requestId, postToWebview) => this._handleSemiAutonomousPermissionTimeout(requestId, postToWebview)
     );
 
+    // Plan 03 Phase 3a: when a background CLI discovery refresh completes,
+    // push the updated provider availability to every open panel —
+    // initialState may have been built from cached/incomplete statuses, so
+    // the webview must treat provider badges as updatable after first paint.
+    this._setupManager.onWizardStatusUpdated((status) => {
+      this._broadcastToAll({
+        type: 'providerAvailability',
+        payload: { providerAvailability: this._buildProviderAvailability(status) }
+      });
+    });
+
     // Subscribe to ActiveModeManager events and broadcast to all panels
     this._activeModeManager.onStatusChanged(status => {
       this._broadcastToAll({
@@ -414,31 +425,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Critical: Wait for agents to load before building initial state
     await this._agentInitPromise;
 
-    // Get wizard status for provider availability.
-    // Note (Plan 03 Phase 2): provider init is backgrounded at activation;
-    // getWizardStatus() awaits providerManager.whenReady internally, so this
-    // (and every other wizard handler that calls it) sees settled discovery.
-    const wizardStatus = await this._setupManager.getWizardStatus();
+    // Plan 03 Phase 3a: build initial state from the CLI discovery cache —
+    // no serial provider probing on panel open (kills the "Preparing your
+    // workspace" stall). Only the ACTIVE provider is probed synchronously
+    // when its cache entry is missing/expired; everything else rides the
+    // cache, and getWizardStatusCached() kicks a single-flight background
+    // refresh whose completion posts a follow-up 'providerAvailability'
+    // message (see the onWizardStatusUpdated subscription in the
+    // constructor).
+    const activeProviderId = this._getPanelProvider(panelId);
+    await this._setupManager.ensureProviderStatusFresh(activeProviderId);
+
+    let wizardStatus: WizardStatusResult = this._setupManager.getWizardStatusCached();
 
     // Check if any provider is ready - show wizard if not
     const wizardDismissed = this._extensionContext.globalState.get('mysti.setupWizardDismissed', false);
     if (!wizardDismissed && !wizardStatus.anyReady) {
-      // No providers installed - show the setup wizard.
-      // Include panelId: when the wizard is shown, initialState (the only
-      // other message carrying panelId) is never sent, so the webview must
-      // learn its panelId from this payload or every wizard response would
-      // be posted with panelId=null and silently dropped (B2).
-      this._postToPanel(panelId, {
-        type: 'showWizard',
-        payload: { ...wizardStatus, panelId }
-      });
-      return;
+      // The cache can't prove any provider is installed. Showing the wizard
+      // is a cold-start decision, so confirm with a full (probing) status —
+      // this is the only panel-open path that still waits on discovery.
+      const fullStatus = await this._setupManager.getWizardStatus();
+      if (!fullStatus.anyReady) {
+        // No providers installed - show the setup wizard.
+        // Include panelId: when the wizard is shown, initialState (the only
+        // other message carrying panelId) is never sent, so the webview must
+        // learn its panelId from this payload or every wizard response would
+        // be posted with panelId=null and silently dropped (B2).
+        this._postToPanel(panelId, {
+          type: 'showWizard',
+          payload: { ...fullStatus, panelId }
+        });
+        return;
+      }
+      wizardStatus = fullStatus;
     }
 
     const config = vscode.workspace.getConfiguration('mysti');
 
     // Get the configured provider — use per-panel override if set, else global config
-    let selectedProvider: ProviderType = this._getPanelProvider(panelId) as ProviderType;
+    let selectedProvider: ProviderType = activeProviderId as ProviderType;
     const configuredProviderStatus = wizardStatus.providers.find(p => p.providerId === selectedProvider);
 
     if (!configuredProviderStatus?.installed) {
@@ -530,16 +555,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const brainstormAgents = mystiConfig.get<string[]>('brainstorm.agents', ['claude-code', 'openai-codex']);
     const brainstormStrategy = mystiConfig.get<string>('brainstorm.strategy', 'quick');
 
-    // Get provider availability status for each provider
+    // Provider availability from the cached wizard statuses — no probing
+    // here (Plan 03 Phase 3a). Statuses may still be incomplete at this
+    // point; the background refresh posts a follow-up 'providerAvailability'
+    // message once discovery settles.
     const providers = this._providerManager.getProviders();
-    const providerAvailability: Record<string, { available: boolean; installCommand?: string }> = {};
-    for (const provider of providers) {
-      const status = await this._providerManager.getProviderStatus(provider.name);
-      providerAvailability[provider.name] = {
-        available: status?.found ?? false,
-        installCommand: status?.installCommand
-      };
-    }
+    const providerAvailability = this._buildProviderAvailability(wizardStatus);
 
     this._postToPanel(panelId, {
       type: 'initialState',
@@ -587,6 +608,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     }
 
+  }
+
+  /**
+   * Map wizard provider statuses to the webview's providerAvailability shape
+   * (keyed by provider id; installCommand only when unavailable — matches
+   * what initialState has always carried).
+   */
+  private _buildProviderAvailability(
+    status: WizardStatusResult
+  ): Record<string, { available: boolean; installCommand?: string }> {
+    const availability: Record<string, { available: boolean; installCommand?: string }> = {};
+    for (const provider of status.providers) {
+      availability[provider.providerId] = {
+        available: provider.installed,
+        installCommand: provider.installed ? undefined : provider.installCommand
+      };
+    }
+    return availability;
   }
 
   private async _handleMessage(message: WebviewMessage) {
@@ -6371,6 +6410,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const authStatus = await provider.checkAuthentication();
 
       if (authStatus.authenticated) {
+        // Auth completed out-of-band — drop the cached status (it still says
+        // unauthenticated) so the next wizard/availability read re-probes
+        this._setupManager.invalidateProviderStatus(providerId);
         this._postToPanel(panelId, {
           type: 'setupComplete',
           payload: { providerId }
@@ -6725,27 +6767,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _handleRefreshProviderDetection(panelId: string): Promise<void> {
     console.log('[Mysti] ChatViewProvider: Refreshing provider detection');
 
-    // Reset npm cache in SetupManager
-    this._setupManager.resetNpmCache();
-
-    // Re-run discovery for all providers and send updated wizard status
-    const wizardStatus = await this._setupManager.getWizardStatus();
+    // Force a full re-probe: resets the npm cache and bypasses the discovery
+    // cache (and provider-side probe-failure TTLs) — Plan 03 Phase 3a.
+    const wizardStatus = await this._setupManager.refreshWizardStatus();
     this._postToPanel(panelId, {
       type: 'wizardStatus',
       payload: wizardStatus
     });
 
-    // Also update provider availability
-    const providerStatuses = wizardStatus.providers.map(p => ({
-      id: p.providerId,
-      name: p.displayName,
-      installed: p.installed,
-      authenticated: p.authenticated
-    }));
-
+    // Also update provider availability (same shape the webview consumes
+    // from initialState / the late providerAvailability message)
     this._postToPanel(panelId, {
       type: 'providerAvailability',
-      payload: providerStatuses
+      payload: { providerAvailability: this._buildProviderAvailability(wizardStatus) }
     });
 
     console.log('[Mysti] ChatViewProvider: Provider detection refreshed');

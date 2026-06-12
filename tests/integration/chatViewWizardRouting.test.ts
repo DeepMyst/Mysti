@@ -101,6 +101,12 @@ function createHarness(): Harness {
   } as any;
   const setupManager = {
     getWizardStatus: async () => ({ ...WIZARD_STATUS }),
+    // Plan 03 Phase 3a surface: cached reads + background-refresh event
+    getWizardStatusCached: () => ({ ...WIZARD_STATUS, complete: false }),
+    ensureProviderStatusFresh: async () => undefined,
+    refreshWizardStatus: async () => ({ ...WIZARD_STATUS }),
+    invalidateProviderStatus: () => undefined,
+    onWizardStatusUpdated: () => ({ dispose: () => {} }),
   } as any;
   const lifecycleManager = {
     onLifecycleEvent: () => undefined,

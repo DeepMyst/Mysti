@@ -18,6 +18,17 @@ Captured after a fresh `npm run compile` (webpack 5.103.0, production). Size fig
 
 CI guard: `node scripts/perf-sizes.js --max-extension-kb <n> --max-vsix-mb <n>` exits 1 on breach.
 
+## Post Phase 3a/3b — static (measured 2026-06-12)
+
+Captured after Phase 3a (cached CLI discovery) + Phase 3b (icon downscale to 128px, lazy-loading `<img>`) landed in the working tree. Fresh `npm run compile` + `npm run perf:sizes`.
+
+| Metric | Value | Delta vs baseline | Notes |
+| --- | --- | --- | --- |
+| `dist/extension.js` | 1,881,830 B (1.79 MB) | +9,215 B (+0.5%) | Cumulative working-tree delta since baseline (Phase 2 + 3a discovery cache + concurrent Canvas v2 work) |
+| `mysti-0.4.0.vsix` | n/a | — | Not repackaged yet; the 32.27 MB figure above predates 3a/3b — re-run `npx vsce package` |
+| `resources/` total | 3,940,757 B (3.76 MB) | −31,258,800 B (−88.8%) | |
+| `resources/icons` total | 339,690 B (0.32 MB) | −31,258,800 B (−98.9%) | 23 PNGs downscaled in place via `sips -Z 128` (was 30.13 MB) |
+
 ## Runtime baselines — capture procedure
 
 These cannot be measured statically; fill the table below after one Extension Development Host session.

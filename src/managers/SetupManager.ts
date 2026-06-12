@@ -18,6 +18,8 @@ import * as os from 'os';
 import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
 import type { ProviderManager } from './ProviderManager';
+import type { ICliProvider } from '../providers/base/IProvider';
+import type { CliDiscoveryService, CliStatus } from '../services/CliDiscoveryService';
 import type {
   ProviderSetupStatus,
   SetupResult,
@@ -43,6 +45,27 @@ import { getPlatformInfo, canWriteNpmGlobalDir, getNpmPrefix, resetPlatformInfoC
 const execAsync = promisify(exec);
 
 /**
+ * Wizard status for all providers (returned by getWizardStatus and
+ * emitted by onWizardStatusUpdated).
+ */
+export interface WizardStatusResult {
+  providers: WizardProviderStatus[];
+  npmAvailable: boolean;
+  nodeVersion?: string;
+  anyReady: boolean;
+}
+
+/**
+ * Immediately-available wizard status (Plan 03 Phase 3a). `complete` is true
+ * only when every provider had a fresh (non-expired) discovery cache entry —
+ * when false, a background refresh has been kicked off and
+ * onWizardStatusUpdated will fire once it settles.
+ */
+export interface CachedWizardStatusResult extends WizardStatusResult {
+  complete: boolean;
+}
+
+/**
  * SetupManager orchestrates the CLI setup flow for AI providers.
  *
  * Responsibilities:
@@ -59,10 +82,30 @@ export class SetupManager {
   private _npmAvailable: boolean | null = null;
   private _npmPath: string | null = null;
   private _npmCacheExpiry: number = 0;
+  /** Plan 03 Phase 3a: cached CLI discovery — single prober for wizard status. */
+  private _discoveryService: CliDiscoveryService | undefined;
+  /** Last node --version result (reused by getWizardStatusCached's zero-exec path). */
+  private _lastNodeVersion: string | undefined;
+  /** Single-flight guard for the background wizard status refresh. */
+  private _backgroundWizardRefresh: Promise<void> | null = null;
 
-  constructor(context: vscode.ExtensionContext, providerManager: ProviderManager) {
+  private readonly _onWizardStatusUpdatedEmitter = new vscode.EventEmitter<WizardStatusResult>();
+  /**
+   * Fires when a background wizard status refresh (kicked off by
+   * getWizardStatusCached on cache miss/expiry) completes. Consumers (e.g.
+   * ChatViewProvider) push the updated provider availability to webviews.
+   */
+  public readonly onWizardStatusUpdated: vscode.Event<WizardStatusResult> =
+    this._onWizardStatusUpdatedEmitter.event;
+
+  constructor(
+    context: vscode.ExtensionContext,
+    providerManager: ProviderManager,
+    discoveryService?: CliDiscoveryService
+  ) {
     this._extensionContext = context;
     this._providerManager = providerManager;
+    this._discoveryService = discoveryService;
   }
 
   // ============================================================================
@@ -529,6 +572,8 @@ export class SetupManager {
 
           const localDiscovery = await provider.discoverCli();
           if (localDiscovery.found) {
+            // Install mutated CLI state — drop the cached discovery status
+            this._discoveryService?.invalidate(providerId);
             return { success: true };
           }
         }
@@ -561,6 +606,8 @@ export class SetupManager {
 
             const localDiscovery = await provider.discoverCli();
             if (localDiscovery.found) {
+              // Install mutated CLI state — drop the cached discovery status
+              this._discoveryService?.invalidate(providerId);
               return { success: true, attemptNumber: result.attemptNumber };
             }
           }
@@ -589,6 +636,8 @@ export class SetupManager {
         };
       }
 
+      // Install mutated CLI state — drop the cached discovery status
+      this._discoveryService?.invalidate(providerId);
       return { success: true };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -675,6 +724,10 @@ export class SetupManager {
     terminal.show();
     terminal.sendText(authCommand);
 
+    // Auth state will change out-of-band (user completes the flow in the
+    // terminal) — drop the cached status so subsequent reads re-probe.
+    this._discoveryService?.invalidate(providerId);
+
     return {
       authenticated: false,
       error: 'Please complete authentication in the terminal window'
@@ -711,6 +764,9 @@ export class SetupManager {
       terminal.sendText('echo \'export GOOGLE_GENAI_USE_GCA=true\' >> ~/.zshrc');
       terminal.sendText('echo "Done! Run \'source ~/.zshrc\' or restart your terminal."');
 
+      // Auth mutation — drop the cached status so subsequent reads re-probe
+      this._discoveryService?.invalidate(providerId);
+
       const authStatus = await provider.checkAuthentication();
       return authStatus;
     }
@@ -730,6 +786,9 @@ export class SetupManager {
         process.env['OPENAI_API_KEY'] = apiKey;
         console.log('[Mysti] SetupManager: Set OPENAI_API_KEY for this session');
       }
+
+      // Auth mutation — drop the cached status so subsequent reads re-probe
+      this._discoveryService?.invalidate(providerId);
 
       const authStatus = await provider.checkAuthentication();
       return authStatus;
@@ -885,17 +944,15 @@ export class SetupManager {
   // ============================================================================
 
   /**
-   * Get detailed wizard status for all providers (enhanced for setup wizard)
+   * Get detailed wizard status for all providers (enhanced for setup wizard).
+   *
+   * Plan 03 Phase 3a: reads through CliDiscoveryService — only stale/missing
+   * cache entries are probed (in parallel). Falls back to direct serial
+   * probing when no discovery service was injected (legacy/tests).
    */
-  async getWizardStatus(): Promise<{
-    providers: WizardProviderStatus[];
-    npmAvailable: boolean;
-    nodeVersion?: string;
-    anyReady: boolean;
-  }> {
+  async getWizardStatus(): Promise<WizardStatusResult> {
     // Plan 03 Phase 2: provider init is backgrounded at activation. Wait for
-    // it to settle so wizard status doesn't race the startup discovery probes
-    // (getWizardStatus still performs its own discoverCli/auth probes below).
+    // it to settle so wizard status doesn't race the startup discovery probes.
     // Resolves immediately once background init has completed.
     await this._providerManager.whenReady;
 
@@ -903,29 +960,35 @@ export class SetupManager {
     const nodeVersion = await this._getNodeVersion();
     const providers: WizardProviderStatus[] = [];
 
-    for (const provider of this._providerManager.getAllProviders()) {
-      const discovery = await provider.discoverCli();
-      let authenticated = false;
+    const statusById = new Map<string, CliStatus>();
+    if (this._discoveryService) {
+      for (const status of await this._discoveryService.getAllStatuses()) {
+        statusById.set(status.providerId, status);
+      }
+    }
 
-      if (discovery.found) {
-        const authStatus = await provider.checkAuthentication();
-        authenticated = authStatus.authenticated;
+    for (const provider of this._providerManager.getAllProviders()) {
+      const cached = statusById.get(provider.id);
+      let installed: boolean;
+      let authenticated: boolean;
+      let cliVersion: string | undefined;
+
+      if (cached) {
+        installed = cached.found;
+        authenticated = cached.authenticated;
+        cliVersion = cached.version;
+      } else {
+        // Legacy path (no discovery service): probe directly.
+        const discovery = await provider.discoverCli();
+        installed = discovery.found;
+        cliVersion = discovery.version;
+        authenticated = false;
+        if (discovery.found) {
+          authenticated = (await provider.checkAuthentication()).authenticated;
+        }
       }
 
-      const setupInfo = this.getProviderSetupInfo(provider.id);
-
-      providers.push({
-        providerId: provider.id,
-        displayName: provider.displayName,
-        installed: discovery.found,
-        authenticated,
-        cliVersion: discovery.version,
-        installCommand: setupInfo?.installCommand || provider.getInstallCommand(),
-        authCommand: setupInfo?.authCommand || provider.getAuthCommand(),
-        authInstructions: setupInfo?.authInstructions || [],
-        docsUrl: setupInfo?.docsUrl,
-        supportsAutoInstall: provider.capabilities.supportsAutoInstall
-      });
+      providers.push(this._toWizardProviderStatus(provider, installed, authenticated, cliVersion));
     }
 
     const anyReady = providers.some(p => p.installed);
@@ -938,10 +1001,125 @@ export class SetupManager {
     };
   }
 
+  /**
+   * Immediately-available wizard status from the discovery cache — no
+   * probing, no exec, no awaiting whenReady (Plan 03 Phase 3a). Stale cache
+   * entries are served as-is (better than nothing); when any entry is
+   * missing or expired, a single-flight background refresh is kicked off and
+   * onWizardStatusUpdated fires once it completes.
+   */
+  getWizardStatusCached(): CachedWizardStatusResult {
+    const providers: WizardProviderStatus[] = [];
+    let complete = this._discoveryService !== undefined;
+
+    for (const provider of this._providerManager.getAllProviders()) {
+      const status = this._discoveryService?.peekStatus(provider.id);
+      if (!status || !this._discoveryService?.isFresh(status)) {
+        complete = false;
+      }
+      providers.push(this._toWizardProviderStatus(
+        provider,
+        status?.found ?? false,
+        status?.authenticated ?? false,
+        status?.version
+      ));
+    }
+
+    if (!complete) {
+      this._kickBackgroundWizardRefresh();
+    }
+
+    return {
+      providers,
+      // Last-known values: never exec from this path. Defaults are optimistic
+      // (npm assumed present) — the background refresh corrects them.
+      npmAvailable: this._npmAvailable ?? true,
+      nodeVersion: this._lastNodeVersion,
+      anyReady: providers.some(p => p.installed),
+      complete
+    };
+  }
+
+  /**
+   * Ensure one provider's discovery status is fresh — probes only that
+   * provider on cache miss/expiry. Used for the active provider when a panel
+   * opens (everything else rides the cache + background refresh).
+   */
+  async ensureProviderStatusFresh(providerId: string): Promise<CliStatus | undefined> {
+    if (!this._discoveryService) {
+      return undefined;
+    }
+    try {
+      return await this._discoveryService.getStatus(providerId);
+    } catch (error) {
+      console.warn(`[Mysti] SetupManager: status probe failed for ${providerId}:`, error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Force a full re-probe of every provider (manual refresh button). Resets
+   * the npm cache, bypasses the discovery cache (and provider-side
+   * probe-failure TTLs via force), then returns the rebuilt wizard status.
+   */
+  async refreshWizardStatus(): Promise<WizardStatusResult> {
+    this.resetNpmCache();
+    await this._discoveryService?.refresh();
+    return this.getWizardStatus();
+  }
+
+  /**
+   * Invalidate cached discovery status (one provider or all). Called from
+   * install/auth mutation paths so the next read re-probes.
+   */
+  invalidateProviderStatus(providerId?: string): void {
+    this._discoveryService?.invalidate(providerId);
+  }
+
+  private _toWizardProviderStatus(
+    provider: ICliProvider,
+    installed: boolean,
+    authenticated: boolean,
+    cliVersion?: string
+  ): WizardProviderStatus {
+    const setupInfo = this.getProviderSetupInfo(provider.id);
+    return {
+      providerId: provider.id,
+      displayName: provider.displayName,
+      installed,
+      authenticated,
+      cliVersion,
+      installCommand: setupInfo?.installCommand || provider.getInstallCommand(),
+      authCommand: setupInfo?.authCommand || provider.getAuthCommand(),
+      authInstructions: setupInfo?.authInstructions || [],
+      docsUrl: setupInfo?.docsUrl,
+      supportsAutoInstall: provider.capabilities.supportsAutoInstall
+    };
+  }
+
+  private _kickBackgroundWizardRefresh(): void {
+    if (this._backgroundWizardRefresh) {
+      return;
+    }
+    this._backgroundWizardRefresh = (async () => {
+      try {
+        // getWizardStatus awaits whenReady, then probes only stale/missing
+        // entries through the discovery service.
+        const status = await this.getWizardStatus();
+        this._onWizardStatusUpdatedEmitter.fire(status);
+      } catch (error) {
+        console.error('[Mysti] SetupManager: background wizard status refresh failed:', error);
+      } finally {
+        this._backgroundWizardRefresh = null;
+      }
+    })();
+  }
+
   private async _getNodeVersion(): Promise<string | undefined> {
     try {
       const { stdout } = await execAsync('node --version');
-      return stdout.trim();
+      this._lastNodeVersion = stdout.trim();
+      return this._lastNodeVersion;
     } catch {
       return undefined;
     }
@@ -1112,12 +1290,15 @@ export class SetupManager {
   }
 
   /**
-   * Reset npm availability cache (for refresh detection)
+   * Reset npm availability cache (for refresh detection).
+   * Also invalidates the CLI discovery cache so the next status read
+   * re-probes every provider (manual refresh semantics).
    */
   resetNpmCache(): void {
     this._npmAvailable = null;
     this._npmPath = null;
     this._npmCacheExpiry = 0;
     resetPlatformInfoCache();
+    this._discoveryService?.invalidate();
   }
 }

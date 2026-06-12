@@ -47,6 +47,32 @@ const mockWorkspaceConfiguration = {
   },
 };
 
+/** Configuration-change event plumbing (used by CliDiscoveryService tests). */
+type ConfigChangeListener = (e: { affectsConfiguration: (section: string) => boolean }) => void;
+const configChangeListeners: ConfigChangeListener[] = [];
+
+/**
+ * Fire a configuration-change event for `changedSection` to all registered
+ * onDidChangeConfiguration listeners. affectsConfiguration(query) mirrors
+ * VS Code semantics: true when the changed section is the query or nested
+ * under it (and vice versa).
+ */
+export function fireConfigurationChange(changedSection: string): void {
+  const event = {
+    affectsConfiguration: (section: string) =>
+      changedSection === section ||
+      changedSection.startsWith(section + '.') ||
+      section.startsWith(changedSection + '.'),
+  };
+  for (const listener of [...configChangeListeners]) {
+    listener(event);
+  }
+}
+
+export function clearConfigurationListeners(): void {
+  configChangeListeners.length = 0;
+}
+
 export const workspace = {
   getConfiguration(_section?: string) {
     return mockWorkspaceConfiguration;
@@ -56,7 +82,21 @@ export const workspace = {
     name: 'mock',
     index: 0,
   }],
-  onDidChangeConfiguration: () => ({ dispose: () => {} }),
+  onDidChangeConfiguration: (listener?: ConfigChangeListener) => {
+    if (typeof listener === 'function') {
+      configChangeListeners.push(listener);
+    }
+    return {
+      dispose: () => {
+        if (listener) {
+          const index = configChangeListeners.indexOf(listener);
+          if (index >= 0) {
+            configChangeListeners.splice(index, 1);
+          }
+        }
+      },
+    };
+  },
   createFileSystemWatcher: () => ({
     onDidCreate: () => ({ dispose: () => {} }),
     onDidChange: () => ({ dispose: () => {} }),

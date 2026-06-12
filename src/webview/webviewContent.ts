@@ -10673,7 +10673,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           card.title = providerMsg;
 
           card.innerHTML =
-            '<div class="welcome-card-icon"><img src="' + ICON_URIS[s.icon] + '" alt="" /></div>' +
+            '<div class="welcome-card-icon"><img src="' + ICON_URIS[s.icon] + '" alt="" loading="lazy" /></div>' +
             '<div class="welcome-card-title">' + escapeHtml(s.title) + '</div>' +
             '<div class="welcome-card-desc">' + escapeHtml(s.description) + '</div>';
 
@@ -11164,7 +11164,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           card.dataset.persona = p.id;
           card.title = p.description;
           card.innerHTML =
-            '<span class="persona-card-icon"><img src="' + ICON_URIS[getPersonaIconKey(p.id)] + '" alt="" /></span>' +
+            '<span class="persona-card-icon"><img src="' + ICON_URIS[getPersonaIconKey(p.id)] + '" alt="" loading="lazy" /></span>' +
             '<span class="persona-card-name">' + escapeHtml(p.name) + '</span>';
 
           card.onclick = function() {
@@ -12743,6 +12743,21 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             if (message.payload && message.payload.provider) {
               var switchedInfo = AGENT_DISPLAY[message.payload.provider];
               showToast('Switched to ' + (switchedInfo ? switchedInfo.name : message.payload.provider), 'info');
+            }
+            break;
+
+          case 'providerAvailability':
+            // Plan 03 Phase 3a: provider statuses are NOT final at
+            // initialState — the extension posts this follow-up once the
+            // background CLI discovery refresh settles (and after manual
+            // refresh). Merge and re-render badges/dropdowns/brainstorm.
+            if (message.payload && message.payload.providerAvailability) {
+              state.providerAvailability = Object.assign(
+                {},
+                state.providerAvailability,
+                message.payload.providerAvailability
+              );
+              updateProviderAvailability();
             }
             break;
 
