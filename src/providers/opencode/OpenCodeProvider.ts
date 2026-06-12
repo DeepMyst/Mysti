@@ -28,6 +28,7 @@ import type {
   AuthStatus
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
+import { normalizeToolName } from '../../utils/permissionClassifier';
 
 /**
  * Per-panel session state for OpenCode, extending base with tool call tracking.
@@ -300,7 +301,10 @@ export class OpenCodeProvider extends BaseCliProvider {
               return null;
 
             case 'tool': {
-              const toolName = part.name || '';
+              // Normalize OpenCode's lowercase native names (bash, edit,
+              // write, patch, ...) to the canonical names the permission
+              // gate classifies — the gate is the sole enforcement point.
+              const toolName = normalizeToolName(part.name || '');
               const toolId = part.id || `tool-${Date.now()}`;
               const state = part.state || 'running';
 
@@ -374,7 +378,7 @@ export class OpenCodeProvider extends BaseCliProvider {
 
         // Direct tool_use/tool_result events (alternative format)
         case 'tool_use': {
-          const toolName = data.tool_name || data.name || '';
+          const toolName = normalizeToolName(data.tool_name || data.name || '');
           const toolId = data.tool_id || data.id || `tool-${Date.now()}`;
           const params = data.parameters || data.input || {};
 

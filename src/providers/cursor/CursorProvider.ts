@@ -15,6 +15,7 @@ import * as os from "os";
 import * as path from "path";
 import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from "../base/BaseCliProvider";
 import { validateModelName } from "../../utils/validation";
+import { normalizeToolName } from "../../utils/permissionClassifier";
 import { getEnrichedEnv } from "../../utils/platform";
 import type {
 	CliDiscoveryResult,
@@ -76,9 +77,15 @@ export class CursorProvider extends BaseCliProvider {
 				contextWindow: 200000,
 			},
 			{
+				id: "gpt-5.4",
+				name: "GPT-5.4",
+				description: "OpenAI's latest flagship model (paid plan required)",
+				contextWindow: 200000,
+			},
+			{
 				id: "gpt-5",
 				name: "GPT-5",
-				description: "OpenAI's latest flagship model (paid plan required)",
+				description: "OpenAI GPT-5 model (paid plan required)",
 				contextWindow: 200000,
 			},
 			{
@@ -276,20 +283,22 @@ export class CursorProvider extends BaseCliProvider {
 	}
 
 	/**
-	 * Map Cursor tool type names to Claude-compatible names.
-	 * The webview's formatToolSummary() expects these standard names.
+	 * Map Cursor tool type names to canonical Claude-compatible names.
+	 * The webview's formatToolSummary() and the stream-level permission gate
+	 * (utils/permissionClassifier.ts) expect these canonical names — the gate
+	 * is the sole enforcement point since the CLI runs with --force.
 	 */
 	private static readonly TOOL_TYPE_MAP: Record<string, string> = {
-		shellToolCall: "bash",
-		readToolCall: "read",
-		writeToolCall: "write",
-		editToolCall: "edit",
-		grepToolCall: "grep",
-		globToolCall: "glob",
-		lsToolCall: "ls",
-		todoToolCall: "todowrite",
-		updateTodosToolCall: "todowrite",
-		deleteToolCall: "delete",
+		shellToolCall: "Bash",
+		readToolCall: "Read",
+		writeToolCall: "Write",
+		editToolCall: "Edit",
+		grepToolCall: "Grep",
+		globToolCall: "Glob",
+		lsToolCall: "LS",
+		todoToolCall: "TodoWrite",
+		updateTodosToolCall: "TodoWrite",
+		deleteToolCall: "Delete",
 	};
 
 	/**
@@ -381,14 +390,14 @@ export class CursorProvider extends BaseCliProvider {
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				const toolData = toolTypeKey ? (data.tool_call as any)[toolTypeKey] : null;
 
-				// Map to Claude-compatible tool name for the webview
+				// Map to canonical tool name for the webview and permission gate
 				let toolName: string;
 				if (toolTypeKey === "function") {
-					toolName = toolData?.name || "tool";
+					toolName = normalizeToolName(toolData?.name || "tool");
 				} else if (toolTypeKey) {
 					toolName =
 						CursorProvider.TOOL_TYPE_MAP[toolTypeKey] ||
-						toolTypeKey.replace(/ToolCall$/, "").toLowerCase();
+						normalizeToolName(toolTypeKey.replace(/ToolCall$/, "").toLowerCase());
 				} else {
 					toolName = "tool";
 				}

@@ -65,6 +65,15 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         contextWindow: 200000
       },
       {
+        // Claude Code CLI's bracket-suffix notation for the 1M-context variant (issue #32).
+        // Safe on the default spawn path (args array, no shell interpretation); on shell:true
+        // paths the bracket suffix is stripped at arg-build time — see _sanitizeModelForSpawn.
+        id: 'claude-opus-4-6[1m]',
+        name: 'Claude Opus 4.6 (1M)',
+        description: 'Opus 4.6 with a 1-million-token context window',
+        contextWindow: 1000000
+      },
+      {
         id: 'claude-sonnet-4-5-20250929',
         name: 'Claude Sonnet 4.5',
         description: 'Best balance of speed and intelligence',
@@ -386,7 +395,35 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       }
       console.warn(`[Mysti] Claude: Invalid custom model "${customModel}": ${validation.error}`);
     }
-    return settings.model || undefined;
+    if (settings.model) {
+      return this._sanitizeModelForSpawn(settings.model);
+    }
+    return undefined;
+  }
+
+  /**
+   * Claude Code's 1M-context model IDs use a bracket suffix (e.g. "claude-opus-4-6[1m]").
+   * On the default spawn path the args array is passed verbatim to the CLI with no shell
+   * interpretation, so brackets are safe as-is. But when the process is spawned with
+   * shell:true (always on Windows for .cmd wrapper support, or when mysti.useShellForCli
+   * is enabled), brackets are POSIX glob characters and are rejected outright by
+   * BaseCliProvider's shell-mode argument safety gate — the spawn would fail hard.
+   * In that case, fall back to the bracket-free base model (reduced context window)
+   * instead of failing the request.
+   */
+  private _sanitizeModelForSpawn(model: string): string {
+    if (!model.includes('[')) {
+      return model;
+    }
+    const config = vscode.workspace.getConfiguration('mysti');
+    const useShell = process.platform === 'win32' || config.get<boolean>('useShellForCli', false);
+    if (!useShell) {
+      // Array-args spawn: the value reaches the CLI verbatim — no quoting/escaping needed
+      return model;
+    }
+    const fallback = model.replace(/\[[^\]]*\]/g, '');
+    console.warn(`[Mysti] Claude: Model "${model}" contains brackets, which are unsafe in shell-mode spawn; falling back to "${fallback}" (reduced context window)`);
+    return fallback;
   }
 
   protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {

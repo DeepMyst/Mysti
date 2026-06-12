@@ -28,6 +28,7 @@ import type {
   AuthStatus
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
+import { normalizeToolName } from '../../utils/permissionClassifier';
 
 /**
  * Per-panel session state for Qwen Code provider.
@@ -184,10 +185,16 @@ export class QwenCodeProvider extends BaseCliProvider {
     // Prompt is sent via stdin by BaseCliProvider.sendMessage()
     // No -p flag needed — Qwen reads from stdin by default
 
-    // Session resume
+    // Session resume — pass the per-panel session ID explicitly.
+    // Bare --continue resumes the *globally most recent* session for the
+    // project, which bleeds conversations across panels (and across any
+    // terminal `qwen` run in the same repo). When no session ID has been
+    // captured yet, start a fresh session (no flag).
     if (session.sessionId) {
-      args.push('--continue');
-      console.log('[Mysti] Qwen: Continuing session');
+      args.push('--resume', session.sessionId);
+      console.log('[Mysti] Qwen: Resuming session:', session.sessionId);
+    } else {
+      console.log('[Mysti] Qwen: Starting new session');
     }
 
     // Model selection
@@ -282,16 +289,20 @@ export class QwenCodeProvider extends BaseCliProvider {
         if (nestedType === 'content_block_start') {
           const contentBlock = nestedEvent.content_block || {};
           if (contentBlock.type === 'tool_use') {
+            // Normalize native tool names (qwen-code is a gemini-cli fork:
+            // write_file, replace, run_shell_command, ...) so the permission
+            // gate classifies them correctly.
+            const canonicalName = normalizeToolName(contentBlock.name || '');
             qwenSession.activeToolCalls.set(blockIndex, {
               id: contentBlock.id || '',
-              name: contentBlock.name || '',
+              name: canonicalName,
               inputJson: ''
             });
             return {
               type: 'tool_use',
               toolCall: {
                 id: contentBlock.id || '',
-                name: contentBlock.name || '',
+                name: canonicalName,
                 input: {},
                 status: 'running'
               }
@@ -401,7 +412,7 @@ export class QwenCodeProvider extends BaseCliProvider {
                 type: 'tool_use',
                 toolCall: {
                   id: block.id || '',
-                  name: block.name || '',
+                  name: normalizeToolName(block.name || ''),
                   input: block.input || {},
                   status: 'running'
                 }
@@ -444,7 +455,7 @@ export class QwenCodeProvider extends BaseCliProvider {
           type: 'tool_result',
           toolCall: {
             id: data.tool_use_id || data.tool_id || '',
-            name: data.tool_name || '',
+            name: normalizeToolName(data.tool_name || ''),
             input: {},
             output: typeof data.content === 'string' ? data.content : JSON.stringify(data.content || ''),
             status: data.is_error ? 'failed' : 'completed'

@@ -80,6 +80,12 @@ export class CopilotProvider extends BaseCliProvider {
       },
       // OpenAI Models
       {
+        id: 'gpt-5.4',
+        name: 'GPT-5.4',
+        description: 'OpenAI latest flagship model',
+        contextWindow: 128000
+      },
+      {
         id: 'gpt-5.2',
         name: 'GPT-5.2',
         description: 'OpenAI general purpose model',
@@ -430,24 +436,28 @@ export class CopilotProvider extends BaseCliProvider {
       return;
     }
 
-    // More-restrictive-wins: only auto-approve when BOTH mode and access allow it
-    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
+    // The stream-level permission gate CANNOT protect Copilot: the CLI emits
+    // plain text (no JSON tool events), so parseStreamLine never produces
+    // tool_use chunks and ChatViewProvider's gate never fires. Only allow all
+    // tools for combinations where the gate is intentionally off anyway
+    // (mirrors shouldGateToolUse in utils/permissionClassifier.ts).
+    const gateIntentionallyOff =
+      mode === 'edit-automatically' ||
+      (accessLevel === 'full-access' && mode !== 'ask-before-edit');
+
+    if (gateIntentionallyOff) {
       args.push('--allow-all-tools');
-      console.log('[Mysti] Copilot: Using auto-approve mode (edit-automatically + full-access)');
+      console.log(`[Mysti] Copilot: Using auto-approve mode [mode=${mode}, access=${accessLevel}]`);
       return;
     }
 
-    // default mode + full-access = allow all tools (no explicit edit restriction)
-    if (mode === 'default' && accessLevel === 'full-access') {
-      args.push('--allow-all-tools');
-      console.log('[Mysti] Copilot: Using auto-approve mode (default + full-access)');
-      return;
-    }
-
-    // All other combinations: bypass CLI permissions to prevent stdin hang.
-    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-    args.push('--allow-all-tools');
-    console.log(`[Mysti] Copilot: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
+    // Ask-tier combinations (ask-before-edit mode, or ask-permission access):
+    // deny-by-default. Until Copilot CLI exposes structured tool events there
+    // is no way to prompt the user, so fail closed instead of silently
+    // executing shell commands and file writes with --allow-all-tools.
+    args.push('--deny-tool', 'shell');
+    args.push('--deny-tool', 'write');
+    console.log(`[Mysti] Copilot: Ask-tier permissions cannot be prompted (plain-text CLI output) — denying shell/write tools (fail closed) [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**

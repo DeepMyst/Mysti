@@ -40,7 +40,7 @@ describe('GeminiProvider.parseStreamLine', () => {
   });
 
   describe('tool use', () => {
-    it('should parse tool_use event', () => {
+    it('should parse tool_use event and normalize the native tool name', () => {
       const line = JSON.stringify({
         type: 'tool_use',
         tool_id: 'tool_1',
@@ -52,12 +52,32 @@ describe('GeminiProvider.parseStreamLine', () => {
         type: 'tool_use',
         toolCall: {
           id: 'tool_1',
-          name: 'ReadFile',
+          name: 'Read',
           input: { path: '/src/main.ts' },
           status: 'running',
         },
       });
       expect(session.activeToolCalls.has('tool_1')).toBe(true);
+    });
+
+    it('should normalize native Gemini write/shell tool names for the permission gate', () => {
+      const writeLine = JSON.stringify({
+        type: 'tool_use', tool_id: 'tool_w', tool_name: 'write_file',
+        parameters: { file_path: '/src/new.ts', content: 'x' },
+      });
+      expect(provider.parseStreamLine(writeLine, session)?.toolCall?.name).toBe('Write');
+
+      const replaceLine = JSON.stringify({
+        type: 'tool_use', tool_id: 'tool_r', tool_name: 'replace',
+        parameters: { file_path: '/src/main.ts', old_string: 'a', new_string: 'b' },
+      });
+      expect(provider.parseStreamLine(replaceLine, session)?.toolCall?.name).toBe('Edit');
+
+      const shellLine = JSON.stringify({
+        type: 'tool_use', tool_id: 'tool_s', tool_name: 'run_shell_command',
+        parameters: { command: 'rm -rf /tmp/x' },
+      });
+      expect(provider.parseStreamLine(shellLine, session)?.toolCall?.name).toBe('Bash');
     });
 
     it('should parse tool_result event', () => {

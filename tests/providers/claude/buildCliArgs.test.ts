@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { TestableClaudeProvider } from '../../helpers/providerFactory';
 import { createClaudeSession } from '../../helpers/sessionFactory';
 import { clearMockConfig, setMockConfig } from '../../helpers/mockVscode';
@@ -88,5 +88,67 @@ describe('ClaudeCodeProvider.buildCliArgs', () => {
     const args = provider.buildCliArgs(defaultSettings(), session);
     expect(args).toContain('--append-system-prompt');
     expect(args).toContain('You are a helpful assistant');
+  });
+
+  // ==========================================================================
+  // Issue #32 — 1M-context model claude-opus-4-6[1m]
+  // ==========================================================================
+  describe('1M context model (issue #32)', () => {
+    // BaseCliProvider's shell-mode argument safety gate (BaseCliProvider.ts ~932)
+    const SHELL_UNSAFE_ARG = /[;&|`$(){}[\]<>!"'\\#~*?\n\r]/;
+    const originalPlatform = process.platform;
+
+    function setPlatform(platform: NodeJS.Platform): void {
+      Object.defineProperty(process, 'platform', { value: platform });
+    }
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    });
+
+    it('should expose claude-opus-4-6[1m] in the model list with a 1M context window', () => {
+      const entry = provider.config.models.find(m => m.id === 'claude-opus-4-6[1m]');
+      expect(entry).toBeDefined();
+      expect(entry?.contextWindow).toBe(1000000);
+    });
+
+    it('should pass the bracketed model verbatim as a single argv entry on non-shell spawn (macOS/Linux default)', () => {
+      setPlatform('darwin');
+      const args = provider.buildCliArgs(defaultSettings({ model: 'claude-opus-4-6[1m]' }), session);
+      const modelIdx = args.indexOf('--model');
+      expect(modelIdx).toBeGreaterThan(-1);
+      // Array-args spawn — no shell interpretation, value must reach the CLI unmodified
+      expect(args[modelIdx + 1]).toBe('claude-opus-4-6[1m]');
+    });
+
+    it('should fall back to the bracket-free model on Windows (shell:true is always used there)', () => {
+      setPlatform('win32');
+      const args = provider.buildCliArgs(defaultSettings({ model: 'claude-opus-4-6[1m]' }), session);
+      const modelIdx = args.indexOf('--model');
+      expect(modelIdx).toBeGreaterThan(-1);
+      expect(args[modelIdx + 1]).toBe('claude-opus-4-6');
+      // Nothing we emit may trip BaseCliProvider's shell-mode unsafe-argument gate
+      for (const arg of args) {
+        expect(SHELL_UNSAFE_ARG.test(arg)).toBe(false);
+      }
+    });
+
+    it('should fall back to the bracket-free model when mysti.useShellForCli is enabled on POSIX', () => {
+      setPlatform('linux');
+      setMockConfig('useShellForCli', true);
+      const args = provider.buildCliArgs(defaultSettings({ model: 'claude-opus-4-6[1m]' }), session);
+      const modelIdx = args.indexOf('--model');
+      expect(args[modelIdx + 1]).toBe('claude-opus-4-6');
+      for (const arg of args) {
+        expect(SHELL_UNSAFE_ARG.test(arg)).toBe(false);
+      }
+    });
+
+    it('should leave bracket-free models untouched on Windows', () => {
+      setPlatform('win32');
+      const args = provider.buildCliArgs(defaultSettings({ model: 'claude-opus-4-6' }), session);
+      const modelIdx = args.indexOf('--model');
+      expect(args[modelIdx + 1]).toBe('claude-opus-4-6');
+    });
   });
 });

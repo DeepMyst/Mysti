@@ -71,7 +71,7 @@ describe('OpenCodeProvider.parseStreamLine', () => {
       const result = provider.parseStreamLine(line, session);
       expect(result).toEqual({
         type: 'tool_use',
-        toolCall: { id: 'tool_1', name: 'bash', input: { command: 'ls' }, status: 'running' },
+        toolCall: { id: 'tool_1', name: 'Bash', input: { command: 'ls' }, status: 'running' },
       });
     });
 
@@ -110,7 +110,7 @@ describe('OpenCodeProvider.parseStreamLine', () => {
       const result = provider.parseStreamLine(line, session);
       expect(result).toEqual({
         type: 'tool_use',
-        toolCall: { id: 'direct_1', name: 'read', input: { path: '/src/main.ts' }, status: 'running' },
+        toolCall: { id: 'direct_1', name: 'Read', input: { path: '/src/main.ts' }, status: 'running' },
       });
     });
 

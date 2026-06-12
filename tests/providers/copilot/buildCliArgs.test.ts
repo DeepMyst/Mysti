@@ -19,9 +19,12 @@ describe('CopilotProvider.buildCliArgs', () => {
     provider = new TestableCopilotProvider();
   });
 
-  it('should include --allow-all-tools for default ask-permission (bypassing CLI permissions)', () => {
+  it('should deny shell/write for default ask-permission (fail closed — plain-text CLI cannot be gated)', () => {
     const args = provider.buildCliArgs(defaultSettings(), createCopilotSession());
-    expect(args).toContain('--allow-all-tools');
+    expect(args).not.toContain('--allow-all-tools');
+    expect(args).toContain('--deny-tool');
+    expect(args).toContain('shell');
+    expect(args).toContain('write');
   });
 
   it('should deny shell and write tools for read-only access', () => {

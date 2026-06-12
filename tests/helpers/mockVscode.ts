@@ -5,6 +5,9 @@
 
 const configValues: Record<string, unknown> = {};
 
+/** Records every `config.update(key, value)` call made by code under test. */
+const configUpdates: Record<string, unknown> = {};
+
 export function setMockConfig(key: string, value: unknown): void {
   configValues[key] = value;
 }
@@ -13,6 +16,14 @@ export function clearMockConfig(): void {
   for (const key of Object.keys(configValues)) {
     delete configValues[key];
   }
+  for (const key of Object.keys(configUpdates)) {
+    delete configUpdates[key];
+  }
+}
+
+/** Read back the values written via `config.update()` (record-only; reads still come from setMockConfig). */
+export function getMockConfigUpdates(): Record<string, unknown> {
+  return configUpdates;
 }
 
 const mockWorkspaceConfiguration = {
@@ -28,7 +39,10 @@ const mockWorkspaceConfiguration = {
   inspect() {
     return undefined;
   },
-  update() {
+  update(key?: string, value?: unknown) {
+    if (typeof key === 'string') {
+      configUpdates[key] = value;
+    }
     return Promise.resolve();
   },
 };
@@ -43,6 +57,12 @@ export const workspace = {
     index: 0,
   }],
   onDidChangeConfiguration: () => ({ dispose: () => {} }),
+  createFileSystemWatcher: () => ({
+    onDidCreate: () => ({ dispose: () => {} }),
+    onDidChange: () => ({ dispose: () => {} }),
+    onDidDelete: () => ({ dispose: () => {} }),
+    dispose: () => {},
+  }),
 };
 
 export const window = {
@@ -60,6 +80,10 @@ export const window = {
 export const Uri = {
   file: (path: string) => ({ fsPath: path, scheme: 'file', path }),
   parse: (uri: string) => ({ fsPath: uri, scheme: 'file', path: uri }),
+  joinPath: (base: { fsPath?: string; path?: string }, ...segments: string[]) => {
+    const joined = [base?.fsPath ?? base?.path ?? '', ...segments].join('/');
+    return { fsPath: joined, scheme: 'file', path: joined, toString: () => joined };
+  },
 };
 
 export const commands = {
@@ -83,6 +107,12 @@ export enum TreeItemCollapsibleState {
   Expanded = 2,
 }
 
+export enum ConfigurationTarget {
+  Global = 1,
+  Workspace = 2,
+  WorkspaceFolder = 3,
+}
+
 // Default export for `import * as vscode from 'vscode'`
 export default {
   workspace,
@@ -92,4 +122,5 @@ export default {
   EventEmitter,
   Disposable,
   TreeItemCollapsibleState,
+  ConfigurationTarget,
 };

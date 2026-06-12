@@ -840,15 +840,29 @@ export class BrainstormManager {
     timeoutMs: number = BRAINSTORM_SILENCE_TIMEOUT_MS
   ): AsyncGenerator<T> {
     const iterator = generator[Symbol.asyncIterator]();
-    while (true) {
-      const result = await Promise.race([
-        iterator.next(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Agent silent for ${Math.round(timeoutMs / 1000)}s — aborting`)), timeoutMs)
-        )
-      ]);
-      if (result.done) { return; }
-      yield result.value;
+    // Single resettable timer: cleared after every chunk (before re-arming) and on
+    // completion/error, so chatty streams don't accumulate one live timer per chunk.
+    let silenceTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearSilenceTimer = () => {
+      if (silenceTimer !== undefined) {
+        clearTimeout(silenceTimer);
+        silenceTimer = undefined;
+      }
+    };
+    try {
+      while (true) {
+        const result = await Promise.race([
+          iterator.next(),
+          new Promise<never>((_, reject) => {
+            silenceTimer = setTimeout(() => reject(new Error(`Agent silent for ${Math.round(timeoutMs / 1000)}s — aborting`)), timeoutMs);
+          })
+        ]);
+        clearSilenceTimer();
+        if (result.done) { return; }
+        yield result.value;
+      }
+    } finally {
+      clearSilenceTimer();
     }
   }
 

@@ -13687,6 +13687,12 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
       function handleShowWizard(payload) {
         dismissInitLoading();
+        // B2: the wizard is shown instead of initialState, so this payload is
+        // the only chance to learn our panelId. Without it every outgoing
+        // wizard message carries panelId=null and replies are dropped.
+        if (payload.panelId) {
+          state.panelId = payload.panelId;
+        }
         state.wizard.visible = true;
         state.wizard.providers = payload.providers || [];
         state.wizard.npmAvailable = payload.npmAvailable;

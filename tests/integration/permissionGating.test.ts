@@ -60,11 +60,59 @@ describe('classifyToolAction', () => {
     expect(classifyToolAction(toolName)).toBe(expected);
   });
 
-  // Safe defaults (unknown tools → file-read)
+  // Read-only allowlist (explicitly safe — never gated)
   it.each([
-    'Read', 'Glob', 'Grep', 'Agent', 'TodoRead', 'ToolSearch', 'UnknownTool', 'AskUserQuestion',
-  ])('should classify %s as file-read (safe default)', (toolName) => {
+    'Read', 'Glob', 'Grep', 'Agent', 'TodoRead', 'TodoWrite', 'Task',
+    'ToolSearch', 'AskUserQuestion', 'NotebookRead', 'read_file',
+    'list_directory', 'search_file_content', 'ls', 'codebase_search',
+  ])('should classify %s as file-read (read-only allowlist)', (toolName) => {
     expect(classifyToolAction(toolName)).toBe('file-read');
+  });
+
+  // Case-insensitive classification (Cursor/OpenCode emit lowercase names)
+  it.each([
+    ['write', 'file-create'],
+    ['edit', 'file-edit'],
+    ['patch', 'file-edit'],
+    ['delete', 'file-delete'],
+    ['bash', 'bash-command'],
+  ])('should classify lowercase %s as %s', (toolName, expected) => {
+    expect(classifyToolAction(toolName)).toBe(expected);
+  });
+
+  // Provider-native write tool names (Gemini/Qwen)
+  it.each([
+    ['write_file', 'file-create'],
+    ['replace', 'file-edit'],
+    ['run_shell_command', 'bash-command'],
+  ])('should classify Gemini/Qwen native %s as %s', (toolName, expected) => {
+    expect(classifyToolAction(toolName)).toBe(expected);
+  });
+
+  // Web tools map to the canonical web-request classification
+  it.each([
+    'WebFetch', 'web_fetch', 'WebSearch', 'web_search', 'websearch',
+    'fetch', 'google_web_search',
+  ])('should classify %s as web-request', (toolName) => {
+    expect(classifyToolAction(toolName)).toBe('web-request');
+  });
+
+  // FAIL-CLOSED: unknown tools must NOT classify as file-read
+  it.each([
+    'UnknownTool', 'mystery_operation', 'SlashCommand', '',
+  ])('should classify unknown tool %s as non-read (fail closed)', (toolName) => {
+    expect(classifyToolAction(toolName)).not.toBe('file-read');
+  });
+
+  // Heuristic bucketing for unrecognized names
+  it.each([
+    ['fs_remove_tree', 'file-delete'],
+    ['create_directory', 'file-create'],
+    ['apply_code_change', 'file-edit'],
+    ['kill_terminal_process', 'bash-command'],
+    ['http_request', 'web-request'],
+  ])('should heuristically classify %s as %s', (toolName, expected) => {
+    expect(classifyToolAction(toolName)).toBe(expected);
   });
 });
 
@@ -92,9 +140,20 @@ describe('shouldGateToolUse', () => {
       expect(shouldGateToolUse(settings, 'Read')).toBe(false);
     });
 
-    it('should NOT gate unknown tools (defaults to file-read)', () => {
+    it('should NOT gate allowlisted orchestration tools', () => {
       expect(shouldGateToolUse(settings, 'Agent')).toBe(false);
-      expect(shouldGateToolUse(settings, 'UnknownTool')).toBe(false);
+      expect(shouldGateToolUse(settings, 'TodoWrite')).toBe(false);
+      expect(shouldGateToolUse(settings, 'Task')).toBe(false);
+    });
+
+    it('should gate unknown tools (fail closed)', () => {
+      expect(shouldGateToolUse(settings, 'UnknownTool')).toBe(true);
+      expect(shouldGateToolUse(settings, 'mystery_operation')).toBe(true);
+    });
+
+    it('should gate web tools', () => {
+      expect(shouldGateToolUse(settings, 'WebFetch')).toBe(true);
+      expect(shouldGateToolUse(settings, 'web_search')).toBe(true);
     });
   });
 

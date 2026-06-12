@@ -3,7 +3,7 @@
  * Simulates user scenarios with mocked providers to verify brainstorm mode behavior
  * for Claude Code, Gemini, and Codex.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { clearMockConfig } from '../helpers/mockVscode';
 import { MockProviderManager, createMockStream } from '../helpers/mockProviderManager';
 import {
@@ -125,6 +125,95 @@ describe('BrainstormManager', () => {
       const geminiComplete = chunks.filter(c => c.type === 'agent_complete' && c.agentId === 'google-gemini');
       expect(geminiComplete.length).toBe(1);
     }, BRAINSTORM_SILENCE_TIMEOUT_MS + 30000); // Allow enough time for the timeout
+  });
+
+  // =========================================================================
+  // 3b. Silence timer cleanup — per-chunk timer leak fix (part of #31)
+  // =========================================================================
+  describe('Silence timer cleanup (#31 timer leak)', () => {
+    type SilenceIterable = {
+      _iterateWithSilenceTimeout<T>(gen: AsyncGenerator<T>, timeoutMs?: number): AsyncGenerator<T>;
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function getIterate(manager: unknown) {
+      const m = manager as SilenceIterable;
+      return m._iterateWithSilenceTimeout.bind(m);
+    }
+
+    async function* makeChunks(count: number): AsyncGenerator<number> {
+      for (let i = 0; i < count; i++) {
+        yield i;
+      }
+    }
+
+    it('should keep at most one live timer per chunk and clear all on completion', async () => {
+      vi.useFakeTimers();
+      const { manager } = createTestBrainstormManager(mockPM);
+      const iterate = getIterate(manager);
+
+      const received: number[] = [];
+      for await (const value of iterate(makeChunks(5), 1000)) {
+        received.push(value);
+        // Timer is cleared before each chunk is yielded — no accumulation across chunks.
+        // (The pre-fix implementation leaked one un-cleared 90s timer per chunk.)
+        expect(vi.getTimerCount()).toBe(0);
+      }
+      expect(received).toEqual([0, 1, 2, 3, 4]);
+      // No timers left pending after the generator completes
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('should clear the pending timer when the source generator throws', async () => {
+      vi.useFakeTimers();
+      const { manager } = createTestBrainstormManager(mockPM);
+      const iterate = getIterate(manager);
+
+      async function* failing(): AsyncGenerator<number> {
+        yield 1;
+        throw new Error('stream blew up');
+      }
+
+      const received: number[] = [];
+      await expect(async () => {
+        for await (const value of iterate(failing(), 1000)) {
+          received.push(value);
+        }
+      }).rejects.toThrow('stream blew up');
+
+      expect(received).toEqual([1]);
+      // The timer armed for the failed next() must have been cleared
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('should still abort after sustained silence (timeout policy unchanged)', async () => {
+      vi.useFakeTimers();
+      const { manager } = createTestBrainstormManager(mockPM);
+      const iterate = getIterate(manager);
+
+      async function* hanging(): AsyncGenerator<number> {
+        yield 1;
+        await new Promise(() => { /* hang forever */ });
+      }
+
+      const gen = iterate(hanging(), 1000);
+      const first = await gen.next();
+      expect(first.value).toBe(1);
+
+      // Attach rejection handling before advancing the clock
+      const outcome = gen.next().then(
+        () => 'resolved',
+        (err: Error) => err.message
+      );
+      await vi.advanceTimersByTimeAsync(1001);
+
+      expect(await outcome).toContain('silent');
+      // Fired timer is gone and nothing else is left pending
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 
   // =========================================================================

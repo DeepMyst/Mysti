@@ -28,6 +28,7 @@ import type {
   AuthStatus
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
+import { normalizeToolName } from '../../utils/permissionClassifier';
 
 /**
  * Per-panel session state for Gemini, extending base with tool call tracking.
@@ -330,17 +331,25 @@ export class GeminiProvider extends BaseCliProvider {
             };
           }
 
+          // Normalize native Gemini tool names (write_file, replace,
+          // run_shell_command, ...) to the canonical names used by the
+          // permission gate and the webview renderer. The stream-level gate
+          // is the sole enforcement point (the CLI runs with --yolo), so raw
+          // names that the classifier doesn't recognize would otherwise be
+          // gated as unknown instead of classified correctly.
+          const canonicalName = normalizeToolName(toolName);
+
           // Track active tool call
           geminiSession.activeToolCalls.set(data.tool_id, {
             id: data.tool_id,
-            name: toolName,
+            name: canonicalName,
             input: params
           });
           return {
             type: 'tool_use',
             toolCall: {
               id: data.tool_id,
-              name: toolName,
+              name: canonicalName,
               input: params,
               status: 'running'
             }

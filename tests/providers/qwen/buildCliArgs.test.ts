@@ -26,16 +26,20 @@ describe('QwenCodeProvider.buildCliArgs', () => {
     expect(args).toContain('--include-partial-messages');
   });
 
-  it('should include --continue for session resume', () => {
+  it('should include --resume <sessionId> for session resume (not bare --continue)', () => {
     const session = createQwenSession();
     session.sessionId = 'qwen_sess_1';
     const args = provider.buildCliArgs(defaultSettings(), session);
-    expect(args).toContain('--continue');
+    expect(args).toContain('--resume');
+    expect(args[args.indexOf('--resume') + 1]).toBe('qwen_sess_1');
+    // Bare --continue resumes the globally most recent session — cross-panel bleed
+    expect(args).not.toContain('--continue');
   });
 
-  it('should not include --continue without session', () => {
+  it('should start fresh (no resume flags) without session', () => {
     const args = provider.buildCliArgs(defaultSettings(), createQwenSession());
     expect(args).not.toContain('--continue');
+    expect(args).not.toContain('--resume');
   });
 
   it('should include --model when set', () => {

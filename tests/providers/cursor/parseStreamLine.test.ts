@@ -82,11 +82,30 @@ describe('CursorProvider.parseStreamLine', () => {
         type: 'tool_use',
         toolCall: {
           id: 'tc_1',
-          name: 'read',
+          name: 'Read',
           input: { path: '/src/main.ts' },
           status: 'running',
         },
       });
+    });
+
+    it('should map write/edit/shell/delete ToolCall keys to canonical names', () => {
+      const cases: Array<[string, string]> = [
+        ['writeToolCall', 'Write'],
+        ['editToolCall', 'Edit'],
+        ['shellToolCall', 'Bash'],
+        ['deleteToolCall', 'Delete'],
+      ];
+      for (const [key, expected] of cases) {
+        const line = JSON.stringify({
+          type: 'tool_call',
+          subtype: 'started',
+          call_id: `tc_${key}`,
+          tool_call: { [key]: { args: { path: '/src/main.ts' } } },
+        });
+        const result = provider.parseStreamLine(line, session);
+        expect(result?.toolCall?.name).toBe(expected);
+      }
     });
 
     it('should normalize glob fields', () => {
@@ -124,7 +143,7 @@ describe('CursorProvider.parseStreamLine', () => {
         type: 'tool_result',
         toolCall: {
           id: 'tc_3',
-          name: 'read',
+          name: 'Read',
           input: { path: '/src/main.ts' },
           output: 'file contents here',
           status: 'completed',
