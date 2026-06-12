@@ -91,10 +91,31 @@ export const commands = {
   executeCommand: () => Promise.resolve(),
 };
 
-export const EventEmitter = class {
-  event = () => ({ dispose: () => {} });
-  fire() {}
-  dispose() {}
+export const EventEmitter = class<T = unknown> {
+  private _listeners: Array<(data: T) => void> = [];
+  event = (listener?: (data: T) => void) => {
+    if (typeof listener === 'function') {
+      this._listeners.push(listener);
+    }
+    return {
+      dispose: () => {
+        if (listener) {
+          const index = this._listeners.indexOf(listener);
+          if (index >= 0) {
+            this._listeners.splice(index, 1);
+          }
+        }
+      },
+    };
+  };
+  fire(data: T) {
+    for (const listener of [...this._listeners]) {
+      listener(data);
+    }
+  }
+  dispose() {
+    this._listeners = [];
+  }
 };
 
 export const Disposable = {

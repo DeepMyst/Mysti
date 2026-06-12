@@ -893,6 +893,12 @@ export class SetupManager {
     nodeVersion?: string;
     anyReady: boolean;
   }> {
+    // Plan 03 Phase 2: provider init is backgrounded at activation. Wait for
+    // it to settle so wizard status doesn't race the startup discovery probes
+    // (getWizardStatus still performs its own discoverCli/auth probes below).
+    // Resolves immediately once background init has completed.
+    await this._providerManager.whenReady;
+
     const npmAvailable = await this.checkNpmAvailable();
     const nodeVersion = await this._getNodeVersion();
     const providers: WizardProviderStatus[] = [];

@@ -38,6 +38,23 @@ export interface LocalAISessionState extends PanelSessionState {
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
 }
 
+const DEFAULT_LOCALAI_ENDPOINT = 'http://localhost:8080';
+
+/** Timeout for discovery/auth probes — local endpoint, so 1s is plenty. */
+const DISCOVERY_PROBE_TIMEOUT_MS = 1000;
+
+/**
+ * Module-level TTL for skipping background-init probes after a failed probe of
+ * the DEFAULT endpoint. Survives provider re-construction within the process.
+ */
+const DISCOVERY_FAILURE_TTL_MS = 5 * 60 * 1000;
+let _lastDefaultEndpointFailureAt = 0;
+
+/** Reset the module-level discovery failure timestamp (for tests). */
+export function resetLocalAIDiscoveryCache(): void {
+  _lastDefaultEndpointFailureAt = 0;
+}
+
 /**
  * LocalAI provider implementation using OpenAI-compatible HTTP API
  *
@@ -103,28 +120,67 @@ export class LocalAIProvider extends BaseCliProvider {
 
   // --- Discovery (HTTP endpoint check) ---
 
+  /** True while background init is running (set by initialize()) — gates the TTL probe skip. */
+  private _initializing = false;
+
   private _getEndpoint(): string {
-    return vscode.workspace.getConfiguration('mysti').get<string>('localaiEndpoint', 'http://localhost:8080');
+    return vscode.workspace.getConfiguration('mysti').get<string>('localaiEndpoint', DEFAULT_LOCALAI_ENDPOINT);
   }
 
   private _getApiKey(): string {
     return vscode.workspace.getConfiguration('mysti').get<string>('localaiApiKey', '');
   }
 
-  async discoverCli(): Promise<CliDiscoveryResult> {
+  async initialize(): Promise<void> {
+    this._initializing = true;
+    try {
+      await super.initialize();
+    } finally {
+      this._initializing = false;
+    }
+  }
+
+  /**
+   * Probe the LocalAI HTTP endpoint.
+   *
+   * During background init only: when the configured endpoint is the default
+   * and a previous probe failed within the TTL, skip the network I/O and
+   * report not-running. The real probe is deferred to first actual use and
+   * the setup wizard (both call discoverCli() outside initialize(), so they
+   * never hit the skip). Pass `force` to bypass the skip explicitly.
+   */
+  async discoverCli(force = false): Promise<CliDiscoveryResult> {
     const endpoint = this._getEndpoint();
+    const isDefaultEndpoint = endpoint === DEFAULT_LOCALAI_ENDPOINT;
+
+    if (!force && this._initializing && isDefaultEndpoint &&
+        Date.now() - _lastDefaultEndpointFailureAt < DISCOVERY_FAILURE_TTL_MS) {
+      console.log('[Mysti] LocalAI: Skipping init probe (recent failure within TTL)');
+      return {
+        found: false,
+        path: endpoint,
+        installCommand: this.getInstallCommand(),
+      };
+    }
+
     try {
       const headers: Record<string, string> = {};
       const apiKey = this._getApiKey();
       if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`;
       }
-      const response = await fetch(`${endpoint}/v1/models`, { signal: AbortSignal.timeout(3000), headers });
+      const response = await fetch(`${endpoint}/v1/models`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS), headers });
       if (response.ok) {
+        if (isDefaultEndpoint) {
+          _lastDefaultEndpointFailureAt = 0;
+        }
         return { found: true, path: endpoint };
       }
     } catch {
       // Server not reachable
+    }
+    if (isDefaultEndpoint) {
+      _lastDefaultEndpointFailureAt = Date.now();
     }
     return {
       found: false,
@@ -154,7 +210,7 @@ export class LocalAIProvider extends BaseCliProvider {
       if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`;
       }
-      const response = await fetch(`${endpoint}/v1/models`, { signal: AbortSignal.timeout(3000), headers });
+      const response = await fetch(`${endpoint}/v1/models`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS), headers });
       if (response.ok) {
         return { authenticated: true, user: 'LocalAI (local)' };
       }

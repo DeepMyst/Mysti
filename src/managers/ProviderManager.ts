@@ -53,6 +53,25 @@ export class ProviderManager {
   }
 
   /**
+   * Resolved when background provider initialization settles (Plan 03
+   * Phase 2: activate() fires initialize() without awaiting it). Call paths
+   * that require discovery results — e.g., SetupManager.getWizardStatus —
+   * await this; the message-send path does NOT (providers self-discover via
+   * getCliPath() on first use).
+   */
+  public get whenReady(): Promise<void> {
+    return this._registry.whenReady;
+  }
+
+  /**
+   * Fires each provider id as its background initialize() settles,
+   * for incremental consumers (e.g., per-provider availability badges).
+   */
+  public get onProviderReady(): vscode.Event<string> {
+    return this._registry.onProviderReady;
+  }
+
+  /**
    * Get the active provider based on settings or default
    */
   private _getActiveProvider(providerId?: string): ICliProvider {

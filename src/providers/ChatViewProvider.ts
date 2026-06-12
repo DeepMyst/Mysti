@@ -414,7 +414,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Critical: Wait for agents to load before building initial state
     await this._agentInitPromise;
 
-    // Get wizard status for provider availability
+    // Get wizard status for provider availability.
+    // Note (Plan 03 Phase 2): provider init is backgrounded at activation;
+    // getWizardStatus() awaits providerManager.whenReady internally, so this
+    // (and every other wizard handler that calls it) sees settled discovery.
     const wizardStatus = await this._setupManager.getWizardStatus();
 
     // Check if any provider is ready - show wizard if not

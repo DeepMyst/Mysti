@@ -47,6 +47,73 @@ export interface CliSearchConfig {
 let _cachedPlatformInfo: PlatformInfo | null = null;
 
 /**
+ * Memoized NVM directory walk — the versions-dir listing is the expensive part
+ * of CLI discovery and is identical for every provider, so it is computed once
+ * per process lifetime (invalidated via resetPlatformCache()).
+ */
+interface NvmWalkResult {
+  nvmDir: string;
+  exists: boolean;
+  /** `bin` directories of installed node versions, latest first */
+  versionBinDirs: string[];
+}
+
+let _cachedNvmWalk: NvmWalkResult | null = null;
+let _nvmWalkCount = 0;
+let _nodeDirWalkCount = 0;
+
+function _walkNvmDirs(): NvmWalkResult {
+  if (_cachedNvmWalk) {
+    return _cachedNvmWalk;
+  }
+  _nvmWalkCount++;
+
+  const nvmDir = process.env.NVM_DIR || path.join(os.homedir(), '.nvm');
+  const exists = fs.existsSync(nvmDir);
+  const versionBinDirs: string[] = [];
+
+  if (exists) {
+    const versionsDir = path.join(nvmDir, 'versions', 'node');
+    if (fs.existsSync(versionsDir)) {
+      try {
+        const versions = fs.readdirSync(versionsDir)
+          .filter(v => v.startsWith('v'))
+          .sort()
+          .reverse();
+        for (const version of versions) {
+          versionBinDirs.push(path.join(versionsDir, version, 'bin'));
+        }
+      } catch { /* ignore directory read errors */ }
+    }
+  }
+
+  _cachedNvmWalk = { nvmDir, exists, versionBinDirs };
+  return _cachedNvmWalk;
+}
+
+/**
+ * Walk counts for the memoized directory probes — exposed so tests can assert
+ * that repeated discovery calls hit the cache instead of re-walking the disk.
+ */
+export function getPlatformWalkCounts(): { nvmWalks: number; nodeDirWalks: number } {
+  return { nvmWalks: _nvmWalkCount, nodeDirWalks: _nodeDirWalkCount };
+}
+
+/**
+ * Reset every module-level platform cache (platform info, NVM walk, resolved
+ * node dir, enriched env) and the walk counters. Intended for tests and for
+ * invalidation after a node/npm install changes the filesystem.
+ */
+export function resetPlatformCache(): void {
+  _cachedPlatformInfo = null;
+  _cachedNvmWalk = null;
+  _resolvedNodeDir = null;
+  _baseEnrichedEnv = null;
+  _nvmWalkCount = 0;
+  _nodeDirWalkCount = 0;
+}
+
+/**
  * Get platform information (cached for session)
  */
 export async function getPlatformInfo(): Promise<PlatformInfo> {
@@ -55,9 +122,9 @@ export async function getPlatformInfo(): Promise<PlatformInfo> {
   }
 
   const platform = process.platform as 'darwin' | 'linux' | 'win32';
-  const homeDir = os.homedir();
-  const nvmDir = process.env.NVM_DIR || path.join(homeDir, '.nvm');
-  const hasNvm = fs.existsSync(nvmDir);
+  const nvm = _walkNvmDirs();
+  const nvmDir = nvm.nvmDir;
+  const hasNvm = nvm.exists;
 
   let nodeVersion: string | null = null;
   let npmVersion: string | null = null;
@@ -141,24 +208,15 @@ export function getCommonSearchPaths(config: CliSearchConfig): string[] {
     addPath(path.join(appData, 'npm', winCmd));
     addPath(path.join(appData, 'npm', commandName));
   } else {
-    // 4. NVM-managed paths
-    const nvmDir = process.env.NVM_DIR || path.join(homeDir, '.nvm');
-    if (fs.existsSync(nvmDir)) {
+    // 4. NVM-managed paths (memoized walk — shared across all providers)
+    const nvm = _walkNvmDirs();
+    if (nvm.exists) {
       // Current symlink (most common)
-      addPath(path.join(nvmDir, 'current', 'bin', commandName));
+      addPath(path.join(nvm.nvmDir, 'current', 'bin', commandName));
 
       // Versioned paths (latest first)
-      const versionsDir = path.join(nvmDir, 'versions', 'node');
-      if (fs.existsSync(versionsDir)) {
-        try {
-          const versions = fs.readdirSync(versionsDir)
-            .filter(v => v.startsWith('v'))
-            .sort()
-            .reverse();
-          for (const version of versions) {
-            addPath(path.join(versionsDir, version, 'bin', commandName));
-          }
-        } catch { /* ignore directory read errors */ }
+      for (const binDir of nvm.versionBinDirs) {
+        addPath(path.join(binDir, commandName));
       }
     }
 
@@ -186,30 +244,19 @@ export function getCommonSearchPaths(config: CliSearchConfig): string[] {
  * Returns paths in order: current symlink first, then versioned (latest first).
  */
 export function getNvmPaths(binaryName: string): string[] {
-  const homeDir = os.homedir();
-  const nvmDir = process.env.NVM_DIR || path.join(homeDir, '.nvm');
+  const nvm = _walkNvmDirs();
   const paths: string[] = [];
 
-  if (!fs.existsSync(nvmDir)) {
+  if (!nvm.exists) {
     return paths;
   }
 
   // Current symlink
-  const currentPath = path.join(nvmDir, 'current', 'bin', binaryName);
-  paths.push(currentPath);
+  paths.push(path.join(nvm.nvmDir, 'current', 'bin', binaryName));
 
-  // Versioned paths
-  const versionsDir = path.join(nvmDir, 'versions', 'node');
-  if (fs.existsSync(versionsDir)) {
-    try {
-      const versions = fs.readdirSync(versionsDir)
-        .filter(v => v.startsWith('v'))
-        .sort()
-        .reverse();
-      for (const version of versions) {
-        paths.push(path.join(versionsDir, version, 'bin', binaryName));
-      }
-    } catch { /* ignore */ }
+  // Versioned paths (latest first, from the memoized walk)
+  for (const binDir of nvm.versionBinDirs) {
+    paths.push(path.join(binDir, binaryName));
   }
 
   return paths;
@@ -298,33 +345,23 @@ export async function canWriteNpmGlobalDir(): Promise<boolean> {
 let _resolvedNodeDir: string | null = null;
 
 /**
- * Find the directory containing the actual `node` binary.
- * Checks common locations since process.execPath in VSCode points to Electron, not node.
+ * Build the candidate directories for the `node` binary, in priority order.
+ * Kept as a standalone builder so new candidates are a one-line addition.
+ *
+ * NOTE (issue #27): Windows candidate directories (e.g. %APPDATA%\npm,
+ * %ProgramFiles%\nodejs) are missing from this list. That fix is owned by the
+ * Batch 2 Windows epic — add the Windows entries here when it lands.
  */
-function findNodeDir(): string | null {
-  if (_resolvedNodeDir !== null) { return _resolvedNodeDir; }
-
+function _buildNodeDirCandidates(): string[] {
   const homeDir = os.homedir();
   const candidates: string[] = [];
 
   // NVM current symlink (highest priority — user's selected version)
-  const nvmDir = process.env.NVM_DIR || path.join(homeDir, '.nvm');
-  const nvmCurrent = path.join(nvmDir, 'current', 'bin');
-  candidates.push(nvmCurrent);
+  const nvm = _walkNvmDirs();
+  candidates.push(path.join(nvm.nvmDir, 'current', 'bin'));
 
-  // NVM versioned paths (latest first)
-  const versionsDir = path.join(nvmDir, 'versions', 'node');
-  if (fs.existsSync(versionsDir)) {
-    try {
-      const versions = fs.readdirSync(versionsDir)
-        .filter(v => v.startsWith('v'))
-        .sort()
-        .reverse();
-      for (const version of versions) {
-        candidates.push(path.join(versionsDir, version, 'bin'));
-      }
-    } catch { /* ignore */ }
-  }
+  // NVM versioned paths (latest first, from the memoized walk)
+  candidates.push(...nvm.versionBinDirs);
 
   // Standard system locations
   candidates.push('/usr/local/bin');
@@ -336,6 +373,21 @@ function findNodeDir(): string | null {
   // npm global user paths
   candidates.push(path.join(homeDir, '.npm-global', 'bin'));
   candidates.push(path.join(homeDir, '.local', 'bin'));
+
+  return candidates;
+}
+
+/**
+ * Find the directory containing the actual `node` binary.
+ * Checks common locations since process.execPath in VSCode points to Electron, not node.
+ * Memoized at module level — the directory walk runs once per process lifetime
+ * (reset via resetPlatformCache()).
+ */
+function findNodeDir(): string | null {
+  if (_resolvedNodeDir !== null) { return _resolvedNodeDir || null; }
+
+  _nodeDirWalkCount++;
+  const candidates = _buildNodeDirCandidates();
 
   for (const dir of candidates) {
     const nodePath = path.join(dir, 'node');

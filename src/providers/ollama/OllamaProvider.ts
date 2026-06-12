@@ -38,6 +38,23 @@ export interface OllamaSessionState extends PanelSessionState {
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
 }
 
+const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
+
+/** Timeout for discovery/auth probes — local endpoint, so 1s is plenty. */
+const DISCOVERY_PROBE_TIMEOUT_MS = 1000;
+
+/**
+ * Module-level TTL for skipping background-init probes after a failed probe of
+ * the DEFAULT endpoint. Survives provider re-construction within the process.
+ */
+const DISCOVERY_FAILURE_TTL_MS = 5 * 60 * 1000;
+let _lastDefaultEndpointFailureAt = 0;
+
+/** Reset the module-level discovery failure timestamp (for tests). */
+export function resetOllamaDiscoveryCache(): void {
+  _lastDefaultEndpointFailureAt = 0;
+}
+
 /**
  * Ollama provider implementation using HTTP API
  *
@@ -115,19 +132,58 @@ export class OllamaProvider extends BaseCliProvider {
 
   // --- Discovery (HTTP endpoint check) ---
 
+  /** True while background init is running (set by initialize()) — gates the TTL probe skip. */
+  private _initializing = false;
+
   private _getEndpoint(): string {
-    return vscode.workspace.getConfiguration('mysti').get<string>('ollamaEndpoint', 'http://localhost:11434');
+    return vscode.workspace.getConfiguration('mysti').get<string>('ollamaEndpoint', DEFAULT_OLLAMA_ENDPOINT);
   }
 
-  async discoverCli(): Promise<CliDiscoveryResult> {
-    const endpoint = this._getEndpoint();
+  async initialize(): Promise<void> {
+    this._initializing = true;
     try {
-      const response = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      await super.initialize();
+    } finally {
+      this._initializing = false;
+    }
+  }
+
+  /**
+   * Probe the Ollama HTTP endpoint.
+   *
+   * During background init only: when the configured endpoint is the default
+   * and a previous probe failed within the TTL, skip the network I/O and
+   * report not-running. The real probe is deferred to first actual use and
+   * the setup wizard (both call discoverCli() outside initialize(), so they
+   * never hit the skip). Pass `force` to bypass the skip explicitly.
+   */
+  async discoverCli(force = false): Promise<CliDiscoveryResult> {
+    const endpoint = this._getEndpoint();
+    const isDefaultEndpoint = endpoint === DEFAULT_OLLAMA_ENDPOINT;
+
+    if (!force && this._initializing && isDefaultEndpoint &&
+        Date.now() - _lastDefaultEndpointFailureAt < DISCOVERY_FAILURE_TTL_MS) {
+      console.log('[Mysti] Ollama: Skipping init probe (recent failure within TTL)');
+      return {
+        found: false,
+        path: endpoint,
+        installCommand: this.getInstallCommand(),
+      };
+    }
+
+    try {
+      const response = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS) });
       if (response.ok) {
+        if (isDefaultEndpoint) {
+          _lastDefaultEndpointFailureAt = 0;
+        }
         return { found: true, path: endpoint };
       }
     } catch {
       // Server not reachable
+    }
+    if (isDefaultEndpoint) {
+      _lastDefaultEndpointFailureAt = Date.now();
     }
     return {
       found: false,
@@ -152,7 +208,7 @@ export class OllamaProvider extends BaseCliProvider {
   async checkAuthentication(): Promise<AuthStatus> {
     const endpoint = this._getEndpoint();
     try {
-      const response = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      const response = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS) });
       if (response.ok) {
         return { authenticated: true, user: 'Ollama (local)' };
       }

@@ -71,14 +71,12 @@
     "workspaceContains:.mysti/config.json",
     "workspaceContains:.mysti/agents.yaml",
     "workspaceContains:.mysti/team.json",
-    "workspaceContains:.mysti/rules/**",
     "workspaceContains:.mysti/mysti.md",
-    "workspaceContains:.claude/**",
-    "workspaceContains:.gemini/**",
-    "workspaceContains:.openai/**",
-    "workspaceContains:.openclaw/**",
-    "workspaceContains:opencode.json",
-    "workspaceContains:.qwen/**"
+    "workspaceContains:.claude/settings.json",
+    "workspaceContains:.gemini/settings.json",
+    "workspaceContains:.openclaw/openclaw.json",
+    "workspaceContains:.qwen/settings.json",
+    "workspaceContains:opencode.json"
   ],
   "main": "./dist/extension.js",
   "contributes": {

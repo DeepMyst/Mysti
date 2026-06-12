@@ -70,8 +70,8 @@ export async function activate(context: vscode.ExtensionContext) {
   console.log('Mysti extension is now active');
 
   // Manager construction block (telemetry through ChatViewProvider).
-  // Note: the measure includes the awaited provider init below — the
-  // 'activation.providerInit' sub-measure isolates that portion.
+  // Note: provider init below is fire-and-forget (Plan 03 Phase 2), so this
+  // measure covers only synchronous construction work.
   PerfTracker.mark('activation.managerConstruction.start');
 
   // Initialize telemetry first
@@ -90,10 +90,21 @@ export async function activate(context: vscode.ExtensionContext) {
   const initialAccessLevel = config.get<'read-only' | 'ask-permission' | 'full-access'>('accessLevel', 'ask-permission');
   permissionManager = new PermissionManager(initialAccessLevel);
 
-  // Initialize providers (async)
+  // Initialize providers in the background (Plan 03 Phase 2): activate() no
+  // longer blocks on CLI discovery — webview/command registration below runs
+  // immediately, and call paths that need discovery results await
+  // providerManager.whenReady instead. The 'activation.providerInit' measure
+  // now wraps the background promise (recorded via .finally when it settles)
+  // so it reports the real discovery duration rather than an awaited ~0ms
+  // span; 'activation.total' keeps measuring only the synchronous activate()
+  // path.
   PerfTracker.mark('activation.providerInit.start');
-  await providerManager.initialize();
-  PerfTracker.measure('activation.providerInit', 'activation.providerInit.start');
+  providerManager
+    .initialize()
+    .catch(err => console.error('[Mysti] Provider init failed:', err))
+    .finally(() => {
+      PerfTracker.measure('activation.providerInit', 'activation.providerInit.start');
+    });
 
   // Initialize brainstorm manager
   brainstormManager = new BrainstormManager(context, providerManager);
