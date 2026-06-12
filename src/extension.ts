@@ -35,6 +35,7 @@ import { MystiCodeLensProvider } from './providers/MystiCodeLensProvider';
 import { ProjectContextManager } from './managers/ProjectContextManager';
 import { VisualTestManager } from './managers/VisualTestManager';
 import { CanvasManager } from './managers/CanvasManager';
+import { StitchService } from './services/StitchService';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -120,8 +121,10 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize visual test manager
   visualTestManager = new VisualTestManager(context);
 
-  // Initialize canvas manager
+  // Initialize canvas manager with Stitch service
   canvasManager = new CanvasManager(context);
+  const stitchService = new StitchService();
+  canvasManager.setStitchService(stitchService);
 
   // Invalidate canvas project profile cache on workspace folder change
   context.subscriptions.push(

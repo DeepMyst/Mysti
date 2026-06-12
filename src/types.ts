@@ -1383,6 +1383,23 @@ export interface CanvasSession {
   canvasJson: string;
   assetPaths: string[];
   linkedChatPanelId?: string;
+  designSpec?: DesignSpec;
+  stitchProjectId?: string;
+}
+
+// ── Google Stitch types ──
+export type StitchDeviceType = 'MOBILE' | 'DESKTOP' | 'TABLET' | 'AGNOSTIC';
+export type StitchModel = 'GEMINI_3_PRO' | 'GEMINI_3_FLASH';
+export type StitchCreativeRange = 'REFINE' | 'EXPLORE' | 'REIMAGINE';
+export type StitchVariantAspect = 'LAYOUT' | 'COLOR_SCHEME' | 'IMAGES' | 'TEXT_FONT' | 'TEXT_CONTENT';
+
+export interface StitchScreenRef {
+  projectId: string;
+  screenId: string;
+  htmlUrl?: string;
+  imageUrl?: string;
+  htmlContent?: string;
+  imageBase64?: string;
 }
 
 export interface CanvasSnapshot {
@@ -1413,7 +1430,7 @@ export interface ReimaginationResult {
   }>;
 }
 
-export type CanvasUnifiedAction = 'render' | 'generate' | 'reimagine' | 'video' | 'prompt' | 'page' | 'section' | 'component' | 'website' | 'svg' | 'code' | 'edit-element' | 'edit-layout';
+export type CanvasUnifiedAction = 'render' | 'generate' | 'reimagine' | 'video' | 'prompt' | 'page' | 'section' | 'component' | 'website' | 'svg' | 'code' | 'edit-element' | 'edit-layout' | 'mockup' | 'theme' | 'stitch-edit' | 'stitch-variants' | 'stitch-html' | 'design-dna';
 
 export interface CanvasRenderRequest {
   canvasId: string;
@@ -1465,6 +1482,17 @@ export type CanvasStreamChunkType =
   | 'canvas_integrate_complete'
   | 'canvas_element_edit_started'
   | 'canvas_element_edit_complete'
+  | 'canvas_mockup_started'
+  | 'canvas_mockup_progress'
+  | 'canvas_mockup_complete'
+  | 'canvas_theme_complete'
+  | 'canvas_asset_generated'
+  | 'canvas_multipass_progress'
+  | 'canvas_stitch_started'
+  | 'canvas_stitch_screen_ready'
+  | 'canvas_stitch_html_ready'
+  | 'canvas_stitch_variants_ready'
+  | 'canvas_stitch_design_dna'
   | 'canvas_error';
 
 export interface CanvasStreamChunk {
@@ -1498,6 +1526,19 @@ export interface CanvasStreamChunk {
   framework?: 'react' | 'vue' | 'html';
   componentName?: string;
   objectId?: string;
+  designNodes?: DesignNode[];
+  designTheme?: DesignTheme;
+  asset?: DesignAssetRef;
+  // Multi-pass progress fields
+  pass?: number;
+  totalPasses?: number;
+  current?: number;
+  total?: number;
+  // Stitch fields
+  stitchScreenRef?: StitchScreenRef;
+  stitchHtml?: string;
+  variantIndex?: number;
+  variantCount?: number;
 }
 
 export interface ComponentProp {
@@ -1535,4 +1576,116 @@ export interface ElementEditPayload {
   framework: string;
   edits: Array<{ selectorPath: string; property: string; value: string }>;
   currentCode: string;
+}
+
+// ============================================================================
+// Canvas v3: Structured Design System Types
+// ============================================================================
+
+export type DesignNodeType = 'page' | 'section' | 'component' | 'element';
+
+export interface DesignLayout {
+  display: 'flex' | 'grid' | 'block';
+  direction?: 'row' | 'column';
+  gap?: number;
+  padding?: number | [number, number, number, number];
+  align?: 'start' | 'center' | 'end' | 'stretch';
+  justify?: 'start' | 'center' | 'end' | 'between' | 'around';
+  wrap?: boolean;
+  gridCols?: number;
+}
+
+export interface DesignStyle {
+  background?: string;
+  border?: { width: number; color: string; style: string };
+  shadow?: string;
+  radius?: number;
+  opacity?: number;
+  overflow?: 'visible' | 'hidden';
+}
+
+export interface DesignTypography {
+  family?: string;
+  size?: number;
+  weight?: number;
+  color?: string;
+  lineHeight?: number;
+  align?: 'left' | 'center' | 'right';
+}
+
+export interface DesignAssetRef {
+  id: string;
+  type: 'image' | 'video' | 'svg' | 'icon' | 'html';
+  prompt?: string;
+  src?: string;
+  alt?: string;
+  fit?: 'cover' | 'contain' | 'fill';
+}
+
+export interface DesignNode {
+  id: string;
+  type: DesignNodeType;
+  name: string;
+  description?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  layout: DesignLayout;
+  style: DesignStyle;
+  typography?: DesignTypography;
+  text?: string;
+  assets?: DesignAssetRef[];
+  parentId?: string;
+  children?: DesignNode[];
+  componentType?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface DesignTheme {
+  colors: {
+    primary: string;
+    secondary: string;
+    accent: string;
+    background: string;
+    surface: string;
+    text: string;
+    textSecondary: string;
+    border: string;
+    error: string;
+    success: string;
+    [key: string]: string;
+  };
+  typography: {
+    fontFamily: string;
+    headingFamily?: string;
+    scale: number[];
+    lineHeight: number;
+    weights: { regular: number; medium: number; bold: number };
+  };
+  spacing: {
+    unit: number;
+    scale: number[];
+  };
+  radii: { sm: number; md: number; lg: number; full: number };
+  shadows: { sm: string; md: string; lg: string };
+}
+
+export interface SavedTheme {
+  id: string;
+  name: string;
+  theme: DesignTheme;
+  createdAt: number;
+}
+
+export interface DesignSpec {
+  id: string;
+  version: number;
+  name: string;
+  theme: DesignTheme;
+  rootNodes: DesignNode[];
+  assets: DesignAssetRef[];
+  themeLibrary?: SavedTheme[];
+  createdAt: number;
+  updatedAt: number;
 }

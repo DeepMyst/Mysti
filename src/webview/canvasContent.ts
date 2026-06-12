@@ -37,13 +37,14 @@ export function getCanvasContent(
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'none';
-             img-src ${webview.cspSource} data: blob:;
+             img-src ${webview.cspSource} data: blob: https:;
              media-src data: blob:;
              frame-src blob: data:;
              child-src blob: data:;
-             style-src 'unsafe-inline';
+             style-src 'unsafe-inline' https:;
              script-src 'nonce-${nonce}' 'unsafe-eval' ${webview.cspSource};
-             font-src ${webview.cspSource};">
+             font-src ${webview.cspSource} https: data:;
+             connect-src https: data:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mysti Canvas</title>
   <style nonce="${nonce}">
@@ -181,6 +182,57 @@ export function getCanvasContent(
     }
     .zoom-level:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1)); }
 
+    /* Zoom preset menu */
+    .zoom-preset-menu {
+      position: absolute; bottom: 36px; right: 0;
+      background: var(--vscode-editorWidget-background, rgba(30,30,30,0.98));
+      border: 1px solid var(--vscode-panel-border, #444);
+      border-radius: 6px; padding: 4px 0; z-index: 60;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4); min-width: 140px;
+      display: none;
+    }
+    .zoom-preset-menu.visible { display: block; }
+    .zoom-preset-item {
+      padding: 6px 16px; cursor: pointer; font-size: 12px;
+      color: var(--vscode-editor-foreground);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .zoom-preset-item:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.08)); }
+    .zoom-preset-shortcut {
+      color: var(--vscode-descriptionForeground); font-size: 11px; margin-left: 16px;
+    }
+    .zoom-preset-separator {
+      height: 1px; background: var(--vscode-panel-border, #444); margin: 4px 0;
+    }
+
+    /* Screen list panel */
+    .screen-list-panel {
+      position: absolute; top: 0; left: 0; width: 200px; height: 100%;
+      background: var(--vscode-editorWidget-background, rgba(30,30,30,0.95));
+      border-right: 1px solid var(--vscode-panel-border, #444);
+      z-index: 45; display: none; flex-direction: column; overflow: hidden;
+    }
+    .screen-list-panel.visible { display: flex; }
+    .screen-list-header {
+      padding: 8px 12px; font-size: 11px; font-weight: 600;
+      color: var(--vscode-descriptionForeground);
+      border-bottom: 1px solid var(--vscode-panel-border, #444);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .screen-list-body { flex: 1; overflow-y: auto; padding: 4px 0; }
+    .screen-list-item {
+      padding: 6px 12px; cursor: pointer; font-size: 12px;
+      color: var(--vscode-editor-foreground);
+      display: flex; align-items: center; gap: 8px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .screen-list-item:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06)); }
+    .screen-list-item.selected {
+      background: var(--vscode-list-activeSelectionBackground, rgba(55,148,255,0.15));
+      color: var(--vscode-list-activeSelectionForeground);
+    }
+    .screen-list-icon { width: 14px; text-align: center; opacity: 0.5; flex-shrink: 0; }
+
     /* Minimap */
     .minimap {
       position: absolute; bottom: 48px; right: 12px;
@@ -232,6 +284,17 @@ export function getCanvasContent(
       width: 100%; height: 100%; border: none;
     }
     .component-iframe-wrapper.hidden { display: none; }
+    .stitch-iframe-wrapper {
+      position: absolute; overflow: hidden;
+      pointer-events: none;
+      border-radius: 4px;
+      background: #fff;
+    }
+    .stitch-iframe-wrapper iframe {
+      border: none;
+      pointer-events: none;
+      transform-origin: 0 0;
+    }
 
     /* Status bar */
     .canvas-statusbar {
@@ -361,10 +424,12 @@ export function getCanvasContent(
       display: flex;
       flex: 1;
       overflow: hidden;
+      position: relative;
     }
     .actions-panel {
-      width: 0;
-      overflow: hidden;
+      width: 160px;
+      overflow-y: auto;
+      overflow-x: hidden;
       background: var(--vscode-sideBar-background, #252526);
       border-left: 1px solid var(--vscode-panel-border, #555);
       transition: width 0.2s ease;
@@ -372,7 +437,31 @@ export function getCanvasContent(
       display: flex;
       flex-direction: column;
     }
-    .actions-panel.visible { width: 160px; }
+    .actions-panel.collapsed { width: 0; overflow: hidden; }
+    .actions-panel-toggle {
+      position: absolute;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 20;
+      width: 16px;
+      height: 48px;
+      background: var(--vscode-sideBar-background, #252526);
+      border: 1px solid var(--vscode-panel-border, #555);
+      border-right: none;
+      border-radius: 4px 0 0 4px;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      padding: 0;
+      opacity: 0.7;
+      transition: opacity 0.15s;
+    }
+    .actions-panel-toggle:hover { opacity: 1; }
+    .actions-panel-toggle.panel-open { right: 160px; }
     .actions-panel-header {
       padding: 8px 12px;
       font-size: 11px;
@@ -401,6 +490,17 @@ export function getCanvasContent(
     .action-btn:hover { background: var(--vscode-list-hoverBackground); }
     .action-icon { width: 20px; text-align: center; flex-shrink: 0; }
     .actions-separator { height: 1px; background: var(--vscode-panel-border, #444); margin: 4px 12px; }
+    .actions-section-header {
+      padding: 6px 12px 2px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--vscode-sideBarSectionHeader-foreground, #888);
+      margin-top: 4px;
+      white-space: nowrap;
+    }
+    .actions-section-header:first-child { margin-top: 0; }
     .action-integrate { display: none; }
     .action-integrate.visible { display: flex; }
 
@@ -414,6 +514,75 @@ export function getCanvasContent(
       padding: 16px;
     }
     .frames-panel.visible { display: block; }
+    .assets-filter-bar {
+      display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap;
+    }
+    .asset-filter-btn {
+      padding: 4px 10px; border-radius: 12px; font-size: 11px;
+      border: 1px solid var(--vscode-widget-border, #444);
+      background: transparent; color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+    }
+    .asset-filter-btn:hover { background: var(--vscode-toolbar-hoverBackground, #333); }
+    .asset-filter-btn.active {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-color: var(--vscode-button-background);
+    }
+    .asset-card { position: relative; }
+    .asset-card .asset-type-badge {
+      position: absolute; top: 6px; right: 6px;
+      font-size: 9px; padding: 2px 6px; border-radius: 8px;
+      background: rgba(0,0,0,0.6); color: #fff; text-transform: uppercase;
+    }
+    .asset-card .asset-prompt-preview {
+      font-size: 10px; color: var(--vscode-descriptionForeground);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      padding: 0 8px 6px;
+    }
+    /* Themes panel */
+    .themes-toolbar { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--vscode-panel-border, #333); }
+    .themes-grid { display: grid; grid-template-columns: 1fr; gap: 8px; padding: 8px; overflow-y: auto; }
+    .theme-card {
+      background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border, #333);
+      border-radius: 6px; padding: 10px; cursor: pointer; transition: border-color 0.15s;
+    }
+    .theme-card.active { border-color: var(--vscode-button-background); border-width: 2px; }
+    .theme-card:hover { border-color: var(--vscode-focusBorder, #007fd4); }
+    .theme-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .theme-card-name { font-size: 12px; font-weight: 600; color: var(--vscode-foreground); }
+    .theme-card-actions { display: flex; gap: 4px; }
+    .theme-card-actions button {
+      background: none; border: none; cursor: pointer; color: var(--vscode-descriptionForeground);
+      font-size: 11px; padding: 2px 4px; border-radius: 3px;
+    }
+    .theme-card-actions button:hover { background: var(--vscode-toolbar-hoverBackground, #333); }
+    .theme-swatches { display: flex; gap: 3px; margin-bottom: 6px; }
+    .theme-swatch { width: 20px; height: 20px; border-radius: 4px; border: 1px solid rgba(128,128,128,0.3); }
+    .theme-card-meta { font-size: 10px; color: var(--vscode-descriptionForeground); }
+    .theme-editor {
+      position: absolute; inset: 0; z-index: 10; background: var(--vscode-editor-background);
+      display: flex; flex-direction: column;
+    }
+    .theme-editor-header {
+      display: flex; gap: 8px; padding: 8px; align-items: center;
+      border-bottom: 1px solid var(--vscode-panel-border, #333);
+    }
+    .theme-editor-input {
+      flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border, #444); padding: 4px 8px; border-radius: 4px; font-size: 12px;
+    }
+    .theme-editor-body { flex: 1; padding: 8px; overflow-y: auto; }
+    .theme-editor-footer { padding: 8px; border-top: 1px solid var(--vscode-panel-border, #333); }
+    .theme-color-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .theme-color-row label { flex: 1; font-size: 11px; color: var(--vscode-foreground); }
+    .theme-color-row input[type="color"] { width: 28px; height: 22px; border: none; cursor: pointer; background: none; padding: 0; }
+    .theme-color-row input[type="text"] {
+      width: 70px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border, #444); padding: 2px 6px; border-radius: 3px; font-size: 11px; font-family: monospace;
+    }
+    .theme-section-title { font-size: 11px; font-weight: 600; margin: 10px 0 6px; color: var(--vscode-descriptionForeground); text-transform: uppercase; }
+
     .frames-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -961,10 +1130,7 @@ export function getCanvasContent(
   <!-- Toolbar -->
   <div class="canvas-toolbar">
     <button class="tool-btn active" data-tool="select" title="Select (V)"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2l12 10-5.5 1.2L8 18z"/><path d="M10.5 13.2L14 18"/></svg></button>
-    <button class="tool-btn" data-tool="pencil" title="Pencil (P)"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3.5l3 3L7 16H4v-3z"/><path d="M11 6l3 3"/></svg></button>
     <button class="tool-btn" data-tool="text" title="Text (T)"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5V3h12v2"/><path d="M10 3v14"/><path d="M7 17h6"/></svg></button>
-    <button class="tool-btn" data-tool="comment" title="Comment (C)"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h14a1 1 0 011 1v8a1 1 0 01-1 1H8l-4 3v-3H3a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg></button>
-    <button class="tool-btn" data-tool="frame" title="Frame (F)"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="14" rx="1"/><path d="M3 7h14M3 13h14M7 3v14M13 3v14"/></svg></button>
     <button class="tool-btn" data-tool="image" title="Import Image (I)"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="16" height="14" rx="1"/><circle cx="7" cy="8" r="1.5"/><path d="M2 14l4-4 3 3 4-4 5 5"/></svg></button>
     <button class="tool-btn" data-tool="pan" title="Pan (Space)"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v10M7 5V3.5a1.5 1.5 0 013 0M13 5V3.5a1.5 1.5 0 00-3 0M7 5v7a1.5 1.5 0 01-3 0V9M13 5v7a1.5 1.5 0 003 0V9M7 12a5 5 0 005 5h0a5 5 0 005-5"/></svg></button>
     <div class="tool-separator"></div>
@@ -973,16 +1139,14 @@ export function getCanvasContent(
     <div class="tool-separator"></div>
     <label class="tool-label">Color</label>
     <input type="color" id="tool-color" class="tool-color-input" value="#ffffff">
-    <label class="tool-label">Size</label>
-    <input type="range" id="tool-size" class="tool-range" min="1" max="20" value="3">
   </div>
 
   <!-- Global tab bar -->
   <div class="canvas-global-tabs" id="canvas-global-tabs">
-    <button class="global-tab" id="tab-frames" data-tab="frames">Frames</button>
-    <button class="global-tab active" id="tab-image-video" data-tab="image">Image / Video</button>
-    <button class="global-tab" id="tab-svg" data-tab="svg">SVG</button>
-    <button class="global-tab" id="tab-components" data-tab="components">Components</button>
+    <button class="global-tab active" id="tab-design" data-tab="design">Design</button>
+    <button class="global-tab" id="tab-assets" data-tab="assets">Assets</button>
+    <button class="global-tab" id="tab-themes" data-tab="themes">Themes</button>
+    <button class="global-tab" id="tab-code" data-tab="code">Code</button>
   </div>
 
   <!-- Main row: canvas + collapsible actions panel -->
@@ -1009,9 +1173,31 @@ export function getCanvasContent(
     <!-- Zoom controls -->
     <div class="zoom-controls" id="zoom-controls">
       <button class="zoom-btn" id="btn-zoom-out" title="Zoom out (Ctrl+-)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8h10"/></svg></button>
-      <button class="zoom-level" id="zoom-level-btn" title="Double-click to reset">100%</button>
+      <button class="zoom-level" id="zoom-level-btn" title="Click for zoom presets">100%</button>
       <button class="zoom-btn" id="btn-zoom-in" title="Zoom in (Ctrl+=)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8h10M8 3v10"/></svg></button>
       <button class="zoom-btn" id="btn-zoom-fit" title="Zoom to fit (Ctrl+0)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg></button>
+      <span style="width:1px;height:16px;background:var(--vscode-widget-border,#444);margin:0 2px;"></span>
+      <button class="zoom-btn" id="btn-preview-toggle" title="Toggle Preview (Shift+P)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8s3-5 7-5 7 5 7 5-3 5-7 5-7-5-7-5z"/><circle cx="8" cy="8" r="2"/></svg></button>
+      <div class="zoom-preset-menu" id="zoom-preset-menu">
+        <div class="zoom-preset-item" data-zoom="0.25">25%</div>
+        <div class="zoom-preset-item" data-zoom="0.5">50%</div>
+        <div class="zoom-preset-item" data-zoom="0.75">75%</div>
+        <div class="zoom-preset-item" data-zoom="1">100%<span class="zoom-preset-shortcut">⌘1</span></div>
+        <div class="zoom-preset-item" data-zoom="1.5">150%</div>
+        <div class="zoom-preset-item" data-zoom="2">200%</div>
+        <div class="zoom-preset-separator"></div>
+        <div class="zoom-preset-item" data-zoom="fit">Zoom to fit<span class="zoom-preset-shortcut">⌘0</span></div>
+      </div>
+    </div>
+    <!-- Screen list panel -->
+    <div class="screen-list-panel" id="screen-list-panel">
+      <div class="screen-list-header">
+        <span>Screens</span>
+        <button class="zoom-btn" id="btn-close-screen-list" style="width:20px;height:20px;" title="Close (L)">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2l8 8M10 2l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="screen-list-body" id="screen-list-body"></div>
     </div>
     <!-- Tab placeholder overlay (positioned over selected frame when tab content missing) -->
     <div class="tab-placeholder-overlay" id="tab-placeholder-overlay">
@@ -1019,9 +1205,34 @@ export function getCanvasContent(
       <div class="tab-placeholder-label" id="tab-placeholder-label">No content</div>
       <button class="tab-placeholder-btn" id="tab-placeholder-btn">Generate</button>
     </div>
-    <!-- Frames panel (thumbnail grid, shown on Frames tab) -->
-    <div class="frames-panel" id="frames-panel">
-      <div class="frames-grid" id="frames-grid"></div>
+    <!-- Assets panel (unified asset library, shown on Assets tab) -->
+    <div class="frames-panel" id="assets-panel">
+      <div class="assets-filter-bar" id="assets-filter-bar">
+        <button class="asset-filter-btn active" data-filter="all">All</button>
+        <button class="asset-filter-btn" data-filter="image">Images</button>
+        <button class="asset-filter-btn" data-filter="video">Videos</button>
+        <button class="asset-filter-btn" data-filter="svg">SVGs</button>
+        <button class="asset-filter-btn" data-filter="icon">Icons</button>
+      </div>
+      <div class="frames-grid" id="assets-grid"></div>
+    </div>
+    <!-- Themes Panel -->
+    <div class="frames-panel" id="themes-panel">
+      <div class="themes-toolbar">
+        <button class="canvas-header-btn" id="btn-theme-generate">+ Generate</button>
+        <button class="canvas-header-btn" id="btn-theme-new">+ Blank</button>
+      </div>
+      <div class="themes-grid" id="themes-grid"></div>
+      <div class="theme-editor" id="theme-editor" style="display:none;">
+        <div class="theme-editor-header">
+          <input type="text" id="theme-editor-name" class="theme-editor-input" placeholder="Theme name" />
+          <button class="canvas-header-btn" id="btn-theme-editor-close">&times;</button>
+        </div>
+        <div class="theme-editor-body" id="theme-editor-body"></div>
+        <div class="theme-editor-footer">
+          <button class="canvas-header-btn primary" id="btn-theme-editor-save">Save</button>
+        </div>
+      </div>
     </div>
     <!-- Properties Panel -->
     <div id="props-panel" class="props-panel">
@@ -1035,18 +1246,24 @@ export function getCanvasContent(
       </div>
     </div>
   </div>
+  <!-- Actions panel toggle -->
+  <button class="actions-panel-toggle panel-open" id="actions-panel-toggle" title="Toggle actions panel">&#9654;</button>
   <!-- Collapsible right actions panel -->
   <div class="actions-panel" id="actions-panel">
-    <div class="actions-panel-header">Actions</div>
-    <button class="action-btn" id="action-generate" title="Generate image"><span class="action-icon">&#9998;</span> Generate Image</button>
-    <button class="action-btn" id="action-video" title="Generate video"><span class="action-icon">&#9654;</span> Generate Video</button>
-    <button class="action-btn" id="action-svg" title="Convert to SVG"><span class="action-icon">S</span> Convert to SVG</button>
-    <button class="action-btn" id="action-code" title="Generate component"><span class="action-icon">&lt;/&gt;</span> Generate Code</button>
-    <button class="action-btn" id="action-reimagine" title="Reimagine"><span class="action-icon">&#10024;</span> Reimagine</button>
-    <div class="actions-separator"></div>
+    <div class="actions-section-header">Design</div>
+    <button class="action-btn" id="action-generate-design" title="Generate a new design with AI"><span class="action-icon">&#127912;</span> Generate Design</button>
+    <button class="action-btn" id="action-reimagine" title="Edit screen with AI"><span class="action-icon">&#9998;</span> Edit Screen</button>
+    <button class="action-btn" id="action-theme" title="Apply or generate a theme"><span class="action-icon">&#127917;</span> Apply Theme</button>
+    <button class="action-btn" id="action-preview" title="Toggle Preview (Shift+P)"><span class="action-icon">&#128065;</span> Toggle Preview</button>
+    <div class="actions-section-header">Assets</div>
+    <button class="action-btn" id="action-generate" title="Generate image"><span class="action-icon">&#128444;</span> Generate Image</button>
+    <button class="action-btn" id="action-video" title="Generate video"><span class="action-icon">&#127916;</span> Generate Video</button>
+    <button class="action-btn" id="action-gen-assets" title="Generate all unresolved assets"><span class="action-icon">&#128230;</span> Generate All Assets</button>
+    <div class="actions-section-header">Code</div>
+    <button class="action-btn" id="action-code" title="Generate component code"><span class="action-icon">&lt;/&gt;</span> Generate Code</button>
     <button class="action-btn action-integrate" id="action-integrate" title="Integrate into project"><span class="action-icon">&#128204;</span> Integrate</button>
     <div class="actions-separator" id="element-actions-sep" style="display:none;"></div>
-    <button class="action-btn" id="action-edit-element" style="display:none;" title="Edit selected element with AI"><span class="action-icon">&#9998;</span> Edit Element</button>
+    <button class="action-btn" id="action-edit-element" style="display:none;" title="Edit element with AI"><span class="action-icon">&#9998;</span> Edit Element</button>
     <button class="action-btn" id="action-edit-layout" style="display:none;" title="Edit layout with AI"><span class="action-icon">&#9638;</span> Edit Layout</button>
   </div>
   </div><!-- end canvas-main-row -->
@@ -1154,7 +1371,7 @@ export function getCanvasContent(
     <div class="prompt-bar-context" id="prompt-bar-context"></div>
     <div class="prompt-bar-input-row">
       <input type="text" id="unified-prompt-input"
-             placeholder="Type a prompt, or /render, /generate, /reimagine, /video..."
+             placeholder="Type a prompt, or /design, /edit, /image, /code..."
              autocomplete="off" />
       <button class="prompt-bar-send" id="btn-unified-send">Send</button>
     </div>
@@ -1272,9 +1489,591 @@ export function getCanvasContent(
     var spaceDown = false;
     var canvasSessionId = null;
     var objectIdCounter = 0;
-    var isDrawingFrame = false;
-    var frameStartPoint = null;
-    var currentFrameRect = null;
+
+    // ====================================================================
+    // Design Spec — structured design hierarchy (Canvas v3)
+    // ====================================================================
+    var _designSpec = null;          // DesignSpec JSON — source of truth
+    var _nodeMap = {};               // { nodeId: { fabricObj, designNode } }
+    var _currentFrameScope = null;   // nodeId when zoomed into a frame
+    var _breadcrumbPath = [];        // array of nodeIds from root to current scope
+    var _previewMode = false;        // toggle: wireframe vs HTML preview overlays
+
+    function _registerDesignNode(fabricObj, designNode) {
+      fabricObj._designNode = designNode;
+      _nodeMap[designNode.id] = { fabricObj: fabricObj, designNode: designNode };
+    }
+
+    function _unregisterDesignNode(nodeId) {
+      var entry = _nodeMap[nodeId];
+      if (entry && entry.fabricObj) {
+        delete entry.fabricObj._designNode;
+      }
+      delete _nodeMap[nodeId];
+    }
+
+    function _getChildNodes(parentId) {
+      if (!_designSpec) return [];
+      var results = [];
+      function walk(nodes) {
+        for (var i = 0; i < nodes.length; i++) {
+          if (nodes[i].parentId === parentId) { results.push(nodes[i]); }
+          if (nodes[i].children) { walk(nodes[i].children); }
+        }
+      }
+      walk(_designSpec.rootNodes);
+      return results;
+    }
+
+    function _getAllDescendantNodes(parentId) {
+      var descendants = [];
+      var directChildren = _getChildNodes(parentId);
+      for (var i = 0; i < directChildren.length; i++) {
+        descendants.push(directChildren[i]);
+        var sub = _getAllDescendantNodes(directChildren[i].id);
+        for (var j = 0; j < sub.length; j++) { descendants.push(sub[j]); }
+      }
+      return descendants;
+    }
+
+    function _getFrameBoundingBox(obj) {
+      // Compute union bounding box of a root frame and all its descendant fabric objects
+      var left = obj.left;
+      var top = obj.top;
+      var right = left + (obj.width * (obj.scaleX || 1));
+      var bottom = top + (obj.height * (obj.scaleY || 1));
+
+      if (obj._designNode) {
+        var descendants = _getAllDescendantNodes(obj._designNode.id);
+        for (var i = 0; i < descendants.length; i++) {
+          var entry = _nodeMap[descendants[i].id];
+          if (entry && entry.fabricObj) {
+            var fo = entry.fabricObj;
+            var foLeft = fo.left;
+            var foTop = fo.top;
+            var foRight = foLeft + (fo.width * (fo.scaleX || 1));
+            var foBottom = foTop + (fo.height * (fo.scaleY || 1));
+            if (foLeft < left) left = foLeft;
+            if (foTop < top) top = foTop;
+            if (foRight > right) right = foRight;
+            if (foBottom > bottom) bottom = foBottom;
+          }
+        }
+      }
+      return { left: left, top: top, width: right - left, height: bottom - top };
+    }
+
+    function _syncChildPositions(parentId, deltaX, deltaY) {
+      var children = _getChildNodes(parentId);
+      children.forEach(function(child) {
+        var entry = _nodeMap[child.id];
+        if (entry && entry.fabricObj) {
+          entry.fabricObj.set({
+            left: entry.fabricObj.left + deltaX,
+            top: entry.fabricObj.top + deltaY
+          });
+          entry.fabricObj.setCoords();
+        }
+        _syncChildPositions(child.id, deltaX, deltaY);
+      });
+    }
+
+    function _renderDesignTree(nodes, theme) {
+      // Clear existing design nodes from canvas
+      Object.keys(_nodeMap).forEach(function(id) {
+        var entry = _nodeMap[id];
+        if (entry && entry.fabricObj) {
+          canvas.remove(entry.fabricObj);
+          if (entry.fabricObj._contentText) { canvas.remove(entry.fabricObj._contentText); }
+          if (entry.fabricObj._typeBadge) { canvas.remove(entry.fabricObj._typeBadge); }
+          if (entry.fabricObj._assetPlaceholders) {
+            entry.fabricObj._assetPlaceholders.forEach(function(p) { canvas.remove(p); });
+          }
+        }
+      });
+      _nodeMap = {};
+
+      // Recursively create fabric rects for each node
+      function renderNode(node, parentOffset, depth) {
+        var absX = parentOffset.x + node.x;
+        var absY = parentOffset.y + node.y;
+
+        // Border color varies by depth — fully opaque for visibility
+        var borderColors = ['#3B82F6', '#8B5CF6', '#F59E0B', '#10B981', '#EF4444'];
+        var borderColor = borderColors[depth % borderColors.length];
+
+        // Resolve background from theme
+        var bgColor = 'transparent';
+        if (node.style && node.style.background) {
+          var bg = node.style.background;
+          if (theme && theme.colors && theme.colors[bg]) {
+            bgColor = theme.colors[bg];
+          } else if (bg.startsWith('#') || bg.startsWith('rgb')) {
+            bgColor = bg;
+          }
+        }
+
+        // Fill: use resolved bg or a subtle tint from border color
+        var fillAlphas = [0.08, 0.06, 0.05, 0.04, 0.03];
+        var fillAlpha = fillAlphas[Math.min(depth, fillAlphas.length - 1)];
+        var fillColor = bgColor !== 'transparent' ? bgColor : _hexToRgba(borderColor, fillAlpha);
+
+        var rect = new fabric.Rect(Object.assign({}, controlStyle, {
+          left: absX,
+          top: absY,
+          width: node.width,
+          height: node.height,
+          fill: fillColor,
+          stroke: borderColor,
+          strokeWidth: depth === 0 ? 2 : 1,
+          opacity: 1,
+          rx: (node.style && node.style.radius) || 0,
+          ry: (node.style && node.style.radius) || 0,
+          selectable: true,
+          hasControls: true,
+          lockRotation: true,
+        }));
+
+        rect.label = node.name;
+        rect.description = node.description || '';
+        rect.nodeType = node.type;
+        rect.id = node.id || 'node-' + (++objectIdCounter);
+
+        _registerDesignNode(rect, node);
+        canvas.add(rect);
+        // Labels are now rendered in after:render (no separate objects needed)
+
+        // Render text content
+        if (node.text) {
+          var typo = node.typography || {};
+          var textFontSize = typo.size || 14;
+          var textWeight = typo.weight || 400;
+          var textColor = 'rgba(220,220,220,0.9)';
+          if (typo.color && theme && theme.colors && theme.colors[typo.color]) {
+            textColor = theme.colors[typo.color];
+          } else if (typo.color && (typo.color.startsWith('#') || typo.color.startsWith('rgb'))) {
+            textColor = typo.color;
+          }
+          var textAlign = typo.align || 'left';
+          var labelH = 16;
+          var textObj = new fabric.Textbox(node.text, {
+            left: absX + 8,
+            top: absY + labelH,
+            width: node.width - 16,
+            fontSize: textFontSize,
+            fontWeight: String(textWeight),
+            fill: textColor,
+            fontFamily: typo.family || (theme && theme.typography ? theme.typography.fontFamily : '') || 'system-ui, sans-serif',
+            textAlign: textAlign,
+            selectable: false,
+            evented: false,
+            _isFrameLabel: true,
+            splitByGrapheme: false,
+          });
+          rect._contentText = textObj;
+          canvas.add(textObj);
+        }
+
+        // Render asset placeholders (or live HTML iframes for Stitch screens)
+        if (node.assets && node.assets.length) {
+          rect._assetPlaceholders = [];
+          var assetY = absY + (node.text ? 40 : 20);
+
+          // Check if this is a Stitch node with HTML — prefer live iframe over screenshot
+          var htmlAsset = null;
+          var imageAsset = null;
+          for (var ai = 0; ai < node.assets.length; ai++) {
+            if (node.assets[ai].type === 'html' && node.assets[ai].src) { htmlAsset = node.assets[ai]; }
+            if (node.assets[ai].type === 'image' && node.assets[ai].src && node.assets[ai].src.indexOf('data:image/') === 0) { imageAsset = node.assets[ai]; }
+          }
+
+          if (htmlAsset && node.metadata && node.metadata.engine === 'stitch') {
+            // Store Stitch ref on fabric object for editing commands
+            rect._stitchScreenRef = {
+              projectId: node.metadata.stitchProjectId,
+              screenId: node.metadata.stitchScreenId,
+              htmlContent: htmlAsset.src,
+              imageBase64: imageAsset ? imageAsset.src.replace(new RegExp('^data:image/[a-z]+;base64,'), '') : undefined,
+            };
+
+            // Make the fabric rect nearly invisible but still selectable (fabric needs some fill for hit detection)
+            rect.set({ fill: 'rgba(255,255,255,0.01)', stroke: 'rgba(59,130,246,0.3)', strokeWidth: 1, opacity: 1 });
+
+            // Render live HTML iframe overlay for full-resolution display
+            _createStitchIframe(rect, htmlAsset.src, node.width, node.height);
+
+            // Also render the screenshot as a low-opacity fallback (visible when iframe is loading)
+            if (imageAsset) {
+              var fallbackImg = new Image();
+              fallbackImg.onload = function() {
+                var fImg = new fabric.Image(fallbackImg, {
+                  left: absX,
+                  top: absY,
+                  scaleX: node.width / fallbackImg.width,
+                  scaleY: node.height / fallbackImg.height,
+                  selectable: false,
+                  evented: false,
+                  _isFrameLabel: true,
+                  opacity: 0.15,
+                });
+                canvas.add(fImg);
+                rect._assetPlaceholders.push(fImg);
+                canvas.renderAll();
+              };
+              fallbackImg.src = imageAsset.src;
+            }
+          } else {
+            // Non-Stitch nodes: render assets normally
+            node.assets.forEach(function(asset) {
+            // For image assets with inline data, render actual image
+            if (asset.type === 'image' && asset.src && asset.src.indexOf('data:image/') === 0) {
+              var imgEl = new Image();
+              imgEl.onload = function() {
+                var scaleX = node.width / imgEl.width;
+                var scaleY = node.height / imgEl.height;
+                var scale = Math.min(scaleX, scaleY);
+                var fImg = new fabric.Image(imgEl, {
+                  left: absX,
+                  top: absY,
+                  scaleX: scale,
+                  scaleY: scale,
+                  selectable: false,
+                  evented: false,
+                  _isFrameLabel: true,
+                });
+                canvas.add(fImg);
+                rect._assetPlaceholders.push(fImg);
+                canvas.renderAll();
+                zoomToFit();
+              };
+              imgEl.onerror = function() {
+                console.error('[Mysti Canvas] Failed to load screenshot image');
+                var errPh = new fabric.Rect({
+                  left: absX + 8, top: assetY, width: node.width - 16, height: Math.min(80, node.height * 0.4),
+                  fill: 'rgba(255,80,80,0.15)', stroke: 'rgba(255,80,80,0.3)', strokeWidth: 1,
+                  strokeDashArray: [4, 4], rx: 4, ry: 4,
+                  selectable: false, evented: false, _isFrameLabel: true,
+                });
+                canvas.add(errPh);
+                rect._assetPlaceholders.push(errPh);
+                canvas.renderAll();
+              };
+              imgEl.src = asset.src;
+              return; // Skip the placeholder rendering
+            }
+            // Skip HTML assets (rendered via iframe for Stitch, unused for others)
+            if (asset.type === 'html') { return; }
+
+            var phH = Math.min(80, node.height * 0.4);
+            var phW = node.width - 16;
+            var ph = new fabric.Rect({
+              left: absX + 8,
+              top: assetY,
+              width: phW,
+              height: phH,
+              fill: 'rgba(100,100,100,0.15)',
+              stroke: 'rgba(150,150,150,0.3)',
+              strokeWidth: 1,
+              strokeDashArray: [4, 4],
+              rx: 4, ry: 4,
+              selectable: false,
+              evented: false,
+              _isFrameLabel: true,
+            });
+            canvas.add(ph);
+            var iconMap = { image: '\uD83D\uDDBC', video: '\uD83C\uDFAC', svg: '\u25C7', icon: '\u2605' };
+            var phLabel = (iconMap[asset.type] || '\uD83D\uDCCE') + ' ' + (asset.alt || asset.prompt || asset.type);
+            var phText = new fabric.Text(phLabel, {
+              left: absX + 8 + phW / 2,
+              top: assetY + phH / 2,
+              originX: 'center',
+              originY: 'center',
+              fontSize: 11,
+              fill: 'rgba(180,180,180,0.7)',
+              fontFamily: 'system-ui, sans-serif',
+              selectable: false,
+              evented: false,
+              _isFrameLabel: true,
+            });
+            canvas.add(phText);
+            rect._assetPlaceholders.push(ph, phText);
+            assetY += phH + 8;
+          }); // end forEach
+          } // end else (non-Stitch)
+        }
+
+        // Component type badge
+        if (node.componentType) {
+          var badge = new fabric.Text(node.componentType, {
+            left: absX + node.width - 4,
+            top: absY + 2,
+            originX: 'right',
+            originY: 'top',
+            fontSize: 9,
+            fill: 'rgba(150,180,255,0.7)',
+            fontFamily: 'system-ui, sans-serif',
+            selectable: false,
+            evented: false,
+            _isFrameLabel: true,
+          });
+          rect._typeBadge = badge;
+          canvas.add(badge);
+        }
+
+        // Render children
+        if (node.children) {
+          node.children.forEach(function(child) {
+            renderNode(child, { x: absX, y: absY }, depth + 1);
+          });
+        }
+      }
+
+      nodes.forEach(function(node) {
+        renderNode(node, { x: 0, y: 0 }, 0);
+      });
+
+      canvas.renderAll();
+    }
+
+    function _updateBreadcrumb(nodeId) {
+      _breadcrumbPath = [];
+      if (!_designSpec || !nodeId) return;
+      // Walk up ancestors
+      function findAncestors(nodes, targetId, path) {
+        for (var i = 0; i < nodes.length; i++) {
+          if (nodes[i].id === targetId) {
+            path.push(nodes[i].id);
+            return true;
+          }
+          if (nodes[i].children) {
+            path.push(nodes[i].id);
+            if (findAncestors(nodes[i].children, targetId, path)) return true;
+            path.pop();
+          }
+        }
+        return false;
+      }
+      findAncestors(_designSpec.rootNodes, nodeId, _breadcrumbPath);
+    }
+
+    function _getDefaultTheme() {
+      return {
+        colors: {
+          primary: '#3B82F6', secondary: '#6366F1', accent: '#F59E0B',
+          background: '#FFFFFF', surface: '#F9FAFB',
+          text: '#111827', textSecondary: '#6B7280', border: '#E5E7EB',
+          error: '#EF4444', success: '#10B981'
+        },
+        typography: {
+          fontFamily: 'Inter, system-ui, sans-serif',
+          scale: [12, 14, 16, 20, 24, 32, 48],
+          lineHeight: 1.5,
+          weights: { regular: 400, medium: 500, bold: 700 }
+        },
+        spacing: { unit: 4, scale: [1, 2, 3, 4, 6, 8, 12, 16] },
+        radii: { sm: 4, md: 8, lg: 16, full: 9999 },
+        shadows: {
+          sm: '0 1px 2px rgba(0,0,0,0.05)',
+          md: '0 4px 6px rgba(0,0,0,0.1)',
+          lg: '0 10px 15px rgba(0,0,0,0.1)'
+        }
+      };
+    }
+
+    // ====================================================================
+    // Preview Rendering — DesignNode → styled HTML overlays
+    // ====================================================================
+    var _previewOverlays = {}; // nodeId -> { div, designNode }
+
+    function _togglePreviewMode() {
+      _previewMode = !_previewMode;
+      var btn = document.getElementById('btn-preview-toggle');
+      if (btn) { btn.style.color = _previewMode ? 'var(--vscode-button-background)' : ''; }
+      if (_previewMode) {
+        _showPreviewOverlays();
+      } else {
+        _hidePreviewOverlays();
+      }
+    }
+
+    function _showPreviewOverlays() {
+      _hidePreviewOverlays();
+      if (!_designSpec) return;
+      var theme = _designSpec.theme;
+
+      // Only create overlays for top-level page nodes (they contain everything)
+      _designSpec.rootNodes.forEach(function(rootNode) {
+        var entry = _nodeMap[rootNode.id];
+        if (!entry || !entry.fabricObj) return;
+        _createPreviewOverlay(rootNode, entry.fabricObj, theme);
+      });
+    }
+
+    function _hidePreviewOverlays() {
+      Object.keys(_previewOverlays).forEach(function(id) {
+        var ov = _previewOverlays[id];
+        if (ov.div && ov.div.parentNode) { ov.div.parentNode.removeChild(ov.div); }
+      });
+      _previewOverlays = {};
+    }
+
+    function _createPreviewOverlay(node, fabricObj, theme) {
+      var div = document.createElement('div');
+      div.style.cssText = 'position:absolute;z-index:85;pointer-events:none;overflow:hidden;';
+      div.innerHTML = _designNodeToHtml(node, theme);
+
+      var container = document.getElementById('iframe-overlay-container');
+      if (container) { container.appendChild(div); }
+
+      _previewOverlays[node.id] = { div: div, designNode: node };
+      _syncPreviewOverlayPosition(node.id, fabricObj);
+    }
+
+    function _syncPreviewOverlayPosition(nodeId, fabricObj) {
+      var ov = _previewOverlays[nodeId];
+      if (!ov || !ov.div) return;
+      var zoom = canvas.getZoom();
+      var vpt = canvas.viewportTransform;
+      var left = fabricObj.left * zoom + vpt[4];
+      var top = fabricObj.top * zoom + vpt[5];
+      var width = fabricObj.width * fabricObj.scaleX * zoom;
+      var height = fabricObj.height * fabricObj.scaleY * zoom;
+      ov.div.style.left = left + 'px';
+      ov.div.style.top = top + 'px';
+      ov.div.style.width = width + 'px';
+      ov.div.style.height = height + 'px';
+      ov.div.style.transform = 'scale(1)';
+    }
+
+    function _syncAllPreviewOverlays() {
+      Object.keys(_previewOverlays).forEach(function(id) {
+        var entry = _nodeMap[id];
+        if (entry && entry.fabricObj) { _syncPreviewOverlayPosition(id, entry.fabricObj); }
+      });
+    }
+
+    function _hexToRgba(hex, alpha) {
+      var r = parseInt(hex.slice(1, 3), 16);
+      var g = parseInt(hex.slice(3, 5), 16);
+      var b = parseInt(hex.slice(5, 7), 16);
+      return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+    }
+
+    function _escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function _designNodeToHtml(node, theme) {
+      var style = _resolveNodeCss(node, theme);
+      var html = '<div style="' + style + '">';
+
+      // Text content
+      if (node.text) {
+        var typoStyle = _resolveTypoCss(node.typography, theme);
+        html += '<span style="' + typoStyle + '">' + _escapeHtml(node.text) + '</span>';
+      }
+
+      // Assets
+      if (node.assets) {
+        node.assets.forEach(function(asset) {
+          if (asset.src) {
+            if (asset.type === 'video') {
+              html += '<video src="' + asset.src + '" autoplay muted loop style="width:100%;object-fit:' + (asset.fit || 'cover') + ';"></video>';
+            } else {
+              html += '<img src="' + asset.src + '" alt="' + _escapeHtml(asset.alt || '') + '" style="width:100%;object-fit:' + (asset.fit || 'cover') + ';" />';
+            }
+          } else {
+            html += '<div style="background:#e5e7eb;display:flex;align-items:center;justify-content:center;padding:8px;color:#6b7280;font-size:11px;border-radius:4px;min-height:40px;">' + _escapeHtml(asset.alt || asset.prompt || asset.type) + '</div>';
+          }
+        });
+      }
+
+      // Children
+      if (node.children) {
+        node.children.forEach(function(child) {
+          html += _designNodeToHtml(child, theme);
+        });
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    function _resolveNodeCss(node, theme) {
+      var parts = [];
+      var l = node.layout || {};
+      var s = node.style || {};
+
+      // Layout
+      parts.push('display:' + (l.display || 'flex'));
+      if (l.display === 'flex') {
+        parts.push('flex-direction:' + (l.direction || 'column'));
+        if (l.wrap) parts.push('flex-wrap:wrap');
+      }
+      if (l.display === 'grid' && l.gridCols) {
+        parts.push('grid-template-columns:repeat(' + l.gridCols + ',1fr)');
+      }
+      if (l.gap !== undefined) parts.push('gap:' + l.gap + 'px');
+      if (l.padding !== undefined) {
+        if (Array.isArray(l.padding)) {
+          parts.push('padding:' + l.padding.map(function(p) { return p + 'px'; }).join(' '));
+        } else {
+          parts.push('padding:' + l.padding + 'px');
+        }
+      }
+      var alignMap = { start: 'flex-start', end: 'flex-end', center: 'center', stretch: 'stretch' };
+      var justifyMap = { start: 'flex-start', end: 'flex-end', center: 'center', between: 'space-between', around: 'space-around' };
+      if (l.align) parts.push('align-items:' + (alignMap[l.align] || l.align));
+      if (l.justify) parts.push('justify-content:' + (justifyMap[l.justify] || l.justify));
+
+      // Style
+      if (s.background) parts.push('background-color:' + _resolveThemeToken(s.background, theme));
+      if (s.radius !== undefined) parts.push('border-radius:' + s.radius + 'px');
+      if (s.shadow) parts.push('box-shadow:' + _resolveThemeToken(s.shadow, theme));
+      if (s.opacity !== undefined) parts.push('opacity:' + s.opacity);
+      if (s.overflow) parts.push('overflow:' + s.overflow);
+      if (s.border) parts.push('border:' + s.border.width + 'px ' + s.border.style + ' ' + _resolveThemeToken(s.border.color, theme));
+
+      // Size — use 100% relative to parent
+      parts.push('width:100%');
+      parts.push('box-sizing:border-box');
+
+      return parts.join(';');
+    }
+
+    function _resolveTypoCss(typo, theme) {
+      if (!typo) return '';
+      var parts = [];
+      if (typo.family) parts.push('font-family:' + typo.family);
+      else if (theme && theme.typography && theme.typography.fontFamily) parts.push('font-family:' + theme.typography.fontFamily);
+      if (typo.size) parts.push('font-size:' + typo.size + 'px');
+      if (typo.weight) parts.push('font-weight:' + typo.weight);
+      if (typo.color) parts.push('color:' + _resolveThemeToken(typo.color, theme));
+      if (typo.lineHeight) parts.push('line-height:' + typo.lineHeight);
+      if (typo.align) parts.push('text-align:' + typo.align);
+      return parts.join(';');
+    }
+
+    function _collectAssetsFromNodes(nodes) {
+      nodes.forEach(function(node) {
+        if (node.assets) {
+          node.assets.forEach(function(asset) {
+            if (!_designAssets.find(function(a) { return a.id === asset.id; })) {
+              _designAssets.push(asset);
+            }
+          });
+        }
+        if (node.children) { _collectAssetsFromNodes(node.children); }
+      });
+    }
+
+    function _resolveThemeToken(value, theme) {
+      if (!value || !theme) return value;
+      if (theme.colors && theme.colors[value]) return theme.colors[value];
+      if (theme.shadows && theme.shadows[value]) return theme.shadows[value];
+      return value;
+    }
 
     // Undo/Redo
     var undoStack = [];
@@ -1290,6 +2089,9 @@ export function getCanvasContent(
     var panVelocity = { x: 0, y: 0 };
     var lastPanTime = 0;
     var inertiaFrame = null;
+
+    // Touch/pinch state
+    var _touchState = { active: false, lastDist: 0, lastCenter: null };
 
     // Minimap
     var minimapVisible = true;
@@ -1311,24 +2113,15 @@ export function getCanvasContent(
       var activeBtn = document.querySelector('.tool-btn[data-tool="' + tool + '"]');
       if (activeBtn) { activeBtn.classList.add('active'); }
 
-      canvas.isDrawingMode = (tool === 'pencil');
+      canvas.isDrawingMode = false;
       canvas.selection = (tool === 'select');
       canvas.defaultCursor = (tool === 'pan') ? 'grab' : 'default';
-
-      if (tool === 'pencil') {
-        canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
-        canvas.freeDrawingBrush.color = document.getElementById('tool-color').value;
-        canvas.freeDrawingBrush.width = parseInt(document.getElementById('tool-size').value);
-      }
 
       document.getElementById('status-tool').textContent = tool.charAt(0).toUpperCase() + tool.slice(1);
     }
 
-    // Color and size controls
+    // Color control
     document.getElementById('tool-color').addEventListener('input', function(e) {
-      if (canvas.freeDrawingBrush) {
-        canvas.freeDrawingBrush.color = e.target.value;
-      }
       // Update selected object color
       var active = canvas.getActiveObject();
       if (active) {
@@ -1339,12 +2132,6 @@ export function getCanvasContent(
         }
         canvas.renderAll();
         autoSave();
-      }
-    });
-
-    document.getElementById('tool-size').addEventListener('input', function(e) {
-      if (canvas.freeDrawingBrush) {
-        canvas.freeDrawingBrush.width = parseInt(e.target.value);
       }
     });
 
@@ -1364,6 +2151,28 @@ export function getCanvasContent(
         canvas.selection = false;
         opt.e.preventDefault();
         return;
+      }
+
+      // Shift+click multi-select (Figma-style)
+      if (opt.e && opt.e.shiftKey && opt.target && currentTool === 'select' && !opt.target._isFrameLabel) {
+        var activeObj = canvas.getActiveObject();
+        if (activeObj && activeObj !== opt.target) {
+          if (activeObj.type === 'activeselection') {
+            var selObjs = activeObj.getObjects();
+            if (selObjs.indexOf(opt.target) >= 0) {
+              activeObj.removeWithUpdate(opt.target);
+            } else {
+              activeObj.addWithUpdate(opt.target);
+            }
+            canvas.requestRenderAll();
+          } else {
+            var sel = new fabric.ActiveSelection([activeObj, opt.target], { canvas: canvas });
+            canvas.setActiveObject(sel);
+            canvas.requestRenderAll();
+          }
+          opt.e.preventDefault();
+          return;
+        }
       }
 
       // Text tool: place text on click
@@ -1392,72 +2201,6 @@ export function getCanvasContent(
         canvas.setActiveObject(text);
         autoSave();
         setTimeout(function() { text.enterEditing(); canvas.renderAll(); }, 0);
-        return;
-      }
-
-      // Comment tool: place sticky note (flat Rect + Textbox)
-      if (currentTool === 'comment') {
-        // If clicking existing IText/Textbox, switch to select and defer editing
-        if (opt.target && (opt.target.type === 'i-text' || opt.target.type === 'textbox')) {
-          var editTarget = opt.target;
-          setTool('select');
-          setTimeout(function() { editTarget.enterEditing(); canvas.renderAll(); }, 0);
-          return;
-        }
-        setTool('select'); // Switch FIRST
-        var pointer = canvas.getViewportPoint(opt.e);
-        var commentId = 'comment-' + (++objectIdCounter);
-        var commentBg = new fabric.Rect({
-          left: pointer.x,
-          top: pointer.y,
-          width: 150,
-          height: 60,
-          fill: '#ffd54f',
-          rx: 4,
-          ry: 4,
-          selectable: false,
-          evented: false,
-          id: commentId + '-bg',
-          shadow: new fabric.Shadow({ color: 'rgba(0,0,0,0.2)', blur: 4, offsetX: 1, offsetY: 1 }),
-        });
-        var commentText = new fabric.Textbox('Comment', Object.assign({}, controlStyle, {
-          left: pointer.x + 8,
-          top: pointer.y + 8,
-          width: 134,
-          fontSize: 12,
-          fill: '#1e1e1e',
-          fontFamily: resolvedFont,
-          id: commentId,
-          editable: true,
-          selectable: true,
-          _commentBgId: commentId + '-bg',
-        }));
-        canvas.add(commentBg);
-        canvas.add(commentText);
-        canvas.setActiveObject(commentText);
-        autoSave();
-        setTimeout(function() { commentText.enterEditing(); canvas.renderAll(); }, 0);
-        return;
-      }
-
-      // Frame tool: start drawing frame
-      if (currentTool === 'frame' && !opt.target) {
-        isDrawingFrame = true;
-        frameStartPoint = canvas.getViewportPoint(opt.e);
-        currentFrameRect = new fabric.Rect(Object.assign({}, controlStyle, {
-          left: frameStartPoint.x,
-          top: frameStartPoint.y,
-          width: 0,
-          height: 0,
-          fill: 'rgba(100, 149, 237, 0.05)',
-          stroke: 'rgba(100, 149, 237, 0.6)',
-          strokeWidth: 2,
-          strokeDashArray: [8, 4],
-          selectable: true,
-          id: 'frame-' + (++objectIdCounter),
-          label: 'Frame',
-        }));
-        canvas.add(currentFrameRect);
         return;
       }
 
@@ -1524,16 +2267,6 @@ export function getCanvasContent(
         return;
       }
 
-      // Frame drawing
-      if (isDrawingFrame && currentFrameRect && frameStartPoint) {
-        var pointer = canvas.getViewportPoint(opt.e);
-        var left = Math.min(frameStartPoint.x, pointer.x);
-        var top = Math.min(frameStartPoint.y, pointer.y);
-        var width = Math.abs(pointer.x - frameStartPoint.x);
-        var height = Math.abs(pointer.y - frameStartPoint.y);
-        currentFrameRect.set({ left: left, top: top, width: width, height: height });
-        canvas.renderAll();
-      }
     });
 
     canvas.on('mouse:up', function() {
@@ -1558,18 +2291,6 @@ export function getCanvasContent(
         return;
       }
 
-      if (isDrawingFrame) {
-        isDrawingFrame = false;
-        if (currentFrameRect && currentFrameRect.width < 10 && currentFrameRect.height < 10) {
-          canvas.remove(currentFrameRect);
-        } else {
-          canvas.setActiveObject(currentFrameRect);
-          autoSave();
-        }
-        currentFrameRect = null;
-        frameStartPoint = null;
-        setTool('select');
-      }
     });
 
     // ====================================================================
@@ -1605,11 +2326,17 @@ export function getCanvasContent(
         updateZoomDisplay(1);
         return;
       }
+      // Use aCoords for accurate world-space bounds
       var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       objects.forEach(function(obj) {
-        var b = obj.getBoundingRect();
-        minX = Math.min(minX, b.left); minY = Math.min(minY, b.top);
-        maxX = Math.max(maxX, b.left + b.width); maxY = Math.max(maxY, b.top + b.height);
+        var coords = obj.aCoords || obj.calcACoords();
+        if (!coords) return;
+        var xs = [coords.tl.x, coords.tr.x, coords.bl.x, coords.br.x];
+        var ys = [coords.tl.y, coords.tr.y, coords.bl.y, coords.br.y];
+        minX = Math.min(minX, Math.min.apply(null, xs));
+        minY = Math.min(minY, Math.min.apply(null, ys));
+        maxX = Math.max(maxX, Math.max.apply(null, xs));
+        maxY = Math.max(maxY, Math.max.apply(null, ys));
       });
       var pad = 60;
       var zoom = Math.min(
@@ -1624,15 +2351,83 @@ export function getCanvasContent(
       _debouncedSyncAllIframes();
     }
 
-    // Zoom with mouse wheel (smooth)
+    // Zoom/Pan with mouse wheel — Figma model:
+    // Bare scroll = pan, Ctrl/Cmd+scroll = zoom, Shift+scroll = horizontal pan
+    // Browsers set ctrlKey=true for trackpad pinch gestures, so pinch-to-zoom works automatically
     canvas.on('mouse:wheel', function(opt) {
-      var delta = opt.e.deltaY;
+      var e = opt.e;
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.ctrlKey || e.metaKey) {
+        // ZOOM: Ctrl+scroll or pinch-to-zoom — instant (no animation) for responsiveness
+        var zoom = canvas.getZoom();
+        // Normalize: mouse wheel sends large deltaY (~100), trackpad pinch sends small (~1-5)
+        var delta = e.deltaY;
+        if (Math.abs(delta) > 10) delta = delta / 25; // normalize mouse wheel
+        var newZoom = Math.max(0.1, Math.min(5, zoom * Math.pow(0.93, delta)));
+        canvas.zoomToPoint(new fabric.Point(e.offsetX, e.offsetY), newZoom);
+        updateZoomDisplay(newZoom);
+        _debouncedSyncAllIframes();
+      } else {
+        // PAN: bare scroll
+        if (inertiaFrame) { cancelAnimationFrame(inertiaFrame); inertiaFrame = null; }
+        var vpt = canvas.viewportTransform.slice();
+        if (e.shiftKey) {
+          vpt[4] -= e.deltaY; // Shift+scroll = horizontal pan
+        } else {
+          vpt[4] -= e.deltaX;
+          vpt[5] -= e.deltaY;
+        }
+        canvas.setViewportTransform(vpt);
+        updateZoomDisplay(canvas.getZoom());
+        _debouncedSyncAllIframes();
+      }
+    });
+
+    // Pinch-to-zoom (touch events for tablets/touch screens)
+    canvasArea.addEventListener('touchstart', function(e) {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        var t1 = e.touches[0], t2 = e.touches[1];
+        _touchState.active = true;
+        _touchState.lastDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+        _touchState.lastCenter = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+      }
+    }, { passive: false });
+
+    canvasArea.addEventListener('touchmove', function(e) {
+      if (!_touchState.active || e.touches.length !== 2) return;
+      e.preventDefault();
+      var t1 = e.touches[0], t2 = e.touches[1];
+      var dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+      var center = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+
+      // Zoom based on pinch distance change
+      var zoomFactor = dist / _touchState.lastDist;
+      var rect = canvasArea.getBoundingClientRect();
+      var pointX = center.x - rect.left;
+      var pointY = center.y - rect.top;
       var zoom = canvas.getZoom();
-      var newZoom = zoom * (0.999 ** delta);
-      smoothZoomTo(newZoom, opt.e.offsetX, opt.e.offsetY);
+      var newZoom = Math.max(0.1, Math.min(5, zoom * zoomFactor));
+      canvas.zoomToPoint(new fabric.Point(pointX, pointY), newZoom);
+
+      // Pan based on center movement
+      var dx = center.x - _touchState.lastCenter.x;
+      var dy = center.y - _touchState.lastCenter.y;
+      var vpt = canvas.viewportTransform.slice();
+      vpt[4] += dx;
+      vpt[5] += dy;
+      canvas.setViewportTransform(vpt);
+
+      _touchState.lastDist = dist;
+      _touchState.lastCenter = center;
+      updateZoomDisplay(canvas.getZoom());
       _debouncedSyncAllIframes();
-      opt.e.preventDefault();
-      opt.e.stopPropagation();
+    }, { passive: false });
+
+    canvasArea.addEventListener('touchend', function(e) {
+      if (e.touches.length < 2) { _touchState.active = false; }
     });
 
     // Zoom control buttons
@@ -1645,17 +2440,92 @@ export function getCanvasContent(
       smoothZoomTo(z * 0.8, canvasArea.clientWidth / 2, canvasArea.clientHeight / 2);
     });
     document.getElementById('btn-zoom-fit').addEventListener('click', zoomToFit);
-    document.getElementById('zoom-level-btn').addEventListener('dblclick', function() {
-      canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
-      updateZoomDisplay(1);
-      _debouncedSyncAllIframes();
+    document.getElementById('btn-preview-toggle').addEventListener('click', _togglePreviewMode);
+    // Zoom presets dropdown
+    var zoomPresetMenu = document.getElementById('zoom-preset-menu');
+    document.getElementById('zoom-level-btn').addEventListener('click', function(e) {
+      e.stopPropagation();
+      zoomPresetMenu.classList.toggle('visible');
+    });
+    document.addEventListener('click', function() {
+      zoomPresetMenu.classList.remove('visible');
+    });
+    zoomPresetMenu.addEventListener('click', function(e) {
+      var item = e.target.closest('.zoom-preset-item');
+      if (!item) return;
+      e.stopPropagation();
+      var val = item.getAttribute('data-zoom');
+      if (val === 'fit') {
+        zoomToFit();
+      } else {
+        var targetZoom = parseFloat(val);
+        smoothZoomTo(targetZoom, canvasArea.clientWidth / 2, canvasArea.clientHeight / 2);
+      }
+      zoomPresetMenu.classList.remove('visible');
     });
     document.getElementById('status-zoom').addEventListener('click', zoomToFit);
 
     // ====================================================================
+    // Screen list panel (L key toggle)
+    // ====================================================================
+    var screenListPanel = document.getElementById('screen-list-panel');
+    var screenListBody = document.getElementById('screen-list-body');
+    var screenListVisible = false;
+
+    function toggleScreenList() {
+      screenListVisible = !screenListVisible;
+      screenListPanel.classList.toggle('visible', screenListVisible);
+      if (screenListVisible) _refreshScreenList();
+    }
+
+    function _refreshScreenList() {
+      screenListBody.innerHTML = '';
+      var activeObj = canvas.getActiveObject();
+      var items = canvas.getObjects().filter(function(obj) {
+        if (obj._isFrameLabel || obj._contentText || obj._typeBadge) return false;
+        if (obj._designNode && obj._designNode.parentId) return false;
+        if (!obj.label && !obj.description && !obj.id) return false;
+        return true;
+      });
+      if (items.length === 0) {
+        screenListBody.innerHTML = '<div style="padding:20px;text-align:center;color:var(--vscode-descriptionForeground);font-size:11px;">No screens yet</div>';
+        return;
+      }
+      items.forEach(function(obj) {
+        var label = obj.label || obj.description || obj.id || 'Untitled';
+        var item = document.createElement('div');
+        item.className = 'screen-list-item' + (obj === activeObj ? ' selected' : '');
+        var icon = (obj.id && obj.id.indexOf('frame-') === 0) ? '▢' : (obj.type === 'image' ? '⬜' : '◇');
+        var iconSpan = document.createElement('span');
+        iconSpan.className = 'screen-list-icon';
+        iconSpan.textContent = icon;
+        var labelSpan = document.createElement('span');
+        labelSpan.textContent = label;
+        labelSpan.style.overflow = 'hidden';
+        labelSpan.style.textOverflow = 'ellipsis';
+        item.appendChild(iconSpan);
+        item.appendChild(labelSpan);
+        item.addEventListener('click', function() {
+          canvas.setActiveObject(obj);
+          _zoomToObject(obj);
+          _refreshScreenList();
+        });
+        screenListBody.appendChild(item);
+      });
+    }
+
+    document.getElementById('btn-close-screen-list').addEventListener('click', toggleScreenList);
+
+    // Refresh screen list on selection/object changes
+    canvas.on('selection:created', function() { if (screenListVisible) _refreshScreenList(); });
+    canvas.on('selection:cleared', function() { if (screenListVisible) _refreshScreenList(); });
+    canvas.on('object:added', function() { if (screenListVisible) _refreshScreenList(); });
+    canvas.on('object:removed', function() { if (screenListVisible) _refreshScreenList(); });
+
+    // ====================================================================
     // Undo / Redo
     // ====================================================================
-    var customJsonProps = ['id', 'label', 'description', 'metadata', 'videoData', 'videoMimeType', 'isVideo', '_commentBgId', '_viewData'];
+    var customJsonProps = ['id', 'label', 'description', 'metadata', 'videoData', 'videoMimeType', 'isVideo', '_viewData'];
 
     function saveHistoryState() {
       if (isUndoRedoing) return;
@@ -1736,35 +2606,47 @@ export function getCanvasContent(
     saveHistoryState();
 
     // ====================================================================
-    // Dot grid background
+    // Dot grid background (optimized with cached pattern tile)
     // ====================================================================
+    var _gridPatternCache = null;
+    var _gridPatternZoom = 0;
+
+    function _getGridPattern(ctx, zoom) {
+      var gridSize = 20;
+      var dotRadius = 0.8;
+      var scaledGrid = Math.round(gridSize * zoom);
+      // Reuse cached pattern if zoom hasn't changed significantly
+      if (_gridPatternCache && Math.abs(_gridPatternZoom - scaledGrid) < 1) {
+        return _gridPatternCache;
+      }
+      if (scaledGrid < 3) return null; // too small to render
+      var tile = document.createElement('canvas');
+      tile.width = scaledGrid;
+      tile.height = scaledGrid;
+      var tctx = tile.getContext('2d');
+      tctx.fillStyle = 'rgba(128,128,128,0.15)';
+      tctx.beginPath();
+      tctx.arc(0, 0, dotRadius, 0, Math.PI * 2);
+      tctx.fill();
+      _gridPatternCache = ctx.createPattern(tile, 'repeat');
+      _gridPatternZoom = scaledGrid;
+      return _gridPatternCache;
+    }
+
     canvas.on('after:render', function() {
       var ctx = canvas.getContext();
       var vpt = canvas.viewportTransform;
       var zoom = canvas.getZoom();
-      // Skip grid at very low zoom to avoid millions of dots
       if (zoom < 0.15) return;
-      var gridSize = 20;
-      var dotRadius = 0.8;
-      var left = -vpt[4] / zoom;
-      var top = -vpt[5] / zoom;
-      var right = left + canvasArea.clientWidth / zoom;
-      var bottom = top + canvasArea.clientHeight / zoom;
-      var startX = Math.floor(left / gridSize) * gridSize;
-      var startY = Math.floor(top / gridSize) * gridSize;
-      // Safety cap: skip if too many dots would be drawn
-      var xCount = (right - startX) / gridSize;
-      var yCount = (bottom - startY) / gridSize;
-      if (xCount * yCount > 10000) return;
+      var pattern = _getGridPattern(ctx, zoom);
+      if (!pattern) return;
       ctx.save();
-      ctx.fillStyle = 'rgba(128,128,128,0.15)';
-      for (var x = startX; x < right; x += gridSize) {
-        for (var y = startY; y < bottom; y += gridSize) {
-          ctx.beginPath();
-          ctx.arc(x * zoom + vpt[4], y * zoom + vpt[5], dotRadius, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
+      // Offset pattern to align with world grid
+      var offsetX = vpt[4] % (20 * zoom);
+      var offsetY = vpt[5] % (20 * zoom);
+      ctx.translate(offsetX, offsetY);
+      ctx.fillStyle = pattern;
+      ctx.fillRect(-offsetX, -offsetY, canvasArea.clientWidth, canvasArea.clientHeight);
       ctx.restore();
     });
 
@@ -1778,7 +2660,7 @@ export function getCanvasContent(
 
     function updateMinimap() {
       var now = performance.now();
-      if (now - lastMinimapUpdate < 100) return;
+      if (now - lastMinimapUpdate < 200) return;  // 5fps is enough for minimap
       lastMinimapUpdate = now;
 
       var mw = 150, mh = 100;
@@ -1790,19 +2672,21 @@ export function getCanvasContent(
         return;
       }
 
-      // Compute world bounds
+      var zoom = canvas.getZoom();
+      var vpt = canvas.viewportTransform;
+
+      // Single pass: collect world bounds for all objects
       var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      var objBounds = [];
       objects.forEach(function(obj) {
         var b = obj.getBoundingRect();
-        // Convert from viewport to world coords
-        var zoom = canvas.getZoom();
-        var vpt = canvas.viewportTransform;
         var wLeft = (b.left - vpt[4]) / zoom;
         var wTop = (b.top - vpt[5]) / zoom;
-        var wRight = wLeft + b.width / zoom;
-        var wBottom = wTop + b.height / zoom;
+        var wW = b.width / zoom;
+        var wH = b.height / zoom;
+        objBounds.push({ wLeft: wLeft, wTop: wTop, wW: wW, wH: wH });
         minX = Math.min(minX, wLeft); minY = Math.min(minY, wTop);
-        maxX = Math.max(maxX, wRight); maxY = Math.max(maxY, wBottom);
+        maxX = Math.max(maxX, wLeft + wW); maxY = Math.max(maxY, wTop + wH);
       });
 
       // Add padding
@@ -1812,27 +2696,18 @@ export function getCanvasContent(
       var worldH = Math.max(1, maxY - minY);
       var scale = Math.min(mw / worldW, mh / worldH);
 
-      // Draw objects as colored rects
+      // Draw objects from cached bounds (no second getBoundingRect pass)
       minimapCtx.fillStyle = 'rgba(128,160,255,0.4)';
-      objects.forEach(function(obj) {
-        var b = obj.getBoundingRect();
-        var zoom = canvas.getZoom();
-        var vpt = canvas.viewportTransform;
-        var wLeft = (b.left - vpt[4]) / zoom;
-        var wTop = (b.top - vpt[5]) / zoom;
-        var wW = b.width / zoom;
-        var wH = b.height / zoom;
+      objBounds.forEach(function(ob) {
         minimapCtx.fillRect(
-          (wLeft - minX) * scale,
-          (wTop - minY) * scale,
-          Math.max(2, wW * scale),
-          Math.max(2, wH * scale)
+          (ob.wLeft - minX) * scale,
+          (ob.wTop - minY) * scale,
+          Math.max(2, ob.wW * scale),
+          Math.max(2, ob.wH * scale)
         );
       });
 
       // Show viewport rect
-      var zoom = canvas.getZoom();
-      var vpt = canvas.viewportTransform;
       var vpLeft = -vpt[4] / zoom;
       var vpTop = -vpt[5] / zoom;
       var vpW = canvasArea.clientWidth / zoom;
@@ -1873,9 +2748,14 @@ export function getCanvasContent(
       var active = canvas.getActiveObject();
       var el = document.getElementById('status-selection');
       if (active) {
-        var b = active.getBoundingRect();
-        var zoom = canvas.getZoom();
-        el.textContent = ' | ' + Math.round(b.width / zoom) + ' \u00d7 ' + Math.round(b.height / zoom);
+        var ac = active.aCoords || active.calcACoords();
+        if (ac) {
+          var axs = [ac.tl.x, ac.tr.x, ac.bl.x, ac.br.x];
+          var ays = [ac.tl.y, ac.tr.y, ac.bl.y, ac.br.y];
+          var aw = Math.max.apply(null, axs) - Math.min.apply(null, axs);
+          var ah = Math.max.apply(null, ays) - Math.min.apply(null, ays);
+          el.textContent = ' | ' + Math.round(aw) + ' \u00d7 ' + Math.round(ah);
+        }
       } else {
         el.textContent = '';
       }
@@ -1883,21 +2763,46 @@ export function getCanvasContent(
     canvas.on('selection:created', updateSelectionStatus);
     canvas.on('selection:updated', updateSelectionStatus);
     canvas.on('selection:cleared', updateSelectionStatus);
-    canvas.on('object:scaling', updateSelectionStatus);
-    canvas.on('object:moving', updateSelectionStatus);
+    // NOTE: object:moving/scaling for updateSelectionStatus moved to consolidated handler
 
-    // Sync comment bg position and size with its textbox
-    function syncCommentBg(obj) {
-      if (!obj._commentBgId) return;
-      var bg = canvas.getObjects().find(function(o) { return o.id === obj._commentBgId; });
-      if (!bg) return;
-      var w = (obj.width || 134) * (obj.scaleX || 1);
-      var h = (obj.height || 44) * (obj.scaleY || 1);
-      bg.set({ left: obj.left - 8, top: obj.top - 8, width: w + 16, height: h + 16 });
+    // ====================================================================
+    // Zoom-to-object (reusable animated navigation)
+    // ====================================================================
+    function _zoomToObject(obj) {
+      // Use aCoords for accurate world-space bounds
+      var coords = obj.aCoords || obj.calcACoords();
+      if (!coords) return;
+      var xs = [coords.tl.x, coords.tr.x, coords.bl.x, coords.br.x];
+      var ys = [coords.tl.y, coords.tr.y, coords.bl.y, coords.br.y];
+      var wLeft = Math.min.apply(null, xs);
+      var wTop = Math.min.apply(null, ys);
+      var wW = Math.max.apply(null, xs) - wLeft;
+      var wH = Math.max.apply(null, ys) - wTop;
+      var pad = 80;
+      var newZoom = Math.min(
+        (canvasArea.clientWidth - pad * 2) / wW,
+        (canvasArea.clientHeight - pad * 2) / wH,
+        5
+      );
+      newZoom = Math.max(0.1, newZoom);
+      var cx = wLeft + wW / 2, cy = wTop + wH / 2;
+      var startVpt = canvas.viewportTransform.slice();
+      var endVpt = [newZoom, 0, 0, newZoom, canvasArea.clientWidth / 2 - cx * newZoom, canvasArea.clientHeight / 2 - cy * newZoom];
+      var startTime = performance.now();
+      var duration = 200;
+      if (zoomAnimationFrame) cancelAnimationFrame(zoomAnimationFrame);
+      (function animateFocus(now) {
+        var t = Math.min((now - startTime) / duration, 1);
+        t = 1 - Math.pow(1 - t, 3); // ease-out cubic
+        var vpt = [];
+        for (var i = 0; i < 6; i++) { vpt[i] = startVpt[i] + (endVpt[i] - startVpt[i]) * t; }
+        canvas.setViewportTransform(vpt);
+        updateZoomDisplay(vpt[0]);
+        _debouncedSyncAllIframes();
+        if (t < 1) zoomAnimationFrame = requestAnimationFrame(animateFocus);
+        else zoomAnimationFrame = null;
+      })(performance.now());
     }
-    canvas.on('object:moving', function(opt) { syncCommentBg(opt.target); });
-    canvas.on('object:scaling', function(opt) { syncCommentBg(opt.target); });
-    canvas.on('object:modified', function(opt) { syncCommentBg(opt.target); });
 
     // ====================================================================
     // Double-click focus / text editing
@@ -1913,37 +2818,7 @@ export function getCanvasContent(
         }
         return; // Don't zoom-focus on text
       }
-      var b = opt.target.getBoundingRect();
-      var zoom = canvas.getZoom();
-      var vpt = canvas.viewportTransform;
-      var wLeft = (b.left - vpt[4]) / zoom;
-      var wTop = (b.top - vpt[5]) / zoom;
-      var wW = b.width / zoom;
-      var wH = b.height / zoom;
-      var pad = 80;
-      var newZoom = Math.min(
-        (canvasArea.clientWidth - pad * 2) / wW,
-        (canvasArea.clientHeight - pad * 2) / wH,
-        5
-      );
-      newZoom = Math.max(0.1, newZoom);
-      var cx = wLeft + wW / 2, cy = wTop + wH / 2;
-      // Animate viewport transition
-      var startVpt = canvas.viewportTransform.slice();
-      var endVpt = [newZoom, 0, 0, newZoom, canvasArea.clientWidth / 2 - cx * newZoom, canvasArea.clientHeight / 2 - cy * newZoom];
-      var startTime = performance.now();
-      var duration = 200;
-      if (zoomAnimationFrame) cancelAnimationFrame(zoomAnimationFrame);
-      (function animateFocus(now) {
-        var t = Math.min((now - startTime) / duration, 1);
-        t = 1 - Math.pow(1 - t, 3); // ease-out cubic
-        var vpt = [];
-        for (var i = 0; i < 6; i++) { vpt[i] = startVpt[i] + (endVpt[i] - startVpt[i]) * t; }
-        canvas.setViewportTransform(vpt);
-        updateZoomDisplay(vpt[0]);
-        if (t < 1) zoomAnimationFrame = requestAnimationFrame(animateFocus);
-        else zoomAnimationFrame = null;
-      })(performance.now());
+      _zoomToObject(opt.target);
     });
 
     // Space key for pan + keyboard shortcuts
@@ -1985,13 +2860,38 @@ export function getCanvasContent(
 
       // Tool shortcuts (only when not focused on input)
       if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
+
+      // Arrow key nudge — move selected objects (1px, or 10px with Shift)
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].indexOf(e.key) >= 0) {
+        var activeObjs = canvas.getActiveObjects();
+        if (activeObjs.length > 0) {
+          var step = e.shiftKey ? 10 : 1;
+          var dx = 0, dy = 0;
+          if (e.key === 'ArrowLeft') dx = -step;
+          if (e.key === 'ArrowRight') dx = step;
+          if (e.key === 'ArrowUp') dy = -step;
+          if (e.key === 'ArrowDown') dy = step;
+          activeObjs.forEach(function(obj) {
+            obj.set({ left: obj.left + dx, top: obj.top + dy });
+            obj.setCoords();
+            _repositionFrameLabel(obj);
+          });
+          canvas.renderAll();
+          _debouncedSyncAllIframes();
+          autoSave();
+          e.preventDefault();
+          return;
+        }
+      }
+
       switch (e.key.toLowerCase()) {
         case 'v': setTool('select'); break;
-        case 'p': setTool('pencil'); break;
+        case 'p':
+          if (e.shiftKey) { _togglePreviewMode(); }
+          break;
         case 't': setTool('text'); break;
-        case 'c': setTool('comment'); break;
-        case 'f': setTool('frame'); break;
         case 'i': setTool('image'); break;
+        case 'l': toggleScreenList(); break;
         case 'm':
           minimapVisible = !minimapVisible;
           minimapEl.classList.toggle('hidden', !minimapVisible);
@@ -2026,33 +2926,50 @@ export function getCanvasContent(
     // Selection controls — collapsible right actions panel + placeholder
     // ====================================================================
     var actionsPanel = document.getElementById('actions-panel');
+    var actionsPanelToggle = document.getElementById('actions-panel-toggle');
     var actionIntegrate = document.getElementById('action-integrate');
     var placeholderOverlay = document.getElementById('tab-placeholder-overlay');
     var placeholderIcon = document.getElementById('tab-placeholder-icon');
     var placeholderLabel = document.getElementById('tab-placeholder-label');
     var placeholderBtn = document.getElementById('tab-placeholder-btn');
     var _placeholderAction = null; // 'generate' | 'svg' | 'code'
+    var _actionsPanelOpen = true;
+
+    // Toggle actions panel collapse/expand
+    actionsPanelToggle.addEventListener('click', function() {
+      _actionsPanelOpen = !_actionsPanelOpen;
+      if (_actionsPanelOpen) {
+        actionsPanel.classList.remove('collapsed');
+        actionsPanelToggle.classList.add('panel-open');
+        actionsPanelToggle.innerHTML = '&#9654;'; // right arrow
+      } else {
+        actionsPanel.classList.add('collapsed');
+        actionsPanelToggle.classList.remove('panel-open');
+        actionsPanelToggle.innerHTML = '&#9664;'; // left arrow
+      }
+    });
 
     canvas.on('selection:created', showSelectionControls);
     canvas.on('selection:updated', showSelectionControls);
     canvas.on('selection:cleared', hideSelectionControls);
 
     function hideSelectionControls() {
-      actionsPanel.classList.remove('visible');
+      // Panel stays visible — only hide context-dependent elements
       placeholderOverlay.classList.remove('visible');
       _placeholderAction = null;
+      actionIntegrate.classList.remove('visible');
+      document.getElementById('element-actions-sep').style.display = 'none';
+      document.getElementById('action-edit-element').style.display = 'none';
+      document.getElementById('action-edit-layout').style.display = 'none';
     }
 
     function showSelectionControls() {
       var active = canvas.getActiveObject();
       if (!active) { hideSelectionControls(); return; }
 
-      // Show actions panel
-      actionsPanel.classList.add('visible');
-
       // Update integrate button visibility
       var vd = _getViewData(active);
-      if (_activeGlobalTab === 'components' && vd && vd.codeFiles && vd.codeFiles.length) {
+      if (_activeGlobalTab === 'code' && vd && vd.codeFiles && vd.codeFiles.length) {
         actionIntegrate.classList.add('visible');
       } else {
         actionIntegrate.classList.remove('visible');
@@ -2069,21 +2986,21 @@ export function getCanvasContent(
       var label = '';
       var action = null;
 
-      if (_activeGlobalTab === 'image') {
+      if (_activeGlobalTab === 'design') {
         if (!vd || !vd.imageDataUrl) {
           needsPlaceholder = true;
           icon = '&#9998;';
           label = 'No image generated';
           action = 'generate';
         }
-      } else if (_activeGlobalTab === 'svg') {
+      } else if (_activeGlobalTab === 'assets') {
         if (!vd || !vd.svgMarkup) {
           needsPlaceholder = true;
           icon = 'SVG';
           label = 'No SVG generated';
           action = 'svg';
         }
-      } else if (_activeGlobalTab === 'components') {
+      } else if (_activeGlobalTab === 'code') {
         if (!vd || !vd.codeFiles || !vd.codeFiles.length) {
           needsPlaceholder = true;
           icon = '&lt;/&gt;';
@@ -2094,30 +3011,47 @@ export function getCanvasContent(
       // Frames tab: no placeholder — always shows grid
 
       if (needsPlaceholder) {
-        var bound = obj.getBoundingRect();
-        var zoom = canvas.getZoom();
-        var vpt = canvas.viewportTransform;
-        var screenLeft = bound.left * zoom + vpt[4];
-        var screenTop = bound.top * zoom + vpt[5];
-        var screenW = bound.width * zoom;
-        var screenH = bound.height * zoom;
-
-        if (screenW > 40 && screenH > 40) {
-          placeholderIcon.innerHTML = icon;
-          placeholderLabel.textContent = label;
-          placeholderOverlay.style.left = screenLeft + 'px';
-          placeholderOverlay.style.top = screenTop + 'px';
-          placeholderOverlay.style.width = screenW + 'px';
-          placeholderOverlay.style.height = screenH + 'px';
-          placeholderOverlay.classList.add('visible');
-          _placeholderAction = action;
-        } else {
-          placeholderOverlay.classList.remove('visible');
-          _placeholderAction = null;
-        }
+        placeholderIcon.innerHTML = icon;
+        placeholderLabel.textContent = label;
+        _placeholderAction = action;
+        _placeholderTargetObj = obj;
+        _repositionPlaceholder();
       } else {
         placeholderOverlay.classList.remove('visible');
         _placeholderAction = null;
+        _placeholderTargetObj = null;
+      }
+    }
+
+    // Dedicated lightweight reposition — called on every pan/zoom/move/scale
+    var _placeholderTargetObj = null;
+    function _repositionPlaceholder() {
+      if (!_placeholderTargetObj || !_placeholderAction) return;
+      var obj = _placeholderTargetObj;
+      // Use aCoords (world-space) + manual viewport conversion — same as iframe overlays
+      var zoom = canvas.getZoom();
+      var vpt = canvas.viewportTransform;
+      var coords = obj.aCoords || obj.calcACoords();
+      if (!coords) { placeholderOverlay.classList.remove('visible'); return; }
+      var xs = [coords.tl.x, coords.tr.x, coords.bl.x, coords.br.x];
+      var ys = [coords.tl.y, coords.tr.y, coords.bl.y, coords.br.y];
+      var worldLeft = Math.min.apply(null, xs);
+      var worldTop = Math.min.apply(null, ys);
+      var worldRight = Math.max.apply(null, xs);
+      var worldBottom = Math.max.apply(null, ys);
+      var screenLeft = worldLeft * zoom + vpt[4];
+      var screenTop = worldTop * zoom + vpt[5];
+      var screenW = (worldRight - worldLeft) * zoom;
+      var screenH = (worldBottom - worldTop) * zoom;
+
+      if (screenW > 40 && screenH > 40) {
+        placeholderOverlay.style.left = screenLeft + 'px';
+        placeholderOverlay.style.top = screenTop + 'px';
+        placeholderOverlay.style.width = screenW + 'px';
+        placeholderOverlay.style.height = screenH + 'px';
+        placeholderOverlay.classList.add('visible');
+      } else {
+        placeholderOverlay.classList.remove('visible');
       }
     }
 
@@ -2134,7 +3068,7 @@ export function getCanvasContent(
         var job = genJobCreate('generate');
         _pendingGenerateJob = job;
         showPromptStatus('Generating image...', 10);
-        vscodeApi.postMessage({ type: 'canvasUnifiedPrompt', payload: { text: '/generate ' + (desc || 'Generate image for this frame'), canvasId: canvasSessionId, snapshot: snapshot, selectedObjectIds: selectedIds } });
+        vscodeApi.postMessage({ type: 'canvasUnifiedPrompt', payload: { text: '/image ' + (desc || 'Generate image for this frame'), canvasId: canvasSessionId, snapshot: snapshot, selectedObjectIds: selectedIds } });
       } else if (_placeholderAction === 'svg') {
         var svgJob = genJobCreate('svg');
         _pendingSvgJob = svgJob;
@@ -2150,8 +3084,7 @@ export function getCanvasContent(
       placeholderOverlay.classList.remove('visible');
     });
 
-    canvas.on('object:moving', showSelectionControls);
-    canvas.on('object:scaling', showSelectionControls);
+    // NOTE: object:moving/scaling for showSelectionControls moved to consolidated handler
 
     document.getElementById('btn-response-close').addEventListener('click', function() {
       document.getElementById('prompt-response-panel').classList.remove('visible');
@@ -2163,14 +3096,19 @@ export function getCanvasContent(
     var _genJobCounter = 0;
     var _genJobs = {}; // jobId -> { targetObject, targetBounds, overlayEl, type }
 
+    function _worldBoundsFromObj(obj) {
+      var coords = obj.aCoords || obj.calcACoords();
+      if (!coords) return null;
+      var xs = [coords.tl.x, coords.tr.x, coords.bl.x, coords.br.x];
+      var ys = [coords.tl.y, coords.tr.y, coords.bl.y, coords.br.y];
+      var l = Math.min.apply(null, xs), t = Math.min.apply(null, ys);
+      return { left: l, top: t, width: Math.max.apply(null, xs) - l, height: Math.max.apply(null, ys) - t };
+    }
+
     function genJobCreate(type) {
       var jobId = 'gen-' + (++_genJobCounter);
       var active = canvas.getActiveObject();
-      var bounds = null;
-      if (active) {
-        bounds = active.getBoundingRect();
-        bounds = { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height };
-      }
+      var bounds = active ? _worldBoundsFromObj(active) : null;
       var job = { id: jobId, type: type, targetObject: active || null, targetBounds: bounds, overlayEl: null };
       _genJobs[jobId] = job;
       if (active) {
@@ -2195,12 +3133,12 @@ export function getCanvasContent(
     function _genJobPositionLoader(job) {
       if (!job.overlayEl || !job.targetObject) return;
       var obj = job.targetObject;
+      var zoom = canvas.getZoom();
+      var vpt = canvas.viewportTransform;
       // Check object still on canvas
       if (!canvas.getObjects().includes(obj)) {
-        // Object was removed — fall back to stored bounds
+        // Object was removed — fall back to stored world-space bounds
         if (job.targetBounds) {
-          var zoom = canvas.getZoom();
-          var vpt = canvas.viewportTransform;
           job.overlayEl.style.left = (job.targetBounds.left * zoom + vpt[4]) + 'px';
           job.overlayEl.style.top = (job.targetBounds.top * zoom + vpt[5]) + 'px';
           job.overlayEl.style.width = (job.targetBounds.width * zoom) + 'px';
@@ -2208,13 +3146,17 @@ export function getCanvasContent(
         }
         return;
       }
-      var bound = obj.getBoundingRect();
-      var zoom = canvas.getZoom();
-      var vpt = canvas.viewportTransform;
-      job.overlayEl.style.left = (bound.left * zoom + vpt[4]) + 'px';
-      job.overlayEl.style.top = (bound.top * zoom + vpt[5]) + 'px';
-      job.overlayEl.style.width = (bound.width * zoom) + 'px';
-      job.overlayEl.style.height = (bound.height * zoom) + 'px';
+      // Use aCoords (world-space) + viewport conversion — same as iframe overlays
+      var coords = obj.aCoords || obj.calcACoords();
+      if (!coords) return;
+      var xs = [coords.tl.x, coords.tr.x, coords.bl.x, coords.br.x];
+      var ys = [coords.tl.y, coords.tr.y, coords.bl.y, coords.br.y];
+      var wl = Math.min.apply(null, xs), wt = Math.min.apply(null, ys);
+      var wr = Math.max.apply(null, xs), wb = Math.max.apply(null, ys);
+      job.overlayEl.style.left = (wl * zoom + vpt[4]) + 'px';
+      job.overlayEl.style.top = (wt * zoom + vpt[5]) + 'px';
+      job.overlayEl.style.width = ((wr - wl) * zoom) + 'px';
+      job.overlayEl.style.height = ((wb - wt) * zoom) + 'px';
     }
 
     function genJobUpdateLabel(jobId, label) {
@@ -2238,10 +3180,9 @@ export function getCanvasContent(
     function genJobGetBounds(jobId) {
       var job = _genJobs[jobId];
       if (!job) return null;
-      // Get live bounds from target object if still on canvas
+      // Get live world-space bounds from target object if still on canvas
       if (job.targetObject && canvas.getObjects().includes(job.targetObject)) {
-        var b = job.targetObject.getBoundingRect();
-        return { left: b.left, top: b.top, width: b.width, height: b.height };
+        return _worldBoundsFromObj(job.targetObject);
       }
       return job.targetBounds;
     }
@@ -2250,10 +3191,7 @@ export function getCanvasContent(
     function _genJobRepositionAll() {
       for (var id in _genJobs) { _genJobPositionLoader(_genJobs[id]); }
     }
-    canvas.on('object:moving', _genJobRepositionAll);
-    canvas.on('object:scaling', _genJobRepositionAll);
-    canvas.on('mouse:wheel', function() { setTimeout(_genJobRepositionAll, 10); });
-    canvas.on('viewport:changed', _genJobRepositionAll);
+    // NOTE: object:moving/scaling for _genJobRepositionAll moved to consolidated handler
 
     // ====================================================================
     // Reimagination
@@ -2273,8 +3211,7 @@ export function getCanvasContent(
     // Create a gen job for a specific canvas object (not the active selection)
     function genJobCreateForObject(fabricObj, type) {
       var jobId = 'gen-' + (++_genJobCounter);
-      var bounds = fabricObj.getBoundingRect();
-      bounds = { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height };
+      var bounds = _worldBoundsFromObj(fabricObj);
       var job = { id: jobId, type: type, targetObject: fabricObj, targetBounds: bounds, overlayEl: null };
       _genJobs[jobId] = job;
       _genJobShowLoader(job);
@@ -2353,16 +3290,68 @@ export function getCanvasContent(
     }
 
     document.getElementById('action-reimagine').addEventListener('click', function() {
-      var job = genJobCreate('reimagine');
-      _pendingReimagineJob = job;
-      reimagineSourceBounds = job.targetBounds;
-      reimagineVariantIndex = 0;
-      showPromptStatus('Starting reimagination...', 10);
-      var snapshot = buildSnapshot();
-      vscodeApi.postMessage({
-        type: 'canvasReimagine',
-        payload: { canvasId: canvasSessionId, prompt: '', snapshot: snapshot, selectedObjectIds: getSelectedIds(), action: 'reimagine' }
-      });
+      var active = canvas.getActiveObject();
+
+      // Smart edit: detect context
+      if (active && active._stitchScreenRef) {
+        // Stitch screen selected — use /edit for Stitch editing
+        showInlineInput('Describe the edit:', 'e.g. make the header darker, add a CTA button', function(instruction) {
+          var job = genJobCreate('stitch-edit');
+          _pendingLayoutJob = job;
+          showPromptStatus('Editing screen...', 5);
+          vscodeApi.postMessage({
+            type: 'canvasUnifiedPrompt',
+            payload: {
+              text: '/edit ' + instruction,
+              canvasId: canvasSessionId,
+              snapshot: buildSnapshot(),
+              selectedObjectIds: getSelectedIds(),
+              stitchScreenRef: active._stitchScreenRef
+            }
+          });
+        });
+      } else if (active && active._designNode && _designSpec) {
+        // Design node selected — generate a variation with Stitch
+        var job = genJobCreate('design');
+        _pendingLayoutJob = job;
+        showPromptStatus('Generating design variation...', 5);
+        var nodeDesc = active._designNode.name || active._designNode.description || 'this design';
+        vscodeApi.postMessage({
+          type: 'canvasUnifiedPrompt',
+          payload: {
+            text: '/design Create a variation of ' + nodeDesc + ' with different layout, spacing, and visual hierarchy while keeping the same purpose',
+            canvasId: canvasSessionId,
+            snapshot: buildSnapshot(),
+            selectedObjectIds: getSelectedIds(),
+            designTheme: _designSpec.theme
+          }
+        });
+      } else if (!active && _designSpec) {
+        // No selection + design spec — generate a theme variation
+        var themeJob = genJobCreate('theme');
+        _pendingLayoutJob = themeJob;
+        showPromptStatus('Generating theme variation...', 5);
+        vscodeApi.postMessage({
+          type: 'canvasUnifiedPrompt',
+          payload: {
+            text: '/theme Create a variation of the current theme with different colors and typography while maintaining contrast and accessibility',
+            canvasId: canvasSessionId,
+            snapshot: buildSnapshot(),
+            designTheme: _designSpec.theme
+          }
+        });
+      } else {
+        // Fallback: reimagine image variants
+        var reimagJob = genJobCreate('reimagine');
+        _pendingReimagineJob = reimagJob;
+        reimagineSourceBounds = reimagJob.targetBounds;
+        reimagineVariantIndex = 0;
+        showPromptStatus('Generating image variants...', 10);
+        vscodeApi.postMessage({
+          type: 'canvasReimagine',
+          payload: { canvasId: canvasSessionId, prompt: '', snapshot: buildSnapshot(), selectedObjectIds: getSelectedIds(), action: 'reimagine' }
+        });
+      }
     });
 
     document.getElementById('action-generate').addEventListener('click', function() {
@@ -2375,7 +3364,7 @@ export function getCanvasContent(
       var snapshot = buildSnapshot();
       vscodeApi.postMessage({
         type: 'canvasUnifiedPrompt',
-        payload: { text: '/generate ' + prompt, canvasId: canvasSessionId, snapshot: snapshot, selectedObjectIds: getSelectedIds() }
+        payload: { text: '/image ' + prompt, canvasId: canvasSessionId, snapshot: snapshot, selectedObjectIds: getSelectedIds() }
       });
     });
 
@@ -2393,19 +3382,56 @@ export function getCanvasContent(
       });
     });
 
-    document.getElementById('action-svg').addEventListener('click', function() {
-      var active = canvas.getActiveObject();
-      if (!active) return;
-      var job = genJobCreate('svg');
-      _pendingSvgJob = job;
-      showPromptStatus('Converting to SVG...', 10);
-      var snapshot = buildSnapshot();
-      vscodeApi.postMessage({
-        type: 'canvasUnifiedPrompt',
-        payload: { text: '/svg', canvasId: canvasSessionId, snapshot: snapshot, selectedObjectIds: getSelectedIds() }
+    // ── Design section actions ──
+    document.getElementById('action-generate-design').addEventListener('click', function() {
+      showInlineInput('Describe the design to generate:', 'e.g. a SaaS pricing page with 3 tiers', function(desc) {
+        var job = genJobCreate('design');
+        _pendingLayoutJob = job;
+        showPromptStatus('Generating design...', 5);
+        vscodeApi.postMessage({
+          type: 'canvasUnifiedPrompt',
+          payload: { text: '/design ' + desc, canvasId: canvasSessionId, snapshot: buildSnapshot(), selectedObjectIds: getSelectedIds(), designTheme: _designSpec ? _designSpec.theme : null }
+        });
       });
     });
 
+    document.getElementById('action-theme').addEventListener('click', function() {
+      showInlineInput('Describe the theme:', 'e.g. dark mode, neon accents, cyberpunk', function(desc) {
+        var job = genJobCreate('theme');
+        _pendingLayoutJob = job;
+        showPromptStatus('Generating theme...', 5);
+        vscodeApi.postMessage({
+          type: 'canvasUnifiedPrompt',
+          payload: { text: '/theme ' + desc, canvasId: canvasSessionId, snapshot: buildSnapshot(), designTheme: _designSpec ? _designSpec.theme : null }
+        });
+      });
+    });
+
+    document.getElementById('action-preview').addEventListener('click', function() {
+      _togglePreviewMode();
+    });
+
+    // ── Assets section actions ──
+    document.getElementById('action-gen-assets').addEventListener('click', function() {
+      if (!_designAssets || !_designAssets.length) {
+        showPromptStatusMessage('No assets to generate. Use /mockup first.', 'error');
+        setTimeout(hidePromptStatus, 3000);
+        return;
+      }
+      var unresolved = _designAssets.filter(function(a) { return !a.src && a.prompt; });
+      if (unresolved.length === 0) {
+        showPromptStatusMessage('All assets already generated!', 'success');
+        setTimeout(hidePromptStatus, 3000);
+        return;
+      }
+      showPromptStatus('Generating ' + unresolved.length + ' assets...', 5);
+      vscodeApi.postMessage({
+        type: 'canvasGenerateAllAssets',
+        payload: { canvasId: canvasSessionId, assets: unresolved }
+      });
+    });
+
+    // ── Code section actions ──
     document.getElementById('action-code').addEventListener('click', function() {
       var active = canvas.getActiveObject();
       if (!active) return;
@@ -2414,10 +3440,17 @@ export function getCanvasContent(
       _pendingCodeJob = job;
       showPromptStatus('Generating code...', 10);
       var snapshot = buildSnapshot();
-      vscodeApi.postMessage({
-        type: 'canvasUnifiedPrompt',
-        payload: { text: '/code ' + desc, canvasId: canvasSessionId, snapshot: snapshot, selectedObjectIds: getSelectedIds() }
-      });
+      var msgPayload = { text: '/code ' + desc, canvasId: canvasSessionId, snapshot: snapshot, selectedObjectIds: getSelectedIds() };
+      // Always send full design context if available
+      if (_designSpec) {
+        msgPayload.designTheme = _designSpec.theme;
+        msgPayload.designAssets = _designAssets;
+      }
+      // If this object has a design node, send it for deterministic code gen
+      if (active._designNode) {
+        msgPayload.designNode = active._designNode;
+      }
+      vscodeApi.postMessage({ type: 'canvasUnifiedPrompt', payload: msgPayload });
     });
 
     // Inline input modal — webview-safe replacement for window.prompt()
@@ -2513,16 +3546,18 @@ export function getCanvasContent(
     var unifiedBusy = false;
 
     var slashCommands = [
-      { cmd: '/render', desc: 'Capture page screenshot (URL, selector, or auto-detect)', example: '/render http://localhost:3000' },
-      { cmd: '/generate', desc: 'Generate AI image from description', example: '/generate a modern SaaS landing page' },
-      { cmd: '/reimagine', desc: 'Reimagine selected region with AI variants', example: '/reimagine' },
+      { cmd: '/design', desc: 'Generate a UI design with Stitch AI', example: '/design a SaaS pricing page with 3 tiers' },
+      { cmd: '/edit', desc: 'Edit selected Stitch screen with AI', example: '/edit make the header darker' },
+      { cmd: '/variants', desc: 'Generate variants of selected Stitch screen', example: '/variants explore different layouts' },
+      { cmd: '/website', desc: 'Generate multi-page website with Stitch', example: '/website SaaS landing page with pricing and docs' },
+      { cmd: '/image', desc: 'Generate AI image from description', example: '/image a modern hero illustration' },
       { cmd: '/video', desc: 'Generate AI video from description', example: '/video a looping gradient background' },
-      { cmd: '/page', desc: 'Generate page layout with sections and components', example: '/page a SaaS pricing page' },
-      { cmd: '/section', desc: 'Generate section layout with component frames', example: '/section hero with CTA and feature highlights' },
-      { cmd: '/component', desc: 'Generate a single component frame', example: '/component login form' },
-      { cmd: '/website', desc: 'Generate multi-page website layout', example: '/website SaaS landing page with pricing and docs' },
       { cmd: '/svg', desc: 'Convert selected image to clean SVG', example: '/svg' },
-      { cmd: '/code', desc: 'Generate component code + Storybook story', example: '/code React card with dark mode' },
+      { cmd: '/code', desc: 'Generate component code from design', example: '/code React card with dark mode' },
+      { cmd: '/theme', desc: 'Generate or change design theme', example: '/theme dark mode, neon accents, cyberpunk' },
+      { cmd: '/render', desc: 'Capture page screenshot (URL or auto-detect)', example: '/render http://localhost:3000' },
+      { cmd: '/html', desc: 'Export Stitch screen HTML', example: '/html' },
+      { cmd: '/design-dna', desc: 'Extract design DNA from Stitch screen', example: '/design-dna' },
     ];
 
     function sendUnifiedPrompt() {
@@ -2532,20 +3567,23 @@ export function getCanvasContent(
 
       // Determine action type from slash command to create the right job
       var actionType = 'prompt';
-      if (text.startsWith('/generate')) { actionType = 'generate'; }
-      else if (text.startsWith('/reimagine')) { actionType = 'reimagine'; }
+      if (text.startsWith('/design-dna')) { actionType = 'design-dna'; }
+      else if (text.startsWith('/design')) { actionType = 'design'; }
+      else if (text.startsWith('/image')) { actionType = 'generate'; }
       else if (text.startsWith('/video')) { actionType = 'video'; }
-      else if (text.startsWith('/page')) { actionType = 'page'; }
-      else if (text.startsWith('/section')) { actionType = 'section'; }
-      else if (text.startsWith('/component')) { actionType = 'component'; }
       else if (text.startsWith('/website')) { actionType = 'website'; }
       else if (text.startsWith('/svg')) { actionType = 'svg'; }
       else if (text.startsWith('/code')) { actionType = 'code'; }
+      else if (text.startsWith('/theme')) { actionType = 'theme'; }
+      else if (text.startsWith('/render')) { actionType = 'render'; }
+      else if (text.startsWith('/edit-element')) { actionType = 'edit-element'; }
+      else if (text.startsWith('/edit-layout')) { actionType = 'edit-layout'; }
+      else if (text.startsWith('/edit')) { actionType = 'stitch-edit'; }
+      else if (text.startsWith('/variants')) { actionType = 'stitch-variants'; }
+      else if (text.startsWith('/html')) { actionType = 'stitch-html'; }
 
       // Create a background job for generation actions (not plain prompts)
-      if (actionType === 'generate' || actionType === 'reimagine' || actionType === 'video'
-          || actionType === 'page' || actionType === 'section' || actionType === 'component'
-          || actionType === 'website' || actionType === 'svg' || actionType === 'code') {
+      if (actionType !== 'prompt') {
         var job = genJobCreate(actionType);
         if (actionType === 'generate') { _pendingGenerateJob = job; }
         else if (actionType === 'reimagine') {
@@ -2556,7 +3594,8 @@ export function getCanvasContent(
         else if (actionType === 'video') { _pendingVideoJob = job; }
         else if (actionType === 'svg') { _pendingSvgJob = job; }
         else if (actionType === 'code') { _pendingCodeJob = job; }
-        else if (actionType === 'page' || actionType === 'section' || actionType === 'component' || actionType === 'website') { _pendingLayoutJob = job; }
+        else if (actionType === 'theme' || actionType === 'page' || actionType === 'section'
+            || actionType === 'component' || actionType === 'website') { _pendingLayoutJob = job; }
       } else {
         // Plain prompts still block
         unifiedBusy = true;
@@ -2572,6 +3611,7 @@ export function getCanvasContent(
           canvasId: canvasSessionId,
           snapshot: snapshot,
           selectedObjectIds: getSelectedIds(),
+          designTheme: _designSpec ? _designSpec.theme : null,
         }
       });
       unifiedInput.value = '';
@@ -2706,6 +3746,19 @@ export function getCanvasContent(
         var label = sel.label || sel.id || type;
         promptBarContext.innerHTML = 'Selected: <strong>' + label + '</strong> (' + w + '&times;' + h + ')';
         promptBarContext.classList.add('visible');
+        // Context-aware placeholder
+        var vd = _getViewData(sel);
+        if (vd && vd.stitchScreenRef) {
+          unifiedInput.placeholder = 'Edit this screen... (e.g. make the header darker)';
+        } else if (vd && vd.imageDataUrl) {
+          unifiedInput.placeholder = 'Describe changes... (e.g. /reimagine with a blue theme)';
+        } else if (sel.type === 'rect' || (sel.label && !vd)) {
+          unifiedInput.placeholder = 'Describe what to generate... (e.g. a login page)';
+        } else {
+          unifiedInput.placeholder = 'Describe a screen to generate, or type / for commands';
+        }
+      } else {
+        unifiedInput.placeholder = 'Describe a screen to generate, or type / for commands';
       }
     }
 
@@ -3325,22 +4378,24 @@ export function getCanvasContent(
 
     function updateVideoOverlayPosition() {
       if (!activeVideoOverlay || !activeVideoTarget) return;
-      var bound = activeVideoTarget.getBoundingRect();
+      // Use aCoords (world-space) + viewport conversion — same as iframe overlays
       var zoom = canvas.getZoom();
       var vpt = canvas.viewportTransform;
-      var sl = bound.left * zoom + vpt[4];
-      var st = bound.top * zoom + vpt[5];
-      var sw = bound.width * zoom;
-      var sh = bound.height * zoom;
-      activeVideoOverlay.style.left = sl + 'px';
-      activeVideoOverlay.style.top = st + 'px';
-      activeVideoOverlay.style.width = sw + 'px';
-      activeVideoOverlay.style.height = sh + 'px';
+      var coords = activeVideoTarget.aCoords || activeVideoTarget.calcACoords();
+      if (!coords) return;
+      var xs = [coords.tl.x, coords.tr.x, coords.bl.x, coords.br.x];
+      var ys = [coords.tl.y, coords.tr.y, coords.bl.y, coords.br.y];
+      var wl = Math.min.apply(null, xs), wt = Math.min.apply(null, ys);
+      var wr = Math.max.apply(null, xs), wb = Math.max.apply(null, ys);
+      activeVideoOverlay.style.left = (wl * zoom + vpt[4]) + 'px';
+      activeVideoOverlay.style.top = (wt * zoom + vpt[5]) + 'px';
+      activeVideoOverlay.style.width = ((wr - wl) * zoom) + 'px';
+      activeVideoOverlay.style.height = ((wb - wt) * zoom) + 'px';
     }
 
     // Close video overlay on pan/zoom/selection change
     canvas.on('selection:cleared', closeVideoOverlay);
-    canvas.on('mouse:wheel', function() { setTimeout(updateVideoOverlayPosition, 10); });
+    // NOTE: video overlay position sync moved to _debouncedSyncAllIframes
 
     canvas.on('mouse:dblclick', function(opt) {
       var target = opt.target;
@@ -3352,18 +4407,20 @@ export function getCanvasContent(
 
       closeVideoOverlay();
 
-      // Position using viewport transform for correct screen coordinates
-      var bound = target.getBoundingRect();
-      var zoom = canvas.getZoom();
-      var vpt = canvas.viewportTransform;
-      var screenLeft = bound.left * zoom + vpt[4];
-      var screenTop = bound.top * zoom + vpt[5];
-      var screenWidth = bound.width * zoom;
-      var screenHeight = bound.height * zoom;
+      // Use aCoords (world-space) + viewport conversion for positioning
+      var _vZoom = canvas.getZoom();
+      var _vVpt = canvas.viewportTransform;
+      var _vCoords = target.aCoords || target.calcACoords();
+      var _vXs = [_vCoords.tl.x, _vCoords.tr.x, _vCoords.bl.x, _vCoords.br.x];
+      var _vYs = [_vCoords.tl.y, _vCoords.tr.y, _vCoords.bl.y, _vCoords.br.y];
+      var _vLeft = Math.min.apply(null, _vXs) * _vZoom + _vVpt[4];
+      var _vTop = Math.min.apply(null, _vYs) * _vZoom + _vVpt[5];
+      var _vW = (Math.max.apply(null, _vXs) - Math.min.apply(null, _vXs)) * _vZoom;
+      var _vH = (Math.max.apply(null, _vYs) - Math.min.apply(null, _vYs)) * _vZoom;
 
       var overlay = document.createElement('div');
       overlay.id = 'video-playback-overlay';
-      overlay.style.cssText = 'position:absolute;left:' + screenLeft + 'px;top:' + screenTop + 'px;width:' + screenWidth + 'px;height:' + screenHeight + 'px;z-index:100;background:#000;border-radius:4px;overflow:hidden;';
+      overlay.style.cssText = 'position:absolute;left:' + _vLeft + 'px;top:' + _vTop + 'px;width:' + _vW + 'px;height:' + _vH + 'px;z-index:100;background:#000;border-radius:4px;overflow:hidden;';
 
       var video = document.createElement('video');
       video.style.cssText = 'width:100%;height:100%;object-fit:contain;';
@@ -3515,15 +4572,26 @@ export function getCanvasContent(
     });
 
     // ====================================================================
-    // Global Tab Bar — Image/Video | SVG | Components | Frames
+    // Global Tab Bar — Frames | Design | Assets | Code
     // ====================================================================
-    var _activeGlobalTab = 'image'; // 'image' | 'svg' | 'components' | 'frames'
-    var tabImageVideo = document.getElementById('tab-image-video');
-    var tabSvg = document.getElementById('tab-svg');
-    var tabComponents = document.getElementById('tab-components');
-    var tabFrames = document.getElementById('tab-frames');
-    var framesPanel = document.getElementById('frames-panel');
-    var framesGrid = document.getElementById('frames-grid');
+    var _activeGlobalTab = 'design'; // 'frames' | 'design' | 'assets' | 'code'
+    var tabDesign = document.getElementById('tab-design');
+    var tabAssets = document.getElementById('tab-assets');
+    var tabCode = document.getElementById('tab-code');
+    var assetsPanel = document.getElementById('assets-panel');
+    var assetsGrid = document.getElementById('assets-grid');
+    var _assetFilter = 'all'; // current assets tab filter
+    var tabThemes = document.getElementById('tab-themes');
+    var themesPanel = document.getElementById('themes-panel');
+    var themesGrid = document.getElementById('themes-grid');
+    var themeEditor = document.getElementById('theme-editor');
+    var themeEditorName = document.getElementById('theme-editor-name');
+    var themeEditorBody = document.getElementById('theme-editor-body');
+
+    // Theme library state
+    var _themeLibrary = [];       // Array of { id, name, theme, createdAt }
+    var _activeThemeId = null;    // ID of currently applied theme
+    var _editingThemeId = null;   // ID of theme being edited (null = not editing)
 
     /**
      * _viewData stored on each fabric object:
@@ -3561,12 +4629,13 @@ export function getCanvasContent(
     }
 
     function _updateGlobalTabs() {
-      tabImageVideo.classList.toggle('active', _activeGlobalTab === 'image');
-      tabSvg.classList.toggle('active', _activeGlobalTab === 'svg');
-      tabComponents.classList.toggle('active', _activeGlobalTab === 'components');
-      tabFrames.classList.toggle('active', _activeGlobalTab === 'frames');
-      // Show/hide frames panel
-      framesPanel.classList.toggle('visible', _activeGlobalTab === 'frames');
+      tabDesign.classList.toggle('active', _activeGlobalTab === 'design');
+      tabAssets.classList.toggle('active', _activeGlobalTab === 'assets');
+      tabCode.classList.toggle('active', _activeGlobalTab === 'code');
+      tabThemes.classList.toggle('active', _activeGlobalTab === 'themes');
+      // Show/hide overlay panels
+      assetsPanel.classList.toggle('visible', _activeGlobalTab === 'assets');
+      themesPanel.classList.toggle('visible', _activeGlobalTab === 'themes');
     }
 
     function _switchGlobalTab(tab) {
@@ -3575,7 +4644,8 @@ export function getCanvasContent(
       _activeGlobalTab = tab;
       _updateGlobalTabs();
       _applyGlobalTabView();
-      if (tab === 'frames') { _buildFramesGrid(); }
+      if (tab === 'assets') { _buildAssetsGrid(); }
+      if (tab === 'themes') { _buildThemesGrid(); }
       showSelectionControls(); // update placeholder + integrate visibility
     }
 
@@ -3583,7 +4653,7 @@ export function getCanvasContent(
       // Apply the correct visual representation to all objects based on the active tab
       var objects = canvas.getObjects();
 
-      if (_activeGlobalTab === 'components') {
+      if (_activeGlobalTab === 'code') {
         // Show live iframes for objects with code
         objects.forEach(function(obj) {
           if (obj._isFrameLabel) return;
@@ -3606,16 +4676,13 @@ export function getCanvasContent(
           if (obj.opacity < 0.1 && vd.liveIframeActive) {
             obj.set('opacity', 1);
           }
-          if (_activeGlobalTab === 'image') {
+          if (_activeGlobalTab === 'design') {
+            // Design tab: show image view (wireframes / generated images)
             if (vd.activeView !== 'image' && vd.imageDataUrl) {
               _showImageView(obj, vd);
             }
-          } else if (_activeGlobalTab === 'svg') {
-            if (vd.svgMarkup && vd.activeView !== 'svg') {
-              _showSvgView(obj, vd);
-            }
           }
-          // Frames tab: don't change object view, just show grid overlay
+          // Frames/Assets tabs: don't change object view, just show grid overlay
         });
         canvas.renderAll();
       }
@@ -3625,107 +4692,569 @@ export function getCanvasContent(
     // Frames Grid — thumbnail view of all objects
     // ====================================================================
 
-    function _buildFramesGrid() {
-      framesGrid.innerHTML = '';
-      var objects = canvas.getObjects();
-      var activeObj = canvas.getActiveObject();
+    // ====================================================================
+    // Assets Grid — unified asset library
+    // ====================================================================
+    var _designAssets = []; // Array of { id, type, prompt, src, alt, fit, linkedNodeId? }
 
-      objects.forEach(function(obj) {
-        if (obj._isFrameLabel) return; // skip label overlay texts
-        var label = obj.label || obj.description || 'Untitled';
-        var thumb = document.createElement('div');
-        thumb.className = 'frame-thumb' + (obj === activeObj ? ' selected' : '');
+    function _buildAssetsGrid() {
+      assetsGrid.innerHTML = '';
+      var filtered = _assetFilter === 'all'
+        ? _designAssets
+        : _designAssets.filter(function(a) { return a.type === _assetFilter; });
 
-        // Generate thumbnail
-        var img = document.createElement('img');
-        img.className = 'frame-thumb-img';
-        try {
-          img.src = obj.toDataURL({ format: 'png', multiplier: 0.3 });
-        } catch (e) {
-          img.style.background = '#333';
+      if (filtered.length === 0) {
+        assetsGrid.innerHTML = '<div style="color:var(--vscode-descriptionForeground);text-align:center;padding:40px;grid-column:1/-1;">No assets yet. Use /mockup to generate a design with assets, or /generate to create images.</div>';
+        return;
+      }
+
+      filtered.forEach(function(asset) {
+        var card = document.createElement('div');
+        card.className = 'frame-thumb asset-card';
+
+        var thumb;
+        if (asset.src && (asset.type === 'image' || asset.type === 'svg' || asset.type === 'icon')) {
+          thumb = document.createElement('img');
+          thumb.className = 'frame-thumb-img';
+          thumb.src = asset.src;
+          thumb.alt = asset.alt || asset.prompt || '';
+        } else if (asset.src && asset.type === 'video') {
+          thumb = document.createElement('video');
+          thumb.className = 'frame-thumb-img';
+          thumb.src = asset.src;
+          thumb.muted = true;
+          thumb.addEventListener('mouseenter', function() { try { thumb.play(); } catch(e) {} });
+          thumb.addEventListener('mouseleave', function() { try { thumb.pause(); thumb.currentTime = 0; } catch(e) {} });
+        } else {
+          thumb = document.createElement('div');
+          thumb.className = 'frame-thumb-img';
+          thumb.style.cssText = 'display:flex;align-items:center;justify-content:center;background:#333;color:#888;font-size:11px;';
+          thumb.textContent = asset.type === 'video' ? 'Generating...' : (asset.prompt || asset.type);
         }
 
-        var labelEl = document.createElement('div');
-        labelEl.className = 'frame-thumb-label';
-        labelEl.textContent = label;
+        var badge = document.createElement('span');
+        badge.className = 'asset-type-badge';
+        badge.textContent = asset.type;
 
-        thumb.appendChild(img);
-        thumb.appendChild(labelEl);
-        thumb.addEventListener('click', function() {
-          canvas.setActiveObject(obj);
-          canvas.renderAll();
-          // Scroll canvas to center on this object
-          var bound = obj.getBoundingRect();
-          var zoom = canvas.getZoom();
-          var cx = canvasArea.clientWidth / 2;
-          var cy = canvasArea.clientHeight / 2;
-          canvas.absolutePan(new fabric.Point(bound.left + bound.width / 2 - cx / zoom, bound.top + bound.height / 2 - cy / zoom));
-          canvas.renderAll();
-          // Switch to Image tab to see the object
-          _switchGlobalTab('image');
+        var label = document.createElement('div');
+        label.className = 'frame-thumb-label';
+        label.textContent = asset.alt || asset.id;
+
+        var promptPreview = document.createElement('div');
+        promptPreview.className = 'asset-prompt-preview';
+        promptPreview.textContent = asset.prompt || '';
+
+        card.appendChild(thumb);
+        card.appendChild(badge);
+        card.appendChild(label);
+        if (asset.prompt) { card.appendChild(promptPreview); }
+
+        card.addEventListener('click', function() {
+          // Select this asset — show regenerate/reimagine in actions
+          _selectedAssetId = asset.id;
+          _buildAssetsGrid(); // re-render to show selection
         });
-        framesGrid.appendChild(thumb);
-      });
+        if (_selectedAssetId === asset.id) {
+          card.style.borderColor = 'var(--vscode-button-background)';
+        }
 
-      if (objects.filter(function(o) { return !o._isFrameLabel; }).length === 0) {
-        framesGrid.innerHTML = '<div style="color:var(--vscode-descriptionForeground);text-align:center;padding:40px;grid-column:1/-1;">No frames on canvas yet. Use the Frame tool or generate a draft to get started.</div>';
-      }
+        assetsGrid.appendChild(card);
+      });
     }
 
-    // ====================================================================
-    // Frame Labels — faded title on each object
-    // ====================================================================
+    var _selectedAssetId = null;
 
-    function _updateFrameLabel(obj) {
-      if (obj._isFrameLabel) return;
-      var label = obj.label || obj.description || '';
-      // Remove existing label
-      if (obj._labelText) {
-        canvas.remove(obj._labelText);
-        obj._labelText = null;
-      }
-      if (!label) return;
-
-      var objW = (obj.width || 100) * (obj.scaleX || 1);
-      var objH = (obj.height || 100) * (obj.scaleY || 1);
-      var text = new fabric.Text(label, {
-        left: obj.left + objW / 2,
-        top: obj.top + objH / 2,
-        originX: 'center',
-        originY: 'center',
-        fontSize: Math.min(14, Math.max(10, objW / 15)),
-        fill: 'rgba(255,255,255,0.25)',
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        selectable: false,
-        evented: false,
-        _isFrameLabel: true,
+    // Asset filter buttons
+    var filterBtns = document.querySelectorAll('.asset-filter-btn');
+    filterBtns.forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        _assetFilter = btn.getAttribute('data-filter');
+        filterBtns.forEach(function(b) { b.classList.toggle('active', b === btn); });
+        _buildAssetsGrid();
       });
-      obj._labelText = text;
-      canvas.add(text);
-    }
-
-    function _repositionFrameLabel(obj) {
-      if (!obj._labelText) return;
-      var objW = (obj.width || 100) * (obj.scaleX || 1);
-      var objH = (obj.height || 100) * (obj.scaleY || 1);
-      obj._labelText.set({
-        left: obj.left + objW / 2,
-        top: obj.top + objH / 2,
-        fontSize: Math.min(14, Math.max(10, objW / 15)),
-      });
-      obj._labelText.setCoords();
-    }
-
-    // Hook frame labels into object events
-    canvas.on('object:added', function(e) {
-      if (e.target && !e.target._isFrameLabel) { _updateFrameLabel(e.target); }
     });
+
+    // ====================================================================
+    // Theme Library — save, switch, edit, manage themes
+    // ====================================================================
+
+    function _deepCloneTheme(theme) {
+      return JSON.parse(JSON.stringify(theme));
+    }
+
+    function _initThemeLibrary() {
+      if (_designSpec && _designSpec.themeLibrary && _designSpec.themeLibrary.length > 0) {
+        _themeLibrary = _designSpec.themeLibrary;
+      } else if (_designSpec && _designSpec.theme) {
+        // Seed with current theme as "Default"
+        var defaultTheme = {
+          id: 'default-theme',
+          name: 'Default',
+          theme: _deepCloneTheme(_designSpec.theme),
+          createdAt: Date.now()
+        };
+        _themeLibrary = [defaultTheme];
+        _designSpec.themeLibrary = _themeLibrary;
+      }
+      // Find the active theme (match current _designSpec.theme)
+      if (_themeLibrary.length > 0 && !_activeThemeId) {
+        _activeThemeId = _themeLibrary[0].id;
+      }
+    }
+
+    function _syncThemeLibraryToSpec() {
+      if (_designSpec) {
+        _designSpec.themeLibrary = _themeLibrary;
+        _designSpec.updatedAt = Date.now();
+      }
+    }
+
+    function _saveThemeToLibrary(name, theme) {
+      var saved = {
+        id: 'theme-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
+        name: name || 'Untitled Theme',
+        theme: _deepCloneTheme(theme),
+        createdAt: Date.now()
+      };
+      _themeLibrary.push(saved);
+      _syncThemeLibraryToSpec();
+      if (_activeGlobalTab === 'themes') { _buildThemesGrid(); }
+      return saved;
+    }
+
+    function _applyThemeFromLibrary(themeId) {
+      var entry = null;
+      for (var i = 0; i < _themeLibrary.length; i++) {
+        if (_themeLibrary[i].id === themeId) { entry = _themeLibrary[i]; break; }
+      }
+      if (!entry || !_designSpec) return;
+      _designSpec.theme = _deepCloneTheme(entry.theme);
+      _designSpec.updatedAt = Date.now();
+      _activeThemeId = themeId;
+      // Re-render canvas with new theme
+      if (_designSpec.rootNodes && _designSpec.rootNodes.length > 0) {
+        _renderDesignTree(_designSpec.rootNodes, _designSpec.theme);
+      }
+      if (_activeGlobalTab === 'themes') { _buildThemesGrid(); }
+      showPromptStatusMessage('Theme "' + entry.name + '" applied', 'success');
+      setTimeout(hidePromptStatus, 2000);
+    }
+
+    function _deleteThemeFromLibrary(themeId) {
+      if (themeId === 'default-theme') return; // Can't delete default
+      _themeLibrary = _themeLibrary.filter(function(t) { return t.id !== themeId; });
+      _syncThemeLibraryToSpec();
+      // If deleted active, switch to first available
+      if (_activeThemeId === themeId) {
+        _activeThemeId = _themeLibrary.length > 0 ? _themeLibrary[0].id : null;
+        if (_activeThemeId) { _applyThemeFromLibrary(_activeThemeId); }
+      }
+      if (_activeGlobalTab === 'themes') { _buildThemesGrid(); }
+    }
+
+    function _duplicateThemeInLibrary(themeId) {
+      var entry = null;
+      for (var i = 0; i < _themeLibrary.length; i++) {
+        if (_themeLibrary[i].id === themeId) { entry = _themeLibrary[i]; break; }
+      }
+      if (!entry) return;
+      _saveThemeToLibrary(entry.name + ' (Copy)', entry.theme);
+    }
+
+    function _buildThemesGrid() {
+      themesGrid.innerHTML = '';
+      if (_themeLibrary.length === 0) {
+        themesGrid.innerHTML = '<div style="padding:24px;text-align:center;color:var(--vscode-descriptionForeground);font-size:12px;">No themes yet. Generate a mockup first or click "+ Blank" to create one.</div>';
+        return;
+      }
+      _themeLibrary.forEach(function(saved) {
+        var card = document.createElement('div');
+        card.className = 'theme-card' + (saved.id === _activeThemeId ? ' active' : '');
+
+        var colors = saved.theme.colors || {};
+        var swatchColors = [colors.primary, colors.secondary, colors.accent, colors.background, colors.surface, colors.text].filter(Boolean);
+
+        var swatchesHtml = '<div class="theme-swatches">';
+        swatchColors.forEach(function(c) {
+          swatchesHtml += '<div class="theme-swatch" style="background:' + c + ';"></div>';
+        });
+        swatchesHtml += '</div>';
+
+        var dateStr = new Date(saved.createdAt).toLocaleDateString();
+        var isDefault = saved.id === 'default-theme';
+        var fontInfo = saved.theme.typography ? saved.theme.typography.fontFamily : '';
+
+        card.innerHTML = '<div class="theme-card-header">' +
+          '<span class="theme-card-name">' + saved.name + '</span>' +
+          '<div class="theme-card-actions">' +
+            '<button class="theme-action-btn" data-action="edit" data-id="' + saved.id + '" title="Edit">&#9998;</button>' +
+            '<button class="theme-action-btn" data-action="duplicate" data-id="' + saved.id + '" title="Duplicate">&#10697;</button>' +
+            (isDefault ? '' : '<button class="theme-action-btn" data-action="delete" data-id="' + saved.id + '" title="Delete">&#128465;</button>') +
+          '</div>' +
+        '</div>' +
+        swatchesHtml +
+        '<div class="theme-card-meta">' +
+          (fontInfo ? fontInfo + ' &middot; ' : '') + dateStr +
+          (saved.id === _activeThemeId ? ' &middot; <strong>Active</strong>' : '') +
+        '</div>';
+
+        // Click card to apply
+        card.addEventListener('click', function(e) {
+          if (e.target.closest('.theme-action-btn')) return; // ignore action button clicks
+          _applyThemeFromLibrary(saved.id);
+        });
+
+        themesGrid.appendChild(card);
+      });
+
+      // Wire action buttons
+      themesGrid.querySelectorAll('.theme-action-btn').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          var action = btn.getAttribute('data-action');
+          var id = btn.getAttribute('data-id');
+          if (action === 'edit') { _openThemeEditor(id); }
+          else if (action === 'duplicate') { _duplicateThemeInLibrary(id); }
+          else if (action === 'delete') { _deleteThemeFromLibrary(id); }
+        });
+      });
+    }
+
+    function _openThemeEditor(themeId) {
+      var entry = null;
+      for (var i = 0; i < _themeLibrary.length; i++) {
+        if (_themeLibrary[i].id === themeId) { entry = _themeLibrary[i]; break; }
+      }
+      if (!entry) return;
+      _editingThemeId = themeId;
+      themeEditorName.value = entry.name;
+
+      var html = '';
+      // Colors section
+      html += '<div class="theme-section-title">Colors</div>';
+      var colorKeys = Object.keys(entry.theme.colors || {});
+      colorKeys.forEach(function(key) {
+        var val = entry.theme.colors[key];
+        // Normalize short labels
+        var label = key.replace(/([A-Z])/g, ' $1').replace(/^./, function(s) { return s.toUpperCase(); });
+        html += '<div class="theme-color-row">' +
+          '<label>' + label + '</label>' +
+          '<input type="color" data-color-key="' + key + '" value="' + (val || '#000000') + '" />' +
+          '<input type="text" class="theme-editor-input" data-color-text="' + key + '" value="' + (val || '#000000') + '" style="width:80px;" />' +
+        '</div>';
+      });
+
+      // Typography section
+      if (entry.theme.typography) {
+        html += '<div class="theme-section-title">Typography</div>';
+        html += '<div class="theme-color-row">' +
+          '<label>Font Family</label>' +
+          '<input type="text" class="theme-editor-input" id="theme-edit-fontFamily" value="' + (entry.theme.typography.fontFamily || '') + '" style="width:160px;" />' +
+        '</div>';
+        if (entry.theme.typography.headingFamily) {
+          html += '<div class="theme-color-row">' +
+            '<label>Heading Family</label>' +
+            '<input type="text" class="theme-editor-input" id="theme-edit-headingFamily" value="' + (entry.theme.typography.headingFamily || '') + '" style="width:160px;" />' +
+          '</div>';
+        }
+        html += '<div class="theme-color-row">' +
+          '<label>Line Height</label>' +
+          '<input type="number" class="theme-editor-input" id="theme-edit-lineHeight" value="' + (entry.theme.typography.lineHeight || 1.5) + '" step="0.1" style="width:70px;" />' +
+        '</div>';
+      }
+
+      // Border radii section
+      if (entry.theme.radii) {
+        html += '<div class="theme-section-title">Border Radius</div>';
+        ['sm', 'md', 'lg', 'full'].forEach(function(size) {
+          if (entry.theme.radii[size] !== undefined) {
+            html += '<div class="theme-color-row">' +
+              '<label>' + size.toUpperCase() + '</label>' +
+              '<input type="number" class="theme-editor-input" data-radius-key="' + size + '" value="' + entry.theme.radii[size] + '" style="width:70px;" />' +
+            '</div>';
+          }
+        });
+      }
+
+      themeEditorBody.innerHTML = html;
+
+      // Sync color picker ↔ text input
+      themeEditorBody.querySelectorAll('input[type="color"]').forEach(function(picker) {
+        var key = picker.getAttribute('data-color-key');
+        var textInput = themeEditorBody.querySelector('input[data-color-text="' + key + '"]');
+        picker.addEventListener('input', function() { if (textInput) textInput.value = picker.value; });
+        if (textInput) {
+          textInput.addEventListener('input', function() {
+            if (/^#[0-9a-fA-F]{6}$/.test(textInput.value)) { picker.value = textInput.value; }
+          });
+        }
+      });
+
+      themeEditor.style.display = 'flex';
+      themesGrid.style.display = 'none';
+    }
+
+    function _closeThemeEditor() {
+      themeEditor.style.display = 'none';
+      themesGrid.style.display = '';
+      _editingThemeId = null;
+    }
+
+    function _saveThemeEdits() {
+      if (!_editingThemeId) return;
+      var entry = null;
+      for (var i = 0; i < _themeLibrary.length; i++) {
+        if (_themeLibrary[i].id === _editingThemeId) { entry = _themeLibrary[i]; break; }
+      }
+      if (!entry) return;
+
+      // Update name
+      entry.name = themeEditorName.value || entry.name;
+
+      // Update colors
+      themeEditorBody.querySelectorAll('input[data-color-text]').forEach(function(input) {
+        var key = input.getAttribute('data-color-text');
+        entry.theme.colors[key] = input.value;
+      });
+
+      // Update typography
+      var fontInput = document.getElementById('theme-edit-fontFamily');
+      if (fontInput) { entry.theme.typography.fontFamily = fontInput.value; }
+      var headingInput = document.getElementById('theme-edit-headingFamily');
+      if (headingInput) { entry.theme.typography.headingFamily = headingInput.value; }
+      var lhInput = document.getElementById('theme-edit-lineHeight');
+      if (lhInput) { entry.theme.typography.lineHeight = parseFloat(lhInput.value) || 1.5; }
+
+      // Update radii
+      themeEditorBody.querySelectorAll('input[data-radius-key]').forEach(function(input) {
+        var key = input.getAttribute('data-radius-key');
+        entry.theme.radii[key] = parseInt(input.value) || 0;
+      });
+
+      _syncThemeLibraryToSpec();
+
+      // If this is the active theme, re-apply to canvas
+      if (_activeThemeId === _editingThemeId && _designSpec) {
+        _designSpec.theme = _deepCloneTheme(entry.theme);
+        if (_designSpec.rootNodes && _designSpec.rootNodes.length > 0) {
+          _renderDesignTree(_designSpec.rootNodes, _designSpec.theme);
+        }
+      }
+
+      _closeThemeEditor();
+      _buildThemesGrid();
+      showPromptStatusMessage('Theme "' + entry.name + '" saved', 'success');
+      setTimeout(hidePromptStatus, 2000);
+    }
+
+    // Theme panel button listeners
+    document.getElementById('btn-theme-generate').addEventListener('click', function() {
+      // Reuse the existing /theme action flow
+      var desc = prompt('Describe the theme you want to generate:');
+      if (!desc) return;
+      vscode.postMessage({
+        type: 'canvasAction',
+        payload: { text: '/theme ' + desc, canvasId: canvasSessionId, snapshot: buildSnapshot(), designTheme: _designSpec ? _designSpec.theme : null }
+      });
+    });
+
+    document.getElementById('btn-theme-new').addEventListener('click', function() {
+      // Create a blank theme with defaults and open editor
+      var blankTheme = {
+        colors: { primary: '#3B82F6', secondary: '#6366F1', accent: '#F59E0B', background: '#FFFFFF', surface: '#F8FAFC', text: '#1E293B', textSecondary: '#64748B', border: '#E2E8F0', error: '#EF4444', success: '#22C55E' },
+        typography: { fontFamily: 'Inter, system-ui, sans-serif', scale: [12, 14, 16, 20, 24, 32, 48], lineHeight: 1.5, weights: { regular: 400, medium: 500, bold: 700 } },
+        spacing: { unit: 4, scale: [0, 4, 8, 12, 16, 24, 32, 48, 64] },
+        radii: { sm: 4, md: 8, lg: 16, full: 9999 },
+        shadows: { sm: '0 1px 2px rgba(0,0,0,0.05)', md: '0 4px 6px rgba(0,0,0,0.1)', lg: '0 10px 15px rgba(0,0,0,0.1)' }
+      };
+      var saved = _saveThemeToLibrary('Custom Theme', blankTheme);
+      _openThemeEditor(saved.id);
+    });
+
+    document.getElementById('btn-theme-editor-close').addEventListener('click', function() {
+      _closeThemeEditor();
+    });
+
+    document.getElementById('btn-theme-editor-save').addEventListener('click', function() {
+      _saveThemeEdits();
+    });
+
+    // ====================================================================
+    // Frame Labels — rendered as canvas overlay (always grouped with frame)
+    // ====================================================================
+
+    // Label bounds cache for click detection (screen-space)
+    var _frameLabelBounds = []; // Array of { obj, left, top, width, height }
+
+    // Render labels in after:render — they're painted directly on the canvas context,
+    // so they always appear at the correct position (no separate objects to sync)
+    canvas.on('after:render', function() {
+      var ctx = canvas.getContext();
+      var zoom = canvas.getZoom();
+      var vpt = canvas.viewportTransform;
+      _frameLabelBounds = [];
+
+      canvas.getObjects().forEach(function(obj) {
+        if (obj._isFrameLabel || obj._isContentText || obj._isTypeBadge) return;
+        var label = obj.label || obj.description || '';
+        if (!label) return;
+
+        var coords = obj.aCoords || obj.calcACoords();
+        if (!coords) return;
+
+        // World-space bounds
+        var xs = [coords.tl.x, coords.tr.x, coords.bl.x, coords.br.x];
+        var ys = [coords.tl.y, coords.tr.y, coords.bl.y, coords.br.y];
+        var wLeft = Math.min.apply(null, xs);
+        var wTop = Math.min.apply(null, ys);
+        var wW = Math.max.apply(null, xs) - wLeft;
+
+        // Screen-space position
+        var sLeft = wLeft * zoom + vpt[4];
+        var sTop = wTop * zoom + vpt[5];
+        var sW = wW * zoom;
+
+        // Font size scales with zoom but stays readable
+        var baseFontSize = Math.min(13, Math.max(9, wW / 18));
+        var fontSize = baseFontSize * zoom;
+        // Clamp rendered font size so labels stay readable when zoomed out
+        if (fontSize < 8) return; // too small to show
+        if (fontSize > 18) fontSize = 18;
+
+        var labelY = sTop - fontSize - 3 * zoom;
+
+        ctx.save();
+        ctx.font = fontSize + 'px system-ui, -apple-system, sans-serif';
+        ctx.fillStyle = 'rgba(180,180,180,0.6)';
+        ctx.textBaseline = 'top';
+
+        // Truncate label if wider than frame
+        var textWidth = ctx.measureText(label).width;
+        var displayLabel = label;
+        if (textWidth > sW) {
+          while (displayLabel.length > 1 && ctx.measureText(displayLabel + '…').width > sW) {
+            displayLabel = displayLabel.slice(0, -1);
+          }
+          displayLabel += '…';
+          textWidth = ctx.measureText(displayLabel).width;
+        }
+
+        ctx.fillText(displayLabel, sLeft, labelY);
+        ctx.restore();
+
+        // Cache bounds for click detection
+        _frameLabelBounds.push({
+          obj: obj,
+          left: sLeft,
+          top: labelY,
+          width: textWidth,
+          height: fontSize,
+        });
+      });
+    });
+
+    // Stub _repositionFrameLabel — labels are now rendered in after:render,
+    // but other code (content text, type badge, asset placeholders) still uses this
+    function _repositionFrameLabel(obj) {
+      if (obj._contentText) {
+        var objW = (obj.width || 100) * (obj.scaleX || 1);
+        obj._contentText.set({ left: obj.left + 8, top: obj.top + 16, width: objW - 16 });
+        obj._contentText.setCoords();
+      }
+      if (obj._typeBadge) {
+        var objW2 = (obj.width || 100) * (obj.scaleX || 1);
+        obj._typeBadge.set({ left: obj.left + objW2 - 4, top: obj.top + 2 });
+        obj._typeBadge.setCoords();
+      }
+      if (obj._assetPlaceholders && obj._assetPlaceholders.length) {
+        var objW3 = (obj.width || 100) * (obj.scaleX || 1);
+        var assetY = obj.top + (obj._contentText ? 40 : 20);
+        for (var i = 0; i < obj._assetPlaceholders.length; i += 2) {
+          var phRect = obj._assetPlaceholders[i];
+          var phText = obj._assetPlaceholders[i + 1];
+          var phW = objW3 - 16;
+          var phH = phRect.height;
+          phRect.set({ left: obj.left + 8, top: assetY, width: phW });
+          phRect.setCoords();
+          if (phText) {
+            phText.set({ left: obj.left + 8 + phW / 2, top: assetY + phH / 2 });
+            phText.setCoords();
+          }
+          assetY += phH + 8;
+        }
+      }
+    }
+
+    // Clean up associated objects on removal (content text, badge, placeholders, iframes)
     canvas.on('object:removed', function(e) {
-      if (e.target && e.target._labelText) { canvas.remove(e.target._labelText); }
+      if (e.target && e.target._contentText) { canvas.remove(e.target._contentText); }
+      if (e.target && e.target._typeBadge) { canvas.remove(e.target._typeBadge); }
+      if (e.target && e.target._assetPlaceholders) {
+        e.target._assetPlaceholders.forEach(function(p) { canvas.remove(p); });
+      }
       if (e.target && e.target.id) { _destroyComponentIframe(e.target.id); }
     });
-    canvas.on('object:moving', function(e) { _repositionFrameLabel(e.target); _syncIframePosition(e.target); });
-    canvas.on('object:scaling', function(e) { _repositionFrameLabel(e.target); _syncIframePosition(e.target); });
+
+    // Click frame label → select parent object and zoom to it
+    canvas.on('mouse:down', function(opt) {
+      if (opt.target) return; // clicking an object, not empty space/label
+      var e = opt.e;
+      var rect = canvasArea.getBoundingClientRect();
+      var mx = e.clientX - rect.left;
+      var my = e.clientY - rect.top;
+      for (var i = 0; i < _frameLabelBounds.length; i++) {
+        var lb = _frameLabelBounds[i];
+        if (mx >= lb.left && mx <= lb.left + lb.width && my >= lb.top && my <= lb.top + lb.height) {
+          canvas.setActiveObject(lb.obj);
+          canvas.renderAll();
+          _zoomToObject(lb.obj);
+          opt.e.preventDefault();
+          return;
+        }
+      }
+    });
+
+    // Track initial positions for delta calculation
+    canvas.on('selection:created', function(e) {
+      var obj = canvas.getActiveObject();
+      if (obj) { obj._lastLeft = obj.left; obj._lastTop = obj.top; }
+    });
+
+    // ====================================================================
+    // Consolidated object:moving / object:scaling handlers (perf optimization)
+    // ====================================================================
+    var _selCtrlThrottleTime = 0;
+    function _throttledShowSelectionControls() {
+      var now = performance.now();
+      if (now - _selCtrlThrottleTime < 50) return;
+      _selCtrlThrottleTime = now;
+      showSelectionControls();
+    }
+
+    canvas.on('object:moving', function(e) {
+      var target = e.target;
+      updateSelectionStatus();
+      _repositionFrameLabel(target);
+      _syncIframePosition(target);
+      if (target._designNode && target._lastLeft !== undefined) {
+        var dx = target.left - target._lastLeft;
+        var dy = target.top - target._lastTop;
+        _syncChildPositions(target._designNode.id, dx, dy);
+      }
+      target._lastLeft = target.left;
+      target._lastTop = target.top;
+      _genJobRepositionAll();
+      _throttledShowSelectionControls();
+    });
+
+    canvas.on('object:scaling', function(e) {
+      var target = e.target;
+      updateSelectionStatus();
+      _repositionFrameLabel(target);
+      _syncIframePosition(target);
+      _genJobRepositionAll();
+      _throttledShowSelectionControls();
+    });
 
     // ====================================================================
     // Live Component iframes — overlay system
@@ -3799,6 +5328,47 @@ export function getCanvasContent(
       return baseHtml.replace('</body>', bridgeScript + '</body>');
     }
 
+    function _createStitchIframe(obj, htmlContent, nodeWidth, nodeHeight) {
+      if (!obj.id || _iframeOverlays[obj.id]) return;
+
+      // Wrap raw HTML to ensure it renders at the intended design dimensions
+      var wrappedHtml = htmlContent;
+      if (wrappedHtml.indexOf('<html') === -1) {
+        wrappedHtml = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+          + '<meta name="viewport" content="width=' + nodeWidth + '">'
+          + '<style>*{margin:0;padding:0;box-sizing:border-box;}body{overflow:hidden;}</style>'
+          + '</head><body>' + htmlContent + '</body></html>';
+      }
+
+      var wrapper = document.createElement('div');
+      wrapper.className = 'stitch-iframe-wrapper';
+      var iframe = document.createElement('iframe');
+      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+      // Render at full design resolution — CSS transform scales to fit wrapper
+      iframe.style.width = nodeWidth + 'px';
+      iframe.style.height = nodeHeight + 'px';
+      iframe.style.transformOrigin = '0 0';
+      var blob = new Blob([wrappedHtml], { type: 'text/html' });
+      iframe.src = URL.createObjectURL(blob);
+      wrapper.appendChild(iframe);
+      _iframeContainer.appendChild(wrapper);
+
+      _iframeOverlays[obj.id] = {
+        wrapper: wrapper, iframe: iframe, objectRef: obj, blobUrl: iframe.src,
+        designWidth: nodeWidth, designHeight: nodeHeight
+      };
+      _syncIframePosition(obj);
+      console.log('[Mysti Canvas] Created Stitch iframe for object:', obj.id);
+    }
+
+    function _syncStitchIframeScale(objId) {
+      var overlay = _iframeOverlays[objId];
+      if (!overlay || !overlay.designWidth) return;
+      var wrapperW = parseFloat(overlay.wrapper.style.width) || overlay.designWidth;
+      var scaleX = wrapperW / overlay.designWidth;
+      overlay.iframe.style.transform = 'scale(' + scaleX + ')';
+    }
+
     function _createComponentIframe(obj, vd) {
       if (!obj.id || _iframeOverlays[obj.id]) return;
       var componentFile = null;
@@ -3850,6 +5420,11 @@ export function getCanvasContent(
       overlay.wrapper.style.top = screenTop + 'px';
       overlay.wrapper.style.width = screenW + 'px';
       overlay.wrapper.style.height = screenH + 'px';
+      // Scale Stitch iframes to match wrapper size
+      if (overlay.designWidth) {
+        var scaleX = screenW / overlay.designWidth;
+        overlay.iframe.style.transform = 'scale(' + scaleX + ')';
+      }
     }
 
     function _syncAllIframePositions() {
@@ -3862,6 +5437,11 @@ export function getCanvasContent(
       if (_iframeSyncRaf) return;
       _iframeSyncRaf = requestAnimationFrame(function() {
         _syncAllIframePositions();
+        _genJobRepositionAll();
+        if (_previewMode) { _syncAllPreviewOverlays(); }
+        if (typeof updateVideoOverlayPosition === 'function') { updateVideoOverlayPosition(); }
+        // Reposition placeholder overlay during pan/zoom (lightweight — no visibility recalc)
+        _repositionPlaceholder();
         _iframeSyncRaf = null;
       });
     }
@@ -4383,7 +5963,7 @@ export function getCanvasContent(
       vd.framework = framework || 'react';
 
       // If Components tab is active, create live iframe immediately
-      if (_activeGlobalTab === 'components') {
+      if (_activeGlobalTab === 'code') {
         _createComponentIframe(obj, vd);
         obj.set('opacity', 0.05);
         canvas.renderAll();
@@ -4437,10 +6017,10 @@ export function getCanvasContent(
     }
 
     // Tab click handlers
-    tabImageVideo.addEventListener('click', function() { _switchGlobalTab('image'); });
-    tabSvg.addEventListener('click', function() { _switchGlobalTab('svg'); });
-    tabComponents.addEventListener('click', function() { _switchGlobalTab('components'); });
-    tabFrames.addEventListener('click', function() { _switchGlobalTab('frames'); });
+    tabDesign.addEventListener('click', function() { _switchGlobalTab('design'); });
+    tabAssets.addEventListener('click', function() { _switchGlobalTab('assets'); });
+    tabCode.addEventListener('click', function() { _switchGlobalTab('code'); });
+    tabThemes.addEventListener('click', function() { _switchGlobalTab('themes'); });
 
     // Integrate button click handler (actions panel)
     actionIntegrate.addEventListener('click', function() {
@@ -4657,6 +6237,20 @@ export function getCanvasContent(
               break;
             }
 
+            case 'canvas_multipass_progress': {
+              var passLabel = 'Pass ' + (chunk.pass || 1) + '/' + (chunk.totalPasses || 3) + ': ' + (chunk.label || 'Processing...');
+              var progressPct = 0;
+              if (chunk.totalPasses && chunk.pass && chunk.total) {
+                var passWeight = 100 / chunk.totalPasses;
+                progressPct = Math.round((chunk.pass - 1) * passWeight + (chunk.current / Math.max(1, chunk.total)) * passWeight);
+              }
+              if (_pendingLayoutJob) {
+                genJobUpdateLabel(_pendingLayoutJob.id, passLabel);
+              }
+              showPromptStatus(passLabel, progressPct);
+              break;
+            }
+
             case 'canvas_layout_complete': {
               var layoutContainer = _pendingLayoutJob ? _pendingLayoutJob.targetObject : null;
               if (_pendingLayoutJob) { genJobComplete(_pendingLayoutJob.id); _pendingLayoutJob = null; }
@@ -4684,52 +6278,42 @@ export function getCanvasContent(
               break;
 
             case 'canvas_website_complete': {
+              // Legacy handler — website generation now yields canvas_mockup_complete for hierarchical rendering
               if (_pendingLayoutJob) { genJobComplete(_pendingLayoutJob.id); _pendingLayoutJob = null; }
-              if (chunk.pages && chunk.pages.length) {
-                var allFrameMap = {};
-                var totalFrameCount = 0;
-                chunk.pages.forEach(function(page, pi) {
-                  // Add page title label above each page column
-                  var titleLeft = page.frames.length > 0 ? page.frames[0].left : pi * 1540;
-                  var titleTop = -50;
-                  // Find the minimum top from frames to position title above
-                  page.frames.forEach(function(f) { if (f.top < titleTop + 50) titleTop = f.top - 50; });
-                  var titleText = new fabric.Text(page.name, {
-                    left: titleLeft,
-                    top: titleTop,
-                    fontSize: 28,
-                    fontWeight: 'bold',
-                    fill: 'rgba(100, 149, 237, 0.9)',
-                    selectable: true,
-                    evented: true,
-                  });
-                  canvas.add(titleText);
-
-                  // Add layout frames for this page
-                  var pageFrameMap = addLayoutFrames(page.frames, null);
-                  Object.keys(pageFrameMap).forEach(function(k) { allFrameMap[k] = pageFrameMap[k]; });
-                  totalFrameCount += page.frames.length;
-                });
-
-                _lastLayoutFrameMap = allFrameMap;
-                showPromptStatusMessage(chunk.pages.length + ' pages, ' + totalFrameCount + ' frames created', 'success');
-                setTimeout(hidePromptStatus, 3000);
-
-                // Collect all frames for batch generation
-                var allFrames = [];
-                chunk.pages.forEach(function(page) {
-                  page.frames.forEach(function(f) { allFrames.push(f); });
-                });
-                showBatchGenerateModal(allFrames, allFrameMap);
-
-                // Zoom to fit all pages
-                canvas.requestRenderAll();
-              } else {
-                showPromptStatusMessage('No pages generated', 'error');
-                setTimeout(hidePromptStatus, 5000);
-              }
               break;
             }
+
+            // ── Stitch Generation ─────────────────────────────────
+            case 'canvas_stitch_started':
+              if (_pendingLayoutJob) {
+                genJobUpdateLabel(_pendingLayoutJob.id, 'Generating with Google Stitch...');
+              }
+              showPromptStatus('Generating with Google Stitch...', 10);
+              break;
+
+            case 'canvas_stitch_screen_ready':
+              if (_pendingLayoutJob && chunk.stitchScreenRef) {
+                _pendingLayoutJob.stitchRef = chunk.stitchScreenRef;
+              }
+              showPromptStatus('Downloading screen...', 50);
+              break;
+
+            case 'canvas_stitch_html_ready':
+              if (_pendingLayoutJob && chunk.stitchHtml) {
+                _pendingLayoutJob.htmlContent = chunk.stitchHtml;
+              }
+              showPromptStatus('Screen ready', 90);
+              break;
+
+            case 'canvas_stitch_variants_ready':
+              showPromptStatus('Variants generated (' + (chunk.variantCount || 0) + ')', 100);
+              setTimeout(hidePromptStatus, 3000);
+              break;
+
+            case 'canvas_stitch_design_dna':
+              showPromptStatusMessage('Design DNA extracted — DESIGN.md created', 'success');
+              setTimeout(hidePromptStatus, 5000);
+              break;
 
             // ── SVG Conversion ────────────────────────────────────
             case 'canvas_svg_started':
@@ -4753,7 +6337,7 @@ export function getCanvasContent(
                 // Auto-switch to SVG view and tab
                 canvas.setActiveObject(svgSourceObj);
                 switchView('svg');
-                _switchGlobalTab('svg');
+                _switchGlobalTab('assets');
                 showPromptStatusMessage('SVG created — use tabs to switch views', 'success');
                 setTimeout(hidePromptStatus, 3000);
               } else if (chunk.svgMarkup) {
@@ -4846,7 +6430,7 @@ export function getCanvasContent(
                   renderVd.componentRender = 'data:image/png;base64,' + chunk.imageBase64;
                   console.log('[Mysti Canvas] Component render stored on object:', renderTargetObj.id);
                   // Auto-switch to Components tab
-                  _switchGlobalTab('components');
+                  _switchGlobalTab('code');
                   canvas.setActiveObject(renderTargetObj);
                   switchView('component');
                   showPromptStatusMessage('Component rendered', 'success');
@@ -4904,7 +6488,7 @@ export function getCanvasContent(
                   } else if (componentFile) {
                     // Create iframe if not yet exists (components tab might not be active)
                     _createComponentIframe(editTargetObj, editVd);
-                    if (_activeGlobalTab === 'components') {
+                    if (_activeGlobalTab === 'code') {
                       editTargetObj.set('opacity', 0.05);
                       canvas.renderAll();
                     }
@@ -4959,6 +6543,100 @@ export function getCanvasContent(
               showPromptStatusMessage('All ' + (chunk.totalFrames || '') + ' frames generated!', 'success');
               setTimeout(hidePromptStatus, 4000);
               break;
+
+            // ── Mockup Generation (DesignNode JSON) ──────────────
+            case 'canvas_mockup_started':
+              showPromptStatus('Generating mockup...', 5);
+              break;
+
+
+            case 'canvas_mockup_complete': {
+              // Complete the pending job (removes spinner overlay)
+              if (_pendingLayoutJob) {
+                genJobComplete(_pendingLayoutJob.id);
+                _pendingLayoutJob = null;
+              }
+
+              // Discard selection before re-rendering
+              canvas.discardActiveObject();
+
+              if (chunk.designNodes && chunk.designNodes.length) {
+                // Store the design spec
+                if (!_designSpec) {
+                  _designSpec = {
+                    id: canvasSessionId || 'spec-' + Date.now(),
+                    version: 1,
+                    name: 'Mockup',
+                    theme: chunk.designTheme || _getDefaultTheme(),
+                    rootNodes: chunk.designNodes,
+                    assets: [],
+                    createdAt: Date.now(),
+                    updatedAt: Date.now()
+                  };
+                } else {
+                  // Append to existing spec
+                  chunk.designNodes.forEach(function(n) { _designSpec.rootNodes.push(n); });
+                  _designSpec.updatedAt = Date.now();
+                  if (chunk.designTheme) { _designSpec.theme = chunk.designTheme; }
+                }
+
+                // Initialize theme library from spec
+                _initThemeLibrary();
+
+                // Collect assets from nodes
+                _collectAssetsFromNodes(chunk.designNodes);
+
+                // Render on canvas
+                _renderDesignTree(_designSpec.rootNodes, _designSpec.theme);
+                _switchGlobalTab('design');
+
+                // Zoom to fit (delay to allow async image loads to complete)
+                setTimeout(function() {
+                  zoomToFit();
+                  canvas.renderAll();
+                }, 500);
+
+                showPromptStatusMessage('Mockup generated — ' + chunk.designNodes.length + ' top-level nodes', 'success');
+              }
+              setTimeout(hidePromptStatus, 2000);
+              break;
+            }
+
+            case 'canvas_theme_complete': {
+              if (chunk.designTheme && _designSpec) {
+                _designSpec.theme = chunk.designTheme;
+                _designSpec.updatedAt = Date.now();
+                // Save to theme library
+                var themeName = 'Generated Theme ' + (_themeLibrary.length);
+                var savedTheme = _saveThemeToLibrary(themeName, chunk.designTheme);
+                _activeThemeId = savedTheme.id;
+                // Re-render with new theme
+                if (_designSpec.rootNodes && _designSpec.rootNodes.length > 0) {
+                  _renderDesignTree(_designSpec.rootNodes, _designSpec.theme);
+                }
+                if (_activeGlobalTab === 'themes') { _buildThemesGrid(); }
+                showPromptStatusMessage('Theme generated and saved as "' + themeName + '"', 'success');
+              }
+              setTimeout(hidePromptStatus, 3000);
+              break;
+            }
+
+            case 'canvas_asset_generated': {
+              if (chunk.asset) {
+                // Update asset in library
+                var found = false;
+                for (var ai = 0; ai < _designAssets.length; ai++) {
+                  if (_designAssets[ai].id === chunk.asset.id) {
+                    _designAssets[ai].src = chunk.asset.src;
+                    found = true;
+                    break;
+                  }
+                }
+                if (!found) { _designAssets.push(chunk.asset); }
+                if (_activeGlobalTab === 'assets') { _buildAssetsGrid(); }
+              }
+              break;
+            }
 
             // ── Errors ─────────────────────────────────────────────
             case 'canvas_error':

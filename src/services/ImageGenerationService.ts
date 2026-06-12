@@ -136,7 +136,7 @@ export class ImageGenerationService {
     }
 
     const body = JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5-mini',
       max_tokens: 16384,
       messages: [{ role: 'user', content }],
     });

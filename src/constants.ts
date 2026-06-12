@@ -137,3 +137,17 @@ export const CANVAS_BATCH_CONCURRENCY = 3;
 export const CANVAS_ASSET_REF_PREFIX = 'asset://';
 export const CANVAS_CODE_DEFAULT_FRAMEWORK = 'react';
 export const CANVAS_CODE_OUTPUT_DIR = 'src/components';
+
+/**
+ * Google Stitch constants
+ */
+export const STITCH_API_TIMEOUT_MS = 120_000;
+export const STITCH_DEFAULT_DEVICE_TYPE = 'DESKTOP';
+export const STITCH_DEFAULT_VARIANT_COUNT = 3;
+export const STITCH_PROJECT_NAME_PREFIX = 'mysti-canvas-';
+export const STITCH_DEVICE_DIMENSIONS: Record<string, { width: number; height: number }> = {
+  DESKTOP: { width: 1440, height: 900 },
+  MOBILE: { width: 375, height: 812 },
+  TABLET: { width: 768, height: 1024 },
+  AGNOSTIC: { width: 1200, height: 800 },
+};

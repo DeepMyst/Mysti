@@ -22,8 +22,11 @@ import {
   CANVAS_MAX_VARIANTS,
   CANVAS_RENDER_DEFAULT_VIEWPORT,
   CANVAS_BATCH_CONCURRENCY,
-  CANVAS_ASSET_REF_PREFIX
+  CANVAS_ASSET_REF_PREFIX,
+  STITCH_DEVICE_DIMENSIONS,
+  STITCH_PROJECT_NAME_PREFIX
 } from '../constants';
+import type { StitchService } from '../services/StitchService';
 import type {
   CanvasSession,
   CanvasSnapshot,
@@ -35,10 +38,16 @@ import type {
   GeneratedFile,
   ElementSelection,
   ElementEditPayload,
+  DesignNode,
+  DesignTheme,
+  DesignSpec,
+  DesignAssetRef,
   Settings,
   StreamChunk,
-  Attachment
+  Attachment,
+  StitchScreenRef
 } from '../types';
+import { DesignSpecManager } from './DesignSpecManager';
 import type { CodeGenerationService } from '../services/CodeGenerationService';
 import { ImageGenerationService } from '../services/ImageGenerationService';
 import type { VideoGenerationService } from '../services/VideoGenerationService';
@@ -68,6 +77,9 @@ export class CanvasManager {
   private _context: vscode.ExtensionContext;
   private _saveTimers: Map<string, NodeJS.Timeout> = new Map();
   private _gitIgnoreCreated = false;
+  private _designSpecManager = new DesignSpecManager();
+  private _stitchService!: StitchService;
+  private _stitchProjectIds: Map<string, string> = new Map(); // canvasId → stitchProjectId
 
   // Static cache — shared across all canvas panels, invalidated on workspace change
   private static _projectProfileCache: string | null = null;
@@ -75,6 +87,10 @@ export class CanvasManager {
 
   constructor(context: vscode.ExtensionContext) {
     this._context = context;
+  }
+
+  setStitchService(service: StitchService): void {
+    this._stitchService = service;
   }
 
   // ========================================================================
@@ -160,13 +176,6 @@ export class CanvasManager {
     } catch {
       return [];
     }
-  }
-
-  async deleteSession(id: string): Promise<void> {
-    const workspaceRoot = this._getWorkspaceRoot();
-    if (!workspaceRoot) { return; }
-    const filePath = vscode.Uri.file(path.join(workspaceRoot, CANVAS_DIR, `${id}.json`));
-    try { await vscode.workspace.fs.delete(filePath); } catch { /* not found */ }
   }
 
   // ========================================================================
@@ -608,7 +617,7 @@ Return ONLY the JSON array, no other text.`;
   // Reimagination
   // ========================================================================
 
-  async *reimagine(
+  async *generateImageVariants(
     request: CanvasPromptRequest,
     providerManager: ProviderManagerLike,
     imageGenService: ImageGenerationService,
@@ -688,6 +697,59 @@ Return ONLY the JSON array, no other text.`;
       yield { type: 'canvas_reimagine_complete', canvasId: request.canvasId };
     } catch (err: any) {
       yield { type: 'canvas_error', canvasId: request.canvasId, error: err.message };
+    }
+  }
+
+  // ========================================================================
+  // Reimagine via Stitch Variants
+  // ========================================================================
+
+  async *reimagineWithStitch(
+    canvasId: string,
+    stitchScreenRef: StitchScreenRef,
+    prompt: string,
+  ): AsyncGenerator<CanvasStreamChunk> {
+    yield { type: 'canvas_reimagine_started', canvasId };
+
+    try {
+      await this._stitchService.ensureAuth();
+
+      const config = vscode.workspace.getConfiguration('mysti');
+      const model = config.get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
+      const creativeRange = config.get<string>('canvas.stitchCreativeRange', 'EXPLORE') as import('../types').StitchCreativeRange;
+
+      yield { type: 'canvas_stitch_started', canvasId, content: 'Generating Stitch variants...' };
+
+      const variants = await this._stitchService.generateVariants(
+        stitchScreenRef,
+        prompt || 'Explore different design directions',
+        { variantCount: 4, creativeRange, aspects: ['LAYOUT', 'COLOR_SCHEME', 'IMAGES'] },
+        undefined,
+        model
+      );
+
+      // Download each variant's screenshot and yield as reimagine variant
+      for (let i = 0; i < variants.length; i++) {
+        try {
+          const imageBase64 = await this._stitchService.getScreenImage(variants[i]);
+          yield {
+            type: 'canvas_reimagine_variant',
+            canvasId,
+            variant: {
+              id: `stitch-variant-${i}-${Date.now()}`,
+              imageBase64,
+              description: `Stitch variant ${i + 1}`,
+            },
+          };
+        } catch (err: any) {
+          console.warn(`[Mysti] Stitch: Failed to download variant ${i} screenshot:`, err.message);
+          yield { type: 'canvas_error', canvasId, error: `Variant ${i + 1} download failed: ${err.message}` };
+        }
+      }
+
+      yield { type: 'canvas_reimagine_complete', canvasId };
+    } catch (err: any) {
+      yield { type: 'canvas_error', canvasId, error: `Stitch reimagine failed: ${err.message}` };
     }
   }
 
@@ -826,328 +888,416 @@ Return ONLY the JSON array, no other text.`;
   }
 
   // ========================================================================
-  // Layout Generation
-  // ========================================================================
-
-  async *generateLayout(
-    canvasId: string,
-    level: 'page' | 'section' | 'component',
-    prompt: string,
-    providerManager: ProviderManagerLike,
-    settings: Settings,
-    projectContext?: string,
-    frameBounds?: { left: number; top: number; width: number; height: number },
-    selectionDescription?: string,
-    regionImageBase64?: string,
-    regionObjects?: CanvasObjectSummary[]
-  ): AsyncGenerator<CanvasStreamChunk> {
-    yield { type: 'canvas_layout_started', canvasId };
-
-    try {
-      // Step 1: Enhance the user's prompt via AI (like _buildSmartPrompt for images)
-      yield { type: 'canvas_layout_progress', canvasId, content: 'Enhancing layout prompt...' };
-      const enhancedPrompt = await this._buildLayoutPrompt(
-        prompt, level, providerManager, settings, {
-          frameBounds, regionImageBase64, projectContext, selectionDescription, regionObjects,
-        }
-      );
-
-      // Step 2: Generate the layout frames using the enhanced prompt
-      yield { type: 'canvas_layout_progress', canvasId, content: 'Generating layout frames...' };
-      const levelGuide: Record<string, string> = {
-        page: `Generate a full page wireframe layout with 5-12 frames covering: navigation/header, hero section, key content sections (features, pricing, testimonials, etc.), and footer. Stack frames vertically in logical page flow order. Use full-width frames for major sections and side-by-side frames for grid layouts (e.g., feature cards, pricing tiers).`,
-        section: `Generate a section wireframe layout with 3-8 component frames. This is one section of a larger page (e.g., a pricing section with title + 3 price cards + CTA, or a features grid with heading + 4 feature blocks). Arrange frames in a logical grid or flow within a single section.`,
-        component: `Generate a single component wireframe frame. This is one UI component (e.g., a login form, a navigation bar, a product card, a sidebar). Return exactly 1 frame with appropriate dimensions for the component type.`,
-      };
-
-      // When a container frame is selected, frames must fit inside it
-      const hasContainer = !!(frameBounds && frameBounds.width > 0 && frameBounds.height > 0);
-      const contentWidth = hasContainer ? Math.round(frameBounds!.width) : 1200;
-      const contentHeight = hasContainer ? Math.round(frameBounds!.height) : undefined;
-      const selectionLine = selectionDescription ? `\nExisting content in selected area: ${selectionDescription}` : '';
-      const containerConstraint = hasContainer
-        ? `\nIMPORTANT: A container frame is selected (${contentWidth}x${contentHeight}px). All generated frames MUST fit within this container. Use positions relative to (0, 0) as the top-left of the container. The total layout height must not exceed ${contentHeight}px and width must not exceed ${contentWidth}px. Pad 16px inside the container edges.`
-        : '';
-
-      const systemPrompt = `You are a UI layout architect. Given the project context and user request, generate a wireframe layout.
-
-Project context:
-${projectContext || 'General web project'}
-
-Enhanced request: ${enhancedPrompt}
-${selectionLine}${containerConstraint}
-
-${levelGuide[level]}
-
-Return a JSON array of frame objects. Each frame has a label, description (what should be rendered inside), and metadata:
-[
-  {
-    "left": 0, "top": 0, "width": ${contentWidth}, "height": 72,
-    "label": "Navigation Bar",
-    "description": "Top nav with logo on left, menu links (Features, Pricing, Docs) in center, Sign In and Get Started buttons on right. Dark background, white text.",
-    "metadata": { "role": "navigation", "componentType": "navbar" }
-  },
-  {
-    "left": 0, "top": 88, "width": ${contentWidth}, "height": 480,
-    "label": "Hero Section",
-    "description": "Large hero with headline, subheading, CTA button, and illustration on the right. Gradient background.",
-    "metadata": { "role": "hero", "componentType": "hero-banner" }
-  }
-]
-
-Guidelines:
-- Content width is ${contentWidth}px. Full-width frames should be ${contentWidth}px wide.
-- For grid layouts (e.g., 3 cards), divide width evenly with 16px gaps between columns.
-- Use realistic web dimensions (header: 60-80px tall, hero: 400-600px, cards: 280-360px tall).
-- Leave 16px vertical gaps between frames.
-- Labels: short name (e.g., "Navigation Bar", "Feature Card 1").
-- Descriptions: detailed, specific to the project — describe what to render inside (colors, layout, content). This will be used by an image generation AI.
-- Metadata: include "role" (navigation, hero, content, sidebar, footer, card, form, etc.) and "componentType" (navbar, hero-banner, feature-grid, pricing-card, footer, login-form, etc.).
-- All positions start from (0, 0) — the consumer will offset them to the current viewport.
-
-Return ONLY the JSON array, no markdown, no explanation.`;
-
-      let aiResponse = '';
-      const stream = providerManager.sendMessage(systemPrompt, [], settings, null);
-      for await (const chunk of stream) {
-        if (chunk.type === 'text' && chunk.content) {
-          aiResponse += chunk.content;
-        }
-      }
-      yield { type: 'canvas_layout_progress', canvasId, content: 'Processing layout...' };
-
-      // Parse JSON array from response
-      const jsonMatch = aiResponse.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) {
-        throw new Error('AI did not return a valid layout. Try again with a more specific prompt.');
-      }
-
-      const frames = JSON.parse(jsonMatch[0]);
-
-      if (!Array.isArray(frames) || frames.length === 0) {
-        throw new Error('AI returned an empty layout.');
-      }
-
-      // Validate and sanitize frame data
-      const sanitized = frames
-        .filter((f: any) => typeof f.left === 'number' && typeof f.top === 'number' &&
-                     typeof f.width === 'number' && typeof f.height === 'number' &&
-                     f.width > 0 && f.height > 0)
-        .map((f: any) => ({
-          left: Math.round(f.left),
-          top: Math.round(f.top),
-          width: Math.round(f.width),
-          height: Math.round(f.height),
-          label: String(f.label || 'Frame'),
-          description: f.description ? String(f.description) : undefined,
-          metadata: (f.metadata && typeof f.metadata === 'object') ? f.metadata : undefined,
-        }));
-
-      if (sanitized.length === 0) {
-        throw new Error('AI returned invalid frame data.');
-      }
-
-      yield { type: 'canvas_layout_complete', canvasId, frames: sanitized };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: err.message };
-    }
-  }
-
-  // ========================================================================
-  // Website Generation (Multi-Page)
+  // Stitch Screen Generation (replaces layout/multipass/SVG pipeline)
   // ========================================================================
 
   /**
-   * Generate a multi-page website layout. Creates a site plan, then generates
-   * per-page layouts arranged horizontally on the canvas.
+   * Generate a UI screen using Google Stitch SDK.
+   * This is the primary generation method — replaces generateLayout, generateLayoutMultiPass, and generateMockup.
+   */
+  async *generateScreen(
+    canvasId: string,
+    prompt: string,
+    deviceType?: import('../types').StitchDeviceType,
+    projectContext?: string,
+    frameBounds?: { left: number; top: number; width: number; height: number },
+  ): AsyncGenerator<CanvasStreamChunk> {
+    yield { type: 'canvas_stitch_started', canvasId };
+
+    try {
+      await this._stitchService.ensureAuth();
+
+      // Build enhanced prompt with context
+      const deviceLabel = deviceType || 'DESKTOP';
+      const dims = STITCH_DEVICE_DIMENSIONS[deviceLabel] || STITCH_DEVICE_DIMENSIONS.DESKTOP;
+      const contextPrefix = projectContext ? `Project: ${projectContext}.\n` : '';
+      const enhancedPrompt = `${contextPrefix}${prompt}`;
+
+      // Create or reuse Stitch project
+      let stitchProjectId: string = this._stitchProjectIds.get(canvasId) || '';
+      if (!stitchProjectId) {
+        const project = await this._stitchService.createProject(
+          STITCH_PROJECT_NAME_PREFIX + (canvasId.substring(0, 8))
+        );
+        stitchProjectId = project.id;
+        this._stitchProjectIds.set(canvasId, stitchProjectId);
+      }
+
+      // Get model from settings
+      const model = vscode.workspace.getConfiguration('mysti')
+        .get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
+
+      // Generate screen
+      yield { type: 'canvas_stitch_screen_ready', canvasId, content: 'Generating screen...' };
+      const ref = await this._stitchService.generateScreen(stitchProjectId, enhancedPrompt, deviceType, model);
+
+      // Download screenshot and HTML in parallel
+      yield { type: 'canvas_layout_progress', canvasId, content: 'Downloading screen assets...' };
+      const [imageBase64, htmlContent] = await Promise.all([
+        this._stitchService.getScreenImage(ref),
+        this._stitchService.getScreenHtml(ref),
+      ]);
+
+      // Build DesignNode with Stitch assets
+      const nodeId = crypto.randomUUID();
+      const x = frameBounds?.left ?? 0;
+      const y = frameBounds?.top ?? 0;
+      const width = frameBounds?.width ?? dims.width;
+      const height = frameBounds?.height ?? dims.height;
+
+      if (!imageBase64) {
+        console.warn('[Mysti] Stitch returned empty screenshot — skipping image asset');
+      }
+
+      const assets: DesignAssetRef[] = [];
+      if (imageBase64) {
+        assets.push({
+          id: `img-${ref.screenId}`,
+          type: 'image',
+          src: `data:image/png;base64,${imageBase64}`,
+          prompt,
+          alt: prompt,
+        });
+      }
+      if (htmlContent) {
+        assets.push({
+          id: `html-${ref.screenId}`,
+          type: 'html',
+          src: htmlContent,
+          prompt,
+          alt: 'Stitch HTML',
+        });
+      }
+
+      const node: DesignNode = {
+        id: nodeId,
+        type: 'page',
+        name: prompt.substring(0, 60),
+        x, y, width, height,
+        layout: { display: 'block' },
+        style: {},
+        assets,
+        metadata: {
+          engine: 'stitch',
+          stitchProjectId: ref.projectId,
+          stitchScreenId: ref.screenId,
+        },
+      };
+
+      yield { type: 'canvas_stitch_html_ready', canvasId, stitchHtml: htmlContent, stitchScreenRef: ref };
+      yield { type: 'canvas_mockup_complete', canvasId, designNodes: [node], designTheme: DesignSpecManager.getDefaultTheme() };
+    } catch (err: any) {
+      yield { type: 'canvas_error', canvasId, error: `Stitch generation failed: ${err.message}` };
+    }
+  }
+
+  /**
+   * Edit an existing Stitch screen with a text prompt.
+   */
+  async *editStitchScreen(
+    canvasId: string,
+    editPrompt: string,
+    stitchScreenRef: import('../types').StitchScreenRef,
+    frameBounds?: { left: number; top: number; width: number; height: number },
+  ): AsyncGenerator<CanvasStreamChunk> {
+    yield { type: 'canvas_stitch_started', canvasId, content: 'Editing screen...' };
+
+    try {
+      await this._stitchService.ensureAuth();
+
+      const model = vscode.workspace.getConfiguration('mysti')
+        .get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
+
+      const newRef = await this._stitchService.editScreen(stitchScreenRef, editPrompt, undefined, model);
+
+      const [imageBase64, htmlContent] = await Promise.all([
+        this._stitchService.getScreenImage(newRef),
+        this._stitchService.getScreenHtml(newRef),
+      ]);
+
+      const nodeId = crypto.randomUUID();
+      const dims = STITCH_DEVICE_DIMENSIONS.DESKTOP;
+      const node: DesignNode = {
+        id: nodeId,
+        type: 'page',
+        name: `Edit: ${editPrompt.substring(0, 50)}`,
+        x: frameBounds?.left ?? 0,
+        y: frameBounds?.top ?? 0,
+        width: frameBounds?.width ?? dims.width,
+        height: frameBounds?.height ?? dims.height,
+        layout: { display: 'block' },
+        style: {},
+        assets: [
+          { id: `img-${newRef.screenId}`, type: 'image', src: `data:image/png;base64,${imageBase64}`, prompt: editPrompt, alt: editPrompt },
+          { id: `html-${newRef.screenId}`, type: 'html', src: htmlContent, prompt: editPrompt, alt: 'Stitch HTML' },
+        ],
+        metadata: {
+          engine: 'stitch',
+          stitchProjectId: newRef.projectId,
+          stitchScreenId: newRef.screenId,
+        },
+      };
+
+      yield { type: 'canvas_stitch_html_ready', canvasId, stitchHtml: htmlContent, stitchScreenRef: newRef };
+      yield { type: 'canvas_mockup_complete', canvasId, designNodes: [node], designTheme: DesignSpecManager.getDefaultTheme() };
+    } catch (err: any) {
+      yield { type: 'canvas_error', canvasId, error: `Stitch edit failed: ${err.message}` };
+    }
+  }
+
+  /**
+   * Generate design variants of an existing Stitch screen.
+   */
+  async *generateStitchVariants(
+    canvasId: string,
+    stitchScreenRef: import('../types').StitchScreenRef,
+    prompt: string,
+    options: {
+      variantCount: number;
+      creativeRange: import('../types').StitchCreativeRange;
+      aspects: import('../types').StitchVariantAspect[];
+    },
+    baseX: number,
+    baseY: number,
+  ): AsyncGenerator<CanvasStreamChunk> {
+    yield { type: 'canvas_stitch_started', canvasId, content: 'Generating variants...' };
+
+    try {
+      await this._stitchService.ensureAuth();
+
+      const model = vscode.workspace.getConfiguration('mysti')
+        .get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
+
+      const variantRefs = await this._stitchService.generateVariants(
+        stitchScreenRef, prompt, options, undefined, model
+      );
+
+      const dims = STITCH_DEVICE_DIMENSIONS.DESKTOP;
+      const nodes: DesignNode[] = [];
+
+      for (let i = 0; i < variantRefs.length; i++) {
+        const ref = variantRefs[i];
+        yield { type: 'canvas_layout_progress', canvasId, content: `Downloading variant ${i + 1}/${variantRefs.length}...` };
+
+        const [imageBase64, htmlContent] = await Promise.all([
+          this._stitchService.getScreenImage(ref),
+          this._stitchService.getScreenHtml(ref),
+        ]);
+
+        nodes.push({
+          id: crypto.randomUUID(),
+          type: 'page',
+          name: `Variant ${i + 1}`,
+          x: baseX + i * (dims.width + 100),
+          y: baseY,
+          width: dims.width,
+          height: dims.height,
+          layout: { display: 'block' },
+          style: {},
+          assets: [
+            { id: `img-${ref.screenId}`, type: 'image', src: `data:image/png;base64,${imageBase64}`, prompt, alt: `Variant ${i + 1}` },
+            { id: `html-${ref.screenId}`, type: 'html', src: htmlContent, prompt, alt: 'Stitch HTML' },
+          ],
+          metadata: {
+            engine: 'stitch',
+            stitchProjectId: ref.projectId,
+            stitchScreenId: ref.screenId,
+          },
+        });
+      }
+
+      yield { type: 'canvas_stitch_variants_ready', canvasId, variantCount: nodes.length };
+      yield { type: 'canvas_mockup_complete', canvasId, designNodes: nodes, designTheme: DesignSpecManager.getDefaultTheme() };
+    } catch (err: any) {
+      yield { type: 'canvas_error', canvasId, error: `Stitch variants failed: ${err.message}` };
+    }
+  }
+
+  /**
+   * Extract Design DNA from a Stitch screen and generate DESIGN.md.
+   */
+  async *extractDesignDna(
+    canvasId: string,
+    stitchScreenRef: import('../types').StitchScreenRef,
+  ): AsyncGenerator<CanvasStreamChunk> {
+    yield { type: 'canvas_stitch_started', canvasId, content: 'Extracting design system...' };
+
+    try {
+      await this._stitchService.ensureAuth();
+
+      const dna = await this._stitchService.extractDesignDna(stitchScreenRef);
+
+      // Convert DNA to DesignTheme (best-effort mapping)
+      const theme = DesignSpecManager.getDefaultTheme();
+      if (dna.colors && typeof dna.colors === 'object') {
+        Object.assign(theme.colors, dna.colors);
+      }
+      if (dna.typography && typeof dna.typography === 'object') {
+        const typo = dna.typography as Record<string, any>;
+        if (typo.fontFamily) theme.typography.fontFamily = typo.fontFamily;
+      }
+
+      // Write DESIGN.md to workspace
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (workspaceFolders && workspaceFolders.length > 0) {
+        const designMdPath = path.join(workspaceFolders[0].uri.fsPath, 'DESIGN.md');
+        const designMdContent = this._buildDesignMdContent(stitchScreenRef.projectId, dna);
+        fs.writeFileSync(designMdPath, designMdContent, 'utf-8');
+        console.log(`[Mysti] Stitch: Wrote DESIGN.md to ${designMdPath}`);
+      }
+
+      yield { type: 'canvas_stitch_design_dna', canvasId, designTheme: theme };
+    } catch (err: any) {
+      yield { type: 'canvas_error', canvasId, error: `Design DNA extraction failed: ${err.message}` };
+    }
+  }
+
+  private _buildDesignMdContent(projectId: string, dna: Record<string, unknown>): string {
+    const title = (dna.projectTitle as string) || 'Untitled Project';
+    const atmosphere = (dna.atmosphere as string) || 'Modern, clean aesthetic';
+    const colors = dna.colors as Record<string, string> | undefined;
+    const typography = dna.typography as Record<string, any> | undefined;
+    const components = dna.components as Record<string, any> | undefined;
+    const layout = dna.layout as Record<string, any> | undefined;
+
+    let md = `# Design System: ${title}\n**Project ID:** ${projectId}\n\n`;
+    md += `## 1. Visual Theme & Atmosphere\n${atmosphere}\n\n`;
+
+    md += `## 2. Color Palette & Roles\n`;
+    if (colors) {
+      for (const [name, hex] of Object.entries(colors)) {
+        md += `- **${name}**: ${hex}\n`;
+      }
+    } else {
+      md += 'No color data extracted.\n';
+    }
+    md += '\n';
+
+    md += `## 3. Typography Rules\n`;
+    if (typography) {
+      md += `- Font Family: ${typography.fontFamily || 'System default'}\n`;
+      md += `- Weights: ${JSON.stringify(typography.weights || [])}\n`;
+    } else {
+      md += 'No typography data extracted.\n';
+    }
+    md += '\n';
+
+    md += `## 4. Component Stylings\n`;
+    if (components) {
+      md += JSON.stringify(components, null, 2) + '\n';
+    } else {
+      md += 'No component data extracted.\n';
+    }
+    md += '\n';
+
+    md += `## 5. Layout Principles\n`;
+    if (layout) {
+      md += JSON.stringify(layout, null, 2) + '\n';
+    } else {
+      md += 'No layout data extracted.\n';
+    }
+
+    return md;
+  }
+
+
+  // ========================================================================
+  // Website Generation (Multi-Page via Stitch)
+  // ========================================================================
+
+  /**
+   * Generate a multi-page website using Stitch. All pages share the same Stitch
+   * project for design consistency. Pages are arranged horizontally on the canvas.
    */
   async *generateWebsite(
     canvasId: string,
     prompt: string,
-    providerManager: ProviderManagerLike,
-    settings: Settings,
     projectContext?: string,
-    regionImageBase64?: string,
-    regionObjects?: CanvasObjectSummary[]
   ): AsyncGenerator<CanvasStreamChunk> {
     yield { type: 'canvas_website_started', canvasId };
 
     try {
-      // Step 1: AI generates site plan — list of pages with descriptions
-      yield { type: 'canvas_layout_progress', canvasId, content: 'Planning website structure...' };
-      const sitePlan = await this._buildWebsitePlan(prompt, providerManager, settings, projectContext);
+      await this._stitchService.ensureAuth();
 
-      const PAGE_WIDTH = 1440;
+      const model = vscode.workspace.getConfiguration('mysti')
+        .get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
+
+      // Create a Stitch project for the whole website
+      const project = await this._stitchService.createProject(
+        STITCH_PROJECT_NAME_PREFIX + 'website-' + canvasId.substring(0, 8)
+      );
+      const stitchProjectId = project.id;
+      this._stitchProjectIds.set(canvasId, stitchProjectId);
+
+      // Plan pages from the prompt (simple heuristic — 4 common pages)
+      const pageNames = this._inferWebsitePages(prompt);
       const PAGE_GAP = 100;
-      const allPages: Array<{ name: string; description: string; frames: Array<{ left: number; top: number; width: number; height: number; label: string; description?: string; metadata?: Record<string, string> }> }> = [];
+      const allPageNodes: DesignNode[] = [];
 
-      // Step 2: For each page, generate layout frames
-      for (let pi = 0; pi < sitePlan.length; pi++) {
-        const page = sitePlan[pi];
-        yield { type: 'canvas_website_page_started', canvasId, pageIndex: pi, totalPages: sitePlan.length, pageName: page.name };
+      for (let pi = 0; pi < pageNames.length; pi++) {
+        const pageName = pageNames[pi];
+        yield { type: 'canvas_website_page_started', canvasId, pageIndex: pi, totalPages: pageNames.length, pageName };
 
-        const pageFrames = await this._generatePageFrames(
-          page, providerManager, settings, projectContext, PAGE_WIDTH, regionImageBase64, regionObjects
-        );
+        const pagePrompt = projectContext
+          ? `Project: ${projectContext}.\n${pageName} page: ${prompt}`
+          : `${pageName} page: ${prompt}`;
 
-        // Offset frames horizontally for this page's column
-        const pageOffsetX = pi * (PAGE_WIDTH + PAGE_GAP);
-        const offsetFrames = pageFrames.map(f => ({ ...f, left: f.left + pageOffsetX }));
+        const ref = await this._stitchService.generateScreen(stitchProjectId, pagePrompt, 'DESKTOP', model);
 
-        allPages.push({ name: page.name, description: page.description, frames: offsetFrames });
+        // Download screenshot + HTML
+        const [imageBase64, htmlContent] = await Promise.all([
+          this._stitchService.getScreenImage(ref),
+          this._stitchService.getScreenHtml(ref),
+        ]);
+
+        const dims = STITCH_DEVICE_DIMENSIONS.DESKTOP;
+        const node: DesignNode = {
+          id: crypto.randomUUID(),
+          type: 'page',
+          name: pageName,
+          x: pi * (dims.width + PAGE_GAP),
+          y: 0,
+          width: dims.width,
+          height: dims.height,
+          layout: { display: 'block' },
+          style: {},
+          assets: [
+            { id: `img-${ref.screenId}`, type: 'image', src: `data:image/png;base64,${imageBase64}`, prompt: pagePrompt, alt: pageName },
+            { id: `html-${ref.screenId}`, type: 'html', src: htmlContent, prompt: pagePrompt, alt: `${pageName} HTML` },
+          ],
+          metadata: { engine: 'stitch', stitchProjectId: ref.projectId, stitchScreenId: ref.screenId },
+        };
+
+        allPageNodes.push(node);
       }
 
-      // Step 3: Yield all pages at once so webview can render them
-      yield { type: 'canvas_website_complete', canvasId, pages: allPages };
+      const theme = DesignSpecManager.getDefaultTheme();
+      yield { type: 'canvas_mockup_complete', canvasId, designNodes: allPageNodes, designTheme: theme };
     } catch (err: any) {
       yield { type: 'canvas_error', canvasId, error: err.message };
     }
   }
 
   /**
-   * Build a website site plan — list of pages with names, descriptions, and key sections.
+   * Infer page names from a website prompt. Returns 4-6 common pages.
    */
-  private async _buildWebsitePlan(
-    userPrompt: string,
-    providerManager: ProviderManagerLike,
-    settings: Settings,
-    projectContext?: string
-  ): Promise<Array<{ name: string; description: string; sections: string[] }>> {
-    const systemPrompt = `You are a website information architect. Given the user's website description, produce a site plan.
+  private _inferWebsitePages(prompt: string): string[] {
+    const lower = prompt.toLowerCase();
+    const pages = ['Home'];
 
-Project context: ${projectContext || 'General web project'}
-
-User request: ${userPrompt || 'A modern website'}
-
-Generate a JSON array of pages for this website. Each page has:
-- "name": Short page name (e.g., "Homepage", "Pricing", "About Us", "Documentation")
-- "description": What this page contains and its purpose (2-3 sentences)
-- "sections": Array of section names this page should have (e.g., ["Navigation", "Hero", "Features Grid", "Testimonials", "Footer"])
-
-Guidelines:
-- Generate 4-7 pages for a typical website
-- Always include a Homepage as the first page
-- Include pages appropriate for the project type (e.g., SaaS: pricing, features, docs; Portfolio: projects, about, contact; E-commerce: products, cart, checkout)
-- Each page should have 4-8 sections
-- Navigation and footer sections should be consistent across pages
-- Be specific to the project — use real feature names, not generic placeholders
-
-Return ONLY the JSON array, no markdown, no explanation.`;
-
-    let aiResponse = '';
-    const stream = providerManager.sendMessage(systemPrompt, [], settings, null);
-    for await (const chunk of stream) {
-      if (chunk.type === 'text' && chunk.content) {
-        aiResponse += chunk.content;
-      }
+    if (lower.includes('ecommerce') || lower.includes('e-commerce') || lower.includes('shop') || lower.includes('store')) {
+      pages.push('Products', 'Product Detail', 'Cart', 'Checkout');
+    } else if (lower.includes('saas') || lower.includes('software') || lower.includes('app')) {
+      pages.push('Features', 'Pricing', 'About', 'Contact');
+    } else if (lower.includes('portfolio') || lower.includes('personal')) {
+      pages.push('Projects', 'About', 'Contact');
+    } else if (lower.includes('blog')) {
+      pages.push('Blog List', 'Blog Post', 'About', 'Contact');
+    } else {
+      pages.push('About', 'Features', 'Contact');
     }
 
-    const jsonMatch = aiResponse.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      throw new Error('AI did not return a valid site plan. Try again with a more specific description.');
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      throw new Error('AI returned an empty site plan.');
-    }
-
-    return parsed.slice(0, 8).map((p: any) => ({
-      name: String(p.name || 'Page'),
-      description: String(p.description || ''),
-      sections: Array.isArray(p.sections) ? p.sections.map(String) : [],
-    }));
-  }
-
-  /**
-   * Generate layout frames for a single page of a website.
-   * Reuses the same AI prompt logic as generateLayout(level='page').
-   */
-  private async _generatePageFrames(
-    page: { name: string; description: string; sections: string[] },
-    providerManager: ProviderManagerLike,
-    settings: Settings,
-    projectContext?: string,
-    pageWidth: number = 1440,
-    regionImageBase64?: string,
-    regionObjects?: CanvasObjectSummary[]
-  ): Promise<Array<{ left: number; top: number; width: number; height: number; label: string; description?: string; metadata?: Record<string, string> }>> {
-    const sectionsGuide = page.sections.length > 0
-      ? `This page should include these sections: ${page.sections.join(', ')}.`
-      : '';
-
-    const systemPrompt = `You are a UI layout architect. Generate a wireframe layout for a single page of a multi-page website.
-
-Project context: ${projectContext || 'General web project'}
-
-Page: "${page.name}"
-Purpose: ${page.description}
-${sectionsGuide}
-
-Generate a full page wireframe layout with 5-12 frames covering all sections of this page. Stack frames vertically in logical page flow order. Use full-width frames for major sections and side-by-side frames for grid layouts.
-
-Return a JSON array of frame objects:
-[
-  {
-    "left": 0, "top": 0, "width": ${pageWidth}, "height": 72,
-    "label": "Navigation Bar",
-    "description": "Top nav with logo on left, menu links in center, CTA button on right. Dark background.",
-    "metadata": { "role": "navigation", "componentType": "navbar" }
-  }
-]
-
-Guidelines:
-- Content width is ${pageWidth}px. Full-width frames should be ${pageWidth}px wide.
-- For grid layouts (e.g., 3 cards), divide width evenly with 16px gaps between columns.
-- Use realistic web dimensions (header: 60-80px tall, hero: 400-600px, cards: 280-360px tall).
-- Leave 16px vertical gaps between frames.
-- Labels: short name prefixed with page name (e.g., "${page.name} - Navigation", "${page.name} - Hero").
-- Descriptions: detailed, specific to the project — describe what to render inside.
-- Metadata: include "role" and "componentType".
-- All positions start from (0, 0).
-
-Return ONLY the JSON array, no markdown, no explanation.`;
-
-    let aiResponse = '';
-    const stream = providerManager.sendMessage(systemPrompt, [], settings, null);
-    for await (const chunk of stream) {
-      if (chunk.type === 'text' && chunk.content) {
-        aiResponse += chunk.content;
-      }
-    }
-
-    const jsonMatch = aiResponse.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      // Fallback: single frame for the whole page
-      return [{
-        left: 0, top: 0, width: pageWidth, height: 800,
-        label: page.name, description: page.description,
-        metadata: { role: 'page', componentType: 'full-page' },
-      }];
-    }
-
-    const frames = JSON.parse(jsonMatch[0]);
-    if (!Array.isArray(frames) || frames.length === 0) {
-      return [{
-        left: 0, top: 0, width: pageWidth, height: 800,
-        label: page.name, description: page.description,
-        metadata: { role: 'page', componentType: 'full-page' },
-      }];
-    }
-
-    return frames
-      .filter((f: any) => typeof f.left === 'number' && typeof f.top === 'number' &&
-                   typeof f.width === 'number' && typeof f.height === 'number' &&
-                   f.width > 0 && f.height > 0)
-      .map((f: any) => ({
-        left: Math.round(f.left),
-        top: Math.round(f.top),
-        width: Math.round(f.width),
-        height: Math.round(f.height),
-        label: String(f.label || 'Frame'),
-        description: f.description ? String(f.description) : undefined,
-        metadata: (f.metadata && typeof f.metadata === 'object') ? f.metadata : undefined,
-      }));
+    return pages;
   }
 
   /**
@@ -1431,85 +1581,6 @@ Return ONLY the JSON array, no markdown, no explanation.`;
         mediaType: (entry.mediaType === 'video' ? 'video' : 'image') as 'image' | 'video',
       };
     });
-  }
-
-  /**
-   * Enhance the user's layout request using AI — similar to _buildSmartPrompt for images.
-   * Adds project specificity, visual style hints, and component naming guidance.
-   */
-  private async _buildLayoutPrompt(
-    userPrompt: string,
-    level: 'page' | 'section' | 'component',
-    providerManager: ProviderManagerLike,
-    settings: Settings,
-    context: {
-      frameBounds?: { left: number; top: number; width: number; height: number };
-      regionImageBase64?: string;
-      projectContext?: string;
-      selectionDescription?: string;
-      regionObjects?: CanvasObjectSummary[];
-    }
-  ): Promise<string> {
-    const bounds = context.frameBounds;
-    const dimInfo = bounds ? `${Math.round(bounds.width)}x${Math.round(bounds.height)}px` : 'no selection';
-    const projectLine = context.projectContext ? `Project: ${context.projectContext}` : '';
-    const hasReference = !!context.regionImageBase64;
-
-    // Extract annotations from canvas objects
-    const { annotations, elements } = context.regionObjects
-      ? this._extractCanvasAnnotations(context.regionObjects)
-      : { annotations: [] as string[], elements: [] as string[] };
-    const annotationsBlock = annotations.length > 0
-      ? `USER'S CANVAS ANNOTATIONS (design directives):\n${annotations.map(a => `- "${a}"`).join('\n')}`
-      : '';
-    const elementsBlock = elements.length > 0
-      ? `Existing content nearby:\n${elements.join('\n')}`
-      : (context.selectionDescription ? `Existing content nearby: ${context.selectionDescription}` : '');
-
-    const systemPrompt = `You are a prompt engineer for UI layout generation. Given the user's request and project context, produce an enhanced layout description.
-
-Layout level: ${level}
-Target area: ${dimInfo}
-${projectLine}
-${annotationsBlock}
-${elementsBlock}
-${hasReference ? 'A screenshot of the current canvas area is attached — analyze its colors, style, and layout to inform your response.' : ''}
-
-User request: ${userPrompt || `Generate a typical ${level} layout`}
-
-Produce a single enhanced prompt that:
-- Is specific to the project (use real feature names, not generic placeholders)
-- Describes the visual style and theme that matches the project${hasReference ? ' and the attached reference image' : ''}
-- Names specific sections/components appropriate for this type of project
-${annotations.length > 0 ? '- Incorporates the user\'s canvas annotations as layout requirements' : ''}
-- For page: describes all major sections from top to bottom
-- For section: describes all components within the section
-- For component: describes the component in detail
-
-Return ONLY the enhanced prompt text, no JSON, no explanation.`;
-
-    const attachments: Attachment[] = [];
-    if (context.regionImageBase64) {
-      attachments.push({
-        id: `layout-prompt-region-${Date.now()}`,
-        type: 'image',
-        fileName: 'canvas-area.png',
-        base64Data: context.regionImageBase64,
-        size: context.regionImageBase64.length,
-        mimeType: 'image/png',
-      });
-    }
-
-    let aiResponse = '';
-    const stream = providerManager.sendMessage(systemPrompt, [], settings, null, undefined, undefined, undefined, attachments);
-    for await (const chunk of stream) {
-      if (chunk.type === 'text' && chunk.content) {
-        aiResponse += chunk.content;
-      }
-    }
-
-    const trimmed = aiResponse.trim();
-    return trimmed || userPrompt || `Generate a typical ${level} layout`;
   }
 
   // ========================================================================
@@ -2030,7 +2101,10 @@ Return ONLY the SVG markup wrapped in <svg>...</svg> tags. No explanation.`;
     imageService: ImageGenerationService,
     frameLabel?: string,
     frameMetadata?: Record<string, string>,
-    projectContext?: string
+    projectContext?: string,
+    frameBounds?: { left: number; top: number; width: number; height: number },
+    designTheme?: DesignTheme,
+    designAssets?: DesignAssetRef[]
   ): AsyncGenerator<CanvasStreamChunk> {
     yield { type: 'canvas_code_started', canvasId };
 
@@ -2051,15 +2125,41 @@ Return ONLY the SVG markup wrapped in <svg>...</svg> tags. No explanation.`;
     let files: GeneratedFile[] = [];
     let props: ComponentProp[] = [];
 
+    const dimHint = frameBounds && frameBounds.width > 0
+      ? ` (target dimensions: ${Math.round(frameBounds.width)}x${Math.round(frameBounds.height)}px)`
+      : '';
+
+    // Build structured design context for the AI prompt
+    let designContext = '';
+    if (designTheme) {
+      designContext += '\n\nDesign System Theme:\n';
+      designContext += `Colors: ${JSON.stringify(designTheme.colors)}\n`;
+      designContext += `Typography: font-family: ${designTheme.typography.fontFamily}, scale: ${designTheme.typography.scale.join(', ')}px\n`;
+      designContext += `Spacing unit: ${designTheme.spacing.unit}px\n`;
+      designContext += `Border radii: sm=${designTheme.radii.sm}px, md=${designTheme.radii.md}px, lg=${designTheme.radii.lg}px\n`;
+      designContext += 'Use these exact design tokens in the generated code.\n';
+    }
+    if (designAssets?.length) {
+      const resolved = designAssets.filter(a => a.src);
+      if (resolved.length) {
+        designContext += '\nAvailable assets:\n';
+        for (const a of resolved) {
+          designContext += `- ${a.id} (${a.type}): ${a.alt || a.prompt || 'unnamed'}\n`;
+        }
+        designContext += 'Reference these assets by their descriptions when generating image/media elements.\n';
+      }
+    }
+
     const genStream = codeGenService.generateComponent({
       svgMarkup: svgMarkup || undefined,
       imageBase64: imageBase64 || undefined,
       componentName,
       framework,
-      description: frameMetadata?.description || frameLabel,
+      description: (frameMetadata?.description || frameLabel || '') + dimHint,
       metadata: frameMetadata,
       projectContext,
       imageService,
+      designContext: designContext || undefined,
     });
 
     for await (const chunk of genStream) {
@@ -2105,6 +2205,121 @@ Return ONLY the SVG markup wrapped in <svg>...</svg> tags. No explanation.`;
       componentName,
       progress: 100
     };
+  }
+
+  // ========================================================================
+  // Code Generation from Stitch HTML
+  // ========================================================================
+
+  async *generateCodeFromStitch(
+    canvasId: string,
+    stitchScreenRef: StitchScreenRef,
+    prompt: string,
+    codeGenService: CodeGenerationService,
+    imageService: ImageGenerationService,
+    projectContext?: string,
+  ): AsyncGenerator<CanvasStreamChunk> {
+    yield { type: 'canvas_code_started', canvasId };
+
+    try {
+      await this._stitchService.ensureAuth();
+
+      yield { type: 'canvas_code_progress', canvasId, content: 'Fetching Stitch HTML...', progress: 10 };
+
+      // Get the HTML source from Stitch
+      const htmlContent = await this._stitchService.getScreenHtml(stitchScreenRef);
+      if (!htmlContent) {
+        yield { type: 'canvas_error', canvasId, error: 'Stitch did not return HTML content' };
+        return;
+      }
+
+      const workspaceRoot = this._getWorkspaceRoot();
+      const framework = codeGenService.detectFramework(projectContext || '', workspaceRoot || undefined);
+      const componentName = codeGenService.deriveComponentName(undefined, prompt || 'StitchScreen');
+
+      // For HTML framework: write the Stitch HTML directly
+      if (framework === 'html') {
+        const files: GeneratedFile[] = [{
+          filePath: `src/components/${componentName}.html`,
+          fileName: `${componentName}.html`,
+          content: htmlContent,
+          fileType: 'component',
+        }];
+
+        if (workspaceRoot) {
+          try {
+            await codeGenService.writeToWorkspace(files, workspaceRoot);
+            await codeGenService.openInEditor(files[0].filePath, workspaceRoot);
+          } catch (err: any) {
+            console.warn('[Mysti] Failed to write Stitch HTML file:', err.message);
+          }
+        }
+
+        yield {
+          type: 'canvas_code_complete', canvasId,
+          generatedFiles: files, componentProps: [],
+          framework, componentName, progress: 100,
+        };
+        return;
+      }
+
+      // For React/Vue: pass Stitch HTML to CodeGenerationService for conversion
+      yield { type: 'canvas_code_progress', canvasId, content: `Converting to ${framework} component...`, progress: 30 };
+
+      const designContext = `\n\nSource HTML from Stitch (high-fidelity UI generation):\n\`\`\`html\n${htmlContent.substring(0, 15000)}\n\`\`\`\n\nConvert this HTML into a clean, well-structured ${framework} component. Preserve the visual design, colors, typography, and layout exactly. Use the HTML as the definitive reference — do not infer from images.\n`;
+
+      let files: GeneratedFile[] = [];
+      let props: ComponentProp[] = [];
+
+      const genStream = codeGenService.generateComponent({
+        componentName,
+        framework,
+        description: prompt || `Stitch-generated UI screen`,
+        projectContext,
+        imageService,
+        designContext,
+      });
+
+      for await (const chunk of genStream) {
+        if (chunk.type === 'progress' && chunk.content) {
+          yield { type: 'canvas_code_progress', canvasId, content: chunk.content, progress: 50 };
+        }
+        if (chunk.type === 'complete') {
+          files = chunk.files || [];
+          props = chunk.props || [];
+        }
+        if (chunk.type === 'error' && chunk.content) {
+          yield { type: 'canvas_error', canvasId, error: chunk.content };
+          return;
+        }
+      }
+
+      if (files.length === 0) {
+        yield { type: 'canvas_error', canvasId, error: 'Code generation produced no files' };
+        return;
+      }
+
+      yield { type: 'canvas_code_progress', canvasId, content: 'Writing files...', progress: 80 };
+      if (workspaceRoot) {
+        try {
+          await codeGenService.writeToWorkspace(files, workspaceRoot);
+          const componentFile = files.find(f => f.fileType === 'component');
+          if (componentFile) {
+            await codeGenService.openInEditor(componentFile.filePath, workspaceRoot);
+          }
+        } catch (err: any) {
+          console.warn('[Mysti] Failed to write code files:', err.message);
+        }
+      }
+
+      yield {
+        type: 'canvas_code_complete', canvasId,
+        generatedFiles: files, componentProps: props,
+        framework, componentName, progress: 100,
+      };
+    } catch (err: any) {
+      yield { type: 'canvas_error', canvasId, error: `Stitch code generation failed: ${err.message}` };
+    }
   }
 
   // ========================================================================
@@ -2321,29 +2536,23 @@ Return ONLY the updated component code in a single code block:
       const arg = trimmed.slice('/render'.length).trim();
       return { action: 'render', argument: arg };
     }
-    if (trimmed.startsWith('/generate')) {
-      const arg = trimmed.slice('/generate'.length).trim();
-      return { action: 'generate', argument: arg };
+    // /design → Stitch generateScreen (primary design command)
+    if (trimmed.startsWith('/design-dna')) {
+      const arg = trimmed.slice('/design-dna'.length).trim();
+      return { action: 'design-dna', argument: arg };
     }
-    if (trimmed.startsWith('/reimagine')) {
-      const arg = trimmed.slice('/reimagine'.length).trim();
-      return { action: 'reimagine', argument: arg };
+    if (trimmed.startsWith('/design')) {
+      const arg = trimmed.slice('/design'.length).trim();
+      return { action: 'page', argument: arg };
+    }
+    // /image → AI image generation (DALL-E/Gemini)
+    if (trimmed.startsWith('/image')) {
+      const arg = trimmed.slice('/image'.length).trim();
+      return { action: 'generate', argument: arg };
     }
     if (trimmed.startsWith('/video')) {
       const arg = trimmed.slice('/video'.length).trim();
       return { action: 'video', argument: arg };
-    }
-    if (trimmed.startsWith('/page')) {
-      const arg = trimmed.slice('/page'.length).trim();
-      return { action: 'page', argument: arg };
-    }
-    if (trimmed.startsWith('/section')) {
-      const arg = trimmed.slice('/section'.length).trim();
-      return { action: 'section', argument: arg };
-    }
-    if (trimmed.startsWith('/component')) {
-      const arg = trimmed.slice('/component'.length).trim();
-      return { action: 'component', argument: arg };
     }
     if (trimmed.startsWith('/website')) {
       const arg = trimmed.slice('/website'.length).trim();
@@ -2364,6 +2573,22 @@ Return ONLY the updated component code in a single code block:
     if (trimmed.startsWith('/edit-layout')) {
       const arg = trimmed.slice('/edit-layout'.length).trim();
       return { action: 'edit-layout', argument: arg };
+    }
+    if (trimmed.startsWith('/theme')) {
+      const arg = trimmed.slice('/theme'.length).trim();
+      return { action: 'theme', argument: arg };
+    }
+    if (trimmed.startsWith('/edit')) {
+      const arg = trimmed.slice('/edit'.length).trim();
+      return { action: 'stitch-edit', argument: arg };
+    }
+    if (trimmed.startsWith('/variants')) {
+      const arg = trimmed.slice('/variants'.length).trim();
+      return { action: 'stitch-variants', argument: arg };
+    }
+    if (trimmed.startsWith('/html')) {
+      const arg = trimmed.slice('/html'.length).trim();
+      return { action: 'stitch-html', argument: arg };
     }
     return { action: 'prompt', argument: trimmed };
   }
@@ -2472,6 +2697,493 @@ Return ONLY the updated component code in a single code block:
         yield { type: 'canvas_error', canvasId, error: `Render failed: ${message}` };
       }
     }
+  }
+
+  // ========================================================================
+  // Theme Generation — Stitch design system extraction → DesignTheme
+  // ========================================================================
+
+  async *generateTheme(
+    canvasId: string,
+    prompt: string,
+    providerManager: ProviderManagerLike,
+    settings: Settings
+  ): AsyncGenerator<CanvasStreamChunk> {
+    yield { type: 'canvas_mockup_started', canvasId };
+
+    try {
+      // Use Stitch to generate a screen with the theme prompt, then extract the design system
+      if (this._stitchService?.isAvailable) {
+        yield { type: 'canvas_stitch_started', canvasId, content: 'Extracting theme from Stitch...' };
+
+        // Get or create Stitch project for this canvas
+        let stitchProjectId = this._stitchProjectIds.get(canvasId) || '';
+        if (!stitchProjectId) {
+          const project = await this._stitchService.createProject(
+            STITCH_PROJECT_NAME_PREFIX + (canvasId.substring(0, 8))
+          );
+          stitchProjectId = project.id;
+          this._stitchProjectIds.set(canvasId, stitchProjectId);
+        }
+
+        const model = vscode.workspace.getConfiguration('mysti')
+          .get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
+
+        // Generate a screen with the theme description — Stitch returns a designSystem alongside
+        const themePrompt = `A modern landing page with this design aesthetic: ${prompt}`;
+        const { raw } = await this._stitchService.generateScreenWithRaw(
+          stitchProjectId, themePrompt, 'DESKTOP', model
+        );
+
+        // Extract design system from the response
+        const ds = this._stitchService.extractDesignSystemFromRaw(raw);
+        if (ds?.designMd) {
+          const theme = this._stitchService.parseDesignMdToTheme(ds.designMd, {
+            customColor: ds.customColor,
+            colorMode: ds.colorMode,
+            bodyFont: ds.bodyFont,
+          });
+          console.log(`[Mysti] Stitch: Theme extracted from design system "${ds.displayName || 'unnamed'}"`);
+          yield { type: 'canvas_theme_complete', canvasId, designTheme: theme };
+          return;
+        }
+
+        console.warn('[Mysti] Stitch: No designSystem in response, falling back to LLM theme generation');
+      }
+
+      // Fallback: LLM-based theme generation via provider
+      const systemPrompt = `You are a design system expert. Generate a complete theme as JSON.
+
+Return ONLY a JSON object with this exact structure (no markdown, no explanation):
+{
+  "colors": {
+    "primary": "#hex", "secondary": "#hex", "accent": "#hex",
+    "background": "#hex", "surface": "#hex",
+    "text": "#hex", "textSecondary": "#hex", "border": "#hex",
+    "error": "#hex", "success": "#hex"
+  },
+  "typography": {
+    "fontFamily": "font stack",
+    "scale": [12, 14, 16, 20, 24, 32, 48],
+    "lineHeight": 1.5,
+    "weights": { "regular": 400, "medium": 500, "bold": 700 }
+  },
+  "spacing": { "unit": 4, "scale": [1, 2, 3, 4, 6, 8, 12, 16] },
+  "radii": { "sm": 4, "md": 8, "lg": 16, "full": 9999 },
+  "shadows": {
+    "sm": "css shadow", "md": "css shadow", "lg": "css shadow"
+  }
+}
+
+Theme description: "${prompt}"`;
+
+      let fullResponse = '';
+      const stream = providerManager.sendMessage(
+        systemPrompt, [], settings,
+        { id: `theme-${canvasId}`, messages: [] },
+        undefined, undefined, undefined, undefined
+      );
+
+      for await (const chunk of stream) {
+        if (chunk.type === 'text' && chunk.content) { fullResponse += chunk.content; }
+        if (chunk.type === 'error') {
+          yield { type: 'canvas_error', canvasId, error: chunk.content || 'Theme generation failed' };
+          return;
+        }
+      }
+
+      const theme = this._parseJsonFromResponse<DesignTheme>(fullResponse);
+      if (!theme || !theme.colors) {
+        yield { type: 'canvas_error', canvasId, error: 'Failed to parse theme from AI response' };
+        return;
+      }
+
+      yield { type: 'canvas_theme_complete', canvasId, designTheme: theme };
+    } catch (err: any) {
+      yield { type: 'canvas_error', canvasId, error: `Theme generation failed: ${err.message}` };
+    }
+  }
+
+  // ========================================================================
+  // Design Node Code Generation (deterministic, no vision API)
+  // ========================================================================
+
+  async *generateCodeFromDesignNode(
+    canvasId: string,
+    node: DesignNode,
+    theme: DesignTheme,
+    framework: 'react' | 'vue' | 'html',
+    componentName: string,
+    projectContext?: string,
+    assets?: DesignAssetRef[]
+  ): AsyncGenerator<CanvasStreamChunk> {
+    yield { type: 'canvas_code_started', canvasId };
+
+    try {
+      const code = this._designNodeToCode(node, theme, framework, componentName, projectContext, assets);
+      const themeCSS = this._generateThemeCssVars(theme);
+      const files: Array<{ filePath: string; fileName: string; fileType: 'component' | 'story' | 'styles'; content: string }> = [];
+
+      // Add theme CSS custom properties file
+      files.push({
+        filePath: `src/components/${componentName}.theme.css`,
+        fileName: `${componentName}.theme.css`,
+        fileType: 'styles',
+        content: themeCSS,
+      });
+
+      if (framework === 'react') {
+        files.push({
+          filePath: `src/components/${componentName}.tsx`,
+          fileName: `${componentName}.tsx`,
+          fileType: 'component',
+          content: code,
+        });
+        files.push({
+          filePath: `src/components/${componentName}.stories.tsx`,
+          fileName: `${componentName}.stories.tsx`,
+          fileType: 'story',
+          content: this._generateStorybook(componentName, framework),
+        });
+      } else if (framework === 'vue') {
+        files.push({
+          filePath: `src/components/${componentName}.vue`,
+          fileName: `${componentName}.vue`,
+          fileType: 'component',
+          content: code,
+        });
+      } else {
+        files.push({
+          filePath: `src/components/${componentName}.html`,
+          fileName: `${componentName}.html`,
+          fileType: 'component',
+          content: code,
+        });
+      }
+
+      yield {
+        type: 'canvas_code_complete',
+        canvasId,
+        generatedFiles: files,
+        componentName,
+        framework,
+      };
+    } catch (err: any) {
+      yield { type: 'canvas_error', canvasId, error: `Code generation failed: ${err.message}` };
+    }
+  }
+
+  get designSpecManager(): DesignSpecManager {
+    return this._designSpecManager;
+  }
+
+  // ========================================================================
+  // Asset Generation Pipeline
+  // ========================================================================
+
+  async *generateDesignAssets(
+    canvasId: string,
+    unresolvedAssets: DesignAssetRef[],
+    imageGenService: ImageGenerationService
+  ): AsyncGenerator<CanvasStreamChunk> {
+    // Keywords that suggest the asset is a full UI screen/section (Stitch-eligible)
+    const screenKeywords = /\b(page|section|layout|screen|dashboard|form|card|modal|dialog|panel|sidebar|navbar|header|footer|hero)\b/i;
+
+    for (const asset of unresolvedAssets) {
+      if (!asset.prompt) { continue; }
+
+      try {
+        // Use Stitch for full UI screen/section assets
+        if (asset.type === 'image' && this._stitchService?.isAvailable
+            && asset.prompt.length > 30 && screenKeywords.test(asset.prompt)) {
+          let stitchProjectId = this._stitchProjectIds.get(canvasId) || '';
+          if (!stitchProjectId) {
+            const project = await this._stitchService.createProject(
+              STITCH_PROJECT_NAME_PREFIX + (canvasId.substring(0, 8))
+            );
+            stitchProjectId = project.id;
+            this._stitchProjectIds.set(canvasId, stitchProjectId);
+          }
+
+          const model = vscode.workspace.getConfiguration('mysti')
+            .get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
+
+          const ref = await this._stitchService.generateScreen(stitchProjectId, asset.prompt, 'DESKTOP', model);
+          const imageBase64 = await this._stitchService.getScreenImage(ref);
+          if (imageBase64) {
+            asset.src = `data:image/png;base64,${imageBase64}`;
+            yield { type: 'canvas_asset_generated', canvasId, asset: { ...asset } };
+            continue;
+          }
+        }
+
+        // Use ImageGenService for icons, small images, and non-UI assets
+        if (asset.type === 'image' || asset.type === 'icon') {
+          const imageResult = await imageGenService.generate(asset.prompt);
+          if (imageResult?.imageBase64) {
+            asset.src = `data:image/png;base64,${imageResult.imageBase64}`;
+            yield { type: 'canvas_asset_generated', canvasId, asset: { ...asset } };
+          }
+        } else if (asset.type === 'svg') {
+          asset.src = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="#e5e7eb"/><text x="50" y="55" text-anchor="middle" fill="#6b7280" font-size="10">' + (asset.alt || 'SVG') + '</text></svg>')}`;
+          yield { type: 'canvas_asset_generated', canvasId, asset: { ...asset } };
+        }
+        // Video assets are handled separately by VideoGenerationService
+      } catch (err: any) {
+        console.warn(`[Mysti] Asset generation failed for ${asset.id}:`, err.message);
+      }
+    }
+  }
+
+  // ========================================================================
+  // Private: JSON parsing helpers
+  // ========================================================================
+
+  private _parseJsonFromResponse<T>(response: string): T | null {
+    // Try extracting JSON from markdown code blocks first
+    const codeBlockMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+    const jsonStr = codeBlockMatch ? codeBlockMatch[1].trim() : response.trim();
+
+    try {
+      return JSON.parse(jsonStr) as T;
+    } catch {
+      // Try finding the first [ or { to start of JSON
+      const arrayStart = jsonStr.indexOf('[');
+      const objStart = jsonStr.indexOf('{');
+      const start = arrayStart >= 0 && (objStart < 0 || arrayStart < objStart) ? arrayStart : objStart;
+      if (start >= 0) {
+        try {
+          return JSON.parse(jsonStr.slice(start)) as T;
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+  }
+
+  // ========================================================================
+  // Private: Deterministic code generation from DesignNode
+  // ========================================================================
+
+  private _designNodeToCode(
+    node: DesignNode,
+    theme: DesignTheme,
+    framework: 'react' | 'vue' | 'html',
+    componentName: string,
+    projectContext?: string,
+    assets?: DesignAssetRef[]
+  ): string {
+    if (framework === 'react') {
+      return this._designNodeToReact(node, theme, componentName, projectContext, assets);
+    } else if (framework === 'vue') {
+      return this._designNodeToVue(node, theme, componentName);
+    }
+    return this._designNodeToHtmlCode(node, theme);
+  }
+
+  private _resolveStyleToken(value: string | undefined, theme: DesignTheme, useVars = false): string {
+    if (!value) { return ''; }
+    if (theme.colors[value]) {
+      if (useVars) { return `var(--color-${value.replace(/([A-Z])/g, '-$1').toLowerCase()})`; }
+      return theme.colors[value];
+    }
+    if ((theme.shadows as any)[value]) {
+      if (useVars) { return `var(--shadow-${value})`; }
+      return (theme.shadows as any)[value];
+    }
+    return value;
+  }
+
+  private _nodeStyleToCSS(node: DesignNode, theme: DesignTheme, useVars = false): string {
+    const parts: string[] = [];
+    const s = node.style;
+    const l = node.layout;
+    const t = node.typography;
+
+    // Layout
+    if (l) {
+      parts.push(`display: ${l.display || 'flex'}`);
+      if (l.display === 'flex') {
+        parts.push(`flex-direction: ${l.direction || 'column'}`);
+        if (l.wrap) { parts.push('flex-wrap: wrap'); }
+      }
+      if (l.display === 'grid' && l.gridCols) {
+        parts.push(`grid-template-columns: repeat(${l.gridCols}, 1fr)`);
+      }
+      if (l.gap !== undefined) { parts.push(`gap: ${l.gap}px`); }
+      if (l.padding !== undefined) {
+        if (Array.isArray(l.padding)) {
+          parts.push(`padding: ${l.padding.map(p => p + 'px').join(' ')}`);
+        } else {
+          parts.push(`padding: ${l.padding}px`);
+        }
+      }
+      const alignMap: Record<string, string> = { start: 'flex-start', end: 'flex-end', center: 'center', stretch: 'stretch' };
+      const justifyMap: Record<string, string> = { start: 'flex-start', end: 'flex-end', center: 'center', between: 'space-between', around: 'space-around' };
+      if (l.align) { parts.push(`align-items: ${alignMap[l.align] || l.align}`); }
+      if (l.justify) { parts.push(`justify-content: ${justifyMap[l.justify] || l.justify}`); }
+    }
+
+    // Style
+    if (s) {
+      if (s.background) { parts.push(`background-color: ${this._resolveStyleToken(s.background, theme, useVars)}`); }
+      if (s.radius !== undefined) { parts.push(`border-radius: ${s.radius}px`); }
+      if (s.shadow) { parts.push(`box-shadow: ${this._resolveStyleToken(s.shadow, theme, useVars)}`); }
+      if (s.opacity !== undefined) { parts.push(`opacity: ${s.opacity}`); }
+      if (s.overflow) { parts.push(`overflow: ${s.overflow}`); }
+      if (s.border) {
+        parts.push(`border: ${s.border.width}px ${s.border.style} ${this._resolveStyleToken(s.border.color, theme, useVars)}`);
+      }
+    }
+
+    // Typography
+    if (t) {
+      if (t.family) { parts.push(`font-family: ${t.family}`); }
+      else if (useVars) { parts.push('font-family: var(--font-family)'); }
+      else if (theme.typography.fontFamily) { parts.push(`font-family: ${theme.typography.fontFamily}`); }
+      if (t.size) { parts.push(`font-size: ${t.size}px`); }
+      if (t.weight) { parts.push(`font-weight: ${t.weight}`); }
+      if (t.color) { parts.push(`color: ${this._resolveStyleToken(t.color, theme, useVars)}`); }
+      if (t.lineHeight) { parts.push(`line-height: ${t.lineHeight}`); }
+      if (t.align) { parts.push(`text-align: ${t.align}`); }
+    }
+
+    // Size
+    parts.push(`width: ${node.width}px`);
+    parts.push(`min-height: ${node.height}px`);
+
+    return parts.join('; ');
+  }
+
+  private _designNodeToReact(
+    node: DesignNode,
+    theme: DesignTheme,
+    componentName: string,
+    projectContext?: string,
+    assets?: DesignAssetRef[]
+  ): string {
+    const lines: string[] = [];
+    // Project context header comment
+    if (projectContext) {
+      lines.push(`/**`);
+      lines.push(` * ${componentName} — generated from design spec`);
+      lines.push(` * ${projectContext.split('\n')[0]}`);
+      lines.push(` */`);
+    }
+    lines.push(`import React from 'react';`);
+    lines.push(`import './${componentName}.theme.css';`);
+    lines.push('');
+    lines.push(`const ${componentName}: React.FC = () => {`);
+    lines.push('  return (');
+    lines.push(this._nodeToJSX(node, theme, 2, true, assets));
+    lines.push('  );');
+    lines.push('};');
+    lines.push('');
+    lines.push(`export default ${componentName};`);
+    return lines.join('\n');
+  }
+
+  private _nodeToJSX(node: DesignNode, theme: DesignTheme, indent: number, useVars = false, allAssets?: DesignAssetRef[]): string {
+    const pad = ' '.repeat(indent * 2);
+    const style = this._nodeStyleToCSS(node, theme, useVars);
+    const lines: string[] = [];
+
+    lines.push(`${pad}<div style={{${this._cssToReactStyle(style)}}}`);
+    if (node.componentType) { lines[lines.length - 1] += ` /* ${node.componentType} */`; }
+    lines[lines.length - 1] += '>';
+
+    if (node.text) {
+      const typoStyle = node.typography ? this._cssToReactStyle(this._nodeStyleToCSS({ ...node, layout: { display: 'block' }, style: {}, children: undefined } as any, theme, useVars)) : '';
+      lines.push(`${pad}  <span${typoStyle ? ` style={{${typoStyle}}}` : ''}>{${JSON.stringify(node.text)}}</span>`);
+    }
+
+    if (node.assets) {
+      for (const nodeAsset of node.assets) {
+        // Resolve from global asset library if available
+        const resolved = allAssets?.find(a => a.id === nodeAsset.id) || nodeAsset;
+        if (resolved.type === 'image' || resolved.type === 'icon' || resolved.type === 'svg') {
+          if (resolved.src) {
+            lines.push(`${pad}  <img src="${resolved.src}" alt="${resolved.alt || resolved.prompt || ''}" style={{objectFit: '${resolved.fit || 'cover'}', width: '100%'}} />`);
+          } else {
+            lines.push(`${pad}  {/* TODO: Generate asset — prompt: "${resolved.prompt || 'unnamed'}" */}`);
+            lines.push(`${pad}  <img src="/placeholder.png" alt="${resolved.alt || resolved.prompt || ''}" style={{objectFit: '${resolved.fit || 'cover'}', width: '100%'}} />`);
+          }
+        } else if (resolved.type === 'video') {
+          if (resolved.src) {
+            lines.push(`${pad}  <video src="${resolved.src}" autoPlay muted loop style={{objectFit: '${resolved.fit || 'cover'}', width: '100%'}} />`);
+          } else {
+            lines.push(`${pad}  {/* TODO: Generate video — prompt: "${resolved.prompt || 'unnamed'}" */}`);
+            lines.push(`${pad}  <video src="" autoPlay muted loop style={{objectFit: '${resolved.fit || 'cover'}', width: '100%'}} />`);
+          }
+        }
+      }
+    }
+
+    if (node.children) {
+      for (const child of node.children) {
+        lines.push(this._nodeToJSX(child, theme, indent + 1, useVars, allAssets));
+      }
+    }
+
+    lines.push(`${pad}</div>`);
+    return lines.join('\n');
+  }
+
+  private _cssToReactStyle(css: string): string {
+    return css.split(';').map(s => s.trim()).filter(Boolean).map(prop => {
+      const [key, ...valParts] = prop.split(':');
+      const val = valParts.join(':').trim();
+      const camelKey = key.trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      const isNum = /^\d+px$/.test(val);
+      return `${camelKey}: ${isNum ? parseInt(val, 10) : `'${val}'`}`;
+    }).join(', ');
+  }
+
+  private _designNodeToVue(node: DesignNode, theme: DesignTheme, componentName: string): string {
+    return `<template>\n${this._nodeToVueTemplate(node, theme, 1)}\n</template>\n\n<script setup lang="ts">\n// ${componentName}\n</script>`;
+  }
+
+  private _nodeToVueTemplate(node: DesignNode, theme: DesignTheme, indent: number): string {
+    const pad = ' '.repeat(indent * 2);
+    const style = this._nodeStyleToCSS(node, theme);
+    const lines: string[] = [];
+    lines.push(`${pad}<div style="${style}">`);
+    if (node.text) { lines.push(`${pad}  <span>${node.text}</span>`); }
+    if (node.children) {
+      for (const child of node.children) { lines.push(this._nodeToVueTemplate(child, theme, indent + 1)); }
+    }
+    lines.push(`${pad}</div>`);
+    return lines.join('\n');
+  }
+
+  private _designNodeToHtmlCode(node: DesignNode, theme: DesignTheme): string {
+    return `<!DOCTYPE html>\n<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>\n<body style="margin:0;font-family:${theme.typography.fontFamily}">\n${this._nodeToVueTemplate(node, theme, 1)}\n</body></html>`;
+  }
+
+  private _generateStorybook(componentName: string, framework: string): string {
+    return `import type { Meta, StoryObj } from '@storybook/react';\nimport ${componentName} from './${componentName}';\n\nconst meta: Meta<typeof ${componentName}> = {\n  title: 'Components/${componentName}',\n  component: ${componentName},\n};\n\nexport default meta;\ntype Story = StoryObj<typeof ${componentName}>;\n\nexport const Default: Story = {};`;
+  }
+
+  // ========================================================================
+  // Theme CSS Variables
+  // ========================================================================
+
+  private _generateThemeCssVars(theme: DesignTheme): string {
+    const vars: string[] = [];
+    for (const [key, val] of Object.entries(theme.colors)) {
+      vars.push(`  --color-${key.replace(/([A-Z])/g, '-$1').toLowerCase()}: ${val};`);
+    }
+    vars.push(`  --font-family: ${theme.typography.fontFamily};`);
+    theme.typography.scale.forEach((s, i) => vars.push(`  --font-size-${i}: ${s}px;`));
+    vars.push(`  --spacing-unit: ${theme.spacing.unit}px;`);
+    for (const [key, val] of Object.entries(theme.radii)) {
+      vars.push(`  --radius-${key}: ${val}px;`);
+    }
+    for (const [key, val] of Object.entries(theme.shadows)) {
+      vars.push(`  --shadow-${key}: ${val};`);
+    }
+    return `:root {\n${vars.join('\n')}\n}`;
   }
 
   // ========================================================================

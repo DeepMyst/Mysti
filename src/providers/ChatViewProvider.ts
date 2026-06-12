@@ -411,10 +411,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Check if any provider is ready - show wizard if not
     const wizardDismissed = this._extensionContext.globalState.get('mysti.setupWizardDismissed', false);
     if (!wizardDismissed && !wizardStatus.anyReady) {
-      // No providers installed - show the setup wizard
+      // No providers installed - show the setup wizard.
+      // Include panelId: when the wizard is shown, initialState (the only
+      // other message carrying panelId) is never sent, so the webview must
+      // learn its panelId from this payload or every wizard response would
+      // be posted with panelId=null and silently dropped (B2).
       this._postToPanel(panelId, {
         type: 'showWizard',
-        payload: wizardStatus
+        payload: { ...wizardStatus, panelId }
       });
       return;
     }
@@ -572,6 +576,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _handleMessage(message: WebviewMessage) {
     // Cast once: the webview always sends panelId alongside every message
     const msg = message as WebviewMessageWithPanel;
+    // B2: a webview that never received initialState (e.g. the setup wizard
+    // shown before any provider is ready) posts messages with panelId=null.
+    // Default to the sidebar — the only panel that exists in that scenario —
+    // so wizard responses are not routed to a non-existent panel and dropped.
+    if (!msg.panelId) {
+      msg.panelId = this._sidebarId;
+    }
     switch (msg.type) {
       case 'sendMessage':
         await this._handleSendMessage(
@@ -3614,7 +3625,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         'openclaw': 'openclawModel',
         'opencode': 'opencodeModel',
         'ollama': 'ollamaModel',
-        'localai': 'localaiModel'
+        'localai': 'localaiModel',
+        'qwen-code': 'qwenCodeModel'
       };
       const settingKey = providerModelKeys[provider];
       if (settingKey) {
@@ -4010,10 +4022,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private _handlePermissionResponse(response: PermissionResponse): void {
     console.log('[Mysti] Permission response received:', response);
+    // B15: read the pending request BEFORE handleResponse() — it deletes the
+    // request from the pending map, so reading afterwards always returned
+    // undefined and permission-decision learning never ran.
+    const request = this._permissionManager.getPendingRequest(response.requestId);
+
     this._permissionManager.handleResponse(response);
 
     // Learn from the user's permission decision (passive memory building)
-    const request = this._permissionManager.getPendingRequest(response.requestId);
     if (request) {
       this._memoryManager.learnFromPermissionDecision(request, response);
     }
@@ -5146,6 +5162,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'canvasReimagine': {
         const request = msg.payload;
         if (!request) { break; }
+
+        // Check if the selected object is a Stitch screen — use Stitch variants instead
+        const reimagineStitchMeta = request.snapshot?.selectedRegion?.objects?.[0]?.metadata;
+        if (reimagineStitchMeta?.engine === 'stitch' && reimagineStitchMeta.stitchProjectId && reimagineStitchMeta.stitchScreenId) {
+          try {
+            const stitchRef = {
+              projectId: reimagineStitchMeta.stitchProjectId,
+              screenId: reimagineStitchMeta.stitchScreenId,
+            };
+            const stream = this._canvasManager.reimagineWithStitch(
+              request.canvasId, stitchRef, request.prompt || ''
+            );
+            for await (const chunk of stream) {
+              this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+            }
+          } catch (err: any) {
+            this._postToPanel(canvasPanelId, {
+              type: 'canvasStreamChunk',
+              payload: { type: 'canvas_error', canvasId: request.canvasId, error: err.message }
+            } as any);
+          }
+          break;
+        }
+
         if (!this._imageGenService.isAvailable) {
           this._postToPanel(canvasPanelId, { type: 'canvasShowConfig' } as any);
           break;
@@ -5161,7 +5201,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const projectContext = await CanvasManager.buildProjectContext(
             this._providerManager, settings, this._projectContextManager
           );
-          const stream = this._canvasManager.reimagine(request, this._providerManager, this._imageGenService, settings, projectContext);
+          const stream = this._canvasManager.generateImageVariants(request, this._providerManager, this._imageGenService, settings, projectContext);
           for await (const chunk of stream) {
             this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
           }
@@ -5318,40 +5358,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
 
-          case 'reimagine': {
-            if (!this._imageGenService.isAvailable) {
-              this._postToPanel(canvasPanelId, { type: 'canvasShowConfig' } as any);
-              break;
-            }
-            const settings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
-            const snapshot = this._canvasManager.buildSnapshot(
-              payload.snapshot?._canvasJson || {},
-              payload.snapshot?.imageBase64 || '',
-              payload.snapshot?.selectedRegion
-            );
-            const request = {
-              canvasId,
-              prompt: parsed.argument,
-              snapshot,
-              selectedObjectIds: payload.selectedObjectIds,
-              action: 'reimagine' as const,
-            };
-            try {
-              const projectContext = await CanvasManager.buildProjectContext(
-                this._providerManager, settings, this._projectContextManager
-              );
-              const stream = this._canvasManager.reimagine(request, this._providerManager, this._imageGenService, settings, projectContext);
-              for await (const chunk of stream) {
-                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
-              }
-            } catch (err: any) {
-              this._postToPanel(canvasPanelId, {
-                type: 'canvasStreamChunk',
-                payload: { type: 'canvas_error', canvasId, error: err.message }
-              } as any);
-            }
-            break;
-          }
+          // 'reimagine' action removed — legacy /reimagine now maps to 'stitch-edit' in parser
 
           case 'video': {
             if (!this._videoGenService.isAvailable) {
@@ -5393,9 +5400,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
 
-          case 'page':
-          case 'section':
-          case 'component': {
+          case 'page': {
             const layoutSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
             try {
               const projectContext = await CanvasManager.buildProjectContext(
@@ -5407,18 +5412,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 payload.snapshot?.selectedRegion
               );
               const frameBounds = snapshot.selectedRegion?.bounds;
-              const selectionDesc = snapshot.selectedRegion?.objects?.length
-                ? snapshot.selectedRegion.objects.map((o: any) =>
-                    `${o.type}${o.content ? `: "${o.content}"` : ''}${o.label ? ` [${o.label}]` : ''}${o.description ? ` — ${o.description}` : ''} (${o.size.width}x${o.size.height})`
-                  ).join(', ')
-                : '';
-              const regionImageBase64 = snapshot.selectedRegion?.imageBase64;
-
-              const stream = this._canvasManager.generateLayout(
-                canvasId, parsed.action as 'page' | 'section' | 'component',
-                parsed.argument, this._providerManager, layoutSettings,
-                projectContext, frameBounds, selectionDesc, regionImageBase64,
-                snapshot.selectedRegion?.objects
+              const stream = this._canvasManager.generateScreen(
+                canvasId, parsed.argument, 'DESKTOP',
+                projectContext, frameBounds
               );
               for await (const chunk of stream) {
                 this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
@@ -5444,9 +5440,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 this._providerManager, websiteSettings, this._projectContextManager
               );
               const stream = this._canvasManager.generateWebsite(
-                canvasId, parsed.argument, this._providerManager, websiteSettings,
-                projectContext, websiteSnapshot.selectedRegion?.imageBase64,
-                websiteSnapshot.selectedRegion?.objects
+                canvasId, parsed.argument, projectContext
               );
               for await (const chunk of stream) {
                 this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
@@ -5502,6 +5496,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           case 'code': {
             try {
+              // Deterministic code gen if a DesignNode is selected
+              if (payload.designNode && payload.designTheme) {
+                const framework = (parsed.argument.match(/react|vue|html/i)?.[0]?.toLowerCase() || 'react') as 'react' | 'vue' | 'html';
+                const compName = payload.designNode.componentType
+                  ? payload.designNode.componentType.replace(/[^a-zA-Z]/g, '').replace(/^./, (c: string) => c.toUpperCase())
+                  : payload.designNode.name?.replace(/[^a-zA-Z]/g, '').replace(/^./, (c: string) => c.toUpperCase()) || 'Component';
+                const codeDetSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+                const codeDetProjectCtx = await CanvasManager.buildProjectContext(
+                  this._providerManager, codeDetSettings, this._projectContextManager, this._imageGenService
+                );
+                const stream = this._canvasManager.generateCodeFromDesignNode(
+                  canvasId, payload.designNode, payload.designTheme, framework, compName,
+                  codeDetProjectCtx, payload.designAssets
+                );
+                for await (const chunk of stream) {
+                  this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+                }
+                break;
+              }
+
+              // Check if selected object is a Stitch screen — use Stitch HTML directly
+              const codeObjMeta = payload.snapshot?.selectedRegion?.objects?.[0]?.metadata
+                || payload.designNode?.metadata;
+              if (codeObjMeta?.engine === 'stitch' && codeObjMeta.stitchProjectId && codeObjMeta.stitchScreenId) {
+                if (!this._codeGenService) {
+                  const { CodeGenerationService } = await import('../services/CodeGenerationService');
+                  this._codeGenService = new CodeGenerationService();
+                }
+                const stitchCodeSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+                const stitchCodeCtx = await CanvasManager.buildProjectContext(
+                  this._providerManager, stitchCodeSettings, this._projectContextManager, this._imageGenService
+                );
+                const stitchRef = {
+                  projectId: codeObjMeta.stitchProjectId,
+                  screenId: codeObjMeta.stitchScreenId,
+                };
+                const stream = this._canvasManager.generateCodeFromStitch(
+                  canvasId, stitchRef, parsed.argument,
+                  this._codeGenService, this._imageGenService, stitchCodeCtx
+                );
+                for await (const chunk of stream) {
+                  this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+                }
+                break;
+              }
+
               if (!this._imageGenService.isVisionAvailable) {
                 this._postToPanel(canvasPanelId, {
                   type: 'canvasStreamChunk',
@@ -5518,10 +5558,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               const projectContext = await CanvasManager.buildProjectContext(
                 this._providerManager, codeSettings, this._projectContextManager, this._imageGenService
               );
-              // Determine SVG markup or image from selected region
               const selectedObj = codeSnapshot.selectedRegion?.objects?.[0];
               const regionImage = codeSnapshot.selectedRegion?.imageBase64;
-              // Check if the selected object has SVG content stored (group type from SVG)
               const svgContent = selectedObj?.content && selectedObj.content.startsWith('<svg') ? selectedObj.content : null;
 
               if (!this._codeGenService) {
@@ -5529,6 +5567,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 this._codeGenService = new CodeGenerationService();
               }
 
+              const codeFrameBounds = codeSnapshot.selectedRegion?.bounds;
               const stream = this._canvasManager.generateCode(
                 canvasId,
                 svgContent,
@@ -5538,7 +5577,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 this._imageGenService,
                 selectedObj?.label,
                 selectedObj?.metadata,
-                projectContext
+                projectContext,
+                codeFrameBounds,
+                payload.designTheme,
+                payload.designAssets
               );
               for await (const chunk of stream) {
                 this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
@@ -5583,6 +5625,125 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 parsed.action as 'edit-element' | 'edit-layout'
               );
               for await (const chunk of editStream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          // 'mockup' action removed — /mockup command no longer exists
+
+          case 'theme': {
+            try {
+              const themeSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+              const stream = this._canvasManager.generateTheme(
+                canvasId, parsed.argument, this._providerManager, themeSettings
+              );
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'stitch-edit': {
+            try {
+              const stitchRef = payload.stitchScreenRef;
+              if (!stitchRef) {
+                this._postToPanel(canvasPanelId, {
+                  type: 'canvasStreamChunk',
+                  payload: { type: 'canvas_error', canvasId, error: 'Select a Stitch-generated screen to edit' }
+                } as any);
+                break;
+              }
+              const stream = this._canvasManager.editStitchScreen(canvasId, parsed.argument, stitchRef);
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'stitch-variants': {
+            try {
+              const variantRef = payload.stitchScreenRef;
+              if (!variantRef) {
+                this._postToPanel(canvasPanelId, {
+                  type: 'canvasStreamChunk',
+                  payload: { type: 'canvas_error', canvasId, error: 'Select a Stitch-generated screen to create variants' }
+                } as any);
+                break;
+              }
+              const config = vscode.workspace.getConfiguration('mysti');
+              const variantCount = config.get<number>('canvas.stitchVariantCount', 3);
+              const creativeRange = config.get<string>('canvas.stitchCreativeRange', 'EXPLORE') as import('../types').StitchCreativeRange;
+              const stream = this._canvasManager.generateStitchVariants(
+                canvasId, variantRef, parsed.argument,
+                { variantCount, creativeRange, aspects: ['LAYOUT', 'COLOR_SCHEME'] },
+                variantRef.imageBase64 ? 0 : 0, 0
+              );
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'stitch-html': {
+            try {
+              const htmlRef = payload.stitchScreenRef;
+              if (!htmlRef) {
+                this._postToPanel(canvasPanelId, {
+                  type: 'canvasStreamChunk',
+                  payload: { type: 'canvas_error', canvasId, error: 'Select a Stitch-generated screen to export HTML' }
+                } as any);
+                break;
+              }
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_stitch_html_ready', canvasId, stitchHtml: htmlRef.htmlContent || '', stitchScreenRef: htmlRef }
+              } as any);
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
+
+          case 'design-dna': {
+            try {
+              const dnaRef = payload.stitchScreenRef;
+              if (!dnaRef) {
+                this._postToPanel(canvasPanelId, {
+                  type: 'canvasStreamChunk',
+                  payload: { type: 'canvas_error', canvasId, error: 'Select a Stitch-generated screen to extract Design DNA' }
+                } as any);
+                break;
+              }
+              const stream = this._canvasManager.extractDesignDna(canvasId, dnaRef);
+              for await (const chunk of stream) {
                 this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
               }
             } catch (err: any) {
@@ -5692,6 +5853,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               payload: { type: 'canvas_error', canvasId: propPayload.canvasId || '', error: err.message }
             } as any);
           }
+        }
+        break;
+      }
+
+      case 'canvasGenerateAllAssets': {
+        const assetPayload = msg.payload || {};
+        const assetCanvasId = assetPayload.canvasId || '';
+        const unresolvedAssets = assetPayload.assets || [];
+        if (unresolvedAssets.length > 0 && this._imageGenService?.isVisionAvailable) {
+          try {
+            const assetStream = this._canvasManager.generateDesignAssets(
+              assetCanvasId, unresolvedAssets, this._imageGenService
+            );
+            for await (const assetChunk of assetStream) {
+              this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: assetChunk } as any);
+            }
+          } catch (err: any) {
+            this._postToPanel(canvasPanelId, {
+              type: 'canvasStreamChunk',
+              payload: { type: 'canvas_error', canvasId: assetCanvasId, error: `Asset generation failed: ${err.message}` }
+            } as any);
+          }
+        } else if (!this._imageGenService?.isVisionAvailable) {
+          this._postToPanel(canvasPanelId, {
+            type: 'canvasStreamChunk',
+            payload: { type: 'canvas_error', canvasId: assetCanvasId, error: 'Configure a Gemini or OpenAI API key to generate assets' }
+          } as any);
         }
         break;
       }

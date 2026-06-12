@@ -94,6 +94,7 @@ export class CodeGenerationService {
     metadata?: Record<string, string>;
     projectContext?: string;
     imageService: ImageGenerationService;
+    designContext?: string;
   }): AsyncGenerator<{ type: string; content?: string; files?: GeneratedFile[]; props?: ComponentProp[] }> {
     yield { type: 'progress', content: `Generating ${opts.framework} component...` };
 
@@ -282,6 +283,7 @@ Prop categories: colors, typography, spacing, content, layout`;
     description?: string;
     metadata?: Record<string, string>;
     projectContext?: string;
+    designContext?: string;
   }): string {
     const parts: string[] = [];
 
@@ -302,6 +304,11 @@ Prop categories: colors, typography, spacing, content, layout`;
 
     if (opts.projectContext) {
       parts.push(`\nProject context:\n${opts.projectContext}`);
+    }
+
+    if (opts.designContext) {
+      parts.push(`\n${opts.designContext}`);
+      parts.push('IMPORTANT: Use the provided design system tokens (colors, typography, spacing) exactly as specified. Do not guess colors from the image — use the theme tokens.');
     }
 
     if (opts.svgMarkup) {

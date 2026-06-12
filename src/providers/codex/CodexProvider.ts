@@ -76,9 +76,15 @@ export class CodexProvider extends BaseCliProvider {
     displayName: 'OpenAI Codex',
     models: [
       {
+        id: 'gpt-5.4-codex',
+        name: 'GPT-5.4 Codex',
+        description: 'Latest coding model, best for code generation',
+        contextWindow: 400000
+      },
+      {
         id: 'gpt-5.3-codex',
         name: 'GPT-5.3 Codex',
-        description: 'Newest coding model, best for code generation',
+        description: 'Previous gen coding model',
         contextWindow: 400000
       },
       {
@@ -130,7 +136,7 @@ export class CodexProvider extends BaseCliProvider {
         contextWindow: 200000
       }
     ],
-    defaultModel: 'gpt-5.3-codex'
+    defaultModel: 'gpt-5.4-codex'
   };
 
   readonly capabilities: ProviderCapabilities = {

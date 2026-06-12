@@ -397,7 +397,7 @@
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
           "maxLength": 128,
-          "description": "Custom model for OpenAI Codex. Overrides the dropdown selection. Leave empty to use the selected model. Example: gpt-5.3-codex"
+          "description": "Custom model for OpenAI Codex. Overrides the dropdown selection. Leave empty to use the selected model. Example: gpt-5.4-codex"
         },
         "mysti.codexProfile": {
           "type": "string",
@@ -1227,6 +1227,36 @@
           "minimum": 1,
           "maximum": 6,
           "description": "Number of variants to generate for reimagination"
+        },
+        "mysti.canvas.stitchApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Google Stitch API key for UI screen generation (get from stitch.withgoogle.com → Settings → API Keys)"
+        },
+        "mysti.canvas.stitchDeviceType": {
+          "type": "string",
+          "default": "DESKTOP",
+          "enum": ["DESKTOP", "MOBILE", "TABLET", "AGNOSTIC"],
+          "description": "Default device type for Stitch screen generation"
+        },
+        "mysti.canvas.stitchModel": {
+          "type": "string",
+          "default": "GEMINI_3_PRO",
+          "enum": ["GEMINI_3_PRO", "GEMINI_3_FLASH"],
+          "description": "Stitch model: GEMINI_3_PRO (higher quality) or GEMINI_3_FLASH (faster)"
+        },
+        "mysti.canvas.stitchVariantCount": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Number of design variants to generate with Stitch"
+        },
+        "mysti.canvas.stitchCreativeRange": {
+          "type": "string",
+          "default": "EXPLORE",
+          "enum": ["REFINE", "EXPLORE", "REIMAGINE"],
+          "description": "Creative range for Stitch variants: REFINE (conservative), EXPLORE (balanced), REIMAGINE (radical)"
         }
       }
     },
@@ -1417,6 +1447,7 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "@google/stitch-sdk": "^0.0.3",
     "@vscode/extension-telemetry": "^0.9.0",
     "marked": "^15.0.0",
     "playwright": "^1.58.2",
