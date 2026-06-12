@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -68,5 +69,24 @@ describe('MemoryManager project memory keys', () => {
     expect(attackerMemoryPath).not.toBe(victimMemoryPath);
     expect(attackerManager.getProjectMemoryContent()).not.toContain('VICTIM_ONLY_MEMORY');
     attackerManager.dispose();
+  });
+
+  it('migrates a legacy v1-keyed project memory dir to the v2 key', () => {
+    const project = path.join(tempRoot, 'projects', 'legacy-repo');
+    fs.mkdirSync(project, { recursive: true });
+
+    // Seed a legacy dir keyed by sha256(<literal path>).substring(0, 12)
+    const legacyHash = crypto.createHash('sha256').update(project).digest('hex').substring(0, 12);
+    const legacyMemoryDir = path.join(process.env.HOME as string, '.mysti', 'projects', legacyHash, 'memory');
+    fs.mkdirSync(legacyMemoryDir, { recursive: true });
+    fs.writeFileSync(path.join(legacyMemoryDir, 'MEMORY.md'), '# Mysti Project Memory\n\n- LEGACY_MEMORY_CONTENT\n');
+
+    const manager = new MemoryManager(createMockContext());
+    manager.initProjectMemory(project);
+
+    expect(manager.getProjectMemoryContent()).toContain('LEGACY_MEMORY_CONTENT');
+    expect(manager.getProjectMemoryPath()).not.toContain(legacyHash);
+    expect(fs.existsSync(path.join(process.env.HOME as string, '.mysti', 'projects', legacyHash))).toBe(false);
+    manager.dispose();
   });
 });
