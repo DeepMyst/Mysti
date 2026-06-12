@@ -25,7 +25,7 @@ Captured after Phase 3a (cached CLI discovery) + Phase 3b (icon downscale to 128
 | Metric | Value | Delta vs baseline | Notes |
 | --- | --- | --- | --- |
 | `dist/extension.js` | 1,881,830 B (1.79 MB) | +9,215 B (+0.5%) | Cumulative working-tree delta since baseline (Phase 2 + 3a discovery cache + concurrent Canvas v2 work) |
-| `mysti-0.4.0.vsix` | n/a | — | Not repackaged yet; the 32.27 MB figure above predates 3a/3b — re-run `npx vsce package` |
+| `mysti-0.4.0.vsix` | 3,907,132 B (3.73 MB) | −29,929,423 B (−88.5%) | Repackaged 2026-06-12 post-3b (`npx vsce package`, 307 files) |
 | `resources/` total | 3,940,757 B (3.76 MB) | −31,258,800 B (−88.8%) | |
 | `resources/icons` total | 339,690 B (0.32 MB) | −31,258,800 B (−98.9%) | 23 PNGs downscaled in place via `sips -Z 128` (was 30.13 MB) |
 
