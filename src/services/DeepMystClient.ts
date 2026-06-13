@@ -29,9 +29,13 @@
 /** A DeepMyst API key always starts with this prefix (machine-to-machine). */
 export const DEEPMYST_KEY_PREFIX = 'dm_';
 
-/** Default endpoints — overridable via the mysti.deepmyst.* settings. */
-export const DEEPMYST_DEFAULT_API_URL = 'https://api.deepmyst.com';
-export const DEEPMYST_DEFAULT_WEB_URL = 'https://app.deepmyst.com';
+/**
+ * Default endpoints — overridable via the mysti.deepmyst.* settings.
+ * The DeepMyst v2 web app is at v2.deepmyst.com; the REST + MCP API is on its
+ * own host (api.v2.deepmyst.com) under `/api/v1/...`.
+ */
+export const DEEPMYST_DEFAULT_API_URL = 'https://api.v2.deepmyst.com';
+export const DEEPMYST_DEFAULT_WEB_URL = 'https://v2.deepmyst.com';
 
 /** Metadata for a DeepMyst built-in MCP server (Corporate Knowledge, Org Data, …). */
 export interface DeepMystBuiltinMcp {

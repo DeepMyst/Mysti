@@ -536,9 +536,14 @@ export async function activate(context: vscode.ExtensionContext) {
         // Plan 04: DeepMyst sign-in deep-link callback
         // (vscode://DeepMyst.mysti/deepmyst-auth?key=dm_...)
         if (uri.path === '/deepmyst-auth') {
-          const key = new URLSearchParams(uri.query).get('key');
-          if (key) {
-            deepMystAuthManager.completeSignIn(key).then(ok => {
+          const params = new URLSearchParams(uri.query);
+          const key = params.get('key');
+          const state = params.get('state') ?? undefined;
+          const error = params.get('error');
+          if (error) {
+            vscode.window.showErrorMessage(`DeepMyst sign-in failed: ${error}`);
+          } else if (key) {
+            deepMystAuthManager.completeSignIn(key, state).then(ok => {
               if (ok) {
                 telemetryManager.sendEvent('deepmyst.signedIn', {});
               }

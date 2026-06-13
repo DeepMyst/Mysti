@@ -26,6 +26,7 @@
  */
 
 import * as vscode from 'vscode';
+import * as crypto from 'crypto';
 import {
   DeepMystClient,
   isPlausibleDeepMystKey,
@@ -50,8 +51,10 @@ export class DeepMystAuthManager implements vscode.Disposable {
 
   private readonly _client: DeepMystClient;
   private _cachedKey: string | undefined;
-  /** Resolver for a pending deep-link callback, if signIn() is awaiting one. */
-  private _pendingCallback: ((key: string) => void) | null = null;
+  /** Resolver for the in-flight browser sign-in awaiting its callback. */
+  private _pendingResolve: ((key: string | null) => void) | null = null;
+  /** CSRF state for the in-flight browser sign-in (must match the callback). */
+  private _pendingState: string | null = null;
 
   constructor(private readonly _context: vscode.ExtensionContext) {
     this._client = new DeepMystClient(
@@ -104,28 +107,112 @@ export class DeepMystAuthManager implements vscode.Disposable {
   // ── Sign-in / sign-out ──────────────────────────────────────────────────────
 
   /**
-   * Interactive sign-in. Opens the DeepMyst web app for Clerk sign-in/sign-up,
-   * then accepts the `dm_` key via either the deep-link callback or a paste box.
+   * Interactive sign-in — Claude-Code-style browser flow with automatic
+   * link-back (no manual key copy/paste in the happy path):
+   *   1. We build a callback URI that routes back to this extension's URI
+   *      handler (via vscode.env.asExternalUri, so it works in desktop AND
+   *      remote/web VS Code) and a random `state` nonce (CSRF guard).
+   *   2. We open `${webUrl}/connect/vscode?redirect_uri=...&state=...`. DeepMyst
+   *      authenticates the user with Clerk, mints a `dm_` API key for them, and
+   *      redirects to the callback with `?key=dm_...&state=...`.
+   *   3. The URI handler calls completeSignIn(key, state); we match the state,
+   *      validate the key against DeepMyst, and store it.
+   * If the browser round-trip doesn't complete (e.g. the connect page isn't
+   * deployed yet, or the user cancels), we fall back to manual key entry.
    * Returns true on success. Never throws.
    */
   async signIn(): Promise<boolean> {
-    const webUrl = this.getWebUrl();
-    const signInUrl = `${webUrl.replace(/\/+$/, '')}/sign-in`;
+    const webUrl = this.getWebUrl().replace(/\/+$/, '');
 
-    const choice = await vscode.window.showInformationMessage(
-      'Sign in to DeepMyst to connect MCP tools. We\'ll open DeepMyst in your browser — sign in (or sign up), then create an API key and paste it here. DeepMyst keeps your connection credentials; Mysti only stores the key.',
-      { modal: true },
-      'Open DeepMyst & continue',
-    );
-    if (choice !== 'Open DeepMyst & continue') {
-      return false;
+    // Callback URI back into this extension (desktop + remote safe).
+    let redirectUri: vscode.Uri;
+    try {
+      redirectUri = await vscode.env.asExternalUri(
+        vscode.Uri.parse(`${vscode.env.uriScheme}://DeepMyst.mysti/deepmyst-auth`),
+      );
+    } catch {
+      // asExternalUri can fail in odd hosts; fall back to the static scheme.
+      redirectUri = vscode.Uri.parse('vscode://DeepMyst.mysti/deepmyst-auth');
     }
 
-    await vscode.env.openExternal(vscode.Uri.parse(signInUrl));
+    const state = crypto.randomBytes(16).toString('hex');
+    const connectUrl =
+      `${webUrl}/connect/vscode?redirect_uri=${encodeURIComponent(redirectUri.toString(true))}&state=${state}`;
 
+    // Arm the pending callback BEFORE opening the browser.
+    const keyPromise = new Promise<string | null>((resolve) => {
+      this._pendingState = state;
+      this._pendingResolve = resolve;
+    });
+
+    const opened = await vscode.env.openExternal(vscode.Uri.parse(connectUrl));
+    if (!opened) {
+      this._clearPending();
+      return this._manualKeyFallback('Could not open the browser. Paste your DeepMyst API key instead.');
+    }
+
+    // Wait for the link-back (cancellable; times out after 5 minutes).
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    const key = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        cancellable: true,
+        title: 'Waiting for DeepMyst sign-in in your browser…',
+      },
+      (_progress, token) => Promise.race<string | null>([
+        keyPromise,
+        new Promise<null>((resolve) => token.onCancellationRequested(() => resolve(null))),
+        new Promise<null>((resolve) => { timeoutTimer = setTimeout(() => resolve(null), 5 * 60 * 1000); }),
+      ]),
+    );
+    if (timeoutTimer) { clearTimeout(timeoutTimer); }
+    this._clearPending();
+
+    if (!key) {
+      // Cancelled / timed out / connect page unavailable — offer manual entry.
+      return this._manualKeyFallback();
+    }
+    return this._storeValidatedKey(key.trim());
+  }
+
+  /**
+   * Complete sign-in from the browser link-back
+   * (`<scheme>://DeepMyst.mysti/deepmyst-auth?key=dm_...&state=...`). When a
+   * browser flow is in progress it must carry the matching `state` (CSRF
+   * guard); an unsolicited deep link with a valid key is still honored.
+   */
+  async completeSignIn(key: string, state?: string): Promise<boolean> {
+    if (this._pendingResolve) {
+      if (this._pendingState && state !== this._pendingState) {
+        console.warn('[Mysti] DeepMyst auth callback state mismatch — ignoring.');
+        return false;
+      }
+      // Hand the key to the in-flight signIn(), which validates + stores it.
+      const resolve = this._pendingResolve;
+      this._clearPending();
+      resolve(key);
+      return true;
+    }
+    // No active flow (e.g. a manual deep link) — validate + store directly.
+    return this._storeValidatedKey(key.trim());
+  }
+
+  /** Manual key entry (the "enter a key manually" affordance). */
+  enterApiKeyManually(): Promise<boolean> {
+    return this._manualKeyFallback();
+  }
+
+  private _clearPending(): void {
+    this._pendingResolve = null;
+    this._pendingState = null;
+  }
+
+  /** Manual key entry — fallback when the browser link-back can't complete. */
+  private async _manualKeyFallback(message?: string): Promise<boolean> {
     const key = await vscode.window.showInputBox({
       title: 'DeepMyst API key',
-      prompt: `Paste your DeepMyst API key (starts with "${DEEPMYST_KEY_PREFIX}"). Create one in the DeepMyst dashboard under API Keys.`,
+      prompt: message
+        ?? `Paste your DeepMyst API key (starts with "${DEEPMYST_KEY_PREFIX}"). Create one in the DeepMyst dashboard under API Keys.`,
       placeHolder: `${DEEPMYST_KEY_PREFIX}...`,
       ignoreFocusOut: true,
       password: true,
@@ -138,19 +225,6 @@ export class DeepMystAuthManager implements vscode.Disposable {
     });
     if (!key) {
       return false;
-    }
-    return this._storeValidatedKey(key.trim());
-  }
-
-  /**
-   * Complete sign-in from a deep-link callback
-   * (`vscode://DeepMyst.mysti/deepmyst-auth?key=dm_...`). Validates + stores.
-   */
-  async completeSignIn(key: string): Promise<boolean> {
-    // Resolve any pending signIn() awaiter first so its flow short-circuits.
-    if (this._pendingCallback) {
-      this._pendingCallback(key);
-      this._pendingCallback = null;
     }
     return this._storeValidatedKey(key.trim());
   }

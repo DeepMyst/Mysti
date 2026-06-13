@@ -184,12 +184,14 @@ export enum ProgressLocation {
 }
 
 export const env = {
+  uriScheme: 'vscode',
   openExternal: () => Promise.resolve(true),
+  asExternalUri: (uri: unknown) => Promise.resolve(uri),
 };
 
 export const Uri = {
   file: (path: string) => ({ fsPath: path, scheme: 'file', path }),
-  parse: (uri: string) => ({ fsPath: uri, scheme: 'file', path: uri }),
+  parse: (uri: string) => ({ fsPath: uri, scheme: 'file', path: uri, toString: () => uri }),
   joinPath: (base: { fsPath?: string; path?: string }, ...segments: string[]) => {
     const joined = [base?.fsPath ?? base?.path ?? '', ...segments].join('/');
     return { fsPath: joined, scheme: 'file', path: joined, toString: () => joined };

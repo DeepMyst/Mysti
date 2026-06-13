@@ -48,22 +48,36 @@ third-party connection credentials** — nothing sensitive lives locally.
   connect card → `openExternal` to DeepMyst → resume on next turn.
 - **Agent/skills management** (original Plan 04 §4–6) is unchanged and independent.
 
+### URLs (confirmed 2026-06-13)
+
+- Web app: **`https://v2.deepmyst.com`** (`mysti.deepmyst.webUrl`)
+- API: **`https://api.v2.deepmyst.com`** (`mysti.deepmyst.apiUrl`) — REST + MCP under `/api/v1/...`
+
+### Automatic browser sign-in (Claude-Code-style link-back, implemented Mysti-side)
+
+`signIn()` no longer asks the user to copy/paste a key in the happy path. It:
+1. builds a callback URI back into the extension via `vscode.env.asExternalUri(<scheme>://DeepMyst.mysti/deepmyst-auth)` (works in desktop + remote/web VS Code) and a random `state` nonce (CSRF guard);
+2. opens `https://v2.deepmyst.com/connect/vscode?redirect_uri=<callback>&state=<nonce>`;
+3. waits (cancellable, 5-min timeout) for the URI handler to receive the link-back and calls `completeSignIn(key, state)`, which matches `state`, validates the key, and stores it.
+Falls back to manual key entry if the browser round-trip can't complete (page not deployed, user cancels, timeout).
+
 ### DeepMyst-side requirements (other repo — for the user to confirm/implement)
 
-1. **`dm_` key minting after Clerk sign-in.** The dashboard's API Keys page already
-   creates `dm_` keys (`/api/v1/keys`). Best UX: a "Connect VS Code" page that, after
-   Clerk sign-in, mints a Mysti-scoped `dm_` key and deep-links back to
-   `vscode://DeepMyst.mysti/deepmyst-auth?key=dm_…`. Until that exists, the paste flow
-   (copy key from dashboard → paste into Mysti) works today.
+1. **`/connect/vscode` page (the link-back endpoint).** A Clerk-gated web page at
+   `https://v2.deepmyst.com/connect/vscode` that accepts `redirect_uri` + `state` query
+   params, signs the user in / signs them up (Clerk), mints a Mysti-scoped `dm_` API key
+   (via the existing `/api/v1/keys`), and redirects the browser to
+   `<redirect_uri>?key=dm_<key>&state=<state>` (or `?error=<reason>` on failure). This is
+   what makes sign-in fully automatic. Until it exists, Mysti's manual-paste fallback works.
+   - Validate/whitelist `redirect_uri` to the `vscode://`/`<host>` extension callback shapes.
 2. **MCP transport compatibility.** Backend CLIs expect MCP Streamable-HTTP for `type:http`
    servers. DeepMyst's `POST /api/v1/mcp/{slug}` returns JSON-RPC results directly — confirm
    each target CLI accepts a JSON-response (non-SSE) streamable-HTTP server, or add an SSE
    variant. (Verify during Phase 3 against Claude Code first.)
-3. **Production URLs.** Confirm `mysti.deepmyst.apiUrl` (default `https://api.deepmyst.com`)
-   and `webUrl` (default `https://app.deepmyst.com`).
-4. **Connections list API.** An endpoint returning the user's connected services + available
-   agents (slugs) so Mysti's Phase 2 UI can show status and Phase 3 can pick the agent slug
-   to wire. (May already exist under datasources/agents domains — confirm.)
+3. **Connections list API.** Endpoints returning the user's connected services + available
+   agents (slugs) so Phase 2's UI shows status and Phase 3 picks the agent slug to wire.
+   Mysti already calls `GET /api/v1/datasources` and `GET /api/v1/agents` (degrades gracefully
+   on 404) — confirm these return for `dm_`-key callers.
 
 ---
 

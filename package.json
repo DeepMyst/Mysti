@@ -534,12 +534,12 @@
         },
         "mysti.deepmyst.apiUrl": {
           "type": "string",
-          "default": "https://api.deepmyst.com",
+          "default": "https://api.v2.deepmyst.com",
           "markdownDescription": "Base URL of the DeepMyst API used for brokered MCP connections (Plan 04). The user's `dm_` API key is sent as `Authorization: Bearer`; DeepMyst exposes MCP tools at `/api/v1/mcp/{agent}`."
         },
         "mysti.deepmyst.webUrl": {
           "type": "string",
-          "default": "https://app.deepmyst.com",
+          "default": "https://v2.deepmyst.com",
           "markdownDescription": "Base URL of the DeepMyst web app, opened in the browser for Clerk sign-in/sign-up and for managing connections."
         },
         "mysti.activeMode.enabled": {

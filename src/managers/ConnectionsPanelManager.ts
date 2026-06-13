@@ -106,7 +106,8 @@ export class ConnectionsPanelManager implements vscode.Disposable {
         await vscode.env.openExternal(vscode.Uri.parse(this._connectionsUrl()));
         break;
       case 'createKey':
-        await vscode.env.openExternal(vscode.Uri.parse(this._apiKeysUrl()));
+        // "Enter an API key manually" — fallback to the paste flow.
+        await this._auth.enterApiKeyManually();
         break;
       default:
         break;
@@ -115,10 +116,6 @@ export class ConnectionsPanelManager implements vscode.Disposable {
 
   private _connectionsUrl(): string {
     return `${this._auth.getWebUrl().replace(/\/+$/, '')}/connections`;
-  }
-
-  private _apiKeysUrl(): string {
-    return `${this._auth.getWebUrl().replace(/\/+$/, '')}/settings/api-keys`;
   }
 
   // ── Rendering ────────────────────────────────────────────────────────────────
