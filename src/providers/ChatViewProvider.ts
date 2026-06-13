@@ -1202,6 +1202,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         vscode.commands.executeCommand('mysti.openInNewTab');
         break;
 
+      case 'openConnections':
+        vscode.commands.executeCommand('mysti.openConnections');
+        break;
+
       case 'checkSetup':
         await this._handleCheckSetup(msg.panelId);
         break;

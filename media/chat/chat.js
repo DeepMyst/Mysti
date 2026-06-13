@@ -2688,6 +2688,14 @@
         postMessageWithPanelId({ type: 'openInNewTab' });
       });
 
+      // DeepMyst Connections button (Plan 04)
+      var connectionsBtn = document.getElementById('connections-btn');
+      if (connectionsBtn) {
+        connectionsBtn.addEventListener('click', function() {
+          postMessageWithPanelId({ type: 'openConnections' });
+        });
+      }
+
       // Export conversation button
       var exportConversationBtn = document.getElementById('export-conversation-btn');
       if (exportConversationBtn) {
