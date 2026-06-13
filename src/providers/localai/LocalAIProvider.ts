@@ -29,6 +29,7 @@ import type {
   Conversation,
   AgentConfiguration,
   Attachment,
+  ModelInfo,
 } from '../../types';
 
 /**
@@ -200,6 +201,32 @@ export class LocalAIProvider extends BaseCliProvider {
 
   getCliPath(): string {
     return this._getEndpoint();
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3): GET /v1/models (OpenAI-compatible)
+   * lists the models the LocalAI server exposes. Returns null on any failure so
+   * the registry keeps its curated/cached list. Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const endpoint = this._getEndpoint();
+    try {
+      const headers: Record<string, string> = {};
+      const apiKey = this._getApiKey();
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+      const response = await fetch(`${endpoint}/v1/models`, { signal: AbortSignal.timeout(timeoutMs), headers });
+      if (!response.ok) { return null; }
+      const data = await response.json() as { data?: Array<{ id?: string }> };
+      const models = (data.data || [])
+        .map(m => (m.id || '').trim())
+        .filter(id => id.length > 0)
+        .map<ModelInfo>(id => ({ id, name: id }));
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
   }
 
   // --- Authentication ---

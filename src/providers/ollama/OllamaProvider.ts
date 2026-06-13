@@ -29,6 +29,7 @@ import type {
   Conversation,
   AgentConfiguration,
   Attachment,
+  ModelInfo,
 } from '../../types';
 
 /**
@@ -205,6 +206,27 @@ export class OllamaProvider extends BaseCliProvider {
 
   getCliPath(): string {
     return this._getEndpoint();
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3): GET /api/tags lists the models
+   * actually pulled on the local Ollama server. Returns null on any failure so
+   * the registry keeps its curated/cached list. Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const endpoint = this._getEndpoint();
+    try {
+      const response = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!response.ok) { return null; }
+      const data = await response.json() as { models?: Array<{ name?: string; model?: string }> };
+      const models = (data.models || [])
+        .map(m => (m.name || m.model || '').trim())
+        .filter(id => id.length > 0)
+        .map<ModelInfo>(id => ({ id, name: id }));
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
   }
 
   // --- Authentication (local, no auth needed) ---

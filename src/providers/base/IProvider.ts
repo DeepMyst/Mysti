@@ -414,6 +414,29 @@ export interface ICliProvider {
   discoverCli(): Promise<CliDiscoveryResult>;
   getCliPath(): string;
 
+  /**
+   * Optional live model discovery (Plan 01 Phase 3). When implemented, the
+   * ModelRegistryService calls this during refresh() to obtain a fresh model
+   * list from the backend (CLI subcommand, --help parse, or local-server HTTP
+   * endpoint). Absence of this method means the provider is curated-only.
+   *
+   * Contract (the registry and adapters code against this exactly):
+   * - Returns a fresh `ModelInfo[]` on success, or `null` when discovery is
+   *   unavailable, unauthenticated, or failed. On `null` the registry keeps the
+   *   existing cached/curated list (never empties the dropdown) and does NOT
+   *   fire onDidUpdateModels.
+   * - MUST resolve within `timeoutMs` (the registry also races its own timeout
+   *   of MODEL_DISCOVERY_TIMEOUT_MS; treat the argument as the hard budget and
+   *   abort/return null rather than overrunning it).
+   * - MUST NOT throw. Any internal error (spawn failure, parse anomaly, network
+   *   error, ANSI/empty output) is caught by the implementation and surfaced as
+   *   `null`. The registry additionally wraps the call in try/catch, but
+   *   adapters should not rely on that — return null instead of throwing.
+   * - Returning an empty array `[]` is treated as "no models discovered" and is
+   *   equivalent to `null` by the registry (e.g. logged-out Cursor).
+   */
+  discoverModels?(timeoutMs: number): Promise<ModelInfo[] | null>;
+
   // Authentication & Setup
   getAuthConfig(): Promise<AuthConfig>;
   checkAuthentication(): Promise<AuthStatus>;

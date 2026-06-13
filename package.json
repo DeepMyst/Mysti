@@ -506,6 +506,11 @@
           "maximum": 95,
           "description": "Context usage percentage at which automatic compaction triggers (50-95%)"
         },
+        "mysti.models.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically refresh provider model lists in the background a few seconds after startup (live discovery via CLI/HTTP where supported). Disable to rely only on the bundled/curated and cached lists."
+        },
         "mysti.activeMode.enabled": {
           "type": "boolean",
           "default": true,

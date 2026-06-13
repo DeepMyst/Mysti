@@ -125,4 +125,34 @@ describe('LocalAIProvider discovery', () => {
     await provider.initialize(); // TTL cleared — init probes again
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+
+  describe('discoverModels (Plan 01 Phase 3)', () => {
+    it('parses /v1/models into ModelInfo[]', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: 'gpt-4' }, { id: 'phi-2' }] }),
+      });
+      const models = await provider.discoverModels(1000);
+      expect(models).toEqual([
+        { id: 'gpt-4', name: 'gpt-4' },
+        { id: 'phi-2', name: 'phi-2' },
+      ]);
+      expect(String(fetchMock.mock.calls[0][0])).toBe('http://localhost:8080/v1/models');
+    });
+
+    it('returns null on a non-ok response', async () => {
+      fetchMock.mockResolvedValue({ ok: false });
+      expect(await provider.discoverModels(1000)).toBeNull();
+    });
+
+    it('returns null on fetch failure', async () => {
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+      expect(await provider.discoverModels(1000)).toBeNull();
+    });
+
+    it('returns null when the server reports no models', async () => {
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+      expect(await provider.discoverModels(1000)).toBeNull();
+    });
+  });
 });

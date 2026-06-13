@@ -17,6 +17,9 @@ import { validateModelName } from '../utils/validation';
 import {
   DEFAULT_FALLBACK_MODEL,
   MODEL_CUSTOM_MAX_PER_PROVIDER,
+  MODEL_DISCOVERY_TIMEOUT_MS,
+  MODEL_CACHE_TTL_CLI_MS,
+  MODEL_CACHE_TTL_LOCAL_MS,
 } from '../constants';
 
 /**
@@ -32,15 +35,32 @@ interface CachedProviderModels {
 type ModelRegistryCache = Record<string, CachedProviderModels>;
 
 /**
- * Minimal structural view of ProviderManager — the registry only needs the
- * curated per-provider config (models + defaultModel) and the list of
- * registered provider ids. Declared structurally to avoid a hard import cycle
- * (ProviderManager imports nothing from this file; this file injects via a
- * setter from extension.ts after both are constructed).
+ * A provider instance that may implement live model discovery (Plan 01 Phase 3).
+ * The registry only touches the optional discoverModels method; everything else
+ * about the provider is irrelevant here, so the shape is intentionally minimal.
+ */
+export interface DiscoverableProvider {
+  readonly id: string;
+  discoverModels?(timeoutMs: number): Promise<ModelInfo[] | null>;
+}
+
+/**
+ * Minimal structural view of ProviderManager — the registry needs the curated
+ * per-provider config (models + defaultModel), the list of registered provider
+ * ids, and (Phase 3) access to the provider instance so it can invoke the
+ * optional discoverModels() probe. Declared structurally to avoid a hard import
+ * cycle (ProviderManager imports nothing from this file; this file injects via a
+ * setter from extension.ts after both are constructed). ProviderManager already
+ * satisfies all three members (getProvider/getAllProviderIds/getProviderInstance).
  */
 export interface ModelRegistryProviderSource {
   getProvider(id: string): { models: ModelInfo[]; defaultModel: string } | undefined;
   getAllProviderIds(): string[];
+  /**
+   * Optional in Phase 1/tests; required for live discovery. Returns the
+   * concrete provider instance whose discoverModels() the registry calls.
+   */
+  getProviderInstance?(id: string): DiscoverableProvider | undefined;
 }
 
 /**
@@ -57,14 +77,37 @@ export const MODEL_REGISTRY_CACHE_KEY = 'mysti.modelRegistry.v1';
 const CUSTOM_MODELS_SETTING = 'customModels';
 
 /**
+ * Provider ids whose model list is served by a local server (Ollama / LocalAI).
+ * These use the SHORT local TTL (MODEL_CACHE_TTL_LOCAL_MS) because the installed
+ * set changes often (a user runs `ollama pull` and expects it to show up soon).
+ * Every other provider is CLI/HTTP-derived and uses the long CLI TTL. Kept as a
+ * small set here rather than a provider-declared hint so the registry stays the
+ * single place that classifies cache freshness.
+ */
+const LOCAL_SERVER_PROVIDER_IDS: ReadonlySet<string> = new Set(['ollama', 'localai']);
+
+/**
+ * Stagger delay between per-provider discovery probes in refreshAll() (R4). A
+ * burst of CLI spawns at the same instant spikes CPU on activation; spacing
+ * them ~400ms apart keeps the cost diffuse while still warming every list
+ * within a few seconds.
+ */
+const REFRESH_ALL_STAGGER_MS = 400;
+
+/**
  * ModelRegistryService — single authority for "what models does provider X
  * have, and what are their context windows" (Plan 01).
  *
- * Phase 1 (this code) is behavior-neutral: getModels() merges the bundled
- * curated config.models with any persisted discovery cache and user custom
- * models, but refresh() is a no-op (live discovery adapters land in Phase 3).
- * With no cache and no custom models, getModels() returns exactly today's
- * bundled list — byte-identical output.
+ * getModels() merges the bundled curated config.models with any persisted
+ * discovery cache and user custom models, answering synchronously and never
+ * throwing. With no cache and no custom models it returns exactly today's
+ * bundled list. Phase 3 (this code) makes refresh() real: it calls the
+ * provider's optional discoverModels() under a timeout race; on a fresh
+ * (non-null, non-empty) result it persists {models, fetchedAt} and fires
+ * onDidUpdateModels; on null/throw/timeout it keeps the existing cache (stale)
+ * and stays silent. getModels() is stale-while-revalidate: it returns the
+ * current merge immediately and, when the cached entry is older than its
+ * per-provider TTL, kicks a deduped background refresh.
  *
  * Merge precedence (low → high): curated → discovered → custom. Higher sources
  * override lower ones for the same model id; custom always wins.
@@ -103,12 +146,24 @@ export class ModelRegistryService {
   /**
    * Merged, deduped model list for a provider. Always answers synchronously
    * from memory cache / globalState / bundled curated. Custom models are always
-   * appended (deduped). Phase 3 adds stale-while-revalidate scheduling here.
+   * appended (deduped).
+   *
+   * Stale-while-revalidate (Phase 3): if the cached discovery entry is older
+   * than the provider's TTL (or there is no cache yet but the provider supports
+   * discovery), a background refresh() is kicked (deduped via _inFlight) and the
+   * CURRENT merge is still returned now — the message-send path never awaits
+   * discovery. The refresh fires onDidUpdateModels when it lands, prompting
+   * consumers to re-read.
    */
   public getModels(providerId: string): ProviderModelState {
     const curated = this._getCuratedModels(providerId);
     const cached = this._memoryCache.get(providerId);
     const customIds = this._getCustomModelIds(providerId);
+
+    if (this._isStale(providerId, cached)) {
+      // Fire-and-forget; deduped by refresh()'s in-flight map. Never awaited.
+      void this.refresh(providerId);
+    }
 
     // Merge by id, low → high precedence so later sources override earlier.
     const merged = new Map<string, ModelEntry>();
@@ -226,10 +281,19 @@ export class ModelRegistryService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Refresh a single provider's model list. Phase 1: NO-OP — the curated list
-   * already serves via getModels(). Phase 3 replaces the body with the
-   * discovery probe + timeout race + cache write + event. The in-flight dedup
-   * map is wired now so concurrent triggers never double-spawn a CLI later.
+   * Refresh a single provider's model list (Plan 01 Phase 3).
+   *
+   * Calls the provider's optional discoverModels() under a timeout race
+   * (MODEL_DISCOVERY_TIMEOUT_MS). On a fresh, non-null, non-empty result it
+   * persists {models, fetchedAt, source:'discovered'} to the globalState cache
+   * and fires onDidUpdateModels. On null / empty / throw / timeout it KEEPS the
+   * existing cache (stale) and stays silent (no event) — the dropdown is never
+   * emptied. Providers without discoverModels are curated-only no-ops.
+   *
+   * Concurrent triggers for the same provider share one in-flight promise (R4:
+   * never double-spawn a CLI). `opts.force` is accepted for signature parity
+   * with the spec; refresh() always probes when called, so force only matters at
+   * the getModels()/stale-while-revalidate gate, not here.
    *
    * Never throws to the caller (failures fall back to the cached/curated list).
    */
@@ -238,9 +302,7 @@ export class ModelRegistryService {
     if (pending) {
       return pending;
     }
-    // Phase 1: synchronous no-op wrapped in a resolved promise so the dedup map
-    // and call sites behave identically once Phase 3 fills in real work.
-    const promise = Promise.resolve();
+    const promise = this._doRefresh(providerId);
     this._inFlight.set(providerId, promise);
     try {
       await promise;
@@ -250,12 +312,99 @@ export class ModelRegistryService {
   }
 
   /**
-   * Refresh every registered provider (fire-and-forget; Phase 3 staggers these
-   * post-activation). Phase 1: each refresh() is a no-op.
+   * The actual discovery probe for one provider. Separated from refresh() so the
+   * in-flight dedup wrapper stays trivial. Catches everything: discoverModels is
+   * contractually non-throwing, but the registry defends regardless.
+   */
+  private async _doRefresh(providerId: string): Promise<void> {
+    const instance = this._source?.getProviderInstance?.(providerId);
+    if (!instance || typeof instance.discoverModels !== 'function') {
+      // Curated-only provider (or no instance access in this build/test) — nothing
+      // to discover. Keep whatever is cached; do not fire.
+      return;
+    }
+
+    let discovered: ModelInfo[] | null = null;
+    try {
+      discovered = await this._raceTimeout(
+        instance.discoverModels(MODEL_DISCOVERY_TIMEOUT_MS),
+        MODEL_DISCOVERY_TIMEOUT_MS
+      );
+    } catch (err) {
+      // discoverModels should never throw, but if it does (or the timeout
+      // rejects), treat it as discovery-unavailable: keep stale cache, no event.
+      console.warn(`[Mysti] ModelRegistry: discovery failed for ${providerId}: ${String(err)}`);
+      return;
+    }
+
+    // null / empty array → "no models discovered" → keep stale cache, no event.
+    if (!Array.isArray(discovered) || discovered.length === 0) {
+      return;
+    }
+
+    // Fresh result: persist {models, fetchedAt} (source recorded at merge time)
+    // and notify consumers.
+    this._memoryCache.set(providerId, { models: discovered, fetchedAt: Date.now() });
+    await this._persistCache();
+    this._onDidUpdateModels.fire({ providerId });
+  }
+
+  /**
+   * Race a discovery promise against a timeout. Resolves to the provider's
+   * result if it lands first, or null if the timeout wins — so a CLI/HTTP probe
+   * that overruns its budget never blocks or wedges the in-flight slot. The
+   * losing promise is left to settle (and is swallowed) so an eventual rejection
+   * doesn't surface as an unhandled rejection.
+   */
+  private _raceTimeout(
+    probe: Promise<ModelInfo[] | null>,
+    timeoutMs: number
+  ): Promise<ModelInfo[] | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+    });
+    // Swallow a late rejection from the probe once the timeout has already won.
+    probe.catch(() => undefined);
+    return Promise.race([probe, timeout]).finally(() => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    });
+  }
+
+  /**
+   * Refresh every registered provider that implements discoverModels, STAGGERED
+   * (R4): probes are spaced REFRESH_ALL_STAGGER_MS apart so a burst of CLI
+   * spawns at activation doesn't spike CPU. Fire-and-forget — the post-activation
+   * trigger in extension.ts does not await this. Providers without discoverModels
+   * are skipped entirely (no spawn, no delay).
    */
   public async refreshAll(opts?: { force?: boolean }): Promise<void> {
     const ids = this._source?.getAllProviderIds() ?? [];
-    await Promise.all(ids.map(id => this.refresh(id, opts)));
+    const targets = ids.filter(id => this._providerSupportsDiscovery(id));
+
+    for (let i = 0; i < targets.length; i++) {
+      const id = targets[i];
+      // Stagger every provider after the first; the first probes immediately.
+      if (i > 0) {
+        await this._delay(REFRESH_ALL_STAGGER_MS);
+      }
+      // Don't await the individual refresh inside the stagger loop — let probes
+      // run concurrently-but-offset so one slow CLI doesn't stall the rest.
+      void this.refresh(id, opts).catch(() => undefined);
+    }
+  }
+
+  /** Whether a provider exposes discoverModels (skips curated-only ids in refreshAll). */
+  private _providerSupportsDiscovery(providerId: string): boolean {
+    const instance = this._source?.getProviderInstance?.(providerId);
+    return !!instance && typeof instance.discoverModels === 'function';
+  }
+
+  /** Promise-based delay used to stagger refreshAll probes. */
+  private _delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   // ---------------------------------------------------------------------------
@@ -265,6 +414,37 @@ export class ModelRegistryService {
   /** Bundled curated list for a provider (the per-provider config.models). */
   private _getCuratedModels(providerId: string): ModelInfo[] {
     return this._source?.getProvider(providerId)?.models ?? [];
+  }
+
+  /**
+   * TTL (ms) for a provider's discovery cache. Local servers (Ollama/LocalAI)
+   * use the SHORT local TTL because their installed set changes often (a user
+   * runs `ollama pull` and expects it to show up soon); every other provider is
+   * CLI/HTTP-derived and uses the long CLI TTL. Classified by id here so the
+   * registry stays the single place that decides cache freshness.
+   */
+  private _getTtl(providerId: string): number {
+    return LOCAL_SERVER_PROVIDER_IDS.has(providerId)
+      ? MODEL_CACHE_TTL_LOCAL_MS
+      : MODEL_CACHE_TTL_CLI_MS;
+  }
+
+  /**
+   * Whether getModels() should kick a background refresh for this provider
+   * (stale-while-revalidate). True when:
+   *  - the provider supports discovery (no point probing a curated-only provider), AND
+   *  - there is no cache yet, OR the cache is older than the provider's TTL.
+   * The current merge is still returned synchronously regardless; this only
+   * decides whether to warm the cache in the background.
+   */
+  private _isStale(providerId: string, cached: CachedProviderModels | undefined): boolean {
+    if (!this._providerSupportsDiscovery(providerId)) {
+      return false;
+    }
+    if (!cached) {
+      return true; // never discovered — warm it once
+    }
+    return Date.now() - cached.fetchedAt > this._getTtl(providerId);
   }
 
   private _getCustomModelIds(providerId: string): string[] {

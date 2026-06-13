@@ -610,6 +610,21 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Post-activation model-list warm-up (Plan 01 Phase 3). Off the critical path:
+  // scheduled a few seconds AFTER activate() returns via setTimeout, never
+  // awaited here, gated by mysti.models.autoRefresh (default true). refreshAll()
+  // itself staggers per-provider discovery probes so the burst of CLI spawns
+  // doesn't spike CPU. Failures are swallowed inside the registry (curated/cached
+  // lists keep serving).
+  if (config.get<boolean>('models.autoRefresh', true)) {
+    const warmupTimer = setTimeout(() => {
+      void modelRegistryService.refreshAll().catch((err) => {
+        console.warn(`[Mysti] Background model refresh failed: ${String(err)}`);
+      });
+    }, 8_000); // ~8s after activation — well clear of the startup CLI-discovery burst
+    context.subscriptions.push({ dispose: () => clearTimeout(warmupTimer) });
+  }
+
   // Activation complete — coarse measure, always recorded and logged
   PerfTracker.measure('activation.total', 'activation.start');
   if (PerfTracker.isEnabled()) {
