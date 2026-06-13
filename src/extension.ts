@@ -41,6 +41,7 @@ import { CliDiscoveryService } from './services/CliDiscoveryService';
 import { ModelRegistryService } from './services/ModelRegistryService';
 import { DeepMystAuthManager } from './managers/DeepMystAuthManager';
 import { ConnectionsPanelManager } from './managers/ConnectionsPanelManager';
+import { McpConfigManager } from './services/McpConfigManager';
 import { PerfTracker } from './utils/PerfTracker';
 
 let chatViewProvider: ChatViewProvider;
@@ -118,15 +119,23 @@ export async function activate(context: vscode.ExtensionContext) {
   // initialize() loads the stored key from SecretStorage (fire-and-forget so
   // it never blocks activation).
   deepMystAuthManager = new DeepMystAuthManager(context);
-  deepMystAuthManager.initialize().catch(err =>
-    console.log('[Mysti] DeepMystAuthManager: init error:', err)
-  );
-  context.subscriptions.push(deepMystAuthManager);
 
-  // Plan 04 Phase 2: the Connections panel (auth status + connected services +
-  // agents + manage links). Standalone editor tab opened via mysti.openConnections.
-  connectionsPanelManager = new ConnectionsPanelManager(context.extensionUri, deepMystAuthManager);
+  // Plan 04 Phase 2-3: the Connections panel + MCP config writer. The panel
+  // shows auth status / agents / connections and lets the user enable an
+  // agent's tools in the local CLIs; McpConfigManager writes the DeepMyst MCP
+  // endpoint into each MCP-capable CLI's own config file.
+  const mcpConfigManager = new McpConfigManager();
+  connectionsPanelManager = new ConnectionsPanelManager(
+    context.extensionUri, deepMystAuthManager, mcpConfigManager, context,
+  );
   context.subscriptions.push(connectionsPanelManager);
+
+  // Load the stored key, then reconcile CLI MCP configs to the signed-in state
+  // (fire-and-forget so neither blocks activation).
+  deepMystAuthManager.initialize()
+    .then(() => connectionsPanelManager.reconcileMcpConfig())
+    .catch(err => console.log('[Mysti] DeepMyst init/reconcile error:', err));
+  context.subscriptions.push(deepMystAuthManager);
 
   suggestionManager = new SuggestionManager(context);
 

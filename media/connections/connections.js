@@ -14,6 +14,7 @@
   function show(el, on) { if (el) { el.classList.toggle('hidden', !on); } }
 
   function post(type) { vscode.postMessage({ type: type }); }
+  function postMsg(msg) { vscode.postMessage(msg); }
 
   // ── Wire up static buttons ──────────────────────────────────────────────
   function bind(id, type) {
@@ -50,11 +51,13 @@
     });
   }
 
-  function renderAgents(list, available) {
+  function renderAgents(list, available, enabledAgents) {
     const ul = $('agents-list');
     ul.innerHTML = '';
     show($('agents-unavailable'), !available);
     show($('agents-empty'), available && list.length === 0);
+    const enabled = {};
+    (enabledAgents || []).forEach(function (s) { enabled[s] = true; });
     list.forEach(function (a) {
       const li = el('li', 'list-item');
       const left = el('div');
@@ -62,8 +65,31 @@
       if (a.description) { left.appendChild(el('div', 'meta', a.description)); }
       left.appendChild(el('div', 'endpoint', '/api/v1/mcp/' + a.slug));
       li.appendChild(left);
+
+      // Toggle: add/remove this agent's tools from the local CLIs.
+      const isOn = !!enabled[a.slug];
+      const btn = el('button', 'btn' + (isOn ? '' : ' btn-primary'), isOn ? 'Remove from CLIs' : 'Add to CLIs');
+      btn.addEventListener('click', function () {
+        postMsg({ type: 'toggleAgent', slug: a.slug, enabled: !isOn });
+      });
+      li.appendChild(btn);
       ul.appendChild(li);
     });
+  }
+
+  function renderMcpStatus(providers, status) {
+    const box = $('mcp-status');
+    if (!box) { return; }
+    const errs = (status || []).filter(function (r) { return !r.ok; });
+    if (!providers || providers.length === 0) {
+      box.textContent = '';
+      return;
+    }
+    var msg = 'Enabled agents are written to the MCP config of: ' + providers.join(', ') + '.';
+    if (errs.length) {
+      msg += ' Issues: ' + errs.map(function (e) { return e.displayName + ' (' + (e.error || 'failed') + ')'; }).join('; ');
+    }
+    box.textContent = msg;
   }
 
   function render(state) {
@@ -81,7 +107,8 @@
     if (state.signedIn) {
       show($('loading'), !!state.loading);
       renderConnections(state.connections || [], state.connectionsAvailable !== false);
-      renderAgents(state.agents || [], state.agentsAvailable !== false);
+      renderAgents(state.agents || [], state.agentsAvailable !== false, state.enabledAgents);
+      renderMcpStatus(state.mcpProviders, state.mcpStatus);
     }
   }
 

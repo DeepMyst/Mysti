@@ -60,12 +60,13 @@
     <ul id="connections-list" class="list"></ul>
 
     <h3 class="section-title">Agents (MCP tool sources)</h3>
-    <p class="muted small">Each agent exposes its tools to your local CLIs through DeepMyst's MCP endpoint.</p>
+    <p class="muted small">Enable an agent to add its DeepMyst-brokered tools to your local AI CLIs — no third-party keys stored locally.</p>
     <div id="agents-empty" class="empty hidden">No agents found for your account.</div>
     <div id="agents-unavailable" class="empty hidden">
       This DeepMyst instance didn’t return an agents list (endpoint not available yet).
     </div>
     <ul id="agents-list" class="list"></ul>
+    <p id="mcp-status" class="muted small"></p>
   </section>
 
   <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
