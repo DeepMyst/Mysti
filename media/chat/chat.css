@@ -7722,6 +7722,49 @@
       color: var(--vscode-editorInfo-foreground, #3794ff);
     }
 
+    /* Plan 04 Phase 4: in-chat DeepMyst connect cards */
+    .connect-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 12px;
+      margin: 8px 0;
+      border-radius: 8px;
+      font-size: 12px;
+      line-height: 1.4;
+      background: var(--vscode-editor-inactiveSelectionBackground, rgba(255,255,255,0.05));
+      border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.1));
+      border-left: 3px solid var(--vscode-terminal-ansiCyan, #11a8cd);
+    }
+    .connect-card.connected {
+      border-left-color: var(--vscode-testing-iconPassed, #4c4);
+    }
+    .connect-card .connect-card-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .connect-card .connect-card-icon { font-size: 14px; flex-shrink: 0; }
+    .connect-card .connect-card-btn {
+      flex-shrink: 0;
+      padding: 4px 12px;
+      border: none;
+      border-radius: 5px;
+      font-size: 12px;
+      cursor: pointer;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    .connect-card .connect-card-btn:hover {
+      background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+    }
+    .connect-card .connect-card-btn:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
     /* ========================================
        Responsive: Narrow sidebar panel (<=500px)
        ======================================== */

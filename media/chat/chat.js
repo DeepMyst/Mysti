@@ -4048,6 +4048,12 @@
           case 'channelAction':
             handleChannelAction(message.payload);
             break;
+          case 'connectionRequired':
+            handleConnectionRequired(message.payload);
+            break;
+          case 'connectionAlready':
+            handleConnectionAlready(message.payload);
+            break;
           case 'permissionRequest':
             handlePermissionRequest(message.payload);
             break;
@@ -7561,7 +7567,82 @@
 
       /** Strip channel markers from content for clean display */
       function stripChannelMarkers(text) {
-        return text.replace(/<<<(?:CHANNEL_(?:SEND|ASK)\s+[^>]*|OPENCLAW)>>>([\s\S]*?)<<<END_(?:CHANNEL_(?:SEND|ASK)|OPENCLAW)>>>/g, '');
+        return text
+          .replace(/<<<(?:CHANNEL_(?:SEND|ASK)\s+[^>]*|OPENCLAW)>>>([\s\S]*?)<<<END_(?:CHANNEL_(?:SEND|ASK)|OPENCLAW)>>>/g, '')
+          // Plan 04 Phase 4: hide the DeepMyst connect marker — it's rendered as
+          // a "Link <service>" card by the extension, not shown as raw text.
+          .replace(/<<<MYSTI_CONNECT:[a-z0-9._-]*>>>/gi, '');
+      }
+
+      // ========================================
+      // Plan 04 Phase 4: DeepMyst connect cards
+      // ========================================
+
+      function _prettyServiceName(slug) {
+        return String(slug || 'service')
+          .split(/[-_]/)
+          .filter(Boolean)
+          .map(function (p) { return p.charAt(0).toUpperCase() + p.slice(1); })
+          .join(' ');
+      }
+
+      function _connectTargetMessageBody() {
+        var targetEl = messagesEl.querySelector('.message.streaming') ||
+          messagesEl.querySelector('.message.assistant:last-child');
+        if (!targetEl) { return null; }
+        return targetEl.querySelector('.message-body');
+      }
+
+      /** Render a "Link <service>" button when an agent requests a connection. */
+      function handleConnectionRequired(payload) {
+        var body = _connectTargetMessageBody();
+        if (!body) { return; }
+        var service = (payload && payload.service) || 'service';
+        // Don't stack duplicate cards for the same service in one message.
+        if (body.querySelector('.connect-card[data-service="' + service + '"]')) { return; }
+        var pretty = _prettyServiceName(service);
+
+        var card = document.createElement('div');
+        card.className = 'connect-card';
+        card.setAttribute('data-service', service);
+
+        var info = document.createElement('div');
+        info.className = 'connect-card-info';
+        info.innerHTML = '<span class="connect-card-icon">🔌</span>' +
+          '<span class="connect-card-text">Connect <strong>' + pretty + '</strong> through DeepMyst</span>';
+
+        var btn = document.createElement('button');
+        btn.className = 'connect-card-btn';
+        btn.textContent = (payload && payload.signedIn) ? 'Link ' + pretty : 'Sign in to link ' + pretty;
+        btn.addEventListener('click', function () {
+          vscode.postMessage({ type: 'connectService', service: service });
+          btn.textContent = 'Opening…';
+          btn.disabled = true;
+        });
+
+        card.appendChild(info);
+        card.appendChild(btn);
+        body.appendChild(card);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      /** Subtle note when the service is already linked in DeepMyst. */
+      function handleConnectionAlready(payload) {
+        var body = _connectTargetMessageBody();
+        if (!body) { return; }
+        var service = (payload && payload.service) || 'service';
+        if (body.querySelector('.connect-card[data-service="' + service + '"]')) { return; }
+        var pretty = _prettyServiceName(service);
+
+        var card = document.createElement('div');
+        card.className = 'connect-card connected';
+        card.setAttribute('data-service', service);
+        card.innerHTML = '<div class="connect-card-info">' +
+          '<span class="connect-card-icon">✅</span>' +
+          '<span class="connect-card-text"><strong>' + pretty + '</strong> is already connected</span>' +
+          '</div>';
+        body.appendChild(card);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 
       // ========================================

@@ -36,6 +36,7 @@ import { EngagementManager } from '../managers/EngagementManager';
 import { ProjectContextManager } from '../managers/ProjectContextManager';
 import { VisualTestManager } from '../managers/VisualTestManager';
 import { ChannelBridge } from '../managers/ChannelBridge';
+import { DeepMystAuthManager } from '../managers/DeepMystAuthManager';
 import { getWebviewContent } from '../webview/webviewContent';
 import { getVisualTestDashboardContent } from '../webview/visualTestDashboardContent';
 import { getCanvasContent } from '../webview/canvasContent';
@@ -135,6 +136,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _vtDashboardPanelId: string | null = null;
   private _vtDashboardChatOrigin: string | null = null;
   private _vtTriggeredThisResponse: boolean = false;
+  // Plan 04 Phase 4: DeepMyst auth (set post-construction in extension.ts). Used
+  // to (a) inject the in-chat connect convention into the system prompt and
+  // (b) resolve the web URL for the "Link <service>" connect action.
+  private _deepMystAuth?: DeepMystAuthManager;
+  // Services for which we've already emitted a connect card this response, so the
+  // per-chunk scan over the accumulated text doesn't re-post the same card.
+  private _connectServicesThisResponse: Set<string> = new Set();
+  // Short-lived cache of the user's DeepMyst connection names (lowercased) for
+  // already-linked suppression; refreshed at most once per TTL.
+  private _connectionsCache?: { at: number; names: string[] };
   // Per-panel cancel tracking for isolated cancellation
   private _cancelledPanels: Set<string> = new Set();
   // Perf (Plan 03 Phase 1): panels whose webview has not yet posted `uiReady`.
@@ -1227,6 +1238,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'openConnections':
         vscode.commands.executeCommand('mysti.openConnections');
+        break;
+
+      case 'connectService':
+        await this._handleConnectService((msg as { service?: string }).service);
         break;
 
       case 'checkSetup':
@@ -2945,7 +2960,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const _tMem = Date.now();
       const autoMemory = autoMemoryEnabled ? this._memoryManager.getProjectMemoryContent() : '';
       console.log(`[Mysti] ⏱️ Auto-memory in ${Date.now() - _tMem}ms`);
-      const fullSystemContext = [projectRules, channelContext, mystiMdContent, autoMemory].filter(Boolean).join('\n\n');
+      const deepMystConnect = this._deepMystConnectSnippet();
+      const fullSystemContext = [projectRules, channelContext, mystiMdContent, autoMemory, deepMystConnect].filter(Boolean).join('\n\n');
 
       if (fullSystemContext) {
         this._providerManager.setChannelSystemContext(panelId, fullSystemContext, effectiveSettings.provider);
@@ -2974,6 +2990,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       let assistantContent = '';
       let thinkingContent = '';
       this._vtTriggeredThisResponse = false;
+      this._connectServicesThisResponse.clear();
       let lastUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined;
 
       // Plan 02 Phase 3: accumulate render-relevant structure extension-side
@@ -3071,6 +3088,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   } else {
                     console.warn('[Mysti] Channel delegate marker detected, but no registered provider supports channels — skipping');
                   }
+                }
+              }
+            }
+
+            // Plan 04 Phase 4: detect DeepMyst connect markers
+            // (<<<MYSTI_CONNECT:slug>>>) and surface a "Link <service>" card.
+            {
+              const connectRe = /<<<MYSTI_CONNECT:([a-z0-9][a-z0-9._-]*)>>>/gi;
+              // Ignore the literal placeholder tokens from the system-prompt
+              // example so a model echoing the instruction doesn't spawn a card.
+              const placeholders = new Set(['slug', 'service', 'name', 'servicename']);
+              let cm: RegExpExecArray | null;
+              while ((cm = connectRe.exec(assistantContent)) !== null) {
+                const service = cm[1].toLowerCase();
+                if (placeholders.has(service)) { continue; }
+                if (!this._connectServicesThisResponse.has(service)) {
+                  this._connectServicesThisResponse.add(service);
+                  void this._emitConnectionCard(panelId, service);
                 }
               }
             }
@@ -3343,10 +3378,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const persistedThinking: string | MessageThinking | undefined = thinkingContent
               ? (thinkingStyle ? { style: thinkingStyle, content: thinkingContent } : thinkingContent)
               : undefined;
+            // Plan 04 Phase 4: keep the connect marker out of persisted history
+            // (it's already been turned into a card); the webview also strips it
+            // from the live stream so the user never sees the raw marker.
+            const persistedContent = assistantContent.replace(/<<<MYSTI_CONNECT:[a-z0-9._-]*>>>/gi, '').replace(/\n{3,}/g, '\n\n');
             const assistantMessage = this._conversationManager.addMessageToConversation(
               conversationId,
               'assistant',
-              assistantContent,
+              persistedContent,
               undefined,
               undefined,
               persistedThinking,
@@ -5599,6 +5638,114 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public setCanvasSecrets(secrets: CanvasSecrets): void {
     this._canvasSecrets = secrets;
     void this._refreshCanvasGenKeys();
+  }
+
+  /**
+   * Plan 04 Phase 4: inject the DeepMyst auth manager (constructed in
+   * extension.ts) so the chat can (a) teach agents the `<<<MYSTI_CONNECT:slug>>>`
+   * convention via the system prompt and (b) open the right connect page when a
+   * marker fires. Wired post-construction to avoid growing the constructor.
+   */
+  public setDeepMystAuth(auth: DeepMystAuthManager): void {
+    this._deepMystAuth = auth;
+    // A sign-in/out invalidates any cached connection list.
+    auth.onDidChangeAuth(() => { this._connectionsCache = undefined; });
+  }
+
+  /**
+   * Plan 04 Phase 4: system-prompt addendum teaching every agent the in-chat
+   * connect convention. When the user asks to link an external service, the
+   * agent emits a single `<<<MYSTI_CONNECT:slug>>>` marker which Mysti turns
+   * into a one-click "Link <service>" button — no local credentials. Returns ''
+   * when DeepMyst isn't wired so the convention never leaks into other setups.
+   */
+  private _deepMystConnectSnippet(): string {
+    if (!this._deepMystAuth) { return ''; }
+    return [
+      '## Connecting external tools (DeepMyst)',
+      'Mysti links external services (Gmail, Google Drive, Slack, Notion, databases, etc.) through DeepMyst — the user never pastes API keys locally.',
+      'When the user asks to connect / link / authorize an external service that you do NOT already have a working tool for, do NOT ask for credentials or API keys.',
+      'Instead emit a single marker on its own line:',
+      '<<<MYSTI_CONNECT:slug>>>',
+      'where `slug` is a short lowercase identifier for the service (e.g. gmail, google-drive, slack, notion, postgres, github).',
+      'Mysti renders that marker as a one-click "Link <service>" button. Emit it once, then in one short sentence tell the user to click the button to connect.',
+    ].join('\n');
+  }
+
+  /**
+   * Plan 04 Phase 4: handle a detected `<<<MYSTI_CONNECT:slug>>>` marker. If the
+   * service already appears in the user's DeepMyst connections, post a subtle
+   * "already linked" note; otherwise post a connect card the webview renders as
+   * a "Link <service>" button. Best-effort and non-blocking — never throws into
+   * the stream loop.
+   */
+  private async _emitConnectionCard(panelId: string, service: string): Promise<void> {
+    try {
+      const signedIn = !!this._deepMystAuth?.isSignedIn();
+      if (signedIn && (await this._isServiceLinked(service))) {
+        this._postToPanel(panelId, {
+          type: 'connectionAlready',
+          payload: { service }
+        });
+        return;
+      }
+      this._postToPanel(panelId, {
+        type: 'connectionRequired',
+        payload: { service, signedIn }
+      });
+    } catch (err) {
+      console.warn('[Mysti] connect card emit failed:', err);
+    }
+  }
+
+  /**
+   * Best-effort check whether `service` matches one of the user's existing
+   * DeepMyst connections (by name/type/id substring). Caches the connection
+   * names for {@link CONNECTIONS_CACHE_TTL_MS} so repeated markers don't hammer
+   * the API. Returns false on any error (we'd rather show an extra button than
+   * hide a needed one).
+   */
+  private async _isServiceLinked(service: string): Promise<boolean> {
+    const auth = this._deepMystAuth;
+    if (!auth?.isSignedIn()) { return false; }
+    const now = Date.now();
+    const CONNECTIONS_CACHE_TTL_MS = 60_000;
+    if (!this._connectionsCache || now - this._connectionsCache.at > CONNECTIONS_CACHE_TTL_MS) {
+      try {
+        const res = await auth.client.listConnections();
+        const names = res.available
+          ? res.items.flatMap(c => [c.name, c.type, c.id].filter(Boolean).map(s => String(s).toLowerCase()))
+          : [];
+        this._connectionsCache = { at: now, names };
+      } catch {
+        this._connectionsCache = { at: now, names: [] };
+      }
+    }
+    const needle = service.toLowerCase();
+    return this._connectionsCache.names.some(n => n.includes(needle) || needle.includes(n));
+  }
+
+  /**
+   * Plan 04 Phase 4: act on the in-chat "Link <service>" button. When signed in,
+   * open the DeepMyst connections page deep-linked to the service so the user can
+   * authorize it; when signed out, open the Mysti Connections panel to sign in
+   * first (the broker needs a DeepMyst session before it can link anything).
+   */
+  private async _handleConnectService(service?: string): Promise<void> {
+    const slug = (service || '').trim().toLowerCase();
+    const auth = this._deepMystAuth;
+    if (!auth || !auth.isSignedIn()) {
+      vscode.commands.executeCommand('mysti.openConnections');
+      return;
+    }
+    const webUrl = auth.getWebUrl().replace(/\/+$/, '');
+    const target = slug
+      ? `${webUrl}/connections?connect=${encodeURIComponent(slug)}`
+      : `${webUrl}/connections`;
+    await vscode.env.openExternal(vscode.Uri.parse(target));
+    // The list may change after the user links something; drop the cache so the
+    // next marker re-checks.
+    this._connectionsCache = undefined;
   }
 
   /**

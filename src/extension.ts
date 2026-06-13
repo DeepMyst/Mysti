@@ -278,6 +278,10 @@ export async function activate(context: vscode.ExtensionContext) {
     })
     .catch(err => console.log('[Mysti] CanvasSecrets: migration/key load error:', err));
 
+  // Plan 04 Phase 4: let the chat teach agents the in-chat connect convention
+  // and resolve the connect URL when a `<<<MYSTI_CONNECT:slug>>>` marker fires.
+  chatViewProvider.setDeepMystAuth(deepMystAuthManager);
+
   PerfTracker.measure('activation.managerConstruction', 'activation.managerConstruction.start');
 
   // Register the webview provider
