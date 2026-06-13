@@ -400,7 +400,7 @@ export class CodexProvider extends BaseCliProvider {
 
       // Register process with ProviderManager for per-panel cancellation
       if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-        (providerManager as ProcessTracker).registerProcess(panelId, session.process);
+        (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
       }
 
       // Collect stderr for error reporting

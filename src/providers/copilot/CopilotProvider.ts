@@ -36,6 +36,7 @@ import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
+import { killProcessTree, isProcessLive } from '../../utils/processKill';
 
 export interface CopilotSessionState extends PanelSessionState {
   activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
@@ -296,7 +297,7 @@ export class CopilotProvider extends BaseCliProvider {
 
     // Register process with ProviderManager for per-panel cancellation
     if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-      (providerManager as ProcessTracker).registerProcess(panelId, session.process);
+      (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
     }
 
     // Set up stderr handler
@@ -350,22 +351,16 @@ export class CopilotProvider extends BaseCliProvider {
     } catch (error) {
       yield this.handleError(error);
     } finally {
-      // Clean up process
-      if (session.process && !session.process.killed) {
+      // Clean up process — liveness-gated (not `.killed`): a SIGTERM'd-but-alive
+      // CLI must still be escalated to SIGKILL, which the old `!killed` guard skipped.
+      if (isProcessLive(session.process)) {
         try {
           // Remove only our stderr handler — don't strip waitForProcess listeners
-          if (session.process.stderr) {
-            session.process.stderr.removeListener('data', stderrHandler);
+          if (session.process!.stderr) {
+            session.process!.stderr.removeListener('data', stderrHandler);
           }
-          session.process.kill('SIGTERM');
-
-          const processToKill = session.process;
-          setTimeout(() => {
-            if (processToKill && !processToKill.killed) {
-              console.warn(`[Mysti] Copilot: Force killing leaked process`);
-              processToKill.kill('SIGKILL');
-            }
-          }, PROCESS_KILL_GRACE_PERIOD_MS);
+          // SIGTERM with reliable SIGKILL escalation (timer cleared on exit).
+          void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
         } catch (e) {
           console.error(`[Mysti] Copilot: Error cleaning up process:`, e);
         }

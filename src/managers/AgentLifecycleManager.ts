@@ -298,13 +298,17 @@ export class AgentLifecycleManager {
       }
     }
 
+    // Snapshot the PRIOR child state BEFORE replacing the set (B16): reading
+    // size after the reassignment always reflected the new state, so neither
+    // event could ever fire.
+    const hadChildren = session.trackedChildPids.size > 0;
+
     // Update tracked set
     session.trackedChildPids = new Set([...allChildPids, ...aliveTracked]);
 
     const combinedPids = Array.from(session.trackedChildPids);
 
     // Emit events for child state changes
-    const hadChildren = session.trackedChildPids.size > 0;
     if (combinedPids.length > 0 && !hadChildren) {
       this._emitEvent('children-detected', session.panelId, session.providerId, undefined, combinedPids);
     } else if (combinedPids.length === 0 && hadChildren) {

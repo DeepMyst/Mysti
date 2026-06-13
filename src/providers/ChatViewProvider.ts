@@ -3402,13 +3402,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               const followUp = this._autonomousManager.shouldContinue(assistantContent);
               if (followUp) {
                 const autoConfig = vscode.workspace.getConfiguration('mysti');
+                // B13: Do NOT force edit-automatically + full-access here — that
+                // blanket bypass disabled the permission gate (and with it the
+                // SafetyClassifier) for the entire continuation. Carry the user's
+                // configured mode/access and flag the turn as autonomous so the
+                // gate stays active (see _shouldGateToolUse) and every write/bash
+                // tool is routed through the SafetyClassifier.
                 const autoSettings: Settings = {
-                  mode: 'edit-automatically' as Settings['mode'],
+                  mode: autoConfig.get('mode', 'default') as Settings['mode'],
                   thinkingLevel: autoConfig.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
-                  accessLevel: 'full-access' as Settings['accessLevel'],
+                  accessLevel: autoConfig.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
                   contextMode: autoConfig.get('autoContext', true) ? 'auto' : 'manual',
                   model: this._getPanelModel(panelId),
-                  provider: this._getPanelProvider(panelId) as Settings['provider']
+                  provider: this._getPanelProvider(panelId) as Settings['provider'],
+                  autonomousMode: true,
                 };
                 setTimeout(() => {
                   this._handleSendMessage(
@@ -4566,8 +4573,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Determine if a tool_use should be gated with a permission card.
    * Delegates to the extracted pure function in utils/permissionClassifier.
+   *
+   * B13: During autonomous sessions (initial turn AND continuations) the gate
+   * must stay ACTIVE regardless of the mode/access settings — autonomous
+   * continuations previously forced edit-automatically + full-access, which
+   * made shouldGateToolUse() return false for everything and bypassed the
+   * SafetyClassifier entirely. We keep the gate active for every write/bash
+   * tool (anything that isn't read-only) so requestPermissionInline() routes
+   * each one through AutonomousManager.shouldAutoApprovePermission (which calls
+   * the SafetyClassifier: auto-approve 'safe', block 'blocked', honor the
+   * configured safety mode for 'caution'). Read-only tools still skip the gate.
    */
   private _shouldGateToolUse(settings: Settings, toolName: string): boolean {
+    if (settings.autonomousMode) {
+      // Read-only operations are never gated; everything else flows through
+      // the SafetyClassifier-backed autonomous decision path.
+      return this._classifyToolAction(toolName) !== 'file-read';
+    }
     return shouldGateToolUse(settings, toolName);
   }
 

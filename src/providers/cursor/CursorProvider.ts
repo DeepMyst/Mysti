@@ -647,7 +647,7 @@ export class CursorProvider extends BaseCliProvider {
 				providerManager &&
 				typeof (providerManager as ProcessTracker).registerProcess === "function"
 			) {
-				(providerManager as ProcessTracker).registerProcess(panelId, session.process);
+				(providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
 			}
 
 			// Capture stderr for error reporting

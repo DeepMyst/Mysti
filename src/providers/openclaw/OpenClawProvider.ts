@@ -709,7 +709,7 @@ export class OpenClawProvider extends BaseCliProvider {
 
       // Register process for per-panel cancellation
       if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-        (providerManager as ProcessTracker).registerProcess(panelId, session.process);
+        (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
       }
 
       // Capture stderr for error reporting

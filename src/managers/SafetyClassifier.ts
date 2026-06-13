@@ -26,8 +26,14 @@ import {
 const BLOCKED_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   // File deletion
   { pattern: /\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+|--recursive|--force)/, reason: 'Recursive/forced file deletion' },
+  // B14: bare `rm` (any rm invocation) — deletion is irreversible even without -rf.
+  { pattern: /\brm\s+/, reason: 'File deletion' },
   { pattern: /\brmdir\b/, reason: 'Directory removal' },
   { pattern: /\bdel\s+\/[sS]/, reason: 'Windows recursive deletion' },
+  // B14: `find ... -delete` / `find ... -exec` can mutate the filesystem or run
+  // arbitrary commands, despite `find` reading like a read-only search.
+  { pattern: /\bfind\b[^\n]*\s-delete\b/, reason: 'find -delete removes matched files' },
+  { pattern: /\bfind\b[^\n]*\s-(exec|execdir)\b/, reason: 'find -exec runs arbitrary commands on matches' },
   // Destructive git operations
   { pattern: /\bgit\s+push\s+.*--force\b/, reason: 'Force push can overwrite remote history' },
   { pattern: /\bgit\s+push\s+-f\b/, reason: 'Force push can overwrite remote history' },
@@ -42,8 +48,12 @@ const BLOCKED_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bchmod\s+777\b/, reason: 'Setting world-writable permissions' },
   { pattern: /\bchown\s+root\b/, reason: 'Changing ownership to root' },
   { pattern: /\bsudo\b/, reason: 'Sudo command execution' },
-  // Data exfiltration via pipe
+  // Data exfiltration via pipe (piping local data OUT to a network command)
   { pattern: /\|\s*(curl|wget|nc|netcat)\b/, reason: 'Piping data to external network command' },
+  // B14: pipe-to-shell — download a remote payload and execute it
+  // (e.g. `curl https://x | sh`, `wget -qO- url | bash`). The remote command
+  // patterns above only catch piping INTO curl/wget, not OUT of them.
+  { pattern: /\b(curl|wget|fetch)\b[^\n|]*\|\s*(sudo\s+)?(sh|bash|zsh|fish|dash|ksh|python[0-9.]*|node|ruby|perl|pwsh|powershell)\b/, reason: 'Piping a downloaded payload directly into a shell/interpreter' },
   // System-level danger
   { pattern: /\bmkfs\b/, reason: 'Filesystem formatting' },
   { pattern: /\bdd\s+/, reason: 'Low-level disk writing' },
@@ -51,12 +61,33 @@ const BLOCKED_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 ];
 
 /**
- * Bash commands that are generally safe to execute
+ * Shell metacharacters that turn a single command into a compound/chained
+ * command. A "safe" prefix (e.g. `ls`) only guarantees the FIRST token is
+ * benign — `ls && rm -rf x`, `cat f; sudo y`, `echo $(rm x)` all start with a
+ * safe-looking command but execute something else. We refuse to safe-list any
+ * command containing these so the SafetyClassifier never auto-approves a
+ * compound command on the strength of its prefix (B14).
+ *
+ * Note: `>` / `<` are intentionally NOT treated as compound operators here —
+ * redirects to sensitive targets are handled by the blocklist (e.g. `> /dev/`),
+ * and a benign redirect (e.g. `ls > out.txt`) should not auto-block; it simply
+ * falls through to the safety-mode default rather than being safe-listed.
+ */
+const COMPOUND_OPERATOR_PATTERN = /(&&|\|\||;|\||\n|\$\(|`|>>?\s*\/(?:dev|etc|sys|proc|boot)\b)/;
+
+/**
+ * Bash commands that are generally safe to execute.
+ *
+ * B14: removed `npx` (executes arbitrary packages), bare `echo` (used to splice
+ * payloads into other commands / write files via redirect) and bare `find`
+ * (can mutate via -delete / -exec — those are blocked above, the rest falls
+ * through to the safety-mode default). The remaining entries are read-only or
+ * non-destructive build/test commands. Compound commands are rejected before
+ * this list is consulted (see classifyBashCommand).
  */
 const SAFE_BASH_PATTERNS: RegExp[] = [
-  /^\s*(ls|cat|head|tail|less|more|wc|grep|find|which|where|echo|pwd|date|whoami)\b/,
+  /^\s*(ls|cat|head|tail|less|more|wc|grep|which|where|pwd|date|whoami)\b/,
   /^\s*(npm\s+(test|run|list|info|ls|outdated|audit))\b/,
-  /^\s*(npx\s+)/,
   /^\s*(node\s+-[ev]|node\s+--version)\b/,
   /^\s*(git\s+(status|log|diff|branch|show|stash\s+list|remote|fetch))\b/,
   /^\s*(tsc|eslint|prettier|jest|vitest|mocha|pytest|cargo\s+test)\b/,
@@ -147,6 +178,17 @@ export class SafetyClassifier {
         category: 'bash',
         recommendation: 'auto-deny',
       };
+    }
+
+    // B14: Reject compound/chained commands BEFORE consulting the safe-list.
+    // The safe-list matches only the leading token, so `ls && rm -rf x`,
+    // `cat f; sudo y` or `echo $(rm x)` would otherwise be auto-approved on the
+    // strength of a benign prefix. The blocklist above already caught any
+    // compound command that *contains* a known-dangerous fragment; anything
+    // still compound here must NOT be safe-listed — fall through to the
+    // configured safety-mode default (caution in conservative/balanced).
+    if (COMPOUND_OPERATOR_PATTERN.test(command)) {
+      return this._classifyBashBySafetyMode(command);
     }
 
     for (const pattern of SAFE_BASH_PATTERNS) {

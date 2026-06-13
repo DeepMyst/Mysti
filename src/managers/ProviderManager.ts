@@ -29,6 +29,15 @@ import type {
   ProviderType
 } from '../types';
 import { DEFAULT_PROVIDER, PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
+import { killProcessTree } from '../utils/processKill';
+
+/**
+ * Minimal structural view of AgentLifecycleManager — avoids a hard import cycle
+ * while letting ProviderManager report child PIDs as processes are registered.
+ */
+interface ProcessPidSink {
+  registerProcessPid(panelId: string, pid: number): void;
+}
 
 /**
  * ProviderManager - Facade over the ProviderRegistry
@@ -41,9 +50,35 @@ export class ProviderManager {
   // Per-panel process tracking for isolated cancellation
   private _activePanelProcesses: Map<string, ChildProcess> = new Map();
 
+  // Per-panel provider id (B12): cancel/suspend/resume/clearSession must route
+  // to the provider that actually owns the panel's request, not the global
+  // default. Recorded when a send starts; cleared when the process clears.
+  private _panelProviders: Map<string, string> = new Map();
+
+  // Optional lifecycle sink (B16): wired post-construction so registerProcess
+  // can report child PIDs for idle/child-protection tracking.
+  private _lifecycleSink?: ProcessPidSink;
+
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
     this._registry = new ProviderRegistry(context);
+  }
+
+  /**
+   * Wire the lifecycle manager (B16) so registerProcess can report child PIDs.
+   * Called from extension.ts after both managers are constructed.
+   */
+  public setLifecycleSink(sink: ProcessPidSink): void {
+    this._lifecycleSink = sink;
+  }
+
+  /**
+   * Resolve the provider that owns a panel's active request (B12).
+   * Falls back to the default provider when the panel has no recorded owner.
+   */
+  private _getPanelProvider(panelId?: string): ICliProvider {
+    const recorded = panelId ? this._panelProviders.get(panelId) : undefined;
+    return this._getActiveProvider(recorded);
   }
 
   /**
@@ -224,6 +259,9 @@ export class ProviderManager {
     attachments?: Attachment[]
   ): AsyncGenerator<StreamChunk> {
     const provider = this._getActiveProvider(settings.provider);
+    if (panelId && settings.provider) {
+      this._panelProviders.set(panelId, settings.provider);
+    }
     yield* provider.sendMessage(content, context, settings, conversation, persona, panelId, this, agentConfig, attachments);
   }
 
@@ -241,34 +279,55 @@ export class ProviderManager {
     panelId?: string
   ): AsyncGenerator<StreamChunk> {
     const provider = this._getActiveProvider(providerId);
+    if (panelId && providerId) {
+      this._panelProviders.set(panelId, providerId);
+    }
     yield* provider.sendMessage(content, context, settings, conversation, persona, panelId, this);
   }
 
   /**
-   * Register a process for a specific panel (for per-panel cancellation)
+   * Register a process for a specific panel (for per-panel cancellation).
+   *
+   * B12: `providerId` is the id of the provider that actually spawned the
+   * process. Recorded here (the spec-preferred site) as the authoritative
+   * panel -> provider mapping so cancel/suspend/resume/clearSession/
+   * disposePersistentProcess route to the owning provider — which may differ
+   * from the global default (per-panel overrides, @-mention sub-agents).
+   *
+   * B16: also reports the child PID to the lifecycle sink for idle/child
+   * protection tracking (previously inert — registerProcessPid had no callers).
    */
-  public registerProcess(panelId: string, process: ChildProcess): void {
+  public registerProcess(panelId: string, process: ChildProcess, providerId?: string): void {
     this._activePanelProcesses.set(panelId, process);
+    if (providerId) {
+      this._panelProviders.set(panelId, providerId);
+    }
+    if (typeof process.pid === 'number') {
+      this._lifecycleSink?.registerProcessPid(panelId, process.pid);
+    }
   }
 
   /**
    * Cancel request for a specific panel only with graceful shutdown
    */
   public cancelRequest(panelId: string): void {
-    // Delegate to provider first — it handles SIGKILL for suspended processes
-    // (avoids SIGCONT+SIGTERM which would give the CLI a window to execute tools)
+    // Delegate to the panel's OWNING provider first (B12) — it handles SIGKILL
+    // for suspended processes (avoids SIGCONT+SIGTERM which would give the CLI a
+    // window to execute tools).
     try {
-      const provider = this._getActiveProvider();
+      const provider = this._getPanelProvider(panelId);
       provider.cancelCurrentRequest(panelId);
-    } catch {
-      // Provider may not be available; fall back to direct process kill
-      const process = this._activePanelProcesses.get(panelId);
-      if (process && !process.killed) {
-        console.log(`[Mysti] Cancelling request for panel: ${panelId} (direct)`);
-        process.kill('SIGKILL');
-      }
+    } catch (err) {
+      console.warn(`[Mysti] Provider cancel failed for panel ${panelId}:`, err);
+    }
+    // Backstop (B3/B4/B12): SIGKILL the tracked handle regardless, so a hung
+    // process dies even if the owning provider's teardown misbehaves.
+    const process = this._activePanelProcesses.get(panelId);
+    if (process) {
+      void killProcessTree(process, PROCESS_KILL_GRACE_PERIOD_MS, { label: `cancel ${panelId}`, initialSignal: 'SIGKILL' });
     }
     this._activePanelProcesses.delete(panelId);
+    this._panelProviders.delete(panelId);
   }
 
   /**
@@ -277,7 +336,7 @@ export class ProviderManager {
    */
   public suspendRequest(panelId: string): boolean {
     try {
-      const provider = this._getActiveProvider();
+      const provider = this._getPanelProvider(panelId);
       return provider.suspendProcess(panelId);
     } catch (err) {
       console.warn(`[Mysti] Failed to suspend request for panel ${panelId}:`, err);
@@ -290,7 +349,7 @@ export class ProviderManager {
    */
   public resumeRequest(panelId: string): boolean {
     try {
-      const provider = this._getActiveProvider();
+      const provider = this._getPanelProvider(panelId);
       return provider.resumeProcess(panelId);
     } catch (err) {
       console.warn(`[Mysti] Failed to resume request for panel ${panelId}:`, err);
@@ -303,6 +362,7 @@ export class ProviderManager {
    */
   public clearProcess(panelId: string): void {
     this._activePanelProcesses.delete(panelId);
+    this._panelProviders.delete(panelId);
   }
 
   /**
@@ -312,28 +372,22 @@ export class ProviderManager {
     for (const provider of this._registry.getAll()) {
       provider.cancelCurrentRequest();
     }
-    // Also clear all tracked panel processes with graceful shutdown
+    // Also clear all tracked panel processes with graceful shutdown.
+    // killProcessTree escalates SIGTERM -> SIGKILL via real liveness (B3/B4),
+    // not the broken `.killed` flag, and cleans up its own escalation timer.
     for (const [panelId, process] of this._activePanelProcesses) {
-      if (process && !process.killed) {
-        process.kill('SIGTERM');
-
-        // Schedule force kill if needed
-        setTimeout(() => {
-          if (process && !process.killed) {
-            console.warn(`[Mysti] Force killing process for panel: ${panelId}`);
-            process.kill('SIGKILL');
-          }
-        }, PROCESS_KILL_GRACE_PERIOD_MS);
-      }
+      void killProcessTree(process, PROCESS_KILL_GRACE_PERIOD_MS, { label: `cancel-all ${panelId}` });
     }
     this._activePanelProcesses.clear();
+    this._panelProviders.clear();
   }
 
   /**
    * Clear session on the default provider
    */
   public clearSession(panelId?: string): void {
-    const provider = this._registry.get(this._getDefaultProviderId());
+    // B12: clear the session on the panel's owning provider, not the default.
+    const provider = this._getPanelProvider(panelId);
     provider?.clearSession(panelId);
   }
 
@@ -349,7 +403,8 @@ export class ProviderManager {
    * Dispose persistent process for a panel on the default provider.
    */
   public disposePersistentProcess(panelId?: string): void {
-    const provider = this._registry.get(this._getDefaultProviderId());
+    // B12: dispose on the panel's owning provider, not the default.
+    const provider = this._getPanelProvider(panelId);
     if (provider && 'disposePersistentProcess' in provider) {
       (provider as { disposePersistentProcess(panelId?: string): void }).disposePersistentProcess(panelId);
     }

@@ -32,6 +32,7 @@ import type {
 	AgentConfiguration,
 } from "../../types";
 import { PROCESS_KILL_GRACE_PERIOD_MS } from "../../constants";
+import { killProcessTree, isProcessLive } from "../../utils/processKill";
 import { getEnrichedEnv } from "../../utils/platform";
 import { toolKind } from "../../utils/toolNames";
 
@@ -801,7 +802,7 @@ export class ClineProvider extends BaseCliProvider {
 				providerManager &&
 				typeof (providerManager as ProcessTracker).registerProcess === "function"
 			) {
-				(providerManager as ProcessTracker).registerProcess(panelId, session.process);
+				(providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
 			}
 
 			// Capture stderr for error reporting and auth error detection
@@ -819,9 +820,9 @@ export class ClineProvider extends BaseCliProvider {
 			yield* this.processStream(stderrRef, session);
 
 			// If Cline sent an "ask" message, terminate the process gracefully
-			if (session.askReceived && session.process && !session.process.killed) {
+			if (session.askReceived && isProcessLive(session.process)) {
 				console.log("[Mysti] Cline: Killing process after ask message");
-				session.process.kill("SIGTERM");
+				void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
 			}
 
 			// Yield single authoritative done chunk
@@ -836,22 +837,16 @@ export class ClineProvider extends BaseCliProvider {
 			// Restore original .clinerules (or remove temp one)
 			this._restoreClinerules(cwd, session);
 
-			if (session.process && !session.process.killed) {
+			// Liveness-gated (not `.killed`): a SIGTERM'd-but-alive CLI must still be
+			// escalated to SIGKILL, which the old `!killed` guard skipped.
+			if (isProcessLive(session.process)) {
 				try {
 					// Remove only our stderr handler -- don't strip waitForProcess listeners
-					if (session.process.stderr) {
-						session.process.stderr.removeListener("data", stderrHandler);
+					if (session.process!.stderr) {
+						session.process!.stderr.removeListener("data", stderrHandler);
 					}
-					session.process.kill("SIGTERM");
-
-					// Schedule force kill if SIGTERM doesn't work
-					const processToKill = session.process;
-					setTimeout(() => {
-						if (processToKill && !processToKill.killed) {
-							console.warn("[Mysti] Cline: Force killing leaked process");
-							processToKill.kill("SIGKILL");
-						}
-					}, PROCESS_KILL_GRACE_PERIOD_MS);
+					// SIGTERM with reliable SIGKILL escalation (timer cleared on exit).
+					void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
 				} catch (e) {
 					console.error("[Mysti] Cline: Error cleaning up process:", e);
 				}

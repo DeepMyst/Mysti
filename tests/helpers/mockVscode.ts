@@ -213,9 +213,27 @@ export const EventEmitter = class<T = unknown> {
   }
 };
 
-export const Disposable = {
-  from: () => ({ dispose: () => {} }),
-};
+/**
+ * vscode.Disposable mock — a real class so `new vscode.Disposable(fn)` works
+ * (used by AgentLifecycleManager.onLifecycleEvent) while keeping the static
+ * `from(...)` helper available.
+ */
+export class Disposable {
+  private readonly _callOnDispose?: () => void;
+  constructor(callOnDispose?: () => void) {
+    this._callOnDispose = callOnDispose;
+  }
+  dispose(): void {
+    this._callOnDispose?.();
+  }
+  static from(...disposables: { dispose(): unknown }[]): Disposable {
+    return new Disposable(() => {
+      for (const d of disposables) {
+        d.dispose();
+      }
+    });
+  }
+}
 
 export enum TreeItemCollapsibleState {
   None = 0,

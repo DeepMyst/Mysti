@@ -39,6 +39,7 @@ import type {
 import type { AgentContextManager } from '../../managers/AgentContextManager';
 import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TIMEOUT_MS } from '../../constants';
 import { getCommonSearchPaths, validateCliPath, checkCommandExists, getEnrichedEnv } from '../../utils/platform';
+import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import type { CliSearchConfig } from '../../utils/platform';
 
 /**
@@ -46,7 +47,12 @@ import type { CliSearchConfig } from '../../utils/platform';
  * Used to avoid casting providerManager to `any` in sendMessage().
  */
 export interface ProcessTracker {
-  registerProcess(panelId: string, process: ChildProcess): void;
+  /**
+   * Record the running CLI process for a panel. `providerId` (B12) lets the
+   * ProviderManager route panel-scoped operations (cancel/suspend/resume/etc.)
+   * back to the provider that actually owns the process, not the global default.
+   */
+  registerProcess(panelId: string, process: ChildProcess, providerId?: string): void;
   clearProcess(panelId: string): void;
 }
 
@@ -70,6 +76,12 @@ export interface PanelSessionState {
   channelSystemContext?: string;
   /** True when the process has been suspended via SIGSTOP */
   suspended: boolean;
+  /**
+   * True once the current request has been cancelled by the user (B4). Checked
+   * before the persistent→single-shot fallback re-sends the prompt, and reset at
+   * the start of each sendMessage().
+   */
+  cancelled?: boolean;
   /** Settings snapshot used when spawning the persistent process (for change detection) */
   persistentSettings?: {
     model: string | undefined;
@@ -200,14 +212,15 @@ export abstract class BaseCliProvider implements ICliProvider {
 
   dispose(): void {
     for (const session of this._panelSessions.values()) {
-      if (session.process && !session.process.killed) {
-        session.process.kill('SIGTERM');
+      // Liveness-gated (not `.killed`-gated) graceful kill with SIGKILL escalation.
+      if (isProcessLive(session.process)) {
+        void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
       }
-      if (session.persistentProcess && !session.persistentProcess.killed) {
-        session.persistentProcess.kill('SIGTERM');
-        session.persistentProcess = null;
-        session.persistentReady = false;
+      if (isProcessLive(session.persistentProcess)) {
+        void killProcessTree(session.persistentProcess, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
       }
+      session.persistentProcess = null;
+      session.persistentReady = false;
     }
     this._panelSessions.clear();
   }
@@ -285,8 +298,11 @@ export abstract class BaseCliProvider implements ICliProvider {
    * For persistent processes, sends an interrupt instead of killing.
    */
   private _cancelSessionRequest(session: PanelSessionState): void {
+    // Mark this session as user-cancelled so any in-flight sendMessage() does NOT
+    // re-send the prompt via the single-shot fallback (bug B4).
+    session.cancelled = true;
     // If using persistent process, send interrupt (Ctrl+C) instead of killing
-    if (session.persistentProcess && !session.persistentProcess.killed) {
+    if (isProcessLive(session.persistentProcess)) {
       console.log(`[Mysti] ${this.displayName}: Interrupting persistent process for panel: ${session.panelId}`);
       this._interruptPersistentProcess(session);
       // Also null out the per-request process ref so the streaming generator exits
@@ -294,18 +310,18 @@ export abstract class BaseCliProvider implements ICliProvider {
       return;
     }
     // Single-shot: kill the process
-    if (session.process && !session.process.killed) {
+    if (isProcessLive(session.process)) {
       if (session.suspended) {
         // Process is frozen by SIGSTOP. Use SIGKILL directly — it is delivered
         // to stopped processes on macOS/Linux without needing SIGCONT first.
         // Sending SIGCONT+SIGTERM would resume the process and give the CLI a
         // window to execute the pending tool before SIGTERM arrives.
         console.log(`[Mysti] ${this.displayName}: Killing suspended process (SIGKILL) for panel: ${session.panelId}`);
-        session.process.kill('SIGKILL');
+        void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName, initialSignal: 'SIGKILL' });
         session.suspended = false;
       } else {
         console.log(`[Mysti] ${this.displayName}: Cancelling request for panel: ${session.panelId}`);
-        session.process.kill('SIGTERM');
+        void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
       }
       session.process = null;
     }
@@ -327,7 +343,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     }
     const session = this._getSession(panelId);
     const proc = session.process;
-    if (proc && !proc.killed && proc.exitCode === null) {
+    if (proc && isProcessLive(proc)) {
       try {
         const sent = proc.kill('SIGSTOP');
         if (sent) {
@@ -350,7 +366,7 @@ export abstract class BaseCliProvider implements ICliProvider {
   public resumeProcess(panelId?: string): boolean {
     const session = this._getSession(panelId);
     const proc = session.process;
-    if (proc && !proc.killed && session.suspended) {
+    if (proc && isProcessLive(proc) && session.suspended) {
       try {
         proc.kill('SIGCONT');
         session.suspended = false;
@@ -501,9 +517,9 @@ export abstract class BaseCliProvider implements ICliProvider {
    * Check if the persistent process is alive and responsive.
    */
   protected _isPersistentProcessHealthy(session: PanelSessionState): boolean {
-    return session.persistentProcess !== null
-      && !session.persistentProcess.killed
-      && session.persistentProcess.exitCode === null;
+    // Liveness via exitCode/signalCode (not `.killed`, which only means a signal
+    // was delivered) — a signalled-but-not-yet-exited process is not healthy.
+    return isProcessLive(session.persistentProcess);
   }
 
   /**
@@ -666,15 +682,10 @@ export abstract class BaseCliProvider implements ICliProvider {
   disposePersistentProcess(panelId?: string): void {
     const key = panelId || 'default';
     const session = this._panelSessions.get(key);
-    if (session?.persistentProcess && !session.persistentProcess.killed) {
+    if (session && isProcessLive(session.persistentProcess)) {
       console.log(`[Mysti] ${this.displayName}: Disposing persistent process for panel: ${key}`);
-      session.persistentProcess.kill('SIGTERM');
-      const proc = session.persistentProcess;
-      setTimeout(() => {
-        if (proc && !proc.killed) {
-          proc.kill('SIGKILL');
-        }
-      }, PROCESS_KILL_GRACE_PERIOD_MS);
+      // SIGTERM with reliable SIGKILL escalation (liveness-gated, timer cleared on exit).
+      void killProcessTree(session.persistentProcess, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
       session.persistentProcess = null;
       session.persistentReady = false;
     }
@@ -846,25 +857,31 @@ export abstract class BaseCliProvider implements ICliProvider {
     const startTime = Date.now();
     const session = this._getSession(panelId);
     session.autonomousMode = settings.autonomousMode === true;
+    // Fresh request: clear any cancellation flag left from a previous turn (B4).
+    session.cancelled = false;
 
     // --- Try persistent process mode ---
     console.log(`[Mysti] ${this.displayName}: sendMessage - supportsPersistentProcess=${this.capabilities.supportsPersistentProcess}, existingProcess=${!!session.persistentProcess}, ready=${session.persistentReady}`);
     if (this.capabilities.supportsPersistentProcess) {
+      // B4: set usedPersistent on the FIRST chunk, not after the loop completes.
+      // A cancelled persistent request yields zero chunks; gating on chunk count
+      // would fall through and RE-SEND the prompt the user just cancelled. By
+      // flipping this flag as soon as the persistent path begins producing output
+      // (or even committing to run), we treat the persistent attempt as terminal.
       let usedPersistent = false;
       try {
-        let chunkCount = 0;
         for await (const chunk of this._sendViaPersistentProcess(
           content, context, settings, conversation, session, persona, agentConfig, attachments,
         )) {
-          chunkCount++;
+          usedPersistent = true;
           yield chunk;
         }
-        usedPersistent = chunkCount > 0;
       } catch (err) {
         console.warn(`[Mysti] ${this.displayName}: Persistent mode failed, falling back to single-shot:`, err);
-        // Kill the broken persistent process so it's not reused
-        if (session.persistentProcess && !session.persistentProcess.killed) {
-          session.persistentProcess.kill('SIGTERM');
+        // Kill the broken persistent process so it's not reused (liveness-gated,
+        // SIGKILL escalation) — `.killed` would skip a signalled-but-alive process.
+        if (isProcessLive(session.persistentProcess)) {
+          void killProcessTree(session.persistentProcess, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
         }
         session.persistentProcess = null;
         session.persistentReady = false;
@@ -877,6 +894,16 @@ export abstract class BaseCliProvider implements ICliProvider {
         yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
         return;
       }
+
+      // B4: if the request was cancelled (or interrupted) mid-flight, do NOT fall
+      // back to single-shot — that would re-send the prompt the user cancelled.
+      // Treat cancellation as terminal.
+      if (session.cancelled) {
+        console.log(`[Mysti] ${this.displayName}: Persistent request cancelled — skipping single-shot fallback`);
+        yield { type: 'done' };
+        return;
+      }
+
       // Fall through to single-shot below
       console.log(`[Mysti] ${this.displayName}: Falling back to single-shot mode`);
     }
@@ -950,7 +977,7 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     // Register process with ProviderManager for per-panel cancellation
     if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-      (providerManager as ProcessTracker).registerProcess(panelId, session.process);
+      (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
     }
 
     // Set up stderr handler early to capture initialization errors
@@ -1015,27 +1042,21 @@ export abstract class BaseCliProvider implements ICliProvider {
     } catch (error) {
       yield this.handleError(error);
     } finally {
-      if (session.process && !session.process.killed) {
+      // Liveness-gated cleanup (not `.killed`): a SIGTERM'd-but-alive CLI must
+      // still be escalated to SIGKILL, which the old `!killed` guard skipped.
+      if (isProcessLive(session.process)) {
         try {
-          if (session.process.stderr) {
-            session.process.stderr.removeListener('data', stderrHandler);
+          if (session.process!.stderr) {
+            session.process!.stderr.removeListener('data', stderrHandler);
           }
 
-          if (session.suspended) {
-            // Process is frozen — SIGKILL is delivered to stopped processes
-            // without needing SIGCONT (avoids tool execution window)
-            session.process.kill('SIGKILL');
-            session.suspended = false;
-          } else {
-            session.process.kill('SIGTERM');
-            const processToKill = session.process;
-            setTimeout(() => {
-              if (processToKill && !processToKill.killed) {
-                console.log(`[Mysti] ${this.displayName}: Force killing leaked process`);
-                processToKill.kill('SIGKILL');
-              }
-            }, PROCESS_KILL_GRACE_PERIOD_MS);
-          }
+          // Suspended (SIGSTOP) processes get SIGKILL directly so we don't open a
+          // tool-execution window by resuming them; others get SIGTERM→SIGKILL.
+          void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, {
+            label: this.displayName,
+            initialSignal: session.suspended ? 'SIGKILL' : 'SIGTERM',
+          });
+          session.suspended = false;
         } catch (e) {
           console.error(`[Mysti] ${this.displayName}: Error cleaning up process:`, e);
         }
@@ -1154,16 +1175,10 @@ export abstract class BaseCliProvider implements ICliProvider {
       const timeoutMs = session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : PROCESS_TIMEOUT_MS;
       const timeout = setTimeout(() => {
         console.error(`[Mysti] ${this.displayName}: Process timeout after ${timeoutMs / 1000}s`);
-        if (session.process && !session.process.killed) {
-          session.process.kill('SIGTERM');
-
-          const processToKill = session.process;
-          setTimeout(() => {
-            if (processToKill && !processToKill.killed) {
-              console.warn(`[Mysti] ${this.displayName}: Force killing process after grace period`);
-              processToKill.kill('SIGKILL');
-            }
-          }, PROCESS_KILL_GRACE_PERIOD_MS);
+        // Liveness-gated SIGTERM→SIGKILL (the old `!killed` guard skipped the
+        // escalation, so a CLI ignoring SIGTERM leaked past the timeout).
+        if (isProcessLive(session.process)) {
+          void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
         }
         reject(new Error('Process timeout'));
       }, timeoutMs);

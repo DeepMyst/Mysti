@@ -133,6 +133,9 @@ export async function activate(context: vscode.ExtensionContext) {
   autonomousManager = new AutonomousManager(context, memoryManager);
   compactionManager = new CompactionManager(context);
   lifecycleManager = new AgentLifecycleManager(context);
+  // B16: let ProviderManager report child PIDs to the lifecycle manager as
+  // processes are registered (enables idle/child-protection tracking).
+  providerManager.setLifecycleSink(lifecycleManager);
 
   // Initialize engagement manager (badges, stats, review prompts)
   engagementManager = new EngagementManager(context);
