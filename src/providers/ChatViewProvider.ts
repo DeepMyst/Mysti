@@ -488,39 +488,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Critical: Wait for agents to load before building initial state
     await this._agentInitPromise;
 
-    // Plan 03 Phase 3a: build initial state from the CLI discovery cache —
-    // no serial provider probing on panel open (kills the "Preparing your
-    // workspace" stall). Only the ACTIVE provider is probed synchronously
-    // when its cache entry is missing/expired; everything else rides the
-    // cache, and getWizardStatusCached() kicks a single-flight background
-    // refresh whose completion posts a follow-up 'providerAvailability'
-    // message (see the onWizardStatusUpdated subscription in the
-    // constructor).
+    // First-run stall fix: every discovery/network step on the way to the first
+    // post is BOUNDED so the "Preparing your workspace" overlay can never get
+    // stuck (it did on a cold cache because a CLI probe could hang with no
+    // timeout; reopening was fast only because discovery was already cached).
+    // On timeout we proceed with whatever the cache has — the
+    // onWizardStatusUpdated subscription posts a provider-availability follow-up
+    // once discovery settles. The GitHub star count is read from cache (never
+    // awaited) and refreshed in the background.
     const activeProviderId = this._getPanelProvider(panelId);
-    await this._setupManager.ensureProviderStatusFresh(activeProviderId);
+    // Bound the active-provider refresh (cold cache → single CLI probe).
+    await this._withTimeout(this._setupManager.ensureProviderStatusFresh(activeProviderId), 4000);
 
     let wizardStatus: WizardStatusResult = this._setupManager.getWizardStatusCached();
 
-    // Check if any provider is ready - show wizard if not
+    // Cold-start wizard decision: show the wizard only if no provider is
+    // installed. The cache can't prove this on first run, so confirm with a full
+    // probe — but BOUND it. On timeout, fall through and build initialState; the
+    // background availability refresh surfaces the wizard later if needed.
     const wizardDismissed = this._extensionContext.globalState.get('mysti.setupWizardDismissed', false);
     if (!wizardDismissed && !wizardStatus.anyReady) {
-      // The cache can't prove any provider is installed. Showing the wizard
-      // is a cold-start decision, so confirm with a full (probing) status —
-      // this is the only panel-open path that still waits on discovery.
-      const fullStatus = await this._setupManager.getWizardStatus();
-      if (!fullStatus.anyReady) {
-        // No providers installed - show the setup wizard.
-        // Include panelId: when the wizard is shown, initialState (the only
-        // other message carrying panelId) is never sent, so the webview must
-        // learn its panelId from this payload or every wizard response would
-        // be posted with panelId=null and silently dropped (B2).
-        this._postToPanel(panelId, {
-          type: 'showWizard',
-          payload: { ...fullStatus, panelId }
-        });
-        return;
+      const fullStatus = await this._withTimeout(this._setupManager.getWizardStatus(), 6000);
+      if (fullStatus) {
+        if (!fullStatus.anyReady) {
+          // No providers installed — show the setup wizard. Include panelId so
+          // wizard responses route to the right panel (B2).
+          this._postToPanel(panelId, { type: 'showWizard', payload: { ...fullStatus, panelId } });
+          return;
+        }
+        wizardStatus = fullStatus;
       }
-      wizardStatus = fullStatus;
+      // fullStatus === null → the probe timed out; fall through to initialState.
     }
 
     const config = vscode.workspace.getConfiguration('mysti');
@@ -649,7 +647,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         brainstormStrategy,
         providerSettings,
         permissionSettings,
-        githubStarCount: await this._getGithubStarCount(),
+        githubStarCount: this._getCachedGithubStarCount(),
         usageStats: this._engagementManager.getUsageStats(),
         badges: this._engagementManager.getAllBadges(),
         badgeCounts: this._engagementManager.getUnlockedCount(),
@@ -675,6 +673,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     }
 
+    // Warm the GitHub star cache in the background (never blocks the render —
+    // the payload above used the cached value).
+    void this._getGithubStarCount();
+  }
+
+  /**
+   * Race a promise against a timeout. Resolves to the promise's value, or null
+   * if it doesn't settle within `ms` (or rejects). Used to bound discovery
+   * probes on the initial-render path so a hung CLI can't stall the webview.
+   */
+  private _withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+    return Promise.race([
+      p.catch(() => null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+    ]);
+  }
+
+  /**
+   * Synchronous, network-free read of the cached GitHub star count (or 0).
+   * Used in the initial payload so the render never waits on the network;
+   * `_getGithubStarCount()` is kicked in the background to warm the cache.
+   */
+  private _getCachedGithubStarCount(): number {
+    const cached = this._extensionContext.globalState.get<{ count: number; fetchedAt: number }>('mysti.githubStarCount');
+    return cached?.count ?? 0;
   }
 
   /**

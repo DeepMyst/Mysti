@@ -1399,6 +1399,12 @@
         }
       }
 
+      // First-run safety net: initialState/showWizard normally dismiss the
+      // overlay within a moment. If neither arrives (e.g. a stalled extension
+      // probe), force-dismiss after 12s so the UI is never permanently stuck on
+      // "Preparing your workspace…" — background follow-ups still populate it.
+      setTimeout(dismissInitLoading, 12000);
+
       // Helper to send messages with panelId
       function postMessageWithPanelId(msg) {
         msg.panelId = state.panelId;
