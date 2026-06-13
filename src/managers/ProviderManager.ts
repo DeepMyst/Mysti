@@ -28,8 +28,21 @@ import type {
   AgentConfiguration,
   ProviderType
 } from '../types';
-import { DEFAULT_PROVIDER, PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
+import { DEFAULT_PROVIDER, DEFAULT_FALLBACK_MODEL, PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
 import { killProcessTree } from '../utils/processKill';
+
+/**
+ * Minimal structural view of ModelRegistryService (Plan 01). ProviderManager
+ * delegates getModels/getProviderDefaultModel/getModelContextWindow to the
+ * registry when injected, falling back to the per-provider config.models
+ * otherwise. Declared structurally to avoid an import cycle (extension.ts wires
+ * the concrete registry via setModelRegistry after both are constructed).
+ */
+interface ModelRegistrySink {
+  getModels(providerId: string): { models: ModelInfo[] };
+  getDefaultModel(providerId: string): string;
+  getContextWindow(providerId: string, modelId: string): number | undefined;
+}
 
 /**
  * Minimal structural view of AgentLifecycleManager — avoids a hard import cycle
@@ -59,6 +72,12 @@ export class ProviderManager {
   // can report child PIDs for idle/child-protection tracking.
   private _lifecycleSink?: ProcessPidSink;
 
+  // Optional model registry (Plan 01): when injected, getModels /
+  // getProviderDefaultModel / getModelContextWindow delegate to it so the
+  // dynamic registry is the single source of truth. Absent => legacy
+  // config.models fallback (preserves byte-identical Phase 1 behavior).
+  private _modelRegistry?: ModelRegistrySink;
+
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
     this._registry = new ProviderRegistry(context);
@@ -70,6 +89,16 @@ export class ProviderManager {
    */
   public setLifecycleSink(sink: ProcessPidSink): void {
     this._lifecycleSink = sink;
+  }
+
+  /**
+   * Wire the model registry (Plan 01). Called from extension.ts after both the
+   * ProviderManager and the ModelRegistryService are constructed (setter
+   * injection avoids a construction-order/import cycle). Once set, the three
+   * model-query methods read through the registry's merged view.
+   */
+  public setModelRegistry(registry: ModelRegistrySink): void {
+    this._modelRegistry = registry;
   }
 
   /**
@@ -201,9 +230,14 @@ export class ProviderManager {
   }
 
   /**
-   * Get available models for a provider
+   * Get available models for a provider.
+   * Plan 01: delegate to the model registry's merged view (curated + discovered
+   * + custom) when injected; fall back to the bundled config.models otherwise.
    */
   public getModels(providerName: string): ModelInfo[] {
+    if (this._modelRegistry) {
+      return this._modelRegistry.getModels(providerName).models;
+    }
     const provider = this._registry.get(providerName);
     return provider ? provider.config.models : [];
   }
@@ -213,13 +247,16 @@ export class ProviderManager {
    * Used in brainstorm mode to ensure each provider uses its own compatible model
    */
   public getProviderDefaultModel(providerId: string): string {
+    if (this._modelRegistry) {
+      return this._modelRegistry.getDefaultModel(providerId);
+    }
     const provider = this._registry.get(providerId);
     if (provider) {
       return provider.config.defaultModel;
     }
     // Fallback to global default
     const config = vscode.workspace.getConfiguration('mysti');
-    return config.get<string>('model', 'claude-sonnet-4-5-20250929');
+    return config.get<string>('model', DEFAULT_FALLBACK_MODEL);
   }
 
   /**
@@ -227,6 +264,15 @@ export class ProviderManager {
    * Used for displaying context usage in the UI
    */
   public getModelContextWindow(providerId: string, modelId: string): number {
+    if (this._modelRegistry) {
+      const ctx = this._modelRegistry.getContextWindow(providerId, modelId);
+      if (typeof ctx === 'number') {
+        return ctx;
+      }
+      // registry knows the provider but not this model's window — fall through
+      // to the 200k default below.
+      return 200000;
+    }
     const provider = this._registry.get(providerId);
     if (provider) {
       const model = provider.config.models.find(m => m.id === modelId);

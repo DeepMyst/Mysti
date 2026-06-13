@@ -42,12 +42,13 @@ import { getCanvasContent } from '../webview/canvasContent';
 import { CanvasManager } from '../managers/CanvasManager';
 import { ImageGenerationService } from '../services/ImageGenerationService';
 import { VideoGenerationService } from '../services/VideoGenerationService';
+import type { ModelRegistryService } from '../services/ModelRegistryService';
 import type { CanvasSecrets } from '../services/CanvasSecrets';
 import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
 import { DevServerManager } from '../managers/DevServerManager';
 import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, MessageSegment, MessageThinking, MessageThinkingStyle, ToolCall, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualTestTrigger, VisualTestStreamChunk } from '../types';
-import { AUTONOMOUS_CONTINUATION_DELAY_MS, DEFAULT_PROVIDER, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
+import { AUTONOMOUS_CONTINUATION_DELAY_MS, DEFAULT_PROVIDER, DEFAULT_FALLBACK_MODEL, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
 import {
   buildProviderManifestPayload,
@@ -114,6 +115,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _channelBridge: ChannelBridge;
   // Canvas tracking
   private _canvasManager: CanvasManager;
+  // Plan 01: model registry — single authority for per-provider model lists +
+  // context windows. Threaded in here for the consumer agent (Phase 4) to drive
+  // the dynamic dropdown / modelsUpdated / requestModels wiring.
+  private _modelRegistry: ModelRegistryService;
   private _imageGenService: ImageGenerationService;
   private _videoGenService: VideoGenerationService;
   private _codeGenService: any; // Lazy-loaded CodeGenerationService
@@ -190,7 +195,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     engagementManager: EngagementManager,
     projectContextManager: ProjectContextManager,
     visualTestManager: VisualTestManager,
-    canvasManager: CanvasManager
+    canvasManager: CanvasManager,
+    modelRegistry: ModelRegistryService
   ) {
     this._extensionUri = extensionUri;
     this._extensionContext = extensionContext;
@@ -212,6 +218,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._projectContextManager = projectContextManager;
     this._visualTestManager = visualTestManager;
     this._canvasManager = canvasManager;
+    this._modelRegistry = modelRegistry;
     this._imageGenService = new ImageGenerationService();
     this._videoGenService = new VideoGenerationService();
     this._channelBridge = new ChannelBridge(activeModeManager);
@@ -408,17 +415,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private _getPanelModel(panelId: string): string {
     const panelState = this._panelStates.get(panelId);
+    const config = vscode.workspace.getConfiguration('mysti');
     const model = panelState?.settingsOverrides?.model
-      || vscode.workspace.getConfiguration('mysti').get<string>('defaultModel', 'claude-sonnet-4-5-20250929');
-    // Validate model belongs to the active provider; reset to provider default if stale
+      || config.get<string>('defaultModel', DEFAULT_FALLBACK_MODEL);
+    // #39 precedence (Plan 01 §4): keep the user's model unless it is genuinely
+    // unusable. Only fall back to the provider default when the model is neither
+    // a known model for this provider, a user-declared custom model, nor even a
+    // syntactically valid id. A valid hand-typed / custom / unlisted model is
+    // KEPT (previously any non-built-in model was silently reset — issue #39).
     const provider = this._getPanelProvider(panelId);
     const providerConfig = this._providerManager.getProvider(provider);
     if (providerConfig) {
-      const validModel = providerConfig.models.some(m => m.id === model);
-      if (!validModel) {
-        console.warn(`[Mysti] Model '${model}' not valid for provider '${provider}', using default '${providerConfig.defaultModel}'`);
-        return providerConfig.defaultModel;
+      if (this._providerManager.getModels(provider).some(m => m.id === model)) {
+        return model;
       }
+      const customModels = config.get<Record<string, string[]>>('customModels', {});
+      if (Array.isArray(customModels?.[provider]) && customModels[provider].includes(model)) {
+        return model;
+      }
+      if (validateModelName(model).valid) {
+        console.warn(`[Mysti] Model '${model}' is not in '${provider}' built-in list but is valid — keeping it (custom/unlisted).`);
+        return model;
+      }
+      console.warn(`[Mysti] Model '${model}' is invalid for provider '${provider}', using default '${providerConfig.defaultModel}'`);
+      return providerConfig.defaultModel;
     }
     return model;
   }
@@ -591,7 +611,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // here (Plan 03 Phase 3a). Statuses may still be incomplete at this
     // point; the background refresh posts a follow-up 'providerAvailability'
     // message once discovery settles.
-    const providers = this._providerManager.getProviders();
+    // Plan 01 Phase 1: source each provider's model list + default from the
+    // registry's merged view (curated + discovered + custom) instead of the
+    // raw bundled ProviderConfig, so custom models appear in the dropdown and
+    // Phase 3 discovery flows through with no further wiring. Phase 1 output is
+    // byte-identical when no cache/custom models exist.
+    const providers = this._providerManager.getProviders().map(p => {
+      const registryState = this._modelRegistry.getModels(p.name);
+      return {
+        ...p,
+        models: registryState.models,
+        defaultModel: registryState.defaultModel
+      };
+    });
     const providerAvailability = this._buildProviderAvailability(wizardStatus);
 
     this._postToPanel(panelId, {
@@ -3873,6 +3905,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
     if (settings.provider !== undefined) {
+      // Capture the provider the panel was on BEFORE applying the switch, so the
+      // auto-switch below can distinguish an old-provider built-in model (safe to
+      // replace) from a user's hand-typed / custom model (keep it).
+      const previousProvider = panelId ? this._getPanelProvider(panelId) : config.get<string>('defaultProvider', DEFAULT_PROVIDER);
       if (panelId) {
         // Store per-panel — don't contaminate other panels
         const panelState = this._panelStates.get(panelId);
@@ -3884,14 +3920,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await config.update('defaultProvider', settings.provider, vscode.ConfigurationTarget.Global);
       }
 
-      // Auto-switch to a compatible model for the new provider
+      // Auto-switch to a compatible model for the new provider — but only when
+      // the current model is a stale OLD-provider built-in (#39/Plan 01 §4.2):
+      // a model the user hand-typed or declared as custom is preserved across
+      // the switch instead of being clobbered with the new provider's default.
       const newProviderConfig = this._providerManager.getProvider(settings.provider);
       if (newProviderConfig) {
         const currentModel = panelId ? this._getPanelModel(panelId) : config.get<string>('defaultModel', '');
-        const validModels = newProviderConfig.models.map(m => m.id);
+        const validModels = this._providerManager.getModels(settings.provider).map(m => m.id);
+        const customModels = config.get<Record<string, string[]>>('customModels', {});
+        const isCustomForNew = Array.isArray(customModels?.[settings.provider]) && customModels[settings.provider].includes(currentModel);
+        const wasOldProviderBuiltin = this._providerManager.getModels(previousProvider).some(m => m.id === currentModel);
+        const needsSwitch = !validModels.includes(currentModel) && !isCustomForNew && wasOldProviderBuiltin;
 
-        // If current model is not valid for the new provider, switch to the provider's default
-        if (!validModels.includes(currentModel)) {
+        // If current model is a stale old-provider built-in, switch to the new provider's default
+        if (needsSwitch) {
           const newModel = newProviderConfig.defaultModel;
           if (panelId) {
             const panelState = this._panelStates.get(panelId);
@@ -4142,6 +4185,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._handleUpdateSettings(settings as Partial<Settings>, pid),
       getPanelProvider: (pid: string) => this._getPanelProvider(pid),
       getPanelModel: (pid: string) => this._getPanelModel(pid),
+      // Plan 01 Phase 1: registry-backed merged model list (curated + discovered
+      // + custom) so the /model QuickPick matches the dropdown.
+      getModelsForProvider: (providerId: string) => this._modelRegistry.getModels(providerId).models,
       // C7: provider-neutral /compact — CompactionManager picks native-cli
       // vs client-summarize from the provider's supportsNativeCompact flag.
       executeManualCompaction: (pid: string) => this._handleManualCompact(pid),

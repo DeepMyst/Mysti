@@ -274,14 +274,18 @@ export class GeminiProvider extends BaseCliProvider {
       console.warn(`[Mysti] Gemini: Invalid custom model "${customModel}": ${validation.error}`);
     }
 
-    // Only pass settings.model if it's actually a Gemini model —
-    // the global defaultModel may belong to another provider (e.g. claude-sonnet-*)
+    // Only pass settings.model if it's actually a Gemini model — the global
+    // defaultModel may belong to another provider (cross-provider guard).
+    // Genuine custom Gemini models go through the `geminiModel` setting above
+    // (now unblocked by the relaxed validation pattern — #39); full pass-through
+    // of arbitrary dropdown models is deferred to pair with per-provider model
+    // memory (Plan 02 Phase 6, #33) to avoid a leaked model reaching the CLI.
     if (settings.model) {
       const isKnownGeminiModel = this.config.models.some(m => m.id === settings.model);
       if (isKnownGeminiModel) {
         return settings.model;
       }
-      console.log(`[Mysti] Gemini: Ignoring non-Gemini model "${settings.model}", using CLI default`);
+      console.warn(`[Mysti] Gemini: Ignoring non-Gemini model "${settings.model}" (use the geminiModel setting for a custom Gemini model); using CLI default`);
     }
     return undefined;
   }

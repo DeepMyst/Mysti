@@ -565,11 +565,25 @@ export abstract class BaseCliProvider implements ICliProvider {
     // Apply shell mode for persistent spawn (needed for Windows .cmd wrappers)
     const useShell = process.platform === 'win32' || vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
     const persistentSpawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
+    let persistentSpawnArgs = args;
     if (useShell) {
       persistentSpawnOpts.shell = true;
+      // Mirror the single-shot spawn path: refuse genuine shell-injection
+      // vectors, then single-quote bracketed args (Plan 01 R1). Brackets are
+      // glob characters — a bracketed model id like claude-opus-4-6[1m] would
+      // otherwise glob-expand against the cwd on POSIX shells. Without this the
+      // persistent (Claude) spawn path had the glob-safety hole the single-shot
+      // path already closed.
+      for (const arg of args) {
+        if (/[;&|`$(){}<>!"'\\#~*?\n\r]/.test(arg)) {
+          console.error(`[Mysti] Rejecting unsafe CLI argument in shell mode (persistent spawn)`);
+          throw new Error('Invalid argument detected in shell mode');
+        }
+      }
+      persistentSpawnArgs = this._quoteShellArgsForBrackets(args);
     }
 
-    session.persistentProcess = spawn(cliPath, args, persistentSpawnOpts);
+    session.persistentProcess = spawn(cliPath, persistentSpawnArgs, persistentSpawnOpts);
 
     // Log stderr but don't treat it as fatal
     if (session.persistentProcess.stderr) {
@@ -916,6 +930,22 @@ export abstract class BaseCliProvider implements ICliProvider {
   }
 
   /**
+   * Glob-safety helper (Plan 01 R1). When spawning with shell:true on a POSIX
+   * shell, single-quote any arg containing [ or ] so glob metacharacters are
+   * treated literally (model ids like "claude-opus-4-6[1m]" must not expand
+   * against the cwd). Already-validated args contain no single quotes (the
+   * shell-mode safety gate refuses them), so plain single-quote wrapping is
+   * sufficient. Windows (cmd.exe) does not glob [ ], so args are returned
+   * unchanged there — quoting would corrupt the .cmd shim invocation.
+   */
+  protected _quoteShellArgsForBrackets(args: string[]): string[] {
+    if (process.platform === 'win32') {
+      return args;
+    }
+    return args.map(arg => (arg.includes('[') || arg.includes(']')) ? `'${arg}'` : arg);
+  }
+
+  /**
    * Original single-shot spawn behavior: spawn CLI, send prompt, stream response, kill process.
    */
   private async *_sendSingleShot(
@@ -953,17 +983,32 @@ export abstract class BaseCliProvider implements ICliProvider {
     // Check if we should use shell for spawning (auto-enable on Windows for .cmd wrapper support)
     const useShell = process.platform === 'win32' || vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
     const spawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
+    let spawnArgs = args;
     if (useShell) {
       spawnOpts.shell = true;
       for (const arg of args) {
-        if (/[;&|`$(){}[\]<>!"'\\#~*?\n\r]/.test(arg)) {
+        // Refuse genuine shell-injection vectors. Square brackets are NOT
+        // refused: some model ids use them (e.g. claude-opus-4-6[1m]); they are
+        // glob characters, not injection vectors (no command substitution or
+        // separators). On POSIX shells they would still glob-expand if a
+        // matching filename exists in cwd, so _quoteShellArgsForBrackets below
+        // single-quotes any bracketed arg to force literal interpretation.
+        if (/[;&|`$(){}<>!"'\\#~*?\n\r]/.test(arg)) {
           console.error(`[Mysti] Rejecting unsafe CLI argument in shell mode`);
           throw new Error('Invalid argument detected in shell mode');
         }
       }
+      // Glob-safety (Plan 01 R1): when Node spawns with shell:true and an args
+      // array, it joins args into a command string WITHOUT quoting. On POSIX
+      // shells, [ and ] are glob characters and could expand against the cwd
+      // (e.g. claude-opus-4-6[1m] matching a stray file). Single-quote bracketed
+      // args so the model id reaches the CLI verbatim. Windows cmd.exe does not
+      // glob [ ], so we leave win32 args untouched (quoting there would break the
+      // .cmd shim invocation).
+      spawnArgs = this._quoteShellArgsForBrackets(args);
     }
 
-    session.process = spawn(cliPath, args, spawnOpts);
+    session.process = spawn(cliPath, spawnArgs, spawnOpts);
 
     // Attach early error handler to catch async spawn errors (e.g., ENOENT/EINVAL on Windows)
     let earlySpawnError: Error | null = null;

@@ -125,6 +125,11 @@ function createHarness(): Harness {
     getAllProviders: () => [],
     getAllProviderIds: vi.fn(() => [...ALL_PROVIDER_IDS]),
     getModelContextWindow: vi.fn(() => 200000),
+    // Plan 01: _getPanelModel now resolves the active model through the
+    // registry-aware getModels() (empty list here = no built-in models, so the
+    // keep-validated/custom precedence is exercised) instead of reading
+    // providerConfig.models directly.
+    getModels: vi.fn(() => []),
   } as any;
   const compactionManager = {
     getStrategy: vi.fn(() => 'client-summarize'),
@@ -199,7 +204,8 @@ function createHarness(): Harness {
     engagementManager,
     noop,                  // projectContextManager
     noop,                  // visualTestManager
-    noop                   // canvasManager
+    noop,                  // canvasManager
+    noop                   // modelRegistry (Plan 01) — threaded; not used by these tests
   );
 
   // Register a fake sidebar panel (normally done in resolveWebviewView)

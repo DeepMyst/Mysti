@@ -386,14 +386,14 @@
         "mysti.claudeCodeModel": {
           "type": "string",
           "default": "",
-          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
           "description": "Custom model for Claude Code. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-sonnet-4-5-20250929"
         },
         "mysti.codexModel": {
           "type": "string",
           "default": "",
-          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
           "description": "Custom model for OpenAI Codex. Overrides the dropdown selection. Leave empty to use the selected model. Example: gpt-5.4-codex"
         },
@@ -407,51 +407,62 @@
         "mysti.geminiModel": {
           "type": "string",
           "default": "",
-          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
           "description": "Custom model for Google Gemini. Overrides the dropdown selection. Leave empty to use the selected model. Example: gemini-3-pro-preview"
         },
         "mysti.clineModel": {
           "type": "string",
           "default": "",
-          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
           "description": "Custom model for Cline. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-sonnet-4-5-20250929"
         },
         "mysti.copilotModel": {
           "type": "string",
           "default": "",
-          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
-          "description": "Custom model for GitHub Copilot. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4.6"
+          "description": "Custom model for GitHub Copilot. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4.5"
         },
         "mysti.cursorModel": {
           "type": "string",
           "default": "",
-          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
           "description": "Custom model for Cursor. Overrides the dropdown selection. Leave empty to use the default model. Example: claude-sonnet-4-5-20250929"
         },
         "mysti.openclawModel": {
           "type": "string",
           "default": "",
-          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
           "description": "Custom model for OpenClaw. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4-6"
         },
         "mysti.opencodeModel": {
           "type": "string",
           "default": "",
-          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
           "description": "Custom model for OpenCode. Overrides the dropdown selection. Leave empty to use the default model. Example: anthropic/claude-sonnet-4-5"
         },
         "mysti.qwenCodeModel": {
           "type": "string",
           "default": "",
-          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
           "description": "Custom model for Qwen Code. Overrides the dropdown selection. Leave empty to use the default model. Example: qwen3-coder-plus"
+        },
+        "mysti.customModels": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "markdownDescription": "User-defined custom models per provider, keyed by provider id (e.g. `{ \"claude-code\": [\"claude-opus-4-6[1m]\"] }`). These appear in the model dropdown alongside the built-in list and survive marketplace updates. Managed automatically by the \"Custom...\" model entry in the chat UI."
         },
         "mysti.codeLens.enabled": {
           "type": "boolean",

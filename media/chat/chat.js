@@ -2828,9 +2828,9 @@
       // Custom model input validation
       customModelInput.addEventListener('input', function() {
         var val = customModelInput.value.trim();
-        if (val && !/^[a-zA-Z0-9][a-zA-Z0-9._\-:/]*$/.test(val)) {
+        if (val && !/^[a-zA-Z0-9][a-zA-Z0-9._\-:/[\]]*$/.test(val)) {
           customModelInput.style.borderColor = 'var(--vscode-errorForeground)';
-          customModelError.textContent = 'Invalid characters. Use letters, numbers, dots, hyphens, underscores, colons, slashes.';
+          customModelError.textContent = 'Invalid characters. Use letters, numbers, dots, hyphens, underscores, colons, slashes, square brackets.';
           customModelError.style.display = 'block';
         } else if (val && val.length > 128) {
           customModelInput.style.borderColor = 'var(--vscode-errorForeground)';
@@ -2845,7 +2845,7 @@
       // Custom model input save on change/blur
       customModelInput.addEventListener('change', function() {
         var val = customModelInput.value.trim();
-        if (val && /^[a-zA-Z0-9][a-zA-Z0-9._\-:/]*$/.test(val) && val.length <= 128) {
+        if (val && /^[a-zA-Z0-9][a-zA-Z0-9._\-:/[\]]*$/.test(val) && val.length <= 128) {
           postMessageWithPanelId({ type: 'updateSettings', payload: { customModel: val } });
         }
       });

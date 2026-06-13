@@ -1009,12 +1009,20 @@ export class CodexProvider extends BaseCliProvider {
       }
       console.warn(`[Mysti] Codex: Invalid custom model "${customModel}": ${validation.error}`);
     }
-    // Fall back to dropdown selection, but only if it's a valid Codex model
+    // Fall back to dropdown selection, but only if it's a Codex model — the
+    // global defaultModel may belong to another provider (cross-provider guard).
+    // Genuine custom Codex models go through the `codexModel` setting above
+    // (now unblocked by the relaxed validation pattern — #39). Full pass-through
+    // of arbitrary dropdown models is deferred to pair with the per-provider
+    // model memory (Plan 02 Phase 6, #33) so a leaked cross-provider model
+    // can't reach the CLI and hard-fail.
     if (settings.model) {
       const validCodexModels = this.config.models.map(m => m.id);
       if (validCodexModels.includes(settings.model)) {
+        // Built-in: preserve the "default model ⇒ omit --model flag" special case
         return settings.model !== this.config.defaultModel ? settings.model : undefined;
       }
+      console.warn(`[Mysti] Codex: Ignoring non-Codex model "${settings.model}" (use the codexModel setting for a custom Codex model); using CLI default.`);
     }
     return undefined;
   }

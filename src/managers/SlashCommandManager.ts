@@ -24,7 +24,8 @@ import type {
   SlashCommandSectionInfo,
   SlashCommandSection,
   ProviderType,
-  WebviewMessage
+  WebviewMessage,
+  ModelInfo
 } from '../types';
 
 interface SlashCommandManagerDeps {
@@ -44,6 +45,12 @@ export interface SlashCommandCallbacks {
   updateSettings: (settings: Record<string, unknown>, panelId?: string) => Promise<void>;
   getPanelProvider: (panelId: string) => string;
   getPanelModel: (panelId: string) => string;
+  /**
+   * Merged model list for a provider (Plan 01 Phase 1) — backed by the
+   * ModelRegistryService so the `/model` QuickPick shows the same curated +
+   * discovered + custom set as the dropdown, not the raw bundled config.models.
+   */
+  getModelsForProvider: (providerId: string) => ModelInfo[];
   /**
    * Provider-neutral manual compaction (Plan 02 Phase 2, C7) — routes through
    * CompactionManager, which picks native-cli vs client-summarize from the
@@ -211,7 +218,8 @@ export class SlashCommandManager {
         const selectedModel = await this._selectModel(panelId, callbacks);
         if (selectedModel) {
           await callbacks.updateSettings({ model: selectedModel }, panelId);
-          return `Model changed to: ${this._getModelDisplayName(selectedModel)}`;
+          const models = callbacks.getModelsForProvider(callbacks.getPanelProvider(panelId));
+          return `Model changed to: ${this._getModelDisplayName(selectedModel, models)}`;
         }
         return;
       }
@@ -772,7 +780,10 @@ export class SlashCommandManager {
     for (const cmd of commands) {
       switch (cmd.id) {
         case 'model:switch':
-          cmd.currentValue = this._getModelDisplayName(callbacks.getPanelModel(panelId));
+          cmd.currentValue = this._getModelDisplayName(
+            callbacks.getPanelModel(panelId),
+            callbacks.getModelsForProvider(activeProvider)
+          );
           break;
         case 'provider:switch':
           cmd.currentValue = this._getProviderDisplayName(activeProvider);
@@ -806,20 +817,14 @@ export class SlashCommandManager {
     }
   }
 
-  private _getModelDisplayName(modelId: string): string {
-    // Shorten common model IDs for display
-    const shortNames: Record<string, string> = {
-      'claude-opus-4-6': 'Opus 4.6',
-      'claude-sonnet-4-5-20250929': 'Sonnet 4.5',
-      'claude-opus-4-5-20250918': 'Opus 4.5',
-      'claude-haiku-4-5-20251001': 'Haiku 4.5',
-      'gpt-5.4-codex': 'GPT-5.4 Codex',
-      'gpt-5.3-codex': 'GPT-5.3 Codex',
-      'gpt-5.2-codex': 'GPT-5.2 Codex',
-      'gemini-2.5-flash': 'Gemini 2.5 Flash',
-      'gemini-2.5-pro': 'Gemini 2.5 Pro',
-    };
-    return shortNames[modelId] || modelId;
+  /**
+   * Human-readable label for a model id. Plan 01 Phase 1: derive the display
+   * name from the registry-backed ModelInfo.name (the single source of truth)
+   * instead of a hand-maintained shortNames map that drifted from the curated
+   * lists. Falls back to the raw id for custom/unlisted models with no metadata.
+   */
+  private _getModelDisplayName(modelId: string, models: ModelInfo[]): string {
+    return models.find(m => m.id === modelId)?.name || modelId;
   }
 
   private _getProviderDisplayName(providerId: string): string {
@@ -850,14 +855,16 @@ export class SlashCommandManager {
   ): Promise<string | undefined> {
     const currentProvider = callbacks.getPanelProvider(panelId);
     const currentModel = callbacks.getPanelModel(panelId);
-    const providerConfig = this._providerManager.getProvider(currentProvider);
+    // Plan 01 Phase 1: pull the merged list (curated + discovered + custom)
+    // from the registry-backed callback so /model matches the dropdown.
+    const models = callbacks.getModelsForProvider(currentProvider);
 
-    if (!providerConfig || providerConfig.models.length === 0) {
+    if (models.length === 0) {
       vscode.window.showWarningMessage('No models available for the current provider');
       return undefined;
     }
 
-    const items = providerConfig.models.map(model => ({
+    const items = models.map(model => ({
       label: model.id === currentModel ? `$(check) ${model.name}` : model.name,
       description: model.id,
       detail: model.description,

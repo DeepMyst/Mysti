@@ -38,6 +38,7 @@ import { CanvasManager } from './managers/CanvasManager';
 import { StitchService } from './services/StitchService';
 import { CanvasSecrets } from './services/CanvasSecrets';
 import { CliDiscoveryService } from './services/CliDiscoveryService';
+import { ModelRegistryService } from './services/ModelRegistryService';
 import { PerfTracker } from './utils/PerfTracker';
 
 let chatViewProvider: ChatViewProvider;
@@ -49,6 +50,7 @@ let brainstormManager: BrainstormManager;
 let permissionManager: PermissionManager;
 let setupManager: SetupManager;
 let cliDiscoveryService: CliDiscoveryService;
+let modelRegistryService: ModelRegistryService;
 let telemetryManager: TelemetryManager;
 let memoryManager: MemoryManager;
 let autonomousManager: AutonomousManager;
@@ -93,6 +95,18 @@ export async function activate(context: vscode.ExtensionContext) {
   // event — panel opens then read warm statuses instead of re-probing.
   cliDiscoveryService = new CliDiscoveryService(providerManager);
   context.subscriptions.push(cliDiscoveryService);
+
+  // Plan 01: model registry — single authority for per-provider model lists +
+  // context windows. Constructed after ProviderManager and wired both ways via
+  // setters (avoids a construction-order/import cycle): the registry reads the
+  // bundled curated config.models through the manager, and the manager's
+  // getModels/getProviderDefaultModel/getModelContextWindow delegate back to
+  // the registry's merged view. Phase 1 is behavior-neutral (refresh() is a
+  // no-op; output is byte-identical to the bundled lists).
+  modelRegistryService = new ModelRegistryService(context);
+  modelRegistryService.setProviderSource(providerManager);
+  providerManager.setModelRegistry(modelRegistryService);
+  context.subscriptions.push(modelRegistryService);
 
   suggestionManager = new SuggestionManager(context);
 
@@ -213,7 +227,8 @@ export async function activate(context: vscode.ExtensionContext) {
     engagementManager,
     projectContextManager,
     visualTestManager,
-    canvasManager
+    canvasManager,
+    modelRegistryService
   );
 
   // F-11: run the one-time settings→secrets migration BEFORE any service reads

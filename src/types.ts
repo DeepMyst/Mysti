@@ -309,8 +309,42 @@ export interface StreamStatusMessage {
   payload: StreamStatusPayload;
 }
 
+/**
+ * Plan 01 — extension→webview model list push (Phase 4 consumer wiring).
+ * Posted to all panels when the ModelRegistryService fires onDidUpdateModels;
+ * each panel filters by its active provider. Declared here in Phase 1 so the
+ * consumer agent codes against a stable shape.
+ */
+export interface ModelsUpdatedPayload {
+  provider: string;
+  models: ModelEntry[];
+  defaultModel: string;
+  discoveryStatus: ProviderModelState['discoveryStatus'];
+  fetchedAt: number;
+}
+
+export interface ModelsUpdatedMessage {
+  type: 'modelsUpdated';
+  payload: ModelsUpdatedPayload;
+}
+
+/**
+ * Plan 01 — webview→extension request to (re)fresh a provider's model list
+ * (dropdown focus / provider switch / explicit "Refresh models"). `force`
+ * bypasses TTL and is only set by the explicit refresh action.
+ */
+export interface RequestModelsPayload {
+  provider: string;
+  force?: boolean;
+}
+
+export interface RequestModelsMessage {
+  type: 'requestModels';
+  payload: RequestModelsPayload;
+}
+
 /** Union of the new, strictly-typed extension→webview messages */
-export type TypedWebviewMessage = ManifestUpdatedMessage | StreamStatusMessage;
+export type TypedWebviewMessage = ManifestUpdatedMessage | StreamStatusMessage | ModelsUpdatedMessage;
 
 export interface ProviderConfig {
   name: string;
@@ -329,6 +363,37 @@ export interface ModelInfo {
   name: string;
   description?: string;
   contextWindow?: number;
+  /**
+   * Plan 01 — provenance of the entry once the ModelRegistryService is wired:
+   *   'curated'    — bundled per-provider config.models / remote curated feed
+   *   'discovered' — live CLI/HTTP discovery (Phase 3+)
+   *   'custom'     — user-defined (mysti.customModels / per-provider setting)
+   * Optional so existing ModelInfo literals (provider config arrays) stay valid.
+   */
+  source?: 'curated' | 'discovered' | 'custom';
+  /** Curated feed can mark sunset models for de-emphasis in the UI. */
+  deprecated?: boolean;
+}
+
+/**
+ * Plan 01 — a model entry as served by the ModelRegistryService (a ModelInfo
+ * with provenance always populated). Alias kept distinct from ModelInfo so the
+ * registry's merged output is typed precisely while provider config arrays
+ * continue to use the looser ModelInfo (source optional).
+ */
+export interface ModelEntry extends ModelInfo {
+  source: 'curated' | 'discovered' | 'custom';
+}
+
+/**
+ * Plan 01 — the merged per-provider view the registry answers synchronously.
+ * `fetchedAt === 0` means "bundled curated only, never discovered".
+ */
+export interface ProviderModelState {
+  models: ModelEntry[];
+  defaultModel: string;
+  fetchedAt: number;
+  discoveryStatus: 'discovered' | 'cached' | 'fallback' | 'unsupported';
 }
 
 export interface UsageStats {

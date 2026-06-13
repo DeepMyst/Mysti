@@ -23,6 +23,13 @@ import type { ProviderType } from './types';
 export const DEFAULT_PROVIDER: ProviderType = 'claude-code';
 
 /**
+ * Last-resort model id used only when no panel/default model is configured.
+ * Replaces scattered 'claude-sonnet-4-5-20250929' literals. Per-provider
+ * defaults still come from each ProviderConfig.defaultModel.
+ */
+export const DEFAULT_FALLBACK_MODEL = 'claude-sonnet-4-5-20250929';
+
+/**
  * Process management constants
  */
 export const PROCESS_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -116,6 +123,21 @@ export const OPENCLAW_GATEWAY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes overall
  */
 export const MANUS_API_BASE_URL = 'https://api.manus.im';
 export const MANUS_POLL_INTERVAL_MS = 3000; // 3 seconds between status polls
+
+/**
+ * Model registry constants (Plan 01 — automatic model updates)
+ *
+ * The fallback model id itself lives in DEFAULT_FALLBACK_MODEL (declared near
+ * the provider defaults above). The TTLs/timeouts govern the dynamic discovery
+ * + curated-feed refresh paths added in later phases; in Phase 1 the registry's
+ * refresh() is a no-op and these are unused but declared so the service surface
+ * is stable for consumers.
+ */
+export const MODEL_DISCOVERY_TIMEOUT_MS = 5000;                 // hard cap per discovery probe
+export const MODEL_CACHE_TTL_CLI_MS = 24 * 60 * 60 * 1000;     // 24h for CLI-derived lists
+export const MODEL_CACHE_TTL_LOCAL_MS = 5 * 60 * 1000;          // 5min for local servers (Ollama/LocalAI)
+export const MODEL_CURATED_FEED_TTL_MS = 24 * 60 * 60 * 1000;  // 24h for the remote curated feed
+export const MODEL_CUSTOM_MAX_PER_PROVIDER = 50;               // hard cap on user custom models per provider
 
 /**
  * Visual testing constants
