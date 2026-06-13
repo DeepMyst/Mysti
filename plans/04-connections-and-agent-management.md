@@ -63,13 +63,14 @@ Falls back to manual key entry if the browser round-trip can't complete (page no
 
 ### DeepMyst-side requirements (other repo — for the user to confirm/implement)
 
-1. **`/connect/vscode` page (the link-back endpoint).** A Clerk-gated web page at
-   `https://v2.deepmyst.com/connect/vscode` that accepts `redirect_uri` + `state` query
-   params, signs the user in / signs them up (Clerk), mints a Mysti-scoped `dm_` API key
-   (via the existing `/api/v1/keys`), and redirects the browser to
-   `<redirect_uri>?key=dm_<key>&state=<state>` (or `?error=<reason>` on failure). This is
-   what makes sign-in fully automatic. Until it exists, Mysti's manual-paste fallback works.
-   - Validate/whitelist `redirect_uri` to the `vscode://`/`<host>` extension callback shapes.
+1. **`/connect/vscode` page (the link-back endpoint). — DONE 2026-06-13** (DeepMyst repo,
+   branch `feat/mysti-vscode-connect`: `apps/dashboard/src/features/auth/components/ConnectVSCodePage.tsx`
+   + route in `app/router.tsx`). Clerk-gated page that reads `redirect_uri` + `state`, signs
+   the user in (inline `<SignIn routing="virtual">` returning to itself), mints a user-scoped
+   `dm_` key via `POST /api/v1/keys`, and redirects to `<redirect_uri>?key=dm_<key>&state=<state>`
+   (or `?error=`). redirect_uri is validated to an allowed editor scheme + the `DeepMyst.mysti`
+   authority + the `deepmyst-auth` path (no open-redirect key leak). Matches the Mysti extension
+   contract exactly. Needs deploy to v2.deepmyst.com; until deployed, the manual-paste fallback works.
 2. **MCP transport compatibility.** Backend CLIs expect MCP Streamable-HTTP for `type:http`
    servers. DeepMyst's `POST /api/v1/mcp/{slug}` returns JSON-RPC results directly — confirm
    each target CLI accepts a JSON-response (non-SSE) streamable-HTTP server, or add an SSE
