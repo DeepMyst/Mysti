@@ -29,6 +29,19 @@ Captured after Phase 3a (cached CLI discovery) + Phase 3b (icon downscale to 128
 | `resources/` total | 3,940,757 B (3.76 MB) | −31,258,800 B (−88.8%) | |
 | `resources/icons` total | 339,690 B (0.32 MB) | −31,258,800 B (−98.9%) | 23 PNGs downscaled in place via `sips -Z 128` (was 30.13 MB) |
 
+## Post Phase 3c Step 1 — static (measured 2026-06-13)
+
+Captured after the chat + visual-test webviews were extracted from the bundled
+`*.ts` template strings into static `media/chat/` and `media/vt-dashboard/`
+assets (loaded from disk at runtime). Fresh `npm run compile` + `npx vsce package`.
+
+| Metric | Value | Delta vs Phase 3b | Notes |
+| --- | --- | --- | --- |
+| `dist/extension.js` | 1,185,355 B (1.13 MB) | −696,475 B (−37.0%) | 19k-line chat template + vt dashboard no longer bundled into the extension host |
+| `mysti-0.4.0.vsix` | 3,482,049 B (3.32 MB) | −425,083 B (−10.9%) | `media/` now ships as assets; `plans/`+`tests/` excluded from the package (`.vscodeignore`) |
+
+Cumulative: `dist/extension.js` 1.79 MB → 1.13 MB; VSIX 32.27 MB → 3.32 MB (−89.7%).
+
 ## Runtime baselines — capture procedure
 
 These cannot be measured statically; fill the table below after one Extension Development Host session.

@@ -29,8 +29,8 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import vm from 'node:vm';
-import { getWebviewContent } from '../../src/webview/webviewContent';
-import { Uri } from '../helpers/mockVscode';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // ---------------------------------------------------------------------------
 // Extraction helpers (same pattern as wizardPanelId.test.ts)
@@ -165,12 +165,9 @@ const escapeHtmlStub = (s: unknown) => String(s);
 let html: string;
 
 beforeAll(() => {
-  const mockWebview = {
-    asWebviewUri: (uri: unknown) => uri,
-    cspSource: 'mock-csp:',
-  } as unknown as Parameters<typeof getWebviewContent>[0];
-  const extensionUri = Uri.file('/mock/extension') as unknown as Parameters<typeof getWebviewContent>[1];
-  html = getWebviewContent(mockWebview, extensionUri, '0.0.0');
+  // The chat script was extracted to media/chat/chat.js (Plan 03 Phase 3c
+  // Step 1); read it directly as the function-extraction source.
+  html = fs.readFileSync(path.join(__dirname, '..', '..', 'media', 'chat', 'chat.js'), 'utf8');
 });
 
 // ---------------------------------------------------------------------------
@@ -178,14 +175,12 @@ beforeAll(() => {
 // template literal; a stray backtick or bad escape ships a broken webview.
 // ---------------------------------------------------------------------------
 
-describe('webview inline script', () => {
+describe('webview chat script', () => {
   it('should parse as valid JavaScript after the Phase 3 renderer edits', () => {
-    const open = html.lastIndexOf('<script nonce=');
-    const start = html.indexOf('>', open) + 1;
-    const end = html.indexOf('</script>', start);
-    const script = html.slice(start, end);
-    expect(script.length).toBeGreaterThan(10000);
-    expect(() => new vm.Script(script)).not.toThrow();
+    // Post-extraction (Plan 03 Phase 3c Step 1) the script is media/chat/chat.js
+    // (loaded here as `html`); parse the whole file.
+    expect(html.length).toBeGreaterThan(10000);
+    expect(() => new vm.Script(html)).not.toThrow();
   });
 });
 

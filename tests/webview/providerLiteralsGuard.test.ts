@@ -91,14 +91,23 @@ describe('check-provider-literals scanner', () => {
   });
 });
 
-describe('webviewContent.ts provider-literal invariant', () => {
-  it('has zero provider-id literals outside allowlisted bootstrap blocks', () => {
-    const file = path.join(__dirname, '..', '..', 'src', 'webview', 'webviewContent.ts');
-    const source = fs.readFileSync(file, 'utf8');
-    const result = scanSource(source);
-    expect(result.markerErrors).toEqual([]);
-    expect(
-      result.violations.map((v: { line: number; text: string }) => `${v.line}: ${v.text}`)
-    ).toEqual([]);
-  });
+describe('chat webview provider-literal invariant', () => {
+  // The markup/script were extracted to media/chat/ in Plan 03 Phase 3c Step 1;
+  // the guard now scans the extracted assets plus the thin loader.
+  const files = [
+    path.join(__dirname, '..', '..', 'media', 'chat', 'index.html'),
+    path.join(__dirname, '..', '..', 'media', 'chat', 'chat.js'),
+    path.join(__dirname, '..', '..', 'src', 'webview', 'webviewContent.ts'),
+  ];
+
+  for (const file of files) {
+    it(`has zero provider-id literals outside allowlisted blocks: ${path.basename(file)}`, () => {
+      const source = fs.readFileSync(file, 'utf8');
+      const result = scanSource(source);
+      expect(result.markerErrors).toEqual([]);
+      expect(
+        result.violations.map((v: { line: number; text: string }) => `${v.line}: ${v.text}`)
+      ).toEqual([]);
+    });
+  }
 });

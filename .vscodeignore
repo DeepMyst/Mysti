@@ -3,6 +3,9 @@
 src/**
 node_modules/**
 scripts/**
+plans/**
+tests/**
+*.vsix
 .gitignore
 .eslintrc.json
 *.map

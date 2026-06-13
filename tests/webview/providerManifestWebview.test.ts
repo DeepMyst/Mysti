@@ -27,9 +27,9 @@
  *   - defaultBrainstormPair (W10: first two manifest providers)
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { getWebviewContent } from '../../src/webview/webviewContent';
+import * as fs from 'fs';
+import * as path from 'path';
 import { PROVIDER_MANIFEST_SCHEMA_VERSION } from '../../src/providers/base/ProviderManifest';
-import { Uri } from '../helpers/mockVscode';
 
 // ---------------------------------------------------------------------------
 // Extraction helpers
@@ -60,12 +60,9 @@ function extractFunction(source: string, name: string): string {
 let html: string;
 
 beforeAll(() => {
-  const mockWebview = {
-    asWebviewUri: (uri: unknown) => uri,
-    cspSource: 'mock-csp:',
-  } as any;
-  const extensionUri = Uri.file('/mock/extension') as any;
-  html = getWebviewContent(mockWebview, extensionUri, '0.0.0');
+  // The chat script was extracted to media/chat/chat.js (Plan 03 Phase 3c
+  // Step 1); read it directly as the function-extraction source.
+  html = fs.readFileSync(path.join(__dirname, '..', '..', 'media', 'chat', 'chat.js'), 'utf8');
 });
 
 // ---------------------------------------------------------------------------
@@ -381,15 +378,23 @@ describe('webview manifest wiring invariants', () => {
     expect(html).toContain("case 'manifestUpdated':");
   });
 
-  it('embeds the manifest schema version the extension ships', () => {
-    expect(html).toContain(`var EXPECTED_MANIFEST_SCHEMA_VERSION = ${PROVIDER_MANIFEST_SCHEMA_VERSION};`);
+  it('wires the manifest schema version from the extension through the boot object', () => {
+    // Post-extraction (Plan 03 Phase 3c Step 1) chat.js sources the expected
+    // version from the bootstrap object instead of a baked-in literal...
+    expect(html).toContain('EXPECTED_MANIFEST_SCHEMA_VERSION = window.__MYSTI_BOOT__.manifestSchemaVersion');
+    // ...and the loader embeds the version the extension actually ships.
+    const loader = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'webview', 'webviewContent.ts'), 'utf8');
+    expect(loader).toContain('manifestSchemaVersion: PROVIDER_MANIFEST_SCHEMA_VERSION');
+    expect(PROVIDER_MANIFEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(1);
   });
 
   it('renders provider settings sections declaratively (W4)', () => {
     expect(html).toContain('function renderProviderSettingsSections(');
-    expect(html).toContain('id="provider-settings-sections"');
+    // the mount point lives in the extracted markup (media/chat/index.html)
+    const indexHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'media', 'chat', 'index.html'), 'utf8');
+    expect(indexHtml).toContain('id="provider-settings-sections"');
     // the old hard-coded codex section is gone (markup + toggle logic)
-    expect(html).not.toContain('id="codex-settings-section"');
+    expect(indexHtml).not.toContain('id="codex-settings-section"');
     expect(html).not.toContain('codexSettingsSection.classList');
   });
 

@@ -22,8 +22,8 @@
  * execute them, so they cannot drift from the shipped artifact.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { getWebviewContent } from '../../src/webview/webviewContent';
-import { Uri } from '../helpers/mockVscode';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // ---------------------------------------------------------------------------
 // Extraction helpers
@@ -54,12 +54,9 @@ function extractFunction(source: string, name: string): string {
 let html: string;
 
 beforeAll(() => {
-  const mockWebview = {
-    asWebviewUri: (uri: unknown) => uri,
-    cspSource: 'mock-csp:',
-  } as any;
-  const extensionUri = Uri.file('/mock/extension') as any;
-  html = getWebviewContent(mockWebview, extensionUri, '0.0.0');
+  // The chat script was extracted to media/chat/chat.js (Plan 03 Phase 3c
+  // Step 1); read it directly as the function-extraction source.
+  html = fs.readFileSync(path.join(__dirname, '..', '..', 'media', 'chat', 'chat.js'), 'utf8');
 });
 
 describe('webview handleShowWizard (B2)', () => {

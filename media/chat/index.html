@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}' {{cspSource}}; img-src {{cspSource}} data: blob:;">
+  <title>Mysti</title>
+  <link rel="stylesheet" href="{{chatCssUri}}">
+  <script nonce="{{nonce}}" src="{{resourceBase}}/marked.min.js"></script>
+  <script nonce="{{nonce}}" src="{{resourceBase}}/prism-bundle.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Loading overlay (shown until initialState arrives) -->
+    <div id="init-loading-overlay" class="init-loading-overlay">
+      <div class="init-loading-content">
+        <img src="{{resourceBase}}/Mysti-Logo.png" alt="Mysti" class="init-loading-logo" />
+        <div class="init-loading-spinner">
+          <div class="init-spinner-ring"></div>
+        </div>
+        <div class="init-loading-text">Preparing your workspace...</div>
+        <div class="init-loading-subtext">Setting up providers and loading agents</div>
+      </div>
+    </div>
+
+    <!-- Header with settings -->
+    <header class="header">
+      <div class="header-left">
+        <span id="session-indicator" class="session-indicator" style="display: none;">
+          <span class="session-dot"></span>
+          Session
+          <button id="stop-agent-btn" class="stop-agent-btn" title="Stop agent session">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+              <rect x="3" y="3" width="10" height="10" rx="1"/>
+            </svg>
+          </button>
+        </span>
+        <span id="autonomy-indicator" class="autonomy-indicator" style="display: none;">
+          <span class="autonomy-dot"></span>
+          <span id="autonomy-indicator-label">Autonomous</span>
+        </span>
+        <div class="history-dropdown">
+          <button id="history-btn" class="icon-btn" title="Chat history">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8.515 1.019A7 7 0 0 0 8 1V0a8 8 0 0 1 .589.022l-.074.997zm2.004.45a7 7 0 0 0-.985-.299l.219-.976c.383.086.76.2 1.126.342l-.36.933zm1.37.71a7 7 0 0 0-.439-.27l.493-.87a8 8 0 0 1 .979.654l-.615.789a7 7 0 0 0-.418-.302zm1.834 1.79a7 7 0 0 0-.653-.796l.724-.69c.27.285.52.59.747.91l-.818.576zm.744 1.352a7 7 0 0 0-.214-.468l.893-.45a8 8 0 0 1 .45 1.088l-.95.313a7 7 0 0 0-.179-.483zm.53 2.507a7 7 0 0 0-.1-1.025l.985-.17c.067.386.106.778.116 1.17l-1 .025zm-.131 1.538c.033-.17.06-.339.081-.51l.993.123a8 8 0 0 1-.23 1.155l-.964-.267c.046-.165.086-.332.12-.501zm-.952 2.379c.184-.29.346-.594.486-.908l.914.405c-.16.36-.345.706-.555 1.038l-.845-.535zm-.964 1.205c.122-.122.239-.248.35-.378l.758.653a8 8 0 0 1-.723.834l-.707-.707c.12-.12.235-.243.344-.37l-.022-.032zm-1.791 1.189c.306-.166.605-.349.89-.551l.605.79a8 8 0 0 1-1.054.652l-.44-.891zm-1.899.559a7 7 0 0 0 .99-.378l.445.887a8 8 0 0 1-1.18.454l-.255-.963zm-3.511.106A8 8 0 0 1 8 16v-1a7 7 0 0 0 .111-.998l.995.063A8 8 0 0 1 8 16zM.93 10.243l.976-.218c.066.297.16.586.28.867l-.924.381a8 8 0 0 1-.332-1.03zm1.122-3.996l-.98-.2a8 8 0 0 1 .634-1.528l.879.446a7 7 0 0 0-.533 1.282zm1.062-2.13l-.798-.6a8 8 0 0 1 .918-.934l.654.78a7 7 0 0 0-.774.754zm1.614-1.411L3.96 2.03a8 8 0 0 1 1.255-.568l.323.947a7 7 0 0 0-1.052.478zm6.058 9.222l-2.379-1.96a1 1 0 0 1-.362-.79V4.498a1 1 0 0 1 2 0v5.357l2.153 1.777a1 1 0 0 1-1.275 1.545l-.137-.112z"/>
+            </svg>
+          </button>
+          <div id="history-menu" class="history-menu hidden">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+        <button id="new-conversation-btn" class="icon-btn" title="New conversation">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 1a.5.5 0 0 1 .5.5v6h6a.5.5 0 0 1 0 1h-6v6a.5.5 0 0 1-1 0v-6h-6a.5.5 0 0 1 0-1h6v-6A.5.5 0 0 1 8 1z"/>
+          </svg>
+        </button>
+        <button id="new-tab-btn" class="icon-btn" title="Open in new tab">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zM10 .5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 16 1.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zM.5 10a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 14.5v-4a.5.5 0 0 1 .5-.5zm15 0a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z"/>
+          </svg>
+        </button>
+        <button id="export-conversation-btn" class="icon-btn export-conversation-btn" title="Export conversation as Markdown">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4.406 1.342A5.53 5.53 0 0 1 8 0c2.69 0 4.923 2 5.166 4.579C14.758 4.804 16 6.137 16 7.773 16 9.569 14.502 11 12.687 11H10a.5.5 0 0 1 0-1h2.688C13.979 10 15 8.988 15 7.773c0-1.216-1.02-2.228-2.313-2.228h-.5v-.5C12.188 2.825 10.328 1 8 1a4.53 4.53 0 0 0-2.941 1.1c-.757.652-1.153 1.438-1.153 2.055v.448l-.445.049C2.064 4.805 1 5.952 1 7.318 1 8.785 2.23 10 3.781 10H6a.5.5 0 0 1 0 1H3.781C1.708 11 0 9.366 0 7.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383z"/>
+            <path d="M7.646 15.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 14.293V5.5a.5.5 0 0 0-1 0v8.793l-2.146-2.147a.5.5 0 0 0-.708.708l3 3z" transform="rotate(180, 8, 10.5)"/>
+          </svg>
+        </button>
+      </div>
+      <div class="header-right">
+        <button id="active-mode-btn" class="icon-btn" title="Active Mode" style="display: none;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M3.17 6.706a5 5 0 0 1 9.66 0 .5.5 0 0 1-.962.268 4 4 0 0 0-7.736 0 .5.5 0 0 1-.962-.268z"/>
+            <path d="M1.086 5.19a8 8 0 0 1 13.828 0 .5.5 0 0 1-.866.5 7 7 0 0 0-12.096 0 .5.5 0 0 1-.866-.5z"/>
+            <path d="M5.254 8.222a3 3 0 0 1 5.492 0 .5.5 0 0 1-.916.398 2 2 0 0 0-3.66 0 .5.5 0 0 1-.916-.398z"/>
+            <circle cx="8" cy="11" r="1.5"/>
+          </svg>
+          <span class="active-mode-btn-dot" id="active-mode-btn-dot"></span>
+        </button>
+        <button id="agent-config-btn" class="icon-btn" title="Agent Configuration">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M11 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>
+            <path fill-rule="evenodd" d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm8-7a7 7 0 0 0-5.468 11.37C3.242 11.226 4.805 10 8 10s4.757 1.225 5.468 2.37A7 7 0 0 0 8 1z"/>
+          </svg>
+        </button>
+        <button id="badges-btn" class="icon-btn" title="My Badges">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2H8.5v1.5A2.5 2.5 0 0 1 11 10v.5a.5.5 0 0 1-.5.5h-5a.5.5 0 0 1-.5-.5V10a2.5 2.5 0 0 1 2.5-2.5V6H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5zM2 2a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1h5V2H2zm9 0v3h3a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1h-3zM6 10v.5h4V10a1.5 1.5 0 0 0-1.5-1.5h-1A1.5 1.5 0 0 0 6 10z"/>
+            <path d="M5 12h6v2.5a.5.5 0 0 1-.765.424L8 13.65l-2.235 1.274A.5.5 0 0 1 5 14.5V12z"/>
+          </svg>
+        </button>
+        <button id="about-btn" class="icon-btn" title="About Mysti">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+            <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588z"/>
+            <circle cx="8" cy="4.5" r="1"/>
+          </svg>
+        </button>
+        <button id="settings-btn" class="icon-btn" title="Settings">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
+            <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Settings panel (hidden by default) -->
+    <div id="settings-panel" class="settings-panel hidden">
+      <div class="settings-section" id="thinking-section">
+        <label class="settings-label">Thinking Level</label>
+        <select id="thinking-select" class="select">
+          <option value="none">None</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+        <div class="settings-hint hidden" id="thinking-advisory-hint">Advisory only — this agent shows its thinking but does not enforce the selected level.</div>
+      </div>
+      <div class="settings-section">
+        <label class="settings-label">Agent</label>
+        <!-- W9: provider options are rendered from state.providerManifest
+             (renderProviderSelectOptions); only the brainstorm pseudo-agent
+             is static. -->
+        <select id="provider-select" class="select">
+          <option value="brainstorm">Brainstorm</option>
+        </select>
+      </div>
+      <div class="settings-section">
+        <label class="settings-label">Model</label>
+        <select id="model-select" class="select">
+        </select>
+      </div>
+      <div id="custom-model-section" class="settings-section hidden" style="margin-top: -8px;">
+        <input type="text" id="custom-model-input" class="input" placeholder="Enter model name (e.g. claude-sonnet-4-5-20250929)" maxlength="128" />
+        <div id="custom-model-error" class="settings-hint" style="color: var(--vscode-errorForeground); display: none;"></div>
+      </div>
+      <!-- W4: provider-specific settings sections are rendered declaratively
+           from the manifest entry's settingsSections
+           (renderProviderSettingsSections). -->
+      <div id="provider-settings-sections"></div>
+      <div class="settings-section hidden" id="brainstorm-agents-section">
+        <label class="settings-label">Brainstorm Agents</label>
+        <div class="settings-hint">Select 2 agents for brainstorm mode</div>
+        <!-- W9/W10: brainstorm agent options are rendered from
+             state.providerManifest (renderBrainstormAgentOptions). -->
+        <div class="brainstorm-agent-selector" id="brainstorm-agent-selector"></div>
+        <div class="brainstorm-agent-error hidden" id="brainstorm-agent-error">
+          Please select exactly 2 agents
+        </div>
+      </div>
+      <div class="settings-section hidden" id="brainstorm-strategy-section">
+        <label class="settings-label">Strategy</label>
+        <select id="brainstorm-strategy-select" class="select">
+          <option value="quick">Quick</option>
+          <option value="debate">Structured Debate</option>
+          <option value="red-team">Red Team</option>
+          <option value="perspectives">Perspectives</option>
+          <option value="delphi">Delphi Convergence</option>
+        </select>
+        <div class="settings-hint" id="brainstorm-strategy-hint">Direct synthesis without discussion</div>
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-section-title">Agent Settings</div>
+      <div class="settings-section">
+        <label class="settings-label">Auto-Suggest Personas</label>
+        <div class="settings-toggle-row">
+          <div id="auto-suggest-toggle" class="settings-toggle">
+            <div class="settings-toggle-knob"></div>
+          </div>
+          <span class="settings-toggle-label">Suggest based on message</span>
+        </div>
+      </div>
+      <div class="settings-section">
+        <label class="settings-label">Limit Agent Tokens</label>
+        <div class="settings-toggle-row">
+          <div id="token-limit-toggle" class="settings-toggle">
+            <div class="settings-toggle-knob"></div>
+          </div>
+          <span class="settings-toggle-label">Enable token limit</span>
+        </div>
+      </div>
+      <div class="settings-section" id="token-budget-section">
+        <label class="settings-label">Token Budget</label>
+        <div class="token-budget-input-row">
+          <input type="number" id="token-budget-input" class="input"
+                 min="100" max="16000" step="100" value="2000" />
+          <span class="token-budget-suffix">tokens</span>
+        </div>
+        <div class="token-budget-hint">Recommended: 1000-4000</div>
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-section">
+        <label class="settings-label">Quick Suggestions</label>
+        <div class="settings-toggle-row">
+          <div id="suggestions-toggle" class="settings-toggle active">
+            <div class="settings-toggle-knob"></div>
+          </div>
+          <span class="settings-toggle-label">Show after AI responses</span>
+        </div>
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-section-title">Agent Behavior</div>
+      <div id="behavior-section">
+        <div class="settings-section">
+          <label class="settings-label">Mode</label>
+          <select id="mode-select" class="select">
+            <option value="default">Default</option>
+            <option value="ask-before-edit">Ask Before Edit</option>
+            <option value="edit-automatically">Edit Automatically</option>
+            <option value="quick-plan">Quick Plan</option>
+            <option value="detailed-plan">Detailed Plan</option>
+          </select>
+        </div>
+        <div class="settings-section">
+          <label class="settings-label">Access Level</label>
+          <select id="access-select" class="select">
+            <option value="read-only">Read only</option>
+            <option value="ask-permission">Ask permission</option>
+            <option value="full-access">Full access</option>
+          </select>
+        </div>
+        <div id="behavior-hint" class="settings-hint behavior-hint">Agent asks before every change</div>
+        <div class="settings-section" style="margin-top: 8px;">
+          <label class="settings-label">Autonomy</label>
+          <select id="autonomy-select" class="select">
+            <option value="manual">Manual</option>
+            <option value="semi-autonomous">Semi-Autonomous</option>
+            <option value="autonomous">Autonomous</option>
+          </select>
+        </div>
+        <!-- Manual sub-settings (shown by default) -->
+        <div id="manual-timeout-section" class="settings-section">
+          <label class="settings-label">Permission Timeout</label>
+          <select id="timeout-behavior-select" class="select">
+            <option value="auto-reject">Auto-reject on timeout</option>
+            <option value="auto-accept">Auto-accept on timeout</option>
+            <option value="require-action">Require explicit action</option>
+          </select>
+          <div class="settings-hint" style="margin-top: 4px; font-size: 10px; color: var(--vscode-descriptionForeground);">
+            What happens when you don't respond to a permission request in time.
+          </div>
+        </div>
+        <!-- Semi-autonomous sub-settings (hidden by default) -->
+        <div id="semi-auto-settings" class="hidden">
+          <div class="settings-section">
+            <label class="settings-label">Safety Level</label>
+            <select id="semi-auto-safety-select" class="select">
+              <option value="conservative">Conservative (read + create only)</option>
+              <option value="balanced" selected>Balanced (edits in workspace)</option>
+              <option value="aggressive">Aggressive (most actions)</option>
+            </select>
+          </div>
+          <div class="settings-section">
+            <label class="settings-label">Timeout</label>
+            <div class="token-budget-input-row">
+              <input type="number" id="semi-auto-timeout-input" class="input"
+                     min="10" max="300" step="5" value="60" />
+              <span class="token-budget-suffix">seconds</span>
+            </div>
+            <div class="settings-hint" style="margin-top: 4px; font-size: 10px; color: var(--vscode-descriptionForeground);">
+              AI decides when you don't respond in time.
+            </div>
+          </div>
+        </div>
+        <!-- Autonomous sub-settings (hidden by default) -->
+        <div id="autonomous-settings" class="hidden">
+          <div class="settings-section">
+            <label class="settings-label">Safety Level</label>
+            <select id="autonomous-safety-select" class="select">
+              <option value="conservative">Conservative (read + create only)</option>
+              <option value="balanced" selected>Balanced (edits in workspace)</option>
+              <option value="aggressive">Aggressive (most actions)</option>
+            </select>
+          </div>
+          <div class="settings-hint" style="margin-top: 4px; font-size: 10px; color: var(--vscode-descriptionForeground);">
+            AI makes all decisions immediately. Destructive actions always blocked.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Autonomous mode confirmation overlay -->
+    <div id="autonomous-confirm-overlay" class="autonomous-overlay hidden">
+      <div class="autonomous-confirm-dialog">
+        <div style="font-size: 24px; text-align: center; margin-bottom: 8px;">&#x26A0;</div>
+        <h3 style="margin: 0 0 8px 0; font-size: 14px; text-align: center;">Enable Autonomous Mode</h3>
+        <p style="font-size: 11px; margin: 0 0 8px 0; color: var(--vscode-descriptionForeground);">Mysti will act on your behalf:</p>
+        <ul style="font-size: 11px; margin: 0 0 8px 0; padding-left: 16px; color: var(--vscode-descriptionForeground);">
+          <li>Auto-approve safe file operations</li>
+          <li>Answer questions using learned preferences</li>
+          <li>Continue working without manual intervention</li>
+        </ul>
+        <p style="font-size: 10px; margin: 0 0 12px 0; padding: 6px; background: rgba(255,200,0,0.1); border-radius: 4px; color: var(--vscode-editorWarning-foreground);">
+          <strong>Safety:</strong> File deletion, destructive git ops, and irreversible actions are ALWAYS blocked.
+        </p>
+        <div style="margin-bottom: 8px;">
+          <label style="font-size: 11px; display: block; margin-bottom: 4px;">Goal or task description:</label>
+          <textarea id="autonomous-goal-input" rows="3" style="width: 100%; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; font-size: 11px; resize: vertical;" placeholder="e.g. Build a React dashboard with auth, CRUD, and tests"></textarea>
+        </div>
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <button id="autonomous-cancel-btn" style="padding: 4px 12px; font-size: 11px; background: transparent; color: var(--vscode-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; cursor: pointer;">Cancel</button>
+          <button id="autonomous-confirm-btn" style="padding: 4px 12px; font-size: 11px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer;">Enable</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- About panel (hidden by default) -->
+    <div id="about-panel" class="about-panel hidden">
+      <div class="about-header">
+        <img src="{{resourceBase}}/Mysti-Logo.png" alt="Mysti Logo" class="about-logo" />
+        <div class="about-title">
+          <h2>Mysti</h2>
+          <span class="about-version">v{{version}}</span>
+        </div>
+      </div>
+      <p class="about-tagline">Your AI Coding Agent</p>
+      <p class="about-description">
+        A powerful AI coding agent for VSCode supporting multiple backends.
+        Mysti can analyze code, execute tasks, and collaborate with you on complex projects.
+      </p>
+      <div class="about-section">
+        <h3>Created by</h3>
+        <div class="about-creator">
+          <span class="creator-name">DeepMyst Inc.</span>
+          <div class="about-links creator-links">
+            <a href="https://www.deepmyst.com/mysti" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm7.5-6.923c-.67.204-1.335.82-1.887 1.855A7.97 7.97 0 0 0 5.145 4H7.5V1.077zM4.09 4a9.267 9.267 0 0 1 .64-1.539 6.7 6.7 0 0 1 .597-.933A7.025 7.025 0 0 0 2.255 4H4.09zm-.582 3.5c.03-.877.138-1.718.312-2.5H1.674a6.958 6.958 0 0 0-.656 2.5h2.49zM4.847 5a12.5 12.5 0 0 0-.338 2.5H7.5V5H4.847zM8.5 5v2.5h2.99a12.495 12.495 0 0 0-.337-2.5H8.5zM4.51 8.5a12.5 12.5 0 0 0 .337 2.5H7.5V8.5H4.51zm3.99 0V11h2.653c.187-.765.306-1.608.338-2.5H8.5zM5.145 12c.138.386.295.744.468 1.068.552 1.035 1.218 1.65 1.887 1.855V12H5.145zm.182 2.472a6.696 6.696 0 0 1-.597-.933A9.268 9.268 0 0 1 4.09 12H2.255a7.024 7.024 0 0 0 3.072 2.472zM3.82 11a13.652 13.652 0 0 1-.312-2.5h-2.49c.062.89.291 1.733.656 2.5H3.82zm6.853 3.472A7.024 7.024 0 0 0 13.745 12H11.91a9.27 9.27 0 0 1-.64 1.539 6.688 6.688 0 0 1-.597.933zM8.5 12v2.923c.67-.204 1.335-.82 1.887-1.855.173-.324.33-.682.468-1.068H8.5zm3.68-1h2.146c.365-.767.594-1.61.656-2.5h-2.49a13.65 13.65 0 0 1-.312 2.5zm2.802-3.5a6.959 6.959 0 0 0-.656-2.5H12.18c.174.782.282 1.623.312 2.5h2.49zM11.27 2.461c.247.464.462.98.64 1.539h1.835a7.024 7.024 0 0 0-3.072-2.472c.218.284.418.598.597.933zM10.855 4a7.966 7.966 0 0 0-.468-1.068C9.835 1.897 9.17 1.282 8.5 1.077V4h2.355z"/>
+              </svg>
+              Website
+            </a>
+            <a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+              </svg>
+              GitHub
+            </a>
+            <a href="https://www.linkedin.com/company/deepmyst/" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 1.146C0 .513.526 0 1.175 0h13.65C15.474 0 16 .513 16 1.146v13.708c0 .633-.526 1.146-1.175 1.146H1.175C.526 16 0 15.487 0 14.854V1.146zm4.943 12.248V6.169H2.542v7.225h2.401zm-1.2-8.212c.837 0 1.358-.554 1.358-1.248-.015-.709-.52-1.248-1.342-1.248-.822 0-1.359.54-1.359 1.248 0 .694.521 1.248 1.327 1.248h.016zm4.908 8.212V9.359c0-.216.016-.432.08-.586.173-.431.568-.878 1.232-.878.869 0 1.216.662 1.216 1.634v3.865h2.401V9.25c0-2.22-1.184-3.252-2.764-3.252-1.274 0-1.845.7-2.165 1.193v.025h-.016a5.54 5.54 0 0 1 .016-.025V6.169h-2.4c.03.678 0 7.225 0 7.225h2.4z"/>
+              </svg>
+              LinkedIn
+            </a>
+          </div>
+        </div>
+        <div class="about-creator">
+          <span class="creator-name about-author">Baha Abunojaim</span>
+          <div class="about-links creator-links">
+            <a href="https://www.linkedin.com/in/bahaabunojaim/" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 1.146C0 .513.526 0 1.175 0h13.65C15.474 0 16 .513 16 1.146v13.708c0 .633-.526 1.146-1.175 1.146H1.175C.526 16 0 15.487 0 14.854V1.146zm4.943 12.248V6.169H2.542v7.225h2.401zm-1.2-8.212c.837 0 1.358-.554 1.358-1.248-.015-.709-.52-1.248-1.342-1.248-.822 0-1.359.54-1.359 1.248 0 .694.521 1.248 1.327 1.248h.016zm4.908 8.212V9.359c0-.216.016-.432.08-.586.173-.431.568-.878 1.232-.878.869 0 1.216.662 1.216 1.634v3.865h2.401V9.25c0-2.22-1.184-3.252-2.764-3.252-1.274 0-1.845.7-2.165 1.193v.025h-.016a5.54 5.54 0 0 1 .016-.025V6.169h-2.4c.03.678 0 7.225 0 7.225h2.4z"/>
+              </svg>
+              LinkedIn
+            </a>
+            <a href="https://github.com/BahaAbuNojaim" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+              </svg>
+              GitHub
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="about-section about-stats">
+        <h3>Your Stats</h3>
+        <div class="stats-grid" id="stats-grid">
+          <div class="stat-card">
+            <span class="stat-value" id="stat-conversations">0</span>
+            <span class="stat-label">Conversations</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="stat-messages">0</span>
+            <span class="stat-label">Messages</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="stat-brainstorms">0</span>
+            <span class="stat-label">Brainstorms</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="stat-streak">0</span>
+            <span class="stat-label">Day Streak</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Badges panel (hidden by default) -->
+    <div id="badges-panel" class="badges-panel hidden">
+      <h3 class="badges-panel-title">My Badges <span class="badge-counter" id="badge-counter">0/0</span></h3>
+      <div id="badges-spinner" class="badges-spinner">
+        <div class="spinner-dot"></div>
+        <div class="spinner-dot"></div>
+        <div class="spinner-dot"></div>
+      </div>
+      <div class="badges-grid" id="badges-grid"></div>
+    </div>
+
+    <!-- Agent Configuration panel (hidden by default) -->
+    <div id="agent-config-panel" class="agent-config-panel hidden">
+      <div class="config-summary">
+        <span class="config-summary-label">Active:</span>
+        <span class="config-summary-value" id="config-summary-text">Default (no customization)</span>
+        <button class="config-reset-btn" id="config-reset-btn" title="Reset to default">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+            <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+          </svg>
+        </button>
+      </div>
+      <div class="config-section">
+        <div class="config-section-header">
+          <span class="config-section-title">Persona</span>
+          <span class="config-section-hint">Select one (optional)</span>
+        </div>
+        <div class="persona-grid" id="persona-grid">
+          <!-- Dynamically populated with persona cards -->
+        </div>
+      </div>
+      <div class="config-section">
+        <div class="config-section-header">
+          <span class="config-section-title">Skills</span>
+          <span class="config-section-hint">Toggle multiple</span>
+        </div>
+        <div class="skills-list" id="skills-list">
+          <!-- Dynamically populated with skill toggles -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Mode Panel (provider-independent OpenClaw daemon) -->
+    <div id="active-mode-strip" class="active-mode-strip" style="display: none;">
+      <div class="active-mode-header" id="active-mode-header">
+        <span class="active-mode-dot" id="active-mode-dot"></span>
+        <span class="active-mode-label" id="active-mode-label">OpenClaw Offline</span>
+        <button class="active-mode-toggle" id="active-mode-toggle" title="Expand/collapse">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/>
+          </svg>
+        </button>
+      </div>
+      <div class="active-mode-body" id="active-mode-body" style="display: none;">
+        <div class="active-mode-section active-mode-toggle-section">
+          <label class="active-mode-toggle-label">
+            <span>Integration</span>
+            <button class="active-mode-integration-toggle on" id="active-mode-integration-toggle" title="Toggle OpenClaw integration on/off">ON</button>
+          </label>
+        </div>
+        <div class="active-mode-section">
+          <div class="active-mode-section-title">Channels</div>
+          <div id="active-mode-channels" class="active-mode-channels">
+            <div class="active-mode-empty">No channels connected</div>
+          </div>
+          <button class="active-mode-connect-btn" id="active-mode-connect-btn">+ Connect Channel</button>
+        </div>
+        <div class="active-mode-section">
+          <div class="active-mode-section-title">Activity</div>
+          <div id="active-mode-activity" class="active-mode-activity">
+            <div class="active-mode-empty">No recent activity</div>
+          </div>
+        </div>
+        <div id="active-mode-daemon-actions" class="active-mode-daemon-actions" style="display: none;">
+          <button class="active-mode-start-btn" id="active-mode-start-daemon">Start Daemon</button>
+          <button class="active-mode-detect-btn" id="active-mode-detect">Detect Connection</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Messages area -->
+    <div id="messages" class="messages">
+      <!-- Fixed container for stuck in-progress items -->
+      <div id="sticky-progress-container" class="sticky-progress-container">
+        <div class="sticky-progress-header">
+          <span class="sticky-progress-title">In Progress</span>
+          <span class="sticky-progress-count"></span>
+        </div>
+        <div class="sticky-progress-list"></div>
+      </div>
+      <div class="welcome-container">
+        <div class="welcome-header">
+          <img src="{{resourceBase}}/Mysti-Logo.png" alt="Mysti" class="welcome-logo" />
+          <h2>Welcome to Mysti</h2>
+          <p>Your AI coding team. Choose an action or ask anything!</p>
+          <a id="github-star-badge" href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="github-star-badge" style="display:none;">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="margin-right:4px;">
+              <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/>
+            </svg>
+            <span id="github-star-count">--</span> stars on GitHub
+          </a>
+        </div>
+        <div class="welcome-suggestions" id="welcome-suggestions"></div>
+        <div class="welcome-spread">
+          <h3>Spread the Word</h3>
+          <div class="about-links spread-links">
+            <a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="spread-link">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/>
+              </svg>
+              Star on GitHub
+            </a>
+            <a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti&ssr=false#review-details" target="_blank" rel="noopener" class="spread-link">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.254.008.045-.236 2.101-.574.028.166-.978 4.607z"/>
+                <circle cx="8" cy="4.5" r="1"/>
+              </svg>
+              Rate on Marketplace
+            </a>
+            <a id="share-on-x" href="#" class="spread-link" title="Share on X / Twitter">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+              </svg>
+              Share on X
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick actions (dynamically populated) -->
+    <div id="quick-actions-container" class="quick-actions-container">
+      <div class="quick-actions-header">
+        <span class="quick-actions-title">Suggestions</span>
+        <button id="quick-actions-hide" class="quick-actions-hide" title="Hide suggestions">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+          </svg>
+        </button>
+      </div>
+      <div id="quick-actions" class="quick-actions">
+        <!-- Suggestions will be dynamically generated after each response -->
+      </div>
+    </div>
+
+    <!-- Inline suggestions widget (compact, above input) -->
+    <div id="inline-suggestions" class="inline-suggestions hidden">
+      <div class="inline-suggestions-content">
+        <div class="inline-suggestions-chips" id="inline-suggestions-chips">
+          <!-- Dynamically populated with recommendation chips -->
+        </div>
+        <div class="inline-suggestions-actions">
+          <label class="inline-suggestions-toggle">
+            <input type="checkbox" id="inline-auto-suggest-check" />
+            <span class="inline-toggle-text">Auto-suggest</span>
+          </label>
+          <button class="inline-suggestions-dismiss" id="inline-suggestions-dismiss" title="Dismiss">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input area -->
+    <div class="input-area">
+      <div class="input-toolbar">
+        <button id="slash-cmd-btn" class="toolbar-btn" title="Slash commands">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M6.354 5.5H2.5a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 .5.5h6a.5.5 0 0 0 .5-.5V9h.5a.5.5 0 0 0 .4-.8l-4-5.333a.5.5 0 0 0-.846.054L6.354 5.5zM7 9v2.5H3V6h2.354l1.646 3z"/>
+          </svg>
+          <span>/</span>
+        </button>
+        <button id="enhance-btn" class="toolbar-btn" title="Enhance prompt">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M7.657 6.247c.11-.33.576-.33.686 0l.645 1.937a2.89 2.89 0 0 0 1.829 1.828l1.936.645c.33.11.33.576 0 .686l-1.937.645a2.89 2.89 0 0 0-1.828 1.829l-.645 1.936a.361.361 0 0 1-.686 0l-.645-1.937a2.89 2.89 0 0 0-1.828-1.828l-1.937-.645a.361.361 0 0 1 0-.686l1.937-.645a2.89 2.89 0 0 0 1.828-1.828l.645-1.937zM3.794 1.148a.217.217 0 0 1 .412 0l.387 1.162c.173.518.579.924 1.097 1.097l1.162.387a.217.217 0 0 1 0 .412l-1.162.387A1.734 1.734 0 0 0 4.593 5.69l-.387 1.162a.217.217 0 0 1-.412 0L3.407 5.69a1.734 1.734 0 0 0-1.097-1.097l-1.162-.387a.217.217 0 0 1 0-.412l1.162-.387A1.734 1.734 0 0 0 3.407 2.31l.387-1.162zM10.863.099a.145.145 0 0 1 .274 0l.258.774c.115.346.386.617.732.732l.774.258a.145.145 0 0 1 0 .274l-.774.258a1.156 1.156 0 0 0-.732.732l-.258.774a.145.145 0 0 1-.274 0l-.258-.774a1.156 1.156 0 0 0-.732-.732L9.1 2.137a.145.145 0 0 1 0-.274l.774-.258c.346-.115.617-.386.732-.732L10.863.1z"/>
+          </svg>
+        </button>
+        <button id="visual-test-btn" class="toolbar-btn" title="Visual Test — screenshot, test, fix your app">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M10.5 8.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/>
+            <path d="M2 4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-1.172a2 2 0 0 1-1.414-.586l-.828-.828A2 2 0 0 0 9.172 2H6.828a2 2 0 0 0-1.414.586l-.828.828A2 2 0 0 1 3.172 4H2zm.5 2a.5.5 0 1 1 0-1 .5.5 0 0 1 0 1zm9 2.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0z"/>
+          </svg>
+        </button>
+        <button id="canvas-btn" class="toolbar-btn" title="Canvas — infinite drawing + AI design workspace">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5L13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5z"/>
+          </svg>
+          <span style="font-size:10px">Canvas</span>
+        </button>
+        <div class="toolbar-spacer"></div>
+        <button id="agent-select-btn" class="toolbar-btn agent-btn" title="Select AI agent">
+          <span id="agent-icon" class="agent-icon"><img src="{{resourceBase}}/icons/Claude.png" alt="" /></span>
+          <span id="agent-name">Claude</span>
+          <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4 6l4 4 4-4"/>
+          </svg>
+        </button>
+        <div id="context-usage" class="context-usage" title="Context usage: 0%">
+          <svg viewBox="0 0 32 32" class="context-pie">
+            <circle class="context-pie-bg" cx="16" cy="16" r="14"/>
+            <path id="context-pie-fill" class="context-pie-fill" d=""/>
+          </svg>
+          <span id="context-usage-text" class="context-usage-text">0%</span>
+        </div>
+        <button id="toolbar-persona-btn" class="toolbar-btn persona-indicator-btn" title="Click to select a persona">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M11 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>
+            <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm8-7a7 7 0 0 0-5.468 11.37C3.242 11.226 4.805 10 8 10s4.757 1.225 5.468 2.37A7 7 0 0 0 8 1z"/>
+          </svg>
+          <span id="toolbar-persona-name">No persona</span>
+          <span id="toolbar-persona-clear" class="toolbar-persona-clear hidden" title="Clear persona">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+            </svg>
+          </span>
+        </button>
+        <span id="strategy-indicator" class="strategy-indicator hidden" title="Click to cycle brainstorm strategy">Quick</span>
+        <span id="behavior-indicator" class="behavior-indicator" title="Click to change agent behavior">Ask before edit</span>
+      </div>
+      <!-- Behavior popup (hidden by default) -->
+      <div id="behavior-popup" class="behavior-popup hidden">
+        <div class="behavior-popup-section">
+          <label class="behavior-popup-label">Mode</label>
+          <select id="popup-mode-select" class="select">
+            <option value="default">Default</option>
+            <option value="ask-before-edit">Ask Before Edit</option>
+            <option value="edit-automatically">Edit Automatically</option>
+            <option value="quick-plan">Quick Plan</option>
+            <option value="detailed-plan">Detailed Plan</option>
+          </select>
+        </div>
+        <div class="behavior-popup-section">
+          <label class="behavior-popup-label">Access</label>
+          <select id="popup-access-select" class="select">
+            <option value="read-only">Read only</option>
+            <option value="ask-permission">Ask permission</option>
+            <option value="full-access">Full access</option>
+          </select>
+        </div>
+        <div class="behavior-popup-divider"></div>
+        <div class="behavior-popup-section">
+          <label class="behavior-popup-label">Autonomy</label>
+          <select id="popup-autonomy-select" class="select">
+            <option value="manual">Manual</option>
+            <option value="semi-autonomous">Semi-Autonomous</option>
+            <option value="autonomous">Autonomous</option>
+          </select>
+        </div>
+      </div>
+      <div id="export-toast" class="export-toast">Copied to clipboard!</div>
+      <!-- Visual Test Mini Status Bar (dashboard runs in separate tab) -->
+      <div id="vt-mini-status" class="vt-mini-status hidden">
+        <span id="vt-mini-status-text">Visual Test: Running...</span>
+        <button id="vt-mini-cancel" class="vt-mini-cancel">Cancel</button>
+      </div>
+      <div id="badge-toast" class="badge-toast" onclick="this.classList.remove('show')">
+        <span class="badge-toast-icon" id="badge-toast-icon"></span>
+        <div class="badge-toast-content">
+          <span class="badge-toast-tier" id="badge-toast-tier"></span>
+          <span class="badge-toast-title" id="badge-toast-title"></span>
+          <span class="badge-toast-subtitle" id="badge-toast-subtitle"></span>
+        </div>
+      </div>
+      <div class="input-container">
+        <div id="attachment-previews" class="attachment-previews"></div>
+        <div class="input-wrapper">
+          <textarea id="message-input" placeholder="Ask Mysti..." rows="1"></textarea>
+          <div id="autocomplete-ghost" class="autocomplete-ghost"></div>
+        </div>
+        <button id="attach-btn" class="attach-btn" title="Attach files">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4.5 3a2.5 2.5 0 0 1 5 0v7.5a1 1 0 0 1-2 0V3a.5.5 0 0 0-1 0v7.5a2.5 2.5 0 0 0 5 0V4h1v6.5a3.5 3.5 0 0 1-7 0V3z"/>
+          </svg>
+        </button>
+        <button id="send-btn" class="send-btn" title="Send message">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M15.854.146a.5.5 0 0 1 .11.54l-5.819 14.547a.75.75 0 0 1-1.329.124l-3.178-4.995L.643 7.184a.75.75 0 0 1 .124-1.33L15.314.037a.5.5 0 0 1 .54.11zM6.636 10.07l2.761 4.338L14.13 2.576 6.636 10.07zm6.787-8.201L1.591 6.602l4.339 2.76 7.494-7.493z"/>
+          </svg>
+        </button>
+        <button id="stop-btn" class="stop-btn" title="Stop generating" style="display: none;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <rect x="3" y="3" width="10" height="10" rx="1"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Slash commands menu (dynamically populated) -->
+    <div id="slash-menu" class="slash-menu hidden" role="listbox" aria-label="Slash commands">
+      <div class="slash-menu-search">
+        <span class="slash-menu-search-prefix">/</span>
+        <span id="slash-menu-query"></span>
+      </div>
+      <div id="slash-menu-sections" class="slash-menu-sections"></div>
+      <div id="slash-menu-empty" class="slash-menu-empty hidden">No matching commands</div>
+    </div>
+
+    <!-- @-Mention autocomplete menu -->
+    <div id="mention-menu" class="mention-menu hidden">
+      <div class="mention-menu-header">Agents</div>
+      <div id="mention-agents-list" class="mention-section"></div>
+      <div class="mention-menu-header" id="mention-files-header">Files</div>
+      <div id="mention-files-list" class="mention-section"></div>
+    </div>
+
+    <!-- Agent selection menu -->
+    <!-- mysti:provider-literals:allow-start — static bootstrap markup rendered
+         before the provider manifest arrives; identity (labels/logos) is
+         refreshed from the manifest at runtime (updateAgentMenuSelection /
+         updateThemeAwareLogos). -->
+    <div id="agent-menu" class="agent-menu hidden">
+      <div class="agent-menu-header">Select Agent</div>
+      <div class="agent-menu-item selected" data-agent="claude-code">
+        <span class="agent-item-icon"><img src="{{resourceBase}}/icons/Claude.png" alt="" /></span>
+        <span class="agent-item-name">Claude Code</span>
+        <span class="agent-item-badge">Active</span>
+      </div>
+      <div class="agent-menu-item" data-agent="cursor">
+        <span class="agent-item-icon"><img class="cursor-logo" src="{{resourceBase}}/icons/cursor.png" alt="" /></span>
+        <span class="agent-item-name">Cursor</span>
+      </div>
+      <div class="agent-menu-item" data-agent="openai-codex">
+        <span class="agent-item-icon"><img class="openai-logo" data-agent-logo="openai-codex" src="{{resourceBase}}/icons/openai_white.png" alt="" /></span>
+        <span class="agent-item-name">OpenAI Codex</span>
+      </div>
+      <div class="agent-menu-item" data-agent="google-gemini">
+        <span class="agent-item-icon"><img class="gemini-logo" src="{{resourceBase}}/icons/gemini.png.webp" alt="" /></span>
+        <span class="agent-item-name">Gemini</span>
+      </div>
+      <div class="agent-menu-item" data-agent="github-copilot">
+        <span class="agent-item-icon"><img class="copilot-logo" src="{{resourceBase}}/icons/copilot.png" alt="" /></span>
+        <span class="agent-item-name">GitHub Copilot</span>
+      </div>
+      <div class="agent-menu-item" data-agent="openclaw">
+        <span class="agent-item-icon"><img class="openclaw-logo" src="{{resourceBase}}/icons/openclaw.png" alt="" /></span>
+        <span class="agent-item-name">OpenClaw</span>
+      </div>
+      <div class="agent-menu-item" data-agent="cline">
+        <span class="agent-item-icon"><img class="cline-logo" src="{{resourceBase}}/icons/cline.png" alt="" /></span>
+        <span class="agent-item-name">Cline</span>
+      </div>
+      <div class="agent-menu-item" data-agent="opencode">
+        <span class="agent-item-icon"><img class="opencode-logo" src="{{resourceBase}}/icons/opencode.png" alt="" /></span>
+        <span class="agent-item-name">OpenCode</span>
+      </div>
+      <div class="agent-menu-item" data-agent="ollama">
+        <span class="agent-item-icon"><img class="ollama-logo" src="{{resourceBase}}/icons/ollama.png" alt="" /></span>
+        <span class="agent-item-name">Ollama</span>
+      </div>
+      <div class="agent-menu-item" data-agent="localai">
+        <span class="agent-item-icon"><img class="localai-logo" src="{{resourceBase}}/icons/localai.png" alt="" /></span>
+        <span class="agent-item-name">LocalAI</span>
+      </div>
+      <div class="agent-menu-item" data-agent="qwen-code">
+        <span class="agent-item-icon"><img class="qwen-logo" src="{{resourceBase}}/icons/qwen.png" alt="" /></span>
+        <span class="agent-item-name">Qwen Code</span>
+      </div>
+      <div class="agent-menu-divider"></div>
+      <div class="agent-menu-item" data-agent="brainstorm">
+        <span class="agent-item-icon"><img src="{{resourceBase}}/Mysti-Logo.png" alt="" /></span>
+        <span class="agent-item-name">Brainstorm</span>
+        <span class="agent-item-desc">Both agents collaborate</span>
+      </div>
+    </div>
+    <!-- mysti:provider-literals:allow-end -->
+
+  </div>
+
+  <!-- Setup Overlay (legacy - kept for backward compatibility) -->
+  <div id="setup-overlay" class="setup-overlay hidden">
+    <div class="setup-content">
+      <div class="setup-progress">
+        <img src="{{resourceBase}}/Mysti-Logo.png" alt="Mysti" class="setup-logo" />
+        <div class="setup-step">Setting up Mysti...</div>
+        <div class="setup-progress-track">
+          <div class="setup-progress-bar" style="width: 0%"></div>
+        </div>
+        <div class="setup-message">Checking CLI installation...</div>
+      </div>
+      <div class="setup-error hidden">
+        <div class="setup-error-icon">⚠️</div>
+        <div class="setup-error-message"></div>
+        <div class="setup-buttons">
+          <button class="setup-btn primary" onclick="postMessageWithPanelId({ type: 'retrySetup', payload: { providerId: state.setup.providerId } })">Retry</button>
+          <button class="setup-btn secondary" onclick="postMessageWithPanelId({ type: 'skipSetup' })">Skip</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Setup Wizard (Enhanced Onboarding) -->
+  <div id="setup-wizard" class="setup-wizard hidden">
+    <div class="wizard-content">
+      <!-- Header -->
+      <div class="wizard-header">
+        <img src="{{resourceBase}}/Mysti-Logo.png" alt="Mysti" class="wizard-logo" />
+        <h2>Welcome to Mysti</h2>
+        <p class="wizard-subtitle">Set up an AI provider to get started</p>
+      </div>
+
+      <!-- Prerequisites Warning -->
+      <div id="wizard-prerequisites" class="wizard-prereq hidden">
+        <span class="prereq-icon">⚠️</span>
+        <div class="prereq-content">
+          <strong>Node.js Required</strong>
+          <p>npm is not available. Install Node.js to enable automatic CLI installation.</p>
+          <a href="https://nodejs.org" target="_blank" class="prereq-link">Download Node.js →</a>
+        </div>
+      </div>
+
+      <!-- Provider Cards -->
+      <!-- mysti:provider-literals:allow-start — static setup-wizard bootstrap
+           cards shown before initialState/manifest exists (the wizard replaces
+           initialState entirely). Runtime identity comes from the manifest. -->
+      <div class="wizard-providers">
+        <!-- Claude Code -->
+        <div class="provider-card" data-provider="claude-code">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/Claude.png" alt="Claude" class="provider-logo" />
+            <div class="provider-info">
+              <h3>Claude Code</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Anthropic's Claude - powerful reasoning and code generation</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+
+        <!-- OpenAI Codex -->
+        <div class="provider-card" data-provider="openai-codex">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/openai_white.png" alt="OpenAI" class="provider-logo openai-logo" data-agent-logo="openai-codex" />
+            <div class="provider-info">
+              <h3>OpenAI Codex</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">OpenAI's Codex - ChatGPT-powered code assistant</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+
+        <!-- Google Gemini -->
+        <div class="provider-card" data-provider="google-gemini">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/gemini.png.webp" alt="Gemini" class="provider-logo gemini-logo" />
+            <div class="provider-info">
+              <h3>Google Gemini</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Google's Gemini - multimodal AI with code capabilities</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+
+        <!-- Cline -->
+        <div class="provider-card" data-provider="cline">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/cline.png" alt="Cline" class="provider-logo cline-logo" />
+            <div class="provider-info">
+              <h3>Cline</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Autonomous coding agent with browser use, file editing, and command execution</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+
+        <!-- GitHub Copilot -->
+        <div class="provider-card" data-provider="github-copilot">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/copilot.png" alt="Copilot" class="provider-logo copilot-logo" />
+            <div class="provider-info">
+              <h3>GitHub Copilot</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">GitHub's Copilot - AI pair programmer with GitHub integration</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+
+        <!-- Cursor -->
+        <div class="provider-card" data-provider="cursor">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/cursor.png" alt="Cursor" class="provider-logo cursor-logo" />
+            <div class="provider-info">
+              <h3>Cursor</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Cursor's headless agent - AI-powered coding with fast editing and multi-file changes</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+
+        <!-- OpenClaw -->
+        <div class="provider-card" data-provider="openclaw">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/openclaw.png" alt="OpenClaw" class="provider-logo openclaw-logo" />
+            <div class="provider-info">
+              <h3>OpenClaw</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Open-source personal AI assistant with multi-model support and Gateway streaming</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+
+      </div>
+      <!-- mysti:provider-literals:allow-end -->
+
+      <!-- Auth Options Modal (for Gemini) -->
+      <div id="auth-options-modal" class="auth-options-modal hidden">
+        <div class="auth-options-content">
+          <h3>Choose Authentication Method</h3>
+          <p id="auth-options-subtitle"></p>
+          <div id="auth-options-list" class="auth-options-list"></div>
+          <button class="auth-options-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="wizard-footer">
+        <button class="wizard-skip-btn" onclick="postMessageWithPanelId({ type: 'dismissWizard', payload: { dontShowAgain: false } })">Skip for now</button>
+        <p class="wizard-footer-hint">You can configure providers later in Settings</p>
+        <button class="wizard-diagnose-btn" onclick="requestDiagnostics()">&#128269; Run Diagnostics</button>
+        <div id="diagnostics-panel" class="diagnostics-panel hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Install Provider Modal (outside wizard so it's always accessible) -->
+  <div id="install-provider-modal" class="install-provider-modal hidden">
+    <div class="install-provider-content">
+      <div class="install-provider-header">
+        <img id="install-provider-icon" src="" alt="" />
+        <h3 id="install-provider-title">Install Provider</h3>
+      </div>
+      <p id="install-provider-desc">Install this provider to use it with Mysti.</p>
+
+      <div id="install-auto-section" class="install-section">
+        <button id="install-auto-btn" class="install-action-btn primary">
+          <span class="install-btn-icon">&#9889;</span>
+          Install Automatically
+        </button>
+        <p class="install-hint">Requires npm installed on your system</p>
+      </div>
+
+      <div id="install-methods-section" class="install-section hidden">
+        <p class="install-interactive-note">This CLI requires interactive setup. Run the command below in your terminal.</p>
+        <div id="install-methods-list"></div>
+      </div>
+
+      <div id="install-progress-section" class="install-section hidden">
+        <div class="install-progress-bar">
+          <div id="install-progress-fill" class="install-progress-fill"></div>
+        </div>
+        <p id="install-progress-msg" class="install-progress-msg">Installing...</p>
+        <div id="install-error-details" class="install-error-details hidden"></div>
+      </div>
+
+      <div id="install-manual-section" class="install-section">
+        <h4>Manual Installation</h4>
+        <div class="install-command-box">
+          <code id="install-command-text"></code>
+          <button id="install-copy-btn" class="install-copy-btn" title="Copy command">&#128203;</button>
+          <button id="install-terminal-btn" class="install-terminal-btn" title="Open in Terminal">&#9654;</button>
+        </div>
+      </div>
+
+      <div id="install-auth-section" class="install-section">
+        <h4>Authentication</h4>
+        <ul id="install-auth-steps" class="install-auth-list"></ul>
+      </div>
+
+      <div class="install-footer">
+        <a id="install-docs-link" href="#" class="install-docs-link" target="_blank">
+          &#128218; View Documentation
+        </a>
+        <button id="install-refresh-btn" class="install-refresh-btn" title="Refresh Detection">&#8635; Refresh Detection</button>
+        <button id="install-close-btn" class="install-close-btn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Drop overlay (shown when dragging files over the webview) -->
+  <div id="drop-overlay" class="drop-overlay">
+    <div class="drop-overlay-content">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+      <span>Drop images or files here</span>
+    </div>
+  </div>
+
+  <script nonce="{{nonce}}">window.__MYSTI_BOOT__ = {{bootJson}};</script>
+  <script nonce="{{nonce}}" src="{{chatJsUri}}"></script>
+</body>
+</html>

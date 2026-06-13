@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {{cspSource}} data:; style-src {{cspSource}} 'nonce-{{nonce}}'; script-src 'nonce-{{nonce}}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mysti Visual Test</title>
+  <link rel="stylesheet" nonce="{{nonce}}" href="{{styleUri}}">
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="vt-header">
+    <span class="vt-header-title">Mysti Visual Test</span>
+    <span class="vt-header-spacer"></span>
+    <span id="vt-status" class="vt-status-badge vt-status-idle">Idle</span>
+    <button id="vt-cancel" class="vt-cancel-btn hidden">Cancel</button>
+  </div>
+
+  <!-- Configuration Form -->
+  <div id="vt-config" class="vt-config">
+    <h2>Configure Visual Test</h2>
+
+    <div class="vt-form-group">
+      <label class="vt-label">URL</label>
+      <input id="cfg-url" type="text" class="vt-input" placeholder="http://localhost:3000" value="http://localhost:3000" />
+    </div>
+
+    <div class="vt-form-group">
+      <label class="vt-label">Dev Server Command</label>
+      <input id="cfg-dev-cmd" type="text" class="vt-input" placeholder="npm run dev (auto-detected if empty)" />
+    </div>
+
+    <div class="vt-form-group">
+      <label class="vt-label">Requirements / What to Test</label>
+      <textarea id="cfg-requirements" class="vt-textarea" rows="4" placeholder="Describe what the app should look like and how it should behave..."></textarea>
+    </div>
+
+    <div class="vt-row">
+      <div class="vt-form-group">
+        <label class="vt-label">Max Iterations</label>
+        <input id="cfg-max-iter" type="number" class="vt-input" min="1" max="20" value="5" />
+      </div>
+      <div class="vt-form-group">
+        <label class="vt-label">Screenshot Mode</label>
+        <select id="cfg-screenshot-mode" class="vt-select">
+          <option value="viewport">Viewport</option>
+          <option value="full-page">Full Page</option>
+          <option value="element">Element</option>
+        </select>
+      </div>
+      <div class="vt-form-group">
+        <label class="vt-label">Browser</label>
+        <select id="cfg-browser" class="vt-select">
+          <option value="chromium">Chromium</option>
+          <option value="firefox">Firefox</option>
+          <option value="webkit">WebKit</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="vt-row">
+      <div class="vt-form-group">
+        <label class="vt-label">Element Selector (when mode = Element)</label>
+        <input id="cfg-element-selector" type="text" class="vt-input" placeholder="#app, .main-content" />
+      </div>
+      <div class="vt-form-group">
+        <label class="vt-checkbox-label">
+          <input id="cfg-interactions" type="checkbox" checked /> Enable Browser Actions
+        </label>
+      </div>
+    </div>
+
+    <button id="vt-start" class="vt-start-btn">Start Visual Test</button>
+  </div>
+
+  <!-- Progress View -->
+  <div id="vt-progress" class="vt-progress">
+
+    <div class="vt-main-grid">
+      <!-- Screenshot -->
+      <div class="vt-screenshot-panel">
+        <h3>Screenshot</h3>
+        <div id="vt-screenshot" class="vt-screenshot-container">
+          Waiting for first screenshot...
+        </div>
+      </div>
+
+      <!-- Issues -->
+      <div class="vt-issues-panel">
+        <h3>Issues <span id="vt-issue-count" class="vt-issue-count">0</span></h3>
+        <div id="vt-issues" class="vt-issues-list">
+          <div class="vt-empty-state">No issues detected yet</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Action Log -->
+    <div class="vt-action-log">
+      <h3>Action Log</h3>
+      <div id="vt-actions" class="vt-action-list">
+        <div class="vt-empty-state">Waiting for actions...</div>
+      </div>
+    </div>
+
+    <!-- Report Summary -->
+    <div id="vt-report" class="vt-report">
+      <div class="vt-report-row">
+        <span id="vt-verdict" class="vt-verdict"></span>
+        <span id="vt-report-iterations" class="vt-report-stat"></span>
+        <span id="vt-report-issues" class="vt-report-stat"></span>
+        <span id="vt-report-duration" class="vt-report-stat"></span>
+      </div>
+    </div>
+
+  </div>
+
+  <script nonce="{{nonce}}">window.__MYSTI_VT_BOOT__ = {{bootJson}};</script>
+  <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
+</body>
+</html>

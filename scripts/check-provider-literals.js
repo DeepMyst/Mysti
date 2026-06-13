@@ -15,9 +15,11 @@
  *
  * The webview must render from the capability manifest
  * (state.providerManifest), never from provider-name literals. This guard
- * fails `npm run lint` when a quoted provider id appears in
- * src/webview/webviewContent.ts outside an explicitly allowlisted bootstrap
- * region.
+ * fails `npm run lint` when a quoted provider id appears in the chat webview
+ * assets (media/chat/index.html, media/chat/chat.js) or the loader
+ * (src/webview/webviewContent.ts) outside an explicitly allowlisted bootstrap
+ * region. (The markup/script were extracted to media/chat/ in Plan 03 Phase
+ * 3c Step 1; this guard scans the extracted assets.)
  *
  * Allowlist mechanisms (markers live in comments — JS or HTML):
  *   - Block:  mysti:provider-literals:allow-start
@@ -55,7 +57,11 @@ const ALLOW_START = 'mysti:provider-literals:allow-start';
 const ALLOW_END = 'mysti:provider-literals:allow-end';
 const ALLOW_LINE = 'mysti:provider-literals:allow-line';
 
-const TARGET_FILE = path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts');
+const TARGET_FILES = [
+  path.join(__dirname, '..', 'media', 'chat', 'index.html'),
+  path.join(__dirname, '..', 'media', 'chat', 'chat.js'),
+  path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'),
+];
 
 // Match a provider id only when it is the ENTIRE quoted string
 // ('cursor' / "cursor" / `cursor`) — so CSS `cursor: pointer`, asset paths
@@ -115,32 +121,44 @@ function scanSource(source) {
 }
 
 function main() {
-  let source;
-  try {
-    source = fs.readFileSync(TARGET_FILE, 'utf8');
-  } catch (err) {
-    console.error(`[check-provider-literals] Cannot read ${TARGET_FILE}: ${err.message}`);
-    process.exit(1);
+  let totalAllowed = 0;
+  let hadFailure = false;
+
+  for (const target of TARGET_FILES) {
+    const rel = path.relative(process.cwd(), target);
+
+    let source;
+    try {
+      source = fs.readFileSync(target, 'utf8');
+    } catch (err) {
+      console.error(`[check-provider-literals] Cannot read ${rel}: ${err.message}`);
+      hadFailure = true;
+      continue;
+    }
+
+    const { violations, allowedCount, markerErrors } = scanSource(source);
+    totalAllowed += allowedCount;
+
+    if (markerErrors.length > 0) {
+      console.error(`[check-provider-literals] Malformed allowlist markers in ${rel}:`);
+      for (const e of markerErrors) {
+        console.error(`  ${e}`);
+      }
+      hadFailure = true;
+    }
+
+    if (violations.length > 0) {
+      console.error(
+        `[check-provider-literals] ${violations.length} provider-id literal(s) in ${rel} outside allowlisted bootstrap blocks:`
+      );
+      for (const v of violations) {
+        console.error(`  ${rel}:${v.line}  ['${v.id}']  ${v.text}`);
+      }
+      hadFailure = true;
+    }
   }
 
-  const { violations, allowedCount, markerErrors } = scanSource(source);
-  const rel = path.relative(process.cwd(), TARGET_FILE);
-
-  if (markerErrors.length > 0) {
-    console.error(`[check-provider-literals] Malformed allowlist markers in ${rel}:`);
-    for (const e of markerErrors) {
-      console.error(`  ${e}`);
-    }
-    process.exit(1);
-  }
-
-  if (violations.length > 0) {
-    console.error(
-      `[check-provider-literals] ${violations.length} provider-id literal(s) in ${rel} outside allowlisted bootstrap blocks:`
-    );
-    for (const v of violations) {
-      console.error(`  ${rel}:${v.line}  ['${v.id}']  ${v.text}`);
-    }
+  if (hadFailure) {
     console.error('');
     console.error('The webview must render from state.providerManifest (capabilities +');
     console.error('display metadata), never from provider-name literals. If this literal');
@@ -151,7 +169,7 @@ function main() {
   }
 
   console.log(
-    `[check-provider-literals] OK — no provider-id literals outside allowlisted blocks (${allowedCount} allowlisted line(s)).`
+    `[check-provider-literals] OK — no provider-id literals outside allowlisted blocks (${totalAllowed} allowlisted line(s) across ${TARGET_FILES.length} files).`
   );
 }
 

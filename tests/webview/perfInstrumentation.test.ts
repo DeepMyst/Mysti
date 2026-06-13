@@ -20,8 +20,8 @@
  * ...) are supplied as `new Function` parameters.
  */
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
-import { getWebviewContent } from '../../src/webview/webviewContent';
-import { Uri } from '../helpers/mockVscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { PerfTracker } from '../../src/utils/PerfTracker';
 
 // ---------------------------------------------------------------------------
@@ -68,12 +68,9 @@ const CAP = 2000; // PERF_SAMPLE_BUFFER_CAP in the webview script
 let html: string;
 
 beforeAll(() => {
-  const mockWebview = {
-    asWebviewUri: (uri: unknown) => uri,
-    cspSource: 'mock-csp:',
-  } as any;
-  const extensionUri = Uri.file('/mock/extension') as any;
-  html = getWebviewContent(mockWebview, extensionUri, '0.0.0');
+  // The chat script was extracted to media/chat/chat.js (Plan 03 Phase 3c
+  // Step 1); read it directly as the function-extraction source.
+  html = fs.readFileSync(path.join(__dirname, '..', '..', 'media', 'chat', 'chat.js'), 'utf8');
 });
 
 // ---------------------------------------------------------------------------
@@ -82,15 +79,11 @@ beforeAll(() => {
 // ---------------------------------------------------------------------------
 
 describe('webview script syntax', () => {
-  it('every generated <script> block parses as valid JavaScript', () => {
-    const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.trim().length > 0);
-    expect(scripts.length).toBeGreaterThan(0);
-    for (const s of scripts) {
-      // Throws SyntaxError (failing the test) if the script does not parse.
-      expect(() => new Function(s)).not.toThrow();
-    }
+  it('the extracted chat script parses as valid JavaScript', () => {
+    // Post-extraction (Plan 03 Phase 3c Step 1) the webview script lives in
+    // media/chat/chat.js (loaded here as `html`); parse it directly.
+    expect(html.length).toBeGreaterThan(10000);
+    expect(() => new Function(html)).not.toThrow();
   });
 });
 
