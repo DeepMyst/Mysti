@@ -170,7 +170,8 @@
       {
         "command": "mysti.openConnections",
         "title": "Open DeepMyst Connections",
-        "category": "Mysti"
+        "category": "Mysti",
+        "icon": "$(plug)"
       },
       {
         "command": "mysti.deepmyst.signIn",
@@ -198,9 +199,14 @@
       ],
       "view/title": [
         {
+          "command": "mysti.openConnections",
+          "when": "view == mysti.chatView",
+          "group": "navigation@0"
+        },
+        {
           "command": "mysti.openInNewTab",
           "when": "view == mysti.chatView",
-          "group": "navigation"
+          "group": "navigation@1"
         }
       ],
       "editor/title": [
