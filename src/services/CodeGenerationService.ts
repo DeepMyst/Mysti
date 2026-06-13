@@ -139,6 +139,13 @@ export class CodeGenerationService {
     framework: Framework;
     componentName: string;
     imageService: ImageGenerationService;
+    /**
+     * F-7: the current component source (e.g. `vd.codeFiles[0].content` from
+     * the webview). Including it lets the model edit the real component instead
+     * of regenerating one from nothing (which discarded the design when
+     * `svgMarkup` was hardcoded to '').
+     */
+    currentSource?: string;
   }): AsyncGenerator<{ type: string; files?: GeneratedFile[]; content?: string }> {
     yield { type: 'progress', content: 'Updating component with new properties...' };
 
@@ -150,14 +157,31 @@ export class CodeGenerationService {
       .map(p => `  ${p.name}: ${p.type} = ${JSON.stringify(p.value)}`)
       .join('\n');
 
-    const prompt = `Regenerate the ${opts.framework} component "${opts.componentName}" with these updated property defaults:
+    // F-7: anchor the regeneration on the real current source. Prefer the
+    // component code (the source of truth); include the SVG when present as
+    // additional context. Falls back gracefully when either is missing.
+    const sourceSections: string[] = [];
+    if (opts.currentSource && opts.currentSource.trim()) {
+      sourceSections.push(`Current component source:
+\`\`\`${opts.framework}
+${opts.currentSource}
+\`\`\``);
+    }
+    if (opts.svgMarkup && opts.svgMarkup.trim()) {
+      sourceSections.push(`Original SVG:
+\`\`\`svg
+${opts.svgMarkup}
+\`\`\``);
+    }
+    if (sourceSections.length === 0) {
+      sourceSections.push('(No existing source was provided — reconstruct the component from the property list and component name.)');
+    }
+
+    const prompt = `Update the ${opts.framework} component "${opts.componentName}" to apply these new property defaults. Preserve the existing structure, styling, and markup — change ONLY what the updated defaults require:
 
 ${propsDescription}
 
-Original SVG:
-\`\`\`svg
-${opts.svgMarkup}
-\`\`\`
+${sourceSections.join('\n\n')}
 
 Return the updated component code and Storybook story in the same format as before.
 Use \`\`\`component and \`\`\`story code fences.`;

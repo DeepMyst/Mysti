@@ -28,40 +28,62 @@ type StitchToolClientType = any;
  * The SDK is ESM-only, so we use dynamic import() to load it at runtime.
  */
 export class StitchService {
+  /** F-24: maximum redirects the download helper follows before erroring. */
+  private static readonly _maxDownloadRedirects = 5;
+
   private _client: StitchToolClientType | null = null;
   private _stitch: StitchSdk | null = null;
   private _sdkModule: any = null;
 
+  // Key injected by the caller (resolved from CanvasSecrets). The service no
+  // longer reads `mysti.canvas.stitchApiKey` or `process.env` for the key,
+  // and no longer mutates `process.env` (F-11). Call `setApiKey()` before use.
+  private _apiKey = '';
+
   // ── Authentication ──
+
+  /**
+   * Inject the Stitch API key resolved from SecretStorage (F-11). Re-callable
+   * (e.g. after the user enters a key); resets cached SDK instances so the new
+   * key takes effect on the next call.
+   */
+  setApiKey(key: string): void {
+    const next = (key || '').trim();
+    if (next === this._apiKey) { return; }
+    this._apiKey = next;
+    // Cached SDK/client were built with the old key — force a rebuild.
+    this._stitch = null;
+    this._client = null;
+    this._sdkModule = null;
+  }
 
   get isAvailable(): boolean {
     return !!this._getApiKey();
   }
 
   private _getApiKey(): string {
-    const settingsKey = vscode.workspace.getConfiguration('mysti').get('canvas.stitchApiKey', '');
-    if (settingsKey) { return settingsKey; }
-    return process.env.STITCH_API_KEY || process.env.STITCH_ACCESS_TOKEN || '';
+    // F-11: key comes from SecretStorage via setApiKey(); no settings/env reads.
+    return this._apiKey;
   }
 
   /**
    * Checks for a Stitch API key. If none is configured, shows a VS Code input
-   * box so the user can enter one on the spot. Saves it to user settings.
-   * Throws if the user cancels or provides an empty key.
+   * box so the user can enter one on the spot. The entered key is applied
+   * in-memory via {@link setApiKey} and handed to the optional `persistKey`
+   * callback so the caller can store it in SecretStorage (F-11). Throws if the
+   * user cancels or provides an empty key.
+   *
+   * @param persistKey optional async callback (wired by ChatViewProvider to
+   *                    `CanvasSecrets.set('stitch', key)`) invoked with the
+   *                    entered key so it survives across sessions.
    */
-  async ensureAuth(): Promise<void> {
+  async ensureAuth(persistKey?: (key: string) => Promise<void>): Promise<void> {
     if (this.isAvailable) { return; }
 
     const action = await vscode.window.showWarningMessage(
       'Google Stitch API key is required for Canvas generation.',
-      'Enter API Key',
-      'Open Settings'
+      'Enter API Key'
     );
-
-    if (action === 'Open Settings') {
-      await vscode.commands.executeCommand('workbench.action.openSettings', 'mysti.canvas.stitchApiKey');
-      throw new Error('Please set your Stitch API key in settings, then try again.');
-    }
 
     if (action === 'Enter API Key') {
       const key = await vscode.window.showInputBox({
@@ -73,12 +95,18 @@ export class StitchService {
       });
 
       if (key?.trim()) {
-        await vscode.workspace.getConfiguration('mysti').update('canvas.stitchApiKey', key.trim(), vscode.ConfigurationTarget.Global);
-        // Reset cached SDK instances so the new key takes effect
-        this._stitch = null;
-        this._client = null;
-        this._sdkModule = null;
-        console.log('[Mysti] Stitch API key saved to settings.');
+        const trimmed = key.trim();
+        // Apply in-memory (also resets cached SDK instances).
+        this.setApiKey(trimmed);
+        // Persist to SecretStorage via the caller-supplied hook (F-11).
+        if (persistKey) {
+          try {
+            await persistKey(trimmed);
+            console.log('[Mysti] Stitch API key saved to SecretStorage.');
+          } catch (err: any) {
+            console.warn(`[Mysti] Stitch API key persistence failed: ${err?.message}`);
+          }
+        }
         return;
       }
     }
@@ -88,8 +116,7 @@ export class StitchService {
       'Setup:\n' +
       '1. Go to stitch.withgoogle.com → Profile → Settings → API Keys\n' +
       '2. Create a new API key\n' +
-      '3. Set it in VS Code: Settings → mysti.canvas.stitchApiKey\n' +
-      '   Or set STITCH_API_KEY environment variable'
+      '3. Re-run the canvas command and paste your key when prompted.'
     );
   }
 
@@ -108,21 +135,20 @@ export class StitchService {
   }
 
   /**
-   * Get or create the Stitch singleton. Uses the API key from settings/env.
-   * The SDK auto-reads STITCH_API_KEY, but we also support a settings override.
+   * Get or create a Stitch instance bound to the injected API key.
+   *
+   * The exported `stitch` singleton only reads `STITCH_API_KEY` from the
+   * environment, which previously forced us to mutate `process.env` (F-11).
+   * Instead we construct `new Stitch(toolClient)` directly, where the tool
+   * client carries the explicit `{ apiKey }` — no env mutation, and a key
+   * change (via setApiKey) is picked up because the cache is reset there.
    */
   private async _getStitch(): Promise<StitchSdk> {
     if (this._stitch) { return this._stitch; }
 
-    const apiKey = this._getApiKey();
-
-    // If the key is in settings (not env), we need to set it for the SDK
-    if (apiKey && !process.env.STITCH_API_KEY && !process.env.STITCH_ACCESS_TOKEN) {
-      process.env.STITCH_API_KEY = apiKey;
-    }
-
     const sdk = await this._loadSdk();
-    this._stitch = sdk.stitch;
+    const client = await this._getToolClient();
+    this._stitch = new sdk.Stitch(client);
     return this._stitch!;
   }
 
@@ -513,20 +539,22 @@ export class StitchService {
   // ── Cleanup ──
 
   async dispose(): Promise<void> {
+    // `_stitch` wraps `_client`, so closing the client tears both down.
     if (this._client) {
       try { await this._client.close(); } catch { /* ignore */ }
       this._client = null;
     }
-    if (this._stitch) {
-      try { await this._stitch.close(); } catch { /* ignore */ }
-      this._stitch = null;
-    }
+    this._stitch = null;
   }
 
   // ── Private Helpers ──
 
-  private _downloadUrl(url: string): Promise<Buffer> {
+  private _downloadUrl(url: string, depth = 0): Promise<Buffer> {
     return new Promise((resolve, reject) => {
+      if (depth > StitchService._maxDownloadRedirects) {
+        reject(new Error(`Stitch download exceeded ${StitchService._maxDownloadRedirects} redirects`));
+        return;
+      }
       const parsedUrl = new URL(url);
       const options: https.RequestOptions = {
         hostname: parsedUrl.hostname,
@@ -536,9 +564,9 @@ export class StitchService {
       };
 
       const req = https.request(options, (res) => {
-        // Follow redirects
+        // Follow redirects (F-24: capped at _maxDownloadRedirects).
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          this._downloadUrl(res.headers.location).then(resolve).catch(reject);
+          this._downloadUrl(new URL(res.headers.location, url).toString(), depth + 1).then(resolve).catch(reject);
           return;
         }
 

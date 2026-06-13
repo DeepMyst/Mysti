@@ -105,6 +105,61 @@ export const workspace = {
   }),
 };
 
+/**
+ * In-memory SecretStorage stub (vscode.SecretStorage shape). Use via
+ * `createMockSecretStorage()` to get an isolated instance per test.
+ */
+export function createMockSecretStorage() {
+  const store = new Map<string, string>();
+  const listeners: Array<(e: { key: string }) => void> = [];
+  return {
+    /** Exposed for assertions in tests (not part of the vscode API). */
+    _store: store,
+    async get(key: string): Promise<string | undefined> {
+      return store.get(key);
+    },
+    async store(key: string, value: string): Promise<void> {
+      store.set(key, value);
+      for (const l of [...listeners]) { l({ key }); }
+    },
+    async delete(key: string): Promise<void> {
+      store.delete(key);
+      for (const l of [...listeners]) { l({ key }); }
+    },
+    onDidChange: (listener?: (e: { key: string }) => void) => {
+      if (typeof listener === 'function') { listeners.push(listener); }
+      return { dispose: () => {
+        if (listener) {
+          const i = listeners.indexOf(listener);
+          if (i >= 0) { listeners.splice(i, 1); }
+        }
+      } };
+    },
+  };
+}
+
+/**
+ * In-memory Memento stub (vscode.Memento shape). Use via
+ * `createMockMemento()` for an isolated instance per test.
+ */
+export function createMockMemento() {
+  const store = new Map<string, unknown>();
+  return {
+    _store: store,
+    get<T>(key: string, defaultValue?: T): T | undefined {
+      return store.has(key) ? (store.get(key) as T) : defaultValue;
+    },
+    async update(key: string, value: unknown): Promise<void> {
+      if (value === undefined) { store.delete(key); }
+      else { store.set(key, value); }
+    },
+    keys(): readonly string[] {
+      return [...store.keys()];
+    },
+    setKeysForSync(): void { /* no-op */ },
+  };
+}
+
 export const window = {
   showInformationMessage: () => Promise.resolve(undefined),
   showWarningMessage: () => Promise.resolve(undefined),

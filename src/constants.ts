@@ -142,7 +142,8 @@ export const CANVAS_ASSETS_DIR = '.mysti/canvas/assets';
 export const CANVAS_RENDER_TIMEOUT_MS = 30_000;
 export const CANVAS_RENDER_DEFAULT_VIEWPORT = { width: 1280, height: 800 };
 export const CANVAS_VIDEO_POLL_INTERVAL_MS = 3_000;
-export const CANVAS_VIDEO_POLL_MAX_MS = 120_000;
+// F-25: Sora/Veo generations frequently exceed 2 minutes; allow 10 minutes.
+export const CANVAS_VIDEO_POLL_MAX_MS = 600_000;
 export const CANVAS_VIDEO_DEFAULT_DURATION_S = 8; // Veo accepts 4, 6, or 8 only
 export const CANVAS_BATCH_CONCURRENCY = 3;
 export const CANVAS_ASSET_REF_PREFIX = 'asset://';

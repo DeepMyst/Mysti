@@ -222,6 +222,8 @@ Fix the confirmed bugs that would otherwise be inherited or block later phases. 
 
 **Ships:** a Canvas v2 whose advertised commands work, whose AI reference images are correct, and which no longer has the same-origin escape or plaintext keys.
 
+> **Status (2026-06-13):** Phase 0 landed except the **webview side of F-15**. The extension/manager/types side of F-15 is done (`canvasBatchGenerate`/`canvasRenderComponent`/`canvasImportScreenshot` cases, `generateBatchContent`/`_buildBatchDesignBrief` methods, and the dead `CanvasStreamChunkType` members are all removed; `_computeCompositionGuide` kept). The **webview dead-code cluster remains in `src/webview/canvasContent.ts`**: the batch-generate modal (HTML ~1364–1371, CSS ~980–990, handlers ~3308–3367, `canvas_layout_complete` case ~6499–6508, batch chunk handlers ~6772–6802) and the `canvasRenderComponent` fallback emitter (~6202). It is harmless (the emitted messages have no extension-side handler; the modal's only trigger `canvas_layout_complete` is no longer produced) but should be removed during the **canvas F5 validation pass** — the webview JS lives in a template string and is not typechecked, so its removal must be validated in the Extension Development Host alongside the F-6 sandbox/inspector flows.
+
 ### Phase 1 — Artifact persistence inversion + typed job protocol + webview build (ship: reload-safe designs, cancellable jobs)
 
 1. **modify `src/types.ts`:** add `CanvasArtifact`, `ArtifactPage`, `CanvasOp`, `CanvasJobEvent`, `CanvasAssetRecord`, `ElementOverride`, `DroppedAsset`, `CanvasFormatSpec` (catalog ids only for now); add `artifactId?: string` to `CanvasSession`; mark `CanvasStreamChunkType` `@deprecated`.

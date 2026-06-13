@@ -42,6 +42,7 @@ import { getCanvasContent } from '../webview/canvasContent';
 import { CanvasManager } from '../managers/CanvasManager';
 import { ImageGenerationService } from '../services/ImageGenerationService';
 import { VideoGenerationService } from '../services/VideoGenerationService';
+import type { CanvasSecrets } from '../services/CanvasSecrets';
 import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
 import { DevServerManager } from '../managers/DevServerManager';
@@ -53,7 +54,7 @@ import {
   getCustomModelSettingKey,
   getManifestAffectingSettingKeys
 } from './base/ProviderManifest';
-import type { ProviderManifestPayload } from '../types';
+import type { ProviderManifestPayload, StitchScreenRef } from '../types';
 import { validateModelName, validateProfileName } from '../utils/validation';
 import { classifyToolAction, shouldGateToolUse } from '../utils/permissionClassifier';
 import { PerfTracker } from '../utils/PerfTracker';
@@ -116,6 +117,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _imageGenService: ImageGenerationService;
   private _videoGenService: VideoGenerationService;
   private _codeGenService: any; // Lazy-loaded CodeGenerationService
+  // F-11: SecretStorage-backed canvas API keys. Injected from extension.ts so
+  // a single instance (constructed once at activation, after migrate()) is
+  // shared with the generation services and StitchService.
+  private _canvasSecrets: CanvasSecrets | null = null;
   private _canvasBrowserManager: BrowserManager = new BrowserManager();
   private _canvasScreenshotService: ScreenshotService = new ScreenshotService();
   private _canvasDevServerManager: DevServerManager = new DevServerManager();
@@ -5492,6 +5497,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * F-11: inject the shared {@link CanvasSecrets} instance (constructed once in
+   * extension.ts after the one-time settings→secrets migration) and prime the
+   * generation services with the stored keys.
+   */
+  public setCanvasSecrets(secrets: CanvasSecrets): void {
+    this._canvasSecrets = secrets;
+    void this._refreshCanvasGenKeys();
+  }
+
+  /**
+   * F-11: re-resolve the OpenAI/Gemini canvas keys from SecretStorage and push
+   * them into the image/video generation services so `isAvailable` /
+   * `isVisionAvailable` / `generate` see the current key without a reload.
+   */
+  private async _refreshCanvasGenKeys(): Promise<void> {
+    if (!this._canvasSecrets) { return; }
+    const [openai, gemini] = await Promise.all([
+      this._canvasSecrets.get('openai'),
+      this._canvasSecrets.get('gemini'),
+    ]);
+    this._imageGenService.setKeys({ openai, gemini });
+    this._videoGenService.setKeys({ openai, gemini });
+  }
+
+  /**
+   * F-3: derive a {@link StitchScreenRef} from a webview snapshot when the
+   * prompt bar did not send an explicit `stitchScreenRef`. Mirrors the
+   * `canvasReimagine` fallback: read the first selected object's metadata and,
+   * if it is a Stitch-generated screen, reconstruct the ref from its
+   * `stitchProjectId` / `stitchScreenId`. Returns `undefined` when the
+   * selection is not a Stitch screen so callers can surface a clear error.
+   */
+  private _stitchRefFromSnapshot(snapshot: any): StitchScreenRef | undefined {
+    const meta = snapshot?.selectedRegion?.objects?.[0]?.metadata;
+    if (meta?.engine === 'stitch' && meta.stitchProjectId && meta.stitchScreenId) {
+      return {
+        projectId: meta.stitchProjectId,
+        screenId: meta.stitchScreenId,
+        htmlContent: meta.stitchHtmlContent || undefined,
+        imageBase64: meta.stitchImageBase64 || undefined,
+      };
+    }
+    return undefined;
+  }
+
+  /**
    * Handle messages from the Canvas webview.
    */
   private async _handleCanvasMessage(msg: any, canvasPanelId: string): Promise<void> {
@@ -5639,44 +5690,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
-      case 'canvasBatchGenerate': {
-        const { canvasId: batchCanvasId, frames: batchFrames, snapshot: batchSnapshot } = (msg.payload || {}) as any;
-        if (!batchFrames?.length) { break; }
-        if (!this._imageGenService.isAvailable) {
-          this._postToPanel(canvasPanelId, { type: 'canvasShowConfig' } as any);
-          break;
-        }
-        const batchSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
-        try {
-          const projectContext = await CanvasManager.buildProjectContext(
-            this._providerManager, batchSettings, this._projectContextManager
-          );
-          const parsedSnapshot = this._canvasManager.buildSnapshot(
-            batchSnapshot?._canvasJson || {},
-            batchSnapshot?.imageBase64 || '',
-            batchSnapshot?.selectedRegion
-          );
-          const regionImageBase64 = parsedSnapshot.selectedRegion?.imageBase64;
-          const stream = this._canvasManager.generateBatchContent(
-            batchCanvasId, batchFrames,
-            this._imageGenService, this._videoGenService,
-            this._providerManager, batchSettings,
-            projectContext, regionImageBase64,
-            parsedSnapshot.selectedRegion?.objects
-          );
-          for await (const chunk of stream) {
-            this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
-          }
-        } catch (err: any) {
-          this._postToPanel(canvasPanelId, {
-            type: 'canvasStreamChunk',
-            payload: { type: 'canvas_error', canvasId: batchCanvasId, error: err.message }
-          } as any);
-        }
-        break;
-      }
+      // F-15: `canvasBatchGenerate` (batch-generation pipeline) and
+      // `canvasImportScreenshot` removed — both were dead code with no webview
+      // producer. The batch pipeline / `generateBatchContent` are gone from
+      // CanvasManager; `_computeCompositionGuide` is kept (reused by smart
+      // prompts).
 
-      case 'canvasImportScreenshot':
       case 'canvasUnifiedPrompt': {
         const payload = msg.payload || {};
         const text = payload.text || '';
@@ -5746,7 +5765,57 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
 
-          // 'reimagine' action removed — legacy /reimagine now maps to 'stitch-edit' in parser
+          case 'reimagine': {
+            // /reimagine — variants of the selected screen/image. If a Stitch
+            // screen is selected use Stitch variants; otherwise AI image variants.
+            const reimagineSnapshot = this._canvasManager.buildSnapshot(
+              payload.snapshot?._canvasJson || {},
+              payload.snapshot?.imageBase64 || '',
+              payload.snapshot?.selectedRegion
+            );
+            // F-3: prefer the explicit stitchScreenRef the webview now sends,
+            // falling back to the selected region's object metadata (the
+            // canvasReimagine pattern at ~5555).
+            const reimagineRef = payload.stitchScreenRef;
+            const reimagineMeta = reimagineSnapshot.selectedRegion?.objects?.[0]?.metadata;
+            const stitchProjectId = reimagineRef?.projectId || reimagineMeta?.stitchProjectId;
+            const stitchScreenId = reimagineRef?.screenId || reimagineMeta?.stitchScreenId;
+            const isStitch = (reimagineRef || reimagineMeta?.engine === 'stitch') && stitchProjectId && stitchScreenId;
+            try {
+              if (isStitch) {
+                const stream = this._canvasManager.reimagineWithStitch(
+                  canvasId,
+                  { projectId: stitchProjectId!, screenId: stitchScreenId! },
+                  parsed.argument
+                );
+                for await (const chunk of stream) {
+                  this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+                }
+                break;
+              }
+              if (!this._imageGenService.isAvailable) {
+                this._postToPanel(canvasPanelId, { type: 'canvasShowConfig' } as any);
+                break;
+              }
+              const reimagineSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
+              const projectContext = await CanvasManager.buildProjectContext(
+                this._providerManager, reimagineSettings, this._projectContextManager
+              );
+              const stream = this._canvasManager.generateImageVariants(
+                { canvasId, prompt: parsed.argument, snapshot: reimagineSnapshot, selectedObjectIds: payload.selectedObjectIds, action: 'reimagine' },
+                this._providerManager, this._imageGenService, reimagineSettings, projectContext
+              );
+              for await (const chunk of stream) {
+                this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
+              }
+            } catch (err: any) {
+              this._postToPanel(canvasPanelId, {
+                type: 'canvasStreamChunk',
+                payload: { type: 'canvas_error', canvasId, error: err.message }
+              } as any);
+            }
+            break;
+          }
 
           case 'video': {
             if (!this._videoGenService.isAvailable) {
@@ -6046,7 +6115,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           case 'stitch-edit': {
             try {
-              const stitchRef = payload.stitchScreenRef;
+              // F-3: the webview sends stitchScreenRef; fall back to the
+              // selected region's object metadata (the canvasReimagine pattern).
+              const stitchRef = payload.stitchScreenRef
+                || this._stitchRefFromSnapshot(payload.snapshot);
               if (!stitchRef) {
                 this._postToPanel(canvasPanelId, {
                   type: 'canvasStreamChunk',
@@ -6069,7 +6141,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           case 'stitch-variants': {
             try {
-              const variantRef = payload.stitchScreenRef;
+              const variantRef = payload.stitchScreenRef
+                || this._stitchRefFromSnapshot(payload.snapshot);
               if (!variantRef) {
                 this._postToPanel(canvasPanelId, {
                   type: 'canvasStreamChunk',
@@ -6080,10 +6153,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               const config = vscode.workspace.getConfiguration('mysti');
               const variantCount = config.get<number>('canvas.stitchVariantCount', 3);
               const creativeRange = config.get<string>('canvas.stitchCreativeRange', 'EXPLORE') as import('../types').StitchCreativeRange;
+              // F-20: anchor the variant row to the source screen's bounds so
+              // variants appear next to the screen they were derived from
+              // (laid out in a row just below it) instead of stacking at (0,0).
+              const sourceBounds = payload.snapshot?.selectedRegion?.bounds;
+              const variantBaseX = sourceBounds?.left ?? 0;
+              const variantBaseY = sourceBounds
+                ? sourceBounds.top + sourceBounds.height + 100
+                : 0;
               const stream = this._canvasManager.generateStitchVariants(
                 canvasId, variantRef, parsed.argument,
                 { variantCount, creativeRange, aspects: ['LAYOUT', 'COLOR_SCHEME'] },
-                variantRef.imageBase64 ? 0 : 0, 0
+                variantBaseX, variantBaseY
               );
               for await (const chunk of stream) {
                 this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
@@ -6099,7 +6180,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           case 'stitch-html': {
             try {
-              const htmlRef = payload.stitchScreenRef;
+              const htmlRef = payload.stitchScreenRef
+                || this._stitchRefFromSnapshot(payload.snapshot);
               if (!htmlRef) {
                 this._postToPanel(canvasPanelId, {
                   type: 'canvasStreamChunk',
@@ -6122,7 +6204,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           case 'design-dna': {
             try {
-              const dnaRef = payload.stitchScreenRef;
+              const dnaRef = payload.stitchScreenRef
+                || this._stitchRefFromSnapshot(payload.snapshot);
               if (!dnaRef) {
                 this._postToPanel(canvasPanelId, {
                   type: 'canvasStreamChunk',
@@ -6215,9 +6298,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               const { CodeGenerationService } = await import('../services/CodeGenerationService');
               this._codeGenService = new CodeGenerationService();
             }
-            const propSettings = this._getSettingsForPanel(this._canvasChatOrigin || this._sidebarId);
             const stream = this._codeGenService.regenerateWithProps({
+              // F-7: pass the real SVG markup AND the current component source so
+              // the regen prompt edits the existing code instead of rebuilding
+              // from a hardcoded empty SVG. The service prefers `currentSource`
+              // as the source of truth and uses SVG as extra context.
               svgMarkup: propPayload.svgMarkup || '',
+              currentSource: propPayload.currentSource || propPayload.componentSource || '',
               modifiedProps: propPayload.modifiedProps,
               framework: propPayload.framework || 'react',
               componentName: propPayload.componentName,
@@ -6328,61 +6415,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
-      case 'canvasRenderComponent': {
-        const renderPayload = msg.payload || {};
-        if (renderPayload.html && renderPayload.objectId) {
-          try {
-            // Write temp HTML file and capture screenshot
-            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-            if (workspaceRoot) {
-              const tmpDir = path.join(workspaceRoot, '.mysti', 'tmp');
-              const tmpDirUri = vscode.Uri.file(tmpDir);
-              try { await vscode.workspace.fs.createDirectory(tmpDirUri); } catch { /* exists */ }
-
-              const tmpFile = path.join(tmpDir, `component-preview-${Date.now()}.html`);
-              const tmpUri = vscode.Uri.file(tmpFile);
-              await vscode.workspace.fs.writeFile(tmpUri, Buffer.from(renderPayload.html, 'utf-8'));
-
-              // Use ScreenshotService if available, otherwise return the HTML as a placeholder
-              // For now, send a progress message — the webview iframe approach handles rendering client-side
-              this._postToPanel(canvasPanelId, {
-                type: 'canvasStreamChunk',
-                payload: {
-                  type: 'canvas_component_render_progress',
-                  canvasId: renderPayload.canvasId || '',
-                  content: 'Component HTML written — rendering preview...',
-                  progress: 50,
-                }
-              } as any);
-
-              // Clean up temp file after a delay
-              setTimeout(() => {
-                try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
-              }, 30000);
-            }
-          } catch (err: any) {
-            console.log(`[Mysti] Canvas: Component render failed: ${err.message}`);
-          }
-        }
-        break;
-      }
+      // F-15: `canvasRenderComponent` stub removed — it had no real producer
+      // (it only wrote a temp file and posted a fake progress chunk). Component
+      // preview rendering happens client-side in the webview iframe.
 
       case 'canvasSaveConfig': {
         const { provider, apiKey } = msg.payload || {};
         if (provider && apiKey) {
           const config = vscode.workspace.getConfiguration('mysti');
-          // Determine if this is a video or image provider
+          // Provider-selection settings are NOT secrets — keep writing them.
           const isVideoProvider = provider === 'sora' || provider === 'veo';
           if (isVideoProvider) {
             await config.update('canvas.videoGenerationProvider', provider, true);
           } else {
             await config.update('canvas.imageGenerationProvider', provider, true);
           }
-          // Save the API key to the appropriate setting
-          if (provider === 'gpt-image-1.5' || provider === 'gpt-image-1' || provider === 'gpt-image-1-mini' || provider === 'sora') {
-            await config.update('canvas.openaiApiKey', apiKey, true);
+          // F-11: the API key goes into SecretStorage, NOT a plaintext setting.
+          if (this._canvasSecrets) {
+            const isOpenAi = provider === 'gpt-image-1.5' || provider === 'gpt-image-1'
+              || provider === 'gpt-image-1-mini' || provider === 'sora';
+            await this._canvasSecrets.set(isOpenAi ? 'openai' : 'gemini', apiKey);
+            // Re-push keys into the generation services so the new key is live
+            // without requiring a reload.
+            await this._refreshCanvasGenKeys();
           } else {
-            await config.update('canvas.geminiApiKey', apiKey, true);
+            console.warn('[Mysti] Canvas: CanvasSecrets not wired — API key not saved.');
           }
           // Notify canvas that config is saved
           this._postToPanel(canvasPanelId, { type: 'canvasConfigSaved', payload: { provider } } as any);

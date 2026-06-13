@@ -127,6 +127,48 @@ describe('CanvasManager', () => {
       expect(result.action).toBe('render');
       expect(result.argument).toBe('localhost:5173');
     });
+
+    // F-4: the slash-command → actionType vocabulary MUST stay in sync with
+    // what the webview prompt bar emits (canvasContent.ts). Each entry below is
+    // a (command, expected action) pair the webview relies on; if the parser
+    // drifts, job overlays leak because the action maps to no completion
+    // handler. See plan 05 Phase 0 F-4 and the webview agent's vocabulary list.
+    describe('F-4 webview action vocabulary cross-check', () => {
+      const cases: Array<[string, string]> = [
+        ['/render localhost:3000', 'render'],
+        ['/design-dna', 'design-dna'],
+        ['/design a dashboard', 'page'],        // /design → 'page' (the F-4 leak fix)
+        ['/image a hero banner', 'generate'],   // /image → 'generate'
+        ['/generate a hero banner', 'generate'],
+        ['/reimagine darker', 'reimagine'],
+        ['/video an intro clip', 'video'],
+        ['/website a portfolio', 'website'],
+        ['/svg', 'svg'],
+        ['/code react', 'code'],
+        ['/edit-element bigger', 'edit-element'],
+        ['/edit-layout two columns', 'edit-layout'],
+        ['/theme dark mode', 'theme'],
+        ['/edit make it blue', 'stitch-edit'],     // /edit → 'stitch-edit'
+        ['/variants', 'stitch-variants'],          // /variants → 'stitch-variants'
+        ['/html', 'stitch-html'],                   // /html → 'stitch-html'
+        ['plain freeform text', 'prompt'],
+      ];
+
+      it.each(cases)('parses %s → %s', (command, expected) => {
+        expect(CanvasManager.parseUnifiedPrompt(command).action).toBe(expected);
+      });
+
+      it('does not let /design-dna fall into /design (longest-prefix wins)', () => {
+        expect(CanvasManager.parseUnifiedPrompt('/design-dna').action).toBe('design-dna');
+        expect(CanvasManager.parseUnifiedPrompt('/design').action).toBe('page');
+      });
+
+      it('does not let /edit-element or /edit-layout fall into /edit', () => {
+        expect(CanvasManager.parseUnifiedPrompt('/edit-element x').action).toBe('edit-element');
+        expect(CanvasManager.parseUnifiedPrompt('/edit-layout x').action).toBe('edit-layout');
+        expect(CanvasManager.parseUnifiedPrompt('/edit x').action).toBe('stitch-edit');
+      });
+    });
   });
 
   // =========================================================================

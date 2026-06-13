@@ -35,9 +35,25 @@ interface GenerateResult {
 export class ImageGenerationService {
   private _provider: ImageGenerationProvider;
 
+  // Keys injected by the caller (resolved from CanvasSecrets). The service no
+  // longer reads `mysti.canvas.*ApiKey` settings or `process.env` for keys
+  // (F-11). Call `setKeys()` before `isAvailable`/`generate`/`analyzeImage`.
+  private _openaiKey = '';
+  private _geminiKey = '';
+
   constructor() {
     this._provider = vscode.workspace.getConfiguration('mysti')
       .get<ImageGenerationProvider>('canvas.imageGenerationProvider', 'none');
+  }
+
+  /**
+   * Inject the API keys resolved from SecretStorage (F-11). Either field may be
+   * omitted/empty when the user hasn't configured that provider. Re-callable
+   * (e.g. after `canvasSaveConfig` writes a new key).
+   */
+  setKeys(keys: { openai?: string; gemini?: string }): void {
+    this._openaiKey = keys.openai || '';
+    this._geminiKey = keys.gemini || '';
   }
 
   get provider(): ImageGenerationProvider {
@@ -68,7 +84,7 @@ export class ImageGenerationService {
   async analyzeImage(imageBase64: string, prompt: string): Promise<string> {
     const provider = this._resolveVisionProvider();
     if (provider === 'none') {
-      throw new Error('No API key configured for vision analysis. Set mysti.canvas.geminiApiKey or mysti.canvas.openaiApiKey in settings.');
+      throw new Error('No API key configured for vision analysis. Add your OpenAI or Gemini key via the Canvas API-key settings.');
     }
 
     console.log(`[Mysti] Vision: Using ${provider} for image analysis (imageSize=${imageBase64.length})`);
@@ -137,7 +153,9 @@ export class ImageGenerationService {
 
     const body = JSON.stringify({
       model: 'gpt-5-mini',
-      max_tokens: 16384,
+      // gpt-5-family Chat Completions reject `max_tokens`; they require
+      // `max_completion_tokens` (F-5).
+      max_completion_tokens: 16384,
       messages: [{ role: 'user', content }],
     });
 
@@ -212,7 +230,7 @@ export class ImageGenerationService {
 
   private async _generateGptImage(prompt: string, model: string, options?: GenerateOptions): Promise<GenerateResult> {
     const apiKey = this._getOpenAIKey();
-    if (!apiKey) { throw new Error('OpenAI API key not configured. Set mysti.canvas.openaiApiKey in settings.'); }
+    if (!apiKey) { throw new Error('OpenAI API key not configured. Add your OpenAI key via the Canvas API-key settings.'); }
 
     const size = options?.frameBounds
       ? ImageGenerationService.mapToApiSize(options.frameBounds.width, options.frameBounds.height)
@@ -296,7 +314,7 @@ export class ImageGenerationService {
 
   private async _generateNanoBanana(prompt: string, model: string, options?: GenerateOptions): Promise<GenerateResult> {
     const apiKey = this._getGeminiKey();
-    if (!apiKey) { throw new Error('Gemini API key not configured. Set mysti.canvas.geminiApiKey in settings.'); }
+    if (!apiKey) { throw new Error('Gemini API key not configured. Add your Gemini key via the Canvas API-key settings.'); }
 
     // Map frame dimensions to Gemini aspect ratio
     const generationConfig: Record<string, any> = {
@@ -403,17 +421,13 @@ export class ImageGenerationService {
   // ========================================================================
 
   private _getOpenAIKey(): string {
-    // Priority: canvas-specific setting → environment variable
-    const settingsKey = vscode.workspace.getConfiguration('mysti').get('canvas.openaiApiKey', '');
-    if (settingsKey) { return settingsKey; }
-    return process.env.OPENAI_API_KEY || '';
+    // F-11: keys come from SecretStorage via setKeys(); no settings/env reads.
+    return this._openaiKey;
   }
 
   private _getGeminiKey(): string {
-    // Priority: canvas-specific setting → environment variable
-    const settingsKey = vscode.workspace.getConfiguration('mysti').get('canvas.geminiApiKey', '');
-    if (settingsKey) { return settingsKey; }
-    return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
+    // F-11: keys come from SecretStorage via setKeys(); no settings/env reads.
+    return this._geminiKey;
   }
 
   private _buildMultipartBody(fields: Record<string, string>, imageBuffer?: Buffer, imageFieldName?: string): { body: Buffer; boundary: string } {
@@ -458,8 +472,9 @@ export class ImageGenerationService {
         });
       });
       req.on('error', reject);
-      req.setTimeout(120000, () => {
-        req.destroy(new Error('Image edit request timed out (120s)'));
+      // F-25: image-edits at high fidelity routinely exceeds 120s; allow 180s.
+      req.setTimeout(180000, () => {
+        req.destroy(new Error('Image edit request timed out (180s)'));
       });
       req.write(body);
       req.end();
@@ -486,8 +501,9 @@ export class ImageGenerationService {
         });
       });
       req.on('error', reject);
-      req.setTimeout(60000, () => {
-        req.destroy(new Error('Image generation request timed out (60s)'));
+      // F-25: gpt-image at 1536×1024 routinely exceeds 60s; allow 180s.
+      req.setTimeout(180000, () => {
+        req.destroy(new Error('Image generation request timed out (180s)'));
       });
       req.write(body);
       req.end();

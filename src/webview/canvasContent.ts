@@ -30,6 +30,13 @@ export function getCanvasContent(
   const nonce = getNonce();
   const fabricUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'fabric.min.js'));
   const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'Mysti-Logo.png'));
+  // F-6: locally bundled sandbox runtime (no unpkg CDN). The parent webview
+  // fetches these (same-origin to itself) and inlines them as <script> text
+  // inside the sandboxed iframe srcdoc, so generated/Stitch code runs in a
+  // unique opaque origin with no allow-same-origin and no network dependency.
+  const sandboxReactUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'canvas-sandbox', 'react.production.min.js'));
+  const sandboxReactDomUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'canvas-sandbox', 'react-dom.production.min.js'));
+  const sandboxBabelUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'canvas-sandbox', 'babel.min.js'));
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -39,12 +46,12 @@ export function getCanvasContent(
     content="default-src 'none';
              img-src ${webview.cspSource} data: blob: https:;
              media-src data: blob:;
-             frame-src blob: data:;
-             child-src blob: data:;
+             frame-src 'self' blob: data:;
+             child-src 'self' blob: data:;
              style-src 'unsafe-inline' https:;
              script-src 'nonce-${nonce}' 'unsafe-eval' ${webview.cspSource};
              font-src ${webview.cspSource} https: data:;
-             connect-src https: data:;">
+             connect-src ${webview.cspSource} https: data:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mysti Canvas</title>
   <style nonce="${nonce}">
@@ -1399,6 +1406,36 @@ export function getCanvasContent(
     var canvasArea = document.getElementById('canvas-area');
     var fabricCanvasEl = document.getElementById('fabric-canvas');
 
+    // F-6: locally bundled sandbox runtime URIs (replaces unpkg CDN). The
+    // parent fetches these once (same-origin to itself), caches the text, and
+    // inlines them into the sandboxed iframe srcdoc.
+    var _SANDBOX_URIS = {
+      react: ${JSON.stringify(sandboxReactUri.toString())},
+      reactDom: ${JSON.stringify(sandboxReactDomUri.toString())},
+      babel: ${JSON.stringify(sandboxBabelUri.toString())}
+    };
+    var _sandboxRuntimeCache = null; // { react, reactDom, babel } text
+    var _sandboxRuntimePromise = null;
+    function _loadSandboxRuntime() {
+      if (_sandboxRuntimeCache) { return Promise.resolve(_sandboxRuntimeCache); }
+      if (_sandboxRuntimePromise) { return _sandboxRuntimePromise; }
+      _sandboxRuntimePromise = Promise.all([
+        fetch(_SANDBOX_URIS.react).then(function(r) { return r.text(); }),
+        fetch(_SANDBOX_URIS.reactDom).then(function(r) { return r.text(); }),
+        fetch(_SANDBOX_URIS.babel).then(function(r) { return r.text(); })
+      ]).then(function(parts) {
+        _sandboxRuntimeCache = { react: parts[0], reactDom: parts[1], babel: parts[2] };
+        return _sandboxRuntimeCache;
+      }).catch(function(err) {
+        console.error('[Mysti Canvas] Failed to load bundled sandbox runtime:', err);
+        _sandboxRuntimePromise = null;
+        throw err;
+      });
+      return _sandboxRuntimePromise;
+    }
+    // Prefetch so React/Babel are warm before the first component renders.
+    _loadSandboxRuntime().catch(function() {});
+
     // ====================================================================
     // Wait for Fabric.js to load (handles async script timing)
     // ====================================================================
@@ -2185,7 +2222,10 @@ export function getCanvasContent(
           return;
         }
         setTool('select'); // Switch FIRST so canvas.selection = true
-        var pointer = canvas.getViewportPoint(opt.e);
+        // F-13: object left/top are world (scene) coordinates, so the click
+        // point must be in scene space too. getViewportPoint returns element
+        // space, which is offset by pan/zoom — getScenePoint is the world point.
+        var pointer = canvas.getScenePoint(opt.e);
         var text = new fabric.IText('', Object.assign({}, controlStyle, {
           left: pointer.x,
           top: pointer.y,
@@ -2245,7 +2285,9 @@ export function getCanvasContent(
       var now = performance.now();
       if (now - cursorThrottleTime > 50) {
         cursorThrottleTime = now;
-        var pointer = canvas.getViewportPoint(opt.e);
+        // F-13: report the cursor in scene/world coordinates (what object
+        // positions use) rather than element/viewport space.
+        var pointer = canvas.getScenePoint(opt.e);
         document.getElementById('status-cursor').textContent = 'X: ' + Math.round(pointer.x) + ' Y: ' + Math.round(pointer.y);
       }
 
@@ -2539,29 +2581,51 @@ export function getCanvasContent(
       }, 150);
     }
 
+    // Shared restore helper using fabric v6's promise-based loadFromJSON (F-2):
+    // v5's callback arg is treated as a per-object *reviver* in v6 (runs once
+    // per revived object, and NEVER when the restored state has zero objects),
+    // which left isUndoRedoing stuck true forever — permanently suppressing
+    // autosave/history. The promise resolves exactly once after the whole load,
+    // including the empty-canvas case, so the zero-object hang is fixed too.
+    function _restoreHistoryState(stateJson) {
+      isUndoRedoing = true;
+      var parsed;
+      try {
+        parsed = JSON.parse(stateJson);
+      } catch (e) {
+        console.error('[Mysti Canvas] History parse failed:', e);
+        isUndoRedoing = false;
+        return;
+      }
+      canvas.loadFromJSON(parsed).then(function() {
+        canvas.getObjects().forEach(function(obj) { obj.set(controlStyle); });
+        canvas.renderAll();
+        isUndoRedoing = false;
+        updateUndoRedoButtons();
+        updateObjectCount();
+      }).catch(function(e) {
+        console.error('[Mysti Canvas] History restore failed:', e);
+        isUndoRedoing = false;
+        updateUndoRedoButtons();
+      });
+    }
+
     function undo() {
-      if (undoStack.length === 0) return;
+      // F-12: the undo stack always has the *current* canvas as its top entry
+      // (saveHistoryState pushes the post-change state). To undo we drop that
+      // top entry onto the redo stack, then load the NEW top (the previous
+      // state). This needs at least 2 entries (current + previous) so the
+      // first undo after a single object add actually reverts.
+      if (undoStack.length < 2) return;
       clearTimeout(historyTimer);
       // Exit any active text editing before undo
       var active = canvas.getActiveObject();
       if (active && active.isEditing) { active.exitEditing(); }
       canvas.discardActiveObject();
-      isUndoRedoing = true;
-      try {
-        var currentState = JSON.stringify(canvas.toJSON(customJsonProps));
-        redoStack.push(currentState);
-        var prevState = undoStack.pop();
-        canvas.loadFromJSON(JSON.parse(prevState), function() {
-          canvas.getObjects().forEach(function(obj) { obj.set(controlStyle); });
-          canvas.renderAll();
-          isUndoRedoing = false;
-          updateUndoRedoButtons();
-          updateObjectCount();
-        });
-      } catch (e) {
-        console.error('[Mysti Canvas] Undo failed:', e);
-        isUndoRedoing = false;
-      }
+      var currentState = undoStack.pop();
+      redoStack.push(currentState);
+      var prevState = undoStack[undoStack.length - 1];
+      _restoreHistoryState(prevState);
     }
 
     function redo() {
@@ -2571,26 +2635,17 @@ export function getCanvasContent(
       var active = canvas.getActiveObject();
       if (active && active.isEditing) { active.exitEditing(); }
       canvas.discardActiveObject();
-      isUndoRedoing = true;
-      try {
-        var currentState = JSON.stringify(canvas.toJSON(customJsonProps));
-        undoStack.push(currentState);
-        var nextState = redoStack.pop();
-        canvas.loadFromJSON(JSON.parse(nextState), function() {
-          canvas.getObjects().forEach(function(obj) { obj.set(controlStyle); });
-          canvas.renderAll();
-          isUndoRedoing = false;
-          updateUndoRedoButtons();
-          updateObjectCount();
-        });
-      } catch (e) {
-        console.error('[Mysti Canvas] Redo failed:', e);
-        isUndoRedoing = false;
-      }
+      var nextState = redoStack.pop();
+      // Keep the restored state as the new top of the undo stack so a
+      // subsequent undo has both current + previous to work with.
+      undoStack.push(nextState);
+      _restoreHistoryState(nextState);
     }
 
     function updateUndoRedoButtons() {
-      document.getElementById('btn-undo').disabled = undoStack.length === 0;
+      // F-12: undo requires both a current snapshot and a previous one on the
+      // stack, so it's only enabled once there are >= 2 entries.
+      document.getElementById('btn-undo').disabled = undoStack.length < 2;
       document.getElementById('btn-redo').disabled = redoStack.length === 0;
     }
 
@@ -3177,6 +3232,33 @@ export function getCanvasContent(
       return job;
     }
 
+    // F-4: tear down EVERY tracked generation job and clear all pending
+    // singletons. Used on canvas_error so no spinner overlay can leak — even
+    // for action types that completion handlers forget (the structural F-4 bug
+    // is properly fixed by jobIds in Phase 1; this is the interim safety net).
+    function genJobClearAll() {
+      for (var id in _genJobs) {
+        if (Object.prototype.hasOwnProperty.call(_genJobs, id)) {
+          var job = _genJobs[id];
+          if (job && job.overlayEl) {
+            job.overlayEl.style.opacity = '0';
+            (function(ovl) {
+              setTimeout(function() { if (ovl && ovl.parentNode) ovl.parentNode.removeChild(ovl); }, 200);
+            })(job.overlayEl);
+          }
+        }
+      }
+      _genJobs = {};
+      _pendingGenerateJob = null;
+      _pendingReimagineJob = null;
+      _pendingVideoJob = null;
+      _pendingSvgJob = null;
+      _pendingCodeJob = null;
+      _pendingLayoutJob = null;
+      _pendingMiscJob = null;
+      _pendingBatchJobs = {};
+    }
+
     function genJobGetBounds(jobId) {
       var job = _genJobs[jobId];
       if (!job) return null;
@@ -3204,6 +3286,11 @@ export function getCanvasContent(
     var _pendingSvgJob = null;
     var _pendingCodeJob = null;
     var _pendingLayoutJob = null;
+    // F-4: slot for action types without a dedicated completion handler
+    // (design-dna, render, edit-element, edit-layout, stitch-edit,
+    // stitch-variants, stitch-html). Tracked so their spinner overlay is torn
+    // down by genJobClearAll() on canvas_error instead of leaking forever.
+    var _pendingMiscJob = null;
     var _lastLayoutFrameMap = null;
     var _pendingBatchFrameMap = null;
     var _pendingBatchJobs = {};
@@ -3565,10 +3652,16 @@ export function getCanvasContent(
       if (!text) return;
       promptBarSuggestions.classList.remove('visible');
 
-      // Determine action type from slash command to create the right job
+      // F-4: action type names MUST match CanvasManager.parseUnifiedPrompt's
+      // vocabulary so completion handlers fire and overlays don't leak. The
+      // canonical set the parser returns is:
+      //   render, design-dna, page (from /design), generate (from /image),
+      //   video, website, svg, code, edit-element, edit-layout, theme,
+      //   stitch-edit, stitch-variants, stitch-html, prompt.
+      // Note: /design maps to 'page' (NOT 'design') to mirror the parser.
       var actionType = 'prompt';
       if (text.startsWith('/design-dna')) { actionType = 'design-dna'; }
-      else if (text.startsWith('/design')) { actionType = 'design'; }
+      else if (text.startsWith('/design')) { actionType = 'page'; }
       else if (text.startsWith('/image')) { actionType = 'generate'; }
       else if (text.startsWith('/video')) { actionType = 'video'; }
       else if (text.startsWith('/website')) { actionType = 'website'; }
@@ -3582,7 +3675,18 @@ export function getCanvasContent(
       else if (text.startsWith('/variants')) { actionType = 'stitch-variants'; }
       else if (text.startsWith('/html')) { actionType = 'stitch-html'; }
 
-      // Create a background job for generation actions (not plain prompts)
+      // F-3: the slash commands that operate on a Stitch screen (/edit,
+      // /variants, /html, /design-dna) require the screen's stitchScreenRef.
+      // The prompt bar never sent it, so the extension always errored. Attach
+      // the active object's ref (null if none — the extension also has a
+      // snapshot.selectedRegion fallback).
+      var _activeForRef = canvas.getActiveObject();
+      var stitchScreenRef = (_activeForRef && _activeForRef._stitchScreenRef) || null;
+
+      // Create a background job for generation actions (not plain prompts).
+      // F-4: EVERY non-prompt action is assigned a tracked slot so its overlay
+      // is reliably cleared (by its completion handler or by genJobClearAll on
+      // canvas_error).
       if (actionType !== 'prompt') {
         var job = genJobCreate(actionType);
         if (actionType === 'generate') { _pendingGenerateJob = job; }
@@ -3596,6 +3700,7 @@ export function getCanvasContent(
         else if (actionType === 'code') { _pendingCodeJob = job; }
         else if (actionType === 'theme' || actionType === 'page' || actionType === 'section'
             || actionType === 'component' || actionType === 'website') { _pendingLayoutJob = job; }
+        else { _pendingMiscJob = job; } // design-dna, render, edit-element, edit-layout, stitch-*
       } else {
         // Plain prompts still block
         unifiedBusy = true;
@@ -3612,6 +3717,7 @@ export function getCanvasContent(
           snapshot: snapshot,
           selectedObjectIds: getSelectedIds(),
           designTheme: _designSpec ? _designSpec.theme : null,
+          stitchScreenRef: stitchScreenRef,
         }
       });
       unifiedInput.value = '';
@@ -3881,7 +3987,18 @@ export function getCanvasContent(
     // ====================================================================
     function buildSnapshot() {
       var json = canvas.toJSON(customJsonProps);
-      var fullBase64 = canvas.toDataURL({ format: 'png' }).replace(/^data:image\\/png;base64,/, '');
+      // F-1: fabric v6 toDataURL crops in screen/viewport space and keeps the
+      // current zoom/pan. For a true full-scene capture, temporarily reset the
+      // viewportTransform to identity so the whole scene (not just the visible
+      // viewport) is rasterized, then restore the user's view afterwards.
+      var fullCaptureVpt = canvas.viewportTransform.slice();
+      var fullBase64;
+      canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      try {
+        fullBase64 = canvas.toDataURL({ format: 'png' }).replace(/^data:image\\/png;base64,/, '');
+      } finally {
+        canvas.setViewportTransform(fullCaptureVpt);
+      }
 
       var selectedRegion = null;
       var active = canvas.getActiveObject();
@@ -3940,14 +4057,29 @@ export function getCanvasContent(
 
         // Validate non-zero crop before generating snapshot
         if (cropW > 0 && cropH > 0) {
-          // Use fabric's toDataURL with world-space crop params —
-          // it handles viewport transform + retina scaling internally
+          // F-1: the crop bounds above are in WORLD space (from aCoords), but
+          // fabric v6 toDataURL interprets left/top/width/height in
+          // SCREEN/VIEWPORT space (it subtracts left/top from the viewport
+          // translation and keeps the current zoom). Convert world->screen:
+          //   left_screen = left_world * zoom + vpt[4]
+          //   top_screen  = top_world  * zoom + vpt[5]
+          //   width_screen  = width_world  * zoom
+          //   height_screen = height_world * zoom
+          // and pass multiplier: 1/zoom so the output is rasterized at the
+          // crop's native (world) resolution regardless of zoom level.
+          var cropZoom = canvas.getZoom();
+          var cropVpt = canvas.viewportTransform;
+          var screenLeft = cropLeft * cropZoom + cropVpt[4];
+          var screenTop = cropTop * cropZoom + cropVpt[5];
+          var screenW = cropW * cropZoom;
+          var screenH = cropH * cropZoom;
           var regionDataUrl = canvas.toDataURL({
             format: 'png',
-            left: cropLeft,
-            top: cropTop,
-            width: cropW,
-            height: cropH,
+            left: screenLeft,
+            top: screenTop,
+            width: screenW,
+            height: screenH,
+            multiplier: cropZoom > 0 ? 1 / cropZoom : 1,
           });
           var regionBase64 = regionDataUrl.replace(/^data:image\\/png;base64,/, '');
           selectedRegion = {
@@ -4146,8 +4278,11 @@ export function getCanvasContent(
           if (targetObject && canvas.getObjects().includes(targetObject)) {
             frameLeft = targetObject.left;
             frameTop = targetObject.top;
-            frameW = targetObject.width;
-            frameH = targetObject.height;
+            // F-18: fabric resizes via scaleX/scaleY, not width/height. Use the
+            // SCALED dimensions so the image fills the frame's VISIBLE size
+            // after the user has resized it with the handles.
+            frameW = targetObject.getScaledWidth();
+            frameH = targetObject.getScaledHeight();
           } else {
             frameLeft = targetBounds.left;
             frameTop = targetBounds.top;
@@ -4235,8 +4370,10 @@ export function getCanvasContent(
             if (targetObject && canvas.getObjects().includes(targetObject)) {
               vFrameLeft = targetObject.left;
               vFrameTop = targetObject.top;
-              vFrameW = targetObject.width;
-              vFrameH = targetObject.height;
+              // F-18: use scaled dimensions so the video poster matches the
+              // frame's visible size after handle-resizing.
+              vFrameW = targetObject.getScaledWidth();
+              vFrameH = targetObject.getScaledHeight();
             } else {
               vFrameLeft = targetBounds.left;
               vFrameTop = targetBounds.top;
@@ -4448,16 +4585,18 @@ export function getCanvasContent(
     var propsPanel = document.getElementById('props-panel');
     var propsPanelBody = document.getElementById('props-panel-body');
     var propsPanelTitle = document.getElementById('props-panel-title');
-    var _currentPropsData = null; // { props, componentName, framework, svgMarkup }
+    var _currentPropsData = null; // { props, componentName, framework, sourceObjectId }
 
     document.getElementById('props-panel-close').addEventListener('click', function() {
       propsPanel.classList.remove('visible');
       _currentPropsData = null;
     });
 
-    function showPropsPanel(props, componentName, framework) {
+    function showPropsPanel(props, componentName, framework, sourceObjectId) {
       if (!props || !props.length) return;
-      _currentPropsData = { props: props, componentName: componentName, framework: framework };
+      // F-7: remember which object owns these props so Apply can resend the
+      // real current SVG markup + component source (not an empty SVG).
+      _currentPropsData = { props: props, componentName: componentName, framework: framework, sourceObjectId: sourceObjectId || null };
       propsPanelTitle.textContent = componentName || 'Properties';
       propsPanelBody.innerHTML = '';
 
@@ -4558,6 +4697,27 @@ export function getCanvasContent(
         return { id: p.id, name: p.name, type: p.type, value: value, options: p.options, category: p.category };
       });
 
+      // F-7: send the REAL current SVG markup and component source so the
+      // model edits the actual design instead of regenerating from an empty
+      // SVG. Pull them from the owning object's view data.
+      var propsSvgMarkup = '';
+      var propsCurrentSource = '';
+      if (_currentPropsData.sourceObjectId) {
+        var propsObj = _findObjectById(_currentPropsData.sourceObjectId);
+        var propsVd = propsObj ? _getViewData(propsObj) : null;
+        if (propsVd) {
+          propsSvgMarkup = propsVd.svgMarkup || '';
+          if (propsVd.codeFiles && propsVd.codeFiles.length) {
+            // Prefer the component file; fall back to the first file.
+            var compFile = null;
+            for (var pfi = 0; pfi < propsVd.codeFiles.length; pfi++) {
+              if (propsVd.codeFiles[pfi].fileType === 'component') { compFile = propsVd.codeFiles[pfi]; break; }
+            }
+            propsCurrentSource = (compFile || propsVd.codeFiles[0]).content || '';
+          }
+        }
+      }
+
       showPromptStatus('Updating code with new properties...', 20);
       vscodeApi.postMessage({
         type: 'canvasUpdateProps',
@@ -4566,7 +4726,8 @@ export function getCanvasContent(
           modifiedProps: modifiedProps,
           componentName: _currentPropsData.componentName,
           framework: _currentPropsData.framework,
-          svgMarkup: '',
+          svgMarkup: propsSvgMarkup,
+          currentSource: propsCurrentSource,
         }
       });
     });
@@ -5263,12 +5424,20 @@ export function getCanvasContent(
     var _iframeContainer = document.getElementById('iframe-overlay-container');
     var _iframeSyncRaf = null;
 
-    function _buildStandaloneHtmlWithBridge(code, componentName, framework) {
-      var baseHtml = _buildStandaloneHtml(code, componentName, framework);
+    // F-6: bridge runs in a sandboxed iframe with NO allow-same-origin (opaque
+    // origin). Communication uses a MessageChannel: the parent posts a private
+    // port via the iframe window on load; the bridge replies/receives over that
+    // port. Falls back to window.parent.postMessage until the port arrives.
+    // The old same-origin DOM-rewrite "reload" path is removed — the parent
+    // now recreates the iframe via srcdoc (no same-origin access needed).
+    function _buildStandaloneHtmlWithBridge(code, componentName, framework, runtime) {
+      var baseHtml = _buildStandaloneHtml(code, componentName, framework, runtime);
       // Inject bridge script before </body>
       var bridgeScript = '<script>'
         + '(function(){'
         + 'var selectedEl=null;'
+        + 'var _port=null;'
+        + 'function _send(msg){if(_port){_port.postMessage(msg);}else{try{window.parent.postMessage(msg,"*");}catch(ex){}}}'
         + 'var hl=document.createElement("div");'
         + 'hl.style.cssText="position:fixed;pointer-events:none;border:2px solid #3794ff;background:rgba(55,148,255,0.08);z-index:99999;display:none;transition:all 0.08s;box-sizing:border-box;";'
         + 'document.body.appendChild(hl);'
@@ -5301,7 +5470,7 @@ export function getCanvasContent(
         + 'e.preventDefault();e.stopPropagation();'
         + 'selectedEl=e.target;posOvl(sl,selectedEl);'
         + 'var cs=window.getComputedStyle(selectedEl);'
-        + 'window.parent.postMessage({type:"mysti-element-selected",payload:{'
+        + '_send({type:"mysti-element-selected",payload:{'
         + 'selectorPath:buildSel(selectedEl),'
         + 'tagName:selectedEl.tagName.toLowerCase(),'
         + 'className:selectedEl.className||"",'
@@ -5310,31 +5479,54 @@ export function getCanvasContent(
         + 'innerHTML:(selectedEl.innerHTML||"").substring(0,1000),'
         + 'computedStyles:extractStyles(cs),'
         + 'boundingRect:{left:0,top:0,width:selectedEl.offsetWidth,height:selectedEl.offsetHeight}'
-        + '}},"*");},true);'
-        + 'function toCamel(s){return s.replace(/-([a-z])/g,function(m,c){return c.toUpperCase();});}'
+        + '}});},true);'
+        + 'function _handle(d){'
+        + 'if(!d||!d.type)return;'
+        + 'if(d.type==="mysti-apply-style"){'
+        + 'var t=selectedEl;if(d.payload.selectorPath){try{t=document.querySelector(d.payload.selectorPath)||selectedEl;}catch(ex){}}if(t){var p=d.payload.property;if(p.indexOf("-")>=0){t.style.setProperty(p,d.payload.value);}else{t.style[p]=d.payload.value;}}}'
+        + 'if(d.type==="mysti-apply-text"){'
+        + 'var t2=selectedEl;if(d.payload.selectorPath){try{t2=document.querySelector(d.payload.selectorPath)||selectedEl;}catch(ex){}}if(t2)t2.textContent=d.payload.text;}'
+        + 'if(d.type==="mysti-get-dom-tree"){'
+        + '_send({type:"mysti-dom-tree",payload:{html:document.body.innerHTML.substring(0,5000)}});}'
+        + '}'
+        // Receive the private MessageChannel port from the parent, then route
+        // all subsequent messages over it. Window-level listener stays as a
+        // fallback for parents that have not yet posted a port.
         + 'window.addEventListener("message",function(e){'
-        + 'if(!e.data||!e.data.type)return;'
-        + 'if(e.data.type==="mysti-apply-style"){'
-        + 'var t=selectedEl;if(e.data.payload.selectorPath){try{t=document.querySelector(e.data.payload.selectorPath)||selectedEl;}catch(ex){}}if(t){var p=e.data.payload.property;if(p.indexOf("-")>=0){t.style.setProperty(p,e.data.payload.value);}else{t.style[p]=e.data.payload.value;}}}'
-        + 'if(e.data.type==="mysti-apply-text"){'
-        + 'var t2=selectedEl;if(e.data.payload.selectorPath){try{t2=document.querySelector(e.data.payload.selectorPath)||selectedEl;}catch(ex){}}if(t2)t2.textContent=e.data.payload.text;}'
-        + 'if(e.data.type==="mysti-get-dom-tree"){'
-        + 'window.parent.postMessage({type:"mysti-dom-tree",payload:{html:document.body.innerHTML.substring(0,5000)}},"*");}'
-        + 'if(e.data.type==="mysti-reload"){'
-        + 'document.open();document.write(e.data.payload.html);document.close();}'
+        + 'if(e.data==="mysti-port"&&e.ports&&e.ports[0]){_port=e.ports[0];_port.onmessage=function(ev){_handle(ev.data);};return;}'
+        + '_handle(e.data);'
         + '});'
         + '})();'
         + '<\\/script>';
       return baseHtml.replace('</body>', bridgeScript + '</body>');
     }
 
+    // F-6: establish a private MessageChannel between the parent and a freshly
+    // created sandboxed iframe. Called on the iframe's 'load' event so the
+    // bridge's window listener is ready. The parent keeps port1; the iframe
+    // receives port2 and routes its bridge traffic over it.
+    function _wireIframePort(objId) {
+      var overlay = _iframeOverlays[objId];
+      if (!overlay || !overlay.iframe || !overlay.iframe.contentWindow) return;
+      try {
+        var channel = new MessageChannel();
+        overlay.port = channel.port1;
+        channel.port1.onmessage = function(ev) { _handleIframeBridgeMessage(objId, ev.data); };
+        overlay.iframe.contentWindow.postMessage('mysti-port', '*', [channel.port2]);
+      } catch (e) {
+        console.log('[Mysti Canvas] Failed to wire iframe port:', e);
+      }
+    }
+
     function _createStitchIframe(obj, htmlContent, nodeWidth, nodeHeight) {
       if (!obj.id || _iframeOverlays[obj.id]) return;
 
-      // Wrap raw HTML to ensure it renders at the intended design dimensions
+      // Wrap raw HTML to ensure it renders at the intended design dimensions.
+      // F-6: inject a restrictive inner CSP (opaque-origin sandbox).
+      var stitchCspMeta = '<meta http-equiv="Content-Security-Policy" content="' + _SANDBOX_INNER_CSP + '">';
       var wrappedHtml = htmlContent;
       if (wrappedHtml.indexOf('<html') === -1) {
-        wrappedHtml = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        wrappedHtml = '<!DOCTYPE html><html><head><meta charset="utf-8">' + stitchCspMeta
           + '<meta name="viewport" content="width=' + nodeWidth + '">'
           + '<style>*{margin:0;padding:0;box-sizing:border-box;}body{overflow:hidden;}</style>'
           + '</head><body>' + htmlContent + '</body></html>';
@@ -5343,18 +5535,21 @@ export function getCanvasContent(
       var wrapper = document.createElement('div');
       wrapper.className = 'stitch-iframe-wrapper';
       var iframe = document.createElement('iframe');
-      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+      // F-6: NO allow-same-origin — opaque origin can't reach the parent/vscodeApi.
+      iframe.setAttribute('sandbox', 'allow-scripts');
+      var objId = obj.id;
+      iframe.addEventListener('load', function() { _wireIframePort(objId); });
       // Render at full design resolution — CSS transform scales to fit wrapper
       iframe.style.width = nodeWidth + 'px';
       iframe.style.height = nodeHeight + 'px';
       iframe.style.transformOrigin = '0 0';
-      var blob = new Blob([wrappedHtml], { type: 'text/html' });
-      iframe.src = URL.createObjectURL(blob);
+      // F-6: srcdoc instead of Blob URL (Blob inherits the webview origin).
+      iframe.setAttribute('srcdoc', wrappedHtml);
       wrapper.appendChild(iframe);
       _iframeContainer.appendChild(wrapper);
 
       _iframeOverlays[obj.id] = {
-        wrapper: wrapper, iframe: iframe, objectRef: obj, blobUrl: iframe.src,
+        wrapper: wrapper, iframe: iframe, objectRef: obj, port: null,
         designWidth: nodeWidth, designHeight: nodeHeight
       };
       _syncIframePosition(obj);
@@ -5379,22 +5574,37 @@ export function getCanvasContent(
       }
       if (!componentFile) return;
 
-      var html = _buildStandaloneHtmlWithBridge(componentFile.content, vd.componentName || '', vd.framework || 'html');
-      vd.componentHtml = html;
+      var framework = vd.framework || 'html';
+      var needsRuntime = framework === 'react';
 
+      // Create the wrapper/iframe immediately so position sync works; populate
+      // srcdoc once the (cached) sandbox runtime resolves. F-6: NO
+      // allow-same-origin; srcdoc instead of Blob URL.
       var wrapper = document.createElement('div');
       wrapper.className = 'component-iframe-wrapper';
       var iframe = document.createElement('iframe');
-      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-      // Use blob URL for CSP compatibility
-      var blob = new Blob([html], { type: 'text/html' });
-      iframe.src = URL.createObjectURL(blob);
+      iframe.setAttribute('sandbox', 'allow-scripts');
+      var objId = obj.id;
+      iframe.addEventListener('load', function() { _wireIframePort(objId); });
       wrapper.appendChild(iframe);
       _iframeContainer.appendChild(wrapper);
 
-      _iframeOverlays[obj.id] = { wrapper: wrapper, iframe: iframe, objectRef: obj, blobUrl: iframe.src };
+      _iframeOverlays[obj.id] = { wrapper: wrapper, iframe: iframe, objectRef: obj, port: null };
       vd.liveIframeActive = true;
       _syncIframePosition(obj);
+
+      var build = function(runtime) {
+        // Bail if the overlay was destroyed before the runtime loaded.
+        if (!_iframeOverlays[objId] || _iframeOverlays[objId].iframe !== iframe) return;
+        var html = _buildStandaloneHtmlWithBridge(componentFile.content, vd.componentName || '', framework, runtime);
+        vd.componentHtml = html;
+        iframe.setAttribute('srcdoc', html);
+      };
+      if (needsRuntime) {
+        _loadSandboxRuntime().then(build).catch(function() { build(null); });
+      } else {
+        build(null);
+      }
       console.log('[Mysti Canvas] Created live iframe for object:', obj.id);
     }
 
@@ -5449,7 +5659,9 @@ export function getCanvasContent(
     function _destroyComponentIframe(objId) {
       var overlay = _iframeOverlays[objId];
       if (!overlay) return;
-      if (overlay.blobUrl) { URL.revokeObjectURL(overlay.blobUrl); }
+      // F-6: srcdoc-based iframes carry no Blob URL to revoke; close the
+      // MessageChannel port instead.
+      if (overlay.port) { try { overlay.port.close(); } catch (e) {} overlay.port = null; }
       overlay.wrapper.remove();
       delete _iframeOverlays[objId];
       // Clear liveIframeActive on viewData if object still exists
@@ -5486,19 +5698,24 @@ export function getCanvasContent(
     function _reloadComponentIframe(objId, newCode, componentName, framework) {
       var overlay = _iframeOverlays[objId];
       if (!overlay) return;
-      var newHtml = _buildStandaloneHtmlWithBridge(newCode, componentName, framework);
-      // Revoke old blob, create new
-      if (overlay.blobUrl) { URL.revokeObjectURL(overlay.blobUrl); }
-      var blob = new Blob([newHtml], { type: 'text/html' });
-      var newUrl = URL.createObjectURL(blob);
-      overlay.iframe.src = newUrl;
-      overlay.blobUrl = newUrl;
-      // Update viewData
-      var obj = overlay.objectRef;
-      if (obj && obj._viewData) {
-        obj._viewData.componentHtml = newHtml;
+      var needsRuntime = framework === 'react';
+      // F-6: reset srcdoc instead of the old same-origin rewrite/blob path.
+      // Setting srcdoc reloads the iframe (firing 'load' → re-wiring a fresh
+      // port). Close the stale port first.
+      if (overlay.port) { try { overlay.port.close(); } catch (e) {} overlay.port = null; }
+      var apply = function(runtime) {
+        if (!_iframeOverlays[objId] || _iframeOverlays[objId] !== overlay) return;
+        var newHtml = _buildStandaloneHtmlWithBridge(newCode, componentName, framework, runtime);
+        overlay.iframe.setAttribute('srcdoc', newHtml);
+        var obj = overlay.objectRef;
+        if (obj && obj._viewData) { obj._viewData.componentHtml = newHtml; }
+        console.log('[Mysti Canvas] Reloaded iframe for object:', objId);
+      };
+      if (needsRuntime) {
+        _loadSandboxRuntime().then(apply).catch(function() { apply(null); });
+      } else {
+        apply(null);
       }
-      console.log('[Mysti Canvas] Reloaded iframe for object:', objId);
     }
 
     // ====================================================================
@@ -5514,52 +5731,66 @@ export function getCanvasContent(
       return null;
     }
 
-    // Listen for messages from component iframes (bridge script)
-    window.addEventListener('message', function(event) {
-      if (!event.data || !event.data.type) return;
-      // Only handle mysti- prefixed messages from iframes
-      if (typeof event.data.type !== 'string' || event.data.type.indexOf('mysti-') !== 0) return;
+    // F-6: send a message TO an iframe bridge — prefer the private port, fall
+    // back to window.postMessage (used before the port handshake completes).
+    function _sendToIframeBridge(objId, msg) {
+      var overlay = _iframeOverlays[objId];
+      if (!overlay) return;
+      if (overlay.port) {
+        try { overlay.port.postMessage(msg); return; } catch (e) {}
+      }
+      if (overlay.iframe && overlay.iframe.contentWindow) {
+        try { overlay.iframe.contentWindow.postMessage(msg, '*'); } catch (e) {}
+      }
+    }
 
-      if (event.data.type === 'mysti-element-selected') {
-        // Identify which object this iframe belongs to
-        var objectId = null;
-        for (var id in _iframeOverlays) {
-          try {
-            if (_iframeOverlays[id].iframe.contentWindow === event.source) {
-              objectId = id; break;
-            }
-          } catch (e) { /* cross-origin access error — skip */ }
-        }
-        if (!objectId) return;
+    // F-6: unified handler for bridge messages, regardless of transport
+    // (MessageChannel port or window-message fallback). objId is resolved by
+    // the caller (port closure binds it; the window fallback matches source).
+    function _handleIframeBridgeMessage(objId, data) {
+      if (!data || typeof data.type !== 'string' || data.type.indexOf('mysti-') !== 0) return;
+      if (!objId) return;
 
+      if (data.type === 'mysti-element-selected') {
         _selectedElement = {
-          objectId: objectId,
-          selectorPath: event.data.payload.selectorPath,
-          tagName: event.data.payload.tagName,
-          className: event.data.payload.className,
-          id: event.data.payload.id,
-          textContent: event.data.payload.textContent,
-          innerHTML: event.data.payload.innerHTML,
-          computedStyles: event.data.payload.computedStyles,
-          boundingRect: event.data.payload.boundingRect,
+          objectId: objId,
+          selectorPath: data.payload.selectorPath,
+          tagName: data.payload.tagName,
+          className: data.payload.className,
+          id: data.payload.id,
+          textContent: data.payload.textContent,
+          innerHTML: data.payload.innerHTML,
+          computedStyles: data.payload.computedStyles,
+          boundingRect: data.payload.boundingRect,
           domSnapshot: null,
         };
         showElementInspector(_selectedElement);
         _updateElementActionButtons(true);
         console.log('[Mysti Canvas] Element selected:', _selectedElement.tagName, _selectedElement.selectorPath);
-
         // Request DOM tree for AI context
-        var overlay = _iframeOverlays[objectId];
-        if (overlay && overlay.iframe.contentWindow) {
-          try { overlay.iframe.contentWindow.postMessage({ type: 'mysti-get-dom-tree' }, '*'); } catch (e) {}
-        }
+        _sendToIframeBridge(objId, { type: 'mysti-get-dom-tree' });
       }
 
-      if (event.data.type === 'mysti-dom-tree') {
+      if (data.type === 'mysti-dom-tree') {
         if (_selectedElement) {
-          _selectedElement.domSnapshot = event.data.payload.html;
+          _selectedElement.domSnapshot = data.payload.html;
         }
       }
+    }
+
+    // Window-message fallback: only fires before the per-iframe port is wired.
+    // Identify the source iframe by its contentWindow (window-reference
+    // identity still works without same-origin).
+    window.addEventListener('message', function(event) {
+      if (!event.data || typeof event.data.type !== 'string' || event.data.type.indexOf('mysti-') !== 0) return;
+      var objectId = null;
+      for (var id in _iframeOverlays) {
+        if (_iframeOverlays[id].iframe && _iframeOverlays[id].iframe.contentWindow === event.source) {
+          objectId = id; break;
+        }
+      }
+      if (!objectId) return;
+      _handleIframeBridgeMessage(objectId, event.data);
     });
 
     function _clearElementSelection() {
@@ -5766,27 +5997,19 @@ export function getCanvasContent(
     }
 
     function _applyLiveStyleEdit(objectId, selectorPath, cssProp, value) {
-      var overlay = _iframeOverlays[objectId];
-      if (!overlay || !overlay.iframe.contentWindow) return;
-      try {
-        overlay.iframe.contentWindow.postMessage({
-          type: 'mysti-apply-style',
-          payload: { selectorPath: selectorPath, property: cssProp, value: value }
-        }, '*');
-      } catch (e) { console.log('[Mysti Canvas] Failed to send style edit to iframe:', e); }
+      // F-6: route through the MessageChannel bridge (port or window fallback).
+      _sendToIframeBridge(objectId, {
+        type: 'mysti-apply-style',
+        payload: { selectorPath: selectorPath, property: cssProp, value: value }
+      });
     }
 
     function _applyLiveEdit(objectId, selectorPath, cssProp, textValue) {
-      var overlay = _iframeOverlays[objectId];
-      if (!overlay || !overlay.iframe.contentWindow) return;
-      try {
-        if (textValue !== undefined && textValue !== null) {
-          overlay.iframe.contentWindow.postMessage({
-            type: 'mysti-apply-text',
-            payload: { selectorPath: selectorPath, text: textValue }
-          }, '*');
-        }
-      } catch (e) { console.log('[Mysti Canvas] Failed to send text edit to iframe:', e); }
+      if (textValue === undefined || textValue === null) return;
+      _sendToIframeBridge(objectId, {
+        type: 'mysti-apply-text',
+        payload: { selectorPath: selectorPath, text: textValue }
+      });
     }
 
     function _applyEditsToSource(objectId, edits) {
@@ -5971,27 +6194,44 @@ export function getCanvasContent(
         console.log('[Mysti Canvas] Live component preview created for:', obj.id);
       }
 
-      // Also send to extension for static screenshot fallback
-      var html = _buildStandaloneHtml(componentFile.content, componentName, framework);
-      vscodeApi.postMessage({
-        type: 'canvasRenderComponent',
-        payload: {
-          html: html,
-          objectId: obj.id,
-          componentName: componentName,
-          framework: framework
-        }
-      });
+      // Also send to extension for static screenshot fallback. F-6: inline the
+      // bundled runtime so the produced HTML is self-contained (no unpkg).
+      var _postRenderComponent = function(runtime) {
+        var html = _buildStandaloneHtml(componentFile.content, componentName, framework, runtime);
+        vscodeApi.postMessage({
+          type: 'canvasRenderComponent',
+          payload: {
+            html: html,
+            objectId: obj.id,
+            componentName: componentName,
+            framework: framework
+          }
+        });
+      };
+      if ((framework || 'react') === 'react') {
+        _loadSandboxRuntime().then(_postRenderComponent).catch(function() { _postRenderComponent(null); });
+      } else {
+        _postRenderComponent(null);
+      }
     }
 
-    function _buildStandaloneHtml(code, componentName, framework) {
+    // F-6: build standalone page with the bundled React/Babel runtime inlined
+    // as <script> text (no unpkg, no external src). The inner sandboxed
+    // document carries its own permissive CSP — safe because, without
+    // allow-same-origin, this opaque-origin frame cannot reach the parent
+    // webview, vscodeApi, or workspace. 'runtime' is the cached bundle text
+    // ({react, reactDom, babel}); for 'html'/'vue' it is not needed.
+    var _SANDBOX_INNER_CSP = "default-src 'none'; "
+      + "script-src 'unsafe-inline' 'unsafe-eval'; "
+      + "style-src 'unsafe-inline'; "
+      + "img-src data: blob: https:; "
+      + "font-src data: https:; "
+      + "connect-src 'none';";
+    function _buildStandaloneHtml(code, componentName, framework, runtime) {
+      var cspMeta = '<meta http-equiv="Content-Security-Policy" content="' + _SANDBOX_INNER_CSP + '">';
       if (framework === 'html') {
-        return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{margin:0;padding:16px;font-family:system-ui,-apple-system,sans-serif;background:#fff;}</style></head><body>' + code + '</body></html>';
+        return '<!DOCTYPE html><html><head><meta charset="utf-8">' + cspMeta + '<style>body{margin:0;padding:16px;font-family:system-ui,-apple-system,sans-serif;background:#fff;}</style></head><body>' + code + '</body></html>';
       }
-      // For React/Vue, build a minimal HTML page with inline script
-      var reactCdn = 'https://unpkg.com/react@18/umd/react.production.min.js';
-      var reactDomCdn = 'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js';
-      var babelCdn = 'https://unpkg.com/@babel/standalone/babel.min.js';
 
       if (framework === 'react') {
         // Strip import/export to make it work inline
@@ -5999,11 +6239,14 @@ export function getCanvasContent(
           .replace(/^import\\s+.*$/gm, '')
           .replace(/^export\\s+default\\s+/gm, 'var _Component = ')
           .replace(/^export\\s+/gm, 'var ');
-        return '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        var reactJs = runtime && runtime.react ? runtime.react : '';
+        var reactDomJs = runtime && runtime.reactDom ? runtime.reactDom : '';
+        var babelJs = runtime && runtime.babel ? runtime.babel : '';
+        return '<!DOCTYPE html><html><head><meta charset="utf-8">' + cspMeta
           + '<style>body{margin:0;padding:16px;font-family:system-ui,-apple-system,sans-serif;background:#fff;}</style>'
-          + '<script src="' + reactCdn + '"><\\/script>'
-          + '<script src="' + reactDomCdn + '"><\\/script>'
-          + '<script src="' + babelCdn + '"><\\/script>'
+          + '<script>' + reactJs + '<\\/script>'
+          + '<script>' + reactDomJs + '<\\/script>'
+          + '<script>' + babelJs + '<\\/script>'
           + '</head><body><div id="root"></div>'
           + '<script type="text/babel">'
           + inlineCode
@@ -6013,7 +6256,7 @@ export function getCanvasContent(
       }
 
       // Vue fallback — simpler approach
-      return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{margin:0;padding:16px;font-family:system-ui,-apple-system,sans-serif;background:#fff;}</style></head><body><pre>' + code.replace(/</g, '&lt;') + '</pre></body></html>';
+      return '<!DOCTYPE html><html><head><meta charset="utf-8">' + cspMeta + '<style>body{margin:0;padding:16px;font-family:system-ui,-apple-system,sans-serif;background:#fff;}</style></head><body><pre>' + code.replace(/</g, '&lt;') + '</pre></body></html>';
     }
 
     // Tab click handlers
@@ -6180,6 +6423,8 @@ export function getCanvasContent(
               break;
 
             case 'canvas_render_complete':
+              // F-4: clear the misc job slot (render has no dedicated slot).
+              if (_pendingMiscJob) { genJobComplete(_pendingMiscJob.id); _pendingMiscJob = null; }
               showPromptStatusMessage('Page captured!', 'success');
               setTimeout(hidePromptStatus, 1500);
               if (chunk.imageBase64) {
@@ -6284,33 +6529,45 @@ export function getCanvasContent(
             }
 
             // ── Stitch Generation ─────────────────────────────────
-            case 'canvas_stitch_started':
-              if (_pendingLayoutJob) {
-                genJobUpdateLabel(_pendingLayoutJob.id, 'Generating with Google Stitch...');
+            case 'canvas_stitch_started': {
+              // F-4: stitch jobs may live in the layout slot (/design) or the
+              // misc slot (/edit, /html, /variants) — label whichever is set.
+              var _stitchStartJob = _pendingLayoutJob || _pendingMiscJob;
+              if (_stitchStartJob) {
+                genJobUpdateLabel(_stitchStartJob.id, 'Generating with Google Stitch...');
               }
               showPromptStatus('Generating with Google Stitch...', 10);
               break;
+            }
 
-            case 'canvas_stitch_screen_ready':
-              if (_pendingLayoutJob && chunk.stitchScreenRef) {
-                _pendingLayoutJob.stitchRef = chunk.stitchScreenRef;
+            case 'canvas_stitch_screen_ready': {
+              var _stitchReadyJob = _pendingLayoutJob || _pendingMiscJob;
+              if (_stitchReadyJob && chunk.stitchScreenRef) {
+                _stitchReadyJob.stitchRef = chunk.stitchScreenRef;
               }
               showPromptStatus('Downloading screen...', 50);
               break;
+            }
 
-            case 'canvas_stitch_html_ready':
-              if (_pendingLayoutJob && chunk.stitchHtml) {
-                _pendingLayoutJob.htmlContent = chunk.stitchHtml;
+            case 'canvas_stitch_html_ready': {
+              var _stitchHtmlJob = _pendingLayoutJob || _pendingMiscJob;
+              if (_stitchHtmlJob && chunk.stitchHtml) {
+                _stitchHtmlJob.htmlContent = chunk.stitchHtml;
               }
               showPromptStatus('Screen ready', 90);
               break;
+            }
 
             case 'canvas_stitch_variants_ready':
+              // F-4: clear the misc job slot (/variants has no dedicated slot).
+              if (_pendingMiscJob) { genJobComplete(_pendingMiscJob.id); _pendingMiscJob = null; }
               showPromptStatus('Variants generated (' + (chunk.variantCount || 0) + ')', 100);
               setTimeout(hidePromptStatus, 3000);
               break;
 
             case 'canvas_stitch_design_dna':
+              // F-4: clear the misc job slot (/design-dna has no dedicated slot).
+              if (_pendingMiscJob) { genJobComplete(_pendingMiscJob.id); _pendingMiscJob = null; }
               showPromptStatusMessage('Design DNA extracted — DESIGN.md created', 'success');
               setTimeout(hidePromptStatus, 5000);
               break;
@@ -6390,9 +6647,10 @@ export function getCanvasContent(
               if (chunk.generatedFiles && chunk.generatedFiles.length) {
                 showPromptStatusMessage(chunk.generatedFiles.length + ' files generated — rendering preview...', 'success');
                 setTimeout(hidePromptStatus, 4000);
-                // Show properties panel if props are available
+                // Show properties panel if props are available. F-7: pass the
+                // owning object id so Apply can resend its real source.
                 if (chunk.componentProps && chunk.componentProps.length > 0) {
-                  showPropsPanel(chunk.componentProps, chunk.componentName, chunk.framework);
+                  showPropsPanel(chunk.componentProps, chunk.componentName, chunk.framework, codeSourceObj ? codeSourceObj.id : null);
                 }
                 // Trigger component rendering instead of code preview
                 if (codeSourceObj) {
@@ -6461,6 +6719,8 @@ export function getCanvasContent(
               break;
 
             case 'canvas_element_edit_complete': {
+              // F-4: clear the misc job slot (/edit-element, /edit-layout).
+              if (_pendingMiscJob) { genJobComplete(_pendingMiscJob.id); _pendingMiscJob = null; }
               hidePromptStatus();
               if (chunk.generatedFiles && chunk.generatedFiles.length) {
                 // Find the target object
@@ -6551,10 +6811,16 @@ export function getCanvasContent(
 
 
             case 'canvas_mockup_complete': {
-              // Complete the pending job (removes spinner overlay)
+              // Complete the pending job (removes spinner overlay). F-4: stitch
+              // edit/variants jobs land in the misc slot, plain /design and
+              // website jobs in the layout slot — clear whichever is set.
               if (_pendingLayoutJob) {
                 genJobComplete(_pendingLayoutJob.id);
                 _pendingLayoutJob = null;
+              }
+              if (_pendingMiscJob) {
+                genJobComplete(_pendingMiscJob.id);
+                _pendingMiscJob = null;
               }
 
               // Discard selection before re-rendering
@@ -6603,6 +6869,21 @@ export function getCanvasContent(
             }
 
             case 'canvas_theme_complete': {
+              // F-26: a /theme on a fresh canvas previously dropped the result
+              // because _designSpec was null. Create a minimal default spec so
+              // the generated theme is saved/applied instead of silently lost.
+              if (chunk.designTheme && !_designSpec) {
+                _designSpec = {
+                  id: canvasSessionId || 'spec-' + Date.now(),
+                  version: 1,
+                  name: 'Untitled',
+                  theme: chunk.designTheme,
+                  rootNodes: [],
+                  assets: [],
+                  createdAt: Date.now(),
+                  updatedAt: Date.now()
+                };
+              }
               if (chunk.designTheme && _designSpec) {
                 _designSpec.theme = chunk.designTheme;
                 _designSpec.updatedAt = Date.now();
@@ -6643,16 +6924,10 @@ export function getCanvasContent(
               showPromptStatusMessage(chunk.error || 'Unknown error', 'error');
               safeEnable('btn-draft-generate');
               safeAddClass('draft-progress', 'hidden');
-              // Clean up any active generation jobs
-              if (_pendingGenerateJob) { genJobComplete(_pendingGenerateJob.id); _pendingGenerateJob = null; }
-              if (_pendingReimagineJob) { genJobComplete(_pendingReimagineJob.id); _pendingReimagineJob = null; }
-              if (_pendingVideoJob) { genJobComplete(_pendingVideoJob.id); _pendingVideoJob = null; }
-              if (_pendingLayoutJob) { genJobComplete(_pendingLayoutJob.id); _pendingLayoutJob = null; }
-              // Clean up batch job for this specific frame if frameId present
-              if (chunk.frameId && _pendingBatchJobs[chunk.frameId]) {
-                genJobComplete(_pendingBatchJobs[chunk.frameId].id);
-                delete _pendingBatchJobs[chunk.frameId];
-              }
+              // F-4: tear down ALL generation jobs (every _pending* slot AND
+              // any untracked _genJobs entry) so no spinner overlay leaks,
+              // regardless of which action type errored.
+              genJobClearAll();
               reimagineVariantIndex = 0;
               reimagineSourceBounds = null;
               // Auto-dismiss error after 8 seconds

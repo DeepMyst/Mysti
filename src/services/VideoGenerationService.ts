@@ -37,11 +37,29 @@ interface VideoGenerateResult {
  * All video APIs are async: POST to create → poll for status → retrieve result.
  */
 export class VideoGenerationService {
+  /** F-24: maximum redirects followed by the download helpers before erroring. */
+  private static readonly _maxDownloadRedirects = 5;
+
   private _provider: VideoGenerationProvider;
+
+  // Keys injected by the caller (resolved from CanvasSecrets). The service no
+  // longer reads `mysti.canvas.*ApiKey` settings or `process.env` for keys
+  // (F-11). Call `setKeys()` before `isAvailable`/`generate`.
+  private _openaiKey = '';
+  private _geminiKey = '';
 
   constructor() {
     this._provider = vscode.workspace.getConfiguration('mysti')
       .get<VideoGenerationProvider>('canvas.videoGenerationProvider', 'none');
+  }
+
+  /**
+   * Inject the API keys resolved from SecretStorage (F-11). Either field may be
+   * omitted/empty when the user hasn't configured that provider. Re-callable.
+   */
+  setKeys(keys: { openai?: string; gemini?: string }): void {
+    this._openaiKey = keys.openai || '';
+    this._geminiKey = keys.gemini || '';
   }
 
   get provider(): VideoGenerationProvider {
@@ -266,9 +284,10 @@ export class VideoGenerationService {
       aspectRatio,
       resolution: '720p',
     };
-    // Only include durationSeconds if explicitly requested (API default is 8)
+    // Only include durationSeconds if explicitly requested (API default is 8).
+    // F-9: send the Veo-legal snapped value, not the raw caller value.
     if (options?.durationSeconds) {
-      params.durationSeconds = Math.round(options.durationSeconds);
+      params.durationSeconds = duration;
     }
     const createBody = JSON.stringify({
       instances: [{
@@ -314,12 +333,13 @@ export class VideoGenerationService {
       throw new Error('Veo: No video URI in response');
     }
 
-    const videoBase64 = await this._downloadUrl(videoUri);
+    const videoBase64 = await this._downloadUrl(videoUri, apiKey);
 
     return {
       videoBase64,
       mimeType: 'video/mp4',
-      durationSeconds: options?.durationSeconds || 8,
+      // F-9: report the snapped duration that was actually requested.
+      durationSeconds: duration,
     };
   }
 
@@ -363,29 +383,51 @@ export class VideoGenerationService {
   // ========================================================================
 
   private _getOpenAIKey(): string {
-    const settingsKey = vscode.workspace.getConfiguration('mysti').get('canvas.openaiApiKey', '');
-    if (settingsKey) { return settingsKey; }
-    return process.env.OPENAI_API_KEY || '';
+    // F-11: keys come from SecretStorage via setKeys(); no settings/env reads.
+    return this._openaiKey;
   }
 
   private _getGeminiKey(): string {
-    const settingsKey = vscode.workspace.getConfiguration('mysti').get('canvas.geminiApiKey', '');
-    if (settingsKey) { return settingsKey; }
-    return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
+    // F-11: keys come from SecretStorage via setKeys(); no settings/env reads.
+    return this._geminiKey;
   }
 
   private _sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  private _downloadUrl(url: string): Promise<string> {
+  /**
+   * Download a video URL and return base64.
+   *
+   * F-10: when the URL targets the Gemini Files API
+   * (generativelanguage.googleapis.com), the download requires the API key —
+   * forward it via the `x-goog-api-key` header.
+   * F-24: cap redirect recursion at _maxDownloadRedirects to avoid
+   * unbounded recursion on a redirect loop. The key is intentionally NOT
+   * forwarded across a redirect to a different host (avoid key leakage).
+   */
+  private _downloadUrl(url: string, apiKey?: string, depth = 0): Promise<string> {
     return new Promise((resolve, reject) => {
+      if (depth > VideoGenerationService._maxDownloadRedirects) {
+        reject(new Error(`Video download exceeded ${VideoGenerationService._maxDownloadRedirects} redirects`));
+        return;
+      }
       const parsedUrl = new URL(url);
       const mod = parsedUrl.protocol === 'https:' ? https : require('http');
-      const req = mod.request(url, (res: any) => {
+      const headers: Record<string, string> = {};
+      if (apiKey && parsedUrl.hostname === 'generativelanguage.googleapis.com') {
+        headers['x-goog-api-key'] = apiKey;
+      }
+      const req = mod.request(url, { headers }, (res: any) => {
         if (res.statusCode === 302 || res.statusCode === 301) {
           const redirect = res.headers.location;
-          if (redirect) { this._downloadUrl(redirect).then(resolve).catch(reject); return; }
+          if (redirect) {
+            // Only forward the key when the redirect stays on the Gemini host.
+            const nextHost = new URL(redirect, url).hostname;
+            const forwardKey = nextHost === 'generativelanguage.googleapis.com' ? apiKey : undefined;
+            this._downloadUrl(new URL(redirect, url).toString(), forwardKey, depth + 1).then(resolve).catch(reject);
+            return;
+          }
         }
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));

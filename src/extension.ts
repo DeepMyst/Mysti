@@ -36,6 +36,7 @@ import { ProjectContextManager } from './managers/ProjectContextManager';
 import { VisualTestManager } from './managers/VisualTestManager';
 import { CanvasManager } from './managers/CanvasManager';
 import { StitchService } from './services/StitchService';
+import { CanvasSecrets } from './services/CanvasSecrets';
 import { CliDiscoveryService } from './services/CliDiscoveryService';
 import { PerfTracker } from './utils/PerfTracker';
 
@@ -61,6 +62,7 @@ let fileDecorationProvider: MystiFileDecorationProvider;
 let projectContextManager: ProjectContextManager;
 let visualTestManager: VisualTestManager;
 let canvasManager: CanvasManager;
+let stitchService: StitchService;
 
 export async function activate(context: vscode.ExtensionContext) {
   PerfTracker.mark('activation.start');
@@ -156,10 +158,19 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize visual test manager
   visualTestManager = new VisualTestManager(context);
 
+  // F-11: SecretStorage-backed canvas API keys. Construct once and share this
+  // instance with the generation services (via ChatViewProvider) and
+  // StitchService. The one-time settings→secrets migration runs BEFORE any
+  // service reads a key, then primes StitchService with the stored key.
+  const canvasSecrets = new CanvasSecrets(context.secrets, context.globalState);
+
   // Initialize canvas manager with Stitch service
   canvasManager = new CanvasManager(context);
-  const stitchService = new StitchService();
+  stitchService = new StitchService();
   canvasManager.setStitchService(stitchService);
+  // F-11: persist a Stitch key entered via the ensureAuth input box into
+  // SecretStorage (no plaintext setting target anymore).
+  canvasManager.setStitchKeyPersister(key => canvasSecrets.set('stitch', key));
 
   // Invalidate canvas project profile cache on workspace folder change
   context.subscriptions.push(
@@ -201,6 +212,20 @@ export async function activate(context: vscode.ExtensionContext) {
     visualTestManager,
     canvasManager
   );
+
+  // F-11: run the one-time settings→secrets migration BEFORE any service reads
+  // a key, then prime StitchService and the image/video generation services
+  // (via ChatViewProvider) with the stored keys.
+  canvasSecrets.migrate()
+    .then(async migrated => {
+      if (migrated.length > 0) {
+        console.log(`[Mysti] CanvasSecrets: migrated ${migrated.join(', ')} from settings.`);
+      }
+      stitchService.setApiKey(await canvasSecrets.get('stitch'));
+      // setCanvasSecrets primes the image/video services via setKeys().
+      chatViewProvider.setCanvasSecrets(canvasSecrets);
+    })
+    .catch(err => console.log('[Mysti] CanvasSecrets: migration/key load error:', err));
 
   PerfTracker.measure('activation.managerConstruction', 'activation.managerConstruction.start');
 
@@ -658,5 +683,12 @@ export function deactivate() {
   }
   if (visualTestManager) {
     visualTestManager.dispose();
+  }
+  // F-29: tear down the Stitch SDK client (it was never disposed before).
+  // dispose() is async; return its promise so VSCode awaits the cleanup.
+  if (stitchService) {
+    return stitchService.dispose().catch(err =>
+      console.log('[Mysti] StitchService: dispose error:', err)
+    );
   }
 }

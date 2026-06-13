@@ -1212,12 +1212,14 @@
         "mysti.canvas.openaiApiKey": {
           "type": "string",
           "default": "",
-          "description": "OpenAI API key for GPT Image and Sora video generation"
+          "description": "OpenAI API key for GPT Image and Sora video generation",
+          "markdownDeprecationMessage": "**Deprecated.** Canvas API keys are now stored securely in VSCode SecretStorage instead of settings. Any value here is migrated automatically on first activation and then cleared. Enter or change the key from the Canvas config panel."
         },
         "mysti.canvas.geminiApiKey": {
           "type": "string",
           "default": "",
-          "description": "Google Gemini API key for image and Veo video generation"
+          "description": "Google Gemini API key for image and Veo video generation",
+          "markdownDeprecationMessage": "**Deprecated.** Canvas API keys are now stored securely in VSCode SecretStorage instead of settings. Any value here is migrated automatically on first activation and then cleared. Enter or change the key from the Canvas config panel."
         },
         "mysti.canvas.autoSave": {
           "type": "boolean",
@@ -1234,7 +1236,8 @@
         "mysti.canvas.stitchApiKey": {
           "type": "string",
           "default": "",
-          "description": "Google Stitch API key for UI screen generation (get from stitch.withgoogle.com → Settings → API Keys)"
+          "description": "Google Stitch API key for UI screen generation (get from stitch.withgoogle.com → Settings → API Keys)",
+          "markdownDeprecationMessage": "**Deprecated.** The Stitch API key is now stored securely in VSCode SecretStorage instead of settings. Any value here is migrated automatically on first activation and then cleared. You will be prompted to enter the key when a Stitch command runs."
         },
         "mysti.canvas.stitchDeviceType": {
           "type": "string",

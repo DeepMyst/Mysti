@@ -21,7 +21,6 @@ import {
   CANVAS_AUTOSAVE_DEBOUNCE_MS,
   CANVAS_MAX_VARIANTS,
   CANVAS_RENDER_DEFAULT_VIEWPORT,
-  CANVAS_BATCH_CONCURRENCY,
   CANVAS_ASSET_REF_PREFIX,
   STITCH_DEVICE_DIMENSIONS,
   STITCH_PROJECT_NAME_PREFIX
@@ -80,6 +79,9 @@ export class CanvasManager {
   private _designSpecManager = new DesignSpecManager();
   private _stitchService!: StitchService;
   private _stitchProjectIds: Map<string, string> = new Map(); // canvasId → stitchProjectId
+  // F-11: persists a Stitch key entered via the ensureAuth input-box flow into
+  // SecretStorage (wired from extension.ts to CanvasSecrets.set('stitch', …)).
+  private _stitchKeyPersister?: (key: string) => Promise<void>;
 
   // Static cache — shared across all canvas panels, invalidated on workspace change
   private static _projectProfileCache: string | null = null;
@@ -91,6 +93,21 @@ export class CanvasManager {
 
   setStitchService(service: StitchService): void {
     this._stitchService = service;
+  }
+
+  /**
+   * F-11: register a callback that persists a Stitch API key entered through
+   * the {@link StitchService.ensureAuth} input box. Wired from extension.ts to
+   * `CanvasSecrets.set('stitch', key)` so a key entered on the fly survives
+   * across sessions. Used by `_ensureStitchAuth()`.
+   */
+  setStitchKeyPersister(persist: (key: string) => Promise<void>): void {
+    this._stitchKeyPersister = persist;
+  }
+
+  /** Auth gate that forwards the SecretStorage persist callback (F-11). */
+  private async _ensureStitchAuth(): Promise<void> {
+    await this._stitchService.ensureAuth(this._stitchKeyPersister);
   }
 
   // ========================================================================
@@ -712,7 +729,7 @@ Return ONLY the JSON array, no other text.`;
     yield { type: 'canvas_reimagine_started', canvasId };
 
     try {
-      await this._stitchService.ensureAuth();
+      await this._ensureStitchAuth();
 
       const config = vscode.workspace.getConfiguration('mysti');
       const model = config.get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
@@ -905,7 +922,7 @@ Return ONLY the JSON array, no other text.`;
     yield { type: 'canvas_stitch_started', canvasId };
 
     try {
-      await this._stitchService.ensureAuth();
+      await this._ensureStitchAuth();
 
       // Build enhanced prompt with context
       const deviceLabel = deviceType || 'DESKTOP';
@@ -1003,7 +1020,7 @@ Return ONLY the JSON array, no other text.`;
     yield { type: 'canvas_stitch_started', canvasId, content: 'Editing screen...' };
 
     try {
-      await this._stitchService.ensureAuth();
+      await this._ensureStitchAuth();
 
       const model = vscode.workspace.getConfiguration('mysti')
         .get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
@@ -1015,8 +1032,22 @@ Return ONLY the JSON array, no other text.`;
         this._stitchService.getScreenHtml(newRef),
       ]);
 
+      // F-23: guard against an empty image download — a bare
+      // `data:image/png;base64,` URI is invalid and renders as a broken image.
+      if (!imageBase64 && !htmlContent) {
+        yield { type: 'canvas_error', canvasId, error: 'Stitch returned no screen content for the edit.' };
+        return;
+      }
+
       const nodeId = crypto.randomUUID();
       const dims = STITCH_DEVICE_DIMENSIONS.DESKTOP;
+      const editAssets: DesignAssetRef[] = [];
+      if (imageBase64) {
+        editAssets.push({ id: `img-${newRef.screenId}`, type: 'image', src: `data:image/png;base64,${imageBase64}`, prompt: editPrompt, alt: editPrompt });
+      }
+      if (htmlContent) {
+        editAssets.push({ id: `html-${newRef.screenId}`, type: 'html', src: htmlContent, prompt: editPrompt, alt: 'Stitch HTML' });
+      }
       const node: DesignNode = {
         id: nodeId,
         type: 'page',
@@ -1027,10 +1058,7 @@ Return ONLY the JSON array, no other text.`;
         height: frameBounds?.height ?? dims.height,
         layout: { display: 'block' },
         style: {},
-        assets: [
-          { id: `img-${newRef.screenId}`, type: 'image', src: `data:image/png;base64,${imageBase64}`, prompt: editPrompt, alt: editPrompt },
-          { id: `html-${newRef.screenId}`, type: 'html', src: htmlContent, prompt: editPrompt, alt: 'Stitch HTML' },
-        ],
+        assets: editAssets,
         metadata: {
           engine: 'stitch',
           stitchProjectId: newRef.projectId,
@@ -1063,7 +1091,7 @@ Return ONLY the JSON array, no other text.`;
     yield { type: 'canvas_stitch_started', canvasId, content: 'Generating variants...' };
 
     try {
-      await this._stitchService.ensureAuth();
+      await this._ensureStitchAuth();
 
       const model = vscode.workspace.getConfiguration('mysti')
         .get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
@@ -1084,6 +1112,21 @@ Return ONLY the JSON array, no other text.`;
           this._stitchService.getScreenHtml(ref),
         ]);
 
+        // F-23: skip variants that came back with no content rather than push a
+        // node with a broken `data:image/png;base64,` URI.
+        if (!imageBase64 && !htmlContent) {
+          continue;
+        }
+
+        // F-23: only include the image asset when the download succeeded.
+        const variantAssets: DesignAssetRef[] = [];
+        if (imageBase64) {
+          variantAssets.push({ id: `img-${ref.screenId}`, type: 'image', src: `data:image/png;base64,${imageBase64}`, prompt, alt: `Variant ${i + 1}` });
+        }
+        if (htmlContent) {
+          variantAssets.push({ id: `html-${ref.screenId}`, type: 'html', src: htmlContent, prompt, alt: 'Stitch HTML' });
+        }
+
         nodes.push({
           id: crypto.randomUUID(),
           type: 'page',
@@ -1094,10 +1137,7 @@ Return ONLY the JSON array, no other text.`;
           height: dims.height,
           layout: { display: 'block' },
           style: {},
-          assets: [
-            { id: `img-${ref.screenId}`, type: 'image', src: `data:image/png;base64,${imageBase64}`, prompt, alt: `Variant ${i + 1}` },
-            { id: `html-${ref.screenId}`, type: 'html', src: htmlContent, prompt, alt: 'Stitch HTML' },
-          ],
+          assets: variantAssets,
           metadata: {
             engine: 'stitch',
             stitchProjectId: ref.projectId,
@@ -1123,7 +1163,7 @@ Return ONLY the JSON array, no other text.`;
     yield { type: 'canvas_stitch_started', canvasId, content: 'Extracting design system...' };
 
     try {
-      await this._stitchService.ensureAuth();
+      await this._ensureStitchAuth();
 
       const dna = await this._stitchService.extractDesignDna(stitchScreenRef);
 
@@ -1142,8 +1182,23 @@ Return ONLY the JSON array, no other text.`;
       if (workspaceFolders && workspaceFolders.length > 0) {
         const designMdPath = path.join(workspaceFolders[0].uri.fsPath, 'DESIGN.md');
         const designMdContent = this._buildDesignMdContent(stitchScreenRef.projectId, dna);
-        fs.writeFileSync(designMdPath, designMdContent, 'utf-8');
-        console.log(`[Mysti] Stitch: Wrote DESIGN.md to ${designMdPath}`);
+        // F-19: confirm before clobbering an existing DESIGN.md so we don't
+        // silently overwrite a hand-authored design system.
+        let shouldWrite = true;
+        if (fs.existsSync(designMdPath)) {
+          const choice = await vscode.window.showWarningMessage(
+            'DESIGN.md already exists. Overwrite it with the extracted Design DNA?',
+            { modal: true },
+            'Overwrite'
+          );
+          shouldWrite = choice === 'Overwrite';
+        }
+        if (shouldWrite) {
+          fs.writeFileSync(designMdPath, designMdContent, 'utf-8');
+          console.log(`[Mysti] Stitch: Wrote DESIGN.md to ${designMdPath}`);
+        } else {
+          console.log('[Mysti] Stitch: DESIGN.md overwrite declined by user.');
+        }
       }
 
       yield { type: 'canvas_stitch_design_dna', canvasId, designTheme: theme };
@@ -1217,7 +1272,7 @@ Return ONLY the JSON array, no other text.`;
     yield { type: 'canvas_website_started', canvasId };
 
     try {
-      await this._stitchService.ensureAuth();
+      await this._ensureStitchAuth();
 
       const model = vscode.workspace.getConfiguration('mysti')
         .get<string>('canvas.stitchModel', 'GEMINI_3_PRO') as import('../types').StitchModel;
@@ -1300,106 +1355,10 @@ Return ONLY the JSON array, no other text.`;
     return pages;
   }
 
-  /**
-   * Generate content (images/videos) for all frames in a layout with a unified visual theme.
-   * Uses a single AI call to build a design brief, then generates content in parallel.
-   */
-  async *generateBatchContent(
-    canvasId: string,
-    frames: Array<{
-      frameId: string; left: number; top: number; width: number; height: number;
-      label: string; description?: string; metadata?: Record<string, string>;
-    }>,
-    imageGenService: { generate(prompt: string, options?: any): Promise<{ imageBase64: string; revisedPrompt?: string }> },
-    videoGenService: { isAvailable: boolean; generate(prompt: string, options?: any, onProgress?: any): Promise<{ videoBase64: string; mimeType: string }> },
-    providerManager: ProviderManagerLike,
-    settings: Settings,
-    projectContext?: string,
-    regionImageBase64?: string,
-    regionObjects?: CanvasObjectSummary[]
-  ): AsyncGenerator<CanvasStreamChunk> {
-    yield { type: 'canvas_batch_started', canvasId, totalFrames: frames.length };
-
-    try {
-      // Step 1: Build unified design brief with per-frame prompts
-      const briefs = await this._buildBatchDesignBrief(
-        frames, providerManager, settings, projectContext, regionImageBase64, regionObjects
-      );
-
-      // Save batch briefs to capture folder
-      this._saveCapturePrompt({
-        userPrompt: frames.map(f => `[${f.label}] ${f.description || ''}`).join('\n'),
-        enhancedPrompt: briefs.map((b, i) => `[Frame ${i}: ${frames[i].label}] ${b.prompt}`).join('\n\n'),
-        provider: 'batch',
-        genOptions: { frameCount: frames.length },
-      });
-
-      // Step 2: Generate content in batches of CANVAS_BATCH_CONCURRENCY
-      for (let batchStart = 0; batchStart < frames.length; batchStart += CANVAS_BATCH_CONCURRENCY) {
-        const batchEnd = Math.min(batchStart + CANVAS_BATCH_CONCURRENCY, frames.length);
-        const batchIndices = Array.from({ length: batchEnd - batchStart }, (_, i) => batchStart + i);
-
-        // Yield frame_started for each frame in this batch
-        for (const idx of batchIndices) {
-          yield {
-            type: 'canvas_batch_frame_started', canvasId,
-            frameId: frames[idx].frameId, frameIndex: idx,
-            totalFrames: frames.length, label: frames[idx].label,
-          };
-        }
-
-        // Run this batch in parallel
-        const results: CanvasStreamChunk[] = [];
-        const promises = batchIndices.map(async (idx) => {
-          const frame = frames[idx];
-          const brief = briefs[idx];
-          try {
-            if (brief.mediaType === 'video' && videoGenService.isAvailable) {
-              const result = await videoGenService.generate(brief.prompt, {
-                frameBounds: { width: frame.width, height: frame.height },
-              });
-              results.push({
-                type: 'canvas_batch_frame_complete', canvasId,
-                frameId: frame.frameId, frameIndex: idx, totalFrames: frames.length,
-                videoBase64: result.videoBase64, mimeType: result.mimeType,
-                label: frame.label,
-              });
-            } else {
-              const genOpts: Record<string, any> = {
-                frameBounds: { width: frame.width, height: frame.height },
-              };
-              if (brief.background !== 'auto') { genOpts.background = brief.background; }
-              if (regionImageBase64) { genOpts.referenceImageBase64 = regionImageBase64; }
-              const result = await imageGenService.generate(brief.prompt, genOpts);
-              results.push({
-                type: 'canvas_batch_frame_complete', canvasId,
-                frameId: frame.frameId, frameIndex: idx, totalFrames: frames.length,
-                imageBase64: result.imageBase64, label: frame.label,
-              });
-            }
-          } catch (err: any) {
-            results.push({
-              type: 'canvas_error', canvasId,
-              frameId: frame.frameId,
-              error: `Failed to generate ${frame.label}: ${err.message}`,
-            });
-          }
-        });
-
-        await Promise.all(promises);
-
-        // Yield all results from this batch (sorted by frameIndex for deterministic order)
-        results.sort((a, b) => (a.frameIndex ?? 0) - (b.frameIndex ?? 0));
-        for (const chunk of results) {
-          yield chunk;
-        }
-      }
-
-      yield { type: 'canvas_batch_complete', canvasId, totalFrames: frames.length };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: err.message };
-    }
-  }
+  // F-15: `generateBatchContent` (the ~100-LoC batch-generation pipeline) was
+  // removed — it had no webview producer (`canvasBatchGenerate` is gone too).
+  // `_computeCompositionGuide` (below) is intentionally kept: it is reused by
+  // the smart-prompt builders.
 
   /**
    * Compute composition guidance for a frame — tells the AI how the image will be cropped
@@ -1483,105 +1442,9 @@ Return ONLY the JSON array, no other text.`;
     };
   }
 
-  /**
-   * Build a unified design brief for all frames in a layout.
-   * One AI call produces per-frame generation prompts that share a consistent visual theme.
-   */
-  private async _buildBatchDesignBrief(
-    frames: Array<{ label: string; width?: number; height?: number; description?: string; metadata?: Record<string, string> }>,
-    providerManager: ProviderManagerLike,
-    settings: Settings,
-    projectContext?: string,
-    regionImageBase64?: string,
-    regionObjects?: CanvasObjectSummary[]
-  ): Promise<Array<{ prompt: string; background: 'transparent' | 'opaque' | 'auto'; mediaType: 'image' | 'video' }>> {
-    const frameList = frames.map((f, i) => {
-      const w = Math.round(f.width || 0);
-      const h = Math.round(f.height || 0);
-      const orient = w > h ? 'landscape' : w < h ? 'portrait' : 'square';
-      const guide = this._computeCompositionGuide(w, h, f.metadata?.role, f.metadata?.componentType);
-      return `${i + 1}. "${f.label}" (${w}x${h}px, ${orient}) — ${f.description || 'No description'} [role: ${f.metadata?.role || 'unknown'}, type: ${f.metadata?.componentType || 'unknown'}]\n   COMPOSITION: ${guide.compositionInstruction}`;
-    }).join('\n');
-
-    const hasReference = !!regionImageBase64;
-
-    // Extract annotations from canvas objects
-    const { annotations } = regionObjects
-      ? this._extractCanvasAnnotations(regionObjects)
-      : { annotations: [] as string[] };
-    const annotationsBlock = annotations.length > 0
-      ? `\nUSER'S CANVAS ANNOTATIONS (treat as design directives):\n${annotations.map(a => `- "${a}"`).join('\n')}`
-      : '';
-
-    const systemPrompt = `You are a UI design director creating a unified visual design brief for a multi-frame layout.
-
-Project context: ${projectContext || 'General web project'}${annotationsBlock}${hasReference ? `\n\nCRITICAL — CANVAS SCREENSHOT ATTACHED:
-Analyze the screenshot and extract exact hex colors, visual style, typography, and layout patterns. Your design brief MUST use these EXACT colors and styles. Do NOT invent a new palette — match what exists on the canvas.
-A reference image will ALSO be sent directly to each frame's image generation API call. Every prompt MUST instruct the model to closely follow the reference image's visual style.
-${annotations.length > 0 ? 'The user has written annotations on the canvas — treat these as binding design requirements.' : ''}` : ''}
-
-The layout has ${frames.length} frames:
-${frameList}
-
-Generate a JSON array with exactly ${frames.length} entries (one per frame, in the same order). Each entry has:
-- "prompt": A detailed image generation prompt for this frame. Include the shared color palette, typography style, and visual theme in EVERY prompt so each frame is visually consistent. Be specific about layout, colors (#hex), content, and style. The prompt should describe what the rendered UI component looks like as a flat design mockup.
-- "background": "opaque" for full section backgrounds and heroes, "transparent" for icons/logos/overlays, "auto" otherwise.
-- "mediaType": "video" ONLY if the frame explicitly suits motion (hero animations, background videos, animated carousels). Default to "image" for everything else.
-
-CRITICAL COMPOSITION & GRID RULES:
-- Each frame includes a COMPOSITION note with: the API output size, a 4x4 GRID target (columns A-D, rows 1-4), and crop severity.
-- The generated image is divided into a 4x4 grid. Each frame specifies which grid cells should contain content (e.g., "cells A1-D1" = top row only).
-- For SEVERE CROP frames: Place ALL meaningful content ONLY within the specified grid cells. Fill ALL other cells with a solid background color matching the palette. Do NOT compose a full scene — cells outside the target will be cropped away entirely.
-- For mild/no crop frames: Center content within the target grid cells. Content may extend to adjacent cells.
-- Use explicit spatial placement: "logo at top-left of target cells", "nav links spread horizontally across target row", "sidebar items stacked vertically in target column".
-
-The prompts MUST all reference the same:
-- Color palette (specify 3-5 exact hex colors)
-- Typography style (modern/classic/minimal etc.)
-- Visual treatment (flat/gradient/glassmorphism/etc.)
-- Overall mood (professional/playful/elegant/etc.)
-
-Return ONLY the JSON array, no markdown, no explanation.`;
-
-    let aiResponse = '';
-    const attachments: Attachment[] = [];
-    if (regionImageBase64) {
-      attachments.push({
-        id: `batch-brief-region-${Date.now()}`,
-        type: 'image',
-        fileName: 'canvas-snapshot.png',
-        base64Data: regionImageBase64,
-        size: regionImageBase64.length,
-        mimeType: 'image/png',
-      });
-    }
-    const stream = providerManager.sendMessage(systemPrompt, [], settings, null, undefined, undefined, undefined, attachments);
-    for await (const chunk of stream) {
-      if (chunk.type === 'text' && chunk.content) {
-        aiResponse += chunk.content;
-      }
-    }
-
-    const jsonMatch = aiResponse.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      throw new Error('AI did not return a valid design brief.');
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      throw new Error('AI returned an empty design brief.');
-    }
-
-    // Validate and pad/trim to match frame count
-    return frames.map((_, i) => {
-      const entry = parsed[i] || parsed[parsed.length - 1];
-      return {
-        prompt: String(entry.prompt || `Generate a UI component for: ${frames[i].label}`),
-        background: (['transparent', 'opaque', 'auto'].includes(entry.background) ? entry.background : 'auto') as 'transparent' | 'opaque' | 'auto',
-        mediaType: (entry.mediaType === 'video' ? 'video' : 'image') as 'image' | 'video',
-      };
-    });
-  }
+  // F-15: `_buildBatchDesignBrief` removed alongside `generateBatchContent`
+  // (its only caller). The annotation-extraction and composition-guide helpers
+  // it used are retained for the per-frame smart-prompt builders.
 
   // ========================================================================
   // Per-Frame Prompt
@@ -2222,7 +2085,7 @@ Return ONLY the SVG markup wrapped in <svg>...</svg> tags. No explanation.`;
     yield { type: 'canvas_code_started', canvasId };
 
     try {
-      await this._stitchService.ensureAuth();
+      await this._ensureStitchAuth();
 
       yield { type: 'canvas_code_progress', canvasId, content: 'Fetching Stitch HTML...', progress: 10 };
 
@@ -2545,10 +2408,22 @@ Return ONLY the updated component code in a single code block:
       const arg = trimmed.slice('/design'.length).trim();
       return { action: 'page', argument: arg };
     }
-    // /image → AI image generation (DALL-E/Gemini)
+    // /image and /generate both → AI image generation (DALL-E/Gemini). The
+    // prompt bar emits /image; /generate is the canonical alias asserted by
+    // tests and kept in sync with the webview vocabulary (F-4).
+    if (trimmed.startsWith('/generate')) {
+      const arg = trimmed.slice('/generate'.length).trim();
+      return { action: 'generate', argument: arg };
+    }
     if (trimmed.startsWith('/image')) {
       const arg = trimmed.slice('/image'.length).trim();
       return { action: 'generate', argument: arg };
+    }
+    // /reimagine → AI variant generation of the selected screen/image
+    // (Stitch variants when a Stitch screen is selected, else image variants).
+    if (trimmed.startsWith('/reimagine')) {
+      const arg = trimmed.slice('/reimagine'.length).trim();
+      return { action: 'reimagine', argument: arg };
     }
     if (trimmed.startsWith('/video')) {
       const arg = trimmed.slice('/video'.length).trim();

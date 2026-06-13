@@ -1590,14 +1590,11 @@ export type CanvasStreamChunkType =
   | 'canvas_video_complete'
   | 'canvas_layout_started'
   | 'canvas_layout_progress'
-  | 'canvas_layout_complete'
-  | 'canvas_batch_started'
-  | 'canvas_batch_frame_started'
-  | 'canvas_batch_frame_complete'
-  | 'canvas_batch_complete'
+  // F-15: 'canvas_layout_complete', the 'canvas_batch_*' family, and
+  // 'canvas_website_complete' removed — they had no producer after the
+  // batch-generation pipeline was deleted from CanvasManager.
   | 'canvas_website_started'
   | 'canvas_website_page_started'
-  | 'canvas_website_complete'
   | 'canvas_svg_started'
   | 'canvas_svg_progress'
   | 'canvas_svg_complete'
@@ -1605,8 +1602,8 @@ export type CanvasStreamChunkType =
   | 'canvas_code_progress'
   | 'canvas_code_complete'
   | 'canvas_props_extracted'
-  | 'canvas_component_render_progress'
-  | 'canvas_component_render_complete'
+  // F-15: 'canvas_component_render_progress'/'canvas_component_render_complete'
+  // removed with the dead `canvasRenderComponent` stub (no real producer).
   | 'canvas_integrate_started'
   | 'canvas_integrate_progress'
   | 'canvas_integrate_complete'
