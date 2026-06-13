@@ -166,6 +166,16 @@
         "command": "mysti.openCanvas",
         "title": "Open Canvas",
         "category": "Mysti"
+      },
+      {
+        "command": "mysti.deepmyst.signIn",
+        "title": "Sign in to DeepMyst",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.deepmyst.signOut",
+        "title": "Sign out of DeepMyst",
+        "category": "Mysti"
       }
     ],
     "menus": {
@@ -510,6 +520,16 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically refresh provider model lists in the background a few seconds after startup (live discovery via CLI/HTTP where supported). Disable to rely only on the bundled/curated and cached lists."
+        },
+        "mysti.deepmyst.apiUrl": {
+          "type": "string",
+          "default": "https://api.deepmyst.com",
+          "markdownDescription": "Base URL of the DeepMyst API used for brokered MCP connections (Plan 04). The user's `dm_` API key is sent as `Authorization: Bearer`; DeepMyst exposes MCP tools at `/api/v1/mcp/{agent}`."
+        },
+        "mysti.deepmyst.webUrl": {
+          "type": "string",
+          "default": "https://app.deepmyst.com",
+          "markdownDescription": "Base URL of the DeepMyst web app, opened in the browser for Clerk sign-in/sign-up and for managing connections."
         },
         "mysti.activeMode.enabled": {
           "type": "boolean",

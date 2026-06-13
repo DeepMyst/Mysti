@@ -1,7 +1,69 @@
 # Plan 04 — Connections & Agent Management (MCP "My Connections", In-Chat Connect Flow, Agent/Skills Management & Discovery)
 
 Date: undefined
-Status: DRAFT
+Status: DRAFT — **superseded architecture below (2026-06-13): DeepMyst-brokered**
+
+---
+
+## ⭐ REVISED ARCHITECTURE — DeepMyst-brokered MCP (2026-06-13, decided with user)
+
+The original plan below assumed Mysti has **no backend** and writes each CLI's own
+MCP config locally (with local third-party keys). The user chose a **DeepMyst-brokered**
+model instead: the user authenticates with DeepMyst (Clerk), and **DeepMyst holds all
+third-party connection credentials** — nothing sensitive lives locally.
+
+### How it works (grounded in the DeepMyst 2.0 backend)
+
+- **Auth.** DeepMyst's core-api (`src/core/auth.py`) accepts two credentials:
+  Clerk JWT (web users) **and** a machine-to-machine **API key with the `dm_` prefix**,
+  sent as `Authorization: Bearer dm_…` (or `X-API-Key: dm_…`). A VSCode extension can't
+  hold a short-lived Clerk JWT, so Mysti's credential is the `dm_` key, which the user
+  mints from the DeepMyst dashboard after signing in with Clerk.
+- **MCP brokering.** DeepMyst exposes each agent (and built-in servers) as a JSON-RPC MCP
+  endpoint: `POST /api/v1/mcp/{slug}` (`initialize` / `tools/list` / `tools/call`), built-ins
+  at `POST /api/v1/mcp/builtin/{name}`, listed via `GET /api/v1/mcp/builtin`. The user's
+  connected third-party services (GitHub, Slack, …) surface as tools on a DeepMyst agent.
+- **Wiring into the local CLIs.** Mysti writes the DeepMyst MCP endpoint URL +
+  `Authorization: Bearer dm_…` into each backend CLI's own MCP config (`.mcp.json`, codex
+  `config.toml`, gemini/qwen settings, …). The local CLIs (Claude Code, etc.) then reach
+  the user's DeepMyst-brokered tools directly — **zero local third-party keys**.
+- **Connection management.** The real OAuth to third parties happens in DeepMyst's web
+  dashboard; Mysti links out (`openExternal`) to manage, and reads status via the API.
+
+### Phasing (revised)
+
+- **Phase 1 — Auth foundation (DONE 2026-06-13).** `DeepMystClient` (dm_ Bearer auth,
+  MCP endpoint URL builder, `validateKey`, `listBuiltinMcps`) + `DeepMystAuthManager`
+  (sign-in via `openExternal` + paste/deep-link `dm_` key, SecretStorage, sign-out,
+  `onDidChangeAuth`). Commands `mysti.deepmyst.signIn`/`signOut`; settings
+  `mysti.deepmyst.apiUrl`/`webUrl`; UriHandler `vscode://DeepMyst.mysti/deepmyst-auth?key=`.
+  21 tests. Suite green.
+- **Phase 2 — Connections UI.** A panel showing auth status + the user's connected
+  services/agents (from the DeepMyst API) + "Manage connections" (openExternal to the
+  dashboard) + per-backend "enable MCP" toggles.
+- **Phase 3 — MCP config wiring.** Per-CLI adapters that write/remove the DeepMyst MCP
+  endpoint in each backend's MCP config (idempotent, subtree-preserving) when the user
+  enables a connection; keyed off `DeepMystAuthManager` state.
+- **Phase 4 — In-chat connect flow.** Agent signals a needed connection mid-chat → inline
+  connect card → `openExternal` to DeepMyst → resume on next turn.
+- **Agent/skills management** (original Plan 04 §4–6) is unchanged and independent.
+
+### DeepMyst-side requirements (other repo — for the user to confirm/implement)
+
+1. **`dm_` key minting after Clerk sign-in.** The dashboard's API Keys page already
+   creates `dm_` keys (`/api/v1/keys`). Best UX: a "Connect VS Code" page that, after
+   Clerk sign-in, mints a Mysti-scoped `dm_` key and deep-links back to
+   `vscode://DeepMyst.mysti/deepmyst-auth?key=dm_…`. Until that exists, the paste flow
+   (copy key from dashboard → paste into Mysti) works today.
+2. **MCP transport compatibility.** Backend CLIs expect MCP Streamable-HTTP for `type:http`
+   servers. DeepMyst's `POST /api/v1/mcp/{slug}` returns JSON-RPC results directly — confirm
+   each target CLI accepts a JSON-response (non-SSE) streamable-HTTP server, or add an SSE
+   variant. (Verify during Phase 3 against Claude Code first.)
+3. **Production URLs.** Confirm `mysti.deepmyst.apiUrl` (default `https://api.deepmyst.com`)
+   and `webUrl` (default `https://app.deepmyst.com`).
+4. **Connections list API.** An endpoint returning the user's connected services + available
+   agents (slugs) so Mysti's Phase 2 UI can show status and Phase 3 can pick the agent slug
+   to wire. (May already exist under datasources/agents domains — confirm.)
 
 ---
 

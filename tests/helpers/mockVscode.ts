@@ -164,12 +164,27 @@ export const window = {
   showInformationMessage: () => Promise.resolve(undefined),
   showWarningMessage: () => Promise.resolve(undefined),
   showErrorMessage: () => Promise.resolve(undefined),
+  showInputBox: () => Promise.resolve(undefined),
+  // Invoke the task immediately with a no-op progress + cancellation token and
+  // return its promise (matches vscode.window.withProgress semantics).
+  withProgress: <T>(_opts: unknown, task: (progress: { report: (v: unknown) => void }, token: { isCancellationRequested: boolean; onCancellationRequested: () => { dispose: () => void } }) => Thenable<T>): Thenable<T> =>
+    task({ report: () => {} }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => {} }) }),
   createOutputChannel: () => ({
     appendLine: () => {},
     append: () => {},
     show: () => {},
     dispose: () => {},
   }),
+};
+
+export enum ProgressLocation {
+  SourceControl = 1,
+  Window = 10,
+  Notification = 15,
+}
+
+export const env = {
+  openExternal: () => Promise.resolve(true),
 };
 
 export const Uri = {
@@ -251,10 +266,12 @@ export enum ConfigurationTarget {
 export default {
   workspace,
   window,
+  env,
   Uri,
   commands,
   EventEmitter,
   Disposable,
   TreeItemCollapsibleState,
   ConfigurationTarget,
+  ProgressLocation,
 };

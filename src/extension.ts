@@ -39,6 +39,7 @@ import { StitchService } from './services/StitchService';
 import { CanvasSecrets } from './services/CanvasSecrets';
 import { CliDiscoveryService } from './services/CliDiscoveryService';
 import { ModelRegistryService } from './services/ModelRegistryService';
+import { DeepMystAuthManager } from './managers/DeepMystAuthManager';
 import { PerfTracker } from './utils/PerfTracker';
 
 let chatViewProvider: ChatViewProvider;
@@ -64,6 +65,7 @@ let fileDecorationProvider: MystiFileDecorationProvider;
 let projectContextManager: ProjectContextManager;
 let visualTestManager: VisualTestManager;
 let canvasManager: CanvasManager;
+let deepMystAuthManager: DeepMystAuthManager;
 let stitchService: StitchService;
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -107,6 +109,17 @@ export async function activate(context: vscode.ExtensionContext) {
   modelRegistryService.setProviderSource(providerManager);
   providerManager.setModelRegistry(modelRegistryService);
   context.subscriptions.push(modelRegistryService);
+
+  // Plan 04: DeepMyst-brokered MCP connections. The user signs in to DeepMyst
+  // (Clerk) on the web and pastes a `dm_` API key; DeepMyst holds every
+  // third-party connection credential, so nothing sensitive lives locally.
+  // initialize() loads the stored key from SecretStorage (fire-and-forget so
+  // it never blocks activation).
+  deepMystAuthManager = new DeepMystAuthManager(context);
+  deepMystAuthManager.initialize().catch(err =>
+    console.log('[Mysti] DeepMystAuthManager: init error:', err)
+  );
+  context.subscriptions.push(deepMystAuthManager);
 
   suggestionManager = new SuggestionManager(context);
 
@@ -384,6 +397,12 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Plan 04: DeepMyst sign-in / sign-out
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.deepmyst.signIn', () => deepMystAuthManager.signIn()),
+    vscode.commands.registerCommand('mysti.deepmyst.signOut', () => deepMystAuthManager.signOut()),
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.newConversation', () => {
       conversationManager.createNewConversation();
@@ -506,6 +525,21 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.window.registerUriHandler({
       handleUri(uri: vscode.Uri) {
+        // Plan 04: DeepMyst sign-in deep-link callback
+        // (vscode://DeepMyst.mysti/deepmyst-auth?key=dm_...)
+        if (uri.path === '/deepmyst-auth') {
+          const key = new URLSearchParams(uri.query).get('key');
+          if (key) {
+            deepMystAuthManager.completeSignIn(key).then(ok => {
+              if (ok) {
+                telemetryManager.sendEvent('deepmyst.signedIn', {});
+              }
+            });
+          } else {
+            vscode.window.showErrorMessage('DeepMyst sign-in callback was missing the API key.');
+          }
+          return;
+        }
         if (uri.path === '/import') {
           const params = new URLSearchParams(uri.query);
           const data = params.get('data');
