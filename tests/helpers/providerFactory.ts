@@ -14,6 +14,7 @@ import { CursorProvider } from '../../src/providers/cursor/CursorProvider';
 import { OpenClawProvider } from '../../src/providers/openclaw/OpenClawProvider';
 import { OpenCodeProvider } from '../../src/providers/opencode/OpenCodeProvider';
 import { QwenCodeProvider } from '../../src/providers/qwen/QwenCodeProvider';
+import { MiniMaxProvider } from '../../src/providers/minimax/MiniMaxProvider';
 
 // Mock extension context for provider constructors
 function createMockContext(): vscode.ExtensionContext {
@@ -138,4 +139,8 @@ export class TestableQwenProvider extends QwenCodeProvider {
   public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
     return super.buildCliArgs(settings, session);
   }
+}
+
+export class TestableMiniMaxProvider extends MiniMaxProvider {
+  constructor() { super(createMockContext()); }
 }

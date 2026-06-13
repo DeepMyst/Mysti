@@ -87,6 +87,11 @@ const AGENT_STYLES: Record<AgentType, { color: string; icon: string; displayName
     color: '#6C5CE7', // Purple
     icon: '🟪',
     displayName: 'Qwen'
+  },
+  'minimax': {
+    color: '#FF6B35', // Orange
+    icon: '🟧',
+    displayName: 'MiniMax'
   }
 };
 
@@ -156,7 +161,8 @@ export class BrainstormManager {
       'opencode': 'opencode',
       'ollama': 'ollama',
       'localai': 'localai',
-      'qwen-code': 'qwenCode'
+      'qwen-code': 'qwenCode',
+      'minimax': 'minimax'
     };
     const agentKey = agentKeyMap[agentId] || 'claude';
 

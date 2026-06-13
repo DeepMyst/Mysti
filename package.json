@@ -199,7 +199,8 @@
             "opencode",
             "ollama",
             "localai",
-            "qwen-code"
+            "qwen-code",
+            "minimax"
           ],
           "enumDescriptions": [
             "Claude Code CLI (Anthropic) - Deep reasoning, complex refactoring, thorough analysis",
@@ -212,7 +213,8 @@
             "OpenCode - Multi-provider AI coding agent with support for OpenAI, Anthropic, Gemini, Groq, and OpenRouter",
             "Ollama - Local LLM inference server supporting Llama, CodeLlama, Mistral, and more",
             "LocalAI - Self-hosted OpenAI-compatible local inference with GPU/CPU support",
-            "Qwen Code - Alibaba's AI coding agent with Qwen3-Coder models and multi-provider support"
+            "Qwen Code - Alibaba's AI coding agent with Qwen3-Coder models and multi-provider support",
+            "MiniMax - MiniMax AI cloud API with MiniMax-M2.7 models and OpenAI-compatible interface"
           ],
           "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context."
         },
@@ -343,6 +345,40 @@
           "default": 120000,
           "minimum": 5000,
           "description": "Request timeout in milliseconds for LocalAI. Increase for large models or slow hardware."
+        },
+        "mysti.minimaxApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for MiniMax. Get your key at https://platform.minimax.io. Can also be set via the MINIMAX_API_KEY environment variable."
+        },
+        "mysti.minimaxBaseUrl": {
+          "type": "string",
+          "default": "https://api.minimax.io/v1",
+          "description": "MiniMax API base URL (OpenAI-compatible endpoint)."
+        },
+        "mysti.minimaxModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model to use with MiniMax. Leave empty to use MiniMax-M2.7 (default). Options: MiniMax-M2.7, MiniMax-M2.7-highspeed."
+        },
+        "mysti.minimaxTemperature": {
+          "type": "number",
+          "default": 1.0,
+          "minimum": 0.01,
+          "maximum": 1.0,
+          "description": "Sampling temperature for MiniMax (0.01-1.0). MiniMax does not accept 0; default is 1.0."
+        },
+        "mysti.minimaxMaxTokens": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Maximum tokens to generate with MiniMax (0 = no limit)."
+        },
+        "mysti.minimaxRequestTimeout": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 5000,
+          "description": "Request timeout in milliseconds for MiniMax."
         },
         "mysti.defaultMode": {
           "type": "string",
@@ -617,7 +653,8 @@
             "opencode",
             "ollama",
             "localai",
-            "qwen-code"
+            "qwen-code",
+            "minimax"
           ],
           "description": "Agent to use for synthesis in brainstorm mode"
         },
@@ -640,13 +677,14 @@
               "opencode",
               "ollama",
               "localai",
-              "qwen-code"
+              "qwen-code",
+              "minimax"
             ]
           },
           "minItems": 2,
           "maxItems": 2,
           "uniqueItems": true,
-          "description": "Select any 2 of 10 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
+          "description": "Select any 2 of 11 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
         },
         "mysti.agents.claudePersona": {
           "type": "string",
@@ -946,6 +984,34 @@
           "type": "string",
           "default": "",
           "description": "Custom persona prompt for Qwen Code (when persona is 'custom')"
+        },
+        "mysti.agents.minimaxPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "Balanced, no specific bias",
+            "Focus on system design and patterns",
+            "Focus on practical, working solutions",
+            "Focus on implementation quality and performance",
+            "Focus on code review and best practices",
+            "Focus on API design and UX",
+            "Use custom prompt"
+          ],
+          "description": "Persona for MiniMax agent in brainstorm mode"
+        },
+        "mysti.agents.minimaxCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for MiniMax (when persona is 'custom')"
         },
         "mysti.agents.autoSuggest": {
           "type": "boolean",

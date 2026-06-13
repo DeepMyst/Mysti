@@ -24,6 +24,7 @@ import { OpenCodeProvider } from './opencode/OpenCodeProvider';
 import { OllamaProvider } from './ollama/OllamaProvider';
 import { LocalAIProvider } from './localai/LocalAIProvider';
 import { QwenCodeProvider } from './qwen/QwenCodeProvider';
+import { MiniMaxProvider } from './minimax/MiniMaxProvider';
 
 /**
  * Registry for managing CLI providers
@@ -97,6 +98,11 @@ export class ProviderRegistry {
     const qwen = new QwenCodeProvider(this._extensionContext);
     this._providers.set(qwen.id, qwen);
     console.log(`[Mysti] Registered provider: ${qwen.displayName}`);
+
+    // Register MiniMax
+    const minimax = new MiniMaxProvider(this._extensionContext);
+    this._providers.set(minimax.id, minimax);
+    console.log(`[Mysti] Registered provider: ${minimax.displayName}`);
 
   }
 
