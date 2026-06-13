@@ -63,6 +63,8 @@ export interface McpApplyResult {
 interface AdapterContext {
   home: string;
   workspace: string | undefined;
+  /** Parent of VS Code's globalStorage (sibling-extension lookup, e.g. Cline). */
+  globalStorageParent: string | undefined;
 }
 
 interface JsonAdapter {
@@ -108,15 +110,38 @@ const ADAPTERS: JsonAdapter[] = [
     // OpenCode uses a `mcp` map with `type: "remote"` for HTTP servers.
     entryFor: (s) => ({ type: 'remote', url: s.url, enabled: true, headers: s.headers }),
   },
+  {
+    id: 'cline',
+    displayName: 'Cline',
+    rootKey: 'mcpServers',
+    // Cline stores MCP config in its own globalStorage (sibling extension of
+    // Mysti in the same editor): <globalStorage>/saoudrizwan.claude-dev/settings/
+    resolvePath: (ctx) =>
+      ctx.globalStorageParent
+        ? path.join(ctx.globalStorageParent, 'saoudrizwan.claude-dev', 'settings', 'cline_mcp_settings.json')
+        : null,
+    // Cline uses `type: "streamableHttp"` for remote MCP servers.
+    entryFor: (s) => ({ type: 'streamableHttp', url: s.url, headers: s.headers, disabled: false }),
+  },
 ];
 
+/** Codex stores MCP servers as TOML tables in ~/.codex/config.toml. */
+const CODEX_DISPLAY = 'Codex';
+
 export class McpConfigManager {
-  /** @param _homeDir overridable for tests; defaults to the OS home directory. */
-  constructor(private readonly _homeDir: string = os.homedir()) {}
+  /**
+   * @param _homeDir overridable for tests; defaults to the OS home directory.
+   * @param _globalStorageParent parent of VS Code's globalStorage dir (for the
+   *   Cline sibling-extension lookup); pass `path.dirname(context.globalStorageUri.fsPath)`.
+   */
+  constructor(
+    private readonly _homeDir: string = os.homedir(),
+    private readonly _globalStorageParent?: string,
+  ) {}
 
   /** Provider ids this manager can write MCP config for. */
   static supportedProviders(): string[] {
-    return ADAPTERS.map((a) => a.id);
+    return [...ADAPTERS.map((a) => a.id), 'openai-codex'];
   }
 
   /**
@@ -125,8 +150,14 @@ export class McpConfigManager {
    * removes it), preserving every other server. An empty `specs` clears them.
    */
   async applyAll(specs: McpServerSpec[]): Promise<McpApplyResult[]> {
-    const ctx: AdapterContext = { home: this._homeDir, workspace: this._workspaceRoot() };
-    return Promise.all(ADAPTERS.map((a) => this._applyOne(a, specs, ctx)));
+    const ctx: AdapterContext = {
+      home: this._homeDir,
+      workspace: this._workspaceRoot(),
+      globalStorageParent: this._globalStorageParent,
+    };
+    const results = await Promise.all(ADAPTERS.map((a) => this._applyOne(a, specs, ctx)));
+    results.push(await this._applyCodex(specs, ctx));
+    return results;
   }
 
   /** Remove every Mysti-managed (`deepmyst-*`) entry from all CLI configs. */
@@ -217,4 +248,96 @@ export class McpConfigManager {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n', 'utf8');
   }
+
+  /**
+   * Codex stores MCP servers as TOML tables in ~/.codex/config.toml. With no
+   * TOML library available, this manages ONLY our own `[mcp_servers."deepmyst-*"]`
+   * tables (and their nested tables) by text: it strips any existing deepmyst
+   * tables and appends fresh ones, leaving every other line — including the
+   * user's comments and other settings — byte-for-byte intact.
+   *
+   * NOTE: the exact Codex remote-MCP keys vary by version; we write a
+   * syntactically valid `url` + `[...http_headers]` table, so even if a given
+   * Codex build ignores the server it cannot fail to PARSE the config.
+   */
+  private async _applyCodex(specs: McpServerSpec[], ctx: AdapterContext): Promise<McpApplyResult> {
+    const configPath = path.join(ctx.home, '.codex', 'config.toml');
+    const base: McpApplyResult = {
+      providerId: 'openai-codex',
+      displayName: CODEX_DISPLAY,
+      configPath,
+      ok: false,
+      action: 'error',
+    };
+    try {
+      const existed = fs.existsSync(configPath);
+      const original = existed ? fs.readFileSync(configPath, 'utf8') : '';
+      const stripped = stripCodexDeepmystTables(original);
+      const generated = specs.map(codexTableFor).join('\n');
+
+      let next = stripped;
+      if (generated) {
+        next = stripped.replace(/\s*$/, '') + (stripped.trim() ? '\n\n' : '') + generated + '\n';
+      }
+
+      if (!existed && !generated) {
+        return { ...base, ok: true, action: 'skipped' };
+      }
+      if (next === original) {
+        return { ...base, ok: true, action: 'skipped' };
+      }
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, next, 'utf8');
+      return { ...base, ok: true, action: specs.length > 0 ? 'wrote' : 'removed' };
+    } catch (err) {
+      return { ...base, ok: false, action: 'error', error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+}
+
+/** TOML table key for a deepmyst entry — quoted (the id contains a dash). */
+function codexTableKey(id: string): string {
+  return `mcp_servers."${id}"`;
+}
+
+/** Render the Codex TOML tables for one DeepMyst MCP server. */
+function codexTableFor(spec: McpServerSpec): string {
+  const lines = [
+    `[${codexTableKey(spec.id)}]`,
+    `url = ${JSON.stringify(spec.url)}`,
+  ];
+  const headerKeys = Object.keys(spec.headers);
+  if (headerKeys.length > 0) {
+    lines.push('');
+    lines.push(`[${codexTableKey(spec.id)}.http_headers]`);
+    for (const k of headerKeys) {
+      lines.push(`${JSON.stringify(k)} = ${JSON.stringify(spec.headers[k])}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Remove every `[mcp_servers."deepmyst-*"]` table (and its nested tables) from a
+ * config.toml string, preserving all other lines. A table runs from its header
+ * line until the next line that opens a table (`[` at column 0) or EOF.
+ */
+function stripCodexDeepmystTables(toml: string): string {
+  const lines = toml.split('\n');
+  const out: string[] = [];
+  let skipping = false;
+  // Matches [mcp_servers."deepmyst-x"], [mcp_servers.deepmyst-x],
+  // and nested [mcp_servers."deepmyst-x".http_headers], etc.
+  const deepmystHeader = /^\s*\[\s*mcp_servers\s*\.\s*"?deepmyst-/i;
+  const anyHeader = /^\s*\[/;
+  for (const line of lines) {
+    if (anyHeader.test(line)) {
+      skipping = deepmystHeader.test(line);
+    }
+    if (!skipping) {
+      out.push(line);
+    }
+  }
+  return out.join('\n');
 }

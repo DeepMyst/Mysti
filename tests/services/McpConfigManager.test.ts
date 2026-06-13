@@ -39,9 +39,10 @@ describe('McpConfigManager', () => {
     (mockWorkspace as { workspaceFolders: unknown }).workspaceFolders = [
       { uri: { fsPath: tmp }, name: 'tmp', index: 0 },
     ];
-    // Redirect homedir-based adapters (Gemini/Qwen/OpenCode) into the temp dir
-    // via the constructor override (os.homedir can't be spied under ESM).
-    mgr = new McpConfigManager(tmp);
+    // Redirect homedir-based adapters (Gemini/Qwen/OpenCode/Codex) into the temp
+    // dir via the constructor override (os.homedir can't be spied under ESM); the
+    // 2nd arg is the globalStorage parent for the Cline adapter.
+    mgr = new McpConfigManager(tmp, path.join(tmp, 'globalStorage'));
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
@@ -154,9 +155,56 @@ describe('McpConfigManager', () => {
     expect(fs.readFileSync(geminiPath, 'utf8')).toBe('{ not valid json');
   });
 
-  it('supportedProviders lists the JSON-capable backends', () => {
+  it('writes the Cline entry under its globalStorage settings file', async () => {
+    await mgr.applyAll([SPEC]);
+    const clinePath = path.join(tmp, 'globalStorage', 'saoudrizwan.claude-dev', 'settings', 'cline_mcp_settings.json');
+    const cfg = readJson(clinePath);
+    expect(cfg.mcpServers[`${DEEPMYST_ENTRY_PREFIX}support`]).toEqual({
+      type: 'streamableHttp',
+      url: SPEC.url,
+      headers: SPEC.headers,
+      disabled: false,
+    });
+  });
+
+  it('writes a valid Codex TOML table and preserves the user\'s config + comments', async () => {
+    const codexPath = path.join(tmp, '.codex', 'config.toml');
+    fs.mkdirSync(path.dirname(codexPath), { recursive: true });
+    fs.writeFileSync(codexPath, '# my codex config\nmodel = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "node"\n');
+
+    const results = await mgr.applyAll([SPEC]);
+    const codex = results.find((r) => r.providerId === 'openai-codex')!;
+    expect(codex.ok).toBe(true);
+    expect(codex.action).toBe('wrote');
+
+    const out = fs.readFileSync(codexPath, 'utf8');
+    expect(out).toContain('# my codex config');           // comment preserved
+    expect(out).toContain('model = "gpt-5"');             // setting preserved
+    expect(out).toContain('[mcp_servers.mine]');          // user server preserved
+    expect(out).toContain('[mcp_servers."deepmyst-support"]');
+    expect(out).toContain(`url = ${JSON.stringify(SPEC.url)}`);
+    expect(out).toContain('[mcp_servers."deepmyst-support".http_headers]');
+    expect(out).toContain('"Authorization" = "Bearer dm_live_abc123"');
+  });
+
+  it('Codex removeAll strips only the deepmyst tables, keeping the user\'s', async () => {
+    const codexPath = path.join(tmp, '.codex', 'config.toml');
+    fs.mkdirSync(path.dirname(codexPath), { recursive: true });
+    fs.writeFileSync(codexPath, 'model = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "node"\n');
+
+    await mgr.applyAll([SPEC]);
+    expect(fs.readFileSync(codexPath, 'utf8')).toContain('deepmyst-support');
+
+    await mgr.removeAll();
+    const out = fs.readFileSync(codexPath, 'utf8');
+    expect(out).not.toContain('deepmyst-support');
+    expect(out).toContain('[mcp_servers.mine]');   // user server kept
+    expect(out).toContain('model = "gpt-5"');       // setting kept
+  });
+
+  it('supportedProviders lists all wired backends incl. codex + cline', () => {
     expect(McpConfigManager.supportedProviders()).toEqual(
-      expect.arrayContaining(['claude-code', 'google-gemini', 'qwen-code', 'opencode']),
+      expect.arrayContaining(['claude-code', 'google-gemini', 'qwen-code', 'opencode', 'cline', 'openai-codex']),
     );
   });
 });

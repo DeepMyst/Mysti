@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import * as nodePath from 'path';
 import { ChatViewProvider } from './providers/ChatViewProvider';
 import { ContextManager } from './managers/ContextManager';
 import { ConversationManager } from './managers/ConversationManager';
@@ -124,7 +125,10 @@ export async function activate(context: vscode.ExtensionContext) {
   // shows auth status / agents / connections and lets the user enable an
   // agent's tools in the local CLIs; McpConfigManager writes the DeepMyst MCP
   // endpoint into each MCP-capable CLI's own config file.
-  const mcpConfigManager = new McpConfigManager();
+  const mcpConfigManager = new McpConfigManager(
+    undefined, // default: os.homedir()
+    nodePath.dirname(context.globalStorageUri.fsPath),
+  );
   connectionsPanelManager = new ConnectionsPanelManager(
     context.extensionUri, deepMystAuthManager, mcpConfigManager, context,
   );
