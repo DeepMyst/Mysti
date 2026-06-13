@@ -47,6 +47,21 @@ export interface DeepMystAgent {
   description?: string;
 }
 
+/** A connected data source / integration the user set up in DeepMyst. */
+export interface DeepMystConnection {
+  id: string;
+  name: string;
+  type?: string;
+  status?: string;
+}
+
+/** Result of a best-effort list call: data plus whether the endpoint exists yet. */
+export interface DeepMystListResult<T> {
+  items: T[];
+  /** false when DeepMyst returned 404 (endpoint not deployed) so the UI can say so. */
+  available: boolean;
+}
+
 export interface DeepMystKeyValidation {
   valid: boolean;
   /** HTTP status of the probe (0 when the request never reached the server). */
@@ -152,6 +167,83 @@ export class DeepMystClient {
       return this._coerceBuiltins(data);
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * List the user's DeepMyst agents (each exposes an MCP endpoint at
+   * /api/v1/mcp/{slug}). available=false when the endpoint 404s (not deployed).
+   */
+  async listAgents(timeoutMs = 10000): Promise<DeepMystListResult<DeepMystAgent>> {
+    return this._getList('/api/v1/agents', (o) => {
+      const slug = typeof o.slug === 'string' ? o.slug : '';
+      if (!slug) { return null; }
+      return {
+        slug,
+        name: typeof o.name === 'string' ? o.name : slug,
+        description: typeof o.description === 'string' ? o.description : undefined,
+      };
+    }, timeoutMs);
+  }
+
+  /**
+   * List the user's connected data sources / integrations (the "connections").
+   * available=false when the endpoint 404s.
+   */
+  async listConnections(timeoutMs = 10000): Promise<DeepMystListResult<DeepMystConnection>> {
+    return this._getList('/api/v1/datasources', (o) => {
+      const id = typeof o.id === 'string' ? o.id : (typeof o.id === 'number' ? String(o.id) : '');
+      if (!id) { return null; }
+      return {
+        id,
+        name: typeof o.name === 'string' ? o.name : id,
+        type: typeof o.type === 'string' ? o.type : (typeof o.source_type === 'string' ? o.source_type : undefined),
+        status: typeof o.status === 'string' ? o.status : undefined,
+      };
+    }, timeoutMs);
+  }
+
+  /**
+   * Shared best-effort GET-list helper. Returns {items, available}; never throws.
+   * Accepts both a bare array and a {data|items|results: [...]} envelope.
+   */
+  private async _getList<T>(
+    path: string,
+    coerce: (o: Record<string, unknown>) => T | null,
+    timeoutMs: number,
+  ): Promise<DeepMystListResult<T>> {
+    const headers = this._authHeaders();
+    if (!headers) {
+      return { items: [], available: true };
+    }
+    try {
+      const res = await fetch(`${this._baseUrl()}${path}`, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.status === 404) {
+        return { items: [], available: false };
+      }
+      if (!res.ok) {
+        return { items: [], available: true };
+      }
+      const data = await res.json() as unknown;
+      const arr = Array.isArray(data)
+        ? data
+        : (data && typeof data === 'object'
+          ? ((data as Record<string, unknown>).data ?? (data as Record<string, unknown>).items ?? (data as Record<string, unknown>).results)
+          : null);
+      if (!Array.isArray(arr)) {
+        return { items: [], available: true };
+      }
+      const items = arr
+        .filter((e): e is Record<string, unknown> => Boolean(e) && typeof e === 'object')
+        .map(coerce)
+        .filter((e): e is T => e !== null);
+      return { items, available: true };
+    } catch {
+      return { items: [], available: true };
     }
   }
 

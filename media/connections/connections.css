@@ -1,0 +1,79 @@
+/* DeepMyst Connections panel (Plan 04 Phase 2) */
+:root {
+  --gap: 12px;
+}
+
+body {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  padding: 20px 24px 40px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.hidden { display: none !important; }
+.muted { color: var(--vscode-descriptionForeground); }
+.small { font-size: 0.9em; }
+
+.header { margin-bottom: 20px; }
+.title-row { display: flex; align-items: center; gap: var(--gap); }
+h1 { font-size: 1.4em; margin: 0; }
+h2 { font-size: 1.1em; margin: 0 0 6px; }
+h3.section-title { font-size: 1em; margin: 22px 0 6px; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 4px; }
+.subtitle { color: var(--vscode-descriptionForeground); max-width: 70ch; margin: 8px 0 0; }
+
+.pill { font-size: 0.8em; padding: 2px 10px; border-radius: 10px; white-space: nowrap; }
+.pill-muted { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+.pill-ok { background: var(--vscode-testing-iconPassed, #2ea043); color: #fff; }
+.pill-off { background: var(--vscode-inputValidation-warningBackground, #6b5800); color: var(--vscode-foreground); }
+
+.card {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  padding: 18px 18px 22px;
+  background: var(--vscode-editorWidget-background, transparent);
+}
+
+.steps { margin: 8px 0 16px; padding-left: 20px; }
+.steps li { margin: 4px 0; }
+code {
+  background: var(--vscode-textCodeBlock-background);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.row-between { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--gap); flex-wrap: wrap; }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.btn {
+  font-family: inherit;
+  font-size: inherit;
+  padding: 6px 14px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 4px;
+  cursor: pointer;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+.btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.btn-primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.btn-primary:hover { background: var(--vscode-button-hoverBackground); }
+.btn-link { background: transparent; border-color: transparent; color: var(--vscode-textLink-foreground); padding: 6px 8px; }
+.btn-link:hover { background: transparent; text-decoration: underline; }
+
+.list { list-style: none; margin: 6px 0 0; padding: 0; }
+.list-item {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--gap);
+  padding: 10px 12px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; margin-bottom: 8px;
+}
+.list-item .name { font-weight: 600; }
+.list-item .meta { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
+.list-item .endpoint { color: var(--vscode-descriptionForeground); font-size: 0.8em; font-family: var(--vscode-editor-font-family, monospace); }
+
+.empty {
+  color: var(--vscode-descriptionForeground);
+  padding: 12px; border: 1px dashed var(--vscode-panel-border); border-radius: 6px; margin: 6px 0;
+}

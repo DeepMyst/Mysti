@@ -138,3 +138,59 @@ describe('DeepMystClient.listBuiltinMcps', () => {
     expect(await client(GOOD_KEY).listBuiltinMcps()).toEqual([]);
   });
 });
+
+describe('DeepMystClient.listAgents / listConnections', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('lists agents from a bare array (name/slug/description)', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => [
+      { slug: 'support', name: 'Support Bot', description: 'Helps' },
+      { slug: 'noname' },
+      { name: 'no slug — dropped' },
+    ] });
+    const res = await client(GOOD_KEY).listAgents();
+    expect(res.available).toBe(true);
+    expect(res.items).toEqual([
+      { slug: 'support', name: 'Support Bot', description: 'Helps' },
+      { slug: 'noname', name: 'noname', description: undefined },
+    ]);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`${API}/api/v1/agents`);
+  });
+
+  it('unwraps a {data:[...]} envelope for connections', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: [
+      { id: 'ds1', name: 'GitHub', type: 'github', status: 'connected' },
+    ] }) });
+    const res = await client(GOOD_KEY).listConnections();
+    expect(res.available).toBe(true);
+    expect(res.items).toEqual([{ id: 'ds1', name: 'GitHub', type: 'github', status: 'connected' }]);
+  });
+
+  it('reports available=false when the endpoint 404s', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 404 });
+    const res = await client(GOOD_KEY).listAgents();
+    expect(res.available).toBe(false);
+    expect(res.items).toEqual([]);
+  });
+
+  it('returns empty+available when signed out (no call)', async () => {
+    const res = await client(undefined).listConnections();
+    expect(res).toEqual({ items: [], available: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('degrades to empty on network error', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+    const res = await client(GOOD_KEY).listAgents();
+    expect(res.items).toEqual([]);
+    expect(res.available).toBe(true);
+  });
+});

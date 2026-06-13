@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}'; img-src {{cspSource}} data:;" />
+  <link rel="stylesheet" href="{{styleUri}}" />
+  <title>DeepMyst Connections</title>
+</head>
+<body>
+  <header class="header">
+    <div class="title-row">
+      <h1>DeepMyst Connections</h1>
+      <span id="status-pill" class="pill pill-muted">Checking…</span>
+    </div>
+    <p class="subtitle">
+      Connect MCP tools through DeepMyst. Sign in once — DeepMyst keeps your
+      connection credentials, and your local AI CLIs reach the tools through
+      DeepMyst with no keys stored on this machine.
+    </p>
+  </header>
+
+  <!-- Signed-out view -->
+  <section id="signed-out" class="card hidden">
+    <h2>Sign in to DeepMyst</h2>
+    <ol class="steps">
+      <li>Open DeepMyst and sign up / sign in.</li>
+      <li>Create an API key (starts with <code>dm_</code>).</li>
+      <li>Paste it when Mysti asks.</li>
+    </ol>
+    <div class="actions">
+      <button id="btn-signin" class="btn btn-primary">Sign in to DeepMyst</button>
+      <button id="btn-createkey" class="btn btn-link">Open API keys page</button>
+    </div>
+  </section>
+
+  <!-- Signed-in view -->
+  <section id="signed-in" class="card hidden">
+    <div class="row-between">
+      <div>
+        <h2>Connected to DeepMyst</h2>
+        <p class="muted">Manage your connections on the DeepMyst dashboard; they appear here.</p>
+      </div>
+      <div class="actions">
+        <button id="btn-manage" class="btn btn-primary">Manage connections</button>
+        <button id="btn-refresh" class="btn">Refresh</button>
+        <button id="btn-signout" class="btn btn-link">Sign out</button>
+      </div>
+    </div>
+
+    <div id="loading" class="muted hidden">Loading your connections…</div>
+
+    <h3 class="section-title">Connections</h3>
+    <div id="connections-empty" class="empty hidden">
+      No connections yet. Use “Manage connections” to add data sources and integrations on DeepMyst.
+    </div>
+    <div id="connections-unavailable" class="empty hidden">
+      Couldn’t list connections from this DeepMyst instance. You can still manage them on the web.
+    </div>
+    <ul id="connections-list" class="list"></ul>
+
+    <h3 class="section-title">Agents (MCP tool sources)</h3>
+    <p class="muted small">Each agent exposes its tools to your local CLIs through DeepMyst's MCP endpoint.</p>
+    <div id="agents-empty" class="empty hidden">No agents found for your account.</div>
+    <div id="agents-unavailable" class="empty hidden">
+      This DeepMyst instance didn’t return an agents list (endpoint not available yet).
+    </div>
+    <ul id="agents-list" class="list"></ul>
+  </section>
+
+  <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
+</body>
+</html>

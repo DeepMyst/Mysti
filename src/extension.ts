@@ -40,6 +40,7 @@ import { CanvasSecrets } from './services/CanvasSecrets';
 import { CliDiscoveryService } from './services/CliDiscoveryService';
 import { ModelRegistryService } from './services/ModelRegistryService';
 import { DeepMystAuthManager } from './managers/DeepMystAuthManager';
+import { ConnectionsPanelManager } from './managers/ConnectionsPanelManager';
 import { PerfTracker } from './utils/PerfTracker';
 
 let chatViewProvider: ChatViewProvider;
@@ -66,6 +67,7 @@ let projectContextManager: ProjectContextManager;
 let visualTestManager: VisualTestManager;
 let canvasManager: CanvasManager;
 let deepMystAuthManager: DeepMystAuthManager;
+let connectionsPanelManager: ConnectionsPanelManager;
 let stitchService: StitchService;
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -120,6 +122,11 @@ export async function activate(context: vscode.ExtensionContext) {
     console.log('[Mysti] DeepMystAuthManager: init error:', err)
   );
   context.subscriptions.push(deepMystAuthManager);
+
+  // Plan 04 Phase 2: the Connections panel (auth status + connected services +
+  // agents + manage links). Standalone editor tab opened via mysti.openConnections.
+  connectionsPanelManager = new ConnectionsPanelManager(context.extensionUri, deepMystAuthManager);
+  context.subscriptions.push(connectionsPanelManager);
 
   suggestionManager = new SuggestionManager(context);
 
@@ -397,10 +404,11 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Plan 04: DeepMyst sign-in / sign-out
+  // Plan 04: DeepMyst sign-in / sign-out + Connections panel
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.deepmyst.signIn', () => deepMystAuthManager.signIn()),
     vscode.commands.registerCommand('mysti.deepmyst.signOut', () => deepMystAuthManager.signOut()),
+    vscode.commands.registerCommand('mysti.openConnections', () => connectionsPanelManager.open()),
   );
 
   context.subscriptions.push(

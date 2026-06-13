@@ -168,6 +168,11 @@
         "category": "Mysti"
       },
       {
+        "command": "mysti.openConnections",
+        "title": "Open DeepMyst Connections",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.deepmyst.signIn",
         "title": "Sign in to DeepMyst",
         "category": "Mysti"
