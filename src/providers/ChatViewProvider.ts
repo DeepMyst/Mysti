@@ -5733,15 +5733,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async _handleConnectService(service?: string): Promise<void> {
     const slug = (service || '').trim().toLowerCase();
+    console.log(`[Mysti] connectService requested for "${slug || '(none)'}"`);
     const auth = this._deepMystAuth;
     if (!auth || !auth.isSignedIn()) {
       vscode.commands.executeCommand('mysti.openConnections');
       return;
     }
+    // DeepMyst's "My Connections" hub lives at /settings/connections (the
+    // catalog browse + OAuth connect happens there). The page doesn't read a
+    // preselect query param, so we open the hub and let the user search.
     const webUrl = auth.getWebUrl().replace(/\/+$/, '');
-    const target = slug
-      ? `${webUrl}/connections?connect=${encodeURIComponent(slug)}`
-      : `${webUrl}/connections`;
+    const target = `${webUrl}/settings/connections`;
     await vscode.env.openExternal(vscode.Uri.parse(target));
     // The list may change after the user links something; drop the cache so the
     // next marker re-checks.

@@ -181,7 +181,9 @@ export class ConnectionsPanelManager implements vscode.Disposable {
   }
 
   private _connectionsUrl(): string {
-    return `${this._auth.getWebUrl().replace(/\/+$/, '')}/connections`;
+    // DeepMyst's "My Connections" hub (McpConnectionsSettingsPage) lives at
+    // /settings/connections — NOT /connections (which 404s).
+    return `${this._auth.getWebUrl().replace(/\/+$/, '')}/settings/connections`;
   }
 
   // ── Rendering ────────────────────────────────────────────────────────────────
