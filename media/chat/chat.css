@@ -1,4 +1,19 @@
     
+    /* Plan 06 Phase 2 — calm palette tokens. Hierarchy comes from foreground +
+       dim + ONE accent; color elsewhere is semantic only (ok/warn/err). All
+       resolve from VS Code theme tokens so light/dark/high-contrast all work. */
+    :root {
+      --mysti-fg: var(--vscode-foreground);
+      --mysti-dim: var(--vscode-descriptionForeground);
+      --mysti-accent: var(--vscode-textLink-foreground);
+      --mysti-surface: var(--vscode-editor-background);
+      --mysti-surface-2: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,0.08));
+      --mysti-border: var(--vscode-panel-border);
+      --mysti-ok: var(--vscode-charts-green, #4caf50);
+      --mysti-warn: var(--vscode-charts-yellow, #e2c541);
+      --mysti-err: var(--vscode-errorForeground, #f14c4c);
+    }
+
     * {
       box-sizing: border-box;
       margin: 0;
@@ -42,16 +57,15 @@
       align-items: center;
       gap: 4px;
       font-size: 10px;
-      color: var(--vscode-charts-green);
+      color: var(--mysti-dim);
       padding: 2px 8px;
-      background: rgba(0, 200, 83, 0.1);
       border-radius: 10px;
     }
 
     .session-dot {
       width: 6px;
       height: 6px;
-      background: var(--vscode-charts-green);
+      background: var(--mysti-ok);
       border-radius: 50%;
       animation: pulse 2s infinite;
     }
@@ -73,19 +87,17 @@
     }
 
     .session-indicator.idle .session-dot {
-      background: var(--vscode-charts-yellow, #e2c541);
+      background: var(--mysti-warn);
       animation: none;
     }
     .session-indicator.idle {
-      color: var(--vscode-charts-yellow, #e2c541);
-      background: rgba(226, 197, 65, 0.1);
+      color: var(--mysti-dim);
     }
     .session-indicator.blocked .session-dot {
-      background: var(--vscode-charts-orange, #d18616);
+      background: var(--mysti-err);
     }
     .session-indicator.blocked {
-      color: var(--vscode-charts-orange, #d18616);
-      background: rgba(209, 134, 22, 0.1);
+      color: var(--mysti-dim);
     }
 
     @keyframes pulse {
@@ -105,28 +117,25 @@
     }
 
     .autonomy-indicator.autonomous {
-      color: var(--vscode-charts-blue, #4285f4);
-      background: rgba(66, 133, 244, 0.1);
+      color: var(--mysti-dim);
     }
 
     .autonomy-indicator.semi-autonomous {
-      color: var(--vscode-charts-orange, #d18616);
-      background: rgba(209, 134, 22, 0.1);
+      color: var(--mysti-dim);
     }
 
     .autonomy-dot {
       width: 6px;
       height: 6px;
       border-radius: 50%;
-      animation: pulse 2s infinite;
     }
 
     .autonomy-indicator.autonomous .autonomy-dot {
-      background: var(--vscode-charts-blue, #4285f4);
+      background: var(--mysti-accent);
     }
 
     .autonomy-indicator.semi-autonomous .autonomy-dot {
-      background: var(--vscode-charts-orange, #d18616);
+      background: var(--mysti-warn);
     }
 
     /* Autonomous confirmation overlay */
@@ -1490,16 +1499,8 @@
       line-height: 1.3;
     }
 
-    /* Welcome card color variants */
-    .welcome-card[data-color="blue"] { --card-color: #3b82f6; }
-    .welcome-card[data-color="green"] { --card-color: #22c55e; }
-    .welcome-card[data-color="purple"] { --card-color: #a855f7; }
-    .welcome-card[data-color="orange"] { --card-color: #f97316; }
-    .welcome-card[data-color="indigo"] { --card-color: #6366f1; }
-    .welcome-card[data-color="red"] { --card-color: #ef4444; }
-    .welcome-card[data-color="teal"] { --card-color: #14b8a6; }
-    .welcome-card[data-color="pink"] { --card-color: #ec4899; }
-    .welcome-card[data-color="amber"] { --card-color: #f59e0b; }
+    /* Plan 06 Phase 2: one accent for all cards (was 9 rainbow variants). */
+    .welcome-card[data-color] { --card-color: var(--mysti-accent); }
 
     .message {
       margin-bottom: 16px;
@@ -1531,12 +1532,14 @@
       letter-spacing: 0.5px;
     }
 
+    /* Plan 06 Phase 2: roles read by label + weight, not by color. The active
+       accent marks the user (the line you're writing); assistant stays dim. */
     .message-role.user {
-      color: var(--vscode-textLink-foreground);
+      color: var(--mysti-accent);
     }
 
     .message-role.assistant {
-      color: var(--vscode-charts-green);
+      color: var(--mysti-dim);
     }
 
     .message-model-info {
@@ -2024,16 +2027,11 @@
       display: none;
     }
 
-    /* Color variants */
-    .suggestion-card[data-color="blue"] { --card-color: #3b82f6; --icon-bg: rgba(59,130,246,0.15); }
-    .suggestion-card[data-color="green"] { --card-color: #22c55e; --icon-bg: rgba(34,197,94,0.15); }
-    .suggestion-card[data-color="purple"] { --card-color: #a855f7; --icon-bg: rgba(168,85,247,0.15); }
-    .suggestion-card[data-color="orange"] { --card-color: #f97316; --icon-bg: rgba(249,115,22,0.15); }
-    .suggestion-card[data-color="indigo"] { --card-color: #6366f1; --icon-bg: rgba(99,102,241,0.15); }
-    .suggestion-card[data-color="red"] { --card-color: #ef4444; --icon-bg: rgba(239,68,68,0.15); }
-    .suggestion-card[data-color="teal"] { --card-color: #14b8a6; --icon-bg: rgba(20,184,166,0.15); }
-    .suggestion-card[data-color="pink"] { --card-color: #ec4899; --icon-bg: rgba(236,72,153,0.15); }
-    .suggestion-card[data-color="amber"] { --card-color: #f59e0b; --icon-bg: rgba(245,158,11,0.15); }
+    /* Plan 06 Phase 2: one accent for all cards (was 9 rainbow variants). */
+    .suggestion-card[data-color] {
+      --card-color: var(--mysti-accent);
+      --icon-bg: var(--mysti-surface-2);
+    }
 
     /* Legacy quick action btn (keep for compatibility) */
     .quick-action-btn {
@@ -3452,7 +3450,7 @@
     }
 
     .agent-response-card.streaming {
-      border-color: var(--agent-color, var(--vscode-focusBorder));
+      border-color: var(--mysti-accent);
     }
 
     .agent-response-header {
@@ -3500,8 +3498,9 @@
     }
 
     .synthesis-container {
-      background: linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(16, 185, 129, 0.1) 100%);
-      border: 1px solid var(--vscode-panel-border);
+      background: var(--mysti-surface-2);
+      border: 1px solid var(--mysti-border);
+      border-left: 3px solid var(--mysti-accent);
       border-radius: 8px;
       overflow: hidden;
     }
@@ -3667,7 +3666,7 @@
       line-height: 1.5;
       background: var(--vscode-editor-background);
       border: 1px solid var(--vscode-panel-border);
-      border-left: 3px solid var(--agent-color, var(--vscode-panel-border));
+      border-left: 3px solid var(--mysti-accent);
     }
 
     .brainstorm-agent-typing {
@@ -3754,6 +3753,8 @@
       font-size: 11px;
     }
 
+    /* Plan 06 Phase 2: one neutral role chip (was 8 hued role colors). The
+       role is conveyed by its label text, not by hue. */
     .discussion-bubble-role {
       font-size: 9px;
       padding: 1px 6px;
@@ -3761,16 +3762,9 @@
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.3px;
+      background: var(--mysti-surface-2);
+      color: var(--mysti-dim);
     }
-
-    .discussion-bubble-role.critic { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
-    .discussion-bubble-role.defender { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
-    .discussion-bubble-role.challenger { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
-    .discussion-bubble-role.proposer { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
-    .discussion-bubble-role.risk-analyst { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
-    .discussion-bubble-role.innovator { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
-    .discussion-bubble-role.facilitator { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
-    .discussion-bubble-role.refiner { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
 
     .discussion-bubble-content {
       padding: 10px 14px;
@@ -3781,13 +3775,14 @@
       border: 1px solid var(--vscode-panel-border);
     }
 
+    /* Plan 06 Phase 2: one accent (left) vs dim (right) instead of per-agent hues. */
     .discussion-bubble.agent-left .discussion-bubble-content {
-      border-left: 3px solid var(--agent-color, var(--vscode-panel-border));
+      border-left: 3px solid var(--mysti-accent);
       border-top-left-radius: 4px;
     }
 
     .discussion-bubble.agent-right .discussion-bubble-content {
-      border-right: 3px solid var(--agent-color, var(--vscode-panel-border));
+      border-right: 3px solid var(--mysti-border);
       border-top-right-radius: 4px;
     }
 
@@ -4009,7 +4004,7 @@
 
     .tool-call-name {
       font-weight: 600;
-      color: var(--vscode-charts-orange);
+      color: var(--mysti-fg);
       flex-shrink: 0;
     }
 
@@ -4616,8 +4611,8 @@
       align-items: center;
       justify-content: space-between;
       padding: 6px 12px;
-      background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(168, 85, 247, 0.1));
-      border: 1px solid rgba(99, 102, 241, 0.2);
+      background: var(--mysti-surface-2);
+      border: 1px solid var(--mysti-border);
       border-radius: 6px;
       margin-bottom: 8px;
       font-size: 12px;
@@ -4996,15 +4991,8 @@
     }
 
     /* Color variations for plan cards */
-    .plan-option-card[data-color="blue"] { border-left: 4px solid var(--vscode-charts-blue, #3b82f6); }
-    .plan-option-card[data-color="green"] { border-left: 4px solid var(--vscode-charts-green, #22c55e); }
-    .plan-option-card[data-color="purple"] { border-left: 4px solid var(--vscode-charts-purple, #a855f7); }
-    .plan-option-card[data-color="orange"] { border-left: 4px solid var(--vscode-charts-orange, #f59e0b); }
-    .plan-option-card[data-color="indigo"] { border-left: 4px solid var(--vscode-charts-blue, #6366f1); }
-    .plan-option-card[data-color="teal"] { border-left: 4px solid var(--vscode-charts-green, #14b8a6); }
-    .plan-option-card[data-color="red"] { border-left: 4px solid var(--vscode-charts-red, #ef4444); }
-    .plan-option-card[data-color="pink"] { border-left: 4px solid var(--vscode-charts-red, #ec4899); }
-    .plan-option-card[data-color="amber"] { border-left: 4px solid var(--vscode-charts-yellow, #f59e0b); }
+    /* Plan 06 Phase 2: one accent for all plan-option cards (was 9 hues). */
+    .plan-option-card[data-color] { border-left: 4px solid var(--mysti-accent); }
 
     /* ========================================
        AskUserQuestion UI (Tabbed) — unified for both tool-based and text-detected questions
