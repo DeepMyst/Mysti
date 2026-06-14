@@ -181,16 +181,36 @@ describe('shouldGateToolUse', () => {
     });
   });
 
-  describe('edit-automatically mode (bypasses gating)', () => {
-    it('should NOT gate with ask-permission', () => {
-      const settings = defaultSettings({ mode: 'edit-automatically', accessLevel: 'ask-permission' });
+  describe('Auto-edit tier (edit-automatically + ask-permission)', () => {
+    const settings = defaultSettings({ mode: 'edit-automatically', accessLevel: 'ask-permission' });
+
+    it('auto-applies file edits/creates (NOT gated)', () => {
       expect(shouldGateToolUse(settings, 'Edit')).toBe(false);
-      expect(shouldGateToolUse(settings, 'Bash')).toBe(false);
+      expect(shouldGateToolUse(settings, 'Write')).toBe(false);
+      expect(shouldGateToolUse(settings, 'MultiEdit')).toBe(false);
     });
 
-    it('should NOT gate with full-access', () => {
+    it('still asks for commands, deletes, and network requests', () => {
+      expect(shouldGateToolUse(settings, 'Bash')).toBe(true);
+      expect(shouldGateToolUse(settings, 'delete_file')).toBe(true);
+      expect(shouldGateToolUse(settings, 'WebFetch')).toBe(true);
+    });
+
+    it('gates unknown tools (fail closed → bash-command)', () => {
+      expect(shouldGateToolUse(settings, 'UnknownTool')).toBe(true);
+    });
+
+    it('still does NOT gate reads', () => {
+      expect(shouldGateToolUse(settings, 'Read')).toBe(false);
+    });
+  });
+
+  describe('Full access tier (edit-automatically + full-access)', () => {
+    it('should NOT gate anything', () => {
       const settings = defaultSettings({ mode: 'edit-automatically', accessLevel: 'full-access' });
       expect(shouldGateToolUse(settings, 'Edit')).toBe(false);
+      expect(shouldGateToolUse(settings, 'Bash')).toBe(false);
+      expect(shouldGateToolUse(settings, 'delete_file')).toBe(false);
     });
   });
 

@@ -593,35 +593,29 @@
           </span>
         </button>
       </div>
-      <!-- Behavior popup (hidden by default) -->
-      <div id="behavior-popup" class="behavior-popup hidden">
-        <div class="behavior-popup-section">
-          <label class="behavior-popup-label">Mode</label>
-          <select id="popup-mode-select" class="select">
-            <option value="default">Default</option>
-            <option value="ask-before-edit">Ask Before Edit</option>
-            <option value="edit-automatically">Edit Automatically</option>
-            <option value="quick-plan">Quick Plan</option>
-            <option value="detailed-plan">Detailed Plan</option>
-          </select>
-        </div>
-        <div class="behavior-popup-section">
-          <label class="behavior-popup-label">Access</label>
-          <select id="popup-access-select" class="select">
-            <option value="read-only">Read only</option>
-            <option value="ask-permission">Ask permission</option>
-            <option value="full-access">Full access</option>
-          </select>
-        </div>
-        <div class="behavior-popup-divider"></div>
-        <div class="behavior-popup-section">
-          <label class="behavior-popup-label">Autonomy</label>
-          <select id="popup-autonomy-select" class="select">
-            <option value="manual">Manual</option>
-            <option value="semi-autonomous">Semi-Autonomous</option>
-            <option value="autonomous">Autonomous</option>
-          </select>
-        </div>
+      <!-- Plan 06: single Mode picker (Plan → Ask → Auto-edit → Full access →
+           Autonomous), replacing the Mode/Access/Autonomy dropdowns. -->
+      <div id="behavior-popup" class="behavior-popup mode-popup hidden" role="listbox" aria-label="Agent mode">
+        <button class="mode-option" data-mode="plan" role="option">
+          <span class="mode-option-head"><span class="mode-option-check">✓</span><span class="mode-option-label">Plan</span></span>
+          <span class="mode-option-desc">Read-only — proposes a plan, makes no changes</span>
+        </button>
+        <button class="mode-option" data-mode="ask" role="option">
+          <span class="mode-option-head"><span class="mode-option-check">✓</span><span class="mode-option-label">Ask</span></span>
+          <span class="mode-option-desc">Confirm every edit &amp; command</span>
+        </button>
+        <button class="mode-option" data-mode="auto-edit" role="option">
+          <span class="mode-option-head"><span class="mode-option-check">✓</span><span class="mode-option-label">Auto-edit</span></span>
+          <span class="mode-option-desc">Auto-apply edits · ask for commands</span>
+        </button>
+        <button class="mode-option" data-mode="full-access" role="option">
+          <span class="mode-option-head"><span class="mode-option-check">✓</span><span class="mode-option-label">Full access</span></span>
+          <span class="mode-option-desc">Edits &amp; runs commands without asking</span>
+        </button>
+        <button class="mode-option" data-mode="autonomous" role="option">
+          <span class="mode-option-head"><span class="mode-option-check">✓</span><span class="mode-option-label">Autonomous</span></span>
+          <span class="mode-option-desc">Full access + keeps working (safety-gated)</span>
+        </button>
       </div>
       <div id="export-toast" class="export-toast">Copied to clipboard!</div>
       <!-- Visual Test Mini Status Bar (dashboard runs in separate tab) -->

@@ -79,16 +79,27 @@ export function shouldGateToolUse(settings: Settings, toolName: string): boolean
     return false;
   }
 
-  // Gate when mode is ask-before-edit (regardless of access level)
+  // "Ask" — gate every change (edits AND commands).
   if (settings.mode === 'ask-before-edit') {
     return true;
   }
 
-  // Gate when access is ask-permission and mode doesn't bypass
+  // "Auto-edit" (edit-automatically + ask-permission): file edits/creates
+  // auto-apply, but commands, deletes, and network requests still ask — the
+  // Claude-Code "accept edits" tier. Without this branch, edit-automatically
+  // would auto-run everything (which is the "Full access" tier instead).
+  if (settings.mode === 'edit-automatically' && settings.accessLevel === 'ask-permission') {
+    return actionType === 'bash-command'
+      || actionType === 'file-delete'
+      || actionType === 'web-request';
+  }
+
+  // "Default"/legacy — gate when access is ask-permission and mode doesn't bypass.
   if (settings.accessLevel === 'ask-permission' && settings.mode !== 'edit-automatically') {
     return true;
   }
 
-  // Don't gate for edit-automatically + full-access, plan modes, read-only, etc.
+  // "Full access" + edit-automatically, plan modes, read-only → not gated here
+  // (read-only/plan are enforced by the provider's CLI permission mode).
   return false;
 }

@@ -2274,6 +2274,32 @@
       display: none;
     }
 
+    /* Plan 06: single Mode picker options (replaces the 3 dropdowns). */
+    .behavior-popup.mode-popup { min-width: 248px; padding: 4px; }
+    .mode-option {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 10px;
+      cursor: pointer;
+      color: var(--mysti-fg);
+    }
+    .mode-option:hover { background: var(--vscode-list-hoverBackground); }
+    .mode-option.active { background: var(--vscode-list-activeSelectionBackground); }
+    .mode-option.active,
+    .mode-option.active .mode-option-desc {
+      color: var(--vscode-list-activeSelectionForeground);
+    }
+    .mode-option-head { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; }
+    .mode-option-check { visibility: hidden; width: 12px; color: var(--mysti-accent); font-weight: 700; }
+    .mode-option.active .mode-option-check { visibility: visible; color: inherit; }
+    .mode-option-desc { font-size: 11px; color: var(--mysti-dim); padding-left: 18px; }
+
     .behavior-popup-section {
       margin-bottom: 8px;
     }

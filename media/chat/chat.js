@@ -3335,14 +3335,17 @@
           var isHidden = behaviorPopup.classList.contains('hidden');
           behaviorPopup.classList.toggle('hidden', !isHidden);
           if (isHidden) {
-            // Sync popup dropdowns with current state
-            var popupMode = document.getElementById('popup-mode-select');
-            var popupAccess = document.getElementById('popup-access-select');
-            var popupAutonomy = document.getElementById('popup-autonomy-select');
-            if (popupMode) popupMode.value = state.settings.mode || 'ask-before-edit';
-            if (popupAccess) popupAccess.value = state.settings.accessLevel || 'ask-permission';
-            if (popupAutonomy) popupAutonomy.value = state.autonomyLevel || 'manual';
+            // Highlight the current mode when the picker opens.
+            renderModeOptions();
           }
+        });
+
+        // Plan 06: pick a mode from the single Mode picker.
+        behaviorPopup.addEventListener('click', function(e) {
+          var opt = e.target.closest ? e.target.closest('.mode-option') : null;
+          if (!opt) { return; }
+          applyChatMode(opt.getAttribute('data-mode'));
+          behaviorPopup.classList.add('hidden');
         });
 
         // Close popup on click outside
@@ -9110,45 +9113,67 @@
         });
       }
 
+      // Plan 06: a single Mode axis replaces Mode × Access × Autonomy. Each mode
+      // maps to the existing engine settings (mode/accessLevel/autonomyLevel);
+      // deriveChatMode reverses the current settings back to one of these.
+      var CHAT_MODES = [
+        { id: 'plan',        label: 'Plan',        mode: 'detailed-plan',      access: 'read-only',      autonomy: 'manual',     desc: 'Read-only — proposes a plan, makes no changes' },
+        { id: 'ask',         label: 'Ask',         mode: 'ask-before-edit',    access: 'ask-permission', autonomy: 'manual',     desc: 'Asks before every edit & command' },
+        { id: 'auto-edit',   label: 'Auto-edit',   mode: 'edit-automatically', access: 'ask-permission', autonomy: 'manual',     desc: 'Auto-applies edits; asks before commands' },
+        { id: 'full-access', label: 'Full access', mode: 'edit-automatically', access: 'full-access',     autonomy: 'manual',     desc: 'Edits & runs commands without asking' },
+        { id: 'autonomous',  label: 'Autonomous',  mode: 'edit-automatically', access: 'full-access',     autonomy: 'autonomous', desc: 'Full access + keeps working on its own' }
+      ];
+      function chatModeById(id) {
+        for (var i = 0; i < CHAT_MODES.length; i++) { if (CHAT_MODES[i].id === id) return CHAT_MODES[i]; }
+        return null;
+      }
+      function deriveChatMode() {
+        if (state.autonomyLevel === 'autonomous') return 'autonomous';
+        var m = state.settings.mode, a = state.settings.accessLevel;
+        if (a === 'read-only' || m === 'quick-plan' || m === 'detailed-plan') return 'plan';
+        if (m === 'edit-automatically' && a === 'full-access') return 'full-access';
+        if (m === 'edit-automatically') return 'auto-edit';
+        return 'ask';
+      }
+      function applyChatMode(id) {
+        var def = chatModeById(id);
+        if (!def) return;
+        state.settings.mode = def.mode;
+        state.settings.accessLevel = def.access;
+        // Persist mode + access via the same message the old dropdowns used.
+        postMessageWithPanelId({ type: 'updateSettings', payload: { mode: def.mode, accessLevel: def.access } });
+        // Autonomy keeps its own activation path (AutonomousManager).
+        if (typeof setAutonomyLevel === 'function') { setAutonomyLevel(def.autonomy); }
+        updateBehaviorIndicator();
+        updateBehaviorHint();
+        renderModeOptions();
+      }
+      function renderModeOptions() {
+        var active = deriveChatMode();
+        var opts = document.querySelectorAll('#behavior-popup .mode-option');
+        for (var i = 0; i < opts.length; i++) {
+          opts[i].classList.toggle('active', opts[i].getAttribute('data-mode') === active);
+        }
+      }
+
       function updateBehaviorIndicator() {
         if (!behaviorIndicator) return;
-        var modeLabels = {
-          'default': 'Default',
-          'ask-before-edit': 'Ask Before Edit',
-          'edit-automatically': 'Auto Edit',
-          'quick-plan': 'Quick Plan',
-          'detailed-plan': 'Detailed Plan'
-        };
+        var id = deriveChatMode();
+        var def = chatModeById(id);
         behaviorIndicator.classList.remove('autonomous-active', 'semi-auto-active');
-        if (state.autonomyLevel === 'autonomous') {
-          behaviorIndicator.innerHTML = '<span class="behavior-dot"></span>Autonomous';
+        if (id === 'autonomous') {
+          behaviorIndicator.innerHTML = '<span class="behavior-dot"></span>' + (def ? def.label : 'Autonomous');
           behaviorIndicator.classList.add('autonomous-active');
-        } else if (state.autonomyLevel === 'semi-autonomous') {
-          behaviorIndicator.innerHTML = '<span class="behavior-dot"></span>Semi-Auto';
-          behaviorIndicator.classList.add('semi-auto-active');
         } else {
-          behaviorIndicator.textContent = modeLabels[state.settings.mode] || state.settings.mode;
+          behaviorIndicator.textContent = def ? def.label : 'Ask';
         }
       }
 
       function updateBehaviorHint() {
         var hint = document.getElementById('behavior-hint');
         if (!hint) return;
-        var mode = state.settings.mode || 'ask-before-edit';
-        var access = state.settings.accessLevel || 'ask-permission';
-        var text = '';
-        if (access === 'read-only' || mode === 'quick-plan' || mode === 'detailed-plan') {
-          text = 'Agent generates plans without executing changes';
-        } else if (mode === 'edit-automatically' && access === 'full-access') {
-          text = 'Agent has full control over files and actions';
-        } else if (mode === 'edit-automatically' && access === 'ask-permission') {
-          text = 'Agent edits files, you approve system actions';
-        } else if (mode === 'ask-before-edit' && access === 'full-access') {
-          text = 'Agent has file access, asks before complex changes';
-        } else {
-          text = 'Agent asks before every change';
-        }
-        hint.textContent = text;
+        var def = chatModeById(deriveChatMode());
+        hint.textContent = def ? def.desc : '';
       }
 
       /**
