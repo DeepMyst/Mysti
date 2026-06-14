@@ -14,6 +14,7 @@
 import type { ArtifactStore } from './ArtifactStore';
 import type { CanvasOpExecutor, CanvasApprovalMode } from './CanvasOpExecutor';
 import { computeAnchors, resolveFormat } from './CanvasFormats';
+import { validatePage } from './CanvasValidator';
 import type { CanvasArtifact, CanvasOp, ArtifactPage } from '../types';
 
 /**
@@ -92,6 +93,12 @@ export const CANVAS_TOOLS: readonly CanvasToolDef[] = [
     access: 'read-only',
     description: 'READ-ONLY (anchor geometry — center, rule-of-thirds points, safe rect — for the artifact\'s format).',
     inputSchema: obj({}),
+  },
+  {
+    name: 'validate_page',
+    access: 'read-only',
+    description: 'READ-ONLY (static design checks — empty page, missing actionTitle, raw hex, unresolved asset refs, overflow). The cheap sibling of render_page_preview; run it after every edit.',
+    inputSchema: obj({ pageId: { type: 'string' }, reportedContentHeight: { type: 'number' } }, ['pageId']),
   },
   {
     name: 'insert_page',
@@ -207,6 +214,13 @@ export function dispatchCanvasTool(name: string, args: Args, ctx: CanvasToolCont
 
     case 'page_coordinates':
       return { ok: true, data: computeAnchors(artifact.format) };
+
+    case 'validate_page': {
+      const page = store.getPage(artifact, String(args.pageId));
+      if (!page) { return { ok: false, error: `page ${String(args.pageId)} not found` }; }
+      const issues = validatePage(artifact, page, { reportedContentHeight: numOrUndef(args.reportedContentHeight) });
+      return { ok: true, data: { issues, ok: issues.every(i => i.severity !== 'error') } };
+    }
 
     case 'insert_page': {
       const page = args.page;
