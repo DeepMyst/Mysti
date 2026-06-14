@@ -77,6 +77,11 @@ code {
 .list-item-main .name { overflow-wrap: anywhere; }
 .list-item-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .conn-icon { width: 20px; height: 20px; border-radius: 4px; flex-shrink: 0; object-fit: contain; }
+.conn-icon-ph {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600; line-height: 1;
+  background: var(--vscode-badge-background, #4d4d4d); color: var(--vscode-badge-foreground, #fff);
+}
 
 .empty {
   color: var(--vscode-descriptionForeground);

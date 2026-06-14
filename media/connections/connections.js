@@ -35,6 +35,27 @@
     return node;
   }
 
+  /** A letter-avatar placeholder (used when there's no icon, or it fails). */
+  function iconPlaceholder(c) {
+    const ph = el('div', 'conn-icon conn-icon-ph');
+    ph.textContent = ((c.displayName || c.provider || '?').trim()[0] || '?').toUpperCase();
+    return ph;
+  }
+
+  /** Provider logo with graceful fallback — a broken/blocked/missing image
+   *  swaps to a letter placeholder (inline onerror is disallowed under CSP). */
+  function makeIcon(c) {
+    if (!c.iconUrl) { return iconPlaceholder(c); }
+    const img = document.createElement('img');
+    img.className = 'conn-icon';
+    img.src = c.iconUrl;
+    img.alt = '';
+    img.addEventListener('error', function () {
+      if (img.parentNode) { img.parentNode.replaceChild(iconPlaceholder(c), img); }
+    });
+    return img;
+  }
+
   function statusLabel(status) {
     switch (status) {
       case 'connected': return 'Connected';
@@ -54,13 +75,7 @@
       const li = el('li', 'list-item');
 
       const left = el('div', 'list-item-main');
-      if (c.iconUrl) {
-        const img = document.createElement('img');
-        img.className = 'conn-icon';
-        img.src = c.iconUrl;
-        img.alt = '';
-        left.appendChild(img);
-      }
+      left.appendChild(makeIcon(c));
       const text = el('div');
       text.appendChild(el('div', 'name', c.displayName || c.id));
       const metaBits = [c.provider, statusLabel(c.status)].filter(Boolean).join(' · ');
