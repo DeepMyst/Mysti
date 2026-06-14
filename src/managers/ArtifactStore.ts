@@ -17,6 +17,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { DesignSpecManager } from './DesignSpecManager';
+import { getDefaultFormat } from './CanvasFormats';
 import type {
   CanvasArtifact,
   ArtifactPage,
@@ -26,13 +27,11 @@ import type {
   DesignTheme,
 } from '../types';
 
-/** Default deck format (full catalog arrives in Phase 4 `CanvasFormats`). */
-export const DEFAULT_CANVAS_FORMAT: CanvasFormatSpec = {
-  formatId: 'deck-16x9',
-  kind: 'screen',
-  width: 1920,
-  height: 1080,
-};
+/**
+ * Default deck format. Sourced from the {@link CanvasFormats} catalog; kept as a
+ * named export for back-compat with earlier Phase 1 importers.
+ */
+export const DEFAULT_CANVAS_FORMAT: CanvasFormatSpec = getDefaultFormat();
 
 /** Lightweight listing entry (avoids loading every artifact's pages). */
 export interface ArtifactSummary {
@@ -85,7 +84,7 @@ export class ArtifactStore {
       version: 1,
       kind: opts.kind ?? 'deck',
       name: opts.name,
-      format: opts.format ?? { ...DEFAULT_CANVAS_FORMAT },
+      format: opts.format ?? getDefaultFormat(),
       theme: opts.theme ?? DesignSpecManager.getDefaultTheme(),
       pages: [],
       assets: [],
