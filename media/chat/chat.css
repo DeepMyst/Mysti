@@ -2148,6 +2148,50 @@
     .tools-menu-item:hover { background: var(--vscode-list-hoverBackground); }
     .tools-menu-divider { height: 1px; background: var(--mysti-border); margin: 4px 0; }
 
+    /* Plan 07: context files panel (above the input) */
+    .context-panel {
+      margin-bottom: 8px;
+      border: 1px solid var(--mysti-border);
+      border-radius: 8px;
+      background: var(--mysti-surface-2);
+    }
+    .context-panel.hidden { display: none; }
+    .context-panel.drop-target { outline: 2px dashed var(--mysti-accent); outline-offset: -2px; }
+    .context-panel-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 8px; font-size: 11px; color: var(--mysti-dim);
+    }
+    .context-panel-title { font-weight: 600; color: var(--mysti-fg); }
+    .context-tokens { color: var(--mysti-dim); }
+    .context-panel-actions { margin-left: auto; display: flex; gap: 2px; }
+    .context-panel-btn {
+      background: transparent; border: none; color: var(--mysti-dim);
+      cursor: pointer; font-size: 11px; padding: 2px 6px; border-radius: 4px;
+    }
+    .context-panel-btn:hover {
+      color: var(--mysti-fg);
+      background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.15));
+    }
+    .context-items { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px 8px; }
+    .context-item {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--mysti-border);
+      border-radius: 6px; padding: 2px 6px; font-size: 11px; max-width: 240px;
+    }
+    .context-item.off { opacity: 0.55; }
+    .context-item-toggle, .context-item-remove {
+      background: transparent; border: none; cursor: pointer;
+      padding: 0; line-height: 1; font-size: 11px; flex-shrink: 0;
+    }
+    .context-item-toggle { color: var(--mysti-accent); }
+    .context-item.off .context-item-toggle { color: var(--mysti-dim); }
+    .context-item-icon { flex-shrink: 0; }
+    .context-item-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mysti-fg); }
+    .context-item.off .context-item-path { text-decoration: line-through; }
+    .context-item-remove { color: var(--mysti-dim); }
+    .context-item-remove:hover { color: var(--mysti-err); }
+
     .toolbar-btn {
       display: flex;
       align-items: center;

@@ -631,6 +631,18 @@
           <span class="badge-toast-subtitle" id="badge-toast-subtitle"></span>
         </div>
       </div>
+      <!-- Plan 07: context files panel (persistent across turns; hidden until items added) -->
+      <div id="context-panel" class="context-panel hidden">
+        <div class="context-panel-header">
+          <span class="context-panel-title">Context <span id="context-count" class="context-count"></span></span>
+          <span id="context-tokens" class="context-tokens"></span>
+          <span class="context-panel-actions">
+            <button id="context-add-btn" class="context-panel-btn" title="Add a file to context">+ Add</button>
+            <button id="context-clear-btn" class="context-panel-btn" title="Remove all context">Clear</button>
+          </span>
+        </div>
+        <div id="context-items" class="context-items"></div>
+      </div>
       <div class="input-container">
         <div id="attachment-previews" class="attachment-previews"></div>
         <div class="input-wrapper">

@@ -69,7 +69,8 @@ export class ContextManager {
         type: 'file',
         path: filePath,
         content,
-        language
+        language,
+        enabled: true
       };
 
       ctx.push(item);
@@ -98,7 +99,8 @@ export class ContextManager {
       content,
       startLine,
       endLine,
-      language: language || this._getLanguageFromPath(filePath)
+      language: language || this._getLanguageFromPath(filePath),
+      enabled: true
     };
 
     ctx.push(item);
@@ -126,6 +128,28 @@ export class ContextManager {
     this._panelContexts.set(pid, filtered);
   }
 
+  /**
+   * Plan 07: activate/deactivate a context item without removing it. A disabled
+   * item stays in the list (and panel) but is excluded from the prompt.
+   * Returns the new enabled state, or null if the item wasn't found.
+   */
+  public setItemEnabled(id: string, enabled: boolean, panelId?: string): boolean | null {
+    const ctx = this._getPanelContext(panelId || 'default');
+    const item = ctx.find((c: ContextItem) => c.id === id);
+    if (!item) { return null; }
+    item.enabled = enabled;
+    return enabled;
+  }
+
+  /** Toggle a context item's active state. Returns the new state, or null. */
+  public toggleItem(id: string, panelId?: string): boolean | null {
+    const ctx = this._getPanelContext(panelId || 'default');
+    const item = ctx.find((c: ContextItem) => c.id === id);
+    if (!item) { return null; }
+    item.enabled = item.enabled === false; // false -> true, true/undefined -> false
+    return item.enabled;
+  }
+
   public clearContext(panelId?: string) {
     const id = panelId || 'default';
     this._panelContexts.set(id, []);
@@ -141,9 +165,9 @@ export class ContextManager {
   public async refreshContext(panelId?: string) {
     const id = panelId || 'default';
     const ctx = this._getPanelContext(id);
-    // Refresh content for all file items
+    // Refresh content for all enabled file items (skip deactivated ones).
     for (const item of ctx) {
-      if (item.type === 'file') {
+      if (item.type === 'file' && item.enabled !== false) {
         try {
           item.content = await fs.promises.readFile(item.path, 'utf-8');
         } catch (error) {
@@ -156,7 +180,7 @@ export class ContextManager {
 
   public formatContextForPrompt(panelId?: string): string {
     const id = panelId || 'default';
-    const ctx = this._getPanelContext(id);
+    const ctx = this._getPanelContext(id).filter((c) => c.enabled !== false);
     if (ctx.length === 0) {
       return '';
     }

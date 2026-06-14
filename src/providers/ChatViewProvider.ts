@@ -961,6 +961,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this._handleRequestFileAttachment(msg.panelId);
         break;
 
+      case 'addContextPaths':
+        {
+          // Plan 07: files dropped onto the context panel.
+          const panelId = msg.panelId;
+          const paths = Array.isArray(msg.payload) ? (msg.payload as string[]) : [];
+          let added = false;
+          for (const p of paths) {
+            const item = await this._contextManager.addFileToContext(p, panelId);
+            if (item) { added = true; }
+          }
+          if (added && panelId) {
+            this._postToPanel(panelId, {
+              type: 'contextUpdated',
+              payload: this._contextManager.getContext(panelId)
+            });
+          }
+        }
+        break;
+
+      case 'addContextFile':
+        {
+          // Plan 07: pick file(s) to add as persistent context.
+          const panelId = msg.panelId;
+          const uris = await vscode.window.showOpenDialog({
+            canSelectMany: true,
+            canSelectFiles: true,
+            canSelectFolders: false,
+            openLabel: 'Add to context',
+          });
+          if (uris && uris.length) {
+            for (const uri of uris) {
+              await this._contextManager.addFileToContext(uri.fsPath, panelId);
+            }
+            if (panelId) {
+              this._postToPanel(panelId, {
+                type: 'contextUpdated',
+                payload: this._contextManager.getContext(panelId)
+              });
+            }
+          }
+        }
+        break;
+
       case 'removeFromContext':
         {
           const panelId = msg.panelId;
@@ -970,6 +1013,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               type: 'contextUpdated',
               payload: this._contextManager.getContext(panelId)
             });
+          }
+        }
+        break;
+
+      case 'setContextItemEnabled':
+        {
+          // Plan 07: activate/deactivate a context item (kept in the list,
+          // excluded from the prompt when off).
+          const panelId = msg.panelId;
+          const p = msg.payload as { id?: string; enabled?: boolean };
+          if (p?.id !== undefined) {
+            this._contextManager.setItemEnabled(p.id, !!p.enabled, panelId);
+            if (panelId) {
+              this._postToPanel(panelId, {
+                type: 'contextUpdated',
+                payload: this._contextManager.getContext(panelId)
+              });
+            }
           }
         }
         break;

@@ -41,6 +41,12 @@ export interface ContextItem {
   startLine?: number;
   endLine?: number;
   language?: string;
+  /**
+   * Plan 07: when false, the item stays in the context list (visible in the
+   * panel) but is excluded from the prompt — the "deactivate" affordance.
+   * Treated as enabled when undefined (back-compat).
+   */
+  enabled?: boolean;
 }
 
 export type AttachmentType = 'image' | 'file';

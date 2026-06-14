@@ -1909,6 +1909,19 @@
           postMessageWithPanelId({ type: 'requestFileAttachment' });
         });
       }
+      // Plan 07: context panel Add / Clear
+      var contextAddBtn = document.getElementById('context-add-btn');
+      if (contextAddBtn) {
+        contextAddBtn.addEventListener('click', function() {
+          postMessageWithPanelId({ type: 'addContextFile' });
+        });
+      }
+      var contextClearBtn = document.getElementById('context-clear-btn');
+      if (contextClearBtn) {
+        contextClearBtn.addEventListener('click', function() {
+          postMessageWithPanelId({ type: 'clearContext' });
+        });
+      }
       if (stopBtn) {
         stopBtn.addEventListener('click', function() {
           postMessageWithPanelId({ type: 'cancelRequest' });
@@ -3826,20 +3839,24 @@
         }
       });
 
-      if (contextItems) {
-        contextItems.addEventListener('dragover', function(e) {
+      // Plan 07: dropping on the context panel adds *context files* (persistent),
+      // not per-message attachments. Bind to the whole panel so the drop target
+      // is generous even when the list is empty.
+      var contextPanelEl = document.getElementById('context-panel');
+      if (contextPanelEl) {
+        contextPanelEl.addEventListener('dragover', function(e) {
           e.preventDefault();
-          contextItems.style.background = 'var(--vscode-list-hoverBackground)';
+          e.stopPropagation();
+          contextPanelEl.classList.add('drop-target');
         });
-
-        contextItems.addEventListener('dragleave', function() {
-          contextItems.style.background = '';
+        contextPanelEl.addEventListener('dragleave', function(e) {
+          if (!contextPanelEl.contains(e.relatedTarget)) { contextPanelEl.classList.remove('drop-target'); }
         });
-
-        contextItems.addEventListener('drop', function(e) {
+        contextPanelEl.addEventListener('drop', function(e) {
           e.preventDefault();
-          contextItems.style.background = '';
-          handleDroppedFiles(e.dataTransfer);
+          e.stopPropagation();
+          contextPanelEl.classList.remove('drop-target');
+          handleDroppedToContext(e.dataTransfer);
         });
       }
 
@@ -6744,6 +6761,33 @@
       var MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
       var MAX_ATTACHMENTS = 10;
 
+      // Plan 07: pull file paths out of a drop (works for drags from the VS Code
+      // explorer / OS, which set a uri-list). Returns absolute paths.
+      function extractDroppedPaths(dataTransfer) {
+        var out = [];
+        if (!dataTransfer) { return out; }
+        var raw = '';
+        try { raw = dataTransfer.getData('text/uri-list') || dataTransfer.getData('application/vnd.code.uri-list') || ''; } catch (e) {}
+        raw.split(/\r?\n/).forEach(function(line) {
+          line = (line || '').trim();
+          if (line && line.indexOf('file:') === 0) {
+            try { out.push(decodeURIComponent(line.replace(/^file:\/\//, ''))); } catch (e) {}
+          }
+        });
+        return out;
+      }
+
+      // Drop onto the context panel → add as persistent context files. Falls back
+      // to attaching when the drop carries no resolvable file paths.
+      function handleDroppedToContext(dataTransfer) {
+        var paths = extractDroppedPaths(dataTransfer);
+        if (paths.length) {
+          postMessageWithPanelId({ type: 'addContextPaths', payload: paths });
+        } else {
+          handleDroppedFiles(dataTransfer);
+        }
+      }
+
       function handleDroppedFiles(dataTransfer) {
         if (!dataTransfer || !dataTransfer.files || dataTransfer.files.length === 0) return;
 
@@ -9094,21 +9138,56 @@
       }
 
       function updateContext(context) {
-        state.context = context;
-        if (!contextItems) return;
+        state.context = context || [];
+        var panel = document.getElementById('context-panel');
+        var items = document.getElementById('context-items');
+        if (!panel || !items) { return; }
 
-        if (context.length === 0) {
-          contextItems.innerHTML = '<div class="context-empty">Drop files here or click + to add context</div>';
+        if (state.context.length === 0) {
+          panel.classList.add('hidden');
+          items.innerHTML = '';
           return;
         }
+        panel.classList.remove('hidden');
 
-        contextItems.innerHTML = context.map(function(item) {
-          return '<div class="context-item" data-id="' + item.id + '"><span class="context-item-path" title="' + item.path + '">' + getFileName(item.path) + (item.type === 'selection' ? ' (selection)' : '') + '</span><button class="context-item-remove" data-id="' + item.id + '">x</button></div>';
+        var activeCount = 0, approxChars = 0;
+        items.innerHTML = state.context.map(function(item) {
+          var on = item.enabled !== false;
+          if (on) { activeCount++; approxChars += (item.content ? item.content.length : 0); }
+          var name = getFileName(item.path) +
+            (item.type === 'selection' ? ':' + (item.startLine || '') + '-' + (item.endLine || '') : '');
+          var icon = item.type === 'selection' ? '⌷' : (item.type === 'folder' ? '📁' : '📄');
+          return '<div class="context-item' + (on ? '' : ' off') + '" data-id="' + item.id + '">' +
+            '<button class="context-item-toggle" data-id="' + item.id + '" aria-pressed="' + on + '" title="' +
+              (on ? 'Active — click to deactivate (keeps it, excludes from prompt)' : 'Inactive — click to activate') + '">' +
+              (on ? '●' : '○') + '</button>' +
+            '<span class="context-item-icon">' + icon + '</span>' +
+            '<span class="context-item-path" title="' + escapeHtml(item.path) + '">' + escapeHtml(name) + '</span>' +
+            '<button class="context-item-remove" data-id="' + item.id + '" title="Remove from context">✕</button>' +
+            '</div>';
         }).join('');
 
-        contextItems.querySelectorAll('.context-item-remove').forEach(function(btn) {
+        var countEl = document.getElementById('context-count');
+        if (countEl) {
+          countEl.textContent = '· ' + state.context.length +
+            (activeCount < state.context.length ? ' (' + activeCount + ' on)' : '');
+        }
+        var tokensEl = document.getElementById('context-tokens');
+        if (tokensEl) {
+          var tok = Math.round(approxChars / 4);
+          tokensEl.textContent = tok > 0 ? '~' + (tok >= 1000 ? (tok / 1000).toFixed(1) + 'k' : tok) + ' tok' : '';
+        }
+
+        items.querySelectorAll('.context-item-remove').forEach(function(btn) {
           btn.addEventListener('click', function() {
             postMessageWithPanelId({ type: 'removeFromContext', payload: btn.dataset.id });
+          });
+        });
+        items.querySelectorAll('.context-item-toggle').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            var item = (state.context || []).find(function(c) { return c.id === btn.dataset.id; });
+            var currentlyOn = item ? item.enabled !== false : true;
+            postMessageWithPanelId({ type: 'setContextItemEnabled', payload: { id: btn.dataset.id, enabled: !currentlyOn } });
           });
         });
       }

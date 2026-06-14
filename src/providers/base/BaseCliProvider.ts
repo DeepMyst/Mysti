@@ -1436,9 +1436,15 @@ export abstract class BaseCliProvider implements ICliProvider {
   }
 
   protected formatContext(context: ContextItem[]): string {
+    // Plan 07: deactivated items stay in the panel but are excluded here.
+    const active = context.filter((item) => item.enabled !== false);
+    if (active.length === 0) {
+      return '';
+    }
+
     let formatted = '# Context Files\n\n';
 
-    for (const item of context) {
+    for (const item of active) {
       if (item.type === 'file') {
         formatted += `## ${item.path}\n`;
         formatted += `\`\`\`${item.language || ''}\n${item.content}\n\`\`\`\n\n`;
