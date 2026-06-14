@@ -557,47 +557,31 @@
 
     <!-- Input area -->
     <div class="input-area">
-      <div class="input-toolbar">
-        <button id="slash-cmd-btn" class="toolbar-btn" title="Slash commands">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M6.354 5.5H2.5a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 .5.5h6a.5.5 0 0 0 .5-.5V9h.5a.5.5 0 0 0 .4-.8l-4-5.333a.5.5 0 0 0-.846.054L6.354 5.5zM7 9v2.5H3V6h2.354l1.646 3z"/>
-          </svg>
-          <span>/</span>
-        </button>
-        <button id="enhance-btn" class="toolbar-btn" title="Enhance prompt">
+      <!-- Plan 06 Phase 3: secondary actions live in a "⋯" tools menu opened
+           from the status line, instead of a wall of always-on toolbar buttons. -->
+      <div id="tools-menu" class="tools-menu hidden">
+        <button id="enhance-btn" class="tools-menu-item" title="Enhance prompt">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
             <path d="M7.657 6.247c.11-.33.576-.33.686 0l.645 1.937a2.89 2.89 0 0 0 1.829 1.828l1.936.645c.33.11.33.576 0 .686l-1.937.645a2.89 2.89 0 0 0-1.828 1.829l-.645 1.936a.361.361 0 0 1-.686 0l-.645-1.937a2.89 2.89 0 0 0-1.828-1.828l-1.937-.645a.361.361 0 0 1 0-.686l1.937-.645a2.89 2.89 0 0 0 1.828-1.828l.645-1.937zM3.794 1.148a.217.217 0 0 1 .412 0l.387 1.162c.173.518.579.924 1.097 1.097l1.162.387a.217.217 0 0 1 0 .412l-1.162.387A1.734 1.734 0 0 0 4.593 5.69l-.387 1.162a.217.217 0 0 1-.412 0L3.407 5.69a1.734 1.734 0 0 0-1.097-1.097l-1.162-.387a.217.217 0 0 1 0-.412l1.162-.387A1.734 1.734 0 0 0 3.407 2.31l.387-1.162zM10.863.099a.145.145 0 0 1 .274 0l.258.774c.115.346.386.617.732.732l.774.258a.145.145 0 0 1 0 .274l-.774.258a1.156 1.156 0 0 0-.732.732l-.258.774a.145.145 0 0 1-.274 0l-.258-.774a1.156 1.156 0 0 0-.732-.732L9.1 2.137a.145.145 0 0 1 0-.274l.774-.258c.346-.115.617-.386.732-.732L10.863.1z"/>
           </svg>
+          <span>Enhance prompt</span>
         </button>
-        <button id="visual-test-btn" class="toolbar-btn" title="Visual Test — screenshot, test, fix your app">
+        <button id="visual-test-btn" class="tools-menu-item" title="Visual Test — screenshot, test, fix your app">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
             <path d="M10.5 8.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/>
             <path d="M2 4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-1.172a2 2 0 0 1-1.414-.586l-.828-.828A2 2 0 0 0 9.172 2H6.828a2 2 0 0 0-1.414.586l-.828.828A2 2 0 0 1 3.172 4H2zm.5 2a.5.5 0 1 1 0-1 .5.5 0 0 1 0 1zm9 2.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0z"/>
           </svg>
+          <span>Visual test</span>
         </button>
-        <button id="canvas-btn" class="toolbar-btn" title="Canvas — infinite drawing + AI design workspace">
+        <button id="canvas-btn" class="tools-menu-item" title="Canvas — infinite drawing + AI design workspace">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
             <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5L13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5z"/>
           </svg>
-          <span style="font-size:10px">Canvas</span>
+          <span>Canvas</span>
         </button>
-        <div class="toolbar-spacer"></div>
-        <button id="agent-select-btn" class="toolbar-btn agent-btn" title="Select AI agent">
-          <span id="agent-icon" class="agent-icon"><img src="{{resourceBase}}/icons/Claude.png" alt="" /></span>
-          <span id="agent-name">Claude</span>
-          <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M4 6l4 4 4-4"/>
-          </svg>
-        </button>
-        <div id="context-usage" class="context-usage" title="Context usage: 0%">
-          <svg viewBox="0 0 32 32" class="context-pie">
-            <circle class="context-pie-bg" cx="16" cy="16" r="14"/>
-            <path id="context-pie-fill" class="context-pie-fill" d=""/>
-          </svg>
-          <span id="context-usage-text" class="context-usage-text">0%</span>
-        </div>
-        <button id="toolbar-persona-btn" class="toolbar-btn persona-indicator-btn" title="Click to select a persona">
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+        <div class="tools-menu-divider"></div>
+        <button id="toolbar-persona-btn" class="tools-menu-item persona-indicator-btn" title="Click to select a persona">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
             <path d="M11 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>
             <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm8-7a7 7 0 0 0-5.468 11.37C3.242 11.226 4.805 10 8 10s4.757 1.225 5.468 2.37A7 7 0 0 0 8 1z"/>
           </svg>
@@ -608,8 +592,6 @@
             </svg>
           </span>
         </button>
-        <span id="strategy-indicator" class="strategy-indicator hidden" title="Click to cycle brainstorm strategy">Quick</span>
-        <span id="behavior-indicator" class="behavior-indicator" title="Click to change agent behavior">Ask before edit</span>
       </div>
       <!-- Behavior popup (hidden by default) -->
       <div id="behavior-popup" class="behavior-popup hidden">
@@ -676,6 +658,23 @@
             <rect x="3" y="3" width="10" height="10" rx="1"/>
           </svg>
         </button>
+      </div>
+      <!-- Plan 06 Phase 3: minimal status line (input is the focus above it) -->
+      <div class="input-status-line">
+        <button id="slash-cmd-btn" class="status-seg status-seg-glyph" title="Slash commands (or type /)">/</button>
+        <button id="tools-menu-btn" class="status-seg status-seg-glyph" title="Tools — enhance, visual test, canvas, persona">&#8943;</button>
+        <span id="strategy-indicator" class="strategy-indicator status-seg hidden" title="Click to cycle brainstorm strategy">Quick</span>
+        <span class="status-spacer"></span>
+        <button id="agent-select-btn" class="status-seg agent-btn" title="Select AI agent">
+          <span id="agent-icon" class="agent-icon"><img src="{{resourceBase}}/icons/Claude.png" alt="" /></span>
+          <span id="agent-name">Claude</span>
+          <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        <div id="context-usage" class="context-usage status-seg" title="Context usage: 0%">
+          <svg viewBox="0 0 32 32" class="context-pie"><circle class="context-pie-bg" cx="16" cy="16" r="14"/><path id="context-pie-fill" class="context-pie-fill" d=""/></svg>
+          <span id="context-usage-text" class="context-usage-text">0%</span>
+        </div>
+        <span id="behavior-indicator" class="behavior-indicator status-seg" title="Click to change agent behavior">Ask before edit</span>
       </div>
     </div>
 

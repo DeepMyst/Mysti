@@ -3361,6 +3361,36 @@
         });
       }
 
+      // Plan 06 Phase 3: "⋯" tools menu (enhance / visual test / canvas /
+      // persona). The items keep their own id-bound handlers; this just toggles
+      // the menu and closes it after a pick / outside click / Escape.
+      var toolsMenuBtn = document.getElementById('tools-menu-btn');
+      var toolsMenu = document.getElementById('tools-menu');
+      if (toolsMenuBtn && toolsMenu) {
+        toolsMenuBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          toolsMenu.classList.toggle('hidden');
+        });
+        toolsMenu.addEventListener('click', function(e) {
+          // Close after an action runs; keep open when clearing the persona.
+          if (e.target.closest('.tools-menu-item') && !e.target.closest('#toolbar-persona-clear')) {
+            toolsMenu.classList.add('hidden');
+          }
+        });
+        document.addEventListener('click', function(e) {
+          if (!toolsMenu.classList.contains('hidden') &&
+              !toolsMenu.contains(e.target) &&
+              e.target !== toolsMenuBtn && !toolsMenuBtn.contains(e.target)) {
+            toolsMenu.classList.add('hidden');
+          }
+        });
+        document.addEventListener('keydown', function(e) {
+          if (e.key === 'Escape' && !toolsMenu.classList.contains('hidden')) {
+            toolsMenu.classList.add('hidden');
+          }
+        });
+      }
+
       // Popup mode/access dropdowns sync with settings panel
       var popupModeSelect = document.getElementById('popup-mode-select');
       var popupAccessSelect = document.getElementById('popup-access-select');

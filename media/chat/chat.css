@@ -2064,6 +2064,90 @@
       position: relative;
     }
 
+    /* Plan 06 Phase 3 — minimal status line below the input (Option A). The
+       input is the focus; this quiet line shows agent · context · mode and
+       affordances for / and the ⋯ tools menu. */
+    .input-status-line {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--mysti-dim);
+    }
+    .input-status-line .status-spacer { flex: 1 1 auto; }
+    .input-status-line .status-seg {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: var(--mysti-dim);
+      cursor: pointer;
+      padding: 2px 6px;
+      font-size: 11px;
+      line-height: 1.4;
+      white-space: nowrap;
+      transition: color 0.12s ease, background-color 0.12s ease;
+    }
+    .input-status-line .status-seg:hover {
+      color: var(--mysti-fg);
+      background: var(--mysti-surface-2);
+    }
+    .input-status-line .status-seg-glyph { font-weight: 700; }
+    /* The relocated controls drop their filled-chip look in the quiet line. */
+    .input-status-line .agent-btn,
+    .input-status-line .context-usage,
+    .input-status-line .behavior-indicator,
+    .input-status-line .strategy-indicator {
+      background: transparent;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--mysti-dim);
+    }
+    .input-status-line .strategy-indicator { color: var(--mysti-accent); }
+    .input-status-line .agent-btn:hover,
+    .input-status-line .context-usage:hover,
+    .input-status-line .behavior-indicator:hover,
+    .input-status-line .strategy-indicator:hover {
+      background: var(--mysti-surface-2);
+      color: var(--mysti-fg);
+    }
+    .input-status-line .context-pie { width: 14px; height: 14px; }
+
+    /* Tools menu (⋯) — secondary actions, opened from the status line. */
+    .tools-menu {
+      position: absolute;
+      bottom: calc(100% + 4px);
+      left: 12px;
+      min-width: 190px;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 8px;
+      padding: 4px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+      z-index: 100;
+    }
+    .tools-menu.hidden { display: none; }
+    .tools-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 6px 10px;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: var(--mysti-fg);
+      cursor: pointer;
+      font-size: 12px;
+      text-align: left;
+    }
+    .tools-menu-item:hover { background: var(--vscode-list-hoverBackground); }
+    .tools-menu-divider { height: 1px; background: var(--mysti-border); margin: 4px 0; }
+
     .toolbar-btn {
       display: flex;
       align-items: center;
