@@ -1580,6 +1580,13 @@ export interface CanvasSession {
   linkedChatPanelId?: string;
   designSpec?: DesignSpec;
   stitchProjectId?: string;
+  /**
+   * Plan 05 Phase 1: links this session to its {@link CanvasArtifact} — the
+   * persisted source of truth. When set, `canvasJson` holds *only* the freeform
+   * fabric layer; structured pages/themes live in the artifact and the webview
+   * derives proxy rects + iframe overlays from it on load (closes F-16).
+   */
+  artifactId?: string;
 }
 
 // ── Google Stitch types ──
@@ -1639,6 +1646,12 @@ export interface CanvasUnifiedParsed {
   argument: string;
 }
 
+/**
+ * @deprecated Plan 05 Phase 1 replaces the stringly-typed 40-variant chunk union
+ * with the jobId-keyed {@link CanvasJobEvent} envelope. New canvas pipelines emit
+ * `CanvasJobEvent`s through `CanvasJobRouter`; this union remains only until the
+ * legacy prompt-bar handlers are ported (Phase 1.7 / webview F5 pass).
+ */
 export type CanvasStreamChunkType =
   | 'canvas_reimagine_started'
   | 'canvas_reimagine_variant'
@@ -1880,4 +1893,182 @@ export interface DesignSpec {
   themeLibrary?: SavedTheme[];
   createdAt: number;
   updatedAt: number;
+}
+
+// ============================================================================
+// Canvas Artifact model (Plan 05 — agent-driven artifact studio)
+//
+// The persisted source of truth for a canvas. Unlike the legacy fabric-render
+// JSON (which only captured the drawing surface), the artifact carries the full
+// structured design — pages, theme, format, media provenance, and the op log —
+// so a reload reconstructs the canvas exactly (closes F-16). The rendered fabric
+// board becomes a derived view; `CanvasSession.canvasJson` persists only the
+// freeform/spatial layer (annotations, ad-hoc frames, uploaded images).
+// ============================================================================
+
+/** Canvas format / page geometry. See `CanvasFormats` catalog (Phase 4). */
+export interface CanvasFormatSpec {
+  /** Catalog id, e.g. `deck-16x9`, `story-9x16`, `a4-portrait`, `custom`. */
+  formatId: string;
+  kind: 'screen' | 'print';
+  /** Design-px dimensions (longer edge normalized to 1920 by convention). */
+  width: number;
+  height: number;
+  dpi?: number;
+  /** Print bleed in design px. */
+  bleed?: number;
+  /** Print safe margin in design px. */
+  safeMargin?: number;
+}
+
+/** Per-element durable override keyed by DOM index path (`0/2/1`). */
+export interface ElementOverride {
+  /** New inner HTML (inline-edit fallback when source splice is ambiguous). */
+  innerHtml?: string;
+  /** Per-element transform applied over generated JSX/HTML. */
+  transform?: { x?: number; y?: number; scale?: number; rotation?: number };
+  /** Arbitrary style attribute overrides. */
+  styles?: Record<string, string>;
+}
+
+/** An image/media asset dropped or pasted onto a page (overlay layer). */
+export interface DroppedAsset {
+  id: string;
+  assetId: string;           // → CanvasAssetRecord.id
+  x: number; y: number;
+  width: number; height: number;
+  rotation?: number;
+}
+
+/** Provenance for a Stitch-backed page. */
+// (StitchScreenRef is declared above; ArtifactPage reuses it.)
+
+export interface ArtifactPage {
+  id: string;
+  /** Bumped on every applied mutation; used for agent base-version checks. */
+  version: number;
+  mode: 'html' | 'jsx' | 'structured';
+  /** Stitch screens / plain HTML pages. */
+  htmlSource?: string;
+  /** `function Page()` React component source (Phase 3). */
+  jsxSource?: string;
+  /** Structured-mode node tree (reuses the existing DesignNode shape). */
+  nodes?: DesignNode[];
+  actionTitle?: string;
+  notes?: string;
+  source?: string;
+  /** DOM-index-path keyed durable overrides for human/agent element edits. */
+  elementOverrides?: Record<string, ElementOverride>;
+  droppedAssets?: DroppedAsset[];
+  /** Provenance for Stitch-generated pages. */
+  stitchRef?: StitchScreenRef;
+  /** Cached self-QA preview/thumbnail (asset:// ref), Phase 4. */
+  previewAsset?: string;
+}
+
+/** Provenance-tracked media asset belonging to an artifact. */
+export interface CanvasAssetRecord {
+  id: string;
+  role: 'image' | 'video' | 'svg' | 'icon' | 'preview';
+  /** `asset://` ref into the content-addressed store. */
+  ref: string;
+  prompt?: string;
+  model?: string;
+  size?: { width: number; height: number };
+  /** Lineage: the asset this was derived from (crop/edit/mask). */
+  parentAssetId?: string;
+  /** Page this asset was generated for, if any. */
+  sourcePageId?: string;
+  ts: number;
+}
+
+export type CanvasOpKind =
+  | 'insert_page'
+  | 'edit_page'
+  | 'delete_page'
+  | 'reorder'
+  | 'set_theme'
+  | 'set_format'
+  | 'edit_element'
+  | 'add_asset';
+
+export type CanvasOpStatus =
+  | 'pending'
+  | 'applied'
+  | 'rejected'
+  | 'superseded'
+  | 'stale';
+
+/** A staged or applied mutation against an artifact — undo/audit source. */
+export interface CanvasOp {
+  opId: string;
+  /** runId = chat turn / job id that authored this op. */
+  runId: string;
+  kind: CanvasOpKind;
+  targetPageId?: string;
+  /** Page version the author read before proposing (stale detection). */
+  baseVersion?: number;
+  proposedValue: unknown;
+  /** Snapshot of the prior value for undo/revert (recorded on apply). */
+  previousValue?: unknown;
+  status: CanvasOpStatus;
+  author: 'agent' | 'user';
+  ts: number;
+}
+
+export interface CanvasArtifact {
+  id: string;
+  /** Monotonically increasing artifact version (bumped per applied op). */
+  version: number;
+  kind: 'deck' | 'document' | 'screens' | 'board';
+  name: string;
+  format: CanvasFormatSpec;
+  /** Snapshotted at creation (DeepMyst brand-snapshot pattern). */
+  theme: DesignTheme;
+  pages: ArtifactPage[];
+  assets: CanvasAssetRecord[];
+  /** Staged + applied ops — the undo/audit log. */
+  opLog: CanvasOp[];
+  /** Stitch project id, persisted (replaces the in-memory map, fixes amnesia). */
+  stitchProjectId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * Typed job envelope replacing {@link CanvasStreamChunkType}. Every canvas job
+ * (prompt-bar command, chat-driven op, media generation, export) is keyed by a
+ * `jobId` so spinners/cancellation/heartbeats are tracked per job rather than by
+ * fragile singleton slots (fixes the F-4 class of leaked-spinner bugs).
+ */
+export interface CanvasJobEvent {
+  jobId: string;
+  type:
+    | 'started'
+    | 'progress'
+    | 'heartbeat'
+    | 'op_staged'
+    | 'op_applied'
+    | 'op_rejected'
+    | 'page_updated'
+    | 'asset_ready'
+    | 'op_error'
+    | 'error'
+    | 'done';
+  /** Human-facing label for the job overlay. */
+  label?: string;
+  /** 0..1 progress for `progress` events. */
+  progress?: number;
+  /** Elapsed seconds for `heartbeat` events on long media tools. */
+  elapsedSeconds?: number;
+  /** Op payload for `op_staged`/`op_applied`/`op_rejected`/`op_error`. */
+  op?: CanvasOp;
+  /** Page id for `page_updated` (re-render just that page's iframe mid-turn). */
+  pageId?: string;
+  /** Asset record for `asset_ready`. */
+  asset?: CanvasAssetRecord;
+  /** Error message for `error`/`op_error`. */
+  error?: string;
+  /** Free-form payload for `done` (e.g. export path). */
+  result?: unknown;
 }

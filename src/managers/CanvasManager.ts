@@ -44,9 +44,12 @@ import type {
   Settings,
   StreamChunk,
   Attachment,
-  StitchScreenRef
+  StitchScreenRef,
+  CanvasArtifact,
+  ArtifactPage
 } from '../types';
 import { DesignSpecManager } from './DesignSpecManager';
+import { ArtifactStore } from './ArtifactStore';
 import type { CodeGenerationService } from '../services/CodeGenerationService';
 import { ImageGenerationService } from '../services/ImageGenerationService';
 import type { VideoGenerationService } from '../services/VideoGenerationService';
@@ -77,6 +80,9 @@ export class CanvasManager {
   private _saveTimers: Map<string, NodeJS.Timeout> = new Map();
   private _gitIgnoreCreated = false;
   private _designSpecManager = new DesignSpecManager();
+  private _artifactStore = new ArtifactStore();
+  // canvasId (== session.id) → in-memory artifact (source of truth, Plan 05).
+  private _artifactByCanvas: Map<string, CanvasArtifact> = new Map();
   private _stitchService!: StitchService;
   private _stitchProjectIds: Map<string, string> = new Map(); // canvasId → stitchProjectId
   // F-11: persists a Stitch key entered via the ensureAuth input-box flow into
@@ -123,7 +129,72 @@ export class CanvasManager {
       canvasJson: '{"version":"6.0.0","objects":[]}',
       assetPaths: [],
     };
+    // Plan 05 Phase 1: every session gets a linked artifact (source of truth).
+    // Built in memory here (no I/O); persisted on first page write / saveSession.
+    const artifact = this._artifactStore.createArtifact({ name, kind: 'board' });
+    session.artifactId = artifact.id;
+    this._artifactByCanvas.set(session.id, artifact);
     return session;
+  }
+
+  /** Shared {@link ArtifactStore} (consumed by the op executor + linker). */
+  getArtifactStore(): ArtifactStore {
+    return this._artifactStore;
+  }
+
+  /**
+   * Resolve the linked artifact for a session: in-memory cache first, then the
+   * persisted store, creating + linking one if none exists yet. Seeds the
+   * Stitch project-id cache from the artifact (fixes restart amnesia).
+   */
+  async ensureArtifact(session: CanvasSession): Promise<CanvasArtifact> {
+    const cached = this._artifactByCanvas.get(session.id);
+    if (cached) { return cached; }
+    let artifact: CanvasArtifact | null = null;
+    if (session.artifactId) {
+      artifact = await this._artifactStore.load(session.artifactId);
+    }
+    if (!artifact) {
+      artifact = this._artifactStore.createArtifact({ name: session.name, kind: 'board' });
+      session.artifactId = artifact.id;
+    }
+    this._artifactByCanvas.set(session.id, artifact);
+    if (artifact.stitchProjectId) {
+      this._stitchProjectIds.set(session.id, artifact.stitchProjectId);
+    }
+    return artifact;
+  }
+
+  /**
+   * Append an `html`-mode page (Stitch screen / plain HTML) to the canvas's
+   * artifact and persist. Best-effort: a persistence failure never disrupts the
+   * generator's user-visible output. Returns the new page, or null when there
+   * is no artifact context (e.g. no workspace).
+   */
+  async recordHtmlPage(
+    canvasId: string,
+    opts: { html?: string; actionTitle?: string; stitchRef?: StitchScreenRef; source?: string }
+  ): Promise<ArtifactPage | null> {
+    try {
+      const artifact = this._artifactByCanvas.get(canvasId);
+      if (!artifact) { return null; }
+      const page = this._artifactStore.makePage({
+        mode: 'html',
+        htmlSource: opts.html,
+        actionTitle: opts.actionTitle,
+        stitchRef: opts.stitchRef,
+        source: opts.source ?? 'stitch',
+      });
+      this._artifactStore.insertPage(artifact, page);
+      if (opts.stitchRef?.projectId) {
+        artifact.stitchProjectId = opts.stitchRef.projectId;
+      }
+      await this._artifactStore.save(artifact);
+      return page;
+    } catch (err) {
+      console.log('[Mysti] Canvas: recordHtmlPage failed (non-fatal):', err);
+      return null;
+    }
   }
 
   async loadSession(id: string): Promise<CanvasSession | null> {
@@ -159,6 +230,16 @@ export class CanvasManager {
     const filePath = vscode.Uri.file(path.join(workspaceRoot, CANVAS_DIR, `${session.id}.json`));
     const content = Buffer.from(JSON.stringify(session, null, 2), 'utf-8');
     await vscode.workspace.fs.writeFile(filePath, content);
+
+    // Plan 05 Phase 1: persist the linked artifact (the structured source of
+    // truth) alongside the freeform fabric layer. Best-effort — a failure here
+    // must not block the session save.
+    const artifact = this._artifactByCanvas.get(session.id);
+    if (artifact) {
+      this._artifactStore.save(artifact).catch(err =>
+        console.log('[Mysti] Canvas: artifact save failed (non-fatal):', err)
+      );
+    }
 
     // Ensure .gitignore exists for captures/
     this._ensureGitIgnore().catch(() => {});
@@ -1001,6 +1082,13 @@ Return ONLY the JSON array, no other text.`;
         },
       };
 
+      // Plan 05 Phase 1: persist the screen into the artifact (reload-safe).
+      await this.recordHtmlPage(canvasId, {
+        html: htmlContent,
+        actionTitle: prompt.substring(0, 60),
+        stitchRef: ref,
+      });
+
       yield { type: 'canvas_stitch_html_ready', canvasId, stitchHtml: htmlContent, stitchScreenRef: ref };
       yield { type: 'canvas_mockup_complete', canvasId, designNodes: [node], designTheme: DesignSpecManager.getDefaultTheme() };
     } catch (err: any) {
@@ -1065,6 +1153,13 @@ Return ONLY the JSON array, no other text.`;
           stitchScreenId: newRef.screenId,
         },
       };
+
+      // Plan 05 Phase 1: persist the edited screen into the artifact.
+      await this.recordHtmlPage(canvasId, {
+        html: htmlContent,
+        actionTitle: `Edit: ${editPrompt.substring(0, 50)}`,
+        stitchRef: newRef,
+      });
 
       yield { type: 'canvas_stitch_html_ready', canvasId, stitchHtml: htmlContent, stitchScreenRef: newRef };
       yield { type: 'canvas_mockup_complete', canvasId, designNodes: [node], designTheme: DesignSpecManager.getDefaultTheme() };

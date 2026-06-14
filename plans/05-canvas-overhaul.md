@@ -237,6 +237,14 @@ Fix the confirmed bugs that would otherwise be inherited or block later phases. 
 
 **Ships:** designs survive reload (Stitch refs, themes, structure intact), every job is tracked/cancellable, webview code is typed and lintable.
 
+> **Status (2026-06-14):** Phase 1 **extension-side foundation landed and tested** (the structural inversion is in place):
+> - **1.1** artifact model types in `src/types.ts` — `CanvasArtifact`, `ArtifactPage`, `CanvasOp`/`CanvasOpKind`/`CanvasOpStatus`, `CanvasJobEvent`, `CanvasAssetRecord`, `ElementOverride`, `DroppedAsset`, `CanvasFormatSpec`; `artifactId` added to `CanvasSession`; `CanvasStreamChunkType` marked `@deprecated`.
+> - **1.2** `src/managers/ArtifactStore.ts` — CRUD for `.mysti/canvas/<id>/artifact.json` (atomic tmp+rename), page primitives with page/artifact version bumping, op-log append/find, and a per-artifact content-addressed `assets/` registry with sha-256 dedup + `asset://<id>/assets/<hash>` refs. Root is injectable for hermetic tests. **+15 tests.**
+> - **1.3** `CanvasManager` wires an artifact into every `createSession` (in-memory, linked via `session.artifactId`), `recordHtmlPage()` persists Stitch screens into the artifact (`generateScreen`/`editStitchScreen` call it), `ensureArtifact()` rehydrates + seeds the Stitch project-id cache (fixes restart amnesia), and `saveSession` flushes the linked artifact. `getArtifactStore()` shares the store with the executor/linker.
+> - **1.7** `src/managers/CanvasJobRouter.ts` — jobId mint/echo, one `AbortController` per job, and a `pipe()` helper that forwards a pipeline's event stream with an exactly-one-terminal-event guarantee (fixes the F-4 leaked-spinner class) and mid-stream cancellation. **+7 tests.**
+>
+> **Deferred to the canvas F5 pass (webview-coupled / runtime-behavior changes):** 1.4 `canvasReady`/`canvasLoad` payload changes, 1.5 the webview load-from-artifact path (closes F-16 end-to-end), 1.6 the `canvasContent.ts` → typed-modules extraction + second webpack entry, and 1.8's per-job `panelId: 'canvas-job-'+jobId` isolation (belongs with wiring `CanvasJobRouter` into `ChatViewProvider`'s ~14 for-await blocks). The extension-side store/router are ready for that wiring.
+
 ### Phase 2 — Agent-to-canvas protocol: tools, staged writes, conflicts (ship: chat agent builds/edits the canvas)
 
 1. **create `src/managers/CanvasOpExecutor.ts`:** validate (target page exists in artifact; `baseVersion` check → `stale`), stage `CanvasOp`, apply/reject/supersede; bump page+artifact versions; emit `op_staged`/`op_applied`/`page_updated` `CanvasJobEvent`s through `CanvasJobRouter`; op-log undo/redo (`undoLastApplied()`); audit line per applied agent op (`[Mysti] canvas-op` log + op log itself).
@@ -254,6 +262,12 @@ Fix the confirmed bugs that would otherwise be inherited or block later phases. 
 8. **tests:** add `src/test/canvasOpExecutor.test.ts` covering version-mismatch → stale, supersession, lock queueing, undo of agent op restoring `previousValue`.
 
 **Ships:** "build me a 5-screen onboarding flow" typed in chat produces pages appearing one-by-one on the canvas mid-turn, each reviewable (or auto-applied), with working undo and audit.
+
+> **Status (2026-06-14):** the **executor core + fallback parser landed and tested** ahead of the transport/UI wiring:
+> - **2.1** `src/managers/CanvasOpExecutor.ts` — the single executor every transport hits: validates writes (cross-artifact page guard, missing-target/shape checks), enforces `baseVersion` → `stale` (never clobbers, even in auto mode), stages vs auto-applies per approval mode, supersedes still-pending ops on an applied page, queues auto ops behind an inline-edit page lock and flushes on unlock, and does artifact-wide op-log undo restoring `previousValue` across **all** op kinds (agent + user). Emits `op_staged`/`op_applied`/`op_rejected`/`op_error`/`page_updated` via `CanvasJobRouter`. **+15 tests** covering the full conflict matrix.
+> - **2.4** `src/managers/CanvasOpParser.ts` — the fenced ` ```canvas-op ` fallback transport: a streaming parser that extracts complete blocks (tolerant of fences split across chunks), ignores surrounding prose with bounded buffering, and surfaces malformed blocks as errors rather than dropping the edit. **+11 tests.**
+>
+> **Remaining for Phase 2 (transport + UI wiring — pairs with the F5 pass):** 2.2 the `mysti-canvas` stdio MCP tool server (needs `@modelcontextprotocol/sdk` + a `dist/canvasToolServer.js` entry), 2.3 `CanvasSessionLinker` (per-CLI session-scoped registration + the `buildArtifactIndex()` system-prompt block), 2.4 feeding the parser from `ChatViewProvider`'s stream loop, 2.5 the Suggestions-rail approval UI, 2.6's webview `canvasPageEditState` wire, and 2.7 media heartbeats. The executor and parser are ready to be driven by all of these.
 
 ### Phase 3 — Sandboxed page renderer, design system, human co-editing (ship: agent-authored slides, inline-editable)
 
