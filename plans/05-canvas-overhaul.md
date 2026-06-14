@@ -402,6 +402,42 @@ Builds on Phases 1–6; overlaps Phase 3 (both touch the webview shell). Impleme
 
 ---
 
+## Continuation Plan — shortest path to a testable build (2026-06-14)
+
+The full extension-side **logic spine is built and unit-tested** (1137 tests green): `ArtifactStore`, `CanvasJobRouter`, `CanvasOpExecutor`, `CanvasOpParser`, `CanvasFormats`, `CanvasToolDispatch` (the 14-tool `mysti-canvas` contract), `CanvasCapabilityRegistry`, `CanvasValidator`, `CanvasPromptBuilder`, plus the `canvas-designer` persona/skill, and `CanvasManager` already links + writes the artifact. **What remains is wiring/transport/UI** — none of it user-clickable yet. This section re-sequences that remaining work so each milestone ends in something you can exercise in an Extension Development Host (F5), earliest-testable first.
+
+> Convention below: **[built]** = exists + tested; **[wire]** = connect built pieces; **[new]** = net-new code.
+
+**M0 — Unblock the build (prerequisite, ~S).** Land the parallel session's in-flight `extension.ts`/`ChatViewProvider`/`AnnouncementManager` edits so `npm run compile` is green and F5 launches. *Test:* F5 opens Mysti; the canvas opens as it does today. *(No canvas work — just a green tree.)*
+
+**M1 — Reload-safe canvas: render FROM the artifact (~M, webview).** **[wire]** `canvasReady`/`canvasLoad` returns the linked artifact; **[new]** the webview rebuilds page proxy-rects + iframe overlays + theme from `artifact.pages`/`artifact.theme` on load instead of fabric expandos. Writing already happens (`recordHtmlPage`). Closes F-16 end-to-end. *Test:* generate a Stitch screen → reopen the canvas / reload the window → the screen, theme, and structure survive intact (today they degrade to faint rects); inspect the readable `.mysti/canvas/<id>/artifact.json`. **← first clickable canvas win.**
+
+**M2 — Agent edits the canvas via MCP (Claude Code) (~L). THE headline test.** **[new]** add `@modelcontextprotocol/sdk`; build `CanvasToolServer` wrapping the **[built]** `CanvasToolDispatch`, bundled to `dist/canvasToolServer.js` (2nd webpack entry, spawned `--artifact <path>`); **[new]** `CanvasSessionLinker` registers `mysti-canvas` into the linked Claude Code session via a temp `--mcp-config` file (Claude's true per-session config = fastest to validate); **[wire]** `CanvasJobRouter` `op_applied`/`page_updated` events → webview (live re-render); **[wire]** inject the **[built]** `CanvasPromptBuilder` block into the linked session's system prompt. *Test (Claude Code):* open + link the canvas, then in the **main chat** type "add a slide titled Roadmap with three columns" → a page appears on the board mid-response; "make the title bigger" → it updates live. **← first time the agent-driven vision is real and end-to-end testable.** *(Other CLIs and the fenced-`canvas-op` fallback come after Claude Code works.)*
+
+**M3 — The design sub-agent + persona (~M-L).** **[new]** `CanvasAgentOrchestrator` spawns a dedicated sub-agent session (reusing `MentionRouter`/`SUBAGENT_TIMEOUT_MS`) loaded with the **[built]** `canvas-designer` persona + `canvas-design` skill + prompt block + the `mysti-canvas` tools; routes intent from the main chat and streams progress/thumbnails back. *Test:* "design a 5-slide pitch deck for a fintech startup" → it builds slide-by-slide with a consistent theme, runs `validate_page`, and reports a summary in the main chat.
+
+**M4 — Generation via the hub (fal/Stitch/Figma/Canva) (~M).** **[new]** `McpClient` (extension-host) + route `generate_visual`/`generate_video`/screens through the **[built]** `CanvasCapabilityRegistry` → DeepMyst broker; gate affordances on capability status. *Test:* connect fal in DeepMyst → "add a hero image of a city skyline" → it generates and lands on the page with provenance; with nothing connected, the command shows a "connect fal" card.
+
+**M5 — Professional no-chat UI (~L, webview).** **[new]** remove the prompt-bar chat; build the §11 three-zone shell (pages rail / live board / inspector + adjustment sliders), inline comments, variant compare, capability-status chips, agent-activity line. *Test:* drag-reorder slides, click an element to refine, generate 3 variants and pick one — all with no in-canvas chat box.
+
+**M6 — Self-QA render loop + exports (~M).** **[new]** `render_page_preview` (Playwright → vision critique), `CanvasExportService` (PNG/PDF/HTML bundle), presenter. *Test:* the agent screenshots and critiques its own slide before "done"; export `deck.pdf`; present fullscreen.
+
+**Recommended target for "a working state I can test": M0 → M1 → M2.** That trio proves the whole concept end-to-end (reload-safe artifact + the chat agent building/editing the canvas live via real tools). M3–M6 are quality and scale on top.
+
+**Coordination:** M1/M2/M5 touch `ChatViewProvider`/`canvasContent.ts` — schedule them when the chat files aren't being edited in parallel (or on a short-lived branch the other session rebases). M2 adds the one new dependency. Validate M2 with **Claude Code first** (cleanest MCP path), then widen.
+
+| Milestone | Net-new vs wiring | Effort | Ends in (F5 test) |
+|---|---|---|---|
+| M0 unblock | — | S | extension launches |
+| M1 reload-safe render | mostly wire + small webview | M | designs survive reload |
+| M2 agent-edits-via-MCP | new server/linker + wire | L | "add a slide" works from chat |
+| M3 design sub-agent | new orchestrator | M–L | "design a deck" autonomously |
+| M4 hub generation | new MCP client + wire | M | "add a hero image" via fal |
+| M5 pro no-chat UI | new webview shell | L | drag/refine/variants, no chat |
+| M6 self-QA + export | new services | M | self-critique + PDF/present |
+
+---
+
 ## Risks & Mitigations
 
 | Risk | Impact | Mitigation |
