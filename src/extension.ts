@@ -551,18 +551,24 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.window.registerUriHandler({
       handleUri(uri: vscode.Uri) {
         // Plan 04: DeepMyst sign-in deep-link callback
-        // (vscode://DeepMyst.mysti/deepmyst-auth?key=dm_...)
-        if (uri.path === '/deepmyst-auth') {
-          const params = new URLSearchParams(uri.query);
+        // (vscode://DeepMyst.mysti/deepmyst-auth?key=dm_...&state=...)
+        // Match leniently (startsWith) and read params from query OR fragment —
+        // some editor hosts/protocol handlers route the params into the fragment.
+        console.log(`[Mysti] UriHandler received: path=${uri.path} query.len=${uri.query.length} fragment.len=${uri.fragment.length}`);
+        if (uri.path.startsWith('/deepmyst-auth')) {
+          const params = new URLSearchParams(uri.query || uri.fragment || '');
           const key = params.get('key');
           const state = params.get('state') ?? undefined;
           const error = params.get('error');
+          console.log(`[Mysti] DeepMyst link-back: hasKey=${!!key} hasState=${!!state} hasError=${!!error}`);
           if (error) {
             vscode.window.showErrorMessage(`DeepMyst sign-in failed: ${error}`);
           } else if (key) {
             deepMystAuthManager.completeSignIn(key, state).then(ok => {
               if (ok) {
                 telemetryManager.sendEvent('deepmyst.signedIn', {});
+              } else {
+                vscode.window.showWarningMessage('DeepMyst sign-in link-back could not be matched to an active sign-in. Click "Sign in to DeepMyst" once and complete it in the newest browser tab, or use "Enter an API key manually".');
               }
             });
           } else {

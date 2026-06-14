@@ -44,6 +44,13 @@ export interface DeepMystAuthState {
   webUrl: string;
 }
 
+/**
+ * Outcome handed to an in-flight `signIn()` waiter: the `dm_` key from the
+ * link-back, `null` (cancelled / timed out), or `'superseded'` when a different
+ * tab/attempt completed the sign-in first (yield silently, no manual fallback).
+ */
+type SignInResult = string | null | 'superseded';
+
 export class DeepMystAuthManager implements vscode.Disposable {
   private readonly _onDidChangeAuth = new vscode.EventEmitter<DeepMystAuthState>();
   /** Fires whenever sign-in state changes (sign in / sign out / key replaced). */
@@ -51,10 +58,16 @@ export class DeepMystAuthManager implements vscode.Disposable {
 
   private readonly _client: DeepMystClient;
   private _cachedKey: string | undefined;
-  /** Resolver for the in-flight browser sign-in awaiting its callback. */
-  private _pendingResolve: ((key: string | null) => void) | null = null;
-  /** CSRF state for the in-flight browser sign-in (must match the callback). */
-  private _pendingState: string | null = null;
+  /**
+   * In-flight browser sign-ins, keyed by their CSRF `state` → resolver. A user
+   * may click "Sign in" several times (e.g. while the browser/Clerk is slow),
+   * opening several tabs each with its own `state`. We track every attempt so a
+   * link-back from ANY of those tabs completes the flow and supersedes the rest
+   * — instead of the old single-slot model, where each new click overwrote the
+   * previous state and a link-back from an earlier tab was rejected as a
+   * mismatch (leaving every "Waiting…" notification stuck forever).
+   */
+  private readonly _pending = new Map<string, (result: SignInResult) => void>();
 
   constructor(private readonly _context: vscode.ExtensionContext) {
     this._client = new DeepMystClient(
@@ -139,15 +152,16 @@ export class DeepMystAuthManager implements vscode.Disposable {
     const connectUrl =
       `${webUrl}/connect/vscode?redirect_uri=${encodeURIComponent(redirectUri.toString(true))}&state=${state}`;
 
-    // Arm the pending callback BEFORE opening the browser.
-    const keyPromise = new Promise<string | null>((resolve) => {
-      this._pendingState = state;
-      this._pendingResolve = resolve;
-    });
+    // Arm THIS attempt's callback BEFORE opening the browser. Multiple concurrent
+    // attempts coexist in the map; the link-back from any of them completes.
+    let resolveKey!: (result: SignInResult) => void;
+    const keyPromise = new Promise<SignInResult>((resolve) => { resolveKey = resolve; });
+    this._pending.set(state, resolveKey);
+    console.log(`[Mysti] DeepMyst sign-in armed: state=${state.slice(0, 8)}… redirect=${redirectUri.toString(true)} (in-flight=${this._pending.size})`);
 
     const opened = await vscode.env.openExternal(vscode.Uri.parse(connectUrl));
     if (!opened) {
-      this._clearPending();
+      this._pending.delete(state);
       return this._manualKeyFallback('Could not open the browser. Paste your DeepMyst API key instead.');
     }
 
@@ -159,17 +173,24 @@ export class DeepMystAuthManager implements vscode.Disposable {
         cancellable: true,
         title: 'Waiting for DeepMyst sign-in in your browser…',
       },
-      (_progress, token) => Promise.race<string | null>([
+      (_progress, token) => Promise.race<SignInResult>([
         keyPromise,
         new Promise<null>((resolve) => token.onCancellationRequested(() => resolve(null))),
         new Promise<null>((resolve) => { timeoutTimer = setTimeout(() => resolve(null), 5 * 60 * 1000); }),
       ]),
     );
     if (timeoutTimer) { clearTimeout(timeoutTimer); }
-    this._clearPending();
+    this._pending.delete(state);
 
+    if (key === 'superseded') {
+      // Another tab/attempt completed sign-in; close this notification silently.
+      console.log(`[Mysti] DeepMyst sign-in: attempt state=${state.slice(0, 8)}… superseded by another tab.`);
+      return this.isSignedIn();
+    }
     if (!key) {
-      // Cancelled / timed out / connect page unavailable — offer manual entry.
+      // Cancelled / timed out. If another attempt is still mid-flight, don't pop
+      // a manual-entry box on top of it; otherwise offer manual entry.
+      if (this._pending.size > 0 || this.isSignedIn()) { return this.isSignedIn(); }
       return this._manualKeyFallback();
     }
     return this._storeValidatedKey(key.trim());
@@ -182,29 +203,36 @@ export class DeepMystAuthManager implements vscode.Disposable {
    * guard); an unsolicited deep link with a valid key is still honored.
    */
   async completeSignIn(key: string, state?: string): Promise<boolean> {
-    if (this._pendingResolve) {
-      if (this._pendingState && state !== this._pendingState) {
-        console.warn('[Mysti] DeepMyst auth callback state mismatch — ignoring.');
+    if (this._pending.size > 0) {
+      // Accept the callback only if its `state` matches one of OUR in-flight
+      // attempts (CSRF guard) — but match ANY of them, since the user may have
+      // clicked "Sign in" several times and completed an earlier tab. Without
+      // this, a link-back from any tab but the most recent was rejected and the
+      // sign-in hung indefinitely.
+      const matched = state && this._pending.has(state) ? state : undefined;
+      if (!matched) {
+        console.warn(`[Mysti] DeepMyst callback state=${(state ?? '∅').slice(0, 8)}… matched none of ${this._pending.size} in-flight attempt(s) — ignoring (stale tab or CSRF).`);
         return false;
       }
-      // Hand the key to the in-flight signIn(), which validates + stores it.
-      const resolve = this._pendingResolve;
-      this._clearPending();
+      const resolve = this._pending.get(matched)!;
+      // Supersede the other in-flight attempts so their "Waiting…" notifications
+      // close cleanly (no manual-entry prompt for the abandoned tabs).
+      for (const [s, r] of this._pending) {
+        if (s !== matched) { r('superseded'); }
+      }
+      this._pending.clear();
+      console.log(`[Mysti] DeepMyst callback accepted: state=${matched.slice(0, 8)}….`);
       resolve(key);
       return true;
     }
-    // No active flow (e.g. a manual deep link) — validate + store directly.
+    // No active flow (e.g. a manual/unsolicited deep link) — validate + store.
+    console.log('[Mysti] DeepMyst callback with no in-flight attempt — validating directly.');
     return this._storeValidatedKey(key.trim());
   }
 
   /** Manual key entry (the "enter a key manually" affordance). */
   enterApiKeyManually(): Promise<boolean> {
     return this._manualKeyFallback();
-  }
-
-  private _clearPending(): void {
-    this._pendingResolve = null;
-    this._pendingState = null;
   }
 
   /** Manual key entry — fallback when the browser link-back can't complete. */
