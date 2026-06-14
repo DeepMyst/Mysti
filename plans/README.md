@@ -33,6 +33,7 @@ Detailed research reports backing these plans: [plans/research/](research/) (11 
 | 03 | [03-performance-optimization.md](03-performance-optimization.md) | Performance | Measurement-first; parallel activation, webview extraction, streaming throttle, persistence rewrite, 33.8MB→<4MB VSIX |
 | 04 | [04-connections-and-agent-management.md](04-connections-and-agent-management.md) | MCP + agents | My Connections hub, in-chat connect cards, per-CLI MCP config adapters, skills discovery (DeepMyst 2.0 patterns) |
 | 05 | [05-canvas-overhaul.md](05-canvas-overhaul.md) | Canvas | Artifact-centric studio with `mysti-canvas` MCP tool server, 34-capability gap table vs DeepMyst presentation agent |
+| 06 | [06-chat-ux-overhaul.md](06-chat-ux-overhaul.md) | Chat UX | Calm, Claude-Code-inspired chat: instant stop/interrupt affordance, foreground+dim+1-accent palette (kills rainbow cards/per-agent hues/gradients), quieted input toolbar |
 
 ## Recommended Execution Order
 
