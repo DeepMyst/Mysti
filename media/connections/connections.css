@@ -82,3 +82,10 @@ code {
   color: var(--vscode-descriptionForeground);
   padding: 12px; border: 1px dashed var(--vscode-panel-border); border-radius: 6px; margin: 6px 0;
 }
+
+.banner {
+  padding: 10px 12px; border-radius: 6px; margin: 6px 0;
+  background: var(--vscode-inputValidation-warningBackground, rgba(204,167,0,0.15));
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700);
+  color: var(--vscode-foreground);
+}

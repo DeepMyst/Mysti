@@ -85,6 +85,10 @@ export interface DeepMystListResult<T> {
   items: T[];
   /** false when DeepMyst returned 404 (endpoint not deployed) so the UI can say so. */
   available: boolean;
+  /** HTTP status of the probe (200 ok, 0 = never reached server / signed out). */
+  status?: number;
+  /** Short error label when status is a non-200, non-404 (e.g. "HTTP 401"). */
+  error?: string;
 }
 
 export interface DeepMystKeyValidation {
@@ -327,7 +331,8 @@ export class DeepMystClient {
   ): Promise<DeepMystListResult<T>> {
     const headers = this._authHeaders();
     if (!headers) {
-      return { items: [], available: true };
+      console.log(`[Mysti] DeepMyst GET ${path} skipped — signed out`);
+      return { items: [], available: true, status: 0 };
     }
     try {
       const res = await fetch(`${this._baseUrl()}${path}`, {
@@ -336,10 +341,15 @@ export class DeepMystClient {
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (res.status === 404) {
-        return { items: [], available: false };
+        console.log(`[Mysti] DeepMyst GET ${path} → 404 (endpoint not available)`);
+        return { items: [], available: false, status: 404 };
       }
       if (!res.ok) {
-        return { items: [], available: true };
+        // 401/403 (key not accepted / wrong principal) and 5xx land here. We
+        // report available:true (no "endpoint missing" banner) but record the
+        // status so the UI can prompt a re-sign-in, and log loudly.
+        console.warn(`[Mysti] DeepMyst GET ${path} → HTTP ${res.status} (treated as empty; check the dm_ key / its user binding)`);
+        return { items: [], available: true, status: res.status, error: `HTTP ${res.status}` };
       }
       const data = await res.json() as unknown;
       const arr = Array.isArray(data)
@@ -348,15 +358,18 @@ export class DeepMystClient {
           ? ((data as Record<string, unknown>).data ?? (data as Record<string, unknown>).items ?? (data as Record<string, unknown>).results)
           : null);
       if (!Array.isArray(arr)) {
-        return { items: [], available: true };
+        console.warn(`[Mysti] DeepMyst GET ${path} → 200 but body is not an array/{data|items|results} envelope`);
+        return { items: [], available: true, status: 200 };
       }
       const items = arr
         .filter((e): e is Record<string, unknown> => Boolean(e) && typeof e === 'object')
         .map(coerce)
         .filter((e): e is T => e !== null);
-      return { items, available: true };
-    } catch {
-      return { items: [], available: true };
+      console.log(`[Mysti] DeepMyst GET ${path} → 200, ${arr.length} raw / ${items.length} mapped item(s)`);
+      return { items, available: true, status: 200 };
+    } catch (err) {
+      console.warn(`[Mysti] DeepMyst GET ${path} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { items: [], available: true, status: 0, error: err instanceof Error ? err.message : String(err) };
     }
   }
 

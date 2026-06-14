@@ -183,7 +183,7 @@ describe('DeepMystClient.listAgents / listConnections', () => {
 
   it('returns empty+available when signed out (no call)', async () => {
     const res = await client(undefined).listConnections();
-    expect(res).toEqual({ items: [], available: true });
+    expect(res).toEqual({ items: [], available: true, status: 0 });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

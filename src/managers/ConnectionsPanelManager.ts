@@ -10,37 +10,34 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * DeepMyst Connections panel (Plan 04 Phase 2).
+ * DeepMyst Connections panel (Plan 04).
  *
- * A standalone editor tab showing DeepMyst auth status, the user's connected
- * data sources and agents (each agent exposes an MCP endpoint), and links to
- * manage connections on the DeepMyst web dashboard. It is the surface the user
- * uses to sign in/out and see what tools will be brokered into the local CLIs.
+ * A standalone editor tab that mirrors DeepMyst's "My Connections" hub: the
+ * user's authorized MCP connections (Smithery / Composio, …) with status,
+ * "Finish authorizing" for pending OAuth, and Disconnect. Sign in once with a
+ * `dm_` key; DeepMyst holds every third-party credential.
  *
- * The actual MCP-config wiring into each backend CLI is Phase 3; this panel is
- * display + auth + manage-links + refresh.
+ * NOTE: local-CLI wiring is intentionally NOT done here. A user's MCP
+ * connections are only reachable by a CLI through an agent broker
+ * (/api/v1/mcp/{slug}); there is no per-user CLI-reachable MCP endpoint yet.
+ * Rather than auto-provision a hidden agent bridge, this panel is a read +
+ * manage surface. McpConfigManager stays in the tree (dormant) for when a
+ * first-class per-user broker exists.
  */
 
 import * as vscode from 'vscode';
 import type { DeepMystAuthManager } from './DeepMystAuthManager';
-import { McpConfigManager } from '../services/McpConfigManager';
-import type { McpServerSpec, McpApplyResult } from '../services/McpConfigManager';
 import type { McpUserConnection } from '../services/DeepMystClient';
 import { getConnectionsContent } from '../webview/connectionsContent';
-
-/** globalState key: agent slugs the user enabled for the local CLIs. */
-const ENABLED_AGENTS_KEY = 'mysti.deepmyst.enabledAgents';
 
 interface ConnectionsState {
   signedIn: boolean;
   webUrl: string;
-  agents: Array<{ slug: string; name: string; description?: string }>;
   connections: McpUserConnection[];
-  enabledAgents: string[];
-  mcpProviders: string[];
-  mcpStatus: McpApplyResult[];
-  agentsAvailable: boolean;
   connectionsAvailable: boolean;
+  /** Set when the list call returned a non-200, non-404 status (auth/principal
+   *  problem) so the UI can prompt a re-sign-in rather than show "empty". */
+  connectionsError?: string;
   loading: boolean;
   error?: string;
 }
@@ -48,64 +45,17 @@ interface ConnectionsState {
 export class ConnectionsPanelManager implements vscode.Disposable {
   private _panel: vscode.WebviewPanel | null = null;
   private readonly _disposables: vscode.Disposable[] = [];
-  private _lastMcpStatus: McpApplyResult[] = [];
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private readonly _auth: DeepMystAuthManager,
-    private readonly _mcpConfig: McpConfigManager,
-    private readonly _context: vscode.ExtensionContext,
   ) {
-    // On any auth change: reconcile the CLI MCP configs (apply enabled agents
-    // when signed in, strip them on sign-out) and re-render if the panel is open.
+    // Re-render on any auth change (sign in/out/key replaced).
     this._disposables.push(
       this._auth.onDidChangeAuth(() => {
-        void this._reconcileMcpConfig().finally(() => {
-          if (this._panel) { void this._refresh(); }
-        });
+        if (this._panel) { void this._refresh(); }
       }),
     );
-  }
-
-  /**
-   * Reconcile CLI MCP configs to the current auth + enabled-agents state. Call
-   * once at activation (after auth.initialize) so a returning signed-in user's
-   * configs are kept in sync without opening the panel.
-   */
-  async reconcileMcpConfig(): Promise<void> {
-    await this._reconcileMcpConfig();
-  }
-
-  /** Build the DeepMyst MCP server specs for the currently-enabled agents. */
-  private _buildSpecs(): McpServerSpec[] {
-    const key = this._auth.getApiKey();
-    if (!this._auth.isSignedIn() || !key) {
-      return [];
-    }
-    return this._enabledAgents().map((slug) => ({
-      id: `deepmyst-${slug}`,
-      url: this._auth.client.getMcpEndpointUrl(slug),
-      headers: { Authorization: `Bearer ${key}` },
-    }));
-  }
-
-  private _enabledAgents(): string[] {
-    return this._context.globalState.get<string[]>(ENABLED_AGENTS_KEY, []);
-  }
-
-  private async _setEnabledAgents(slugs: string[]): Promise<void> {
-    await this._context.globalState.update(ENABLED_AGENTS_KEY, slugs);
-  }
-
-  private async _reconcileMcpConfig(): Promise<void> {
-    try {
-      const specs = this._buildSpecs();
-      this._lastMcpStatus = specs.length > 0 || this._auth.isSignedIn()
-        ? await this._mcpConfig.applyAll(specs)
-        : await this._mcpConfig.removeAll();
-    } catch (err) {
-      console.log('[Mysti] MCP config reconcile error:', err);
-    }
   }
 
   /** Open (or reveal) the Connections panel. */
@@ -163,9 +113,6 @@ export class ConnectionsPanelManager implements vscode.Disposable {
         // "Enter an API key manually" — fallback to the paste flow.
         await this._auth.enterApiKeyManually();
         break;
-      case 'toggleAgent':
-        await this._toggleAgent(msg as { slug?: string; enabled?: boolean });
-        break;
       case 'finishAuth':
         await this._finishAuth(msg as { setupUrl?: string });
         break;
@@ -193,7 +140,7 @@ export class ConnectionsPanelManager implements vscode.Disposable {
     if (!msg.id) { return; }
     const label = msg.name || 'this connection';
     const pick = await vscode.window.showWarningMessage(
-      `Disconnect ${label}? This revokes it on the provider and removes it from your DeepMyst account. Agents/CLIs that rely on it will lose access.`,
+      `Disconnect ${label}? This revokes it on the provider and removes it from your DeepMyst account.`,
       { modal: true },
       'Disconnect',
     );
@@ -204,16 +151,6 @@ export class ConnectionsPanelManager implements vscode.Disposable {
       vscode.window.showWarningMessage('Could not disconnect from here. Opening DeepMyst to manage it on the web.');
       await vscode.env.openExternal(vscode.Uri.parse(this._connectionsUrl()));
     }
-    await this._refresh();
-  }
-
-  /** Enable/disable an agent's tools in the local CLIs (writes MCP config). */
-  private async _toggleAgent(msg: { slug?: string; enabled?: boolean }): Promise<void> {
-    if (!msg.slug) { return; }
-    const set = new Set(this._enabledAgents());
-    if (msg.enabled) { set.add(msg.slug); } else { set.delete(msg.slug); }
-    await this._setEnabledAgents([...set]);
-    await this._reconcileMcpConfig();
     await this._refresh();
   }
 
@@ -234,40 +171,30 @@ export class ConnectionsPanelManager implements vscode.Disposable {
 
     const signedIn = this._auth.isSignedIn();
     const webUrl = this._auth.getWebUrl();
-    const mcpProviders = McpConfigManager.supportedProviders();
 
     if (!signedIn) {
-      this._post({
-        signedIn: false, webUrl, agents: [], connections: [],
-        enabledAgents: [], mcpProviders, mcpStatus: this._lastMcpStatus,
-        agentsAvailable: true, connectionsAvailable: true, loading: false,
-      });
+      this._post({ signedIn: false, webUrl, connections: [], connectionsAvailable: true, loading: false });
       return;
     }
 
-    // Signed in: show a loading state, then fetch agents + connections.
-    this._post({
-      signedIn: true, webUrl, agents: [], connections: [],
-      enabledAgents: this._enabledAgents(), mcpProviders, mcpStatus: this._lastMcpStatus,
-      agentsAvailable: true, connectionsAvailable: true, loading: true,
-    });
+    // Signed in: show a loading state, then fetch the user's MCP connections.
+    this._post({ signedIn: true, webUrl, connections: [], connectionsAvailable: true, loading: true });
 
-    const client = this._auth.client;
-    const [agentsRes, connsRes] = await Promise.all([
-      client.listAgents(),
-      client.listMcpConnections(),
-    ]);
+    const res = await this._auth.client.listMcpConnections();
+    // A non-200, non-404 status means the key authenticated to the wrong
+    // principal or was rejected — surface it so the user re-signs-in rather than
+    // mistaking it for an empty account. (A NULL-bound key returns 200+[], which
+    // we can't distinguish here; the empty-state copy covers that case.)
+    const connectionsError = (res.status && res.status !== 200 && res.status !== 404)
+      ? `HTTP ${res.status}`
+      : undefined;
 
     this._post({
       signedIn: true,
       webUrl,
-      agents: agentsRes.items,
-      connections: connsRes.items,
-      enabledAgents: this._enabledAgents(),
-      mcpProviders,
-      mcpStatus: this._lastMcpStatus,
-      agentsAvailable: agentsRes.available,
-      connectionsAvailable: connsRes.available,
+      connections: res.items.filter((c) => c.status !== 'revoked'),
+      connectionsAvailable: res.available,
+      connectionsError,
       loading: false,
     });
   }
