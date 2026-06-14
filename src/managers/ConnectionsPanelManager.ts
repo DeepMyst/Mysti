@@ -25,6 +25,7 @@ import * as vscode from 'vscode';
 import type { DeepMystAuthManager } from './DeepMystAuthManager';
 import { McpConfigManager } from '../services/McpConfigManager';
 import type { McpServerSpec, McpApplyResult } from '../services/McpConfigManager';
+import type { McpUserConnection } from '../services/DeepMystClient';
 import { getConnectionsContent } from '../webview/connectionsContent';
 
 /** globalState key: agent slugs the user enabled for the local CLIs. */
@@ -34,7 +35,7 @@ interface ConnectionsState {
   signedIn: boolean;
   webUrl: string;
   agents: Array<{ slug: string; name: string; description?: string }>;
-  connections: Array<{ id: string; name: string; type?: string; status?: string }>;
+  connections: McpUserConnection[];
   enabledAgents: string[];
   mcpProviders: string[];
   mcpStatus: McpApplyResult[];
@@ -165,9 +166,45 @@ export class ConnectionsPanelManager implements vscode.Disposable {
       case 'toggleAgent':
         await this._toggleAgent(msg as { slug?: string; enabled?: boolean });
         break;
+      case 'finishAuth':
+        await this._finishAuth(msg as { setupUrl?: string });
+        break;
+      case 'disconnectConnection':
+        await this._disconnectConnection(msg as { id?: string; name?: string });
+        break;
       default:
         break;
     }
+  }
+
+  /** Open a pending connection's OAuth setup URL so the user can authorize it. */
+  private async _finishAuth(msg: { setupUrl?: string }): Promise<void> {
+    const url = (msg.setupUrl || '').trim();
+    // Only open https:// setup URLs (guards against a null/non-HTTPS value).
+    if (!/^https:\/\//i.test(url)) {
+      await vscode.env.openExternal(vscode.Uri.parse(this._connectionsUrl()));
+      return;
+    }
+    await vscode.env.openExternal(vscode.Uri.parse(url));
+  }
+
+  /** Disconnect a user MCP connection (revokes upstream + deletes the row). */
+  private async _disconnectConnection(msg: { id?: string; name?: string }): Promise<void> {
+    if (!msg.id) { return; }
+    const label = msg.name || 'this connection';
+    const pick = await vscode.window.showWarningMessage(
+      `Disconnect ${label}? This revokes it on the provider and removes it from your DeepMyst account. Agents/CLIs that rely on it will lose access.`,
+      { modal: true },
+      'Disconnect',
+    );
+    if (pick !== 'Disconnect') { return; }
+    const ok = await this._auth.client.disconnectMcp(msg.id);
+    if (!ok) {
+      // Read-only / agent-scoped key, or network error — fall back to the web hub.
+      vscode.window.showWarningMessage('Could not disconnect from here. Opening DeepMyst to manage it on the web.');
+      await vscode.env.openExternal(vscode.Uri.parse(this._connectionsUrl()));
+    }
+    await this._refresh();
   }
 
   /** Enable/disable an agent's tools in the local CLIs (writes MCP config). */
@@ -218,7 +255,7 @@ export class ConnectionsPanelManager implements vscode.Disposable {
     const client = this._auth.client;
     const [agentsRes, connsRes] = await Promise.all([
       client.listAgents(),
-      client.listConnections(),
+      client.listMcpConnections(),
     ]);
 
     this._post({

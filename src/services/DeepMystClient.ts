@@ -59,6 +59,27 @@ export interface DeepMystConnection {
   status?: string;
 }
 
+/**
+ * A user-scoped MCP connection from DeepMyst's "My Connections" hub
+ * (GET /api/v1/me/mcp-connections). This is the real connections model —
+ * Smithery/Composio servers the user authorized via OAuth, shared across all
+ * their agents. NOTE: `mcpUrl` is the UPSTREAM provider URL, not a DeepMyst
+ * broker endpoint — it is NOT written into local CLI MCP configs (the agent
+ * broker /api/v1/mcp/{slug} is the only CLI-reachable endpoint).
+ */
+export interface McpUserConnection {
+  id: string;
+  displayName: string;
+  provider: string;            // 'smithery' | 'composio' | …
+  status: string;              // 'pending' | 'connected' | 'failed' | 'revoked'
+  mcpUrl: string;              // upstream provider URL (not CLI-reachable)
+  setupUrl?: string;           // present while pending OAuth — open to authorize
+  iconUrl?: string;
+  description?: string;
+  errorMessage?: string;
+  connectedAt?: string;
+}
+
 /** Result of a best-effort list call: data plus whether the endpoint exists yet. */
 export interface DeepMystListResult<T> {
   items: T[];
@@ -205,6 +226,94 @@ export class DeepMystClient {
         status: typeof o.status === 'string' ? o.status : undefined,
       };
     }, timeoutMs);
+  }
+
+  /**
+   * List the user's MCP connections (DeepMyst "My Connections" hub —
+   * GET /api/v1/me/mcp-connections). These are the Smithery/Composio servers the
+   * user authorized; the same `dm_` key Mysti holds authenticates this endpoint.
+   * available=false only if the endpoint 404s (instance predates the feature).
+   */
+  async listMcpConnections(timeoutMs = 10000): Promise<DeepMystListResult<McpUserConnection>> {
+    return this._getList('/api/v1/me/mcp-connections', (o) => {
+      const id = typeof o.id === 'string' ? o.id : (typeof o.id === 'number' ? String(o.id) : '');
+      if (!id) { return null; }
+      const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+      return {
+        id,
+        displayName: str(o.display_name) ?? str(o.name) ?? id,
+        provider: str(o.provider) ?? 'mcp',
+        status: str(o.status) ?? 'connected',
+        mcpUrl: str(o.mcp_url) ?? '',
+        setupUrl: str(o.setup_url),
+        iconUrl: str(o.icon_url),
+        description: str(o.description),
+        errorMessage: str(o.error_message),
+        connectedAt: str(o.connected_at),
+      };
+    }, timeoutMs);
+  }
+
+  /**
+   * Disconnect a user MCP connection (DELETE /api/v1/me/mcp-connections/{id}).
+   * Revokes upstream + deletes the row. Returns true on 2xx. Never throws.
+   * A 401/403 (read-only or agent-scoped key) resolves false so the caller can
+   * fall back to the web hub.
+   */
+  async disconnectMcp(id: string, timeoutMs = 10000): Promise<boolean> {
+    return this._authedMutate('DELETE', `/api/v1/me/mcp-connections/${encodeURIComponent(id)}`, timeoutMs);
+  }
+
+  /**
+   * Refresh a pending connection's status (POST .../{id}/refresh) — used to poll
+   * after the user completes OAuth. Returns the updated connection, or null on
+   * any failure.
+   */
+  async refreshMcpConnection(id: string, timeoutMs = 10000): Promise<McpUserConnection | null> {
+    const headers = this._authHeaders();
+    if (!headers) { return null; }
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/v1/me/mcp-connections/${encodeURIComponent(id)}/refresh`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) { return null; }
+      const o = await res.json() as Record<string, unknown>;
+      if (!o || typeof o !== 'object') { return null; }
+      const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+      const id2 = str(o.id) ?? id;
+      return {
+        id: id2,
+        displayName: str(o.display_name) ?? str(o.name) ?? id2,
+        provider: str(o.provider) ?? 'mcp',
+        status: str(o.status) ?? 'connected',
+        mcpUrl: str(o.mcp_url) ?? '',
+        setupUrl: str(o.setup_url),
+        iconUrl: str(o.icon_url),
+        description: str(o.description),
+        errorMessage: str(o.error_message),
+        connectedAt: str(o.connected_at),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Shared authenticated mutation (no body). Returns true on 2xx. Never throws. */
+  private async _authedMutate(method: 'POST' | 'DELETE', path: string, timeoutMs: number): Promise<boolean> {
+    const headers = this._authHeaders();
+    if (!headers) { return false; }
+    try {
+      const res = await fetch(`${this._baseUrl()}${path}`, {
+        method,
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
   /**

@@ -35,6 +35,16 @@
     return node;
   }
 
+  function statusLabel(status) {
+    switch (status) {
+      case 'connected': return 'Connected';
+      case 'pending': return 'Pending authorization';
+      case 'failed': return 'Failed';
+      case 'revoked': return 'Revoked';
+      default: return status || '';
+    }
+  }
+
   function renderConnections(list, available) {
     const ul = $('connections-list');
     ul.innerHTML = '';
@@ -42,11 +52,43 @@
     show($('connections-empty'), available && list.length === 0);
     list.forEach(function (c) {
       const li = el('li', 'list-item');
-      const left = el('div');
-      left.appendChild(el('div', 'name', c.name || c.id));
-      const metaBits = [c.type, c.status].filter(Boolean).join(' · ');
-      if (metaBits) { left.appendChild(el('div', 'meta', metaBits)); }
+
+      const left = el('div', 'list-item-main');
+      if (c.iconUrl) {
+        const img = document.createElement('img');
+        img.className = 'conn-icon';
+        img.src = c.iconUrl;
+        img.alt = '';
+        left.appendChild(img);
+      }
+      const text = el('div');
+      text.appendChild(el('div', 'name', c.displayName || c.id));
+      const metaBits = [c.provider, statusLabel(c.status)].filter(Boolean).join(' · ');
+      if (metaBits) { text.appendChild(el('div', 'meta', metaBits)); }
+      if (c.status === 'failed' && c.errorMessage) {
+        text.appendChild(el('div', 'meta meta-error', c.errorMessage));
+      } else if (c.description) {
+        text.appendChild(el('div', 'meta', c.description));
+      }
+      left.appendChild(text);
       li.appendChild(left);
+
+      const actions = el('div', 'list-item-actions');
+      // Pending OAuth → let the user finish authorizing in the browser.
+      if (c.status === 'pending' && c.setupUrl) {
+        const finish = el('button', 'btn btn-primary', 'Finish authorizing');
+        finish.addEventListener('click', function () {
+          postMsg({ type: 'finishAuth', setupUrl: c.setupUrl });
+        });
+        actions.appendChild(finish);
+      }
+      const disc = el('button', 'btn btn-link', 'Disconnect');
+      disc.addEventListener('click', function () {
+        postMsg({ type: 'disconnectConnection', id: c.id, name: c.displayName || c.id });
+      });
+      actions.appendChild(disc);
+      li.appendChild(actions);
+
       ul.appendChild(li);
     });
   }

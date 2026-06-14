@@ -5700,10 +5700,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Best-effort check whether `service` matches one of the user's existing
-   * DeepMyst connections (by name/type/id substring). Caches the connection
-   * names for {@link CONNECTIONS_CACHE_TTL_MS} so repeated markers don't hammer
-   * the API. Returns false on any error (we'd rather show an extra button than
-   * hide a needed one).
+   * DeepMyst MCP connections (by name/provider substring). Only CONNECTED ones
+   * count as linked (a pending OAuth still needs the button). Caches for
+   * {@link CONNECTIONS_CACHE_TTL_MS} so repeated markers don't hammer the API.
+   * Returns false on any error (we'd rather show an extra button than hide one).
    */
   private async _isServiceLinked(service: string): Promise<boolean> {
     const auth = this._deepMystAuth;
@@ -5712,9 +5712,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const CONNECTIONS_CACHE_TTL_MS = 60_000;
     if (!this._connectionsCache || now - this._connectionsCache.at > CONNECTIONS_CACHE_TTL_MS) {
       try {
-        const res = await auth.client.listConnections();
+        const res = await auth.client.listMcpConnections();
         const names = res.available
-          ? res.items.flatMap(c => [c.name, c.type, c.id].filter(Boolean).map(s => String(s).toLowerCase()))
+          ? res.items
+              .filter(c => c.status === 'connected')
+              .flatMap(c => [c.displayName, c.provider].filter(Boolean).map(s => String(s).toLowerCase()))
           : [];
         this._connectionsCache = { at: now, names };
       } catch {

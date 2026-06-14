@@ -71,7 +71,12 @@ code {
 }
 .list-item .name { font-weight: 600; }
 .list-item .meta { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
+.list-item .meta-error { color: var(--vscode-errorForeground, #f44); }
 .list-item .endpoint { color: var(--vscode-descriptionForeground); font-size: 0.8em; font-family: var(--vscode-editor-font-family, monospace); }
+.list-item-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.list-item-main .name { overflow-wrap: anywhere; }
+.list-item-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.conn-icon { width: 20px; height: 20px; border-radius: 4px; flex-shrink: 0; object-fit: contain; }
 
 .empty {
   color: var(--vscode-descriptionForeground);

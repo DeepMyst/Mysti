@@ -39,10 +39,10 @@
     <div class="row-between">
       <div>
         <h2>Connected to DeepMyst</h2>
-        <p class="muted">Manage your connections on the DeepMyst dashboard; they appear here.</p>
+        <p class="muted">Your MCP connections (Smithery, Composio, …) live in DeepMyst and appear here.</p>
       </div>
       <div class="actions">
-        <button id="btn-manage" class="btn btn-primary">Manage connections</button>
+        <button id="btn-manage" class="btn btn-primary">Browse catalog &amp; connect</button>
         <button id="btn-refresh" class="btn">Refresh</button>
         <button id="btn-signout" class="btn btn-link">Sign out</button>
       </div>
@@ -50,17 +50,18 @@
 
     <div id="loading" class="muted hidden">Loading your connections…</div>
 
-    <h3 class="section-title">Connections</h3>
+    <h3 class="section-title">My connections</h3>
+    <p class="muted small">MCP servers you've authorized through DeepMyst via OAuth. Connect new ones with “Browse catalog &amp; connect”.</p>
     <div id="connections-empty" class="empty hidden">
-      No connections yet. Use “Manage connections” to add data sources and integrations on DeepMyst.
+      No MCP connections yet. Use “Browse catalog &amp; connect” to authorize Smithery / Composio tools on DeepMyst.
     </div>
     <div id="connections-unavailable" class="empty hidden">
-      Couldn’t list connections from this DeepMyst instance. You can still manage them on the web.
+      Couldn’t list MCP connections from this DeepMyst instance. You can still manage them on the web.
     </div>
     <ul id="connections-list" class="list"></ul>
 
-    <h3 class="section-title">Agents (MCP tool sources)</h3>
-    <p class="muted small">Enable an agent to add its DeepMyst-brokered tools to your local AI CLIs — no third-party keys stored locally.</p>
+    <h3 class="section-title">Expose to your local CLIs</h3>
+    <p class="muted small">Add a DeepMyst agent's brokered tools to your local AI CLIs (Claude Code, Gemini, Qwen, OpenCode, Codex, Cline). The CLI reaches them through DeepMyst — no third-party keys stored locally.</p>
     <div id="agents-empty" class="empty hidden">No agents found for your account.</div>
     <div id="agents-unavailable" class="empty hidden">
       This DeepMyst instance didn’t return an agents list (endpoint not available yet).

@@ -194,3 +194,65 @@ describe('DeepMystClient.listAgents / listConnections', () => {
     expect(res.available).toBe(true);
   });
 });
+
+describe('DeepMystClient MCP connections (My Connections hub)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('lists MCP connections from /me/mcp-connections, mapping snake_case fields', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => [
+      { id: 'c1', display_name: 'GitHub', provider: 'smithery', status: 'connected', mcp_url: 'https://smithery.ai/x', icon_url: 'https://i/g.png' },
+      { id: 'c2', display_name: 'Jira', provider: 'composio', status: 'pending', mcp_url: 'composio://jira', setup_url: 'https://auth/jira' },
+      { display_name: 'no id — dropped' },
+    ] });
+    const res = await client(GOOD_KEY).listMcpConnections();
+    expect(res.available).toBe(true);
+    expect(res.items).toEqual([
+      { id: 'c1', displayName: 'GitHub', provider: 'smithery', status: 'connected', mcpUrl: 'https://smithery.ai/x', setupUrl: undefined, iconUrl: 'https://i/g.png', description: undefined, errorMessage: undefined, connectedAt: undefined },
+      { id: 'c2', displayName: 'Jira', provider: 'composio', status: 'pending', mcpUrl: 'composio://jira', setupUrl: 'https://auth/jira', iconUrl: undefined, description: undefined, errorMessage: undefined, connectedAt: undefined },
+    ]);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`${API}/api/v1/me/mcp-connections`);
+  });
+
+  it('reports available=false when /me/mcp-connections 404s (instance predates feature)', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 404 });
+    const res = await client(GOOD_KEY).listMcpConnections();
+    expect(res.available).toBe(false);
+    expect(res.items).toEqual([]);
+  });
+
+  it('disconnectMcp DELETEs the connection and returns true on 2xx', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 204 });
+    const ok = await client(GOOD_KEY).disconnectMcp('c1');
+    expect(ok).toBe(true);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`${API}/api/v1/me/mcp-connections/c1`);
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE');
+  });
+
+  it('disconnectMcp returns false on 403 (read-only / agent-scoped key)', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403 });
+    expect(await client(GOOD_KEY).disconnectMcp('c1')).toBe(false);
+  });
+
+  it('disconnectMcp returns false when signed out (no call)', async () => {
+    expect(await client(undefined).disconnectMcp('c1')).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refreshMcpConnection POSTs and maps the updated connection', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => (
+      { id: 'c2', display_name: 'Jira', provider: 'composio', status: 'connected', mcp_url: 'composio://jira' }
+    ) });
+    const conn = await client(GOOD_KEY).refreshMcpConnection('c2');
+    expect(conn?.status).toBe('connected');
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`${API}/api/v1/me/mcp-connections/c2/refresh`);
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+  });
+});
