@@ -3085,16 +3085,16 @@
       border-radius: 4px;
       background: var(--vscode-textBlockQuote-background);
       font-size: 11px;
-      border-left: 2px solid var(--vscode-charts-blue);
+      border-left: 2px solid var(--mysti-border);
     }
 
     .subagent-tool-call.completed {
-      border-left-color: var(--vscode-charts-green);
+      border-left-color: var(--mysti-ok);
       opacity: 0.7;
     }
 
     .subagent-tool-call.failed {
-      border-left-color: var(--vscode-errorForeground);
+      border-left-color: var(--mysti-err);
     }
 
     .subagent-tool-header {
@@ -3563,8 +3563,8 @@
     }
 
     .agent-response-status.streaming {
-      background: var(--vscode-charts-blue);
-      color: white;
+      background: var(--mysti-accent);
+      color: var(--vscode-button-foreground, #fff);
       animation: pulse 1.5s infinite;
     }
 
@@ -3641,8 +3641,8 @@
     }
 
     .brainstorm-step.active {
-      background: color-mix(in srgb, var(--vscode-charts-blue, #3b82f6) 20%, transparent);
-      color: var(--vscode-charts-blue, #3b82f6);
+      background: color-mix(in srgb, var(--mysti-accent) 20%, transparent);
+      color: var(--mysti-accent);
       animation: pulse 2s infinite;
     }
 
@@ -4138,32 +4138,21 @@
       color: var(--vscode-charts-green);
     }
 
+    /* Plan 06 Phase 4: status is a small semantic DOT, not a filled badge.
+       The status word is hidden (font-size:0); the dot + the chevron carry it. */
     .tool-call-status {
-      font-size: 10px;
-      padding: 1px 6px;
-      border-radius: 8px;
-      background: var(--vscode-badge-background);
+      font-size: 0;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--mysti-dim);
     }
 
-    .tool-call-status.running {
-      background: var(--vscode-charts-blue);
-      color: white;
-    }
-
-    .tool-call-status.completed {
-      background: var(--vscode-charts-green);
-      color: white;
-    }
-
-    .tool-call-status.failed {
-      background: var(--vscode-charts-red);
-      color: white;
-    }
-
-    .tool-call-status.pending {
-      background: var(--vscode-charts-yellow, #f59e0b);
-      color: #1a1a1a;
-    }
+    .tool-call-status.running { background: var(--mysti-accent); }
+    .tool-call-status.completed { background: var(--mysti-ok); }
+    .tool-call-status.failed { background: var(--mysti-err); }
+    .tool-call-status.pending { background: var(--mysti-warn); }
 
     /* Pending tool call styling (for AskUserQuestion awaiting input) */
     .tool-call.pending {
