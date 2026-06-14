@@ -255,4 +255,41 @@ describe('DeepMystClient MCP connections (My Connections hub)', () => {
     expect(String(fetchMock.mock.calls[0][0])).toBe(`${API}/api/v1/me/mcp-connections/c2/refresh`);
     expect(fetchMock.mock.calls[0][1].method).toBe('POST');
   });
+
+  it('connectMcp POSTs the body and maps the pending connection + setup_url', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => (
+      { id: 'c9', display_name: 'Jira', provider: 'composio', status: 'pending', setup_url: 'https://auth/jira', mcp_url: 'composio://jira' }
+    ) });
+    const conn = await client(GOOD_KEY).connectMcp({ provider: 'composio', toolkit_slug: 'jira', mcp_url: 'composio://jira' });
+    expect(conn?.status).toBe('pending');
+    expect(conn?.setupUrl).toBe('https://auth/jira');
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`${API}/api/v1/me/mcp-connections`);
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ provider: 'composio', toolkit_slug: 'jira', mcp_url: 'composio://jira' });
+  });
+
+  it('connectMcp returns null on non-2xx (caller falls back to the web hub)', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 400 });
+    expect(await client(GOOD_KEY).connectMcp({ provider: 'composio', toolkit_slug: 'jira' })).toBeNull();
+  });
+
+  it('searchComposioApps maps toolkits; returns [] when Composio is not configured', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => (
+      { configured: true, toolkits: [{ slug: 'jira', display_name: 'Jira', icon_url: 'https://i/j.png', mcp_url: 'composio://jira' }] }
+    ) });
+    const apps = await client(GOOD_KEY).searchComposioApps('jira');
+    expect(apps).toEqual([{ provider: 'composio', slug: 'jira', toolkitSlug: 'jira', displayName: 'Jira', iconUrl: 'https://i/j.png', description: undefined, mcpUrl: 'composio://jira' }]);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/api/v1/me/mcp-catalog/apps?q=jira');
+
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ configured: false, toolkits: [] }) });
+    expect(await client(GOOD_KEY).searchComposioApps('jira')).toEqual([]);
+  });
+
+  it('searchMcpRegistry maps servers with their hosted mcp_url', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => (
+      { servers: [{ qualified_name: 'acme/jira', display_name: 'Jira (Smithery)', mcp_url: 'https://smithery.ai/jira', icon_url: 'https://i/s.png' }], has_more: false }
+    ) });
+    const res = await client(GOOD_KEY).searchMcpRegistry('jira');
+    expect(res[0]).toEqual({ provider: 'smithery', slug: 'acme/jira', displayName: 'Jira (Smithery)', iconUrl: 'https://i/s.png', description: undefined, mcpUrl: 'https://smithery.ai/jira' });
+  });
 });

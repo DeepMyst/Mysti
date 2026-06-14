@@ -80,6 +80,17 @@ export interface McpUserConnection {
   connectedAt?: string;
 }
 
+/** A catalog entry the user can connect (Composio app or Smithery registry card). */
+export interface DeepMystCatalogItem {
+  provider: 'composio' | 'smithery';
+  slug: string;
+  displayName: string;
+  mcpUrl?: string;             // Smithery hosted URL, or composio://{slug}
+  toolkitSlug?: string;        // Composio toolkit slug (connect payload)
+  iconUrl?: string;
+  description?: string;
+}
+
 /** Result of a best-effort list call: data plus whether the endpoint exists yet. */
 export interface DeepMystListResult<T> {
   items: T[];
@@ -249,23 +260,26 @@ export class DeepMystClient {
    * available=false only if the endpoint 404s (instance predates the feature).
    */
   async listMcpConnections(timeoutMs = 10000): Promise<DeepMystListResult<McpUserConnection>> {
-    return this._getList('/api/v1/me/mcp-connections', (o) => {
-      const id = typeof o.id === 'string' ? o.id : (typeof o.id === 'number' ? String(o.id) : '');
-      if (!id) { return null; }
-      const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
-      return {
-        id,
-        displayName: str(o.display_name) ?? str(o.name) ?? id,
-        provider: str(o.provider) ?? 'mcp',
-        status: str(o.status) ?? 'connected',
-        mcpUrl: str(o.mcp_url) ?? '',
-        setupUrl: str(o.setup_url),
-        iconUrl: str(o.icon_url),
-        description: str(o.description),
-        errorMessage: str(o.error_message),
-        connectedAt: str(o.connected_at),
-      };
-    }, timeoutMs);
+    return this._getList('/api/v1/me/mcp-connections', (o) => DeepMystClient._mapConn(o), timeoutMs);
+  }
+
+  /** Map a raw DeepMyst MCP-connection object (snake_case) to McpUserConnection. */
+  private static _mapConn(o: Record<string, unknown>): McpUserConnection | null {
+    const id = typeof o.id === 'string' ? o.id : (typeof o.id === 'number' ? String(o.id) : '');
+    if (!id) { return null; }
+    const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+    return {
+      id,
+      displayName: str(o.display_name) ?? str(o.name) ?? id,
+      provider: str(o.provider) ?? 'mcp',
+      status: str(o.status) ?? 'connected',
+      mcpUrl: str(o.mcp_url) ?? '',
+      setupUrl: str(o.setup_url),
+      iconUrl: str(o.icon_url),
+      description: str(o.description),
+      errorMessage: str(o.error_message),
+      connectedAt: str(o.connected_at),
+    };
   }
 
   /**
@@ -295,22 +309,119 @@ export class DeepMystClient {
       if (!res.ok) { return null; }
       const o = await res.json() as Record<string, unknown>;
       if (!o || typeof o !== 'object') { return null; }
-      const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
-      const id2 = str(o.id) ?? id;
-      return {
-        id: id2,
-        displayName: str(o.display_name) ?? str(o.name) ?? id2,
-        provider: str(o.provider) ?? 'mcp',
-        status: str(o.status) ?? 'connected',
-        mcpUrl: str(o.mcp_url) ?? '',
-        setupUrl: str(o.setup_url),
-        iconUrl: str(o.icon_url),
-        description: str(o.description),
-        errorMessage: str(o.error_message),
-        connectedAt: str(o.connected_at),
-      };
+      return DeepMystClient._mapConn({ id, ...o });
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Create a connection to a catalog MCP server (POST /api/v1/me/mcp-connections).
+   * For Composio apps pass `provider:'composio'` + `toolkit_slug`; for Smithery
+   * pass `provider:'smithery'` + the registry `mcp_url`. Returns the connection
+   * (status 'pending' carries `setupUrl` to open for OAuth), or null on failure.
+   */
+  async connectMcp(body: {
+    mcp_url?: string;
+    provider?: string;
+    toolkit_slug?: string;
+    display_name?: string;
+    icon_url?: string;
+    description?: string;
+  }, timeoutMs = 15000): Promise<McpUserConnection | null> {
+    const headers = this._authHeaders();
+    if (!headers) { return null; }
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/v1/me/mcp-connections`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        console.warn(`[Mysti] DeepMyst connectMcp → HTTP ${res.status}`);
+        return null;
+      }
+      const o = await res.json() as Record<string, unknown>;
+      return (o && typeof o === 'object') ? DeepMystClient._mapConn(o) : null;
+    } catch (err) {
+      console.warn(`[Mysti] DeepMyst connectMcp failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Search the Composio managed-app catalog (GET /api/v1/me/mcp-catalog/apps).
+   * Returns [] when Composio isn't configured on the instance or on any error.
+   */
+  async searchComposioApps(query: string, timeoutMs = 10000): Promise<DeepMystCatalogItem[]> {
+    const headers = this._authHeaders();
+    if (!headers) { return []; }
+    try {
+      const res = await fetch(
+        `${this._baseUrl()}/api/v1/me/mcp-catalog/apps?q=${encodeURIComponent(query)}&page_size=10`,
+        { headers, signal: AbortSignal.timeout(timeoutMs) },
+      );
+      if (!res.ok) { return []; }
+      const data = await res.json() as Record<string, unknown>;
+      if (data.configured === false) { return []; }
+      const items = Array.isArray(data.toolkits) ? data.toolkits : [];
+      const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+      return items
+        .filter((t): t is Record<string, unknown> => Boolean(t) && typeof t === 'object')
+        .map((t) => {
+          const slug = str(t.slug);
+          if (!slug) { return null; }
+          return {
+            provider: 'composio',
+            slug,
+            toolkitSlug: slug,
+            displayName: str(t.display_name) ?? slug,
+            iconUrl: str(t.icon_url),
+            description: str(t.description),
+            mcpUrl: str(t.mcp_url) ?? `composio://${slug}`,
+          } as DeepMystCatalogItem;
+        })
+        .filter((x): x is DeepMystCatalogItem => x !== null);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Search the Smithery registry (GET /api/v1/me/mcp-registry). Returns []
+   * on any error. Each result's `mcpUrl` is the hosted connect URL.
+   */
+  async searchMcpRegistry(query: string, timeoutMs = 10000): Promise<DeepMystCatalogItem[]> {
+    const headers = this._authHeaders();
+    if (!headers) { return []; }
+    try {
+      const res = await fetch(
+        `${this._baseUrl()}/api/v1/me/mcp-registry?q=${encodeURIComponent(query)}&page=1&page_size=10`,
+        { headers, signal: AbortSignal.timeout(timeoutMs) },
+      );
+      if (!res.ok) { return []; }
+      const data = await res.json() as Record<string, unknown>;
+      const items = Array.isArray(data.servers) ? data.servers : [];
+      const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+      return items
+        .filter((s): s is Record<string, unknown> => Boolean(s) && typeof s === 'object')
+        .map((s) => {
+          const mcpUrl = str(s.mcp_url);
+          if (!mcpUrl) { return null; }
+          const name = str(s.display_name) ?? str(s.name) ?? str(s.qualified_name) ?? mcpUrl;
+          return {
+            provider: 'smithery',
+            slug: (str(s.qualified_name) ?? name).toLowerCase(),
+            displayName: name,
+            iconUrl: str(s.icon_url),
+            description: str(s.description),
+            mcpUrl,
+          } as DeepMystCatalogItem;
+        })
+        .filter((x): x is DeepMystCatalogItem => x !== null);
+    } catch {
+      return [];
     }
   }
 

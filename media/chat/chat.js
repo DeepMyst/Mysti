@@ -4054,6 +4054,9 @@
           case 'connectionAlready':
             handleConnectionAlready(message.payload);
             break;
+          case 'connectionResult':
+            handleConnectionResult(message.payload);
+            break;
           case 'permissionRequest':
             handlePermissionRequest(message.payload);
             break;
@@ -7616,13 +7619,32 @@
         btn.textContent = (payload && payload.signedIn) ? 'Link ' + pretty : 'Sign in to link ' + pretty;
         btn.addEventListener('click', function () {
           vscode.postMessage({ type: 'connectService', service: service });
-          btn.textContent = 'Opening…';
+          btn.textContent = 'Opening sign-in…';
           btn.disabled = true;
         });
 
         card.appendChild(info);
         card.appendChild(btn);
         body.appendChild(card);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      /** Flip a connect card to connected/failed after the OAuth round-trip. */
+      function handleConnectionResult(payload) {
+        var service = (payload && payload.service) || 'service';
+        var card = messagesEl.querySelector('.connect-card[data-service="' + service + '"]');
+        if (!card) { return; }
+        var pretty = _prettyServiceName(service);
+        if (payload && payload.ok) {
+          card.className = 'connect-card connected';
+          card.innerHTML = '<div class="connect-card-info">' +
+            '<span class="connect-card-icon">✅</span>' +
+            '<span class="connect-card-text"><strong>' + pretty + '</strong> connected</span>' +
+            '</div>';
+        } else {
+          var btn = card.querySelector('.connect-card-btn');
+          if (btn) { btn.textContent = 'Retry ' + pretty; btn.disabled = false; }
+        }
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 

@@ -5728,10 +5728,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Plan 04 Phase 4: act on the in-chat "Link <service>" button. When signed in,
-   * open the DeepMyst connections page deep-linked to the service so the user can
-   * authorize it; when signed out, open the Mysti Connections panel to sign in
-   * first (the broker needs a DeepMyst session before it can link anything).
+   * Plan 04 Phase 4: act on the in-chat "Link <service>" button. Minimize touch
+   * points — instead of dumping the user on the generic connections hub, resolve
+   * the service to a catalog entry, create the connection via the API, and open
+   * ITS OAuth `setup_url` directly so the user lands straight on the service's
+   * authorize screen. Then poll until connected and flip the card. Any
+   * resolution/API failure falls back to the hub so the user can do it manually.
    */
   private async _handleConnectService(service?: string): Promise<void> {
     const slug = (service || '').trim().toLowerCase();
@@ -5741,15 +5743,119 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.commands.executeCommand('mysti.openConnections');
       return;
     }
-    // DeepMyst's "My Connections" hub lives at /settings/connections (the
-    // catalog browse + OAuth connect happens there). The page doesn't read a
-    // preselect query param, so we open the hub and let the user search.
-    const webUrl = auth.getWebUrl().replace(/\/+$/, '');
-    const target = `${webUrl}/settings/connections`;
-    await vscode.env.openExternal(vscode.Uri.parse(target));
-    // The list may change after the user links something; drop the cache so the
-    // next marker re-checks.
+    const openHub = async () => {
+      await vscode.env.openExternal(vscode.Uri.parse(`${auth.getWebUrl().replace(/\/+$/, '')}/settings/connections`));
+      this._connectionsCache = undefined;
+    };
+    if (!slug) { await openHub(); return; }
+
+    // Resolve the service → a connect payload. Prefer Composio (managed apps
+    // like Jira/Slack/Notion); fall back to the Smithery registry.
+    const composio = await auth.client.searchComposioApps(slug);
+    const cMatch = this._bestCatalogMatch(composio, slug);
+    let body: Parameters<typeof auth.client.connectMcp>[0] | undefined;
+    if (cMatch) {
+      body = {
+        provider: 'composio',
+        toolkit_slug: cMatch.toolkitSlug,
+        mcp_url: cMatch.mcpUrl,
+        display_name: cMatch.displayName,
+        icon_url: cMatch.iconUrl,
+        description: cMatch.description,
+      };
+    } else {
+      const registry = await auth.client.searchMcpRegistry(slug);
+      const sMatch = this._bestCatalogMatch(registry, slug) ?? registry[0];
+      if (sMatch?.mcpUrl) {
+        body = {
+          provider: 'smithery',
+          mcp_url: sMatch.mcpUrl,
+          display_name: sMatch.displayName,
+          icon_url: sMatch.iconUrl,
+          description: sMatch.description,
+        };
+      }
+    }
+    if (!body) {
+      // No catalog match — let the user search the hub themselves.
+      console.log(`[Mysti] connectService: no catalog match for "${slug}", opening hub`);
+      await openHub();
+      return;
+    }
+
+    const conn = await auth.client.connectMcp(body);
     this._connectionsCache = undefined;
+    if (!conn) { await openHub(); return; }
+
+    if (conn.status === 'connected') {
+      vscode.window.showInformationMessage(`${conn.displayName} is already connected to DeepMyst.`);
+      this._broadcastConnectionResult(slug, true);
+      return;
+    }
+    if (conn.setupUrl && /^https:\/\//i.test(conn.setupUrl)) {
+      await vscode.env.openExternal(vscode.Uri.parse(conn.setupUrl));
+      void this._pollConnection(auth, conn.id, conn.displayName, slug);
+      return;
+    }
+    // Pending but no usable OAuth URL — fall back to the hub.
+    await openHub();
+  }
+
+  /** Pick the catalog entry that best matches `slug` (exact slug/name first). */
+  private _bestCatalogMatch(
+    items: import('../services/DeepMystClient').DeepMystCatalogItem[],
+    slug: string,
+  ): import('../services/DeepMystClient').DeepMystCatalogItem | undefined {
+    if (!items.length) { return undefined; }
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const target = norm(slug);
+    return (
+      items.find(i => norm(i.slug) === target) ??
+      items.find(i => norm(i.displayName) === target) ??
+      items.find(i => norm(i.displayName).includes(target) || target.includes(norm(i.slug))) ??
+      undefined
+    );
+  }
+
+  /**
+   * Poll a pending connection after opening its OAuth, flipping the in-chat card
+   * to connected on success. Bounded (2s interval, ~3 min) so it can't run away.
+   */
+  private async _pollConnection(
+    auth: DeepMystAuthManager,
+    id: string,
+    displayName: string,
+    slug: string,
+  ): Promise<void> {
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, cancellable: true, title: `Connecting ${displayName} — finish sign-in in your browser…` },
+      async (_progress, token) => {
+        const deadline = Date.now() + 3 * 60 * 1000;
+        while (Date.now() < deadline && !token.isCancellationRequested) {
+          await new Promise(r => setTimeout(r, 2000));
+          const updated = await auth.client.refreshMcpConnection(id);
+          if (!updated) { continue; }
+          if (updated.status === 'connected') {
+            this._connectionsCache = undefined;
+            vscode.window.showInformationMessage(`${displayName} connected. Its tools are now available through DeepMyst.`);
+            this._broadcastConnectionResult(slug, true);
+            return;
+          }
+          if (updated.status === 'failed' || updated.status === 'revoked') {
+            vscode.window.showWarningMessage(`Couldn't connect ${displayName}: ${updated.errorMessage || updated.status}.`);
+            this._broadcastConnectionResult(slug, false);
+            return;
+          }
+        }
+      },
+    );
+  }
+
+  /** Tell every panel's webview to flip the connect card for `service`. */
+  private _broadcastConnectionResult(service: string, ok: boolean): void {
+    for (const panelId of this._panelStates.keys()) {
+      this._postToPanel(panelId, { type: 'connectionResult', payload: { service, ok } });
+    }
   }
 
   /**
