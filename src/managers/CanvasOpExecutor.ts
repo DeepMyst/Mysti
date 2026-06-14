@@ -58,10 +58,22 @@ export class CanvasOpExecutor {
   private _lockedPages = new Set<string>();
   /** Auto-mode ops queued behind a page lock, replayed on unlock. */
   private _queuedByPage = new Map<string, string[]>();
+  /** Reason the most recent submit() was rejected by validation (else null). */
+  private _lastSubmitError: string | null = null;
 
   constructor(store: ArtifactStore, router: CanvasJobRouter) {
     this._store = store;
     this._router = router;
+  }
+
+  /**
+   * The validation reason the most recent {@link submit} call rejected with, or
+   * null when it did not reject. Read synchronously right after submit() so the
+   * tool layer can surface the specific message to the agent (the same reason is
+   * also emitted as an `op_error` event to the webview).
+   */
+  lastSubmitError(): string | null {
+    return this._lastSubmitError;
   }
 
   // ========================================================================
@@ -91,8 +103,10 @@ export class CanvasOpExecutor {
       ts: Date.now(),
     };
 
+    this._lastSubmitError = null;
     const invalid = this._validate(artifact, op);
     if (invalid) {
+      this._lastSubmitError = invalid;
       op.status = 'rejected';
       this._store.appendOp(artifact, op);
       this._router.emit(jobId, { type: 'op_error', op, error: invalid });

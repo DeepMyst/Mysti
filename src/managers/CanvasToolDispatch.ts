@@ -190,7 +190,9 @@ export function dispatchCanvasTool(name: string, args: Args, ctx: CanvasToolCont
       jobId,
       approvalMode,
     );
-    return op ? { ok: true, op } : { ok: false, op: null, error: `op rejected (${kind})` };
+    return op
+      ? { ok: true, op }
+      : { ok: false, op: null, error: executor.lastSubmitError() ?? `op rejected (${kind})` };
   };
 
   switch (name) {
