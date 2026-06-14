@@ -2028,6 +2028,15 @@
           return;
         }
 
+        // Escape to stop a request in flight (Claude-Code-style interrupt).
+        // Runs after menu/autocomplete dismissal so it only fires when nothing
+        // else is consuming Escape.
+        if (e.key === 'Escape' && state.isLoading) {
+          e.preventDefault();
+          postMessageWithPanelId({ type: 'cancelRequest' });
+          return;
+        }
+
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           clearAutocomplete();
@@ -6862,8 +6871,10 @@
         // Clear attachments after sending
         state.attachments = [];
         renderAttachmentPreviews();
-        state.isLoading = true;
-        sendBtn.disabled = true;
+        // Show Stop + lock the input immediately — don't wait for the backend's
+        // responseStarted (which can be 100-500ms away). This is the fix for
+        // "no stop button while the message is processing".
+        setProcessing(true);
       }
 
       function addMessage(msg) {
@@ -8751,39 +8762,41 @@
         setTimeout(function() { container.remove(); }, 1500);
       }
 
-      function showLoading() {
-        state.isLoading = true;
-        sendBtn.style.display = 'none';
-        stopBtn.style.display = 'flex';
-        var loading = document.createElement('div');
-        loading.className = 'loading';
-        loading.innerHTML = '<div class="loading-dot"></div><div class="loading-dot"></div><div class="loading-dot"></div>';
-        messagesEl.appendChild(loading);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-
-        // Auto-hide suggestions while AI is running
+      // Single owner of the "is a request in flight" UI: swaps send⇄stop, the
+      // disabled state, and the quick-actions visibility. Called IMMEDIATELY on
+      // send (so Stop is available during the pre-first-token window), and on
+      // every terminal path (complete/error/cancel). Idempotent.
+      function setProcessing(on) {
+        state.isLoading = on;
+        if (sendBtn) { sendBtn.style.display = on ? 'none' : 'flex'; sendBtn.disabled = on; }
+        if (stopBtn) { stopBtn.style.display = on ? 'flex' : 'none'; }
         var quickActionsContainer = document.getElementById('quick-actions-container');
-        if (quickActionsContainer) {
-          quickActionsContainer.classList.add('ai-running');
+        if (quickActionsContainer) { quickActionsContainer.classList.toggle('ai-running', on); }
+        if (!on) {
+          currentResponse = '';
+          currentThinking = '';
+          contentSegmentIndex = 0;
+        }
+      }
+
+      function showLoading() {
+        setProcessing(true);
+        // The bottom "thinking" spinner is appended on responseStarted (after the
+        // user bubble is rendered) so it stays at the end of the transcript.
+        // Idempotent — never stack two.
+        if (!messagesEl.querySelector('.loading')) {
+          var loading = document.createElement('div');
+          loading.className = 'loading';
+          loading.innerHTML = '<div class="loading-dot"></div><div class="loading-dot"></div><div class="loading-dot"></div>';
+          messagesEl.appendChild(loading);
+          messagesEl.scrollTop = messagesEl.scrollHeight;
         }
       }
 
       function hideLoading() {
-        state.isLoading = false;
-        sendBtn.style.display = 'flex';
-        sendBtn.disabled = false;
-        stopBtn.style.display = 'none';
-        currentResponse = '';
-        currentThinking = '';
-        contentSegmentIndex = 0;
+        setProcessing(false);
         var loading = messagesEl.querySelector('.loading');
         if (loading) loading.remove();
-
-        // Show suggestions again if enabled
-        var quickActionsContainer = document.getElementById('quick-actions-container');
-        if (quickActionsContainer) {
-          quickActionsContainer.classList.remove('ai-running');
-        }
       }
 
       // Dynamic suggestions functions (ezorro-style cards)
