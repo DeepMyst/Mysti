@@ -74,6 +74,7 @@ export class ContextManager {
       };
 
       ctx.push(item);
+      this._persist(id);
       return item;
     } catch (error) {
       console.error(`Failed to read file: ${filePath}`, error);
@@ -104,6 +105,7 @@ export class ContextManager {
     };
 
     ctx.push(item);
+    this._persist(id);
     return item;
   }
 
@@ -126,6 +128,7 @@ export class ContextManager {
     const ctx = this._getPanelContext(pid);
     const filtered = ctx.filter((c: ContextItem) => c.id !== id);
     this._panelContexts.set(pid, filtered);
+    this._persist(pid);
   }
 
   /**
@@ -138,21 +141,80 @@ export class ContextManager {
     const item = ctx.find((c: ContextItem) => c.id === id);
     if (!item) { return null; }
     item.enabled = enabled;
+    this._persist(panelId || 'default');
     return enabled;
   }
 
   /** Toggle a context item's active state. Returns the new state, or null. */
   public toggleItem(id: string, panelId?: string): boolean | null {
-    const ctx = this._getPanelContext(panelId || 'default');
+    const pid = panelId || 'default';
+    const ctx = this._getPanelContext(pid);
     const item = ctx.find((c: ContextItem) => c.id === id);
     if (!item) { return null; }
     item.enabled = item.enabled === false; // false -> true, true/undefined -> false
+    this._persist(pid);
     return item.enabled;
+  }
+
+  // ── Persistence (Plan 07 A5) ─────────────────────────────────────────────
+  // Per-panel context survives reloads (workspace-scoped). We persist the LIST
+  // + enabled flags but re-read file content on restore so it's never stale.
+  // (Selections keep their snapshot content — they aren't re-readable by range.)
+
+  private _persistKey(panelId: string): string {
+    return `mysti.context:${panelId}`;
+  }
+
+  private _persist(panelId: string): void {
+    try {
+      const items = this._getPanelContext(panelId).map((c) =>
+        c.type === 'selection'
+          ? c // selections keep their content snapshot
+          : { ...c, content: undefined }, // files: drop content, re-read on restore
+      );
+      void this._extensionContext.workspaceState.update(this._persistKey(panelId), items);
+    } catch (err) {
+      console.log('[Mysti] context persist failed:', err);
+    }
+  }
+
+  /**
+   * Load a panel's persisted context (if any) and re-read file content. No-op if
+   * the panel already has in-memory context (don't clobber a live session).
+   * Returns the (possibly empty) restored list.
+   */
+  public async restorePanelContext(panelId: string): Promise<ContextItem[]> {
+    const existing = this._panelContexts.get(panelId);
+    if (existing && existing.length > 0) { return [...existing]; }
+
+    let saved: ContextItem[] | undefined;
+    try {
+      saved = this._extensionContext.workspaceState.get<ContextItem[]>(this._persistKey(panelId));
+    } catch { saved = undefined; }
+    if (!saved || saved.length === 0) { return []; }
+
+    const restored: ContextItem[] = [];
+    for (const item of saved) {
+      if (item.type === 'file') {
+        try {
+          item.content = await fs.promises.readFile(item.path, 'utf-8');
+          restored.push(item);
+        } catch {
+          // File gone — drop it silently.
+        }
+      } else {
+        restored.push(item); // selections/symbols keep their snapshot
+      }
+    }
+    this._panelContexts.set(panelId, restored);
+    this._persist(panelId); // re-persist the pruned set
+    return [...restored];
   }
 
   public clearContext(panelId?: string) {
     const id = panelId || 'default';
     this._panelContexts.set(id, []);
+    this._persist(id);
   }
 
   /**

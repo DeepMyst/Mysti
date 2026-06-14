@@ -14,8 +14,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type * as vscode from 'vscode';
 import { ContextManager } from '../../src/managers/ContextManager';
 
-function newMgr(): ContextManager {
-  return new ContextManager({} as unknown as vscode.ExtensionContext);
+function newMgr(store?: Map<string, unknown>): ContextManager {
+  const ws = {
+    get: (k: string) => store?.get(k),
+    update: (k: string, v: unknown) => { store?.set(k, v); return Promise.resolve(); },
+  };
+  return new ContextManager({ workspaceState: ws } as unknown as vscode.ExtensionContext);
 }
 
 describe('ContextManager — activate/deactivate (Plan 07)', () => {
@@ -71,5 +75,39 @@ describe('ContextManager — activate/deactivate (Plan 07)', () => {
     m.setItemEnabled(a!.id, false, 'p1');
     expect(m.formatContextForPrompt('p1')).toBe('');
     expect(m.formatContextForPrompt('p2')).toContain('a.ts');
+  });
+
+  it('persists across instances and re-reads file content on restore (A5)', async () => {
+    const store = new Map<string, unknown>();
+    const m1 = newMgr(store);
+    const item = await m1.addFileToContext(file, 'sidebar');
+    m1.setItemEnabled(item!.id, false, 'sidebar'); // deactivate → flag must survive
+
+    // New instance (simulates reload) sharing the same workspaceState.
+    const m2 = newMgr(store);
+    const restored = await m2.restorePanelContext('sidebar');
+    expect(restored).toHaveLength(1);
+    expect(restored[0].enabled).toBe(false);          // flag preserved
+    expect(restored[0].content).toContain('export const x'); // content re-read fresh
+  });
+
+  it('drops restored items whose files no longer exist', async () => {
+    const store = new Map<string, unknown>();
+    const m1 = newMgr(store);
+    await m1.addFileToContext(file, 'sidebar');
+    fs.rmSync(file); // delete the backing file
+
+    const m2 = newMgr(store);
+    const restored = await m2.restorePanelContext('sidebar');
+    expect(restored).toHaveLength(0);
+  });
+
+  it('restore does not clobber a live in-memory session', async () => {
+    const store = new Map<string, unknown>();
+    const m = newMgr(store);
+    await m.addFileToContext(file, 'sidebar');
+    // Already has in-memory context → restore returns it without touching store.
+    const restored = await m.restorePanelContext('sidebar');
+    expect(restored).toHaveLength(1);
   });
 });
