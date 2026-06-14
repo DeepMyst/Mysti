@@ -542,6 +542,11 @@
           "default": "https://v2.deepmyst.com",
           "markdownDescription": "Base URL of the DeepMyst web app, opened in the browser for Clerk sign-in/sign-up and for managing connections."
         },
+        "mysti.deepmyst.useInLocalClis": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Expose your DeepMyst MCP connections (Smithery/Composio) to your local AI CLIs (Claude Code, Gemini, Qwen, OpenCode, Codex, Cline) by writing the per-user MCP broker endpoint (`/api/v1/me/mcp`) into each CLI's MCP config, with your `dm_` key as the Bearer. **Off by default** — when on, your `dm_` key is written into those config files (including the workspace `.mcp.json`, which may be committed to git). Toggle it from the DeepMyst Connections panel."
+        },
         "mysti.activeMode.enabled": {
           "type": "boolean",
           "default": true,

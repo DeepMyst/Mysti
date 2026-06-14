@@ -94,3 +94,15 @@ code {
   border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700);
   color: var(--vscode-foreground);
 }
+
+.clis-toggle {
+  margin: 10px 0 14px; padding: 10px 12px;
+  border: 1px solid var(--vscode-panel-border); border-radius: 6px;
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(255,255,255,0.04));
+}
+.switch-row { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
+.switch-row input { cursor: pointer; }
+.clis-toggle code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  background: var(--vscode-textCodeBlock-background, rgba(255,255,255,0.08)); padding: 0 3px; border-radius: 3px;
+}

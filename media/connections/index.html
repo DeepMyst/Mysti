@@ -50,6 +50,19 @@
 
     <div id="loading" class="muted hidden">Loading your connections…</div>
 
+    <div class="clis-toggle">
+      <label class="switch-row">
+        <input type="checkbox" id="use-clis" />
+        <span>Use my connections in local CLIs</span>
+      </label>
+      <p class="muted small">
+        Writes one DeepMyst MCP endpoint into your local AI CLIs (Claude Code, Gemini, Qwen, OpenCode, Codex, Cline)
+        so their agents can call your connected tools directly. Your <code>dm_</code> key is stored in those CLI
+        config files (incl. the workspace <code>.mcp.json</code>, which may be committed to git) — leave off if you don't want that.
+      </p>
+      <p id="clis-status" class="muted small"></p>
+    </div>
+
     <h3 class="section-title">My connections</h3>
     <p class="muted small">MCP servers (Smithery, Composio, …) you've authorized through DeepMyst via OAuth. Connect new ones with “Browse catalog &amp; connect”.</p>
     <div id="connections-error" class="banner hidden"></div>

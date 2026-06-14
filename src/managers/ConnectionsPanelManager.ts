@@ -12,23 +12,30 @@
  *
  * DeepMyst Connections panel (Plan 04).
  *
- * A standalone editor tab that mirrors DeepMyst's "My Connections" hub: the
- * user's authorized MCP connections (Smithery / Composio, …) with status,
- * "Finish authorizing" for pending OAuth, and Disconnect. Sign in once with a
- * `dm_` key; DeepMyst holds every third-party credential.
+ * Mirrors DeepMyst's "My Connections" hub: the user's authorized MCP
+ * connections (Smithery / Composio, …) with status, "Finish authorizing" for
+ * pending OAuth, and Disconnect. Sign in once with a `dm_` key; DeepMyst holds
+ * every third-party credential.
  *
- * NOTE: local-CLI wiring is intentionally NOT done here. A user's MCP
- * connections are only reachable by a CLI through an agent broker
- * (/api/v1/mcp/{slug}); there is no per-user CLI-reachable MCP endpoint yet.
- * Rather than auto-provision a hidden agent bridge, this panel is a read +
- * manage surface. McpConfigManager stays in the tree (dormant) for when a
- * first-class per-user broker exists.
+ * "Use in local CLIs" toggle: when on, writes the per-user MCP broker URL
+ * (DeepMyst POST /api/v1/me/mcp) into each MCP-capable CLI's config via
+ * {@link McpConfigManager}, with the `dm_` Bearer. That single endpoint exposes
+ * the union of the user's connected tools, so a local agent (Claude Code, …)
+ * can call Gmail/Trello/Sheets/… directly. Off (default) writes nothing and
+ * strips any prior entry.
  */
 
 import * as vscode from 'vscode';
 import type { DeepMystAuthManager } from './DeepMystAuthManager';
+import { McpConfigManager } from '../services/McpConfigManager';
+import type { McpApplyResult } from '../services/McpConfigManager';
 import type { McpUserConnection } from '../services/DeepMystClient';
 import { getConnectionsContent } from '../webview/connectionsContent';
+
+/** Settings key (global) for the "expose my connections to local CLIs" toggle. */
+const USE_IN_CLIS_SETTING = 'deepmyst.useInLocalClis';
+/** Stable MCP-config entry id for the per-user broker (one per machine). */
+const BROKER_ENTRY_ID = 'deepmyst-my-connections';
 
 interface ConnectionsState {
   signedIn: boolean;
@@ -38,6 +45,10 @@ interface ConnectionsState {
   /** Set when the list call returned a non-200, non-404 status (auth/principal
    *  problem) so the UI can prompt a re-sign-in rather than show "empty". */
   connectionsError?: string;
+  /** "Use in local CLIs" toggle state + which CLIs + last write results. */
+  useInLocalClis: boolean;
+  mcpProviders: string[];
+  mcpStatus: McpApplyResult[];
   loading: boolean;
   error?: string;
 }
@@ -45,17 +56,69 @@ interface ConnectionsState {
 export class ConnectionsPanelManager implements vscode.Disposable {
   private _panel: vscode.WebviewPanel | null = null;
   private readonly _disposables: vscode.Disposable[] = [];
+  private _lastMcpStatus: McpApplyResult[] = [];
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private readonly _auth: DeepMystAuthManager,
+    private readonly _mcpConfig: McpConfigManager,
   ) {
-    // Re-render on any auth change (sign in/out/key replaced).
+    // On any auth change: reconcile CLI configs to the new state (write the
+    // broker entry when signed-in + toggle on, strip it otherwise) and re-render.
     this._disposables.push(
       this._auth.onDidChangeAuth(() => {
-        if (this._panel) { void this._refresh(); }
+        void this._reconcile().finally(() => {
+          if (this._panel) { void this._refresh(); }
+        });
       }),
     );
+  }
+
+  /**
+   * Reconcile CLI MCP configs to the current auth + toggle state. Call once at
+   * activation (after auth.initialize) so a returning user's configs match the
+   * toggle without opening the panel.
+   */
+  async reconcile(): Promise<void> {
+    await this._reconcile();
+  }
+
+  // ── Toggle + reconcile ───────────────────────────────────────────────────
+
+  private _useInLocalClis(): boolean {
+    return vscode.workspace.getConfiguration('mysti').get<boolean>(USE_IN_CLIS_SETTING, false);
+  }
+
+  private async _setUseInLocalClis(on: boolean): Promise<void> {
+    await vscode.workspace
+      .getConfiguration('mysti')
+      .update(USE_IN_CLIS_SETTING, on, vscode.ConfigurationTarget.Global);
+  }
+
+  /**
+   * Write or strip the per-user broker entry across the MCP-capable CLIs. The
+   * broker URL is a single endpoint (/api/v1/me/mcp) that fans out to all the
+   * user's connections, so exactly one `deepmyst-my-connections` entry is
+   * written. applyAll replaces any prior `deepmyst-*` entries (incl. legacy
+   * per-agent ones); removeAll strips them.
+   */
+  private async _reconcile(): Promise<void> {
+    try {
+      const key = this._auth.getApiKey();
+      if (this._auth.isSignedIn() && this._useInLocalClis() && key) {
+        this._lastMcpStatus = await this._mcpConfig.applyAll([
+          {
+            id: BROKER_ENTRY_ID,
+            url: this._auth.client.getMyMcpEndpointUrl(),
+            headers: { Authorization: `Bearer ${key}` },
+          },
+        ]);
+      } else {
+        this._lastMcpStatus = await this._mcpConfig.removeAll();
+      }
+    } catch (err) {
+      console.log('[Mysti] MCP config reconcile error:', err);
+    }
   }
 
   /** Open (or reveal) the Connections panel. */
@@ -101,7 +164,7 @@ export class ConnectionsPanelManager implements vscode.Disposable {
         break;
       case 'signIn':
         await this._auth.signIn();
-        // onDidChangeAuth triggers a refresh on success.
+        // onDidChangeAuth triggers reconcile + refresh on success.
         break;
       case 'signOut':
         await this._auth.signOut();
@@ -118,6 +181,11 @@ export class ConnectionsPanelManager implements vscode.Disposable {
         break;
       case 'disconnectConnection':
         await this._disconnectConnection(msg as { id?: string; name?: string });
+        break;
+      case 'setUseInLocalClis':
+        await this._setUseInLocalClis(!!(msg as { enabled?: boolean }).enabled);
+        await this._reconcile();
+        await this._refresh();
         break;
       default:
         break;
@@ -151,6 +219,8 @@ export class ConnectionsPanelManager implements vscode.Disposable {
       vscode.window.showWarningMessage('Could not disconnect from here. Opening DeepMyst to manage it on the web.');
       await vscode.env.openExternal(vscode.Uri.parse(this._connectionsUrl()));
     }
+    // A removed connection changes the broker's tool set; re-write CLI configs.
+    await this._reconcile();
     await this._refresh();
   }
 
@@ -171,14 +241,22 @@ export class ConnectionsPanelManager implements vscode.Disposable {
 
     const signedIn = this._auth.isSignedIn();
     const webUrl = this._auth.getWebUrl();
+    const useInLocalClis = this._useInLocalClis();
+    const mcpProviders = McpConfigManager.supportedProviders();
 
     if (!signedIn) {
-      this._post({ signedIn: false, webUrl, connections: [], connectionsAvailable: true, loading: false });
+      this._post({
+        signedIn: false, webUrl, connections: [], connectionsAvailable: true,
+        useInLocalClis, mcpProviders, mcpStatus: this._lastMcpStatus, loading: false,
+      });
       return;
     }
 
     // Signed in: show a loading state, then fetch the user's MCP connections.
-    this._post({ signedIn: true, webUrl, connections: [], connectionsAvailable: true, loading: true });
+    this._post({
+      signedIn: true, webUrl, connections: [], connectionsAvailable: true,
+      useInLocalClis, mcpProviders, mcpStatus: this._lastMcpStatus, loading: true,
+    });
 
     const res = await this._auth.client.listMcpConnections();
     // A non-200, non-404 status means the key authenticated to the wrong
@@ -195,6 +273,9 @@ export class ConnectionsPanelManager implements vscode.Disposable {
       connections: res.items.filter((c) => c.status !== 'revoked'),
       connectionsAvailable: res.available,
       connectionsError,
+      useInLocalClis,
+      mcpProviders,
+      mcpStatus: this._lastMcpStatus,
       loading: false,
     });
   }

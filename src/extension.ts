@@ -122,21 +122,25 @@ export async function activate(context: vscode.ExtensionContext) {
   deepMystAuthManager = new DeepMystAuthManager(context);
 
   // Plan 04: the Connections panel mirrors DeepMyst's "My Connections" hub
-  // (the user's Smithery/Composio MCP connections). Local-CLI auto-wiring is
-  // intentionally NOT done — a user's connections are only reachable by a CLI
-  // through an agent broker, and we don't auto-provision a hidden agent bridge.
+  // (the user's Smithery/Composio MCP connections). When the user enables "Use
+  // in local CLIs", McpConfigManager writes the per-user MCP broker URL
+  // (/api/v1/me/mcp) into each MCP-capable CLI's config so a local agent can
+  // call those tools directly.
+  const mcpConfigManager = new McpConfigManager(
+    undefined, // default: os.homedir()
+    nodePath.dirname(context.globalStorageUri.fsPath),
+  );
   connectionsPanelManager = new ConnectionsPanelManager(
-    context.extensionUri, deepMystAuthManager,
+    context.extensionUri, deepMystAuthManager, mcpConfigManager,
   );
   context.subscriptions.push(connectionsPanelManager);
 
-  // Load the stored key (fire-and-forget so it doesn't block activation), then
-  // do a ONE-TIME cleanup of any stale `deepmyst-*` MCP entries a previous
-  // version wrote into the local CLI configs (agent-broker URLs bound to a
-  // possibly-mis-bound key). Runs once, guarded by a globalState flag.
+  // Load the stored key, then reconcile CLI MCP configs to the signed-in +
+  // toggle state (writes the broker entry when on, strips any prior/legacy
+  // `deepmyst-*` entry when off). Fire-and-forget so neither blocks activation.
   deepMystAuthManager.initialize()
-    .then(() => _cleanupLegacyMcpEntries(context))
-    .catch(err => console.log('[Mysti] DeepMyst init error:', err));
+    .then(() => connectionsPanelManager.reconcile())
+    .catch(err => console.log('[Mysti] DeepMyst init/reconcile error:', err));
   context.subscriptions.push(deepMystAuthManager);
 
   suggestionManager = new SuggestionManager(context);
@@ -743,29 +747,6 @@ function _formatProviderLabel(provider: string): string {
     'openclaw': 'OpenClaw',
   };
   return labels[provider] || provider;
-}
-
-/**
- * Plan 04: one-time cleanup of stale `deepmyst-*` MCP entries that an earlier
- * version wrote into the local CLI configs (agent-broker URLs carrying a
- * possibly-mis-bound dm_ key). We no longer auto-wire CLIs, so strip those
- * entries once. Guarded by a globalState flag; best-effort, never throws.
- */
-async function _cleanupLegacyMcpEntries(context: vscode.ExtensionContext): Promise<void> {
-  const FLAG = 'mysti.deepmyst.legacyMcpCleanupDone';
-  if (context.globalState.get<boolean>(FLAG)) { return; }
-  try {
-    const mgr = new McpConfigManager(
-      undefined, // default: os.homedir()
-      nodePath.dirname(context.globalStorageUri.fsPath),
-    );
-    const results = await mgr.removeAll();
-    console.log('[Mysti] One-time legacy DeepMyst MCP cleanup:', JSON.stringify(results));
-  } catch (err) {
-    console.log('[Mysti] Legacy MCP cleanup error:', err);
-  } finally {
-    await context.globalState.update(FLAG, true);
-  }
 }
 
 export function deactivate() {

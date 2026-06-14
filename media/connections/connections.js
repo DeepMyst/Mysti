@@ -27,6 +27,15 @@
   bind('btn-refresh', 'refresh');
   bind('btn-signout', 'signOut');
 
+  (function () {
+    const cb = document.getElementById('use-clis');
+    if (cb) {
+      cb.addEventListener('change', function () {
+        postMsg({ type: 'setUseInLocalClis', enabled: cb.checked });
+      });
+    }
+  })();
+
   // ── Rendering ───────────────────────────────────────────────────────────
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -108,6 +117,22 @@
     });
   }
 
+  function renderClisStatus(providers, status, on) {
+    const box = $('clis-status');
+    if (!box) { return; }
+    if (!on) { box.textContent = ''; return; }
+    const list = status || [];
+    const wrote = list.filter(function (r) { return r.ok && r.action === 'wrote'; });
+    const skipped = list.filter(function (r) { return r.action === 'skipped'; });
+    const errs = list.filter(function (r) { return !r.ok; });
+    const parts = [];
+    if (wrote.length) { parts.push('Written to: ' + wrote.map(function (r) { return r.displayName || r.providerId; }).join(', ') + '.'); }
+    if (skipped.length) { parts.push('Skipped: ' + skipped.map(function (r) { return (r.displayName || r.providerId) + (r.error ? ' (' + r.error + ')' : ''); }).join(', ') + '.'); }
+    if (errs.length) { parts.push('Issues: ' + errs.map(function (r) { return (r.displayName || r.providerId) + ' (' + (r.error || 'failed') + ')'; }).join('; ') + '.'); }
+    if (!parts.length) { parts.push('Will write to: ' + (providers || []).join(', ') + '.'); }
+    box.textContent = parts.join(' ');
+  }
+
   function renderError(message) {
     const box = $('connections-error');
     if (!box) { return; }
@@ -134,6 +159,9 @@
 
     if (state.signedIn) {
       show($('loading'), !!state.loading);
+      const cb = $('use-clis');
+      if (cb) { cb.checked = !!state.useInLocalClis; }
+      renderClisStatus(state.mcpProviders, state.mcpStatus, state.useInLocalClis);
       renderError(state.connectionsError);
       renderConnections(state.connections || [], state.connectionsAvailable !== false);
     }

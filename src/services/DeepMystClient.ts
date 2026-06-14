@@ -146,6 +146,16 @@ export class DeepMystClient {
   }
 
   /**
+   * The per-user MCP broker endpoint (POST /api/v1/me/mcp). A single MCP server
+   * exposing the union of the user's connected Smithery/Composio tools — this is
+   * the URL written into each local CLI's MCP config (with the dm_ Bearer) so an
+   * agent can call those tools directly. See DeepMyst MyMcpHandler.
+   */
+  getMyMcpEndpointUrl(): string {
+    return `${this._baseUrl()}/api/v1/me/mcp`;
+  }
+
+  /**
    * Verify a candidate key by hitting a lightweight authenticated GET
    * (the built-in MCP list). 200 → valid; 401/403 → invalid; anything else or
    * a network error → not-valid-but-reason-recorded (so the UI can distinguish
