@@ -1,0 +1,78 @@
+<!doctype html>
+<!--
+ Mysti - AI Coding Agent · Copyright (c) 2025 DeepMyst Inc.
+ SPDX-License-Identifier: Apache-2.0
+ Plan 05 — the agent-driven canvas: a three-pane design studio (pages rail /
+ live sandboxed page / inspector). No in-canvas chat — driven from Mysti chat.
+ Thin template: {{placeholders}} are filled by getCanvasContent (or the preview
+ generator); all dynamic state arrives via window.__MYSTI_CANVAS_BOOT__.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  {{cspMeta}}
+  <link rel="stylesheet" href="{{cssUri}}">
+  <title>Mysti Canvas</title>
+</head>
+<body>
+  <div id="app" class="app">
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="brand">◆ Mysti Canvas</span>
+        <span id="artifact-name" class="artifact-name">Untitled</span>
+        <span id="agent-activity" class="agent-activity" hidden></span>
+      </div>
+      <div class="topbar-right">
+        <label class="select-wrap" title="Device / format">
+          <span class="select-label">Device</span>
+          <select id="device-select"></select>
+        </label>
+        <label class="select-wrap" title="Design system">
+          <span class="select-label">Theme</span>
+          <select id="theme-select"></select>
+        </label>
+        <div id="capability-chips" class="chips" title="Connected capabilities"></div>
+        <button class="btn ghost" id="btn-present" title="Present">▶ Present</button>
+        <button class="btn ghost" id="btn-export" title="Export">⤓ Export</button>
+      </div>
+    </header>
+
+    <div class="body">
+      <!-- Left: pages rail -->
+      <aside class="rail" id="pages-rail">
+        <div class="rail-head">
+          <span>Pages</span>
+          <button class="icon-btn" id="btn-add-page" title="Add page">＋</button>
+        </div>
+        <div class="rail-list" id="rail-list"></div>
+      </aside>
+
+      <!-- Center: the live board -->
+      <main class="board" id="board">
+        <div class="board-scroll" id="board-scroll">
+          <div class="page-stage" id="page-stage">
+            <!-- iframe injected here -->
+          </div>
+        </div>
+        <div class="board-empty" id="board-empty" hidden>
+          <div class="empty-title">No page selected</div>
+          <div class="empty-sub">Pick a page on the left, or ask Mysti to design one.</div>
+        </div>
+      </main>
+
+      <!-- Right: inspector -->
+      <aside class="inspector" id="inspector">
+        <div class="insp-tabs">
+          <button class="insp-tab active" data-tab="page">Page</button>
+          <button class="insp-tab" data-tab="theme">Theme</button>
+        </div>
+        <div class="insp-body" id="insp-body"></div>
+      </aside>
+    </div>
+  </div>
+
+  <script nonce="{{nonce}}">{{boot}}</script>
+  <script nonce="{{nonce}}" src="{{jsUri}}"></script>
+</body>
+</html>

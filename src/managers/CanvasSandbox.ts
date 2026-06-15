@@ -31,10 +31,22 @@ export const PAGE_ROOT_ID = '__mysti_page';
 export const PAGE_JSX_SCRIPT_ID = '__mysti_page_jsx';
 
 export interface SandboxRuntime {
-  /** Script *contents* inlined into <head> in load order (React, ReactDOM, Recharts, Babel, ui-primitives). */
-  headScripts: string[];
+  /**
+   * Script *contents* inlined into <head> in load order (React, ReactDOM,
+   * Recharts, Babel, ui-primitives). Required for the no-same-origin iframe
+   * srcdoc (nothing loads over the network).
+   */
+  headScripts?: string[];
+  /**
+   * Alternative to `headScripts`: load the runtime via `<script src>` URLs
+   * (webview `asWebviewUri` or relative paths for a standalone preview) instead
+   * of inlining. Use when the host CSP permits the source.
+   */
+  headScriptSrcs?: string[];
   /** The harness script content (runs last in <body>: compile/mount/report/guard). */
-  harness: string;
+  harness?: string;
+  /** Alternative: load the harness via `<script src>`. */
+  harnessSrc?: string;
   /** Optional extra stylesheet (utility classes). */
   css?: string;
 }
@@ -83,7 +95,11 @@ export function buildPageDocument(opts: BuildPageDocOptions): string {
   const { page, theme, format, runtime, resolveAsset } = opts;
   const isJsx = page.mode === 'jsx';
 
-  const headScripts = runtime.headScripts.map(inlineScript).join('\n');
+  const inlined = (runtime.headScripts ?? []).map(inlineScript);
+  const sourced = (runtime.headScriptSrcs ?? []).map(srcScript);
+  const headScripts = [...sourced, ...inlined].join('\n');
+  const harness = runtime.harnessSrc ? srcScript(runtime.harnessSrc)
+    : runtime.harness ? inlineScript(runtime.harness) : '';
   const themeVars = buildThemeCssVars(theme);
   const baseCss = buildBaseCss(format);
 
@@ -112,7 +128,7 @@ ${headScripts}
 </head>
 <body>
 ${body}
-${inlineScript(runtime.harness)}
+${harness}
 </body>
 </html>`;
 }
@@ -131,6 +147,10 @@ function buildBaseCss(format: CanvasFormatSpec): string {
 
 function inlineScript(content: string): string {
   return `<script>${escapeForScript(content)}</script>`;
+}
+
+function srcScript(src: string): string {
+  return `<script src="${escapeAttr(src)}"></script>`;
 }
 
 /** Neutralize a closing-script sequence so embedded code can't break out. */

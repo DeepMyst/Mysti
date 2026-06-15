@@ -90,4 +90,45 @@ body { background: #2a2d34; display: flex; justify-content: center; padding: 32p
   console.log('wrote', path.relative(ROOT, file), `(${format.formatId}, ${format.width}x${format.height})`);
 }
 
-console.log('\nOpen one, e.g.:  open resources/canvas-sandbox/preview-dashboard-midnight.html');
+// ── Full three-pane shell preview (the actual media/canvas/ webview) ──
+(function buildShellPreview() {
+  const indexHtml = fs.readFileSync(path.join(ROOT, 'media/canvas/index.html'), 'utf8');
+
+  const pages = ['dashboard', 'landing', 'mobile-home', 'login', 'settings'].map((id, i) => {
+    const s = Scaffolds.getScaffold(id);
+    return { id: 'page-' + i, version: 1, mode: 'jsx', jsxSource: s.jsx, actionTitle: s.name };
+  });
+  const devices = ['desktop', 'web', 'tablet', 'mobile'].map(fid => {
+    const f = Formats.getFormat(fid);
+    return { formatId: f.formatId, width: f.width, height: f.height, kind: f.kind, label: f.formatId + ' (' + f.width + '×' + f.height + ')' };
+  });
+  const presets = Presets.THEME_PRESETS.map(p => ({ id: p.id, name: p.name, dark: p.dark, theme: p.theme }));
+  const cleanSaas = Presets.getThemePreset('clean-saas');
+
+  const rt = '../../resources/canvas-sandbox/';
+  const boot = {
+    artifact: {
+      id: 'demo', name: 'Sample App (demo)', kind: 'screens',
+      format: { formatId: 'desktop', width: 1440, height: 900, kind: 'screen' },
+      theme: cleanSaas.theme, pages,
+    },
+    presets, deviceFormats: devices, activeThemeId: 'clean-saas',
+    runtimeSrcs: [rt + 'react.production.min.js', rt + 'react-dom.production.min.js', rt + 'babel.min.js', rt + 'ui-primitives.js'],
+    harnessSrc: rt + 'harness.js',
+    capabilities: [{ label: 'fal', on: false }, { label: 'Stitch', on: false }, { label: 'Figma', on: false }],
+  };
+
+  const out = indexHtml
+    .replace('{{cspMeta}}', '')
+    .replace('{{cssUri}}', './canvas.css')
+    .replace('{{jsUri}}', './canvas.js')
+    .replace('{{nonce}}', 'preview')
+    .replace('{{boot}}', 'window.__MYSTI_CANVAS_BOOT__ = ' + JSON.stringify(boot) + ';');
+
+  const file = path.join(ROOT, 'media/canvas/preview-shell.html');
+  fs.writeFileSync(file, out);
+  console.log('wrote', path.relative(ROOT, file), '(the full three-pane shell)');
+})();
+
+console.log('\nOpen the full canvas:  open media/canvas/preview-shell.html');
+console.log('Or a single screen:    open resources/canvas-sandbox/preview-dashboard-midnight.html');

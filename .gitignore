@@ -50,3 +50,4 @@ scripts/export-cache.js
 .clipboard/
 clipboard/
 resources/canvas-sandbox/preview-*.html
+media/canvas/preview-*.html

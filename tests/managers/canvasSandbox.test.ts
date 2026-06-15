@@ -105,6 +105,18 @@ describe('CanvasSandbox', () => {
       expect(doc).toContain('<\\/script');
     });
 
+    it('supports src-referenced runtime scripts (webview/preview mode)', () => {
+      const doc = buildPageDocument({
+        page: page({ mode: 'jsx', jsxSource: 'function Page(){return <div/>;}' }),
+        theme,
+        format: getFormat('desktop')!,
+        runtime: { headScriptSrcs: ['./react.js', './babel.js'], harnessSrc: './harness.js', css: '' },
+      });
+      expect(doc).toContain('<script src="./react.js"></script>');
+      expect(doc).toContain('<script src="./babel.js"></script>');
+      expect(doc).toContain('<script src="./harness.js"></script>');
+    });
+
     it('rewrites asset tokens inside JSX', () => {
       const doc = buildPageDocument({
         page: page({ mode: 'jsx', jsxSource: 'function Page(){return <img src="asset://d/assets/y.png"/>;}' }),
