@@ -16,6 +16,23 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { listMcpTools, callMcpTool } from '../managers/CanvasMcpBridge';
 import type { CanvasToolContext } from '../managers/CanvasToolDispatch';
+import type { PreviewIssue } from './CanvasPreviewService';
+
+/** The async render-to-PNG + vision-critique tool (Playwright/vision injected). */
+export type RenderPagePreviewHook = (
+  args: Record<string, unknown>,
+  ctx: CanvasToolContext,
+) => Promise<{ issues: PreviewIssue[]; previewBase64?: string; error?: string }>;
+
+const RENDER_PREVIEW_TOOL = {
+  name: 'render_page_preview',
+  description: 'READ-ONLY (render the page to an image and vision-critique it — returns visual issues to fix). Run before declaring a new page done.',
+  inputSchema: {
+    type: 'object',
+    properties: { pageId: { type: 'string' }, questions: { type: 'array', items: { type: 'string' } } },
+    required: ['pageId'],
+  },
+} as const;
 
 /**
  * The `mysti-canvas` MCP server (Plan 05 Phase 2.2 / continuation M3). It wraps
@@ -32,6 +49,8 @@ import type { CanvasToolContext } from '../managers/CanvasToolDispatch';
 export interface CanvasToolServerOptions {
   /** Resolve the current canvas tool context, or null when no canvas is active. */
   resolveContext: () => CanvasToolContext | null;
+  /** Optional render-to-PNG + vision self-QA tool; when set, exposes render_page_preview. */
+  renderPagePreview?: RenderPagePreviewHook;
   serverName?: string;
   version?: string;
 }
@@ -39,9 +58,11 @@ export interface CanvasToolServerOptions {
 export class CanvasToolServer {
   private _server: Server;
   private _resolveContext: () => CanvasToolContext | null;
+  private _renderPagePreview?: RenderPagePreviewHook;
 
   constructor(opts: CanvasToolServerOptions) {
     this._resolveContext = opts.resolveContext;
+    this._renderPagePreview = opts.renderPagePreview;
     this._server = new Server(
       { name: opts.serverName ?? 'mysti-canvas', version: opts.version ?? '0.1.0' },
       { capabilities: { tools: {} } },
@@ -65,7 +86,7 @@ export class CanvasToolServer {
 
   private _registerHandlers(): void {
     this._server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: listMcpTools(),
+      tools: this._renderPagePreview ? [...listMcpTools(), RENDER_PREVIEW_TOOL] : listMcpTools(),
     }));
 
     this._server.setRequestHandler(CallToolRequestSchema, async (req) => {
@@ -74,6 +95,20 @@ export class CanvasToolServer {
         return { content: [{ type: 'text', text: 'No active canvas to edit. Open the canvas first.' }], isError: true };
       }
       const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+
+      // Async self-QA tool, handled out of band from the sync dispatch.
+      if (req.params.name === 'render_page_preview') {
+        if (!this._renderPagePreview) {
+          return { content: [{ type: 'text', text: 'render_page_preview is not available.' }], isError: true };
+        }
+        const preview = await this._renderPagePreview(args, ctx);
+        if (preview.error) {
+          return { content: [{ type: 'text', text: preview.error }], isError: true };
+        }
+        const ok = preview.issues.every(i => i.severity !== 'error');
+        return { content: [{ type: 'text', text: JSON.stringify({ ok, issues: preview.issues }) }] };
+      }
+
       const result = callMcpTool(req.params.name, args, ctx);
       return { content: result.content, isError: result.isError ?? false };
     });

@@ -83,4 +83,29 @@ describe('CanvasToolServer (MCP, in-memory transport)', () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('No active canvas');
   });
+
+  it('exposes + runs render_page_preview when a preview hook is provided', async () => {
+    server = new CanvasToolServer({
+      resolveContext: () => ctx,
+      renderPagePreview: async () => ({ issues: [{ severity: 'warning', message: 'cramped footer' }] }),
+    });
+    client = new Client({ name: 'test', version: '1.0.0' }, { capabilities: {} });
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverT), client.connect(clientT)]);
+
+    const { tools } = await client.listTools();
+    expect(tools.map(t => t.name)).toContain('render_page_preview');
+
+    const res: any = await client.callTool({ name: 'render_page_preview', arguments: { pageId: 'p1' } });
+    expect(res.isError).toBeFalsy();
+    const payload = JSON.parse(res.content[0].text);
+    expect(payload.ok).toBe(true); // a warning is not an error
+    expect(payload.issues[0].message).toBe('cramped footer');
+  });
+
+  it('render_page_preview is absent without a hook', async () => {
+    await connect(() => ctx);
+    const { tools } = await client.listTools();
+    expect(tools.map(t => t.name)).not.toContain('render_page_preview');
+  });
 });
