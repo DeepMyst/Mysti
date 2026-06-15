@@ -131,7 +131,8 @@ export class CanvasManager {
     };
     // Plan 05 Phase 1: every session gets a linked artifact (source of truth).
     // Built in memory here (no I/O); persisted on first page write / saveSession.
-    const artifact = this._artifactStore.createArtifact({ name, kind: 'board' });
+    // App/website design is the primary use → `screens` (desktop frame default).
+    const artifact = this._artifactStore.createArtifact({ name, kind: 'screens' });
     session.artifactId = artifact.id;
     this._artifactByCanvas.set(session.id, artifact);
     return session;
@@ -155,7 +156,7 @@ export class CanvasManager {
       artifact = await this._artifactStore.load(session.artifactId);
     }
     if (!artifact) {
-      artifact = this._artifactStore.createArtifact({ name: session.name, kind: 'board' });
+      artifact = this._artifactStore.createArtifact({ name: session.name, kind: 'screens' });
       session.artifactId = artifact.id;
     }
     this._artifactByCanvas.set(session.id, artifact);

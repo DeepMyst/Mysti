@@ -79,7 +79,9 @@ export class ArtifactStore {
     theme?: DesignTheme;
   }): CanvasArtifact {
     const now = Date.now();
-    const kind = opts.kind ?? 'deck';
+    // App & website design is the primary use; a new artifact defaults to
+    // `screens` (→ desktop frame) unless a caller asks for deck/document/board.
+    const kind = opts.kind ?? 'screens';
     return {
       id: crypto.randomUUID(),
       version: 1,

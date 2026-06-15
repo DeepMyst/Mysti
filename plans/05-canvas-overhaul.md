@@ -442,13 +442,13 @@ The full extension-side **logic spine is built and unit-tested** (1137 tests gre
 
 Locks the DeepMyst-presentation-agent-grounded rethink (investigated in `research/deepmyst-presentation-canvas.md` + the live DeepMyst 2.0 source) into a build target. Sharpens §11's UI and the tool catalog, and adds the two driving requirements: **generate app/web designs for desktop *or* mobile**, and **import from Figma or any connected design MCP**. The spine (`ArtifactStore`/`CanvasOpExecutor`/`CanvasJobRouter`/`CanvasToolDispatch`/`CanvasMcpBridge`/`CanvasCapabilityRegistry`/`CanvasValidator`/`CanvasPromptBuilder`/`canvas-designer` persona) is built + tested — this is what gets built on top.
 
-### Scope — a design studio, not just decks
+### Scope — an app & website design studio (slides skipped)
 
-One engine authors three artifact kinds (the `kind` field already exists):
+**Primary use: building app screens and websites.** A new canvas defaults to `screens`. One engine authors:
 
-- **`deck`** — presentation slides (16:9 / 4:3 / social / print).
-- **`screens`** — **app & web UI designs, desktop *or* mobile** (the headline capability): one page per screen/frame at the device's real CSS-pixel size; a single artifact holds a flow (e.g. onboarding → home → settings) and can carry the same screen at several device sizes (a responsive set).
-- **`document` / `board`** — living documents and freeform moodboards.
+- **`screens`** (PRIMARY, default kind) — **app & web UI designs, desktop *or* mobile**: one page per screen/frame at the device's real CSS-pixel size; a single artifact holds a flow (e.g. onboarding → home → settings) and can carry the same screen at several device sizes (a responsive set).
+- **`document` / `board`** — living documents and freeform moodboards (kept).
+- **`deck`** — presentation slides are **deprioritized / skipped as a focus** (user direction 2026-06-15). The deck/social/print formats stay in the catalog for the occasional one-off, but v1 builds **no** slide-specific tooling (no consulting-framework menu, no action-title-as-claim rules), the designer persona is product/web-oriented (not slides), and a new canvas is `screens`, not a deck.
 
 ### Device & format catalog (extends §4 / `CanvasFormats`)
 

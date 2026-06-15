@@ -75,8 +75,9 @@ describe('CanvasToolDispatch', () => {
     });
 
     it('page_coordinates returns anchor geometry for the format', () => {
+      // Default artifact is `screens` → desktop 1440×900 (app/website is primary).
       const r = dispatchCanvasTool('page_coordinates', {}, ctx);
-      expect((r.data as any).center).toEqual({ x: 960, y: 540 });
+      expect((r.data as any).center).toEqual({ x: 720, y: 450 });
     });
   });
 

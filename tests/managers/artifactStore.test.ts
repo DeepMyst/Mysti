@@ -23,22 +23,21 @@ describe('ArtifactStore', () => {
   });
 
   describe('createArtifact', () => {
-    it('creates a versioned artifact with default deck format and theme', () => {
-      const a = store.createArtifact({ name: 'My Deck' });
+    it('defaults a new artifact to screens (app/website) at the desktop frame', () => {
+      const a = store.createArtifact({ name: 'My App' });
       expect(a.id).toBeTruthy();
       expect(a.version).toBe(1);
-      expect(a.kind).toBe('deck');
-      expect(a.name).toBe('My Deck');
-      expect(a.format.formatId).toBe('deck-16x9');
-      expect(a.format.width).toBe(1920);
+      expect(a.kind).toBe('screens');          // app & website design is primary
+      expect(a.name).toBe('My App');
+      expect(a.format.formatId).toBe('desktop');
       expect(a.theme.colors.primary).toBeTruthy();
       expect(a.pages).toEqual([]);
       expect(a.opLog).toEqual([]);
     });
 
-    it('honors an explicit kind', () => {
-      const a = store.createArtifact({ name: 'Board', kind: 'board' });
-      expect(a.kind).toBe('board');
+    it('honors an explicit kind (and its default format)', () => {
+      expect(store.createArtifact({ name: 'Board', kind: 'board' }).kind).toBe('board');
+      expect(store.createArtifact({ name: 'Deck', kind: 'deck' }).format.formatId).toBe('deck-16x9');
     });
   });
 
