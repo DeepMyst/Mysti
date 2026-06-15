@@ -17,7 +17,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { DesignSpecManager } from './DesignSpecManager';
-import { getDefaultFormat } from './CanvasFormats';
+import { getDefaultFormat, getDefaultFormatForKind } from './CanvasFormats';
 import type {
   CanvasArtifact,
   ArtifactPage,
@@ -79,12 +79,14 @@ export class ArtifactStore {
     theme?: DesignTheme;
   }): CanvasArtifact {
     const now = Date.now();
+    const kind = opts.kind ?? 'deck';
     return {
       id: crypto.randomUUID(),
       version: 1,
-      kind: opts.kind ?? 'deck',
+      kind,
       name: opts.name,
-      format: opts.format ?? getDefaultFormat(),
+      // Default format follows the kind (screens → desktop, document → A4, …).
+      format: opts.format ?? getDefaultFormatForKind(kind),
       theme: opts.theme ?? DesignSpecManager.getDefaultTheme(),
       pages: [],
       assets: [],

@@ -7,8 +7,10 @@ import {
   CANVAS_FORMATS,
   getFormat,
   getDefaultFormat,
+  getDefaultFormatForKind,
   listFormats,
   isPrint,
+  isDeviceFormat,
   normalizeLongerEdge,
   makeCustomFormat,
   resolveFormat,
@@ -17,10 +19,51 @@ import {
 } from '../../src/managers/CanvasFormats';
 
 describe('CanvasFormats', () => {
-  it('every catalog format has its longer edge normalized to 1920', () => {
+  it('design/print formats normalize the longer edge to 1920; device formats use real px', () => {
     for (const f of CANVAS_FORMATS) {
-      expect(Math.max(f.width, f.height)).toBe(1920);
+      if (isDeviceFormat(f)) {
+        expect(Math.max(f.width, f.height)).toBeLessThan(1920);
+      } else {
+        expect(Math.max(f.width, f.height)).toBe(1920);
+      }
     }
+  });
+
+  describe('device / app formats (desktop & mobile)', () => {
+    it('exposes mobile/tablet/desktop/web at real device px', () => {
+      expect(getFormat('mobile')).toMatchObject({ width: 390, height: 844, kind: 'screen' });
+      expect(getFormat('tablet')).toMatchObject({ width: 768, height: 1024 });
+      expect(getFormat('desktop')).toMatchObject({ width: 1440, height: 900 });
+      expect(getFormat('web')).toMatchObject({ width: 1280, height: 800 });
+      expect(isDeviceFormat(getFormat('mobile')!)).toBe(true);
+      expect(isDeviceFormat(getFormat('deck-16x9')!)).toBe(false);
+    });
+
+    it('getDefaultFormatForKind maps screens→desktop, document→a4, deck/board→16x9', () => {
+      expect(getDefaultFormatForKind('screens').formatId).toBe('desktop');
+      expect(getDefaultFormatForKind('document').formatId).toBe('a4-portrait');
+      expect(getDefaultFormatForKind('deck').formatId).toBe('deck-16x9');
+      expect(getDefaultFormatForKind('board').formatId).toBe('deck-16x9');
+    });
+
+    it('mobile persona instructs native phone UI patterns (not a slide)', () => {
+      const p = buildFormatPersona(getFormat('mobile')!);
+      expect(p).toContain('MOBILE APP SCREEN');
+      expect(p.toLowerCase()).toContain('touch target');
+      expect(p.toLowerCase()).toContain('nav bar');
+    });
+
+    it('desktop persona instructs an app shell with a sidebar', () => {
+      const p = buildFormatPersona(getFormat('desktop')!);
+      expect(p).toContain('DESKTOP APP');
+      expect(p.toLowerCase()).toContain('sidebar');
+    });
+
+    it('web persona instructs a landing/marketing layout with a hero', () => {
+      const p = buildFormatPersona(getFormat('web')!);
+      expect(p).toContain('WEB PAGE');
+      expect(p.toLowerCase()).toContain('hero');
+    });
   });
 
   it('getDefaultFormat is deck-16x9 at 1920x1080 (and is a copy)', () => {

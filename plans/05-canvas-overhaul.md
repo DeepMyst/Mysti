@@ -438,6 +438,57 @@ The full extension-side **logic spine is built and unit-tested** (1137 tests gre
 
 ---
 
+## Build Spec v1 — Design Studio: pages, app screens (desktop/mobile), Figma/MCP import (2026-06-15)
+
+Locks the DeepMyst-presentation-agent-grounded rethink (investigated in `research/deepmyst-presentation-canvas.md` + the live DeepMyst 2.0 source) into a build target. Sharpens §11's UI and the tool catalog, and adds the two driving requirements: **generate app/web designs for desktop *or* mobile**, and **import from Figma or any connected design MCP**. The spine (`ArtifactStore`/`CanvasOpExecutor`/`CanvasJobRouter`/`CanvasToolDispatch`/`CanvasMcpBridge`/`CanvasCapabilityRegistry`/`CanvasValidator`/`CanvasPromptBuilder`/`canvas-designer` persona) is built + tested — this is what gets built on top.
+
+### Scope — a design studio, not just decks
+
+One engine authors three artifact kinds (the `kind` field already exists):
+
+- **`deck`** — presentation slides (16:9 / 4:3 / social / print).
+- **`screens`** — **app & web UI designs, desktop *or* mobile** (the headline capability): one page per screen/frame at the device's real CSS-pixel size; a single artifact holds a flow (e.g. onboarding → home → settings) and can carry the same screen at several device sizes (a responsive set).
+- **`document` / `board`** — living documents and freeform moodboards.
+
+### Device & format catalog (extends §4 / `CanvasFormats`)
+
+Device/app formats render at **real device px** — not 1920-normalized — so a mobile screen looks like a phone and a desktop app looks like a desktop: `mobile` 390×844, `mobile-android` 360×800, `tablet` 768×1024, `desktop` 1440×900, `web` 1280×800, alongside the deck/social/print formats. Each carries a device-specific prompt persona (mobile → single column, large touch targets, status bar + bottom nav, thumb-reach; desktop → app shell with sidebar/topbar, multi-pane density; web → marketing sections + hero). The top-bar **device/format switcher** changes the active frame and offers an agent re-layout pass; `screens` artifacts default to `desktop` (or `mobile`).
+
+### Figma / MCP import (first-class)
+
+When a design source is connected through the DeepMyst hub (Figma, Canva, or any design MCP — §9), the sub-agent has that source's tools alongside the local `mysti-canvas` tools, and import is a real flow:
+
+- **Agent path:** call the source MCP to pull a frame's structured design (nodes/layout/styles/text/image refs) → land it as a page via `import_design` (or `write_page_jsx`/`insert_page`) — Figma frame → JSX (or structured) page preserving layout + design tokens; images → provenance-tracked assets.
+- **`import_design(source, ref)` / `import_from_connection(slug, ref)` tool** — generalizes to *any* connected design MCP ("or other MCPs if connected"), gated on capability status.
+- **UI:** a top-bar **"Import from Figma…"** (and "Import from &lt;connected source&gt;") affordance, shown only when the capability is live; picking a frame routes a synthetic instruction to the sub-agent. Disconnected → the `<<<MYSTI_CONNECT:figma>>>` connect card.
+- **Round-trip (Mysti's edge):** a generated `screens` page exports back into the repo as a real component (`canvas-code`) — design ⇄ code in the same workspace, which DeepMyst structurally cannot do.
+
+### UI — the three-pane shell (replaces the current canvas, DeepMyst-grounded)
+
+- **Left — Pages rail:** live thumbnails of every page/screen; reorder/insert/duplicate/delete; per-page device badge.
+- **Center — the live page:** one scaled, sandboxed JSX/HTML page at its device/format size, with selection gizmos, click-to-edit text, refine-element-via-AI popover, dropped-asset layer; a thin agent-activity line.
+- **Right — Suggestions · Inspector · Comments** (no chat tab): staged agent edits (accept/reject/bulk), the contextual inspector (theme tokens, element props, adjustment sliders, raw-JSX editor), threaded comments.
+- **Top bar:** artifact name · device/format switcher · theme · capability chips (fal/Stitch/Figma…) · Import · Present · Export.
+- **Removed:** in-canvas chat / prompt bar, the Design·Assets·Themes·Code tabs, the fabric drawing toolbar, and the "Generate X" button rail — you drive from Mysti's main chat; those actions become agent tools.
+
+### Tool catalog v1 (~22 — the `mysti-canvas` contract)
+
+*Built:* `list_pages`, `read_page`, `insert_page`, `edit_page`, `write_page_jsx`, `delete_page`, `reorder_pages`, `set_theme`, `set_format`, `edit_element`, `add_asset`, `list_assets`, `page_coordinates`, `get_artifact_index`, `validate_page`. *To add:* `render_page_preview` (vision self-QA), `generate_visual`, `generate_video`, `analyze_visual`, `repair_page`, **`import_design`**, `export_artifact`.
+
+### Build milestone order (v1)
+
+0. **Unblock build** (parallel session's `extension.ts`).
+1. **Sandbox JSX renderer + `UI.*` primitives + theme tokens** (`resources/canvas-sandbox/`) — `write_page_jsx` renders beautifully at deck **and** device sizes. *Net-new; no collision — start here.*
+2. **Three-pane shell** (pages rail / live page / Suggestions+Inspector) + device/format switcher, driven from Mysti's main chat.
+3. **Agent edits via MCP** (`CanvasToolServer` wrapping the built `CanvasMcpBridge`, Claude Code first) — pages appear live mid-turn.
+4. **Vision self-QA** (`render_page_preview` → Playwright PNG → vision critique → `repair_page`) — the biggest quality multiplier.
+5. **Figma / MCP import** — connect Figma → pull a frame → page; generalize to other design MCPs.
+6. **Media (fal) + co-editing + export/presenter** — imagery with safe-zone text placement; inline edit + refine; PDF/PNG/HTML + presenter; design→code export.
+
+Highest-leverage first: M1 gates everything visual; M4 (vision self-QA) is the quality differentiator; M5 delivers the Figma/MCP requirement.
+
+---
+
 ## Risks & Mitigations
 
 | Risk | Impact | Mitigation |

@@ -33,16 +33,34 @@ export const DESIGN_LONG_EDGE = 1920;
  * ~12.7mm / 0.5in safe margin at the format's design scale).
  */
 export const CANVAS_FORMATS: readonly CanvasFormatSpec[] = [
+  // Decks / social (design-normalized: longer edge = 1920).
   { formatId: 'deck-16x9', kind: 'screen', width: 1920, height: 1080 },
   { formatId: 'deck-4x3', kind: 'screen', width: 1920, height: 1440 },
   { formatId: 'square-1x1', kind: 'screen', width: 1920, height: 1920 },
   { formatId: 'portrait-4x5', kind: 'screen', width: 1536, height: 1920 },
   { formatId: 'story-9x16', kind: 'screen', width: 1080, height: 1920 },
   { formatId: 'landscape-1.91x1', kind: 'screen', width: 1920, height: 1005 },
+  // App / web UI designs — REAL device CSS px (not 1920-normalized) so a screen
+  // looks like an actual phone / tablet / desktop. Used by `screens` artifacts.
+  { formatId: 'mobile', kind: 'screen', width: 390, height: 844 },
+  { formatId: 'mobile-android', kind: 'screen', width: 360, height: 800 },
+  { formatId: 'tablet', kind: 'screen', width: 768, height: 1024 },
+  { formatId: 'desktop', kind: 'screen', width: 1440, height: 900 },
+  { formatId: 'web', kind: 'screen', width: 1280, height: 800 },
+  // Print (design-normalized + physical bleed/safe-margin).
   { formatId: 'a4-portrait', kind: 'print', width: 1358, height: 1920, dpi: 96, bleed: 19, safeMargin: 82 },
   { formatId: 'a4-landscape', kind: 'print', width: 1920, height: 1358, dpi: 96, bleed: 19, safeMargin: 82 },
   { formatId: 'us-letter', kind: 'print', width: 1484, height: 1920, dpi: 96, bleed: 22, safeMargin: 87 },
 ] as const;
+
+/** App/web UI formats that render at real device px (exempt from 1920 normalization). */
+export const DEVICE_FORMAT_IDS: ReadonlySet<string> = new Set([
+  'mobile', 'mobile-android', 'tablet', 'desktop', 'web',
+]);
+
+export function isDeviceFormat(spec: CanvasFormatSpec): boolean {
+  return DEVICE_FORMAT_IDS.has(spec.formatId);
+}
 
 /** Look up a catalog format by id. */
 export function getFormat(formatId: string): CanvasFormatSpec | undefined {
@@ -52,6 +70,15 @@ export function getFormat(formatId: string): CanvasFormatSpec | undefined {
 /** The default deck format (deep-cloned so callers can mutate freely). */
 export function getDefaultFormat(): CanvasFormatSpec {
   return { ...getFormat(DEFAULT_FORMAT_ID)! };
+}
+
+/** Sensible default format for a new artifact of the given kind. */
+export function getDefaultFormatForKind(kind: 'deck' | 'document' | 'screens' | 'board'): CanvasFormatSpec {
+  switch (kind) {
+    case 'screens': return { ...getFormat('desktop')! };   // app/web UI → desktop frame
+    case 'document': return { ...getFormat('a4-portrait')! };
+    default: return getDefaultFormat();                     // deck / board → 16:9
+  }
 }
 
 export function listFormats(): CanvasFormatSpec[] {
@@ -136,6 +163,9 @@ export function computeAnchors(spec: CanvasFormatSpec): FormatAnchors {
 export function buildFormatPersona(spec: CanvasFormatSpec): string {
   const ar = spec.width / spec.height;
   const dims = `${spec.width}×${spec.height} design px`;
+  if (isDeviceFormat(spec)) {
+    return buildDevicePersona(spec, dims);
+  }
   if (spec.kind === 'print') {
     return (
       `Format: ${spec.formatId} (${dims}, PRINT). Design for paper: generous margins, ` +
@@ -168,4 +198,39 @@ export function buildFormatPersona(spec: CanvasFormatSpec): string {
     `Format: ${spec.formatId} (${dims}). Balanced composition with a clear visual hierarchy, ` +
     `intentional whitespace, and a single dominant focal point per page.`
   );
+}
+
+/**
+ * App/web UI persona — this page is a real screen at device px, not a slide.
+ * Steers the agent to native UI patterns for the target device.
+ */
+function buildDevicePersona(spec: CanvasFormatSpec, dims: string): string {
+  switch (spec.formatId) {
+    case 'mobile':
+    case 'mobile-android':
+      return (
+        `Format: ${spec.formatId} (${dims}, MOBILE APP SCREEN). Design a real phone UI: a single ` +
+        `column, generous touch targets (≥44px), a top status/app bar and a bottom tab/nav bar, ` +
+        `primary actions in the thumb zone, system safe-area insets respected. No desktop multi-column ` +
+        `layouts, no hover-only affordances.`
+      );
+    case 'tablet':
+      return (
+        `Format: ${spec.formatId} (${dims}, TABLET SCREEN). Adaptive layout: a master/detail or ` +
+        `two-pane split where it helps, larger type and spacing than mobile, touch-first targets.`
+      );
+    case 'desktop':
+      return (
+        `Format: ${spec.formatId} (${dims}, DESKTOP APP). Use an app shell — a left sidebar/nav and a ` +
+        `top bar, a dense but organized content area (dashboards, tables, multi-pane), clear information ` +
+        `hierarchy; hover/focus states are fine.`
+      );
+    case 'web':
+    default:
+      return (
+        `Format: ${spec.formatId} (${dims}, WEB PAGE). A marketing/landing layout: a strong hero, ` +
+        `sectioned vertical scroll, clear CTAs, responsive section composition; the height is a fold ` +
+        `guide — content may scroll beyond it.`
+      );
+  }
 }
