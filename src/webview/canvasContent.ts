@@ -23,9 +23,27 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { ArtifactStore } from '../managers/ArtifactStore';
 import { getScaffold } from '../managers/CanvasScaffolds';
 import { THEME_PRESETS, getThemePreset } from '../managers/CanvasThemePresets';
 import { getFormat } from '../managers/CanvasFormats';
+import type { CanvasArtifact } from '../types';
+
+/**
+ * A real sample artifact (scaffold pages + clean-saas theme) used to seed a
+ * freshly-opened canvas so it isn't blank and the chat agent has something to
+ * edit. Returns a live CanvasArtifact (with op log) the executor can mutate.
+ */
+export function buildSampleCanvasArtifact(): CanvasArtifact {
+  const store = new ArtifactStore();
+  const theme = getThemePreset('clean-saas')!.theme;
+  const artifact = store.createArtifact({ name: 'Sample App', kind: 'screens', theme });
+  for (const id of SAMPLE_SCAFFOLDS) {
+    const s = getScaffold(id)!;
+    store.insertPage(artifact, store.makePage({ mode: 'jsx', jsxSource: s.jsx, actionTitle: s.name }));
+  }
+  return artifact;
+}
 
 /** Inner CSP for the per-page sandboxed iframes — runtime is inlined as text. */
 const SANDBOX_INNER_CSP =
@@ -59,7 +77,8 @@ function sandboxPath(extensionUri: vscode.Uri, file: string): string {
 export function getCanvasContent(
   webview: vscode.Webview,
   extensionUri: vscode.Uri,
-  _version: string = '0.0.0'
+  _version: string = '0.0.0',
+  artifact?: CanvasArtifact
 ): string {
   const nonce = getNonce();
   const cspSource = webview.cspSource;
@@ -77,14 +96,8 @@ export function getCanvasContent(
   ];
   const harnessContent = readFileCached(sandboxPath(extensionUri, 'harness.js'));
 
-  // Sample artifact (scaffold pages + clean-saas theme) so the new UI renders
-  // immediately; replaced by the real linked artifact once chat-wiring lands.
-  const theme = getThemePreset('clean-saas')!.theme;
-  const pages = SAMPLE_SCAFFOLDS.map((id, i) => {
-    const s = getScaffold(id)!;
-    return { id: `sample-${i}`, version: 1, mode: 'jsx' as const, jsxSource: s.jsx, actionTitle: s.name };
-  });
-  const desktop = getFormat('desktop')!;
+  // Boot from the linked artifact (or a sample one so the canvas isn't blank).
+  const art = artifact ?? buildSampleCanvasArtifact();
   const deviceFormats = ['desktop', 'web', 'tablet', 'mobile'].map(fid => {
     const f = getFormat(fid)!;
     return { formatId: f.formatId, width: f.width, height: f.height, kind: f.kind, label: `${f.formatId} (${f.width}×${f.height})` };
@@ -93,9 +106,8 @@ export function getCanvasContent(
 
   const boot = {
     artifact: {
-      id: 'sample', name: 'Sample App (sample data)', kind: 'screens',
-      format: { formatId: desktop.formatId, width: desktop.width, height: desktop.height, kind: desktop.kind },
-      theme, pages,
+      id: art.id, name: art.name, kind: art.kind, format: art.format, theme: art.theme,
+      pages: art.pages.map(p => ({ id: p.id, version: p.version, mode: p.mode, jsxSource: p.jsxSource, htmlSource: p.htmlSource, actionTitle: p.actionTitle })),
     },
     presets, deviceFormats, activeThemeId: 'clean-saas',
     runtimeContent, harnessContent, innerCsp: SANDBOX_INNER_CSP,

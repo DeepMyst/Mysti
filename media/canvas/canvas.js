@@ -198,6 +198,15 @@
     if (p && p.theme) { state.artifact.theme = p.theme; renderRail(); renderBoard(); renderInspector(); }
   }
 
+  var _activityTimer = null;
+  function flashActivity(text) {
+    var node = el('agent-activity');
+    if (!node) { return; }
+    node.textContent = text; node.hidden = false;
+    if (_activityTimer) { clearTimeout(_activityTimer); }
+    _activityTimer = setTimeout(function () { node.hidden = true; }, 1800);
+  }
+
   function wire() {
     el('device-select').addEventListener('change', function (e) { onDeviceChange(e.target.value); });
     el('theme-select').addEventListener('change', function (e) { onThemeChange(e.target.value); });
@@ -207,12 +216,30 @@
     el('btn-present').addEventListener('click', function () { if (vscode) { vscode.postMessage({ type: 'canvasPresent' }); } });
     el('btn-export').addEventListener('click', function () { if (vscode) { vscode.postMessage({ type: 'canvasExport' }); } });
     window.addEventListener('resize', renderBoard);
-    // Surface page render errors from the iframe harness (future: inline "Fix with AI").
     window.addEventListener('message', function (ev) {
       var d = ev.data || {};
+      // Page render errors from the iframe harness (future: inline "Fix with AI").
       if (d.source === 'mysti-canvas-page' && d.type === 'page_render_error') {
         console.warn('[Mysti canvas] page render error:', d.message);
+        return;
       }
+      // Live artifact update from the chat agent (pages added/edited, theme set).
+      if (d.type === 'canvasArtifactUpdate' && d.payload) {
+        var prev = (state.artifact.pages || []).length;
+        state.artifact = Object.assign({}, state.artifact, d.payload);
+        var pages = state.artifact.pages || [];
+        if (pages.length > prev && pages.length) { state.selectedId = pages[pages.length - 1].id; }
+        else if (!selectedPage() && pages.length) { state.selectedId = pages[0].id; }
+        renderTopbar(); renderRail(); renderBoard(); renderInspector();
+        flashActivity('Updated');
+        return;
+      }
+      // Agent activity (op applied / heartbeat) → the top-bar activity line.
+      if (d.type === 'canvasJobEvent' && d.payload) {
+        if (d.payload.type === 'op_applied' || d.payload.type === 'started') { flashActivity('Designing…'); }
+        return;
+      }
+      if (d.type === 'canvasOpError') { console.warn('[Mysti canvas] op error:', d.payload && d.payload.error); }
     });
   }
 
