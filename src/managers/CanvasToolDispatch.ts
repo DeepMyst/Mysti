@@ -15,6 +15,8 @@ import type { ArtifactStore } from './ArtifactStore';
 import type { CanvasOpExecutor, CanvasApprovalMode } from './CanvasOpExecutor';
 import { computeAnchors, resolveFormat } from './CanvasFormats';
 import { validatePage } from './CanvasValidator';
+import { getScaffold, listScaffolds } from './CanvasScaffolds';
+import type { ScaffoldDevice } from './CanvasScaffolds';
 import type { CanvasArtifact, CanvasOp, ArtifactPage } from '../types';
 
 /**
@@ -99,6 +101,18 @@ export const CANVAS_TOOLS: readonly CanvasToolDef[] = [
     access: 'read-only',
     description: 'READ-ONLY (static design checks — empty page, missing actionTitle, raw hex, unresolved asset refs, overflow). The cheap sibling of render_page_preview; run it after every edit.',
     inputSchema: obj({ pageId: { type: 'string' }, reportedContentHeight: { type: 'number' } }, ['pageId']),
+  },
+  {
+    name: 'list_scaffolds',
+    access: 'read-only',
+    description: 'READ-ONLY (list curated app/web page scaffolds — login, dashboard, mobile-home, settings, landing — optionally filtered by device). Start a screen from one instead of a blank page.',
+    inputSchema: obj({ device: { type: 'string', enum: ['mobile', 'tablet', 'desktop', 'web'] } }),
+  },
+  {
+    name: 'scaffold_page',
+    access: 'write',
+    description: 'WRITE (stages an edit): insert a new page seeded from a scaffold id (see list_scaffolds), then refine it.',
+    inputSchema: obj({ scaffold: { type: 'string' }, actionTitle: { type: 'string' }, index: { type: 'number' } }, ['scaffold']),
   },
   {
     name: 'insert_page',
@@ -222,6 +236,23 @@ export function dispatchCanvasTool(name: string, args: Args, ctx: CanvasToolCont
       if (!page) { return { ok: false, error: `page ${String(args.pageId)} not found` }; }
       const issues = validatePage(artifact, page, { reportedContentHeight: numOrUndef(args.reportedContentHeight) });
       return { ok: true, data: { issues, ok: issues.every(i => i.severity !== 'error') } };
+    }
+
+    case 'list_scaffolds':
+      return { ok: true, data: listScaffolds(args.device as ScaffoldDevice | undefined) };
+
+    case 'scaffold_page': {
+      const scaffold = getScaffold(String(args.scaffold));
+      if (!scaffold) { return { ok: false, error: `unknown scaffold: ${String(args.scaffold)}` }; }
+      const cleaned = cleanJsx(scaffold.jsx);          // scaffolds must be valid JSX pages
+      if (!cleaned.ok) { return { ok: false, error: `scaffold ${scaffold.id} is invalid: ${cleaned.error}` }; }
+      const page: Partial<ArtifactPage> & { mode: 'jsx'; index?: number } = {
+        mode: 'jsx',
+        jsxSource: cleaned.source,
+        actionTitle: typeof args.actionTitle === 'string' ? args.actionTitle : scaffold.name,
+      };
+      if (typeof args.index === 'number') { page.index = args.index; }
+      return submit('insert_page', { proposedValue: page });
     }
 
     case 'insert_page': {
