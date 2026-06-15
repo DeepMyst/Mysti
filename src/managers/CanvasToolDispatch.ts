@@ -17,6 +17,7 @@ import { computeAnchors, resolveFormat } from './CanvasFormats';
 import { validatePage } from './CanvasValidator';
 import { getScaffold, listScaffolds } from './CanvasScaffolds';
 import type { ScaffoldDevice } from './CanvasScaffolds';
+import { getThemePreset, listThemePresets } from './CanvasThemePresets';
 import type { CanvasArtifact, CanvasOp, ArtifactPage } from '../types';
 
 /**
@@ -113,6 +114,18 @@ export const CANVAS_TOOLS: readonly CanvasToolDef[] = [
     access: 'write',
     description: 'WRITE (stages an edit): insert a new page seeded from a scaffold id (see list_scaffolds), then refine it.',
     inputSchema: obj({ scaffold: { type: 'string' }, actionTitle: { type: 'string' }, index: { type: 'number' } }, ['scaffold']),
+  },
+  {
+    name: 'list_theme_presets',
+    access: 'read-only',
+    description: 'READ-ONLY (list curated design-system presets — clean-saas, midnight, editorial, playful, minimal-mono, forest — with swatches).',
+    inputSchema: obj({}),
+  },
+  {
+    name: 'apply_theme_preset',
+    access: 'write',
+    description: 'WRITE (stages an edit): set the artifact theme to a curated preset (see list_theme_presets) so every screen restyles coherently.',
+    inputSchema: obj({ preset: { type: 'string' } }, ['preset']),
   },
   {
     name: 'insert_page',
@@ -240,6 +253,15 @@ export function dispatchCanvasTool(name: string, args: Args, ctx: CanvasToolCont
 
     case 'list_scaffolds':
       return { ok: true, data: listScaffolds(args.device as ScaffoldDevice | undefined) };
+
+    case 'list_theme_presets':
+      return { ok: true, data: listThemePresets() };
+
+    case 'apply_theme_preset': {
+      const preset = getThemePreset(String(args.preset));
+      if (!preset) { return { ok: false, error: `unknown theme preset: ${String(args.preset)}` }; }
+      return submit('set_theme', { proposedValue: preset.theme });
+    }
 
     case 'scaffold_page': {
       const scaffold = getScaffold(String(args.scaffold));
