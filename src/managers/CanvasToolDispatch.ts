@@ -18,6 +18,7 @@ import { validatePage } from './CanvasValidator';
 import { getScaffold, listScaffolds } from './CanvasScaffolds';
 import type { ScaffoldDevice } from './CanvasScaffolds';
 import { getThemePreset, listThemePresets } from './CanvasThemePresets';
+import { importFigmaPayload } from './FigmaImport';
 import type { CanvasArtifact, CanvasOp, ArtifactPage } from '../types';
 
 /**
@@ -181,6 +182,12 @@ export const CANVAS_TOOLS: readonly CanvasToolDef[] = [
     description: 'WRITE (stages an edit): register a provenance-tracked asset record into the artifact.',
     inputSchema: obj({ asset: { type: 'object' } }, ['asset']),
   },
+  {
+    name: 'import_design',
+    access: 'write',
+    description: 'WRITE (stages an edit): import a design frame as a new page. Fetch it from the connected source MCP first (e.g. Figma get_design_data), then pass source:"figma" + the node JSON as payload.',
+    inputSchema: obj({ source: { type: 'string', enum: ['figma'] }, payload: { type: 'object' }, actionTitle: { type: 'string' }, index: { type: 'number' } }, ['source', 'payload']),
+  },
 ] as const;
 
 const TOOL_BY_NAME = new Map(CANVAS_TOOLS.map(t => [t.name, t]));
@@ -336,6 +343,20 @@ export function dispatchCanvasTool(name: string, args: Args, ctx: CanvasToolCont
     case 'add_asset':
       if (!args.asset || typeof args.asset !== 'object') { return { ok: false, error: 'add_asset requires an asset record' }; }
       return submit('add_asset', { proposedValue: args.asset });
+
+    case 'import_design': {
+      if (args.source !== 'figma') { return { ok: false, error: `unsupported import source: ${String(args.source)} (figma supported)` }; }
+      const spec = importFigmaPayload(args.payload);
+      if (!spec) { return { ok: false, error: 'could not find a frame in the figma payload' }; }
+      const page: Partial<ArtifactPage> & { mode: 'html'; index?: number } = {
+        mode: 'html',
+        htmlSource: spec.htmlSource,
+        actionTitle: typeof args.actionTitle === 'string' ? args.actionTitle : spec.actionTitle,
+        source: 'figma',
+      };
+      if (typeof args.index === 'number') { page.index = args.index; }
+      return submit('insert_page', { proposedValue: page });
+    }
 
     default:
       return { ok: false, error: `unhandled canvas tool: ${name}` };
