@@ -296,6 +296,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       console.log('[Mysti] Claude: Appending channel context to system prompt');
     }
 
+    // Plan 05 — register the in-extension mysti-canvas MCP server (canvas-linked sessions).
+    if (session.canvasMcpConfigPath) {
+      args.push('--mcp-config', session.canvasMcpConfigPath);
+    }
+
     return args;
   }
 
@@ -332,6 +337,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     // Inject system context at spawn time (only way to set system prompt for persistent process)
     if (session.channelSystemContext) {
       args.push('--append-system-prompt', session.channelSystemContext);
+    }
+
+    // Plan 05 — register the in-extension mysti-canvas MCP server (canvas-linked sessions).
+    if (session.canvasMcpConfigPath) {
+      args.push('--mcp-config', session.canvasMcpConfigPath);
     }
 
     return args;

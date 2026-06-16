@@ -230,6 +230,18 @@ export class ProviderManager {
   }
 
   /**
+   * Plan 05 — register (or clear) the per-session `mysti-canvas` MCP config for a
+   * panel so a canvas-linked CLI session spawns with `--mcp-config`. Must run
+   * before sendMessage() so buildCliArgs reads it.
+   */
+  public setCanvasMcpConfig(panelId: string, configPath: string | null, providerId?: string): void {
+    const provider = this._getActiveProvider(providerId);
+    if (provider && 'setCanvasMcpConfig' in provider) {
+      (provider as BaseCliProvider).setCanvasMcpConfig(panelId, configPath);
+    }
+  }
+
+  /**
    * Get available models for a provider.
    * Plan 01: delegate to the model registry's merged view (curated + discovered
    * + custom) when injected; fall back to the bundled config.models otherwise.

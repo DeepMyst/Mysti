@@ -74,6 +74,12 @@ export interface PanelSessionState {
   lastHealthCheck: number;
   /** Channel context to inject as system instructions (set before each message) */
   channelSystemContext?: string;
+  /**
+   * Plan 05 — path to a per-session MCP config registering the in-extension
+   * `mysti-canvas` HTTP server, appended as `--mcp-config` for canvas-linked
+   * sessions (Claude Code). Cleared on unlink/dispose.
+   */
+  canvasMcpConfigPath?: string;
   /** True when the process has been suspended via SIGSTOP */
   suspended: boolean;
   /**
@@ -136,6 +142,15 @@ export abstract class BaseCliProvider implements ICliProvider {
   public setChannelSystemContext(panelId: string, context: string): void {
     const session = this._getSession(panelId);
     session.channelSystemContext = context;
+  }
+
+  /**
+   * Register (or clear, with null) the per-session `mysti-canvas` MCP config for
+   * a panel. Read by buildCliArgs (Claude Code appends `--mcp-config`). Plan 05.
+   */
+  public setCanvasMcpConfig(panelId: string, configPath: string | null): void {
+    const session = this._getSession(panelId);
+    session.canvasMcpConfigPath = configPath ?? undefined;
   }
 
   // Abstract methods - must be implemented by subclasses
