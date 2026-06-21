@@ -24,7 +24,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ArtifactStore } from '../managers/ArtifactStore';
-import { getScaffold } from '../managers/CanvasScaffolds';
+import { getScaffold, listScaffolds } from '../managers/CanvasScaffolds';
 import { THEME_PRESETS, getThemePreset } from '../managers/CanvasThemePresets';
 import { getFormat } from '../managers/CanvasFormats';
 import type { CanvasArtifact } from '../types';
@@ -112,6 +112,8 @@ export function getCanvasContent(
     presets, deviceFormats, activeThemeId: 'clean-saas',
     runtimeContent, harnessContent, innerCsp: SANDBOX_INNER_CSP,
     capabilities: [{ label: 'fal', on: false }, { label: 'Stitch', on: false }, { label: 'Figma', on: false }],
+    // Quick-start templates for the empty state / add-page menu.
+    scaffolds: listScaffolds(),
   };
 
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="`

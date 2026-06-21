@@ -87,9 +87,29 @@ select {
 .board-scroll { position: absolute; inset: 0; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 32px; }
 .page-stage { box-shadow: 0 16px 50px rgba(0,0,0,.5); border-radius: 8px; overflow: hidden; background: #fff; }
 .page-stage iframe { display: block; border: 0; background: #fff; }
-.board-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--c-dim); }
-.empty-title { font-size: 15px; color: var(--c-fg); }
-.empty-sub { font-size: 13px; }
+.board-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--c-dim); padding: 24px; text-align: center; }
+.empty-title { font-size: 18px; color: var(--c-fg); font-weight: 600; }
+.empty-sub { font-size: 13px; max-width: 420px; }
+.empty-templates { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 8px; max-width: 460px; }
+.tpl-btn { font: inherit; font-size: 12px; padding: 7px 12px; border-radius: 6px; border: 1px solid var(--c-border); background: var(--c-panel); color: var(--c-fg); cursor: pointer; }
+.tpl-btn:hover { border-color: var(--c-accent); color: var(--c-accent); }
+
+/* onboarding hint */
+.onboarding {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 5;
+  display: flex; align-items: center; gap: 10px; max-width: 640px;
+  padding: 8px 12px; border-radius: 8px; font-size: 12px;
+  background: var(--c-panel); border: 1px solid var(--c-border); box-shadow: 0 6px 20px rgba(0,0,0,.25);
+}
+.onboarding-text em { font-style: italic; color: var(--c-dim); }
+.onboarding-x { border: none; background: transparent; color: var(--c-dim); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+.onboarding-x:hover { color: var(--c-fg); }
+
+/* add-page template menu */
+.scaffold-menu { border-bottom: 1px solid var(--c-border); padding: 6px; display: flex; flex-direction: column; gap: 2px; background: var(--c-bg); }
+.scaffold-menu .sm-item { text-align: left; font: inherit; font-size: 12px; padding: 6px 8px; border: none; background: transparent; color: var(--c-fg); border-radius: 5px; cursor: pointer; }
+.scaffold-menu .sm-item:hover { background: var(--c-hover); }
+.scaffold-menu .sm-item small { color: var(--c-dim); display: block; font-size: 11px; }
 
 /* right inspector */
 .inspector { background: var(--c-panel); border-left: 1px solid var(--c-border); display: flex; flex-direction: column; min-height: 0; }

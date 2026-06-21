@@ -28,6 +28,8 @@
     harnessContent: boot.harnessContent || null,
     innerCsp: boot.innerCsp || '',
     capabilities: boot.capabilities || [],
+    scaffolds: boot.scaffolds || [],
+    onboardingDismissed: false,
     selectedId: null,
     inspTab: 'page',
   };
@@ -131,11 +133,29 @@
     });
   }
 
+  // ── render: empty-state templates + add-page menu ──
+  function renderTemplateButtons(container, cls, withDesc) {
+    if (!container) { return; }
+    container.innerHTML = state.scaffolds.map(function (s) {
+      var desc = withDesc ? '<small>' + esc(s.description || '') + '</small>' : '';
+      return '<button class="' + cls + '" data-scaffold="' + escAttr(s.id) + '" title="' + escAttr(s.description || '') + '">' + esc(s.name) + desc + '</button>';
+    }).join('');
+    Array.prototype.forEach.call(container.querySelectorAll('[data-scaffold]'), function (b) {
+      b.addEventListener('click', function () { addScaffold(b.getAttribute('data-scaffold')); el('scaffold-menu').hidden = true; });
+    });
+  }
+  function addScaffold(id) {
+    if (vscode) { vscode.postMessage({ type: 'canvasAddScaffold', payload: { scaffold: id } }); flashActivity('Adding ' + id + '…'); }
+  }
+
   // ── render: board (the live page) ──
   function renderBoard() {
     var page = selectedPage();
     var stage = el('page-stage');
-    el('board-empty').hidden = !!page;
+    var hasPages = (state.artifact.pages || []).length > 0;
+    el('board-empty').hidden = hasPages;
+    el('onboarding').hidden = !hasPages || state.onboardingDismissed;
+    if (!hasPages) { renderTemplateButtons(el('empty-templates'), 'tpl-btn', false); }
     if (!page) { stage.innerHTML = ''; return; }
 
     var format = state.artifact.format || { width: 1440, height: 900 };
@@ -215,6 +235,14 @@
     });
     el('btn-present').addEventListener('click', function () { if (vscode) { vscode.postMessage({ type: 'canvasPresent' }); } });
     el('btn-export').addEventListener('click', function () { if (vscode) { vscode.postMessage({ type: 'canvasExport' }); } });
+    el('btn-add-page').addEventListener('click', function () {
+      var m = el('scaffold-menu');
+      if (m.hidden) { renderTemplateButtons(m, 'sm-item', true); m.hidden = false; }
+      else { m.hidden = true; }
+    });
+    el('onboarding-dismiss').addEventListener('click', function () {
+      state.onboardingDismissed = true; el('onboarding').hidden = true;
+    });
     window.addEventListener('resize', renderBoard);
     window.addEventListener('message', function (ev) {
       var d = ev.data || {};

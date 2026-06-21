@@ -43,21 +43,27 @@
       <aside class="rail" id="pages-rail">
         <div class="rail-head">
           <span>Pages</span>
-          <button class="icon-btn" id="btn-add-page" title="Add page">＋</button>
+          <button class="icon-btn" id="btn-add-page" title="Add a page from a template">＋</button>
         </div>
+        <div class="scaffold-menu" id="scaffold-menu" hidden></div>
         <div class="rail-list" id="rail-list"></div>
       </aside>
 
       <!-- Center: the live board -->
       <main class="board" id="board">
+        <div class="onboarding" id="onboarding" hidden>
+          <span class="onboarding-text">👋 Ask <b>Mysti</b> in chat to design screens — e.g. <em>“add a settings screen.”</em> Switch device &amp; theme above, or export your design.</span>
+          <button class="onboarding-x" id="onboarding-dismiss" title="Dismiss">×</button>
+        </div>
         <div class="board-scroll" id="board-scroll">
           <div class="page-stage" id="page-stage">
             <!-- iframe injected here -->
           </div>
         </div>
         <div class="board-empty" id="board-empty" hidden>
-          <div class="empty-title">No page selected</div>
-          <div class="empty-sub">Pick a page on the left, or ask Mysti to design one.</div>
+          <div class="empty-title">Design your app or website</div>
+          <div class="empty-sub">Ask Mysti in chat (e.g. “design a login screen”), or start from a template:</div>
+          <div class="empty-templates" id="empty-templates"></div>
         </div>
       </main>
 

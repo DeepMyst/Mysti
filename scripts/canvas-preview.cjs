@@ -116,6 +116,7 @@ body { background: #2a2d34; display: flex; justify-content: center; padding: 32p
     runtimeSrcs: [rt + 'react.production.min.js', rt + 'react-dom.production.min.js', rt + 'babel.min.js', rt + 'ui-primitives.js'],
     harnessSrc: rt + 'harness.js',
     capabilities: [{ label: 'fal', on: false }, { label: 'Stitch', on: false }, { label: 'Figma', on: false }],
+    scaffolds: Scaffolds.listScaffolds(),
   };
 
   const out = indexHtml
