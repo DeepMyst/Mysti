@@ -118,7 +118,11 @@ Real tokenizer (replace `chars/4`), measured `remainingTurns` EWMA, deterministi
 
 ## Phase 4 — L4 store unification + L5 holdout governance
 
-Merge the CCR store and `history.jsonl` into one durable content-addressed store; make L5 the gate for every stage (auto-disable on net-loss or holdout-fail).
+**Status (2026-07-05) — L5 LANDED (rescoped after review); L4 re-scoped as largely subsumed.**
+
+- ✅ **L5 — holdout-based savings MEASUREMENT** (gateway PR #565, commit 1d4dc4f; `apps/gateway/src/optimize/governance.py`). A deterministic **holdout** control cohort (stable-id hash → prompt cache never disrupted) bypasses optimization; the gateway records real cost-per-request + cache-hit rate **per model** for the optimized vs holdout cohorts and exposes the delta via `savings_report()`. Wired fail-open into both the streaming and non-streaming `/v1/chat/completions` paths, flag-gated (`DEEPMYST_OPT_GOVERNANCE`, default off). 13 unit tests; 43 optimize tests green.
+  - **Why NOT auto-disable** (the plan originally said "auto-disable on net-loss/holdout-fail"): a 3-dimension / 22-agent adversarial review proved an online auto-disable from aggregate telemetry **unsound** — (1) normalizing total cost (incl. completion) by the *shrunk* prompt-token count **inverts** the sign, so a genuine saving reads as a regression and disables good optimization; (2) pooling across api-key hashes **confounds** the comparison across models/customers (Simpson's paradox — a 20× Opus/Haiku gap swamps the effect); plus per-request peeking on a one-way latch trips on noise. Rather than ship a kill-switch that disables the very savings it's meant to protect, L5 **measures honestly** (per-request, per-model, cache tracked separately) and an operator flips the per-stage flags. A sound sequential auto-disable (model-stratified, variance-aware, rolling-window) is the documented follow-up.
+- ⏸️ **L4 — durable reversible store** — re-scoped as **largely subsumed**. Post-Headroom (Phase 2), the reversible compress-cache-retrieve store belongs to the Headroom sidecar, and on the Mysti side `HistoryStore` is already the durable content store for L2 retrieval — so there's no CCR-vs-`history.jsonl` "merge" to do. Residual (deferred): make `HistoryStore` content-addressed so L2's pointing-not-inlining can fetch exact originals, and (if L1 is enabled) point Headroom's CCR store at a durable Sqlite/Redis backend instead of its 30-min in-memory default.
 
 ## Sequencing
 
@@ -133,7 +137,7 @@ Phase 4  L4 store unification + L5 holdout   — gateway + Mysti                
 
 - **Plan 13 owns** the gateway-side optimization layer (L0/L1/L3/L4/L5) and the unifying architecture.
 - **Plan 08/09 own** the Mysti-side cross-turn compactor, which plugs in as **L2** — Plan 09's "cache-honest v2" *is* Phase 3 here. Plan 09's `ModelRouter` (compaction-model pick) and Plan 11's two-tier backend router are the seed of the **self-hosted-model tier**.
-- Do not duplicate the savings ledger — L5 extends Plan 08's `SavingsLedger` (adds the holdout + cache-hit-aware net gate).
+- Two savings surfaces, deliberately distinct: Mysti's `SavingsLedger` (Plan 08) shows the **user** their realized compaction/cache savings in-app; the gateway's L5 `savings_report()` gives **operators** the holdout-measured, per-model optimized-vs-holdout deltas to decide whether each gateway stage earns its keep. They measure different layers and are not duplicates.
 
 ## Risks & guardrails
 
