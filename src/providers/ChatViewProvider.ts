@@ -3304,12 +3304,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   interactionsEnabled: true
                 };
                 const effectiveSettings = this._getSettingsForPanel(panelId);
-                if (trigger.showDashboard) {
-                  const dashPanelId = this.openVisualTestDashboard(vtConfig, panelId);
-                  this._runVisualTestWithDashboard(dashPanelId, vtConfig, panelId, effectiveSettings);
-                } else {
-                  this._runVisualTestHeadless(vtConfig, panelId, effectiveSettings);
-                }
+                // SECURITY (RCE gate): vtConfig.devServerCommand is parsed from the
+                // AI's OWN response text, which can be steered by prompt injection
+                // (e.g. when the AI is asked to read an untrusted file/repo/page).
+                // Never spawn a model-supplied shell command without explicit user
+                // approval — the gate lives in _launchModelTriggeredVisualTest.
+                void this._launchModelTriggeredVisualTest(vtConfig, panelId, effectiveSettings, !!trigger.showDashboard);
               }
             }
             break;
@@ -5769,6 +5769,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Run a visual test with dashboard panel (streams to both dashboard and chat).
    */
+  /**
+   * Launch a visual test that was TRIGGERED BY MODEL TEXT (a ```visual-test```
+   * block in the AI response). Because `config.devServerCommand` originates from
+   * untrusted, prompt-injectable model output, running it is a remote-code-execution
+   * risk — so we NEVER spawn it without explicit, per-command user approval. With no
+   * command, or once approved, the test proceeds; on denial it is aborted. The
+   * user-initiated dashboard path (where the command is visible and the user clicks
+   * Run) is separately attested and does not route through here.
+   */
+  private async _launchModelTriggeredVisualTest(
+    config: VisualTestConfig,
+    panelId: string,
+    settings: Settings,
+    showDashboard: boolean
+  ): Promise<void> {
+    const command = config.devServerCommand?.trim();
+    if (command) {
+      const approved = await this._confirmModelDevServerCommand(command);
+      if (!approved) {
+        console.warn('[Mysti] Visual-test dev-server command from the AI was not approved — aborting.');
+        return;
+      }
+    }
+    if (showDashboard) {
+      const dashPanelId = this.openVisualTestDashboard(config, panelId);
+      void this._runVisualTestWithDashboard(dashPanelId, config, panelId, settings);
+    } else {
+      void this._runVisualTestHeadless(config, panelId, settings);
+    }
+  }
+
+  /**
+   * Modal, default-DENY confirmation for a shell command that came from model
+   * output. Returns true only when the user explicitly approves; dismissing the
+   * dialog (Escape / click-away) returns false.
+   */
+  private async _confirmModelDevServerCommand(command: string): Promise<boolean> {
+    const RUN = 'Run command';
+    const choice = await vscode.window.showWarningMessage(
+      `Mysti's visual testing wants to start a dev server by running a command that came from the AI's response:\n\n${command}\n\nOnly allow this if you trust it — a command inside an AI response can be influenced by content the AI was asked to read.`,
+      { modal: true },
+      RUN
+    );
+    return choice === RUN;
+  }
+
   private async _runVisualTestWithDashboard(
     dashPanelId: string,
     config: VisualTestConfig,
