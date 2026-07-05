@@ -107,6 +107,57 @@ export class ConversationManager {
     return false;
   }
 
+  /**
+   * Fork a conversation at a given message: create a NEW conversation
+   * containing a deep copy of every message up to AND including `messageId`.
+   * The original conversation is left untouched. Cloned messages keep their
+   * `checkpoint` refs (the shadow-repo commits still exist), so a forked
+   * branch can still rewind code. Does NOT switch the current conversation —
+   * the caller (per-panel handler) decides whether to activate the fork.
+   * Returns the new conversation, or null if the source/message is not found.
+   */
+  public forkConversation(conversationId: string, messageId: string): Conversation | null {
+    const source = this._conversations.get(conversationId);
+    if (!source) {
+      return null;
+    }
+
+    const cutoff = source.messages.findIndex(m => m.id === messageId);
+    if (cutoff === -1) {
+      return null;
+    }
+
+    const now = Date.now();
+    const fork: Conversation = {
+      id: this._generateId(),
+      title: `${source.title} (fork)`,
+      // Deep copy so edits to the fork never mutate the original's messages.
+      messages: source.messages.slice(0, cutoff + 1).map(m => this._cloneMessage(m)),
+      createdAt: now,
+      updatedAt: now,
+      mode: source.mode,
+      model: source.model,
+      provider: source.provider,
+      agentConfig: source.agentConfig ? { ...source.agentConfig } : undefined
+    };
+
+    this._conversations.set(fork.id, fork);
+    this._saveConversations();
+    return fork;
+  }
+
+  /** Structured deep copy of a message (safe to mutate on a forked branch). */
+  private _cloneMessage(m: Message): Message {
+    return {
+      ...m,
+      context: m.context ? m.context.map(c => ({ ...c })) : undefined,
+      attachments: m.attachments ? m.attachments.map(a => ({ ...a })) : undefined,
+      toolCalls: m.toolCalls ? m.toolCalls.map(t => ({ ...t })) : undefined,
+      segments: m.segments ? m.segments.map(s => ({ ...s })) : undefined,
+      checkpoint: m.checkpoint ? { ...m.checkpoint } : undefined
+    };
+  }
+
   public deleteConversation(id: string): boolean {
     if (this._conversations.has(id)) {
       this._conversations.delete(id);
@@ -319,6 +370,29 @@ export class ConversationManager {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Update a message in a SPECIFIC conversation (per-panel safe — unlike
+   * updateMessage, which only touches the globally-current conversation).
+   */
+  public updateMessageInConversation(
+    conversationId: string | null | undefined,
+    messageId: string,
+    updates: Partial<Message>
+  ): boolean {
+    const conversation = conversationId ? this._conversations.get(conversationId) : null;
+    if (!conversation) {
+      return false;
+    }
+    const message = conversation.messages.find(m => m.id === messageId);
+    if (!message) {
+      return false;
+    }
+    Object.assign(message, updates);
+    conversation.updatedAt = Date.now();
+    this._saveConversations();
+    return true;
   }
 
   public getMessages(): Message[] {

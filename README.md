@@ -341,16 +341,16 @@ Mysti works with your existing subscriptions—no additional costs!
 | CLI Tool | Subscription | Install |
 |----------|--------------|---------|
 | **Claude Code** (recommended) | Anthropic API or Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API or Gemini Advanced | `npm install -g @google/gemini-cli` |
-| **Codex CLI** | OpenAI API | Follow OpenAI's installation guide |
+| **Codex CLI** | OpenAI API | `npm install -g @openai/codex` |
 | **Cline** | Depends on model provider | `npm install -g cline` |
-| **Cursor** | Cursor subscription | `curl https://cursor.com/install -fsS \| bash` |
+| **Cursor** | Cursor subscription | macOS/Linux: `curl https://cursor.com/install -fsS \| bash` · Windows: `irm 'https://cursor.com/install?win32=true' \| iex` |
 | **OpenClaw** | OpenClaw account | `npm install -g openclaw@latest && openclaw onboard --install-daemon` |
 | **OpenCode** | Provider API keys (Anthropic, OpenAI, etc.) | `npm i -g opencode-ai@latest` |
 | **Qwen Code** | Qwen OAuth or API keys | `npm install -g @qwen-code/qwen-code@latest` |
 | **Ollama** | Local (no subscription needed) | [Install from ollama.com](https://ollama.com) |
-| **LocalAI** | Local (no subscription needed) | [Install from localai.io](https://localai.io) |
+| **LocalAI** | Local (no subscription needed) | [Docker / binaries](https://localai.io/basics/getting_started/) |
 
 You only need **one** CLI to get started. Install **any two** to unlock Brainstorm Mode.
 
@@ -375,14 +375,14 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # Or GitHub Copilot CLI (access Claude, GPT-5, Gemini via GitHub)
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # then use /login command
 
 # Or Gemini CLI
 npm install -g @google/gemini-cli
 gemini auth login
 
-# Or Cursor
+# Or Cursor (macOS/Linux; on Windows PowerShell: irm 'https://cursor.com/install?win32=true' | iex)
 curl https://cursor.com/install -fsS | bash
 agent login
 

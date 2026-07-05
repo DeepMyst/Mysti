@@ -25,7 +25,8 @@ import type {
   Settings,
   StreamChunk,
   ProviderConfig,
-  AuthStatus
+  AuthStatus,
+  ModelInfo
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
 import { normalizeToolName, toolKind } from '../../utils/toolNames';
@@ -101,6 +102,27 @@ export class OpenCodeProvider extends BaseCliProvider {
 
   getCliPath(): string {
     return this._getCliPathCommon();
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3) via `opencode models`, which prints
+   * one `provider/model` id per line — exactly the form the `-m`/`--model` flag
+   * accepts. Returns null on any failure so the registry keeps its curated/cached
+   * list. Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const raw = await this._runCliForDiscovery(['models'], timeoutMs);
+    if (!raw) { return null; }
+    const seen = new Set<string>();
+    const models: ModelInfo[] = [];
+    for (const line of raw.split('\n')) {
+      const id = line.trim();
+      // Keep only `provider/model`-shaped ids; skip headers/blank/log lines.
+      if (!id || id.includes(' ') || !id.includes('/') || seen.has(id)) { continue; }
+      seen.add(id);
+      models.push({ id, name: id });
+    }
+    return models.length > 0 ? models : null;
   }
 
   protected _getCliCommandName(): string {
@@ -239,7 +261,7 @@ export class OpenCodeProvider extends BaseCliProvider {
   /**
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('opencodeModel', '');
     if (customModel) {

@@ -134,6 +134,12 @@ export interface Message {
   model?: string;
   /** Ordered render segments for exact stream replay (see MessageSegment). */
   segments?: MessageSegment[];
+  /**
+   * Shadow-repo code checkpoint captured just before this user turn ran
+   * (anchors "rewind code to here"). Present only on user messages when the
+   * checkpoint engine is available; optional ⇒ old conversations load unchanged.
+   */
+  checkpoint?: { commit: string; createdAt: number };
 }
 
 export interface DiffLine {
@@ -452,6 +458,95 @@ export interface CompactionResult {
   strategy: CompactionStrategy;
   duration: number;
   summary?: string;
+  error?: string;
+}
+
+// ============================================================================
+// Smart Compaction Types (Plan 08, DeepMyst-gated)
+// ============================================================================
+
+/** Whether the prompt cache is still warm (observational; cache-reporting providers only). */
+export type CacheWarmth = 'warm' | 'cold' | 'unknown';
+
+/** The decision the smart engine returns for a panel after a response. */
+export interface CompactionDecision {
+  /** Whether to act now. */
+  act: boolean;
+  /** What action: do nothing, free tool-result prune, or a full compaction pass. */
+  tier: 'none' | 'prune' | 'compact';
+  /** Human-readable rationale (shown in logs / the savings popover). */
+  reason: string;
+  /** True when a compaction is warranted by fill but deferred to wait for a cold cache. */
+  deferred: boolean;
+  warmth: CacheWarmth;
+  /** Economic break-even turn count N* (when computable). */
+  breakEvenTurns?: number;
+  /** Estimated remaining turns N used in the decision. */
+  remainingTurns?: number;
+  /** Projected USD saved if we act now (when computable). */
+  projectedSavingsUsd?: number;
+}
+
+/** Kinds of realized savings the ledger tracks. */
+export type SavingsKind = 'cheap-model' | 'cache-timing' | 'avoided-compaction' | 'prune' | 'retrieval';
+
+/** A single realized-savings event (counted only after the action happened). */
+export interface SavingsEvent {
+  kind: SavingsKind;
+  tokensSaved: number;
+  usdSaved: number;
+  /** True when the figure is an estimate (e.g. cache-timing), false when grounded in a billed cost. */
+  estimated: boolean;
+  at: number;
+}
+
+export interface SavingsTotals {
+  tokens: number;
+  usd: number;
+}
+
+/** Snapshot pushed to the webview for the always-on savings chip. */
+export interface SavingsSnapshot {
+  session: SavingsTotals;
+  lifetime: SavingsTotals;
+  byKind: Partial<Record<SavingsKind, SavingsTotals>>;
+  /** Whether any figure is an estimate (so the UI can show "~"). */
+  estimated: boolean;
+  /** Remaining free-tier smart compactions this month, when the entitlement endpoint reports it. */
+  freeRemaining?: number;
+  freeLimit?: number;
+}
+
+/** Structured incremental-memory sections the compactor agent maintains. */
+export type MemorySectionKey = 'goal' | 'decisions' | 'files' | 'code' | 'open-threads';
+
+/** A section-scoped patch the cheap compactor model returns (applied deterministically). */
+export interface MemoryPatch {
+  section: MemorySectionKey;
+  op: 'append' | 'replace' | 'remove';
+  content: string;
+}
+
+/** Result of an entitlement check (paid OR within the free monthly allowance). */
+export interface EntitlementState {
+  entitled: boolean;
+  tier: string;
+  freeRemaining?: number;
+  freeLimit?: number;
+  /** 'endpoint' when /api/v1/me answered; 'fallback' when it 404'd / was unreachable. */
+  source: 'endpoint' | 'fallback';
+  checkedAt: number;
+}
+
+/** A completion returned by the DeepMyst gateway client. */
+export interface GatewayCompletion {
+  text: string;
+  /** Real billed cost from the X-DeepMyst-Cost-USD response header, when present. */
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  /** True when the gateway call failed and the caller should fall back. */
+  failed?: boolean;
   error?: string;
 }
 

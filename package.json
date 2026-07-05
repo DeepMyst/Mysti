@@ -401,7 +401,7 @@
         },
         "mysti.defaultModel": {
           "type": "string",
-          "default": "claude-sonnet-4-5-20250929",
+          "default": "claude-sonnet-4-6",
           "description": "Default model to use"
         },
         "mysti.claudeCodeModel": {
@@ -409,7 +409,7 @@
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
-          "description": "Custom model for Claude Code. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-sonnet-4-5-20250929"
+          "description": "Custom model for Claude Code. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4-8 (or claude-opus-4-8[1m] for the 1M-context variant)"
         },
         "mysti.codexModel": {
           "type": "string",
@@ -515,6 +515,23 @@
           "default": true,
           "description": "Detect and show implementation plan options in AI responses. Disable to reduce post-response latency."
         },
+        "mysti.checkpoints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Snapshot the workspace before each chat turn so you can rewind code to any prior turn. Uses a private git repository stored outside your project — it never touches your own .git."
+        },
+        "mysti.checkpoints.maxFiles": {
+          "type": "number",
+          "default": 20000,
+          "minimum": 0,
+          "description": "Skip checkpointing when the workspace has more than this many tracked/untracked files (0 = no limit). Protects very large repositories from slow snapshots."
+        },
+        "mysti.checkpoints.maxSnapshots": {
+          "type": "number",
+          "default": 200,
+          "minimum": 0,
+          "description": "Maximum checkpoints to retain per workspace before the oldest are pruned (0 = unlimited)."
+        },
         "mysti.compaction.enabled": {
           "type": "boolean",
           "default": true,
@@ -526,6 +543,33 @@
           "minimum": 50,
           "maximum": 95,
           "description": "Context usage percentage at which automatic compaction triggers (50-95%)"
+        },
+        "mysti.compaction.smart.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Enable **smart compaction** (requires a connected DeepMyst account). Adds cache-aware timing, a cheap incremental compactor agent, an economic compact-vs-cache decision with a quality floor, cherry-pick retrieval over full history, and an always-on savings display. When off — or when no DeepMyst account is connected — Mysti uses the standard threshold compaction configured above."
+        },
+        "mysti.compaction.smart.cheapModel": {
+          "type": "string",
+          "default": "claude-haiku-4-5",
+          "markdownDescription": "Model used by the smart compactor agent for summarization + retrieval scoring, routed through the DeepMyst gateway. A cheap, reliable model is recommended (default `claude-haiku-4-5`)."
+        },
+        "mysti.compaction.smart.minSummaryTokens": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 2048,
+          "markdownDescription": "Quality floor for smart compaction — the compacted prefix is never targeted below this size. Keeps it above the model's minimum cacheable prefix (≈4096 on Opus/Haiku) so the summary still caches, and preserves enough context for quality."
+        },
+        "mysti.compaction.smart.retrieval.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When smart compaction is active, allow parallel cherry-pick retrieval over the full on-disk history to pull back relevant summarized-away context. Only fires when a prompt needs buried history (gated by a free local relevance check), so it rarely adds cost."
+        },
+        "mysti.deepmyst.gatewayUrl": {
+          "type": "string",
+          "default": "https://gateway.v2.deepmyst.com",
+          "scope": "machine",
+          "markdownDescription": "Base URL of the DeepMyst OpenAI-compatible LLM **gateway** used by smart compaction (`/v1/chat/completions`). Distinct from `mysti.deepmyst.apiUrl` (the MCP/REST host). The same `dm_` key authenticates both. Machine-scoped so a workspace can't redirect your key; the client also only ever sends it to a `*.deepmyst.com` host."
         },
         "mysti.models.autoRefresh": {
           "type": "boolean",

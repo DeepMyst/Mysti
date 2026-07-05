@@ -1634,6 +1634,71 @@
       color: var(--vscode-charts-green);
     }
 
+    /* Rewind / fork button (user messages) — mirrors .message-copy-btn */
+    .message-rewind-btn {
+      position: absolute;
+      right: 0;
+      top: 0;
+      background: transparent;
+      border: none;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.2s ease, color 0.2s ease, background 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .message:hover .message-rewind-btn {
+      opacity: 1;
+    }
+
+    .message-rewind-btn:hover {
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-foreground);
+    }
+
+    /* The 3-item rewind/fork dropdown (positioned on document.body) */
+    .rewind-menu {
+      position: fixed;
+      z-index: 10000;
+      min-width: 220px;
+      padding: 4px;
+      background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+      color: var(--vscode-menu-foreground, var(--vscode-editorWidget-foreground));
+      border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border));
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+    }
+
+    .rewind-menu-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      padding: 7px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .rewind-menu-item:hover:not(.disabled) {
+      background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+      color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+    }
+
+    .rewind-menu-item.disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+
     /* Export conversation button in header */
     .export-conversation-btn {
       background: transparent;
@@ -2097,6 +2162,10 @@
       background: var(--mysti-surface-2);
     }
     .input-status-line .status-seg-glyph { font-weight: 700; }
+    /* Plan 08: smart-compaction savings chip — one accent (green = savings). */
+    .input-status-line .savings-indicator .savings-glyph { color: var(--vscode-charts-green); }
+    .input-status-line .savings-indicator .savings-text { font-variant-numeric: tabular-nums; }
+    .savings-indicator.hidden { display: none !important; }
     /* The relocated controls drop their filled-chip look in the quiet line. */
     .input-status-line .agent-btn,
     .input-status-line .context-usage,
@@ -4496,6 +4565,129 @@
     /* ========================================
        Permission Approval Card
        ======================================== */
+    /* ── Dynamic in-app messages (DeepMyst announcements) ─────────────────── */
+    .inapp-messages {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .inapp-card {
+      position: relative;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      padding: 12px 32px 12px 12px;
+      animation: fadeSlideIn 0.3s ease forwards;
+    }
+
+    .inapp-card.inapp-announcement {
+      border-color: var(--vscode-focusBorder, #007acc);
+    }
+
+    .inapp-card.inapp-removing {
+      opacity: 0;
+      transform: translateY(-4px);
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+
+    .inapp-body-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .inapp-title {
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--vscode-foreground);
+    }
+
+    .inapp-text {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--vscode-descriptionForeground);
+      white-space: pre-wrap;
+    }
+
+    .inapp-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .inapp-btn {
+      padding: 5px 12px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      background: var(--vscode-button-secondaryBackground, transparent);
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .inapp-btn:hover {
+      background: var(--vscode-list-hoverBackground);
+      border-color: var(--vscode-focusBorder, #007acc);
+    }
+
+    .inapp-btn.inapp-cta {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-color: transparent;
+    }
+
+    .inapp-btn.inapp-cta:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    .inapp-dismiss {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 22px;
+      height: 22px;
+      line-height: 18px;
+      padding: 0;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    .inapp-dismiss:hover {
+      background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+      color: var(--vscode-foreground);
+    }
+
+    .inapp-freetext {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .inapp-freetext-input {
+      width: 100%;
+      box-sizing: border-box;
+      resize: vertical;
+      padding: 6px 8px;
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+      border-radius: 6px;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      font-family: inherit;
+      font-size: 12px;
+    }
+
+    .inapp-freetext .inapp-btn {
+      align-self: flex-start;
+    }
+
     .permission-card {
       background: var(--vscode-editor-background);
       border: 1px solid var(--vscode-panel-border);

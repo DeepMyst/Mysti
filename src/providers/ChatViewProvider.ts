@@ -37,10 +37,26 @@ import { ProjectContextManager } from '../managers/ProjectContextManager';
 import { VisualTestManager } from '../managers/VisualTestManager';
 import { ChannelBridge } from '../managers/ChannelBridge';
 import { DeepMystAuthManager } from '../managers/DeepMystAuthManager';
+import type { SavingsLedger } from '../managers/SavingsLedger';
+import type { AnnouncementManager } from '../managers/AnnouncementManager';
+import type { InAppMessage } from '../services/DeepMystClient';
 import { getWebviewContent } from '../webview/webviewContent';
 import { getVisualTestDashboardContent } from '../webview/visualTestDashboardContent';
-import { getCanvasContent } from '../webview/canvasContent';
+import { getCanvasContent, buildSampleCanvasArtifact } from '../webview/canvasContent';
+import { ArtifactStore } from '../managers/ArtifactStore';
+import { CanvasOpExecutor } from '../managers/CanvasOpExecutor';
+import { CanvasJobRouter } from '../managers/CanvasJobRouter';
+import { CanvasOpParser } from '../managers/CanvasOpParser';
+import { buildCanvasContextBlock } from '../managers/CanvasPromptBuilder';
+import { CanvasToolServer } from '../services/CanvasToolServer';
+import { CanvasMcpHttpServer } from '../services/CanvasMcpHttpServer';
+import { CanvasSessionLinker } from '../managers/CanvasSessionLinker';
+import { dispatchCanvasTool } from '../managers/CanvasToolDispatch';
+import type { CanvasToolContext } from '../managers/CanvasToolDispatch';
+import { exportHtmlBundle } from '../services/CanvasExportService';
+import type { CanvasArtifact } from '../types';
 import { CanvasManager } from '../managers/CanvasManager';
+import { CheckpointManager } from '../managers/CheckpointManager';
 import { ImageGenerationService } from '../services/ImageGenerationService';
 import { VideoGenerationService } from '../services/VideoGenerationService';
 import type { ModelRegistryService } from '../services/ModelRegistryService';
@@ -58,6 +74,7 @@ import {
 } from './base/ProviderManifest';
 import type { ProviderManifestPayload, StitchScreenRef } from '../types';
 import { validateModelName, validateProfileName } from '../utils/validation';
+import { filterInstallMethodsForOS } from '../utils/platform';
 import { classifyToolAction, shouldGateToolUse } from '../utils/permissionClassifier';
 import { PerfTracker } from '../utils/PerfTracker';
 
@@ -120,6 +137,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // context windows. Threaded in here for the consumer agent (Phase 4) to drive
   // the dynamic dropdown / modelsUpdated / requestModels wiring.
   private _modelRegistry: ModelRegistryService;
+  // Code checkpoints — shadow git repo backing "rewind code to here".
+  private _checkpointManager: CheckpointManager;
   private _imageGenService: ImageGenerationService;
   private _videoGenService: VideoGenerationService;
   private _codeGenService: any; // Lazy-loaded CodeGenerationService
@@ -132,6 +151,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _canvasDevServerManager: DevServerManager = new DevServerManager();
   private _canvasPanelId: string | null = null;
   private _canvasChatOrigin: string | null = null;
+  // Plan 05 — chat→canvas bridge: the live artifact backing the open canvas, the
+  // op executor/router that mutate it, and the per-turn fenced-`canvas-op` parser.
+  private _canvasArtifact: CanvasArtifact | null = null;
+  private _canvasStore: ArtifactStore | null = null;
+  private _canvasExecutor: CanvasOpExecutor | null = null;
+  private _canvasJobRouter: CanvasJobRouter | null = null;
+  private _canvasOpParser: CanvasOpParser | null = null;
+  // Live MCP path: in-extension HTTP server + per-CLI session registration.
+  private _canvasToolServer: CanvasToolServer | null = null;
+  private _canvasMcpHttp: CanvasMcpHttpServer | null = null;
+  private readonly _canvasLinker = new CanvasSessionLinker();
+  private _canvasSaveTimer: NodeJS.Timeout | null = null;
   // Visual test dashboard tracking
   private _vtDashboardPanelId: string | null = null;
   private _vtDashboardChatOrigin: string | null = null;
@@ -140,6 +171,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // to (a) inject the in-chat connect convention into the system prompt and
   // (b) resolve the web URL for the "Link <service>" connect action.
   private _deepMystAuth?: DeepMystAuthManager;
+  private _savingsLedger?: SavingsLedger;
+  private _announcementManager?: AnnouncementManager;
   // Services for which we've already emitted a connect card this response, so the
   // per-chunk scan over the accumulated text doesn't re-post the same card.
   private _connectServicesThisResponse: Set<string> = new Set();
@@ -207,7 +240,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     projectContextManager: ProjectContextManager,
     visualTestManager: VisualTestManager,
     canvasManager: CanvasManager,
-    modelRegistry: ModelRegistryService
+    modelRegistry: ModelRegistryService,
+    checkpointManager: CheckpointManager
   ) {
     this._extensionUri = extensionUri;
     this._extensionContext = extensionContext;
@@ -230,6 +264,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._visualTestManager = visualTestManager;
     this._canvasManager = canvasManager;
     this._modelRegistry = modelRegistry;
+    this._checkpointManager = checkpointManager;
     this._imageGenService = new ImageGenerationService();
     this._videoGenService = new VideoGenerationService();
     this._channelBridge = new ChannelBridge(activeModeManager);
@@ -499,6 +534,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Critical: Wait for agents to load before building initial state
     await this._agentInitPromise;
 
+    // Plan 07 A5: restore this panel's persisted context files (re-reading
+    // content fresh) off the critical path; broadcast when ready.
+    void this._contextManager.restorePanelContext(panelId)
+      .then((items) => {
+        if (items.length) {
+          this._postToPanel(panelId, { type: 'contextUpdated', payload: items });
+        }
+      })
+      .catch(() => { /* best-effort */ });
+
     // First-run stall fix: every discovery/network step on the way to the first
     // post is BOUNDED so the "Preparing your workspace" overlay can never get
     // stuck (it did on a cold cache because a CLI probe could hang with no
@@ -684,9 +729,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     }
 
+    // Tell the webview whether code-checkpoints are usable (git installed +
+    // feature enabled + workspace open) so it can hide the code-rewind menu
+    // items when they're not. Non-blocking — fork always works regardless.
+    void this._checkpointManager.isAvailable()
+      .then(available => this._postToPanel(panelId, {
+        type: 'checkpointAvailability',
+        payload: { available }
+      }))
+      .catch(() => { /* optimistic default in the webview */ });
+
     // Warm the GitHub star cache in the background (never blocks the render —
     // the payload above used the cached value).
     void this._getGithubStarCount();
+
+    // Fetch DeepMyst's dynamic in-app messages and push them to the panel once
+    // they arrive (never blocks the render; no-op when signed out).
+    void this._pushInAppMessages(panelId);
   }
 
   /**
@@ -1204,6 +1263,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
         break;
 
+      case 'inAppMessageAction':
+        void this._handleInAppMessageAction(
+          msg.payload as { message?: InAppMessage; action?: 'cta' | 'feedback' | 'dismiss'; value?: string }
+        );
+        break;
+
       case 'permissionCustomInstruction':
         {
           const customText = (msg.payload as { text: string }).text;
@@ -1409,6 +1474,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 currentId: panelState?.currentConversationId
               }
             });
+          }
+        }
+        break;
+
+      case 'forkConversation':
+        {
+          const messageId = (msg.payload as { messageId: string }).messageId;
+          this._forkConversation(msg.panelId, messageId);
+        }
+        break;
+
+      case 'rewindToCheckpoint':
+        {
+          const { commit, messageId } = msg.payload as { commit: string; messageId?: string };
+          await this._rewindCode(msg.panelId, commit, messageId);
+        }
+        break;
+
+      case 'forkAndRewind':
+        {
+          const { messageId, commit } = msg.payload as { messageId: string; commit?: string };
+          const forked = this._forkConversation(msg.panelId, messageId);
+          // Rewind the forked branch's anchor message (id is preserved across fork).
+          if (forked && commit) {
+            await this._rewindCode(msg.panelId, commit, messageId);
           }
         }
         break;
@@ -2677,6 +2767,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       payload: displayMessage
     });
 
+    // Snapshot the workspace BEFORE this turn runs so the user can "rewind code
+    // to here" later. Fire-and-forget — never block the send path on git.
+    this._captureCheckpoint(panelId, conversationId, userMessage.id, content);
+
     // Generate AI title for first user message
     if (conversationId && this._conversationManager.isFirstUserMessage(conversationId)) {
       this._generateTitleAsync(conversationId, content, panelId);
@@ -3022,7 +3116,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const autoMemory = autoMemoryEnabled ? this._memoryManager.getProjectMemoryContent() : '';
       console.log(`[Mysti] ⏱️ Auto-memory in ${Date.now() - _tMem}ms`);
       const deepMystConnect = this._deepMystConnectSnippet();
-      const fullSystemContext = [projectRules, channelContext, mystiMdContent, autoMemory, deepMystConnect].filter(Boolean).join('\n\n');
+      const canvasSnippet = this._canvasPromptSnippet(panelId);
+      const fullSystemContext = [projectRules, channelContext, mystiMdContent, autoMemory, deepMystConnect, canvasSnippet].filter(Boolean).join('\n\n');
 
       if (fullSystemContext) {
         this._providerManager.setChannelSystemContext(panelId, fullSystemContext, effectiveSettings.provider);
@@ -3035,6 +3130,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Reset channel bridge marker tracking for this new response
       this._channelBridge.resetForNewResponse(panelId);
       this._lastActivePanelId = panelId;
+
+      // Plan 08: cherry-pick relevant buried context (after a compaction) and
+      // append it to the user turn ONLY — never to the persisted user message.
+      // Best-effort + gated: returns '' instantly unless smart compaction is
+      // active and a prior compaction produced memory to retrieve against, so it
+      // adds no latency for non-smart sends and never blocks a send on failure.
+      try {
+        const retrieved = await this._compactionManager.retrieveContext(panelId, content);
+        if (retrieved) {
+          enrichedContent += retrieved;
+          console.log(`[Mysti] Smart retrieval: injected ${retrieved.length} chars of cherry-picked context`);
+        }
+      } catch { /* retrieval is never allowed to block a send */ }
 
       PerfTracker.measure('send.contextBuilt', _sendStartMark);
       const stream = this._providerManager.sendMessage(
@@ -3052,6 +3160,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       let thinkingContent = '';
       this._vtTriggeredThisResponse = false;
       this._connectServicesThisResponse.clear();
+      if (this._isCanvasLinked(panelId)) { this._canvasOpParser = new CanvasOpParser(); }
       let lastUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined;
 
       // Plan 02 Phase 3: accumulate render-relevant structure extension-side
@@ -3169,6 +3278,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   void this._emitConnectionCard(panelId, service);
                 }
               }
+            }
+
+            // Plan 05 — apply fenced ```canvas-op edits to the linked canvas live.
+            if (this._isCanvasLinked(panelId)) {
+              this._consumeCanvasOps(chunk.content || '', panelId);
             }
 
             // Detect visual test trigger from AI (```visual-test\n{...}\n```)
@@ -3457,6 +3571,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 segments: responseSegments.length > 0 ? responseSegments : undefined
               }
             );
+            // Plan 08: append this turn to the on-disk full history so smart
+            // compaction can cherry-pick it back later. Fire-and-forget; a no-op
+            // unless smart compaction is active.
+            this._compactionManager.appendHistory(panelId, { role: 'user', kind: 'text', content, ts: Date.now(), msgId: userMessage?.id });
+            this._compactionManager.appendHistory(panelId, { role: 'assistant', kind: 'text', content: persistedContent, ts: Date.now(), msgId: assistantMessage?.id });
+
             console.log('[Mysti] Sending responseComplete with usage:', lastUsage);
             this._postToPanel(panelId, {
               type: 'responseComplete',
@@ -3521,7 +3641,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 : null;
               const messageCount = updatedConversation ? updatedConversation.messages.length : 0;
 
-              if (this._compactionManager.shouldCompact(panelId, lastUsage, contextWindow, messageCount)) {
+              const compactionEval = this._compactionManager.evaluateCompaction(
+                panelId, lastUsage, contextWindow, messageCount, settings, updatedConversation,
+              );
+              if (compactionEval.act) {
                 // Run compaction asynchronously (don't block the response flow)
                 this._executeCompaction(panelId, settings, updatedConversation, lastUsage, contextWindow);
               } else {
@@ -3694,6 +3817,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     try {
+      // Plan 08 smart path: when active, the cheap incremental gateway summarizer
+      // replaces BOTH native /compact and same-model client-summarize. On success
+      // we drop the provider session so the NEXT turn reseeds a fresh session with
+      // the compacted context — required for --resume providers like Claude (the
+      // CLI owns history server-side), harmless for re-send providers. Falls
+      // through to the native/client strategy below if the gateway is unavailable.
+      if (this._compactionManager.isSmartActive() && conversation) {
+        const smart = await this._compactionManager.executeSmartSummarization(settings, conversation, panelId);
+        if (smart && smart.success) {
+          this._providerManager.clearSessionForProvider(settings.provider, panelId);
+          this._postToPanel(panelId, {
+            type: 'compactionStatus',
+            payload: {
+              status: 'complete',
+              strategy: 'client-summarize',
+              beforeTokens: smart.beforeTokens,
+              afterTokens: smart.afterTokens,
+              contextWindow,
+              threshold: this._compactionManager.getThreshold(),
+              summary: smart.summary,
+            } as CompactionEvent,
+          });
+          this._compactionManager.updateUsageAfterCompaction(panelId, smart.afterTokens);
+          this._postToPanel(panelId, { type: 'contextWindowInfo', payload: { contextWindow } });
+          console.log(`[Mysti] Smart compaction (reseed): ${smart.beforeTokens} -> ${smart.afterTokens} tokens; session reset for ${settings.provider}`);
+          return;
+        }
+        // smart returned null (gateway down, not enough messages) → fall through.
+      }
+
       if (strategy === 'native-cli') {
         // Native /compact: send the command to the CLI
         console.log(`[Mysti] Executing native /compact for panel ${panelId}`);
@@ -3746,7 +3899,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         console.log(`[Mysti] Native compaction complete: ${beforeTokens} -> ${afterTokens ?? '?'} tokens`);
 
       } else {
-        // Client-side summarization
+        // Standard same-model client summarization (non-smart, or smart-fallback
+        // when the gateway was unavailable — the smart path is handled above).
         if (!conversation) {
           console.warn('[Mysti] Cannot perform client-side compaction without conversation');
           return;
@@ -3820,6 +3974,110 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Snapshot the workspace for "rewind code to here", anchored to a user
+   * message. Fire-and-forget: the shadow-git commit runs off the send critical
+   * path; when it lands we persist the commit on the message and tell the
+   * webview to enable the message's code-rewind affordance. Failures (git
+   * missing, disabled, huge repo) are silent — conversation-fork still works.
+   */
+  private _captureCheckpoint(
+    panelId: string,
+    conversationId: string | null | undefined,
+    messageId: string,
+    content: string
+  ): void {
+    const label = `turn: ${content.slice(0, 80)}`;
+    void this._checkpointManager
+      .snapshot(label)
+      .then(commit => {
+        if (!commit) { return; }
+        this._conversationManager.updateMessageInConversation(conversationId, messageId, {
+          checkpoint: { commit, createdAt: Date.now() }
+        });
+        this._postToPanel(panelId, {
+          type: 'checkpointCreated',
+          payload: { messageId, commit }
+        });
+      })
+      .catch(err => console.log('[Mysti] Checkpoint snapshot failed:', err));
+  }
+
+  /**
+   * Fork the panel's current conversation at `messageId` into a new branch and
+   * make this panel view it. The original is untouched and stays in history.
+   * Returns the new conversation (or null if it couldn't be forked).
+   */
+  private _forkConversation(panelId: string, messageId: string): Conversation | null {
+    const panelState = this._panelStates.get(panelId);
+    const sourceId = panelState?.currentConversationId;
+    if (!panelState || !sourceId) { return null; }
+
+    const fork = this._conversationManager.forkConversation(sourceId, messageId);
+    if (!fork) { return null; }
+
+    panelState.currentConversationId = fork.id;
+    this._postToPanel(panelId, { type: 'conversationChanged', payload: fork });
+    this._postToPanel(panelId, {
+      type: 'conversationHistory',
+      payload: {
+        conversations: this._conversationManager.getAllConversations(),
+        currentId: fork.id
+      }
+    });
+    return fork;
+  }
+
+  /**
+   * Restore the workspace to a checkpoint commit ("rewind code to here").
+   * Confirms first (destructive but reversible — a safety snapshot is taken),
+   * then offers an inline "Undo" that rewinds back to that safety snapshot.
+   * The conversation is left untouched (chat ≠ code).
+   */
+  private async _rewindCode(panelId: string, commit: string, messageId?: string): Promise<void> {
+    if (!commit) {
+      this._postToPanel(panelId, {
+        type: 'rewindComplete',
+        payload: { ok: false, reason: 'No checkpoint exists for this message.', messageId }
+      });
+      return;
+    }
+
+    const choice = await vscode.window.showWarningMessage(
+      'Rewind code to this checkpoint? Files changed since then will be restored to their earlier state. Your current changes are saved to a checkpoint first, so this can be undone.',
+      { modal: true },
+      'Rewind'
+    );
+    if (choice !== 'Rewind') {
+      this._postToPanel(panelId, {
+        type: 'rewindComplete',
+        payload: { ok: false, reason: 'cancelled', messageId }
+      });
+      return;
+    }
+
+    const result = await this._checkpointManager.rewindTo(commit);
+    this._postToPanel(panelId, { type: 'rewindComplete', payload: { ...result, messageId } });
+
+    if (result.ok) {
+      const action = result.safetyCommit
+        ? await vscode.window.showInformationMessage('Code rewound to the selected checkpoint.', 'Undo')
+        : (vscode.window.showInformationMessage('Code rewound to the selected checkpoint.'), undefined);
+      if (action === 'Undo' && result.safetyCommit) {
+        const undo = await this._checkpointManager.rewindTo(result.safetyCommit);
+        this._postToPanel(panelId, {
+          type: 'rewindComplete',
+          payload: { ...undo, messageId, undone: true }
+        });
+        if (!undo.ok) {
+          vscode.window.showErrorMessage(`Undo failed: ${undo.reason}`);
+        }
+      }
+    } else {
+      vscode.window.showErrorMessage(`Rewind failed: ${result.reason}`);
+    }
+  }
+
+  /**
    * Handle brainstorm mode messages
    */
   private async _handleBrainstormMessage(
@@ -3849,6 +4107,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: 'messageAdded',
       payload: userMessage
     });
+
+    // Snapshot the workspace before this turn (see _captureCheckpoint).
+    this._captureCheckpoint(panelId, conversationId, userMessage.id, content);
 
     // Generate AI title for first user message
     if (conversationId && this._conversationManager.isFirstUserMessage(conversationId)) {
@@ -5649,7 +5910,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
     const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
-    panel.webview.html = getCanvasContent(panel.webview, this._extensionUri, version);
+
+    // Plan 05 — chat→canvas bridge: a live artifact backs the canvas; the chat
+    // agent edits it through fenced `canvas-op` blocks (executor applies them and
+    // posts artifact snapshots back to this panel).
+    const canvasArtifact = buildSampleCanvasArtifact();
+    const canvasStore = new ArtifactStore();
+    this._canvasArtifact = canvasArtifact;
+    this._canvasStore = canvasStore;
+    this._canvasJobRouter = new CanvasJobRouter((event) => {
+      this._postToPanel(panelId, { type: 'canvasJobEvent', payload: event });
+      // Any applied edit (chat agent, MCP, or direct) → re-render + persist.
+      if (event.type === 'op_applied' || event.type === 'page_updated') {
+        this._postCanvasArtifact();
+        this._scheduleCanvasSave();
+      }
+    });
+    this._canvasExecutor = new CanvasOpExecutor(canvasStore, this._canvasJobRouter);
+    this._canvasOpParser = new CanvasOpParser();
+
+    // Restore the most-recent saved design (reload-safe), keeping the sample until
+    // it loads so the canvas is never blank.
+    canvasStore.list().then(async (summaries) => {
+      if (summaries.length && this._canvasArtifact === canvasArtifact) {
+        const loaded = await canvasStore.load(summaries[0].id);
+        if (loaded && loaded.pages.length) {
+          this._canvasArtifact = loaded;
+          this._postCanvasArtifact();
+        }
+      }
+    }).catch(() => { /* no saved designs yet */ });
+
+    // Live MCP path: an in-extension HTTP server exposing the canvas tools, then
+    // registered into the linked CLI session (Claude Code --mcp-config). Falls
+    // back to the fenced canvas-op parser for providers without it.
+    this._canvasToolServer = new CanvasToolServer({ resolveContext: () => this._canvasToolContext() });
+    this._canvasMcpHttp = new CanvasMcpHttpServer(this._canvasToolServer);
+    const linkPanel = originPanelId;
+    this._canvasMcpHttp.start().then(handle => {
+      if (linkPanel) {
+        const cfg = this._canvasLinker.link(linkPanel, { url: handle.url, token: handle.token });
+        this._providerManager.setCanvasMcpConfig(linkPanel, cfg);
+        console.log('[Mysti] Canvas MCP server at', handle.url, '→ linked to panel', linkPanel);
+      }
+    }).catch(err => console.warn('[Mysti] Canvas MCP server failed to start:', err));
+
+    panel.webview.html = getCanvasContent(panel.webview, this._extensionUri, version, canvasArtifact);
 
     // Track canvas panel
     this._canvasPanelId = panelId;
@@ -5673,8 +5979,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     panel.onDidDispose(() => {
       this._canvasBrowserManager.close(panelId).catch(() => {});
       this._canvasDevServerManager.stop(panelId).catch(() => {});
+      this._canvasMcpHttp?.stop().catch(() => {});
+      // Flush any pending save so the design survives the panel closing.
+      if (this._canvasSaveTimer) { clearTimeout(this._canvasSaveTimer); this._canvasSaveTimer = null; }
+      if (this._canvasStore && this._canvasArtifact) {
+        this._canvasStore.save(this._canvasArtifact).catch(() => {});
+      }
+      if (this._canvasChatOrigin) {
+        this._canvasLinker.unlink(this._canvasChatOrigin);
+        this._providerManager.setCanvasMcpConfig(this._canvasChatOrigin, null);
+      }
       this._canvasPanelId = null;
       this._canvasChatOrigin = null;
+      this._canvasArtifact = null;
+      this._canvasStore = null;
+      this._canvasExecutor = null;
+      this._canvasJobRouter = null;
+      this._canvasOpParser = null;
+      this._canvasToolServer = null;
+      this._canvasMcpHttp = null;
       this._panelStates.delete(panelId);
     });
 
@@ -5711,6 +6034,84 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._deepMystAuth = auth;
     // A sign-in/out invalidates any cached connection list.
     auth.onDidChangeAuth(() => { this._connectionsCache = undefined; });
+  }
+
+  /**
+   * Inject the smart-compaction savings ledger (Plan 08). Subscribes to changes
+   * and broadcasts the running savings snapshot to every panel so the always-on
+   * "saved $X" chip stays live; also pushes an initial snapshot.
+   */
+  public setSavingsLedger(ledger: SavingsLedger): void {
+    this._savingsLedger = ledger;
+    // Broadcast the entitlement-enriched snapshot (so the chip can show free-tier
+    // quota) when smart is wired; fall back to the bare ledger snapshot otherwise.
+    const broadcast = () => {
+      const snap = this._compactionManager.getSavingsSnapshot() ?? ledger.snapshot();
+      this.postMessage({ type: 'compactionSavings', payload: snap } as WebviewMessage);
+    };
+    ledger.onDidChange(() => broadcast());
+    broadcast();
+  }
+
+  /**
+   * Inject the AnnouncementManager (constructed in extension.ts) so each session
+   * open can fetch DeepMyst's dynamic in-app messages and push them to the
+   * panel. Wired post-construction to avoid growing the constructor.
+   */
+  public setAnnouncementManager(manager: AnnouncementManager): void {
+    this._announcementManager = manager;
+  }
+
+  /**
+   * Best-effort: fetch the dynamic in-app messages for this session and push
+   * them to the panel as a separate `inAppMessages` event. Never blocks session
+   * open — called fire-and-forget after the initial state is posted. Records a
+   * `shown` event for whatever is delivered.
+   */
+  private async _pushInAppMessages(panelId: string): Promise<void> {
+    const manager = this._announcementManager;
+    if (!manager) { return; }
+    try {
+      const messages = await manager.getSessionMessages();
+      if (!messages.length) { return; }
+      this._postToPanel(panelId, { type: 'inAppMessages', payload: { messages } });
+      void manager.markShown(messages.map(m => m.id));
+    } catch (err) {
+      console.warn(`[Mysti] _pushInAppMessages failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Handle a user interaction with an in-app message card from the webview.
+   * `cta` opens the configured https link; `feedback` carries the chosen value;
+   * `dismiss` just suppresses it. All paths record an event via DeepMyst.
+   */
+  private async _handleInAppMessageAction(payload: {
+    message?: InAppMessage;
+    action?: 'cta' | 'feedback' | 'dismiss';
+    value?: string;
+  }): Promise<void> {
+    const manager = this._announcementManager;
+    const message = payload?.message;
+    if (!manager || !message || !message.id) { return; }
+
+    switch (payload.action) {
+      case 'cta': {
+        const url = message.ctaUrl;
+        if (url && /^https?:\/\//i.test(url)) {
+          await vscode.env.openExternal(vscode.Uri.parse(url));
+        }
+        await manager.markClicked(message.id);
+        break;
+      }
+      case 'feedback':
+        await manager.markResponded(message, payload.value ?? '');
+        break;
+      case 'dismiss':
+      default:
+        await manager.markDismissed(message);
+        break;
+    }
   }
 
   /**
@@ -5955,11 +6356,128 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return undefined;
   }
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Plan 05 — chat→canvas bridge (fenced `canvas-op` path)
+  // ──────────────────────────────────────────────────────────────────────
+
+  /** The live canvas tool context for the MCP server, or null when no canvas is open. */
+  private _canvasToolContext(): CanvasToolContext | null {
+    if (!this._canvasArtifact || !this._canvasStore || !this._canvasExecutor) { return null; }
+    return {
+      artifact: this._canvasArtifact, store: this._canvasStore, executor: this._canvasExecutor,
+      jobId: 'mcp', runId: 'mcp', approvalMode: 'auto',
+    };
+  }
+
+  /** True when the open canvas is driven by chat from this panel. */
+  private _isCanvasLinked(panelId: string): boolean {
+    return !!this._canvasPanelId && !!this._canvasArtifact
+      && (this._canvasChatOrigin === panelId || this._canvasChatOrigin === null);
+  }
+
+  /** The system-prompt block that teaches the agent the canvas tools + state. */
+  private _canvasPromptSnippet(panelId: string): string {
+    if (!this._isCanvasLinked(panelId) || !this._canvasArtifact) { return ''; }
+    return buildCanvasContextBlock({ artifact: this._canvasArtifact, approvalMode: 'auto' })
+      + '\n\nTo edit the canvas, emit a fenced ```canvas-op block of JSON per edit, e.g.:\n'
+      + '```canvas-op\n{"kind":"scaffold_page","proposedValue":{"scaffold":"login"}}\n```\n'
+      + 'WRITE kinds: insert_page, edit_page, delete_page, reorder, set_theme, set_format, edit_element, add_asset '
+      + '(use proposedValue:{mode:"jsx",jsxSource:"function Page(){…}",actionTitle:"…"} for insert_page). '
+      + 'Apply edits this way — do not just describe them.';
+  }
+
+  /**
+   * Feed streamed assistant text through the fenced-`canvas-op` parser; apply
+   * each parsed op to the linked artifact and push a refreshed snapshot to the
+   * canvas panel so pages appear/update live mid-turn.
+   */
+  private _consumeCanvasOps(textChunk: string, runId: string): void {
+    if (!this._canvasOpParser || !this._canvasExecutor || !this._canvasArtifact || !this._canvasPanelId) { return; }
+    const results = this._canvasOpParser.push(textChunk);
+    let changed = false;
+    for (const r of results) {
+      if (!r.ok) {
+        this._postToPanel(this._canvasPanelId, { type: 'canvasOpError', payload: { error: r.error } });
+        continue;
+      }
+      const op = this._canvasExecutor.submit(
+        this._canvasArtifact,
+        { kind: r.op.kind, runId, author: 'agent', targetPageId: r.op.targetPageId, baseVersion: r.op.baseVersion, proposedValue: r.op.proposedValue },
+        'chat-' + runId,
+        'auto'
+      );
+      if (op && op.status === 'applied') { changed = true; }
+    }
+    if (changed) { this._postCanvasArtifact(); }
+  }
+
+  /** Post the current artifact snapshot to the canvas panel for a live re-render. */
+  private _postCanvasArtifact(): void {
+    if (!this._canvasArtifact || !this._canvasPanelId) { return; }
+    const a = this._canvasArtifact;
+    this._postToPanel(this._canvasPanelId, {
+      type: 'canvasArtifactUpdate',
+      payload: {
+        name: a.name, kind: a.kind, format: a.format, theme: a.theme,
+        pages: a.pages.map(p => ({ id: p.id, version: p.version, mode: p.mode, jsxSource: p.jsxSource, htmlSource: p.htmlSource, actionTitle: p.actionTitle })),
+      },
+    });
+  }
+
+  /** Debounced persist of the canvas artifact to .mysti/canvas/<id>/artifact.json. */
+  private _scheduleCanvasSave(): void {
+    if (this._canvasSaveTimer) { clearTimeout(this._canvasSaveTimer); }
+    this._canvasSaveTimer = setTimeout(() => {
+      if (this._canvasStore && this._canvasArtifact) {
+        this._canvasStore.save(this._canvasArtifact).catch(err => console.log('[Mysti] Canvas save failed:', err));
+      }
+    }, 800);
+  }
+
+  /** Apply a scaffold template chosen in the canvas (the + menu / empty state). */
+  private _addCanvasScaffold(scaffold: string): void {
+    const ctx = this._canvasToolContext();
+    if (!ctx || !scaffold) { return; }
+    // Routes through the executor → op_applied event → re-render + save (router sink).
+    dispatchCanvasTool('scaffold_page', { scaffold }, ctx);
+  }
+
+  /** Export the current canvas to a self-contained HTML bundle in a chosen folder. */
+  private async _exportCanvas(): Promise<void> {
+    if (!this._canvasArtifact) { return; }
+    const pick = await vscode.window.showOpenDialog({
+      canSelectFolders: true, canSelectFiles: false, canSelectMany: false, openLabel: 'Export design here',
+    });
+    if (!pick || !pick[0]) { return; }
+    const sandbox = (f: string) => vscode.Uri.joinPath(this._extensionUri, 'resources', 'canvas-sandbox', f).fsPath;
+    const read = (f: string) => ({ name: f, content: fs.readFileSync(sandbox(f), 'utf8') });
+    const files = exportHtmlBundle(this._canvasArtifact, {
+      headRuntime: [read('react.production.min.js'), read('react-dom.production.min.js'), read('babel.min.js'), read('ui-primitives.js')],
+      harness: read('harness.js'),
+    });
+    const root = pick[0].fsPath;
+    for (const file of files) {
+      const dest = path.join(root, file.path);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, file.content, file.encoding === 'base64' ? { encoding: 'base64' } : { encoding: 'utf8' });
+    }
+    const indexUri = vscode.Uri.file(path.join(root, 'index.html'));
+    void vscode.window.showInformationMessage(`Canvas exported to ${root}`, 'Open').then(choice => {
+      if (choice === 'Open') { void vscode.env.openExternal(indexUri); }
+    });
+  }
+
   /**
    * Handle messages from the Canvas webview.
    */
   private async _handleCanvasMessage(msg: any, canvasPanelId: string): Promise<void> {
     switch (msg.type) {
+      case 'canvasAddScaffold':
+        this._addCanvasScaffold(msg.payload?.scaffold);
+        return;
+      case 'canvasExport':
+        await this._exportCanvas();
+        return;
       case 'canvasReady': {
         // Resume the most recent session, or create a new one
         let session = await this._canvasManager.getLatestSession();
@@ -6686,22 +7204,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
-      case 'canvasExport': {
-        const dataUrl = msg.payload?.imageDataUrl;
-        if (dataUrl) {
-          const uri = await vscode.window.showSaveDialog({
-            filters: { 'PNG Image': ['png'] },
-            defaultUri: vscode.Uri.file('canvas-export.png'),
-          });
-          if (uri) {
-            const base64 = dataUrl.replace(/^data:image\/png;base64,/, '');
-            const buffer = Buffer.from(base64, 'base64');
-            await vscode.workspace.fs.writeFile(uri, buffer);
-            vscode.window.showInformationMessage(`Canvas exported to ${uri.fsPath}`);
-          }
-        }
-        break;
-      }
+      // (legacy viewport-PNG canvasExport removed — handled by the new
+      // self-contained HTML-bundle export at the top of this switch.)
 
       case 'canvasUpdateProps': {
         const propPayload = msg.payload || {};
@@ -7267,10 +7771,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const installResult = await this._setupManager.autoInstallCli(providerId);
 
         if (!installResult.success) {
-          // Build alternative commands from provider's install methods
+          // Build alternative commands from provider's install methods, filtered
+          // to the current OS (the webview can't reliably know the host OS, so a
+          // Windows user must not be shown a macOS-only `brew`/`curl|bash`).
           const alternativeCommands: Array<{ label: string; command: string }> = [];
           if (provider.getInstallMethods) {
-            const methods = provider.getInstallMethods();
+            const methods = filterInstallMethodsForOS(provider.getInstallMethods());
             methods.forEach(m => alternativeCommands.push({ label: m.label, command: m.command }));
           }
           if (alternativeCommands.length === 0) {
@@ -7562,7 +8068,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Get provider instance for capabilities and install methods
     const providerInstance = this._providerManager.getProviderInstance(payload.providerId);
     const supportsAutoInstall = providerInstance?.capabilities.supportsAutoInstall ?? true;
-    const installMethods = providerInstance?.getInstallMethods?.() || [];
+    // Filter to the current OS — the webview renders these verbatim and can't tell
+    // the host platform, so a Windows user must never see a macOS-only command.
+    const installMethods = filterInstallMethodsForOS(providerInstance?.getInstallMethods?.() || []);
 
     this._postToPanel(panelId, {
       type: 'providerInstallInfo',

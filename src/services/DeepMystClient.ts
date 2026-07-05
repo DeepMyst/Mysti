@@ -102,6 +102,29 @@ export interface DeepMystListResult<T> {
   error?: string;
 }
 
+/**
+ * A dynamic in-app message served by DeepMyst (GET /api/v1/me/announcements) and
+ * rendered as a card at the top of a Mysti session. Three kinds:
+ *  - `announcement`: title + body + an optional CTA button that opens `ctaUrl`.
+ *  - `feedback`: a prompt with choice buttons (`feedbackOptions`) + optional freetext.
+ *  - `banner`: body text with a dismiss only.
+ */
+export interface InAppMessage {
+  id: string;
+  kind: 'announcement' | 'feedback' | 'banner';
+  title?: string;
+  body: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  feedbackOptions?: string[];
+  feedbackFreetext?: boolean;
+  /** `once` → suppress permanently after dismiss/respond; `every_session` → re-show each session. */
+  frequency?: 'once' | 'every_session';
+}
+
+/** How a user interacted with an in-app message (mirrors the backend event_type). */
+export type InAppMessageEvent = 'shown' | 'dismissed' | 'clicked' | 'responded';
+
 export interface DeepMystKeyValidation {
   valid: boolean;
   /** HTTP status of the probe (0 when the request never reached the server). */
@@ -422,6 +445,64 @@ export class DeepMystClient {
         .filter((x): x is DeepMystCatalogItem => x !== null);
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * List the dynamic in-app messages eligible for the current user right now
+   * (GET /api/v1/me/announcements). available=false when the endpoint 404s (the
+   * DeepMyst instance predates this feature), so the UI degrades silently.
+   * Returns [] when signed out.
+   */
+  async listAnnouncements(timeoutMs = 8000): Promise<DeepMystListResult<InAppMessage>> {
+    return this._getList('/api/v1/me/announcements', (o) => DeepMystClient._mapAnnouncement(o), timeoutMs);
+  }
+
+  /** Map a raw announcement object (snake_case) to InAppMessage. */
+  private static _mapAnnouncement(o: Record<string, unknown>): InAppMessage | null {
+    const id = typeof o.id === 'string' ? o.id : '';
+    const kind = o.kind;
+    if (!id || (kind !== 'announcement' && kind !== 'feedback' && kind !== 'banner')) { return null; }
+    const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+    const options = Array.isArray(o.feedback_options)
+      ? o.feedback_options.filter((x): x is string => typeof x === 'string' && x.length > 0)
+      : undefined;
+    return {
+      id,
+      kind,
+      title: str(o.title),
+      body: str(o.body) ?? '',
+      ctaLabel: str(o.cta_label),
+      ctaUrl: str(o.cta_url),
+      feedbackOptions: options && options.length ? options : undefined,
+      feedbackFreetext: o.feedback_freetext === true,
+      frequency: o.frequency === 'every_session' ? 'every_session' : 'once',
+    };
+  }
+
+  /**
+   * Record an interaction with an in-app message
+   * (POST /api/v1/me/announcements/{id}/events). Fire-and-forget; never throws.
+   * `value` carries the feedback choice / freetext for `responded` events.
+   */
+  async recordAnnouncementEvent(
+    id: string,
+    eventType: InAppMessageEvent,
+    value?: string,
+    timeoutMs = 8000,
+  ): Promise<boolean> {
+    const headers = this._authHeaders();
+    if (!headers) { return false; }
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/v1/me/announcements/${encodeURIComponent(id)}/events`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_type: eventType, value: value ?? null }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      return res.ok;
+    } catch {
+      return false;
     }
   }
 

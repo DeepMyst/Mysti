@@ -256,7 +256,47 @@ export class OllamaProvider extends BaseCliProvider {
   }
 
   getInstallCommand(): string {
-    return 'brew install ollama';
+    // OS-correct: Linux uses the install script, macOS uses Homebrew, Windows
+    // uses the OllamaSetup.exe installer (download URL). Derived from the
+    // per-OS getInstallMethods() below so the wizard never shows a Unix-only
+    // `brew install` on Windows.
+    return this._installCommandForCurrentOS('curl -fsSL https://ollama.com/install.sh | sh');
+  }
+
+  getInstallMethods(): import('../../types').InstallMethod[] {
+    return [
+      // Linux — official install script
+      {
+        id: 'curl',
+        label: 'Install script (Linux)',
+        command: 'curl -fsSL https://ollama.com/install.sh | sh',
+        platform: 'linux',
+        priority: 1,
+      },
+      // macOS — Homebrew formula (CLI) or the official .dmg
+      {
+        id: 'brew',
+        label: 'Homebrew (macOS)',
+        command: 'brew install ollama',
+        platform: 'darwin',
+        priority: 1,
+      },
+      {
+        id: 'dmg',
+        label: 'Download Ollama for macOS',
+        command: 'https://ollama.com/download/mac',
+        platform: 'darwin',
+        priority: 2,
+      },
+      // Windows — official installer (download + run)
+      {
+        id: 'exe',
+        label: 'Download OllamaSetup.exe (Windows)',
+        command: 'https://ollama.com/download/OllamaSetup.exe',
+        platform: 'win32',
+        priority: 1,
+      },
+    ];
   }
 
   // --- Stub methods (not used for HTTP provider) ---

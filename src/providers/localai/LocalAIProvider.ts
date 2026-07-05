@@ -264,7 +264,46 @@ export class LocalAIProvider extends BaseCliProvider {
   }
 
   getInstallCommand(): string {
-    return 'curl https://localai.io/install.sh | sh';
+    // NOTE: the old `curl https://localai.io/install.sh | sh` was a 404 on every
+    // OS (no such script exists). Docker is LocalAI's primary supported install
+    // and works on all platforms; per-OS alternatives live in getInstallMethods().
+    return this._installCommandForCurrentOS('docker run -p 8080:8080 --name local-ai -ti localai/localai:latest');
+  }
+
+  getInstallMethods(): import('../../types').InstallMethod[] {
+    return [
+      // Docker — the officially recommended, cross-platform path
+      {
+        id: 'docker',
+        label: 'Docker (recommended, all platforms)',
+        command: 'docker run -p 8080:8080 --name local-ai -ti localai/localai:latest',
+        platform: 'all',
+        priority: 1,
+      },
+      // macOS / Linux — prebuilt binary one-liner
+      {
+        id: 'binary-darwin',
+        label: 'Prebuilt binary (macOS)',
+        command: 'curl -Lo local-ai "https://github.com/mudler/LocalAI/releases/latest/download/local-ai-$(uname -s)-$(uname -m)" && chmod +x local-ai && ./local-ai',
+        platform: 'darwin',
+        priority: 2,
+      },
+      {
+        id: 'binary-linux',
+        label: 'Prebuilt binary (Linux)',
+        command: 'curl -Lo local-ai "https://github.com/mudler/LocalAI/releases/latest/download/local-ai-$(uname -s)-$(uname -m)" && chmod +x local-ai && ./local-ai',
+        platform: 'linux',
+        priority: 2,
+      },
+      // Windows — Docker Desktop only (no native binary); WSL is the other option
+      {
+        id: 'releases',
+        label: 'LocalAI releases (Windows: use Docker Desktop or WSL)',
+        command: 'https://github.com/mudler/LocalAI/releases/latest',
+        platform: 'win32',
+        priority: 2,
+      },
+    ];
   }
 
   // --- Stub methods (not used for HTTP provider) ---

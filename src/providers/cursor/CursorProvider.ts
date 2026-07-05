@@ -30,6 +30,7 @@ import type {
 	ContextItem,
 	Conversation,
 	AgentConfiguration,
+	ModelInfo,
 } from "../../types";
 
 export interface CursorSessionState extends PanelSessionState {
@@ -154,6 +155,31 @@ export class CursorProvider extends BaseCliProvider {
 		return this._getCliPathCommon();
 	}
 
+	/**
+	 * Live model discovery (Plan 01 Phase 3) via `cursor-agent models`, which lists
+	 * the models available to the signed-in account. Output is ANSI-laced text, one
+	 * model per line; we strip ANSI, then keep only slug-like tokens (no spaces) so
+	 * header / "Loading…" / "No models" lines are dropped. A logged-out account
+	 * yields no slugs → null → curated fallback. Returns null on any failure; never
+	 * throws.
+	 */
+	async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+		const raw = await this._runCliForDiscovery(["models"], timeoutMs);
+		if (!raw) { return null; }
+		// eslint-disable-next-line no-control-regex
+		const ansi = /\x1b\[[0-9;]*m/g;
+		const slug = /^[a-zA-Z0-9][a-zA-Z0-9._\-:/[\]]*$/;
+		const seen = new Set<string>();
+		const models: ModelInfo[] = [];
+		for (const line of raw.split("\n")) {
+			const id = line.replace(ansi, "").replace(/^[\s•*-]+/, "").trim();
+			if (!id || seen.has(id) || !slug.test(id)) { continue; }
+			seen.add(id);
+			models.push({ id, name: id });
+		}
+		return models.length > 0 ? models : null;
+	}
+
 	protected _getCliCommandName(): string {
 		return 'agent';
 	}
@@ -227,16 +253,32 @@ export class CursorProvider extends BaseCliProvider {
 	}
 
 	getInstallCommand(): string {
-		return "curl https://cursor.com/install -fsS | bash";
+		// OS-correct: macOS/Linux use the bash installer, Windows uses the native
+		// PowerShell installer (the bash one-liner can't run in cmd/PowerShell).
+		return this._installCommandForCurrentOS("curl https://cursor.com/install -fsS | bash");
 	}
 
 	getInstallMethods(): import('../../types').InstallMethod[] {
 		return [
 			{
-				id: 'curl',
-				label: 'Direct install (recommended)',
+				id: 'curl-darwin',
+				label: 'Direct install (macOS)',
 				command: 'curl https://cursor.com/install -fsS | bash',
-				platform: 'all',
+				platform: 'darwin',
+				priority: 1
+			},
+			{
+				id: 'curl-linux',
+				label: 'Direct install (Linux)',
+				command: 'curl https://cursor.com/install -fsS | bash',
+				platform: 'linux',
+				priority: 1
+			},
+			{
+				id: 'powershell',
+				label: 'Direct install (Windows PowerShell)',
+				command: "irm 'https://cursor.com/install?win32=true' | iex",
+				platform: 'win32',
 				priority: 1
 			}
 		];
@@ -789,7 +831,7 @@ export class CursorProvider extends BaseCliProvider {
 		}
 	}
 
-	private _getEffectiveModel(settings: Settings): string | undefined {
+	protected _getEffectiveModel(settings: Settings): string | undefined {
 		const config = vscode.workspace.getConfiguration("mysti");
 		const customModel = config.get<string>("cursorModel", "");
 		if (customModel) {

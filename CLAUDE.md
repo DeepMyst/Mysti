@@ -25,19 +25,24 @@ Output: `dist/extension.js` from entry point `src/extension.ts` (webpack bundles
 
 Press `F5` in VSCode to launch Extension Development Host for debugging. Set breakpoints in TypeScript files and filter Debug Console with `[Mysti]` for extension logs.
 
-**CLI requirements**: At least one of these CLIs must be installed for the extension to function:
+**CLI requirements**: At least one of these CLIs must be installed for the extension to function. The npm-based CLIs install identically on macOS/Linux/Windows; the non-npm ones differ by OS — the in-app setup wizard shows the OS-correct command automatically (each provider's `getInstallMethods()` is platform-tagged and filtered to `process.platform` extension-side; see `src/utils/platform.ts` `filterInstallMethodsForOS`).
+
+npm-based (cross-OS):
 
 - `npm install -g @anthropic-ai/claude-code` (Claude Code)
+- `npm install -g @openai/codex` (OpenAI Codex)
 - `npm install -g @google/gemini-cli` (Gemini)
-- `npm install -g @github/copilot-cli` (GitHub Copilot)
-- Codex CLI (OpenAI - follow their installation guide)
 - `npm install -g cline` (Cline)
-- `curl https://cursor.com/install -fsS | bash` (Cursor)
-- `npm install -g openclaw@latest` (OpenClaw)
+- `npm install -g @github/copilot` (GitHub Copilot)
+- `npm install -g openclaw@latest` (OpenClaw — then `openclaw onboard --install-daemon` for the Gateway daemon)
 - `npm i -g opencode-ai@latest` (OpenCode)
 - `npm install -g @qwen-code/qwen-code@latest` (Qwen Code)
-- Ollama (install from ollama.com)
-- LocalAI (install from localai.io)
+
+OS-specific (handled per-platform by the wizard):
+
+- **Cursor** — macOS/Linux: `curl https://cursor.com/install -fsS | bash`; Windows (PowerShell): `irm 'https://cursor.com/install?win32=true' | iex` (binary is `cursor-agent`/`agent`; login: `agent login`)
+- **Ollama** — Linux: `curl -fsSL https://ollama.com/install.sh | sh`; macOS: `brew install ollama` (or download from ollama.com); Windows: `OllamaSetup.exe` from ollama.com/download
+- **LocalAI** — Docker (all OSes): `docker run -p 8080:8080 --name local-ai -ti localai/localai:latest`; macOS/Linux can also use the prebuilt binary; Windows requires Docker Desktop or WSL (there is no `localai.io/install.sh`)
 
 ## Architecture
 

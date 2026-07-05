@@ -472,6 +472,8 @@
 
     <!-- Messages area -->
     <div id="messages" class="messages">
+      <!-- Dynamic in-app messages (feedback surveys, offers, banners) from DeepMyst -->
+      <div id="inapp-messages" class="inapp-messages"></div>
       <!-- Fixed container for stuck in-progress items -->
       <div id="sticky-progress-container" class="sticky-progress-container">
         <div class="sticky-progress-header">
@@ -679,6 +681,10 @@
         <div id="context-usage" class="context-usage status-seg" title="Context usage: 0%">
           <svg viewBox="0 0 32 32" class="context-pie"><circle class="context-pie-bg" cx="16" cy="16" r="14"/><path id="context-pie-fill" class="context-pie-fill" d=""/></svg>
           <span id="context-usage-text" class="context-usage-text">0%</span>
+        </div>
+        <div id="savings-indicator" class="savings-indicator status-seg hidden" title="Smart compaction savings">
+          <span class="status-seg-glyph savings-glyph">◇</span>
+          <span id="savings-text" class="savings-text">$0</span>
         </div>
         <span id="behavior-indicator" class="behavior-indicator status-seg" title="Click to change agent behavior">Ask before edit</span>
       </div>
@@ -1040,7 +1046,7 @@
   <div id="drop-overlay" class="drop-overlay">
     <div class="drop-overlay-content">
       <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
-      <span>Drop images or files here</span>
+      <span>Drop to attach · drop on <strong>Context</strong> to add a context file</span>
     </div>
   </div>
 

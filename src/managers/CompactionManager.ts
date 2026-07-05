@@ -16,6 +16,8 @@ import type {
   CumulativeUsage,
   CompactionResult,
   CompactionStrategy,
+  CompactionDecision,
+  SavingsSnapshot,
   UsageStats,
   ProviderType,
   Conversation,
@@ -28,9 +30,13 @@ import {
   COMPACTION_COOLDOWN_MS,
   COMPACTION_MIN_MESSAGES_BEFORE_COMPACT,
   COMPACTION_MESSAGES_TO_PRESERVE,
+  SMART_DEFAULT_CHEAP_MODEL,
+  SMART_MIN_SUMMARY_TOKENS,
 } from '../constants';
+import { estimateTokens } from '../services/ModelPricing';
 import type { ProviderManager } from './ProviderManager';
 import type { ConversationManager } from './ConversationManager';
+import type { SmartCompactor, HistoryAppend } from './SmartCompactor';
 
 /**
  * CompactionManager - Unified context compaction across all providers
@@ -58,19 +64,40 @@ export class CompactionManager {
   // Whether compaction is enabled
   private _enabled: boolean;
 
+  // Whether smart compaction (DeepMyst-gated premium) is enabled via settings.
+  // This reflects the user toggle only; full activation additionally requires a
+  // signed-in DeepMyst account + entitlement (resolved by the SmartCompactor).
+  private _smartEnabled: boolean;
+
+  // Smart-compaction tunables (loaded from settings).
+  private _cheapModel: string;
+  private _minSummaryTokens: number;
+  private _retrievalEnabled: boolean;
+
+  // The smart engine, injected post-construction (null until wired in extension.ts).
+  private _smart: SmartCompactor | null = null;
+
   private _configDisposable: vscode.Disposable;
 
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
     this._thresholdPercent = this._loadThreshold();
     this._enabled = this._loadEnabled();
+    this._smartEnabled = this._loadSmartEnabled();
+    this._cheapModel = this._loadCheapModel();
+    this._minSummaryTokens = this._loadMinSummaryTokens();
+    this._retrievalEnabled = this._loadRetrievalEnabled();
 
     // Listen for configuration changes
     this._configDisposable = vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('mysti.compaction')) {
         this._thresholdPercent = this._loadThreshold();
         this._enabled = this._loadEnabled();
-        console.log(`[Mysti] CompactionManager: Config updated - enabled=${this._enabled}, threshold=${this._thresholdPercent}%`);
+        this._smartEnabled = this._loadSmartEnabled();
+        this._cheapModel = this._loadCheapModel();
+        this._minSummaryTokens = this._loadMinSummaryTokens();
+        this._retrievalEnabled = this._loadRetrievalEnabled();
+        console.log(`[Mysti] CompactionManager: Config updated - enabled=${this._enabled}, smart=${this._smartEnabled}, threshold=${this._thresholdPercent}%`);
       }
     });
   }
@@ -278,6 +305,7 @@ export class CompactionManager {
   public resetUsage(panelId: string): void {
     this._panelUsage.delete(panelId);
     this._lastCompactionTime.delete(panelId);
+    this._smart?.resetPanel(panelId);
   }
 
   /**
@@ -306,6 +334,114 @@ export class CompactionManager {
     return this._enabled;
   }
 
+  /**
+   * Whether the user has opted into smart compaction via settings
+   * (`mysti.compaction.smart.enabled`). This reflects the toggle only — smart
+   * compaction additionally requires a signed-in DeepMyst account + entitlement
+   * before it actually activates (Plan 08 Phase 2, wired in a later slice).
+   */
+  public isSmartEnabled(): boolean {
+    return this._smartEnabled;
+  }
+
+  /** Inject the smart-compaction engine (Plan 08). Wired in extension.ts. */
+  public setSmartCompactor(smart: SmartCompactor): void {
+    this._smart = smart;
+  }
+
+  /** Whether smart compaction is currently active (toggle + signed in + entitled). */
+  public isSmartActive(): boolean {
+    return !!this._smart && this._smart.isActive(this._smartEnabled);
+  }
+
+  /**
+   * Decide whether to compact after a completed response. When smart compaction
+   * is active this uses the cache-aware + economic engine (and records cache
+   * warmth / cache-timing savings); otherwise it falls back to the standard
+   * percentage-threshold trigger. `recordUsage` is still the caller's job on the
+   * non-act path (it accumulates the per-panel token totals).
+   */
+  public evaluateCompaction(
+    panelId: string,
+    usage: UsageStats,
+    contextWindow: number,
+    messageCount: number,
+    settings: Settings,
+    conversation?: Conversation | null,
+  ): { act: boolean; smart: boolean; decision?: CompactionDecision } {
+    if (this.isSmartActive() && this._smart) {
+      this._smart.recordTurn(panelId, usage);
+      if (!this._enabled || messageCount < COMPACTION_MIN_MESSAGES_BEFORE_COMPACT) {
+        return { act: false, smart: true };
+      }
+      const lastCompaction = this._lastCompactionTime.get(panelId) || 0;
+      if (Date.now() - lastCompaction < COMPACTION_COOLDOWN_MS) {
+        return { act: false, smart: true };
+      }
+      const decision = this._smart.evaluate({
+        panelId,
+        usage,
+        contextWindow,
+        messageCount,
+        providerModel: settings.model,
+        cheapModel: this._cheapModel,
+        thresholdPercent: this._thresholdPercent,
+        minSummaryTokens: this._minSummaryTokens,
+        preserveTokens: conversation ? this._estimatePreserveTokens(conversation) : undefined,
+      });
+      console.log(`[Mysti] CompactionManager: smart decision for ${panelId} — act=${decision.act}, ${decision.reason}`);
+      return { act: decision.act, smart: true, decision };
+    }
+    return { act: this.shouldCompact(panelId, usage, contextWindow, messageCount), smart: false };
+  }
+
+  /**
+   * Smart incremental summarization through the cheap gateway model. Returns null
+   * when smart compaction isn't active or the gateway is unavailable, so the
+   * caller falls back to executeClientSummarization.
+   */
+  public async executeSmartSummarization(
+    settings: Settings,
+    conversation: Conversation,
+    panelId: string,
+  ): Promise<CompactionResult | null> {
+    if (!this.isSmartActive() || !this._smart) { return null; }
+    this._lastCompactionTime.set(panelId, Date.now());
+    return this._smart.summarize({
+      panelId,
+      conversation,
+      providerModel: settings.model,
+      cheapModel: this._cheapModel,
+      minSummaryTokens: this._minSummaryTokens,
+    });
+  }
+
+  /** Current savings snapshot for the always-on UI (null when smart isn't wired). */
+  public getSavingsSnapshot(): SavingsSnapshot | null {
+    return this._smart ? this._smart.snapshot() : null;
+  }
+
+  /** Append a finalized turn to the on-disk full history (smart compaction only). */
+  public appendHistory(panelId: string, record: HistoryAppend): void {
+    if (this.isSmartActive() && this._smart) {
+      this._smart.recordHistory(panelId, record);
+    }
+  }
+
+  /**
+   * Cherry-pick relevant buried context for the prompt, as a block to append to
+   * the user turn. Returns '' when smart compaction isn't active or retrieval
+   * shouldn't run. Never throws.
+   */
+  public async retrieveContext(panelId: string, prompt: string): Promise<string> {
+    if (!this.isSmartActive() || !this._smart) { return ''; }
+    try {
+      return await this._smart.retrieve(panelId, prompt, this._cheapModel, this._retrievalEnabled);
+    } catch {
+      return '';
+    }
+  }
+
   public dispose(): void {
     this._panelUsage.clear();
     this._lastCompactionTime.clear();
@@ -313,6 +449,16 @@ export class CompactionManager {
   }
 
   // --- Private helpers ---
+
+  /**
+   * Estimate the tokens in the tail we keep verbatim past a compaction (the last
+   * COMPACTION_MESSAGES_TO_PRESERVE messages). Used to charge the smart path's
+   * cold reseed for re-priming the preserved tail, not just the summary.
+   */
+  private _estimatePreserveTokens(conversation: Conversation): number {
+    const tail = conversation.messages.slice(-COMPACTION_MESSAGES_TO_PRESERVE);
+    return tail.reduce((sum, m) => sum + estimateTokens(m.content || ''), 0);
+  }
 
   private _loadThreshold(): number {
     const config = vscode.workspace.getConfiguration('mysti');
@@ -322,6 +468,26 @@ export class CompactionManager {
   private _loadEnabled(): boolean {
     const config = vscode.workspace.getConfiguration('mysti');
     return config.get<boolean>('compaction.enabled', true);
+  }
+
+  private _loadSmartEnabled(): boolean {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<boolean>('compaction.smart.enabled', false);
+  }
+
+  private _loadCheapModel(): string {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<string>('compaction.smart.cheapModel', SMART_DEFAULT_CHEAP_MODEL) || SMART_DEFAULT_CHEAP_MODEL;
+  }
+
+  private _loadMinSummaryTokens(): number {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<number>('compaction.smart.minSummaryTokens', SMART_MIN_SUMMARY_TOKENS);
+  }
+
+  private _loadRetrievalEnabled(): boolean {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<boolean>('compaction.smart.retrieval.enabled', true);
   }
 
   private _createEmptyUsage(): CumulativeUsage {

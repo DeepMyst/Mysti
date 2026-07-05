@@ -364,7 +364,7 @@ export class ManusProvider extends BaseCliProvider {
     return process.env.MANUS_API_KEY || '';
   }
 
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('manusModel', '');
     if (customModel) {

@@ -998,7 +998,7 @@ export class CodexProvider extends BaseCliProvider {
   /**
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('codexModel', '');
     if (customModel) {

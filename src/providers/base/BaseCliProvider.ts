@@ -38,7 +38,7 @@ import type {
 } from '../../types';
 import type { AgentContextManager } from '../../managers/AgentContextManager';
 import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TIMEOUT_MS } from '../../constants';
-import { getCommonSearchPaths, validateCliPath, checkCommandExists, getEnrichedEnv } from '../../utils/platform';
+import { getCommonSearchPaths, validateCliPath, checkCommandExists, getEnrichedEnv, filterInstallMethodsForOS } from '../../utils/platform';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import type { CliSearchConfig } from '../../utils/platform';
 
@@ -627,10 +627,14 @@ export abstract class BaseCliProvider implements ICliProvider {
     session.persistentReady = true;
     session.lastHealthCheck = Date.now();
 
-    // Store settings snapshot so we can detect changes later
+    // Store settings snapshot so we can detect changes later.
+    // Use the EFFECTIVE model (which honors per-provider custom-model overrides
+    // like mysti.claudeCodeModel), not the raw dropdown value — otherwise a
+    // custom model set while a persistent process is already running would never
+    // trigger a respawn and would be silently ignored (issue #39).
     if (!session.persistentSettings) {
       session.persistentSettings = {
-        model: settings.model || undefined,
+        model: this._getEffectiveModel(settings),
         permissionMode: this._derivePermissionMode(settings),
         thinkingLevel: settings.thinkingLevel || 'none',
       };
@@ -735,12 +739,67 @@ export abstract class BaseCliProvider implements ICliProvider {
   }
 
   /**
+   * The model that will actually be passed to the CLI for this request.
+   *
+   * Base default is the dropdown selection (`settings.model`). Providers that
+   * support a per-provider custom-model override (e.g. `mysti.claudeCodeModel`)
+   * OVERRIDE this to return that override first. It is used both when building
+   * CLI args and when snapshotting/comparing persistent-process settings, so the
+   * two never drift — a custom model set mid-session correctly triggers a
+   * persistent-process respawn instead of being silently ignored (issue #39).
+   */
+  protected _getEffectiveModel(settings: Settings): string | undefined {
+    return settings.model || undefined;
+  }
+
+  /**
+   * Run the provider's CLI with the given args and capture stdout, for live
+   * model discovery (Plan 01 Phase 3). Best-effort: returns the captured stdout
+   * on a clean (exit 0) run, or null on spawn error / non-zero exit / timeout.
+   * Never throws — the registry falls back to the curated list on null.
+   */
+  protected async _runCliForDiscovery(args: string[], timeoutMs: number): Promise<string | null> {
+    let cliPath: string;
+    try {
+      cliPath = this.getCliPath();
+    } catch {
+      return null;
+    }
+    if (!cliPath) { return null; }
+
+    return new Promise<string | null>((resolve) => {
+      let settled = false;
+      let stdout = '';
+      let proc: ChildProcess;
+      const finish = (value: string | null) => {
+        if (settled) { return; }
+        settled = true;
+        clearTimeout(timer);
+        try { proc?.kill('SIGKILL'); } catch { /* already gone */ }
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(null), timeoutMs);
+      try {
+        proc = spawn(cliPath, args, { env: getEnrichedEnv(), windowsHide: true });
+      } catch {
+        finish(null);
+        return;
+      }
+      proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+      proc.on('error', () => finish(null));
+      proc.on('close', (code) => finish(code === 0 ? stdout : null));
+    });
+  }
+
+  /**
    * Check if the current settings match the persistent process's spawn settings.
    */
   protected _persistentSettingsMatch(session: PanelSessionState, settings: Settings): boolean {
     if (!session.persistentSettings) { return false; }
     const ps = session.persistentSettings;
-    return ps.model === (settings.model || undefined)
+    // Compare the EFFECTIVE model (honors per-provider custom-model overrides),
+    // not the raw dropdown value — so changing mysti.<provider>Model respawns.
+    return ps.model === this._getEffectiveModel(settings)
       && ps.permissionMode === this._derivePermissionMode(settings)
       && ps.thinkingLevel === (settings.thinkingLevel || 'none');
   }
@@ -765,9 +824,9 @@ export abstract class BaseCliProvider implements ICliProvider {
       this.disposePersistentProcess(panelId);
     }
 
-    // Store settings snapshot before spawning
+    // Store settings snapshot before spawning (effective model, see above)
     session.persistentSettings = {
-      model: settings.model || undefined,
+      model: this._getEffectiveModel(settings),
       permissionMode: this._derivePermissionMode(settings),
       thinkingLevel: settings.thinkingLevel || 'none',
     };
@@ -789,6 +848,23 @@ export abstract class BaseCliProvider implements ICliProvider {
 
   protected _getAdditionalSearchPaths(): string[] {
     return [];
+  }
+
+  /**
+   * Pick the best install command for the CURRENT OS from this provider's
+   * getInstallMethods() (filtered to the platform, lowest priority first).
+   * Providers whose install command differs per OS (curl|bash vs PowerShell vs
+   * an .exe download) override getInstallCommand() to call this, so the wizard,
+   * the manual-fallback hint, and the install modal all show an OS-correct
+   * command instead of a Unix-only one. Falls back to the supplied default when
+   * no method matches (e.g. the provider declares none for this OS).
+   */
+  protected _installCommandForCurrentOS(fallback: string): string {
+    // getInstallMethods is an optional ICliProvider method — reference it through
+    // the interface type so it's visible even though the base class doesn't declare it.
+    const methods = (this as ICliProvider).getInstallMethods?.() ?? [];
+    const best = filterInstallMethodsForOS(methods)[0];
+    return best?.command || fallback;
   }
 
   protected async _discoverCliCommon(): Promise<CliDiscoveryResult> {

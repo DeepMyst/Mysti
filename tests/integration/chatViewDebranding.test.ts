@@ -145,6 +145,9 @@ function createHarness(): Harness {
     })),
     updateUsageAfterCompaction: vi.fn(),
     resetUsage: vi.fn(),
+    isSmartActive: vi.fn(() => false),
+    evaluateCompaction: vi.fn(() => ({ act: false, smart: false })),
+    appendHistory: vi.fn(),
   } as any;
   const setupManager = {
     getWizardStatus: async () => ({ ...WIZARD_STATUS }),

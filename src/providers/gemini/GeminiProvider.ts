@@ -25,7 +25,8 @@ import type {
   Settings,
   StreamChunk,
   ProviderConfig,
-  AuthStatus
+  AuthStatus,
+  ModelInfo
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
 import { normalizeToolName, toolKind } from '../../utils/toolNames';
@@ -49,7 +50,22 @@ export class GeminiProvider extends BaseCliProvider {
   readonly config: ProviderConfig = {
     name: 'google-gemini',
     displayName: 'Gemini',
+    // Curated fallback list (bundled). Live discovery (discoverModels) refreshes
+    // this from the Google Generative Language Models API when a GEMINI_API_KEY /
+    // GOOGLE_API_KEY is present. Verified 2026-06.
     models: [
+      {
+        id: 'gemini-3.1-pro-preview',
+        name: 'Gemini 3.1 Pro (Preview)',
+        description: 'Most intelligent, best for complex agentic and coding tasks',
+        contextWindow: 1048576
+      },
+      {
+        id: 'gemini-3.5-flash',
+        name: 'Gemini 3.5 Flash',
+        description: 'Fast and capable — strong on coding and agentic workflows',
+        contextWindow: 1048576
+      },
       {
         id: 'gemini-3-pro-preview',
         name: 'Gemini 3 Pro (Preview)',
@@ -262,7 +278,7 @@ export class GeminiProvider extends BaseCliProvider {
   /**
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('geminiModel', '');
     if (customModel) {
@@ -288,6 +304,46 @@ export class GeminiProvider extends BaseCliProvider {
       console.warn(`[Mysti] Gemini: Ignoring non-Gemini model "${settings.model}" (use the geminiModel setting for a custom Gemini model); using CLI default`);
     }
     return undefined;
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3) via the official Google Generative
+   * Language Models API. Only fires when a GEMINI_API_KEY / GOOGLE_API_KEY is
+   * present (the Gemini CLI may instead use Google-account OAuth, in which case
+   * there is no usable list endpoint and the curated list serves). Filters to
+   * models that support generateContent and strips the "models/" id prefix the
+   * API uses (the CLI's --model flag takes the short id). Returns null on any
+   * failure so the registry keeps its curated/cached list. Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!apiKey) { return null; }
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(apiKey)}`,
+        { signal: AbortSignal.timeout(timeoutMs) },
+      );
+      if (!response.ok) { return null; }
+      const data = await response.json() as {
+        models?: Array<{
+          name?: string;
+          displayName?: string;
+          inputTokenLimit?: number;
+          supportedGenerationMethods?: string[];
+        }>;
+      };
+      const models = (data.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map<ModelInfo>(m => ({
+          id: (m.name || '').replace(/^models\//, '').trim(),
+          name: m.displayName || (m.name || '').replace(/^models\//, ''),
+          contextWindow: typeof m.inputTokenLimit === 'number' ? m.inputTokenLimit : undefined,
+        }))
+        .filter(m => m.id.length > 0);
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
   }
 
   /**

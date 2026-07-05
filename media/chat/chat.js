@@ -3872,6 +3872,15 @@
           case 'messageAdded':
             addMessage(message.payload);
             break;
+          case 'checkpointCreated':
+            handleCheckpointCreated(message.payload);
+            break;
+          case 'checkpointAvailability':
+            state.checkpointsAvailable = !(message.payload && message.payload.available === false);
+            break;
+          case 'rewindComplete':
+            handleRewindComplete(message.payload);
+            break;
           case 'responseStarted':
             // Perf: per-response chunk counter (ring buffer keeps rolling
             // across responses — "last 2000 samples").
@@ -3929,6 +3938,9 @@
             break;
           case 'compactionStatus':
             handleCompactionStatus(message.payload);
+            break;
+          case 'compactionSavings':
+            updateSavingsChip(message.payload);
             break;
           case 'requestCancelled':
             hideLoading();
@@ -4118,6 +4130,9 @@
             break;
           case 'permissionRequest':
             handlePermissionRequest(message.payload);
+            break;
+          case 'inAppMessages':
+            renderInAppMessages((message.payload && message.payload.messages) || []);
             break;
           case 'permissionExpired':
             handlePermissionExpired(message.payload);
@@ -5430,6 +5445,116 @@
           .replace(/>/g, '&gt;')
           .replace(/"/g, '&quot;')
           .replace(/'/g, '&#39;');
+      }
+
+      // ── Dynamic in-app messages (DeepMyst announcements) ──────────────────
+      function renderInAppMessages(messages) {
+        var container = document.getElementById('inapp-messages');
+        if (!container) return;
+        container.innerHTML = '';
+        (messages || []).forEach(function(msg) {
+          if (!msg || !msg.id) return;
+          container.appendChild(renderInAppMessageCard(msg));
+        });
+      }
+
+      function sendInAppMessageAction(message, action, value) {
+        postMessageWithPanelId({
+          type: 'inAppMessageAction',
+          payload: { message: message, action: action, value: value }
+        });
+      }
+
+      function dismissInAppCard(card, message, action, value) {
+        sendInAppMessageAction(message, action || 'dismiss', value);
+        card.classList.add('inapp-removing');
+        setTimeout(function() { if (card.parentNode) card.parentNode.removeChild(card); }, 200);
+      }
+
+      function renderInAppMessageCard(message) {
+        var card = document.createElement('div');
+        card.className = 'inapp-card inapp-' + (message.kind || 'banner');
+        card.dataset.id = message.id;
+
+        // Dismiss (×) — present on every kind.
+        var dismissBtn = document.createElement('button');
+        dismissBtn.className = 'inapp-dismiss';
+        dismissBtn.setAttribute('aria-label', 'Dismiss');
+        dismissBtn.textContent = '×';
+        dismissBtn.addEventListener('click', function() { dismissInAppCard(card, message, 'dismiss'); });
+        card.appendChild(dismissBtn);
+
+        var bodyWrap = document.createElement('div');
+        bodyWrap.className = 'inapp-body-wrap';
+        if (message.title) {
+          var titleEl = document.createElement('div');
+          titleEl.className = 'inapp-title';
+          titleEl.textContent = message.title;
+          bodyWrap.appendChild(titleEl);
+        }
+        if (message.body) {
+          var bodyEl = document.createElement('div');
+          bodyEl.className = 'inapp-text';
+          bodyEl.textContent = message.body;
+          bodyWrap.appendChild(bodyEl);
+        }
+        card.appendChild(bodyWrap);
+
+        if (message.kind === 'feedback') {
+          var actions = document.createElement('div');
+          actions.className = 'inapp-actions';
+          var options = (message.feedbackOptions && message.feedbackOptions.length)
+            ? message.feedbackOptions : ['Bad', 'Fine', 'Good'];
+          options.forEach(function(opt) {
+            var b = document.createElement('button');
+            b.className = 'inapp-btn inapp-choice';
+            b.textContent = opt;
+            b.addEventListener('click', function() {
+              if (message.feedbackFreetext) {
+                showInAppFreetext(card, message, opt);
+              } else {
+                dismissInAppCard(card, message, 'feedback', opt);
+              }
+            });
+            actions.appendChild(b);
+          });
+          bodyWrap.appendChild(actions);
+        } else if (message.kind === 'announcement' && message.ctaUrl) {
+          var ctaWrap = document.createElement('div');
+          ctaWrap.className = 'inapp-actions';
+          var cta = document.createElement('button');
+          cta.className = 'inapp-btn inapp-cta';
+          cta.textContent = message.ctaLabel || 'Open';
+          cta.addEventListener('click', function() { dismissInAppCard(card, message, 'cta'); });
+          ctaWrap.appendChild(cta);
+          bodyWrap.appendChild(ctaWrap);
+        }
+
+        return card;
+      }
+
+      function showInAppFreetext(card, message, choice) {
+        var actions = card.querySelector('.inapp-actions');
+        if (actions) actions.remove();
+        var wrap = document.createElement('div');
+        wrap.className = 'inapp-freetext';
+        var input = document.createElement('textarea');
+        input.className = 'inapp-freetext-input';
+        input.placeholder = 'Tell us more (optional)…';
+        input.rows = 2;
+        var submit = document.createElement('button');
+        submit.className = 'inapp-btn inapp-cta';
+        submit.textContent = 'Send';
+        submit.addEventListener('click', function() {
+          var extra = input.value.trim();
+          var combined = extra ? (choice + ': ' + extra) : choice;
+          dismissInAppCard(card, message, 'feedback', combined);
+        });
+        wrap.appendChild(input);
+        wrap.appendChild(submit);
+        var bw = card.querySelector('.inapp-body-wrap');
+        if (bw) bw.appendChild(wrap);
+        input.focus();
       }
 
       function copyToClipboard(text) {
@@ -6886,6 +7011,141 @@
         }, 3000);
       }
 
+      // ---- Rewind / fork menu (anchored to a user message) -----------------
+      var _rewindMenuEl = null;
+
+      function getRewindMenuEl() {
+        if (_rewindMenuEl) return _rewindMenuEl;
+        var menu = document.createElement('div');
+        menu.className = 'rewind-menu';
+        menu.id = 'rewind-menu';
+        menu.style.display = 'none';
+        menu.innerHTML =
+          '<button class="rewind-menu-item" data-action="fork">Fork conversation from here</button>' +
+          '<button class="rewind-menu-item rewind-menu-code" data-action="rewind">Rewind code to here</button>' +
+          '<button class="rewind-menu-item rewind-menu-code" data-action="fork-rewind">Fork conversation and rewind code</button>';
+        // The menu lives on document.body, so it handles its own item clicks
+        // (the message-level delegated handler is scoped to the messages list).
+        menu.addEventListener('click', function(e) {
+          var item = e.target.closest('.rewind-menu-item');
+          if (item) { e.stopPropagation(); handleRewindMenuAction(item); }
+        });
+        document.body.appendChild(menu);
+        _rewindMenuEl = menu;
+        return menu;
+      }
+
+      function closeRewindMenu() {
+        if (_rewindMenuEl) {
+          _rewindMenuEl.style.display = 'none';
+          _rewindMenuEl.removeAttribute('data-message-id');
+          _rewindMenuEl.removeAttribute('data-commit');
+        }
+        document.removeEventListener('click', _rewindOutsideClick, true);
+        document.removeEventListener('keydown', _rewindEscClose, true);
+      }
+
+      function toggleRewindMenu(btn) {
+        var menu = getRewindMenuEl();
+        var messageId = btn.dataset.messageId || '';
+        if (menu.style.display === 'block' && menu.dataset.messageId === messageId) {
+          closeRewindMenu();
+          return;
+        }
+        var commit = btn.dataset.commit || '';
+        menu.dataset.messageId = messageId;
+        if (commit) { menu.dataset.commit = commit; } else { menu.removeAttribute('data-commit'); }
+
+        // The two code-rewind items need a captured checkpoint AND git available.
+        var codeEnabled = state.checkpointsAvailable !== false && !!commit;
+        var codeItems = menu.querySelectorAll('.rewind-menu-code');
+        for (var i = 0; i < codeItems.length; i++) {
+          if (codeEnabled) {
+            codeItems[i].removeAttribute('disabled');
+            codeItems[i].classList.remove('disabled');
+            codeItems[i].removeAttribute('title');
+          } else {
+            codeItems[i].setAttribute('disabled', 'true');
+            codeItems[i].classList.add('disabled');
+            codeItems[i].title = state.checkpointsAvailable === false
+              ? 'Code checkpoints unavailable (git not found or disabled)'
+              : 'No checkpoint captured for this turn yet';
+          }
+        }
+
+        // Position under the button, right-aligned, clamped to the viewport.
+        menu.style.display = 'block';
+        var rect = btn.getBoundingClientRect();
+        var mw = menu.offsetWidth || 240;
+        var left = Math.max(8, Math.min(rect.right - mw, window.innerWidth - mw - 8));
+        menu.style.left = left + 'px';
+        menu.style.top = (rect.bottom + 4) + 'px';
+
+        setTimeout(function() {
+          document.addEventListener('click', _rewindOutsideClick, true);
+          document.addEventListener('keydown', _rewindEscClose, true);
+        }, 0);
+      }
+
+      function _rewindOutsideClick(e) {
+        if (_rewindMenuEl && (_rewindMenuEl.contains(e.target) ||
+            (e.target.closest && e.target.closest('.message-rewind-btn')))) {
+          return;
+        }
+        closeRewindMenu();
+      }
+
+      function _rewindEscClose(e) {
+        if (e.key === 'Escape') { closeRewindMenu(); }
+      }
+
+      function handleRewindMenuAction(item) {
+        if (item.getAttribute('disabled')) { return; }
+        var menu = getRewindMenuEl();
+        var messageId = menu.dataset.messageId || '';
+        var commit = menu.dataset.commit || '';
+        var action = item.dataset.action;
+        if (!messageId) { closeRewindMenu(); return; }
+        if (action === 'fork') {
+          postMessageWithPanelId({ type: 'forkConversation', payload: { messageId: messageId } });
+        } else if (action === 'rewind' && commit) {
+          postMessageWithPanelId({ type: 'rewindToCheckpoint', payload: { commit: commit, messageId: messageId } });
+        } else if (action === 'fork-rewind' && commit) {
+          postMessageWithPanelId({ type: 'forkAndRewind', payload: { messageId: messageId, commit: commit } });
+        }
+        closeRewindMenu();
+      }
+
+      // A turn's checkpoint commit lands shortly after the user bubble (the
+      // snapshot runs off the send critical path). Stamp it on the button so
+      // the code-rewind actions become available.
+      function handleCheckpointCreated(payload) {
+        if (!payload || !payload.messageId || !payload.commit) return;
+        var btn = messagesEl.querySelector('.message[data-id="' + payload.messageId + '"] .message-rewind-btn');
+        if (btn) { btn.dataset.commit = payload.commit; }
+        // If the menu is open for this very message, enable its code items now.
+        if (_rewindMenuEl && _rewindMenuEl.style.display === 'block' &&
+            _rewindMenuEl.dataset.messageId === payload.messageId &&
+            state.checkpointsAvailable !== false) {
+          _rewindMenuEl.dataset.commit = payload.commit;
+          var codeItems = _rewindMenuEl.querySelectorAll('.rewind-menu-code');
+          for (var i = 0; i < codeItems.length; i++) {
+            codeItems[i].removeAttribute('disabled');
+            codeItems[i].classList.remove('disabled');
+            codeItems[i].removeAttribute('title');
+          }
+        }
+      }
+
+      function handleRewindComplete(payload) {
+        if (!payload) return;
+        if (payload.ok) {
+          showToast(payload.undone ? 'Rewind undone.' : 'Code rewound to checkpoint.', 'info');
+        } else if (payload.reason && payload.reason !== 'cancelled') {
+          showToast('Rewind failed: ' + payload.reason, 'error');
+        }
+      }
+
       function sendMessage() {
         var content = inputEl.value.trim();
         if (!content && state.attachments.length === 0) return;
@@ -6978,6 +7238,16 @@
         if (msg.role === 'assistant') {
           html += '<button class="message-copy-btn" data-message-id="' + msg.id + '" title="Copy message as Markdown">' +
             '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/></svg>' +
+            '</button>';
+        } else if (msg.role === 'user') {
+          // Rewind / fork affordance, anchored to the start of this turn.
+          // data-commit (set here or later via checkpointCreated) gates the
+          // two code-rewind actions; "Fork conversation" is always available.
+          var rewindCommit = (msg.checkpoint && msg.checkpoint.commit) ? msg.checkpoint.commit : '';
+          html += '<button class="message-rewind-btn" data-message-id="' + msg.id + '"' +
+            (rewindCommit ? ' data-commit="' + escapeHtml(rewindCommit) + '"' : '') +
+            ' title="Rewind / fork from here">' +
+            '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h4v-4"/><path d="M2.9 9.2a5 5 0 1 0 1.3-4.7L2.5 5.5"/></svg>' +
             '</button>';
         }
         html += '</div>';
@@ -9131,6 +9401,8 @@
       function clearMessages() {
         messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Mysti" class="welcome-logo" /><h2>Welcome to Mysti</h2><p>Your AI coding team. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div><div class="welcome-spread"><h3>Spread the Word</h3><div class="about-links spread-links"><a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> Star on GitHub</a><a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti&ssr=false#review-details" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.254.008.045-.236 2.101-.574.028.166-.978 4.607z"/><circle cx="8" cy="4.5" r="1"/></svg> Rate on Marketplace</a><a id="share-on-x" href="#" class="spread-link" title="Share on X / Twitter"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Share on X</a></div></div></div>';
         renderWelcomeSuggestions();
+        // A rebuilt message list invalidates any open rewind menu's anchor.
+        if (typeof closeRewindMenu === 'function') { closeRewindMenu(); }
         // Reset all streaming buffers
         currentResponse = '';
         currentThinking = '';
@@ -9385,6 +9657,48 @@
       /**
        * Handle compaction status events from the extension
        */
+      // Plan 08: always-on smart-compaction savings chip. Shows realized savings
+      // ("saved ~$X · Nk tok") and, on hover, the per-kind / lifetime / free-tier
+      // breakdown. Stays hidden until there is something to show.
+      function updateSavingsChip(snap) {
+        var el = document.getElementById('savings-indicator');
+        var txt = document.getElementById('savings-text');
+        if (!el || !txt || !snap) { return; }
+        var sessionUsd = (snap.session && snap.session.usd) || 0;
+        var sessionTok = (snap.session && snap.session.tokens) || 0;
+        if (sessionUsd <= 0 && sessionTok <= 0) { el.classList.add('hidden'); return; }
+        var approx = snap.estimated ? '~' : '';
+        txt.textContent = approx + '$' + formatSavingsUsd(sessionUsd) + ' · ' + formatSavingsTokens(sessionTok) + ' tok';
+        var lines = ['Smart compaction saved ' + approx + '$' + formatSavingsUsd(sessionUsd) + ' / ' + formatSavingsTokens(sessionTok) + ' tokens this session'];
+        if (snap.lifetime && snap.lifetime.usd > 0) {
+          lines.push('Lifetime: ' + approx + '$' + formatSavingsUsd(snap.lifetime.usd) + ' / ' + formatSavingsTokens(snap.lifetime.tokens) + ' tokens');
+        }
+        if (snap.byKind) {
+          var kindLabels = { 'cheap-model': 'Cheaper model', 'cache-timing': 'Cache timing', 'avoided-compaction': 'Avoided compaction', 'prune': 'Pruning', 'retrieval': 'Retrieval' };
+          for (var k in snap.byKind) {
+            if (snap.byKind.hasOwnProperty(k) && snap.byKind[k] && snap.byKind[k].usd > 0) {
+              lines.push('  • ' + (kindLabels[k] || k) + ': $' + formatSavingsUsd(snap.byKind[k].usd));
+            }
+          }
+        }
+        if (typeof snap.freeRemaining === 'number') {
+          lines.push('Free tier: ' + snap.freeRemaining + (typeof snap.freeLimit === 'number' ? ' of ' + snap.freeLimit : '') + ' smart compactions left this month');
+        }
+        el.title = lines.join('\n');
+        el.classList.remove('hidden');
+      }
+      function formatSavingsUsd(v) {
+        v = v || 0;
+        if (v >= 1) { return v.toFixed(2); }
+        if (v >= 0.01) { return v.toFixed(3); }
+        return v.toFixed(4);
+      }
+      function formatSavingsTokens(t) {
+        t = t || 0;
+        if (t >= 1000) { return (t / 1000).toFixed(1) + 'k'; }
+        return String(t);
+      }
+
       function handleCompactionStatus(event) {
         var usageContainer = document.getElementById('context-usage');
         var statusEl = document.getElementById('compaction-status');
@@ -10357,6 +10671,14 @@
               msgCopyBtn.classList.remove('copied');
             }, 1500);
           }
+          return;
+        }
+
+        // Handle rewind/fork button click → open the 3-item menu for this turn
+        var rewindBtn = e.target.closest('.message-rewind-btn');
+        if (rewindBtn) {
+          e.stopPropagation();
+          toggleRewindMenu(rewindBtn);
           return;
         }
 

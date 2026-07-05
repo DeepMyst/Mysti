@@ -25,6 +25,9 @@ import { TelemetryManager } from './managers/TelemetryManager';
 import { MemoryManager } from './managers/MemoryManager';
 import { AutonomousManager } from './managers/AutonomousManager';
 import { CompactionManager } from './managers/CompactionManager';
+import { SmartCompactor } from './managers/SmartCompactor';
+import { SavingsLedger } from './managers/SavingsLedger';
+import { DeepMystGatewayClient } from './services/DeepMystGatewayClient';
 import { AgentLifecycleManager } from './managers/AgentLifecycleManager';
 import { SlashCommandManager } from './managers/SlashCommandManager';
 import { ActiveModeManager } from './managers/ActiveModeManager';
@@ -36,11 +39,13 @@ import { MystiCodeLensProvider } from './providers/MystiCodeLensProvider';
 import { ProjectContextManager } from './managers/ProjectContextManager';
 import { VisualTestManager } from './managers/VisualTestManager';
 import { CanvasManager } from './managers/CanvasManager';
+import { CheckpointManager } from './managers/CheckpointManager';
 import { StitchService } from './services/StitchService';
 import { CanvasSecrets } from './services/CanvasSecrets';
 import { CliDiscoveryService } from './services/CliDiscoveryService';
 import { ModelRegistryService } from './services/ModelRegistryService';
 import { DeepMystAuthManager } from './managers/DeepMystAuthManager';
+import { AnnouncementManager } from './managers/AnnouncementManager';
 import { ConnectionsPanelManager } from './managers/ConnectionsPanelManager';
 import { McpConfigManager } from './services/McpConfigManager';
 import { PerfTracker } from './utils/PerfTracker';
@@ -68,6 +73,7 @@ let fileDecorationProvider: MystiFileDecorationProvider;
 let projectContextManager: ProjectContextManager;
 let visualTestManager: VisualTestManager;
 let canvasManager: CanvasManager;
+let checkpointManager: CheckpointManager;
 let deepMystAuthManager: DeepMystAuthManager;
 let connectionsPanelManager: ConnectionsPanelManager;
 let stitchService: StitchService;
@@ -143,6 +149,11 @@ export async function activate(context: vscode.ExtensionContext) {
     .catch(err => console.log('[Mysti] DeepMyst init/reconcile error:', err));
   context.subscriptions.push(deepMystAuthManager);
 
+  // Dynamic in-app messages (feedback surveys, offers, banners) DeepMyst targets
+  // at the signed-in user, shown as a card at the top of a session. A no-op when
+  // signed out; fetches/records via the shared DeepMystClient.
+  const announcementManager = new AnnouncementManager(deepMystAuthManager, context.globalState);
+
   suggestionManager = new SuggestionManager(context);
 
   // Get initial access level from configuration
@@ -181,6 +192,21 @@ export async function activate(context: vscode.ExtensionContext) {
   }
   autonomousManager = new AutonomousManager(context, memoryManager);
   compactionManager = new CompactionManager(context);
+
+  // Plan 08: smart compaction (DeepMyst-gated). The cheap compactor + retrieval
+  // calls route through DeepMyst's OpenAI-compatible LLM gateway with the same
+  // `dm_` key; the SavingsLedger tracks realized savings for the always-on UI.
+  // Injected post-construction so CompactionManager keeps its standard behavior
+  // until a signed-in + entitled user enables `mysti.compaction.smart.enabled`.
+  const deepMystGatewayClient = new DeepMystGatewayClient(
+    () => deepMystAuthManager.getApiKey(),
+    () => deepMystAuthManager.getGatewayUrl(),
+  );
+  const savingsLedger = new SavingsLedger(context);
+  context.subscriptions.push(savingsLedger);
+  compactionManager.setSmartCompactor(
+    new SmartCompactor(deepMystAuthManager, deepMystGatewayClient, savingsLedger),
+  );
   lifecycleManager = new AgentLifecycleManager(context);
   // B16: let ProviderManager report child PIDs to the lifecycle manager as
   // processes are registered (enables idle/child-protection tracking).
@@ -209,6 +235,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Initialize visual test manager
   visualTestManager = new VisualTestManager(context);
+
+  // Code-checkpoint engine (shadow git repo) backing "rewind code to here".
+  checkpointManager = new CheckpointManager(context);
 
   // F-11: SecretStorage-backed canvas API keys. Construct once and share this
   // instance with the generation services (via ChatViewProvider) and
@@ -263,7 +292,8 @@ export async function activate(context: vscode.ExtensionContext) {
     projectContextManager,
     visualTestManager,
     canvasManager,
-    modelRegistryService
+    modelRegistryService,
+    checkpointManager
   );
 
   // F-11: run the one-time settings→secrets migration BEFORE any service reads
@@ -283,6 +313,8 @@ export async function activate(context: vscode.ExtensionContext) {
   // Plan 04 Phase 4: let the chat teach agents the in-chat connect convention
   // and resolve the connect URL when a `<<<MYSTI_CONNECT:slug>>>` marker fires.
   chatViewProvider.setDeepMystAuth(deepMystAuthManager);
+  chatViewProvider.setSavingsLedger(savingsLedger);
+  chatViewProvider.setAnnouncementManager(announcementManager);
 
   PerfTracker.measure('activation.managerConstruction', 'activation.managerConstruction.start');
 
@@ -788,6 +820,9 @@ export function deactivate() {
   }
   if (visualTestManager) {
     visualTestManager.dispose();
+  }
+  if (checkpointManager) {
+    checkpointManager.dispose();
   }
   // F-29: tear down the Stitch SDK client (it was never disposed before).
   // dispose() is async; return its promise so VSCode awaits the cleanup.

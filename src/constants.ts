@@ -27,7 +27,7 @@ export const DEFAULT_PROVIDER: ProviderType = 'claude-code';
  * Replaces scattered 'claude-sonnet-4-5-20250929' literals. Per-provider
  * defaults still come from each ProviderConfig.defaultModel.
  */
-export const DEFAULT_FALLBACK_MODEL = 'claude-sonnet-4-5-20250929';
+export const DEFAULT_FALLBACK_MODEL = 'claude-sonnet-4-6';
 
 /**
  * Process management constants
@@ -107,6 +107,22 @@ export const COMPACTION_MESSAGES_TO_PRESERVE = 4; // Keep last N messages uncomp
 export const COMPACTION_SUMMARY_MAX_TOKENS = 2000; // Target token count for client summaries
 
 /**
+ * Smart compaction constants (Plan 08, DeepMyst-gated).
+ */
+export const PROMPT_CACHE_TTL_MS = 5 * 60 * 1000;          // Anthropic default ephemeral (5-min) cache window
+export const SMART_CRITICAL_FILL_PERCENT = 90;             // Compact regardless of cache warmth above this fill
+export const SMART_MIN_SUMMARY_TOKENS = 5000;             // Floor so the compacted prefix stays cacheable (Opus/Haiku min 4096)
+export const SMART_DEFAULT_REMAINING_TURNS = 6;           // Default N estimate for the economic gate
+export const SMART_DEFAULT_CHEAP_MODEL = 'claude-haiku-4-5'; // DeepMyst gateway cheap compactor model
+export const SMART_GATEWAY_DEFAULT_URL = 'https://gateway.v2.deepmyst.com';
+export const SMART_ENTITLEMENT_TTL_MS = 5 * 60 * 1000;    // Re-check entitlement at most every 5 min
+export const RETRIEVAL_MAX_WORKERS = 4;                   // Concurrency cap for parallel relevance scorers
+export const RETRIEVAL_CHUNK_TARGET_TOKENS = 7000;        // Target tokens per history chunk
+export const RETRIEVAL_TOP_K = 5;                         // Snippets kept after the reduce step
+export const RETRIEVAL_SNIPPET_TOKEN_BUDGET = 1500;       // Hard token budget for the retrieved-context suffix
+export const RETRIEVAL_DEDUP_SIMILARITY = 0.8;            // Jaccard threshold for near-duplicate snippet dedup
+
+/**
  * Agent lifecycle management constants
  */
 export const LIFECYCLE_DEFAULT_IDLE_TIMEOUT_MS = 60 * 60 * 1000;    // 1 hour
@@ -171,6 +187,22 @@ export const CANVAS_BATCH_CONCURRENCY = 3;
 export const CANVAS_ASSET_REF_PREFIX = 'asset://';
 export const CANVAS_CODE_DEFAULT_FRAMEWORK = 'react';
 export const CANVAS_CODE_OUTPUT_DIR = 'src/components';
+
+/**
+ * Code-checkpoint constants (shadow git repo for "rewind code to here").
+ *
+ * The shadow repo's git-dir lives under the extension's globalStorage (never
+ * inside the workspace, so it can't pollute the user's own .git), while its
+ * work-tree is the workspace root. CHECKPOINTS_DIR is the globalStorage
+ * subdirectory; per-workspace repos are keyed by a hash of the root path.
+ */
+export const CHECKPOINTS_DIR = 'checkpoints';
+export const CHECKPOINT_AUTHOR_NAME = 'Mysti Checkpoints';
+export const CHECKPOINT_AUTHOR_EMAIL = 'checkpoints@mysti.local';
+/** Default cap on tracked+untracked files before a snapshot is skipped (huge-repo guard). */
+export const CHECKPOINT_DEFAULT_MAX_FILES = 20000;
+/** Timeout for a single shadow-git command. */
+export const CHECKPOINT_GIT_TIMEOUT_MS = 30_000;
 
 /**
  * Google Stitch constants

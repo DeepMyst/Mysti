@@ -51,3 +51,6 @@ scripts/export-cache.js
 clipboard/
 resources/canvas-sandbox/preview-*.html
 media/canvas/preview-*.html
+
+# Plan 08 smart compaction: on-disk full-history transcripts + memory (never commit)
+.mysti/

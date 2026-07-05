@@ -31,7 +31,8 @@ import type {
   ProviderConfig,
   AgentConfiguration,
   AuthStatus,
-  SlashCommandDefinition
+  SlashCommandDefinition,
+  ModelInfo
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
@@ -58,36 +59,70 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   readonly config: ProviderConfig = {
     name: 'claude-code',
     displayName: 'Claude Code',
+    // Curated fallback list (bundled). Live discovery (discoverModels) refreshes
+    // this from the Anthropic Models API when an ANTHROPIC_API_KEY is present;
+    // otherwise the evergreen aliases (opus/sonnet/haiku) keep the UX current
+    // across model releases without an extension update. Verified 2026-06.
     models: [
       {
-        id: 'claude-opus-4-6',
-        name: 'Claude Opus 4.6',
-        description: 'Latest flagship model, most capable for complex tasks',
+        id: 'claude-fable-5',
+        name: 'Claude Fable 5',
+        description: "Anthropic's most capable model for the most demanding reasoning and agentic work",
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-opus-4-8',
+        name: 'Claude Opus 4.8',
+        description: 'Latest flagship Opus — most capable for complex agentic and coding tasks',
         contextWindow: 200000
       },
       {
         // Claude Code CLI's bracket-suffix notation for the 1M-context variant (issue #32).
         // Reaches the CLI argv intact on every spawn path (the shell:true gate permits
         // brackets — they are glob chars, not injection vectors).
+        id: 'claude-opus-4-8[1m]',
+        name: 'Claude Opus 4.8 (1M)',
+        description: 'Opus 4.8 with a 1-million-token context window',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-opus-4-7',
+        name: 'Claude Opus 4.7',
+        description: 'Previous-generation Opus, highly autonomous for long-horizon work',
+        contextWindow: 200000
+      },
+      {
+        id: 'claude-sonnet-4-6',
+        name: 'Claude Sonnet 4.6',
+        description: 'Best balance of speed and intelligence',
+        contextWindow: 200000
+      },
+      {
+        id: 'claude-opus-4-6',
+        name: 'Claude Opus 4.6',
+        description: 'Older Opus flagship, advanced reasoning and analysis',
+        contextWindow: 200000
+      },
+      {
         id: 'claude-opus-4-6[1m]',
         name: 'Claude Opus 4.6 (1M)',
         description: 'Opus 4.6 with a 1-million-token context window',
         contextWindow: 1000000
       },
       {
-        id: 'claude-sonnet-4-5-20250929',
-        name: 'Claude Sonnet 4.5',
-        description: 'Best balance of speed and intelligence',
-        contextWindow: 200000
-      },
-      {
         id: 'claude-opus-4-5-20251101',
         name: 'Claude Opus 4.5',
-        description: 'Previous flagship, advanced reasoning and analysis',
+        description: 'Legacy Opus model',
         contextWindow: 200000
       },
       {
-        id: 'claude-haiku-4-5-20251001',
+        id: 'claude-sonnet-4-5-20250929',
+        name: 'Claude Sonnet 4.5',
+        description: 'Legacy Sonnet model',
+        contextWindow: 200000
+      },
+      {
+        id: 'claude-haiku-4-5',
         name: 'Claude Haiku 4.5',
         description: 'Fast and efficient for simpler tasks',
         contextWindow: 200000
@@ -114,7 +149,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         contextWindow: 200000
       }
     ],
-    defaultModel: 'claude-sonnet-4-5-20250929'
+    defaultModel: 'claude-sonnet-4-6'
   };
 
   readonly capabilities: ProviderCapabilities = {
@@ -424,7 +459,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   /**
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('claudeCodeModel', '');
     if (customModel) {
@@ -443,6 +478,45 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       return settings.model;
     }
     return undefined;
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3) via the official Anthropic Models API.
+   *
+   * The Claude Code CLI has no `list models` subcommand and normally authenticates
+   * with a Claude.ai subscription (no API key), so this only fires when an
+   * ANTHROPIC_API_KEY is present in the environment — otherwise it returns null
+   * and the curated list + evergreen aliases (opus/sonnet/haiku) carry the UX.
+   * Returns null on any failure so the registry keeps its curated/cached list.
+   * Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const env = getEnrichedEnv();
+    const apiKey = env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) { return null; }
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+      });
+      if (!response.ok) { return null; }
+      const data = await response.json() as {
+        data?: Array<{ id?: string; display_name?: string; max_input_tokens?: number }>;
+      };
+      const models = (data.data || [])
+        .map<ModelInfo>(m => ({
+          id: (m.id || '').trim(),
+          name: m.display_name || m.id || '',
+          contextWindow: typeof m.max_input_tokens === 'number' ? m.max_input_tokens : undefined,
+        }))
+        .filter(m => m.id.length > 0);
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
   }
 
   protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {

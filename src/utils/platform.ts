@@ -205,6 +205,14 @@ export function getCommonSearchPaths(config: CliSearchConfig): string[] {
     // Windows paths
     const appData = process.env.APPDATA || path.join(homeDir, 'AppData', 'Roaming');
     const winCmd = windowsCmd || `${commandName}.cmd`;
+    // Mysti local-prefix fallback (permission-denied global install): on Windows,
+    // `npm install --prefix X` drops the shim directly in the prefix root
+    // (X\<cmd>.cmd), NOT in a bin/ subdir as on Unix — so the Unix-shaped localBin
+    // added above never matches. Add the Windows-shaped variants here.
+    const localPrefix = path.join(homeDir, LOCAL_CLI_PREFIX);
+    addPath(path.join(localPrefix, winCmd));
+    addPath(path.join(localPrefix, commandName));
+    // npm global (default prefix)
     addPath(path.join(appData, 'npm', winCmd));
     addPath(path.join(appData, 'npm', commandName));
   } else {
@@ -347,14 +355,27 @@ let _resolvedNodeDir: string | null = null;
 /**
  * Build the candidate directories for the `node` binary, in priority order.
  * Kept as a standalone builder so new candidates are a one-line addition.
- *
- * NOTE (issue #27): Windows candidate directories (e.g. %APPDATA%\npm,
- * %ProgramFiles%\nodejs) are missing from this list. That fix is owned by the
- * Batch 2 Windows epic — add the Windows entries here when it lands.
  */
 function _buildNodeDirCandidates(): string[] {
   const homeDir = os.homedir();
   const candidates: string[] = [];
+
+  if (process.platform === 'win32') {
+    // Windows (issue #27): node.exe ships in Program Files; nvm-windows symlinks
+    // a "current" dir; the npm global dir (%APPDATA%\npm) also holds node shims.
+    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+    const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const appData = process.env.APPDATA || path.join(homeDir, 'AppData', 'Roaming');
+    const localAppData = process.env.LOCALAPPDATA || path.join(homeDir, 'AppData', 'Local');
+    candidates.push(path.join(programFiles, 'nodejs'));
+    candidates.push(path.join(programFilesX86, 'nodejs'));
+    // nvm-windows: NVM_SYMLINK points at the active version; NVM_HOME holds versions
+    if (process.env.NVM_SYMLINK) { candidates.push(process.env.NVM_SYMLINK); }
+    if (process.env.NVM_HOME) { candidates.push(process.env.NVM_HOME); }
+    candidates.push(path.join(appData, 'npm'));
+    candidates.push(path.join(localAppData, 'Programs', 'nodejs'));
+    return candidates;
+  }
 
   // NVM current symlink (highest priority — user's selected version)
   const nvm = _walkNvmDirs();
@@ -377,6 +398,11 @@ function _buildNodeDirCandidates(): string[] {
   return candidates;
 }
 
+/** The node binary's filename for the current platform. */
+function _nodeBinaryName(): string {
+  return process.platform === 'win32' ? 'node.exe' : 'node';
+}
+
 /**
  * Find the directory containing the actual `node` binary.
  * Checks common locations since process.execPath in VSCode points to Electron, not node.
@@ -388,11 +414,14 @@ function findNodeDir(): string | null {
 
   _nodeDirWalkCount++;
   const candidates = _buildNodeDirCandidates();
+  const nodeBin = _nodeBinaryName();
 
   for (const dir of candidates) {
-    const nodePath = path.join(dir, 'node');
+    const nodePath = path.join(dir, nodeBin);
     try {
-      fs.accessSync(nodePath, fs.constants.X_OK);
+      // X_OK is meaningless on Windows (everything reports executable); F_OK
+      // (existence) is the correct check there.
+      fs.accessSync(nodePath, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
       _resolvedNodeDir = dir;
       console.log('[Mysti] Resolved node directory:', dir);
       return dir;
@@ -402,7 +431,7 @@ function findNodeDir(): string | null {
   // Fallback: process.execPath dirname (works in standalone node, not VSCode)
   const execDir = path.dirname(process.execPath);
   try {
-    fs.accessSync(path.join(execDir, 'node'), fs.constants.X_OK);
+    fs.accessSync(path.join(execDir, nodeBin), process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
     _resolvedNodeDir = execDir;
     return execDir;
   } catch { /* not there either */ }
@@ -484,6 +513,23 @@ export async function getNpmPrefix(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Filter a provider's install methods down to those applicable to the current OS
+ * (or the supplied platform), sorted by ascending priority. A method with no
+ * `platform` (or `platform: 'all'`) applies everywhere. Centralized here so both
+ * BaseCliProvider (deriving getInstallCommand) and ChatViewProvider (what the
+ * install modal renders) agree on which commands a given OS should ever see — the
+ * webview can't reliably know the host OS, so this gate must run extension-side.
+ */
+export function filterInstallMethodsForOS<T extends { platform?: 'darwin' | 'linux' | 'win32' | 'all'; priority?: number }>(
+  methods: T[],
+  platform: NodeJS.Platform = process.platform
+): T[] {
+  return methods
+    .filter(m => !m.platform || m.platform === 'all' || m.platform === platform)
+    .sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
 }
 
 /**

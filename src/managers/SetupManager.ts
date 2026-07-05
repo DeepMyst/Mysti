@@ -757,12 +757,36 @@ export class SetupManager {
 
       const terminal = vscode.window.createTerminal({
         name: 'Gemini GCA Setup',
-        shellPath: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash'
+        shellPath: process.platform === 'win32' ? 'cmd.exe' : (process.env.SHELL || '/bin/bash')
       });
       terminal.show();
-      terminal.sendText('echo "Adding GOOGLE_GENAI_USE_GCA=true to your shell profile..."');
-      terminal.sendText('echo \'export GOOGLE_GENAI_USE_GCA=true\' >> ~/.zshrc');
-      terminal.sendText('echo "Done! Run \'source ~/.zshrc\' or restart your terminal."');
+
+      if (process.platform === 'win32') {
+        // Persist to the user's environment (no shell rc file on Windows).
+        terminal.sendText('setx GOOGLE_GENAI_USE_GCA true');
+        terminal.sendText('echo Done! Restart VS Code (and any terminals) for the change to take effect.');
+      } else {
+        // Pick the rc file + syntax for the user's actual shell, not a hardcoded
+        // ~/.zshrc (which silently does nothing for bash/fish users).
+        const shell = path.basename(process.env.SHELL || 'bash');
+        let profile: string;
+        let line: string;
+        if (shell.includes('fish')) {
+          profile = '~/.config/fish/config.fish';
+          line = 'set -gx GOOGLE_GENAI_USE_GCA true';
+          terminal.sendText('mkdir -p ~/.config/fish');
+        } else if (shell.includes('zsh')) {
+          profile = '~/.zshrc';
+          line = 'export GOOGLE_GENAI_USE_GCA=true';
+        } else {
+          // bash / sh and friends
+          profile = process.platform === 'darwin' ? '~/.bash_profile' : '~/.bashrc';
+          line = 'export GOOGLE_GENAI_USE_GCA=true';
+        }
+        terminal.sendText(`echo "Adding GOOGLE_GENAI_USE_GCA to ${profile} (${shell})..."`);
+        terminal.sendText(`echo '${line}' >> ${profile}`);
+        terminal.sendText(`echo "Done! Run 'source ${profile}' or restart your terminal."`);
+      }
 
       // Auth mutation — drop the cached status so subsequent reads re-probe
       this._discoveryService?.invalidate(providerId);

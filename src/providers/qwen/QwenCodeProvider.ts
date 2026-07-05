@@ -248,7 +248,7 @@ export class QwenCodeProvider extends BaseCliProvider {
     console.log(`[Mysti] Qwen: Using auto-edit approval mode [mode=${mode}, access=${accessLevel}]`);
   }
 
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('qwenCodeModel', '');
     if (customModel) {

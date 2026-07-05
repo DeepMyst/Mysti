@@ -27,6 +27,7 @@ import type {
   ContextItem,
   Conversation,
   AgentConfiguration,
+  ModelInfo,
 } from '../../types';
 import { getEnrichedEnv, readOpenClawToken } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
@@ -153,6 +154,36 @@ export class OpenClawProvider extends BaseCliProvider {
 
   getCliPath(): string {
     return this._getCliPathCommon();
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3) via `openclaw models list --all --json`,
+   * the CLI's own machine-readable model catalog (the richest source — it carries
+   * context windows). Tolerant of either a top-level array or a `{ models: [...] }`
+   * envelope. Returns null on any failure so the registry keeps its curated/cached
+   * list. Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const raw = await this._runCliForDiscovery(['models', 'list', '--all', '--json'], timeoutMs);
+    if (!raw) { return null; }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const rows: Array<{ id?: string; key?: string; name?: string; contextWindow?: number; contextTokens?: number }> =
+        Array.isArray(parsed)
+          ? parsed as never[]
+          : ((parsed as { models?: never[] })?.models ?? []);
+      const models = rows
+        .map<ModelInfo>(m => {
+          const id = (m.id || m.key || '').trim();
+          const ctx = typeof m.contextWindow === 'number' ? m.contextWindow
+            : typeof m.contextTokens === 'number' ? m.contextTokens : undefined;
+          return { id, name: m.name || id, contextWindow: ctx };
+        })
+        .filter(m => m.id.length > 0);
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
   }
 
   protected _getCliCommandName(): string {

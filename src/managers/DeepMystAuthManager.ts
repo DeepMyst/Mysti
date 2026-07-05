@@ -34,6 +34,8 @@ import {
   DEEPMYST_DEFAULT_API_URL,
   DEEPMYST_DEFAULT_WEB_URL,
 } from '../services/DeepMystClient';
+import type { EntitlementState } from '../types';
+import { SMART_GATEWAY_DEFAULT_URL, SMART_ENTITLEMENT_TTL_MS } from '../constants';
 
 /** SecretStorage key under which the DeepMyst API key is stored. */
 const SECRET_KEY = 'mysti.deepmyst.apiKey';
@@ -58,6 +60,8 @@ export class DeepMystAuthManager implements vscode.Disposable {
 
   private readonly _client: DeepMystClient;
   private _cachedKey: string | undefined;
+  /** Cached entitlement (tier + free-monthly allowance) for smart compaction. */
+  private _entitlement: EntitlementState | undefined;
   /**
    * In-flight browser sign-ins, keyed by their CSRF `state` → resolver. A user
    * may click "Sign in" several times (e.g. while the browser/Clerk is slow),
@@ -97,6 +101,12 @@ export class DeepMystAuthManager implements vscode.Disposable {
     return v || DEEPMYST_DEFAULT_WEB_URL;
   }
 
+  /** The DeepMyst LLM gateway base URL (smart compaction; distinct from the MCP/REST apiUrl). */
+  getGatewayUrl(): string {
+    const v = vscode.workspace.getConfiguration('mysti').get<string>('deepmyst.gatewayUrl', '').trim();
+    return v || SMART_GATEWAY_DEFAULT_URL;
+  }
+
   /** The shared API client (key + URL injected). */
   get client(): DeepMystClient {
     return this._client;
@@ -115,6 +125,91 @@ export class DeepMystAuthManager implements vscode.Disposable {
 
   getState(): DeepMystAuthState {
     return { signedIn: this.isSignedIn(), apiUrl: this.getApiUrl(), webUrl: this.getWebUrl() };
+  }
+
+  // ── Entitlement (Plan 08 smart compaction) ──────────────────────────────────
+
+  /** The last-checked entitlement snapshot (for the savings UI), if any. */
+  getEntitlement(): EntitlementState | undefined {
+    return this._entitlement;
+  }
+
+  /**
+   * Synchronous gate for premium features: true when the user is entitled —
+   * paid OR within the free monthly allowance. Uses the cached entitlement; with
+   * none cached it optimistically allows a signed-in user and kicks a background
+   * refresh (the entitlement endpoint may not be deployed yet — see
+   * {@link ensureActiveAccount}'s graceful fallback).
+   */
+  hasEntitlement(): boolean {
+    if (!this.isSignedIn()) { return false; }
+    if (this._entitlement && Date.now() - this._entitlement.checkedAt < SMART_ENTITLEMENT_TTL_MS) {
+      return this._entitlement.entitled;
+    }
+    void this.ensureActiveAccount();   // refresh in the background
+    return true;                        // optimistic until the check returns
+  }
+
+  /**
+   * Check the user's tier + free-monthly allowance against DeepMyst
+   * (GET /api/v1/me). Cached for SMART_ENTITLEMENT_TTL_MS. Graceful fallback: if
+   * the endpoint 404s or is unreachable, a signed-in user is treated as entitled
+   * (tier 'free', source 'fallback') so smart compaction works before the
+   * entitlement endpoint ships and tightens once it does. Never throws.
+   */
+  async ensureActiveAccount(force = false): Promise<EntitlementState> {
+    if (!this.isSignedIn()) {
+      this._entitlement = { entitled: false, tier: 'signed-out', source: 'fallback', checkedAt: Date.now() };
+      return this._entitlement;
+    }
+    if (!force && this._entitlement && Date.now() - this._entitlement.checkedAt < SMART_ENTITLEMENT_TTL_MS) {
+      return this._entitlement;
+    }
+    const key = this._cachedKey as string;
+    const base = this.getApiUrl().replace(/\/+$/, '');
+    // Never send the dm_ key to a non-DeepMyst host (a workspace could try to
+    // override apiUrl). On an untrusted host, deny rather than leak the key.
+    if (!isDeepMystHost(base)) {
+      this._entitlement = { entitled: false, tier: 'untrusted-host', source: 'fallback', checkedAt: Date.now() };
+      return this._entitlement;
+    }
+    try {
+      const res = await fetch(`${base}/api/v1/me/entitlement`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const o = await res.json() as Record<string, unknown>;
+        const tier = typeof o.tier === 'string' ? o.tier : 'free';
+        const freeRemaining = numOrUndef(o.free_remaining ?? o.freeRemaining);
+        const freeLimit = numOrUndef(o.free_limit ?? o.freeLimit);
+        // Prefer the server's explicit `entitled`; otherwise derive (paid tier
+        // OR within the free monthly allowance).
+        const entitled = typeof o.entitled === 'boolean'
+          ? o.entitled
+          : ((tier !== 'free' && tier !== 'signed-out') || freeRemaining === undefined || freeRemaining > 0);
+        this._entitlement = {
+          entitled,
+          tier,
+          freeRemaining,
+          freeLimit,
+          source: 'endpoint',
+          checkedAt: Date.now(),
+        };
+      } else if (res.status === 401 || res.status === 403) {
+        // Hard DENY on an auth failure — the key is invalid/unentitled. Never
+        // fail-open on a rejected key (only on a not-deployed / unreachable endpoint).
+        this._entitlement = { entitled: false, tier: 'unauthorized', source: 'endpoint', checkedAt: Date.now() };
+      } else {
+        // 404 (endpoint not deployed yet) or 5xx → graceful lenient fallback.
+        this._entitlement = { entitled: true, tier: 'free', source: 'fallback', checkedAt: Date.now() };
+      }
+    } catch {
+      this._entitlement = { entitled: true, tier: 'free', source: 'fallback', checkedAt: Date.now() };
+    }
+    this._onDidChangeAuth.fire(this.getState());
+    return this._entitlement;
   }
 
   // ── Sign-in / sign-out ──────────────────────────────────────────────────────
@@ -260,6 +355,7 @@ export class DeepMystAuthManager implements vscode.Disposable {
   async signOut(): Promise<void> {
     await this._context.secrets.delete(SECRET_KEY);
     this._cachedKey = undefined;
+    this._entitlement = undefined;
     this._onDidChangeAuth.fire(this.getState());
     vscode.window.showInformationMessage('Signed out of DeepMyst.');
   }
@@ -281,8 +377,24 @@ export class DeepMystAuthManager implements vscode.Disposable {
     }
     await this._context.secrets.store(SECRET_KEY, key);
     this._cachedKey = key;
+    this._entitlement = undefined;   // re-check entitlement for the new key
     this._onDidChangeAuth.fire(this.getState());
     vscode.window.showInformationMessage('Signed in to DeepMyst. Your connected MCP tools are now available.');
     return true;
+  }
+}
+
+/** Narrow an unknown JSON value to a finite number, else undefined. */
+function numOrUndef(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/** Only send the dm_ key to DeepMyst (or localhost for dev). */
+function isDeepMystHost(urlStr: string): boolean {
+  try {
+    const h = new URL(urlStr).hostname.toLowerCase();
+    return h === 'deepmyst.com' || h.endsWith('.deepmyst.com') || h === 'localhost' || h === '127.0.0.1';
+  } catch {
+    return false;
   }
 }
