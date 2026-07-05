@@ -17,6 +17,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { listMcpTools, callMcpTool } from '../managers/CanvasMcpBridge';
 import type { CanvasToolContext } from '../managers/CanvasToolDispatch';
 import type { PreviewIssue } from './CanvasPreviewService';
+import type { CanvasMediaService, MediaKind } from './CanvasMediaService';
 
 /** The async render-to-PNG + vision-critique tool (Playwright/vision injected). */
 export type RenderPagePreviewHook = (
@@ -32,6 +33,30 @@ const RENDER_PREVIEW_TOOL = {
     properties: { pageId: { type: 'string' }, questions: { type: 'array', items: { type: 'string' } } },
     required: ['pageId'],
   },
+} as const;
+
+const MEDIA_TOOL_SCHEMA = {
+  type: 'object',
+  properties: {
+    prompt: { type: 'string' },
+    role: { type: 'string', description: 'hero | background | illustration | icon | photo | decoration' },
+    sourcePageId: { type: 'string' },
+    width: { type: 'number' },
+    height: { type: 'number' },
+  },
+  required: ['prompt'],
+} as const;
+
+const GENERATE_VISUAL_TOOL = {
+  name: 'generate_visual',
+  description: 'WRITE (stages an edit): generate an image (fal via DeepMyst, or a local key) and register it as a provenance-tracked asset. Returns the asset:// ref to use in a page. Generate with negative space when text will sit on it.',
+  inputSchema: MEDIA_TOOL_SCHEMA,
+} as const;
+
+const GENERATE_VIDEO_TOOL = {
+  name: 'generate_video',
+  description: 'WRITE (stages an edit): generate a short video clip (fal via DeepMyst, or a local key) and register it as a provenance-tracked asset. Returns the asset:// ref.',
+  inputSchema: MEDIA_TOOL_SCHEMA,
 } as const;
 
 /**
@@ -51,6 +76,8 @@ export interface CanvasToolServerOptions {
   resolveContext: () => CanvasToolContext | null;
   /** Optional render-to-PNG + vision self-QA tool; when set, exposes render_page_preview. */
   renderPagePreview?: RenderPagePreviewHook;
+  /** Optional media generation; when set, exposes generate_visual/generate_video. */
+  mediaService?: CanvasMediaService;
   serverName?: string;
   version?: string;
 }
@@ -59,10 +86,12 @@ export class CanvasToolServer {
   private _server: Server;
   private _resolveContext: () => CanvasToolContext | null;
   private _renderPagePreview?: RenderPagePreviewHook;
+  private _mediaService?: CanvasMediaService;
 
   constructor(opts: CanvasToolServerOptions) {
     this._resolveContext = opts.resolveContext;
     this._renderPagePreview = opts.renderPagePreview;
+    this._mediaService = opts.mediaService;
     this._server = new Server(
       { name: opts.serverName ?? 'mysti-canvas', version: opts.version ?? '0.1.0' },
       { capabilities: { tools: {} } },
@@ -85,9 +114,12 @@ export class CanvasToolServer {
   }
 
   private _registerHandlers(): void {
-    this._server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: this._renderPagePreview ? [...listMcpTools(), RENDER_PREVIEW_TOOL] : listMcpTools(),
-    }));
+    this._server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const tools = [...listMcpTools()];
+      if (this._renderPagePreview) { tools.push(RENDER_PREVIEW_TOOL); }
+      if (this._mediaService) { tools.push(GENERATE_VISUAL_TOOL, GENERATE_VIDEO_TOOL); }
+      return { tools };
+    });
 
     this._server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const ctx = this._resolveContext();
@@ -95,6 +127,30 @@ export class CanvasToolServer {
         return { content: [{ type: 'text', text: 'No active canvas to edit. Open the canvas first.' }], isError: true };
       }
       const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+
+      // Media generation (fal via DeepMyst hub / local key) — async, out of band.
+      if (req.params.name === 'generate_visual' || req.params.name === 'generate_video') {
+        if (!this._mediaService) {
+          return { content: [{ type: 'text', text: `${req.params.name} is not available.` }], isError: true };
+        }
+        const kind: MediaKind = req.params.name === 'generate_video' ? 'video' : 'image';
+        const size = typeof args.width === 'number' && typeof args.height === 'number'
+          ? { width: args.width as number, height: args.height as number } : undefined;
+        const result = await this._mediaService.generate(ctx.artifact, {
+          kind,
+          prompt: String(args.prompt ?? ''),
+          role: typeof args.role === 'string' ? args.role : undefined,
+          sourcePageId: typeof args.sourcePageId === 'string' ? args.sourcePageId : undefined,
+          size,
+        });
+        if (!result.ok) {
+          const hint = result.connectHint ? ` <<<MYSTI_CONNECT:${result.connectHint}>>>` : '';
+          return { content: [{ type: 'text', text: `${result.error}${hint}` }], isError: true };
+        }
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: true, source: result.source, asset: { id: result.asset!.id, ref: result.asset!.ref, role: result.asset!.role } }) }],
+        };
+      }
 
       // Async self-QA tool, handled out of band from the sync dispatch.
       if (req.params.name === 'render_page_preview') {

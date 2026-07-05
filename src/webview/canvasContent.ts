@@ -71,7 +71,9 @@ export function getCanvasContent(
   webview: vscode.Webview,
   extensionUri: vscode.Uri,
   _version: string = '0.0.0',
-  artifact?: CanvasArtifact
+  artifact?: CanvasArtifact,
+  /** Real connection status chips (from CanvasCapabilityRegistry); fallback = all off. */
+  capabilities?: Array<{ label: string; on: boolean }>
 ): string {
   const nonce = getNonce();
   const cspSource = webview.cspSource;
@@ -104,7 +106,7 @@ export function getCanvasContent(
     },
     presets, deviceFormats, activeThemeId: 'clean-saas',
     runtimeContent, harnessContent, innerCsp: SANDBOX_INNER_CSP,
-    capabilities: [{ label: 'fal', on: false }, { label: 'Stitch', on: false }, { label: 'Figma', on: false }],
+    capabilities: capabilities ?? [{ label: 'fal', on: false }, { label: 'Stitch', on: false }, { label: 'Figma', on: false }],
     // Quick-start templates for the empty state / add-page menu.
     scaffolds: listScaffolds(),
   };

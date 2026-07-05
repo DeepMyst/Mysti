@@ -17,7 +17,7 @@ import * as vscode from 'vscode';
  * Logical identifiers for the canvas generation API keys.
  * These map 1:1 to the legacy `mysti.canvas.*ApiKey` settings.
  */
-export type CanvasSecretKind = 'openai' | 'gemini' | 'stitch';
+export type CanvasSecretKind = 'openai' | 'gemini' | 'stitch' | 'fal';
 
 /**
  * SecretStorage-backed store for canvas generation API keys (F-11).
@@ -38,6 +38,7 @@ export class CanvasSecrets {
     openai: 'mysti.canvas.openaiApiKey',
     gemini: 'mysti.canvas.geminiApiKey',
     stitch: 'mysti.canvas.stitchApiKey',
+    fal: 'mysti.canvas.falApiKey',
   };
 
   /** Legacy settings keys (relative to the `mysti` config section). */
@@ -45,6 +46,8 @@ export class CanvasSecrets {
     openai: 'canvas.openaiApiKey',
     gemini: 'canvas.geminiApiKey',
     stitch: 'canvas.stitchApiKey',
+    // fal never had a legacy setting; migration finds nothing and skips it.
+    fal: 'canvas.falApiKey',
   };
 
   /** globalState flag recording that the one-time settings→secrets migration ran. */
