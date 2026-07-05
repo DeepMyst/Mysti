@@ -38,6 +38,7 @@ import {
   MODEL_CACHE_TTL_CLI_MS,
   MODEL_CACHE_TTL_LOCAL_MS,
   MODEL_DISCOVERY_TIMEOUT_MS,
+  DEFAULT_FALLBACK_MODEL,
 } from '../../src/constants';
 import type { ModelInfo } from '../../src/types';
 import {
@@ -136,7 +137,7 @@ describe('ModelRegistryService', () => {
     const { context } = makeContext();
     const registry = new ModelRegistryService(context);
     registry.setProviderSource(makeSource(CURATED));
-    expect(registry.getDefaultModel('nope')).toBe('claude-sonnet-4-5-20250929');
+    expect(registry.getDefaultModel('nope')).toBe(DEFAULT_FALLBACK_MODEL);
     registry.dispose();
   });
 

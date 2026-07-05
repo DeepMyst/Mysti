@@ -187,6 +187,11 @@ function createHarness(): Harness {
   const compactionManager = {
     shouldCompact: () => false,
     recordUsage: () => undefined,
+    // Smart-compaction (Plan 08) additions the done-handler calls unconditionally.
+    appendHistory: () => undefined,
+    isSmartActive: () => false,
+    evaluateCompaction: () => ({ act: false, smart: false }),
+    getThreshold: () => 75,
   } as any;
 
   const contextManager = {
@@ -217,7 +222,11 @@ function createHarness(): Harness {
     engagementManager,
     projectContextManager,
     noop,                  // visualTestManager
-    noop                   // canvasManager
+    noop,                  // canvasManager
+    noop,                  // modelRegistry (Plan 01)
+    // checkpointManager — snapshot returns null so _captureCheckpoint no-ops
+    // (these tests assert message persistence, not code checkpoints).
+    { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any
   );
 
   const sidebarMessages: Array<{ type: string; payload?: any }> = [];
