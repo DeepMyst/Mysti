@@ -579,7 +579,8 @@
         "mysti.deepmyst.apiUrl": {
           "type": "string",
           "default": "https://api.v2.deepmyst.com",
-          "markdownDescription": "Base URL of the DeepMyst API used for brokered MCP connections (Plan 04). The user's `dm_` API key is sent as `Authorization: Bearer`; DeepMyst exposes MCP tools at `/api/v1/mcp/{agent}`."
+          "scope": "machine",
+          "markdownDescription": "Base URL of the DeepMyst API used for brokered MCP connections (Plan 04). The user's `dm_` API key is sent as `Authorization: Bearer`; DeepMyst exposes MCP tools at `/api/v1/mcp/{agent}`. Machine-scoped so a workspace can't redirect your key; the client also only ever sends it to a `*.deepmyst.com` host."
         },
         "mysti.deepmyst.webUrl": {
           "type": "string",

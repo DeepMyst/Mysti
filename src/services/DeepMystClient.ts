@@ -140,6 +140,21 @@ export function isPlausibleDeepMystKey(key: string | undefined | null): key is s
   return typeof key === 'string' && key.startsWith(DEEPMYST_KEY_PREFIX) && key.trim().length >= DEEPMYST_KEY_PREFIX.length + 8;
 }
 
+/**
+ * Only ever send the `dm_` key to DeepMyst (or localhost for dev). Mirrors the
+ * guard on the two sibling clients (DeepMystAuthManager, DeepMystGatewayClient)
+ * so a workspace-overridden `mysti.deepmyst.apiUrl` can't redirect the key to an
+ * attacker host. Defense-in-depth alongside the setting's machine scope.
+ */
+export function isDeepMystHost(urlStr: string): boolean {
+  try {
+    const h = new URL(urlStr).hostname.toLowerCase();
+    return h === 'deepmyst.com' || h.endsWith('.deepmyst.com') || h === 'localhost' || h === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
 export class DeepMystClient {
   /**
    * @param _getApiKey returns the current `dm_` key (or undefined when signed out)
@@ -155,10 +170,14 @@ export class DeepMystClient {
     return this._getApiUrl().replace(/\/+$/, '');
   }
 
-  /** Authorization headers for an authenticated request, or null when signed out. */
+  /**
+   * Authorization headers for an authenticated request, or null when signed out
+   * OR the configured host isn't DeepMyst — every list/mutate call then
+   * short-circuits to its empty result rather than leaking the key.
+   */
   private _authHeaders(): Record<string, string> | null {
     const key = this._getApiKey();
-    if (!key) {
+    if (!key || !isDeepMystHost(this._baseUrl())) {
       return null;
     }
     return { Authorization: `Bearer ${key}`, Accept: 'application/json' };
@@ -202,6 +221,9 @@ export class DeepMystClient {
     const key = candidate ?? this._getApiKey();
     if (!isPlausibleDeepMystKey(key)) {
       return { valid: false, status: 0, error: `Key must start with "${DEEPMYST_KEY_PREFIX}".` };
+    }
+    if (!isDeepMystHost(this._baseUrl())) {
+      return { valid: false, status: 0, error: 'Refusing to send the key to a non-DeepMyst host — check mysti.deepmyst.apiUrl.' };
     }
     try {
       const res = await fetch(`${this._baseUrl()}/api/v1/mcp/builtin`, {

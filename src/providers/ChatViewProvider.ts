@@ -3819,13 +3819,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       // Plan 08 smart path: when active, the cheap incremental gateway summarizer
       // replaces BOTH native /compact and same-model client-summarize. On success
-      // we drop the provider session so the NEXT turn reseeds a fresh session with
-      // the compacted context — required for --resume providers like Claude (the
-      // CLI owns history server-side), harmless for re-send providers. Falls
-      // through to the native/client strategy below if the gateway is unavailable.
+      // we drop the provider session so the NEXT turn reseeds with the compacted
+      // context. Two things must be cleared for the reseed to actually take hold:
+      //   1. the persistent process — providers like Claude run a long-lived CLI
+      //      process that accumulates the whole conversation in memory; nulling the
+      //      session id alone would leave that process (and the un-compacted
+      //      context) alive, making compaction a NO-OP on the primary provider;
+      //   2. the session id — so the next turn re-sends the compacted messages
+      //      (effectiveConversation is only the conversation when sessionId is null).
       if (this._compactionManager.isSmartActive() && conversation) {
         const smart = await this._compactionManager.executeSmartSummarization(settings, conversation, panelId);
         if (smart && smart.success) {
+          this._providerManager.disposePersistentProcess(panelId);
           this._providerManager.clearSessionForProvider(settings.provider, panelId);
           this._postToPanel(panelId, {
             type: 'compactionStatus',

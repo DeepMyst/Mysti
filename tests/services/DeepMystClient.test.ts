@@ -12,10 +12,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   DeepMystClient,
   isPlausibleDeepMystKey,
+  isDeepMystHost,
   DEEPMYST_KEY_PREFIX,
 } from '../../src/services/DeepMystClient';
 
-const API = 'https://api.deepmyst.test';
+const API = 'https://api.v2.deepmyst.com'; // must be a real DeepMyst host — the client refuses to send the key elsewhere
 const GOOD_KEY = 'dm_live_abcdef 1234567890'.replace(' ', ''); // dm_live_abcdef1234567890
 
 function client(key: string | undefined, api = API) {
@@ -31,6 +32,39 @@ describe('isPlausibleDeepMystKey', () => {
     expect(isPlausibleDeepMystKey('sk-abcdef123456')).toBe(false);
     expect(isPlausibleDeepMystKey('dm_')).toBe(false);
     expect(isPlausibleDeepMystKey(undefined)).toBe(false);
+  });
+});
+
+describe('isDeepMystHost (dm_ key host allowlist)', () => {
+  it('accepts deepmyst.com, its subdomains, and localhost', () => {
+    expect(isDeepMystHost('https://api.v2.deepmyst.com')).toBe(true);
+    expect(isDeepMystHost('https://deepmyst.com/x')).toBe(true);
+    expect(isDeepMystHost('http://localhost:8080')).toBe(true);
+    expect(isDeepMystHost('http://127.0.0.1:3000')).toBe(true);
+  });
+  it('rejects look-alike and attacker hosts', () => {
+    expect(isDeepMystHost('https://api.deepmyst.test')).toBe(false);
+    expect(isDeepMystHost('https://deepmyst.com.evil.io')).toBe(false);
+    expect(isDeepMystHost('https://evil.com')).toBe(false);
+    expect(isDeepMystHost('not a url')).toBe(false);
+  });
+});
+
+describe('DeepMystClient refuses to leak the key to a non-DeepMyst host', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => { fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  it('validateKey returns invalid WITHOUT a network call when apiUrl is not DeepMyst', async () => {
+    const res = await client(GOOD_KEY, 'https://attacker.example.com').validateKey();
+    expect(res.valid).toBe(false);
+    expect(res.error).toContain('non-DeepMyst host');
+    expect(fetchMock).not.toHaveBeenCalled(); // key never emitted
+  });
+
+  it('authenticated calls short-circuit (no Bearer sent) on a non-DeepMyst host', async () => {
+    expect(await client(GOOD_KEY, 'https://attacker.example.com').listBuiltinMcps()).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

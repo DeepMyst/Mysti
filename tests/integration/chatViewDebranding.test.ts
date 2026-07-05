@@ -125,6 +125,11 @@ function createHarness(): Harness {
     getAllProviders: () => [],
     getAllProviderIds: vi.fn(() => [...ALL_PROVIDER_IDS]),
     getModelContextWindow: vi.fn(() => 200000),
+    // Smart-compaction reseed uses BOTH: dispose the persistent process (so a
+    // long-lived CLI like Claude drops its accumulated context) then clear the
+    // session id (so the next turn re-sends the compacted messages).
+    disposePersistentProcess: vi.fn(),
+    clearSessionForProvider: vi.fn(),
     // Plan 01: _getPanelModel now resolves the active model through the
     // registry-aware getModels() (empty list here = no built-in models, so the
     // keep-validated/custom precedence is exercised) instead of reading
@@ -148,6 +153,7 @@ function createHarness(): Harness {
     isSmartActive: vi.fn(() => false),
     evaluateCompaction: vi.fn(() => ({ act: false, smart: false })),
     appendHistory: vi.fn(),
+    executeSmartSummarization: vi.fn(async () => null),
   } as any;
   const setupManager = {
     getWizardStatus: async () => ({ ...WIZARD_STATUS }),
@@ -406,6 +412,38 @@ describe('ChatViewProvider de-branding (Plan 02 Phase 2)', () => {
       );
       expect(complete).toBeDefined();
       expect(complete!.payload.strategy).toBe('client-summarize');
+    });
+
+    it('smart-compaction reseed disposes the persistent process BEFORE clearing the session (so Claude actually reseeds)', async () => {
+      h.sidebarPanelState.currentConversationId = 'c1';
+      h.conversationManager.getConversation.mockReturnValue({
+        id: 'c1',
+        messages: [
+          { role: 'user', content: 'a' }, { role: 'assistant', content: 'b' },
+          { role: 'user', content: 'c' }, { role: 'assistant', content: 'd' },
+          { role: 'user', content: 'e' },
+        ],
+      });
+      // Take the smart path with a successful summary.
+      h.compactionManager.isSmartActive.mockReturnValue(true);
+      h.compactionManager.executeSmartSummarization.mockResolvedValue({
+        success: true, beforeTokens: 5000, afterTokens: 400, strategy: 'client-summarize', duration: 7,
+      });
+
+      const order: string[] = [];
+      h.providerManager.disposePersistentProcess.mockImplementation(() => { order.push('dispose'); });
+      h.providerManager.clearSessionForProvider.mockImplementation(() => { order.push('clear'); });
+
+      const callbacks = (h.provider as any)._getSlashCommandCallbacks();
+      await callbacks.executeManualCompaction('sidebar');
+
+      // Both fire, dispose FIRST — nulling the session id without disposing the
+      // long-lived process would leave Claude's un-compacted context alive (no-op).
+      expect(h.providerManager.disposePersistentProcess).toHaveBeenCalledWith('sidebar');
+      expect(h.providerManager.clearSessionForProvider).toHaveBeenCalled();
+      expect(order).toEqual(['dispose', 'clear']);
+      // Smart path taken → the same-model client summarizer is NOT used.
+      expect(h.compactionManager.executeClientSummarization).not.toHaveBeenCalled();
     });
   });
 });
