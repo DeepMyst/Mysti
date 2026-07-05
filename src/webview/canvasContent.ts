@@ -24,33 +24,26 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ArtifactStore } from '../managers/ArtifactStore';
-import { getScaffold, listScaffolds } from '../managers/CanvasScaffolds';
+import { listScaffolds } from '../managers/CanvasScaffolds';
 import { THEME_PRESETS, getThemePreset } from '../managers/CanvasThemePresets';
 import { getFormat } from '../managers/CanvasFormats';
 import type { CanvasArtifact } from '../types';
 
 /**
- * A real sample artifact (scaffold pages + clean-saas theme) used to seed a
- * freshly-opened canvas so it isn't blank and the chat agent has something to
- * edit. Returns a live CanvasArtifact (with op log) the executor can mutate.
+ * A fresh, EMPTY artifact for a project with no saved designs. The canvas never
+ * shows placeholder pages — the empty state offers quick-start templates and the
+ * chat agent adds real pages. Named after the workspace so users recognize it.
  */
-export function buildSampleCanvasArtifact(): CanvasArtifact {
+export function buildEmptyCanvasArtifact(name?: string): CanvasArtifact {
   const store = new ArtifactStore();
   const theme = getThemePreset('clean-saas')!.theme;
-  const artifact = store.createArtifact({ name: 'Sample App', kind: 'screens', theme });
-  for (const id of SAMPLE_SCAFFOLDS) {
-    const s = getScaffold(id)!;
-    store.insertPage(artifact, store.makePage({ mode: 'jsx', jsxSource: s.jsx, actionTitle: s.name }));
-  }
-  return artifact;
+  return store.createArtifact({ name: name || 'Untitled design', kind: 'screens', theme });
 }
 
 /** Inner CSP for the per-page sandboxed iframes — runtime is inlined as text. */
 const SANDBOX_INNER_CSP =
   "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; " +
   "style-src 'unsafe-inline'; img-src data: blob: https:; font-src data: https:; connect-src 'none';";
-
-const SAMPLE_SCAFFOLDS = ['dashboard', 'landing', 'mobile-home', 'login', 'settings'];
 
 // Module-level caches (read once per extension-host process).
 let _templateCache: string | null = null;
@@ -96,8 +89,8 @@ export function getCanvasContent(
   ];
   const harnessContent = readFileCached(sandboxPath(extensionUri, 'harness.js'));
 
-  // Boot from the linked artifact (or a sample one so the canvas isn't blank).
-  const art = artifact ?? buildSampleCanvasArtifact();
+  // Boot from the project's real artifact; an empty one when none exists yet.
+  const art = artifact ?? buildEmptyCanvasArtifact();
   const deviceFormats = ['desktop', 'web', 'tablet', 'mobile'].map(fid => {
     const f = getFormat(fid)!;
     return { formatId: f.formatId, width: f.width, height: f.height, kind: f.kind, label: `${f.formatId} (${f.width}×${f.height})` };

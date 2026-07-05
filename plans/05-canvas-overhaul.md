@@ -489,6 +489,24 @@ Highest-leverage first: M1 gates everything visual; M4 (vision self-QA) is the q
 
 ---
 
+## Canvas review + status (2026-06-20)
+
+**Built & committed** (all test-backed; ~260 canvas tests green): the engine spine (`ArtifactStore` / `CanvasOpExecutor` / `CanvasJobRouter` / `CanvasOpParser` / `CanvasFormats` incl. device px / `CanvasToolDispatch` ~22 tools / `CanvasMcpBridge` / `CanvasCapabilityRegistry` / `CanvasValidator` / `CanvasPromptBuilder`), the three-pane webview shell (`media/canvas/` + `canvasContent` loader; onboarding hint, empty state with quick-start templates, add-page menu, device/theme switchers), the sandbox renderer (`CanvasSandbox` + `resources/canvas-sandbox/` `UI.*` primitives + harness), scaffolds + theme presets, `CanvasToolServer` (MCP, tested end-to-end over InMemoryTransport) + `CanvasMcpHttpServer` + `CanvasSessionLinker`, Figma `import_design`, the vision self-QA service (`CanvasPreviewService` + `render_page_preview`), and `CanvasExportService` (self-contained HTML bundle + PNG). **Working tree (F5, pending the parallel CheckpointManager WIP landing):** the ChatViewProvider bridge (prompt block + fenced-op parse + live snapshots), MCP host start + `--mcp-config` session link, `canvasAddScaffold`/`canvasExport` handlers, debounced persistence.
+
+**Placeholder purge (this review's fix, user direction):** the Pages rail must list **the project's real designs, never placeholders**. `openCanvas` now loads the most recent saved artifact from `.mysti/canvas/` *before* setting the webview html; when none exists it boots a genuinely **empty** artifact named `"<workspace> designs"` — the empty state + templates carry discoverability (the old always-seeded 5-page "Sample App" is gone; `buildSampleCanvasArtifact` → `buildEmptyCanvasArtifact`). This also removed a race where sample pages could be edited and then clobbered by the late restore.
+
+**Review findings still open (ranked):**
+1. **Placeholder capability chips** — fal/Stitch/Figma chips are hardcoded `off`; wire to `CanvasCapabilityRegistry` + DeepMyst connection status.
+2. **Media generation** (`generate_visual`/`generate_video` → fal via hub + `McpClient`) — not built.
+3. **Vision self-QA not wired to real deps** (ScreenshotService/ImageGenerationService) — service tested with mocks only.
+4. **Staging UI** — edits auto-apply; the accept/reject Suggestions rail isn't in the shell.
+5. **Co-editing round-trip** — harness tags `data-el` but inline text edit / overrides / refine-popover aren't wired; inspector is read-only.
+6. **Rail thumbnails are text-only** (no live previews); no drag-reorder; single-artifact only (no picker for multiple saved designs).
+7. **Design sub-agent / presenter / other-CLI MCP registration** — not started.
+8. *(Follow-up idea, code⇄design)*: optionally seed `screens` from the workspace's **actual app routes/pages** (scan `src/pages`/router) — turning "real pages of the project" into a first-class import.
+
+---
+
 ## Risks & Mitigations
 
 | Risk | Impact | Mitigation |

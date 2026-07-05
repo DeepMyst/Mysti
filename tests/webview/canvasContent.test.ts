@@ -17,6 +17,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getCanvasContent } from '../../src/webview/canvasContent';
+import { ArtifactStore } from '../../src/managers/ArtifactStore';
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 
@@ -59,21 +60,34 @@ describe('three-pane shell structure', () => {
   });
 });
 
-describe('boot state (sample artifact + presets + devices)', () => {
+describe('boot state (real artifact, no placeholders)', () => {
   it('injects a parseable boot object', () => {
     expect(() => extractBoot()).not.toThrow();
   });
 
-  it('seeds sample app/website pages, theme presets and device formats', () => {
+  it('with no artifact, boots an EMPTY design (no placeholder pages) + presets/devices/templates', () => {
     const boot = extractBoot();
     expect(boot.artifact.kind).toBe('screens');           // app/website is primary
     expect(boot.artifact.format.formatId).toBe('desktop');
-    expect(boot.artifact.pages.length).toBeGreaterThanOrEqual(4);
-    expect(boot.artifact.pages.every((p: any) => p.mode === 'jsx')).toBe(true);
+    expect(boot.artifact.pages).toEqual([]);              // never fake "Sample App" pages
+    expect(boot.artifact.name).toBe('Untitled design');
     expect(boot.presets.length).toBeGreaterThanOrEqual(5);
+    expect(boot.scaffolds.length).toBeGreaterThanOrEqual(4); // quick-start templates instead
     const devices = boot.deviceFormats.map((d: any) => d.formatId);
     expect(devices).toEqual(expect.arrayContaining(['mobile', 'desktop']));
     expect(boot.capabilities.map((c: any) => c.label)).toEqual(expect.arrayContaining(['fal', 'Figma']));
+  });
+
+  it('boots from a provided real artifact verbatim (the project designs)', () => {
+    const store = new ArtifactStore({ getRoot: () => null });
+    const real = store.createArtifact({ name: 'Acme designs', kind: 'screens' });
+    store.insertPage(real, store.makePage({ mode: 'html', htmlSource: '<h1>Checkout</h1>', actionTitle: 'Checkout' }));
+    const bootHtml = getCanvasContent(makeWebview(), extensionUri, '0.0.0', real);
+    const marker = '__MYSTI_CANVAS_BOOT__ = ';
+    const rest = bootHtml.slice(bootHtml.indexOf(marker) + marker.length);
+    const boot = JSON.parse(rest.slice(0, rest.indexOf('</script>')).replace(/;\s*$/, ''));
+    expect(boot.artifact.name).toBe('Acme designs');
+    expect(boot.artifact.pages.map((p: any) => p.actionTitle)).toEqual(['Checkout']);
   });
 });
 
