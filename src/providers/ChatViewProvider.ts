@@ -26,6 +26,8 @@ import { SetupManager, type WizardStatusResult } from '../managers/SetupManager'
 import { TelemetryManager } from '../managers/TelemetryManager';
 import { AgentLoader } from '../managers/AgentLoader';
 import { AgentContextManager } from '../managers/AgentContextManager';
+import { AgentStudio } from '../managers/AgentStudio';
+import { SkillDiscoveryService } from '../services/SkillDiscoveryService';
 import { AutonomousManager } from '../managers/AutonomousManager';
 import { MemoryManager } from '../managers/MemoryManager';
 import { CompactionManager } from '../managers/CompactionManager';
@@ -42,7 +44,7 @@ import type { AnnouncementManager } from '../managers/AnnouncementManager';
 import type { InAppMessage } from '../services/DeepMystClient';
 import { getWebviewContent } from '../webview/webviewContent';
 import { getVisualTestDashboardContent } from '../webview/visualTestDashboardContent';
-import { getCanvasContent, buildSampleCanvasArtifact } from '../webview/canvasContent';
+import { getCanvasContent, buildEmptyCanvasArtifact } from '../webview/canvasContent';
 import { ArtifactStore } from '../managers/ArtifactStore';
 import { CanvasOpExecutor } from '../managers/CanvasOpExecutor';
 import { CanvasJobRouter } from '../managers/CanvasJobRouter';
@@ -54,6 +56,11 @@ import { CanvasSessionLinker } from '../managers/CanvasSessionLinker';
 import { dispatchCanvasTool } from '../managers/CanvasToolDispatch';
 import type { CanvasToolContext } from '../managers/CanvasToolDispatch';
 import { exportHtmlBundle } from '../services/CanvasExportService';
+import { CanvasCapabilityRegistry } from '../managers/CanvasCapabilityRegistry';
+import type { CapabilityPreference } from '../managers/CanvasCapabilityRegistry';
+import { CanvasMediaService } from '../services/CanvasMediaService';
+import type { GeneratedMedia, GenerateMediaRequest, MediaKind } from '../services/CanvasMediaService';
+import { McpClient } from '../services/McpClient';
 import type { CanvasArtifact } from '../types';
 import { CanvasManager } from '../managers/CanvasManager';
 import { CheckpointManager } from '../managers/CheckpointManager';
@@ -120,6 +127,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _telemetryManager: TelemetryManager;
   private _agentLoader: AgentLoader;
   private _agentContextManager: AgentContextManager;
+  private _agentStudio: AgentStudio;
+  private _warnedShadowedAgentIds: Set<string> = new Set();
   private _mentionRouter: MentionRouter;
   private _autonomousManager: AutonomousManager;
   private _memoryManager: MemoryManager;
@@ -274,6 +283,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Initialize agent system (three-tier loading)
     this._agentLoader = new AgentLoader(extensionContext);
     this._agentContextManager = new AgentContextManager(extensionContext, this._agentLoader);
+    this._agentStudio = new AgentStudio(
+      this._agentLoader,
+      new SkillDiscoveryService(),
+      () => this._refreshAgentsAndBroadcast()
+    );
+    this._watchAgentFileSaves();
 
     // Connect agent context manager to provider manager
     this._providerManager.setAgentContextManager(this._agentContextManager);
@@ -425,10 +440,121 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._engagementManager.trackCustomSkillCreated();
       }
 
+      this._warnWorkspaceShadowing();
       console.log('[Mysti] Agent system initialized');
     } catch (error) {
       console.error('[Mysti] Failed to initialize agent system:', error);
     }
+  }
+
+  /**
+   * Map loader metadata into the webview's persona/skill list shape,
+   * falling back to the legacy static tables until the loader is ready.
+   */
+  private _mapAgentLists(): {
+    availablePersonas: { id: string; name: string; description: string; icon: string; keyCharacteristics: string; category?: string; source?: string }[];
+    availableSkills: { id: string; name: string; description: string; instructions: string; category?: string; source?: string }[];
+  } {
+    const availablePersonas = this._agentsLoaded
+      ? this._agentContextManager.getAllPersonas().map(p => ({
+          id: p.id,
+          name: p.name,
+          description: p.description,
+          icon: p.icon || '👤',
+          keyCharacteristics: '', // Loaded on demand via three-tier system
+          category: p.category,
+          source: p.source
+        }))
+      : Object.values(DEVELOPER_PERSONAS);
+
+    const availableSkills = this._agentsLoaded
+      ? this._agentContextManager.getAllSkills().map(s => ({
+          id: s.id,
+          name: s.name,
+          description: s.description,
+          instructions: '', // Loaded on demand via three-tier system
+          category: s.category,
+          source: s.source
+        }))
+      : Object.values(DEVELOPER_SKILLS);
+
+    return { availablePersonas, availableSkills };
+  }
+
+  /**
+   * Reload the agent catalog from disk and push the updated persona/
+   * skill lists to every open panel. Called after create/import/reload
+   * and whenever a file under an agent source directory is saved.
+   */
+  private async _refreshAgentsAndBroadcast(): Promise<void> {
+    await this._agentLoader.reload();
+    this._agentsLoaded = true;
+
+    // Engagement: custom agents may have just been created/imported
+    const personas = this._agentLoader.getPersonas();
+    const skills = this._agentLoader.getSkills();
+    if (personas.some(p => p.source === 'user' || p.source === 'workspace')) {
+      this._engagementManager.trackCustomPersonaCreated();
+    }
+    if (skills.some(s => s.source === 'user' || s.source === 'workspace')) {
+      this._engagementManager.trackCustomSkillCreated();
+    }
+
+    this._warnWorkspaceShadowing();
+    this._broadcastToAll({ type: 'agentsUpdated', payload: this._mapAgentLists() });
+  }
+
+  /**
+   * A workspace `.mysti/agents` file overriding a built-in persona/skill
+   * id means repo-controlled content silently replaces trusted prompt
+   * material — surface it once per id per session.
+   */
+  private _warnWorkspaceShadowing(): void {
+    const shadowed = this._agentLoader.getWorkspaceShadowedIds()
+      .filter(id => !this._warnedShadowedAgentIds.has(id));
+    if (shadowed.length === 0) {
+      return;
+    }
+    shadowed.forEach(id => this._warnedShadowedAgentIds.add(id));
+    vscode.window.showWarningMessage(
+      `Mysti: this workspace overrides built-in agent${shadowed.length > 1 ? 's' : ''} ${shadowed.map(s => `'${s}'`).join(', ')} via .mysti/agents. Their content is injected into AI prompts — review the files if you don't trust this repository.`
+    );
+  }
+
+  /**
+   * Auto-reload the catalog when an agent definition file is saved.
+   */
+  private _watchAgentFileSaves(): void {
+    this._extensionContext.subscriptions.push(
+      vscode.workspace.onDidSaveTextDocument(doc => {
+        if (!doc.fileName.toLowerCase().endsWith('.md')) {
+          return;
+        }
+        const saved = path.resolve(doc.fileName);
+        const isAgentFile = this._agentLoader.getSourceDirPaths()
+          .some(dir => saved.startsWith(path.resolve(dir) + path.sep));
+        if (isAgentFile) {
+          this._refreshAgentsAndBroadcast().catch(error =>
+            console.error('[Mysti] Agent auto-reload on save failed:', error)
+          );
+        }
+      })
+    );
+  }
+
+  /** Command entry point: create a new persona or skill interactively. */
+  public createAgentInteractive(type: 'persona' | 'skill'): Promise<void> {
+    return this._agentStudio.createAgentInteractive(type);
+  }
+
+  /** Command entry point: import skills from a configured GitHub source. */
+  public importSkillsInteractive(): Promise<void> {
+    return this._agentStudio.importSkillsInteractive();
+  }
+
+  /** Command entry point: reload the agent catalog. */
+  public reloadAgents(): Promise<void> {
+    return this._agentStudio.reloadAgents();
   }
 
   /**
@@ -625,28 +751,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const workspacePath = workspaceFolders ? workspaceFolders[0].uri.fsPath : '';
 
     // Get available agents from the dynamic loader if available, fall back to static
-    const availablePersonas = this._agentsLoaded
-      ? this._agentContextManager.getAllPersonas().map(p => ({
-          id: p.id,
-          name: p.name,
-          description: p.description,
-          icon: p.icon || '👤',
-          keyCharacteristics: '', // Loaded on demand via three-tier system
-          category: p.category,
-          source: p.source
-        }))
-      : Object.values(DEVELOPER_PERSONAS);
-
-    const availableSkills = this._agentsLoaded
-      ? this._agentContextManager.getAllSkills().map(s => ({
-          id: s.id,
-          name: s.name,
-          description: s.description,
-          instructions: '', // Loaded on demand via three-tier system
-          category: s.category,
-          source: s.source
-        }))
-      : Object.values(DEVELOPER_SKILLS);
+    const { availablePersonas, availableSkills } = this._mapAgentLists();
 
     // Get agent settings
     const agentConfig = vscode.workspace.getConfiguration('mysti');
@@ -1612,6 +1717,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
           }
         }
+        break;
+
+      case 'createAgent':
+        {
+          const agentType = (msg.payload as { agentType?: string })?.agentType === 'skill' ? 'skill' : 'persona';
+          this._agentStudio.createAgentInteractive(agentType).catch((error: Error) => {
+            console.error('[Mysti] Create agent failed:', error);
+            vscode.window.showErrorMessage(`Mysti: create ${agentType} failed — ${error.message}`);
+          });
+        }
+        break;
+
+      case 'importSkills':
+        this._agentStudio.importSkillsInteractive().catch((error: Error) => {
+          console.error('[Mysti] Import skills failed:', error);
+          vscode.window.showErrorMessage(`Mysti: skill import failed — ${error.message}`);
+        });
+        break;
+
+      case 'reloadAgents':
+        this._agentStudio.reloadAgents().catch((error: Error) => {
+          console.error('[Mysti] Reload agents failed:', error);
+          vscode.window.showErrorMessage(`Mysti: agent reload failed — ${error.message}`);
+        });
         break;
 
       case 'getAgentDetails':
@@ -5963,11 +6092,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
 
     // Plan 05 — chat→canvas bridge: a live artifact backs the canvas; the chat
-    // agent edits it through fenced `canvas-op` blocks (executor applies them and
-    // posts artifact snapshots back to this panel).
-    const canvasArtifact = buildSampleCanvasArtifact();
+    // agent edits it through the MCP tools / fenced `canvas-op` blocks (executor
+    // applies them and posts artifact snapshots back to this panel).
     const canvasStore = new ArtifactStore();
-    this._canvasArtifact = canvasArtifact;
     this._canvasStore = canvasStore;
     this._canvasJobRouter = new CanvasJobRouter((event) => {
       this._postToPanel(panelId, { type: 'canvasJobEvent', payload: event });
@@ -5980,33 +6107,50 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._canvasExecutor = new CanvasOpExecutor(canvasStore, this._canvasJobRouter);
     this._canvasOpParser = new CanvasOpParser();
 
-    // Restore the most-recent saved design (reload-safe), keeping the sample until
-    // it loads so the canvas is never blank.
-    canvasStore.list().then(async (summaries) => {
-      if (summaries.length && this._canvasArtifact === canvasArtifact) {
-        const loaded = await canvasStore.load(summaries[0].id);
-        if (loaded && loaded.pages.length) {
-          this._canvasArtifact = loaded;
-          this._postCanvasArtifact();
+    // The pages shown are the PROJECT'S real designs: load the most recent saved
+    // artifact from .mysti/canvas/; when none exists, start a genuinely empty
+    // artifact named after the workspace (the empty state offers templates) —
+    // never placeholder pages. The webview html is set once this resolves.
+    const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
+    void (async () => {
+      let artifact: CanvasArtifact | null = null;
+      try {
+        const summaries = await canvasStore.list();
+        if (summaries.length) { artifact = await canvasStore.load(summaries[0].id); }
+      } catch { /* no saved designs yet */ }
+      if (!artifact) {
+        artifact = buildEmptyCanvasArtifact(workspaceName ? `${workspaceName} designs` : undefined);
+      }
+
+      // Real capability status (DeepMyst hub connections + local keys) → media
+      // generation routing + truthful top-bar chips (Plan 05 §9 / Phase 6).
+      const registry = await this._buildCanvasCapabilityRegistry().catch(() => null);
+      const mediaService = registry ? this._buildCanvasMediaService(registry, canvasStore) : undefined;
+      const chips = registry ? this._canvasCapabilityChips(registry) : undefined;
+
+      // Panel may have been disposed while loading.
+      if (this._canvasPanelId !== panelId) { return; }
+      this._canvasArtifact = artifact;
+
+      // Live MCP path: an in-extension HTTP server exposing the canvas tools
+      // (media tools included when available), then registered into the linked
+      // CLI session (Claude Code --mcp-config). Falls back to the fenced
+      // canvas-op parser for providers without it.
+      this._canvasToolServer = new CanvasToolServer({ resolveContext: () => this._canvasToolContext(), mediaService });
+      this._canvasMcpHttp = new CanvasMcpHttpServer(this._canvasToolServer);
+      this._canvasMcpHttp.start().then(handle => {
+        if (originPanelId) {
+          const cfg = this._canvasLinker.link(originPanelId, { url: handle.url, token: handle.token });
+          this._providerManager.setCanvasMcpConfig(originPanelId, cfg);
+          console.log('[Mysti] Canvas MCP server at', handle.url, '→ linked to panel', originPanelId);
         }
-      }
-    }).catch(() => { /* no saved designs yet */ });
+      }).catch(err => console.warn('[Mysti] Canvas MCP server failed to start:', err));
 
-    // Live MCP path: an in-extension HTTP server exposing the canvas tools, then
-    // registered into the linked CLI session (Claude Code --mcp-config). Falls
-    // back to the fenced canvas-op parser for providers without it.
-    this._canvasToolServer = new CanvasToolServer({ resolveContext: () => this._canvasToolContext() });
-    this._canvasMcpHttp = new CanvasMcpHttpServer(this._canvasToolServer);
-    const linkPanel = originPanelId;
-    this._canvasMcpHttp.start().then(handle => {
-      if (linkPanel) {
-        const cfg = this._canvasLinker.link(linkPanel, { url: handle.url, token: handle.token });
-        this._providerManager.setCanvasMcpConfig(linkPanel, cfg);
-        console.log('[Mysti] Canvas MCP server at', handle.url, '→ linked to panel', linkPanel);
-      }
-    }).catch(err => console.warn('[Mysti] Canvas MCP server failed to start:', err));
+      panel.webview.html = getCanvasContent(panel.webview, this._extensionUri, version, artifact, chips);
+    })();
 
-    panel.webview.html = getCanvasContent(panel.webview, this._extensionUri, version, canvasArtifact);
+    // (webview html is set by the artifact-load block above once the project's
+    // saved designs have been read — no placeholder content in between.)
 
     // Track canvas panel
     this._canvasPanelId = panelId;
@@ -6418,6 +6562,96 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       artifact: this._canvasArtifact, store: this._canvasStore, executor: this._canvasExecutor,
       jobId: 'mcp', runId: 'mcp', approvalMode: 'auto',
     };
+  }
+
+  /**
+   * Build the capability registry from live status: DeepMyst hub connections
+   * (primed once via the 60s connections cache) + local CanvasSecrets keys +
+   * `mysti.canvas.capabilities.*` preferences. Snapshot semantics — recomputed
+   * on canvas open (Plan 05 §9 / Phase 6).
+   */
+  private async _buildCanvasCapabilityRegistry(): Promise<CanvasCapabilityRegistry> {
+    // Hub connections (map registry hubConnection ids → connection-name needles).
+    const hubNeedles: Record<string, string> = { 'fal_ai': 'fal', 'neversight/stitch': 'stitch', 'figma': 'figma', 'canva': 'canva' };
+    const hubStatus = new Map<string, boolean>();
+    for (const [id, needle] of Object.entries(hubNeedles)) {
+      hubStatus.set(id, await this._isServiceLinked(needle).catch(() => false));
+    }
+    // Local keys.
+    const keys = new Set<string>();
+    if (this._canvasSecrets) {
+      for (const kind of ['openai', 'gemini', 'stitch', 'fal'] as const) {
+        if (await this._canvasSecrets.get(kind)) { keys.add(kind); }
+      }
+    }
+    const config = vscode.workspace.getConfiguration('mysti');
+    return new CanvasCapabilityRegistry({
+      isHubConnected: (slug) => hubStatus.get(slug) === true,
+      hasLocalKey: (k) => keys.has(k),
+      getPreference: (slug) => config.get<CapabilityPreference>(`canvas.capabilities.${slug}`, 'auto'),
+    });
+  }
+
+  /** The top-bar capability chips, from real registry status. */
+  private _canvasCapabilityChips(registry: CanvasCapabilityRegistry): Array<{ label: string; on: boolean }> {
+    return [
+      { label: 'fal', on: registry.isEnabled('canvas-image') },
+      { label: 'Stitch', on: registry.isEnabled('canvas-screens') },
+      { label: 'Figma', on: registry.isEnabled('figma') },
+    ];
+  }
+
+  /**
+   * Media generation with real deps: brokered = fal via the DeepMyst hub MCP
+   * (McpClient + dm_ bearer; tool discovered by name), local = the BYO-key
+   * ImageGenerationService. Video is hub-only in v1.
+   */
+  private _buildCanvasMediaService(registry: CanvasCapabilityRegistry, store: ArtifactStore): CanvasMediaService {
+    let falClient: McpClient | null = null;
+    let falImageTool: string | null = null;
+
+    const callBrokered = async (kind: MediaKind, req: GenerateMediaRequest): Promise<GeneratedMedia> => {
+      const auth = this._deepMystAuth;
+      const dmKey = auth?.getApiKey();
+      if (!auth?.isSignedIn() || !dmKey) { throw new Error('DeepMyst sign-in required for brokered generation'); }
+      if (!falClient) {
+        falClient = new McpClient({ url: auth.client.getMcpEndpointUrl('fal_ai'), bearer: dmKey });
+      }
+      if (!falImageTool) {
+        const tools = await falClient.listTools();
+        const match = (res: RegExp) => tools.find(t => res.test(t.name))?.name ?? null;
+        falImageTool = kind === 'video'
+          ? match(/video/i) ?? match(/generat/i)
+          : match(/text.?to.?image|image.*generat|flux/i) ?? match(/image/i);
+        if (!falImageTool) { throw new Error('no fal generation tool found on the DeepMyst connection'); }
+      }
+      const res = await falClient.callTool(falImageTool, { prompt: req.prompt });
+      if (res.isError) { throw new Error(res.text || 'fal generation failed'); }
+      // fal returns CDN URLs (in JSON or prose) — extract the first media URL.
+      const urlMatch = res.text.match(/https?:\/\/[^\s"')]+\.(png|jpe?g|webp|mp4|webm)[^\s"')]*/i)
+        ?? res.text.match(/https?:\/\/[^\s"')]+/);
+      if (!urlMatch) { throw new Error('fal returned no media URL'); }
+      return { url: urlMatch[0], mimeType: kind === 'video' ? 'video/mp4' : 'image/png' };
+    };
+
+    const generateLocal = async (kind: MediaKind, req: GenerateMediaRequest): Promise<GeneratedMedia> => {
+      if (kind === 'video') { throw new Error('local video generation is not supported yet — connect fal via DeepMyst'); }
+      const apiKey = this._canvasSecrets ? await this._canvasSecrets.get('openai') : '';
+      const result = await this._imageGenService.generate(req.prompt, {
+        frameBounds: req.size,
+        ...(apiKey ? { apiKey } : {}),
+      } as Parameters<ImageGenerationService['generate']>[1]);
+      return { base64: result.imageBase64, mimeType: 'image/png', model: 'gpt-image-1' };
+    };
+
+    const fetchBytes = async (url: string): Promise<{ base64: string; mimeType?: string }> => {
+      const res = await fetch(url);
+      if (!res.ok) { throw new Error(`media download failed: HTTP ${res.status}`); }
+      const buf = Buffer.from(await res.arrayBuffer());
+      return { base64: buf.toString('base64'), mimeType: res.headers.get('content-type') ?? undefined };
+    };
+
+    return new CanvasMediaService({ registry, callBrokered, generateLocal, fetchBytes, store });
   }
 
   /** True when the open canvas is driven by chat from this panel. */
