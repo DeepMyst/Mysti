@@ -97,6 +97,16 @@ export class MystiMemoryStore {
     return rows.join('\n');
   }
 
+  /** Remove one entry by exact text (Plan 18 F4 — user-facing review/delete). */
+  forget(text: string): boolean {
+    const entries = this._load();
+    const idx = entries.findIndex(e => e.text === text);
+    if (idx === -1) { return false; }
+    entries.splice(idx, 1);
+    this._save(entries);
+    return true;
+  }
+
   /** Wipe (test/debug/reset). */
   clear(): void {
     this._save([]);

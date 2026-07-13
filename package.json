@@ -153,6 +153,11 @@
         "category": "Mysti"
       },
       {
+        "command": "mysti.viewMystiMemory",
+        "title": "View & Prune Mysti Memory",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.openInNewTab",
         "title": "Open in Editor Tab",
         "shortTitle": "New Tab",
@@ -699,7 +704,7 @@
         "mysti.mysti.memory": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "**Unified cross-backend memory** for the Mysti agent: durable project facts (learned by the coordinator via a `remember` tool, or recorded by Mysti when a backend fails) are stored per-workspace and injected into every future Mysti run — so the 14 backends behave like one agent that knows your project. Injected as untrusted, nonce-fenced data. Disable to stop persisting/injecting learnings."
+          "markdownDescription": "**Unified cross-backend memory** for the Mysti agent: durable project facts (learned by the coordinator via a `remember` tool) are stored per-workspace and injected into every future Mysti run — so the 14 backends behave like one agent that knows your project. Injected as untrusted, nonce-fenced data. Disable to stop persisting/injecting learnings. Review or delete individual facts with the `Mysti: View & Prune Mysti Memory` command."
         },
         "mysti.mysti.crossReview": {
           "type": "string",

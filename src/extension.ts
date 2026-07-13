@@ -534,6 +534,33 @@ export async function activate(context: vscode.ExtensionContext) {
       await cfg.update('mysti.coordinatorModel', value, vscode.ConfigurationTarget.Global);
       vscode.window.showInformationMessage(`Mysti coordinator model: ${value || 'Auto (free)'}`);
     }),
+    // Plan 18 (F4): model-authored memory is a persistent cross-session bias
+    // channel — give the user a way to SEE and PRUNE it. Multi-select deletes;
+    // selecting everything is "clear all".
+    vscode.commands.registerCommand('mysti.viewMystiMemory', async () => {
+      const { MystiMemoryStore } = await import('./services/MystiMemoryStore');
+      const store = new MystiMemoryStore(context.workspaceState, () => Date.now());
+      const entries = store.list();
+      if (entries.length === 0) {
+        vscode.window.showInformationMessage('Mysti has no remembered facts for this workspace.');
+        return;
+      }
+      const picks = await vscode.window.showQuickPick(
+        entries.map(e => ({
+          label: e.text.length > 90 ? `${e.text.slice(0, 90)}…` : e.text,
+          description: `${e.source === 'host' ? 'system' : 'model'} · used ${e.hits}×`,
+          entryText: e.text,
+        })),
+        {
+          title: `Mysti memory — ${entries.length} fact(s) for this workspace`,
+          placeHolder: 'Select facts to FORGET (Esc keeps everything)',
+          canPickMany: true,
+        }
+      );
+      if (!picks || picks.length === 0) { return; }
+      for (const p of picks) { store.forget(p.entryText); }
+      vscode.window.showInformationMessage(`Forgot ${picks.length} fact(s). ${entries.length - picks.length} remain.`);
+    }),
   );
 
   context.subscriptions.push(

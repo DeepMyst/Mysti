@@ -212,3 +212,94 @@ describe('MystiTagScanner local-tool directives (P0.1)', () => {
     expect(f.directive).toBeUndefined();
   });
 });
+
+// ============================================================================
+// Plan 18 Wave 2 — fence-awareness (F7) + flush remainder (F8)
+// ============================================================================
+describe('MystiTagScanner fence-awareness (Plan 18 F7)', () => {
+  it('renders (does not execute) a live-nonce directive inside a ``` fence', () => {
+    const s = new MystiTagScanner(N);
+    const input = 'Example:\n```\n<read:' + N + '>src/a.ts</read>\n```\nDone.';
+    let text = '';
+    const directives: MystiDirective[] = [];
+    for (const ch of input) {
+      const r = s.feed(ch);
+      text += r.text;
+      if (r.directive) { directives.push(r.directive); }
+    }
+    const f = s.flush();
+    text += f.text;
+    if (f.directive) { directives.push(f.directive); }
+
+    expect(directives).toHaveLength(0);
+    expect(text).toContain('<read:' + N + '>src/a.ts</read>');
+  });
+
+  it('executes a directive AFTER a closed fence', () => {
+    const s = new MystiTagScanner(N);
+    const input = '```\ncode\n```\n<read:' + N + '>src/a.ts</read>';
+    let directive: MystiDirective | undefined;
+    for (const ch of input) {
+      const r = s.feed(ch);
+      if (r.directive) { directive = r.directive; }
+    }
+    if (!directive) { directive = s.flush().directive; }
+    expect(directive).toEqual({ kind: 'read', path: 'src/a.ts', startLine: undefined, endLine: undefined });
+  });
+});
+
+describe('MystiTagScanner flush remainder (Plan 18 F8)', () => {
+  it('post-directive prose is not stranded when the directive resolves at flush', () => {
+    const s = new MystiTagScanner(N);
+    // A fenced (rendered) block consumes the first drain step, leaving the
+    // real directive + trailing prose in the buffer for flush to resolve.
+    const feedText = '```\n<read:' + N + '>x</read>\n``` then <read:' + N + '>b.ts</read> tail prose';
+    const r1 = s.feed(feedText);
+    const f = s.flush();
+    const allText = r1.text + f.text;
+    const directive = r1.directive || f.directive;
+
+    expect(directive).toEqual({ kind: 'read', path: 'b.ts', startLine: undefined, endLine: undefined });
+    expect(allText).toContain('tail prose');
+  });
+});
+
+describe('MystiTagScanner fence-walker hardening (Plan 18 W2 review)', () => {
+  it('inline ``` in prose does NOT demote a later real directive', () => {
+    const s = new MystiTagScanner(N);
+    const input = 'Type ``` to open a fence in markdown. Now reading: <read:' + N + '>src/a.ts</read>';
+    let directive: MystiDirective | undefined;
+    let r = s.feed(input);
+    if (r.directive) { directive = r.directive; }
+    if (!directive) { directive = s.flush().directive; }
+    expect(directive).toEqual({ kind: 'read', path: 'src/a.ts', startLine: undefined, endLine: undefined });
+  });
+
+  it('a fenced directive resolving at flush does not strand a later real directive', () => {
+    const s = new MystiTagScanner(N);
+    // Fenced example, then an UNCLOSED directive at flush: fail-open text,
+    // nothing silently dropped, the fenced example visible.
+    const r0 = s.feed('```\n<read:' + N + '>example.ts</read>\n');
+    const r1 = s.feed('```\n');
+    const r2 = s.feed('Real: <read:' + N);
+    const f = s.flush();
+    const text = r0.text + r1.text + r2.text + f.text;
+    expect(f.directive).toBeUndefined();
+    expect(text).toContain('example.ts');
+    expect(text).toContain('Real: <read:');
+  });
+
+  it('fenced block + complete directive + tail all resolve in a single final drain', () => {
+    const s = new MystiTagScanner(N);
+    // Deliver everything in ONE chunk, then flush. The fenced example must
+    // render, the real directive must execute, the tail must not vanish.
+    const chunk = '```\n<read:' + N + '>ex.ts</read>\n```\n<read:' + N + '>real.ts</read> after';
+    const r = s.feed(chunk);
+    const f = s.flush();
+    const directive = r.directive || f.directive;
+    const text = r.text + f.text;
+    expect(directive).toEqual({ kind: 'read', path: 'real.ts', startLine: undefined, endLine: undefined });
+    expect(text).toContain('ex.ts');
+    expect(text).toContain('after');
+  });
+});

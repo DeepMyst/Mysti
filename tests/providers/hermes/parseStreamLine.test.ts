@@ -381,7 +381,7 @@ describe('Hermes response boundary + interrupt + fallback', () => {
     // 'plan', so WITHOUT the override a read-only flip would NOT respawn and
     // the permission snapshot would go stale (the confirmed bug).
     provider.buildPersistentCliArgs(settings({ accessLevel: 'full-access', mode: 'detailed-plan' }), session);
-    session.persistentSettings = { model: undefined, permissionMode: 'plan', thinkingLevel: 'none' };
+    session.persistentSettings = { model: undefined, permissionMode: 'plan', thinkingLevel: 'none', effortLevel: '' };
 
     expect(provider.persistentSettingsMatch(session, settings({ accessLevel: 'full-access', mode: 'detailed-plan' }))).toBe(true);
     // Flip access to read-only under the same plan mode → must break the match

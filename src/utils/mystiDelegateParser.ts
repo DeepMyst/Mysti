@@ -64,6 +64,23 @@ export const ALL_MYSTI_KINDS: MystiDirectiveKind[] = ['delegate', 'read', 'ls', 
 
 export class MystiTagScanner {
   private _buf = '';
+  /**
+   * Plan 18 (F7): running "inside a ``` code fence" state for the VISIBLE
+   * text stream. A directive that opens inside a fence is the model SHOWING
+   * the protocol, not invoking it — it renders as text instead of executing.
+   * Heuristic (a fence marker split across chunks can toggle late); the real
+   * security control remains the nonce — this aligns the scanner with the
+   * repo's fence-aware-parser invariant for UX correctness.
+   */
+  private _fenceOpen = false;
+  /** Consecutive-backtick run carried across chunk boundaries (a \`\`\` split
+   * over emissions must still toggle). */
+  private _tickRun = 0;
+  /** Line-anchoring state for the fence walker (beginning-of-line, indent,
+   * whether the current backtick run started line-anchored). */
+  private _bol = true;
+  private _indent = 0;
+  private _anchored = true;
   private readonly _opens: Array<{ kind: MystiDirectiveKind; open: string; close: string; re: RegExp }>;
 
   constructor(nonce: string, kinds: MystiDirectiveKind[] = ALL_MYSTI_KINDS) {
@@ -122,11 +139,13 @@ export class MystiTagScanner {
       if (isFinal) {
         const text = this._buf;
         this._buf = '';
+        this._trackFences(text);
         return { text };
       }
       const safeLen = this._safePrefixLen();
       const text = this._buf.slice(0, safeLen);
       this._buf = this._buf.slice(safeLen);
+      this._trackFences(text);
       return { text };
     }
 
@@ -137,22 +156,113 @@ export class MystiTagScanner {
       // Open marker seen but not yet closed.
       if (!isFinal) {
         this._buf = this._buf.slice(openIdx); // keep the (incomplete) directive
+        this._trackFences(before);
         return { text: before };
       }
       // Final + unclosed ⇒ FAIL OPEN: show the fragment as text, don't drop it.
       const rest = this._buf.slice(openIdx);
       this._buf = '';
-      return { text: before + rest };
+      const text = before + rest;
+      this._trackFences(text);
+      return { text };
     }
 
     const raw = this._buf.slice(openIdx, closeIdx + hit.close.length);
     this._buf = this._buf.slice(closeIdx + hit.close.length);
+
+    // Plan 18 (F7): a directive opening INSIDE a code fence renders as text.
+    const insideFence = this._walkFences(before, {
+      open: this._fenceOpen, run: this._tickRun,
+      bol: this._bol, indent: this._indent, anchored: this._anchored,
+    }).open;
+    if (insideFence) {
+      return this._emitAsText(before + raw, isFinal);
+    }
+
     const directive = this._parse(hit, raw);
     if (!directive) {
       // Malformed directive — surface the raw block as text so nothing is lost.
-      return { text: before + raw };
+      return this._emitAsText(before + raw, isFinal);
+    }
+    this._trackFences(before);
+    if (isFinal && this._buf.length > 0) {
+      // Plan 18 (F8): flush() used to strand post-directive prose in _buf
+      // forever (nothing drains after a final directive). Emit it as text —
+      // any second directive in the tail degrades to visible text (only the
+      // first directive per step executes). The remainder renders alongside
+      // `before`, slightly ahead of its true stream position; losing it
+      // would be worse.
+      const rest = this._buf;
+      this._buf = '';
+      this._trackFences(rest);
+      return { text: before + rest, directive };
     }
     return { text: before, directive };
+  }
+
+  /**
+   * Emit consumed content as text. At FINAL, keep draining the remaining
+   * buffer too — the fenced/malformed branches previously returned early and
+   * stranded (dropped) whatever followed them at flush, including a real
+   * directive (Plan 18 review of F7/F8).
+   */
+  private _emitAsText(text: string, isFinal: boolean): TagScanResult {
+    this._trackFences(text);
+    if (!isFinal || this._buf.length === 0) {
+      return { text };
+    }
+    const rest = this._drain(true);
+    return rest.directive
+      ? { text: text + rest.text, directive: rest.directive }
+      : { text: text + rest.text };
+  }
+
+  /** Commit emitted text to the fence state (stateful — survives splits). */
+  private _trackFences(text: string): void {
+    if (!text) { return; }
+    const s = this._walkFences(text, {
+      open: this._fenceOpen, run: this._tickRun,
+      bol: this._bol, indent: this._indent, anchored: this._anchored,
+    });
+    this._fenceOpen = s.open;
+    this._tickRun = s.run;
+    this._bol = s.bol;
+    this._indent = s.indent;
+    this._anchored = s.anchored;
+  }
+
+  /**
+   * Pure char walk: toggle on a run of three backticks that starts at the
+   * beginning of a line (≤3 spaces indent — CommonMark fence anchoring).
+   * Inline \`\`\` in prose must NOT toggle, or one stray mention would
+   * demote every later real directive in the turn to text.
+   */
+  private _walkFences(
+    text: string,
+    state: { open: boolean; run: number; bol?: boolean; indent?: number; anchored?: boolean }
+  ): { open: boolean; run: number; bol: boolean; indent: number; anchored: boolean } {
+    let { open, run } = state;
+    let bol = state.bol ?? true;
+    let indent = state.indent ?? 0;
+    let anchored = state.anchored ?? true;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === '`') {
+        if (run === 0) { anchored = bol && indent <= 3; }
+        run++;
+        if (run === 3 && anchored) { open = !open; run = 0; }
+        bol = false;
+      } else if (ch === '\n') {
+        run = 0; bol = true; indent = 0;
+      } else if (ch === ' ' && bol) {
+        run = 0; indent++;
+        // stays bol-eligible while indent small; deeper indent is code, not a fence
+        if (indent > 3) { bol = false; }
+      } else {
+        run = 0; bol = false;
+      }
+    }
+    return { open, run, bol, indent, anchored };
   }
 
   /**

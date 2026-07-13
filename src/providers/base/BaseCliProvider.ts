@@ -95,6 +95,9 @@ export interface PanelSessionState {
     model: string | undefined;
     permissionMode: string;
     thinkingLevel: string;
+    /** Plan 18 (4.1): --effort is baked into spawn args — a mid-session change
+     * must respawn, same bug class as the issue-#39 custom-model fix. */
+    effortLevel: string;
   };
   /** Buffered stdout data received during persistent process initialization */
   _initBuffer?: string;
@@ -678,6 +681,7 @@ export abstract class BaseCliProvider implements ICliProvider {
         model: this._getEffectiveModel(settings),
         permissionMode: this._derivePermissionMode(settings),
         thinkingLevel: settings.thinkingLevel || 'none',
+        effortLevel: settings.effortLevel || '',
       };
     }
 
@@ -842,9 +846,15 @@ export abstract class BaseCliProvider implements ICliProvider {
     const ps = session.persistentSettings;
     // Compare the EFFECTIVE model (honors per-provider custom-model overrides),
     // not the raw dropdown value — so changing mysti.<provider>Model respawns.
+    // Plan 18 (4.1): effort is only spawn-relevant for providers that consume
+    // it (declared effortLevels). Comparing it unconditionally would let a
+    // global effort flip destroy e.g. a live Hermes ACP session that ignores
+    // effort entirely.
+    const effortRelevant = (this.capabilities.effortLevels?.length ?? 0) > 0;
     return ps.model === this._getEffectiveModel(settings)
       && ps.permissionMode === this._derivePermissionMode(settings)
-      && ps.thinkingLevel === (settings.thinkingLevel || 'none');
+      && ps.thinkingLevel === (settings.thinkingLevel || 'none')
+      && (!effortRelevant || ps.effortLevel === (settings.effortLevel || ''));
   }
 
   /**
@@ -872,6 +882,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       model: this._getEffectiveModel(settings),
       permissionMode: this._derivePermissionMode(settings),
       thinkingLevel: settings.thinkingLevel || 'none',
+      effortLevel: settings.effortLevel || '',
     };
 
     await this._getOrSpawnPersistentProcess(session, settings);

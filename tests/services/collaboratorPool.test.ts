@@ -11,6 +11,7 @@ import {
   createTestCollaboratorPool,
   collabSpec,
   collabOptions,
+  collabSettings,
   collectCollabChunks,
 } from '../helpers/collaboratorFactory';
 import type { StreamChunk, CollaboratorChunk } from '../../src/types';
@@ -394,7 +395,10 @@ describe('CollaboratorPool', () => {
       expect(gateCalled).toBe(true);
     });
 
-    it('allows a read-only advisor to do a web read without killing it', async () => {
+    it('allows a read-only advisor to do a web read without killing it (non-gating policy)', async () => {
+      // Plan 18 (F5): the unconditional web fast-pass is gone — web reads now
+      // defer to the user's gate policy. Under a NON-gating policy
+      // (full access) the advisor's research still flows unprompted.
       const { pool, mockPM: pm } = createTestCollaboratorPool(mockPM);
       pm.setProviderAvailable('google-gemini');
       pm.streamFactories.set('google-gemini', () => createMockStream([
@@ -404,7 +408,10 @@ describe('CollaboratorPool', () => {
       ]));
 
       const chunks = await collectCollabChunks(
-        pool.dispatch([collabSpec('c1', 'google-gemini' as any, { access: 'read-only' })], collabOptions())
+        pool.dispatch(
+          [collabSpec('c1', 'google-gemini' as any, { access: 'read-only' })],
+          collabOptions({ settings: collabSettings({ mode: 'edit-automatically', accessLevel: 'full-access' }) })
+        )
       );
 
       expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(false);
@@ -590,5 +597,151 @@ describe('CollaboratorPool disposeRun completeness (Plan 18)', () => {
     const before = mockPM.disposedChildren.length;
     pool.disposeRun('run-race');
     expect(mockPM.disposedChildren.length).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan 18 Wave 2 (F5): web-request defers to the user's gate policy instead
+// of a hardcoded fast-pass — a repo-steered WebFetch is an exfil primitive.
+// ---------------------------------------------------------------------------
+describe('CollaboratorPool web-request policy (Plan 18 F5)', () => {
+  beforeEach(() => {
+    clearMockConfig();
+  });
+
+  function webFetchStream(): StreamChunk[] {
+    return [
+      { type: 'tool_use', toolCall: { id: 'w1', name: 'WebFetch', input: { url: 'https://example.com' } } } as StreamChunk,
+      { type: 'text', content: 'fetched' } as StreamChunk,
+      { type: 'done' } as StreamChunk,
+    ];
+  }
+
+  it('gates a WebFetch under ask-permission (was a hardcoded pass)', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
+    mockPM.setProviderChunks('google-gemini', webFetchStream());
+
+    let gateAsked = false;
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'gated-write' })],
+      collabOptions({
+        runId: 'run-web-gate',
+        // collabSettings default: mode 'default' + ask-permission → policy gates web requests
+        onGate: async () => { gateAsked = true; return true; },
+      })
+    ));
+
+    expect(gateAsked).toBe(true);
+    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(true);
+  });
+
+  it('a read-only advisor gets the PROMPT for a policy-gated WebFetch, not the write hard-deny', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
+    mockPM.setProviderChunks('google-gemini', webFetchStream());
+
+    let gateAsked = false;
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'read-only' })],
+      collabOptions({
+        runId: 'run-web-ro',
+        onGate: async () => { gateAsked = true; return true; },
+      })
+    ));
+
+    expect(gateAsked).toBe(true);
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(false);
+  });
+
+  it('still fast-passes a WebFetch where policy would not gate it (full access)', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    mockPM.setProviderChunks('google-gemini', webFetchStream());
+
+    let gateAsked = false;
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'gated-write' })],
+      collabOptions({
+        runId: 'run-web-free',
+        settings: collabSettings({ mode: 'edit-automatically', accessLevel: 'full-access' }),
+        onGate: async () => { gateAsked = true; return true; },
+      })
+    ));
+
+    expect(gateAsked).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan 18 W2 review corrections: read-only specs always prompt for web reads
+// (never silently ungated under the strictest setting), and a failed freeze
+// downgrades a web read to a best-effort prompt instead of a kill.
+// ---------------------------------------------------------------------------
+describe('CollaboratorPool web-request corrections (Plan 18 W2 review)', () => {
+  beforeEach(() => { clearMockConfig(); });
+
+  it('read-only spec + read-only user policy: web request still PROMPTS (never ungated)', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
+    mockPM.setProviderChunks('google-gemini', [
+      { type: 'tool_use', toolCall: { id: 'w1', name: 'WebFetch', input: { url: 'https://evil.example' } } } as StreamChunk,
+      { type: 'done' } as StreamChunk,
+    ]);
+
+    let gateAsked = false;
+    await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'read-only' })],
+      collabOptions({
+        runId: 'run-ro-strict',
+        // Under accessLevel read-only the bare policy fn gates nothing —
+        // the read-only spec must force the prompt anyway.
+        settings: collabSettings({ accessLevel: 'read-only' }),
+        onGate: async () => { gateAsked = true; return false; },
+      })
+    ));
+
+    expect(gateAsked).toBe(true);
+  });
+
+  it('failed freeze (Windows) prompts for a web read instead of killing the child', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(false); // no SIGSTOP available
+    mockPM.setProviderChunks('google-gemini', [
+      { type: 'tool_use', toolCall: { id: 'w1', name: 'WebFetch', input: { url: 'https://example.com' } } } as StreamChunk,
+      { type: 'text', content: 'researched' } as StreamChunk,
+      { type: 'done' } as StreamChunk,
+    ]);
+
+    let gateAsked = false;
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'gated-write' })],
+      collabOptions({
+        runId: 'run-win-web',
+        onGate: async () => { gateAsked = true; return true; },
+      })
+    ));
+
+    expect(gateAsked).toBe(true);
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(true);
+  });
+
+  it('failed freeze still fail-closes for WRITES (unchanged)', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(false);
+    mockPM.setProviderChunks('google-gemini', [
+      { type: 'tool_use', toolCall: { id: 'w1', name: 'Write', input: { path: 'x' } } } as StreamChunk,
+      { type: 'done' } as StreamChunk,
+    ]);
+
+    let gateAsked = false;
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'gated-write' })],
+      collabOptions({ runId: 'run-win-write', onGate: async () => { gateAsked = true; return true; } })
+    ));
+
+    expect(gateAsked).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
   });
 });

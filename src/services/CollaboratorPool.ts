@@ -11,7 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { classifyToolAction } from '../utils/permissionClassifier';
+import { classifyToolAction, shouldGateToolUse } from '../utils/permissionClassifier';
 import { SUBAGENT_TIMEOUT_MS, SUBAGENT_MAX_RETRIES, SUBAGENT_QUESTION_TIMEOUT_MS } from '../constants';
 import type {
   ContextItem,
@@ -558,9 +558,22 @@ export class CollaboratorPool {
     // sub-agent unapproved. They fall through to hard-deny (read-only) or the
     // gate (gated-write). (Mirrors the Plan 10 security-floor concern.)
     const isDelegation = /^(task|agent|dispatch_agent|tool_search|toolsearch)$/i.test(toolCall.name);
-    // Reads pass without a prompt: file reads and benign network reads
-    // (WebFetch/WebSearch) — an advisor doing research must not be killed.
-    if (!isDelegation && (action === 'file-read' || action === 'web-request')) {
+    // File reads pass without a prompt.
+    if (!isDelegation && action === 'file-read') {
+      return true;
+    }
+    // Plan 18 (F5): web reads defer to the user's OWN gate policy instead of a
+    // hardcoded pass — under modes where direct chat would prompt for a
+    // WebFetch, a delegated child prompts too (a repo-steered fetch is an
+    // exfiltration primitive). Where policy is genuinely permissive it passes
+    // as before, so an advisor doing research is not killed. One carve-out:
+    // under accessLevel `read-only` the bare policy fn returns false for
+    // EVERYTHING (enforcement is delegated to CLI flags), which would leave
+    // the exfil primitive ungated under the STRICTEST setting — read-only
+    // users' web requests always prompt instead.
+    if (!isDelegation && action === 'web-request'
+        && options.settings.accessLevel !== 'read-only'
+        && !shouldGateToolUse(options.settings, toolCall.name)) {
       return true;
     }
 
@@ -569,7 +582,10 @@ export class CollaboratorPool {
     const suspended = this._providerManager.suspendRequest(childPanelId);
 
     // Read-only collaborators never write: hard local deny, no prompt.
-    if (spec.access === 'read-only') {
+    // Web reads are NOT writes — a policy-gated web-request from a read-only
+    // advisor goes to the user prompt below (direct-chat parity) rather than
+    // the write hard-deny.
+    if (spec.access === 'read-only' && action !== 'web-request') {
       yield {
         ...base,
         type: 'collab_tool_denied',
@@ -583,8 +599,12 @@ export class CollaboratorPool {
 
     // Gated-write, but the freeze didn't take (Windows/no live process): the
     // child keeps running with CLI permissions bypassed while we'd prompt, so
-    // the "gate" would be after-the-fact. Fail closed instead of prompting.
-    if (!suspended) {
+    // the "gate" would be after-the-fact. Fail closed instead of prompting —
+    // EXCEPT for web reads (Plan 18 F5 review): killing every researching
+    // collaborator on platforms without SIGSTOP contradicts the feature; a
+    // read-ish fetch gets a best-effort prompt (suspended=false), matching
+    // the main-path gate's Windows behavior.
+    if (!suspended && action !== 'web-request') {
       yield {
         ...base,
         type: 'collab_tool_denied',
