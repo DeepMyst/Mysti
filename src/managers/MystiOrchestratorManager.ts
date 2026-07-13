@@ -109,44 +109,56 @@ export class MystiOrchestratorManager {
     const frontiers = topologicalFrontiers(plan);
     void chainLength; // (available for a depth-based governor extension)
 
-    for (const frontier of frontiers) {
-      const frontierRunId = `${runId}-f${frontiers.indexOf(frontier)}`;
-      const specs = frontier.map(nodeId => this._buildSpec(plan!, nodeId, input, outcomes, runId));
-      // Seed outcomes so a mid-run failure still surfaces the node.
-      for (const spec of specs) {
-        const node = plan.nodes.find(n => n.id === spec.collaboratorId)!;
-        yield { type: 'orch_node_start', nodeId: node.id, nodeBackend: spec.agentId, content: node.task };
-        outcomes.set(node.id, { nodeId: node.id, task: node.task, backend: spec.agentId, text: '', hasError: false });
-      }
+    // Plan 18 (H2): track every frontier's pool-run id so the finally can
+    // reclaim ALL children. Without this the orchestrate path leaked each
+    // node's persistent process/session until window reload (disposeRun's
+    // only caller was the agentic loop).
+    const dispatchedFrontierRunIds: string[] = [];
+    try {
+      for (const frontier of frontiers) {
+        const frontierRunId = `${runId}-f${frontiers.indexOf(frontier)}`;
+        const specs = frontier.map(nodeId => this._buildSpec(plan!, nodeId, input, outcomes, runId));
+        // Seed outcomes so a mid-run failure still surfaces the node.
+        for (const spec of specs) {
+          const node = plan.nodes.find(n => n.id === spec.collaboratorId)!;
+          yield { type: 'orch_node_start', nodeId: node.id, nodeBackend: spec.agentId, content: node.task };
+          outcomes.set(node.id, { nodeId: node.id, task: node.task, backend: spec.agentId, text: '', hasError: false });
+        }
 
-      const stream = this._pool.dispatch(specs, {
-        settings: input.settings,
-        panelId: input.panelId,
-        runId: frontierRunId,
-        maxConcurrent: this._maxConcurrent(),
-        conversation: input.conversation ?? null,
-        onQuestion: input.onQuestion,
-        onGate: input.onGate,
-      });
+        dispatchedFrontierRunIds.push(frontierRunId);
+        const stream = this._pool.dispatch(specs, {
+          settings: input.settings,
+          panelId: input.panelId,
+          runId: frontierRunId,
+          maxConcurrent: this._maxConcurrent(),
+          conversation: input.conversation ?? null,
+          onQuestion: input.onQuestion,
+          onGate: input.onGate,
+        });
 
-      for await (const chunk of stream) {
-        const outcome = outcomes.get(chunk.collaboratorId);
-        if (outcome) {
-          if (chunk.type === 'collab_text' && chunk.content) {
-            outcome.text += chunk.content;
-          } else if (chunk.type === 'collab_complete') {
-            if (chunk.responseText) { outcome.text = chunk.responseText; }
-            outcome.hasError = Boolean(chunk.hasError);
-            outcome.failure = chunk.failure;
-          } else if (chunk.type === 'collab_skipped' || chunk.type === 'collab_error') {
-            outcome.hasError = true;
-            outcome.failure = chunk.failure;
+        for await (const chunk of stream) {
+          const outcome = outcomes.get(chunk.collaboratorId);
+          if (outcome) {
+            if (chunk.type === 'collab_text' && chunk.content) {
+              outcome.text += chunk.content;
+            } else if (chunk.type === 'collab_complete') {
+              if (chunk.responseText) { outcome.text = chunk.responseText; }
+              outcome.hasError = Boolean(chunk.hasError);
+              outcome.failure = chunk.failure;
+            } else if (chunk.type === 'collab_skipped' || chunk.type === 'collab_error') {
+              outcome.hasError = true;
+              outcome.failure = chunk.failure;
+            }
+          }
+          yield { type: 'orch_collab', nodeId: chunk.collaboratorId, collab: chunk };
+          if (chunk.type === 'collab_complete') {
+            yield { type: 'orch_node_done', nodeId: chunk.collaboratorId, hasError: Boolean(chunk.hasError) };
           }
         }
-        yield { type: 'orch_collab', nodeId: chunk.collaboratorId, collab: chunk };
-        if (chunk.type === 'collab_complete') {
-          yield { type: 'orch_node_done', nodeId: chunk.collaboratorId, hasError: Boolean(chunk.hasError) };
-        }
+      }
+    } finally {
+      for (const frontierRunId of dispatchedFrontierRunIds) {
+        try { this._pool.disposeRun(frontierRunId); } catch { /* best-effort */ }
       }
     }
 

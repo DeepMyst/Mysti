@@ -267,7 +267,8 @@ export class BrainstormManager {
       convergenceHistory: [],
       unifiedSolution: null,
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      childPanels: []
     };
 
     this._panelSessions.set(sessionId, session);
@@ -839,6 +840,48 @@ export class BrainstormManager {
   }
 
   /**
+   * Composite panel key for a brainstorm child stream. Dispatching children
+   * under their own key (not the parent panelId) is what makes cancelSession's
+   * composite cancels land on real processes (S1) and keeps brainstorm from
+   * resuming the panel's main chat session when an agent equals the panel's
+   * provider (S4).
+   */
+  private _childPanelId(sessionId: string, agentId: AgentType): string {
+    return `${sessionId}-brainstorm-${agentId}`;
+  }
+
+  /**
+   * Brainstorm children are analysis-only: force read-only access so the
+   * provider's CLI-level permission mode is the enforcement. The stream-level
+   * tool-use gate is NOT wired on the brainstorm path, so anything looser
+   * here would let agents write files/run commands with no prompts (S2).
+   */
+  private _childSettings(settings: Settings, agentId: AgentType): Settings {
+    return {
+      ...settings,
+      provider: agentId,
+      model: this._providerManager.getProviderDefaultModel(agentId),
+      accessLevel: 'read-only'
+    };
+  }
+
+  /**
+   * Record a child dispatch on the session (deduped) so cancel/teardown can
+   * reach every child — including a synthesis agent that isn't in `agents`.
+   */
+  private _registerChild(sessionId: string, agentId: AgentType): string {
+    const childPanelId = this._childPanelId(sessionId, agentId);
+    const session = this._panelSessions.get(sessionId);
+    if (session) {
+      session.childPanels = session.childPanels || [];
+      if (!session.childPanels.some(c => c.panelId === childPanelId)) {
+        session.childPanels.push({ panelId: childPanelId, providerId: agentId });
+      }
+    }
+    return childPanelId;
+  }
+
+  /**
    * Stream response from a single agent
    */
   private async *_streamAgentResponse(
@@ -857,13 +900,16 @@ export class BrainstormManager {
         agent.id,
         query,
         context,
-        { ...settings, provider: agent.id, model: this._providerManager.getProviderDefaultModel(agent.id) },
+        this._childSettings(settings, agent.id),
         null,
         agent.persona,
-        sessionId
+        this._registerChild(sessionId, agent.id)
       );
 
       let agentUsage: import('../types').UsageStats | undefined;
+      // Providers emit tool_use twice per tool (start/stop pair) — surface
+      // each tool invocation once.
+      const surfacedToolIds = new Set<string>();
       // B1: Wrap with silence-based timeout
       for await (const chunk of this._iterateWithSilenceTimeout(stream)) {
         if (chunk.type === 'text' && chunk.content) {
@@ -880,6 +926,20 @@ export class BrainstormManager {
             agentId: agent.id,
             content: chunk.content
           };
+        } else if (chunk.type === 'tool_use') {
+          // S2 visibility: children run read-only (enforced via _childSettings),
+          // but tool activity must still be visible in the timeline, not
+          // silently dropped. Ride the thinking channel — it renders per-agent
+          // and never feeds the synthesis input (agentResponse.content).
+          const toolKey = chunk.toolCall?.id || `${surfacedToolIds.size}`;
+          if (!surfacedToolIds.has(toolKey)) {
+            surfacedToolIds.add(toolKey);
+            yield {
+              type: 'agent_thinking',
+              agentId: agent.id,
+              content: `\n[tool] ${chunk.toolCall?.name || 'tool'}\n`
+            };
+          }
         } else if (chunk.type === 'done' && chunk.usage) {
           agentUsage = chunk.usage;
         } else if (chunk.type === 'error') {
@@ -927,10 +987,10 @@ export class BrainstormManager {
         agent.id,
         prompt,
         context,
-        { ...settings, provider: agent.id, model: this._providerManager.getProviderDefaultModel(agent.id) },
+        this._childSettings(settings, agent.id),
         null,
         agent.persona,
-        sessionId
+        this._registerChild(sessionId, agent.id)
       );
 
       // B1: Wrap with silence-based timeout
@@ -976,10 +1036,10 @@ export class BrainstormManager {
         synthesisAgentId,
         synthesisPrompt,
         context,
-        { ...settings, provider: synthesisAgentId, model: this._providerManager.getProviderDefaultModel(synthesisAgentId) },
+        this._childSettings(settings, synthesisAgentId),
         null,
         undefined,
-        sessionId
+        this._registerChild(sessionId, synthesisAgentId)
       );
 
       let synthesis = '';
@@ -1009,10 +1069,10 @@ export class BrainstormManager {
             fallbackAgent.id,
             synthesisPrompt,
             context,
-            { ...settings, provider: fallbackAgent.id, model: this._providerManager.getProviderDefaultModel(fallbackAgent.id) },
+            this._childSettings(settings, fallbackAgent.id),
             null,
             undefined,
-            sessionId
+            this._registerChild(sessionId, fallbackAgent.id)
           );
 
           let synthesis = '';
@@ -1712,20 +1772,62 @@ Your updated recommendation incorporating insights from the facilitator summary.
     const session = this._panelSessions.get(sessionId);
     if (session) {
       console.log('[Mysti] Brainstorm: Cancelling session for panel', sessionId);
-      // B9: Cancel the main session process AND each agent's process
+      // B9/S1: cancel the main session process AND every child actually
+      // dispatched (children run under composite keys, so these cancels
+      // resolve to the owning provider's live process). The agents-derived
+      // keys are kept as a backstop for sessions created before childPanels
+      // existed; the recorded set additionally covers a synthesis agent
+      // that isn't one of the two participants.
       this._providerManager.cancelRequest(sessionId);
+      const childIds = new Set<string>(
+        (session.childPanels || []).map(c => c.panelId)
+      );
       for (const agent of session.agents) {
-        this._providerManager.cancelRequest(`${sessionId}-brainstorm-${agent.id}`);
+        childIds.add(this._childPanelId(sessionId, agent.id));
+      }
+      for (const childId of childIds) {
+        this._providerManager.cancelRequest(childId);
       }
       session.phase = 'complete';
+      // Stop = unclean end: also retire the children's CLI sessions so the
+      // next brainstorm can't --resume a mid-kill session. (Clean `done` ends
+      // deliberately KEEP the sessions — composite keys already isolate them
+      // from the main chat, and keeping them preserves cross-turn brainstorm
+      // continuity.)
+      this.disposeChildSessions(sessionId);
     }
   }
 
   /**
-   * Clear the session for a specific panel
+   * Dispose the provider-side sessions of every child this panel's brainstorm
+   * dispatched. Called when a session finishes (done/error) so the next
+   * brainstorm in the same panel starts fresh CLI sessions instead of
+   * resuming the previous brainstorm's, and so persistent-process providers
+   * (e.g. hermes) don't keep a live child process per finished session.
+   * Keeps the in-memory session record — the UI still reads it after `done`.
+   */
+  public disposeChildSessions(panelId?: string): void {
+    const sessionId = panelId || 'default';
+    const session = this._panelSessions.get(sessionId);
+    if (!session?.childPanels?.length) {
+      return;
+    }
+    for (const child of session.childPanels) {
+      // Target the recorded provider directly: the panel→provider map entry
+      // is dropped when a stream completes, so provider-resolving variants
+      // would fall back to the default provider and no-op.
+      this._providerManager.disposePersistentProcessForProvider(child.providerId, child.panelId);
+    }
+    session.childPanels = [];
+  }
+
+  /**
+   * Clear the session for a specific panel (panel dispose / new conversation):
+   * tear down child provider sessions, then drop the record.
    */
   public clearSession(panelId?: string): void {
     const sessionId = panelId || 'default';
+    this.disposeChildSessions(sessionId);
     this._panelSessions.delete(sessionId);
   }
 }

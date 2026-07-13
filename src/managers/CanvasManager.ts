@@ -2574,7 +2574,13 @@ Return ONLY the updated component code in a single code block:
     urlOrSelector: string,
     browserManager: BrowserManager,
     screenshotService: ScreenshotService,
-    devServerManager: DevServerManager
+    devServerManager: DevServerManager,
+    // Plan 18 (canvas M1): auto-starting the workspace's package.json dev
+    // script goes through `spawn(shell:true)` — a hostile repo's "dev" script
+    // would execute on a bare /render with no prompt. The caller supplies the
+    // user-confirmation hook; WITHOUT one we fail closed (no auto-start, the
+    // explicit-URL path still works).
+    confirmDevServerStart?: (command: string) => Promise<boolean>
   ): AsyncGenerator<CanvasStreamChunk> {
     yield { type: 'canvas_render_started', canvasId };
 
@@ -2602,6 +2608,15 @@ Return ONLY the updated component code in a single code block:
           if (workspaceRoot) {
             const cmd = DevServerManager.detectDevCommand(workspaceRoot);
             if (cmd) {
+              const approved = confirmDevServerStart ? await confirmDevServerStart(cmd) : false;
+              if (!approved) {
+                yield {
+                  type: 'canvas_error',
+                  canvasId,
+                  error: `Dev server not started (command "${cmd}" was not approved). Start it yourself and retry, or use /render http://... with an explicit URL.`
+                };
+                return;
+              }
               yield { type: 'canvas_render_progress', canvasId, progress: 10, content: 'Starting dev server...' };
               const result = await devServerManager.start(panelId, cmd, workspaceRoot);
               url = result.url;

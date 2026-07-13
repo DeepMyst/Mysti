@@ -119,23 +119,32 @@ export class CollaborationManager {
       onGate: input.onGate,
     });
 
-    for await (const chunk of stream) {
-      const outcome = outcomes.get(chunk.collaboratorId);
-      if (outcome) {
-        if (chunk.type === 'collab_text' && chunk.content) {
-          outcome.text += chunk.content;
-        } else if (chunk.type === 'collab_complete') {
-          if (chunk.responseText) {
-            outcome.text = chunk.responseText;
+    try {
+      for await (const chunk of stream) {
+        const outcome = outcomes.get(chunk.collaboratorId);
+        if (outcome) {
+          if (chunk.type === 'collab_text' && chunk.content) {
+            outcome.text += chunk.content;
+          } else if (chunk.type === 'collab_complete') {
+            if (chunk.responseText) {
+              outcome.text = chunk.responseText;
+            }
+            outcome.hasError = Boolean(chunk.hasError);
+            outcome.failure = chunk.failure;
+          } else if (chunk.type === 'collab_skipped' || chunk.type === 'collab_error') {
+            outcome.hasError = true;
+            outcome.failure = chunk.failure;
           }
-          outcome.hasError = Boolean(chunk.hasError);
-          outcome.failure = chunk.failure;
-        } else if (chunk.type === 'collab_skipped' || chunk.type === 'collab_error') {
-          outcome.hasError = true;
-          outcome.failure = chunk.failure;
         }
+        yield chunk;
       }
-      yield chunk;
+    } finally {
+      // Plan 18 (H2): reclaim every child this run dispatched. Without this,
+      // disposeRun's only caller was the Mysti agentic loop — each @agent:role
+      // run leaked its children's persistent processes (e.g. a live
+      // `hermes acp` per consult) and per-UUID session records until the
+      // window reloaded. In a finally so consumer breaks/throws clean up too.
+      try { this._pool.disposeRun(runId); } catch { /* best-effort */ }
     }
 
     const list = Array.from(outcomes.values());

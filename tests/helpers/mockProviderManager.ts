@@ -72,6 +72,12 @@ export class MockProviderManager {
   /** Track cancelRequest calls for assertions */
   public cancelledPanelIds: string[] = [];
 
+  /** Record every sendMessageToProvider dispatch for assertions */
+  public sendCalls: { providerId: string; content: string; settings: Settings; panelId?: string }[] = [];
+
+  /** Track disposePersistentProcessForProvider calls for assertions */
+  public disposedChildren: { providerId: string; panelId: string }[] = [];
+
   /** Default model names per provider */
   public defaultModels: Map<string, string> = new Map();
 
@@ -89,6 +95,7 @@ export class MockProviderManager {
     persona?: PersonaConfig,
     panelId?: string
   ): AsyncGenerator<StreamChunk> {
+    this.sendCalls.push({ providerId, content, settings, panelId });
     const factory = this.streamFactories.get(providerId) || this.defaultStreamFactory;
     if (!factory) {
       throw new Error(`No stream factory configured for provider: ${providerId}`);
@@ -159,6 +166,8 @@ export class MockProviderManager {
     this.providerStatuses.clear();
     this.availableProviders = [];
     this.cancelledPanelIds = [];
+    this.sendCalls = [];
+    this.disposedChildren = [];
     this.defaultModels.clear();
     this.contextWindows.clear();
   }
@@ -169,5 +178,8 @@ export class MockProviderManager {
   resumeRequest(): boolean { return false; }
   dispose(): void {}
   disposePersistentProcess(): void {}
+  disposePersistentProcessForProvider(providerId: string, panelId: string): void {
+    this.disposedChildren.push({ providerId, panelId });
+  }
   setAgentContextManager(): void {}
 }

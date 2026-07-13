@@ -563,3 +563,77 @@ describe('CanvasManager', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 18 Wave 1 (canvas M1): /render must NOT auto-execute the workspace's
+// package.json dev script (spawn shell:true) without explicit user approval.
+// No callback wired = fail closed.
+// ---------------------------------------------------------------------------
+describe('renderPage dev-server gate (Plan 18 canvas M1)', () => {
+  function ctx(): any {
+    return { globalState: { get: () => undefined, update: () => Promise.resolve() }, subscriptions: [] };
+  }
+  function mocks() {
+    return {
+      browserMgr: {
+        launch: vi.fn().mockResolvedValue({
+          url: () => 'http://localhost:3000',
+          waitForTimeout: vi.fn().mockResolvedValue(undefined),
+          screenshot: vi.fn().mockResolvedValue(Buffer.from('png')),
+          $: vi.fn().mockResolvedValue(null),
+        }),
+        close: vi.fn().mockResolvedValue(undefined),
+      },
+      screenshotSvc: {
+        capture: vi.fn().mockResolvedValue({
+          id: 's1', iteration: 0, timestamp: 1, filePath: '/tmp/s.png',
+          base64Data: 'QUJD', label: 'canvas-render', url: 'http://localhost:3000',
+        }),
+      },
+      devServerMgr: {
+        isRunning: vi.fn().mockReturnValue(false),
+        getUrl: vi.fn().mockReturnValue(null),
+        start: vi.fn().mockResolvedValue({ url: 'http://localhost:3000', pid: 1 }),
+        stop: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+  }
+
+  async function run(confirm?: (cmd: string) => Promise<boolean>) {
+    const { DevServerManager } = await import('../../src/managers/DevServerManager');
+    const detectSpy = vi.spyOn(DevServerManager, 'detectDevCommand').mockReturnValue('npm run dev');
+    const m = mocks();
+    const manager = new CanvasManager(ctx());
+    const chunks: CanvasStreamChunk[] = [];
+    for await (const chunk of manager.renderPage(
+      'canvas-1', 'panel-1', '',
+      m.browserMgr as any, m.screenshotSvc as any, m.devServerMgr as any,
+      confirm
+    )) {
+      chunks.push(chunk);
+    }
+    detectSpy.mockRestore();
+    return { chunks, ...m };
+  }
+
+  it('fails closed when no confirmation callback is wired', async () => {
+    const r = await run(undefined);
+    expect(r.devServerMgr.start).not.toHaveBeenCalled();
+    expect(r.chunks.some(c => c.type === 'canvas_error' && /not approved/.test(c.error || ''))).toBe(true);
+  });
+
+  it('does not start the dev server when the user denies', async () => {
+    const confirm = vi.fn(async () => false);
+    const r = await run(confirm);
+    expect(confirm).toHaveBeenCalledWith('npm run dev');
+    expect(r.devServerMgr.start).not.toHaveBeenCalled();
+    expect(r.chunks.some(c => c.type === 'canvas_error' && /not approved/.test(c.error || ''))).toBe(true);
+  });
+
+  it('starts the dev server only after the user approves', async () => {
+    const confirm = vi.fn(async () => true);
+    const r = await run(confirm);
+    expect(confirm).toHaveBeenCalledWith('npm run dev');
+    expect(r.devServerMgr.start).toHaveBeenCalledWith('panel-1', 'npm run dev', expect.any(String));
+  });
+});

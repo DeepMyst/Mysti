@@ -235,3 +235,78 @@ describe('CollaborationManager', () => {
     expect(peak).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 18 Wave 1 (H2): every @agent:role run must reclaim its children when
+// the stream ends. disposeRun's only caller used to be the Mysti agentic
+// loop, so each collaboration run leaked persistent child processes (e.g. a
+// live `hermes acp` per consult) and session records until window reload.
+// ---------------------------------------------------------------------------
+describe('CollaborationManager disposeRun (Plan 18 H2)', () => {
+  let pm: MockProviderManager;
+
+  beforeEach(() => {
+    clearMockConfig();
+    pm = new MockProviderManager();
+  });
+
+  it('disposes every child provider session after the run completes', async () => {
+    pm.setProviderAvailable('google-gemini');
+    pm.setProviderAvailable('openai-codex');
+    pm.setProviderChunks('google-gemini', textChunks(['critique']));
+    pm.setProviderChunks('openai-codex', textChunks(['review']));
+
+    const manager = makeManager(pm);
+    const { result } = await drain(manager.run({
+      brief: 'Check this',
+      collaborators: [
+        { agentId: 'google-gemini' as any, roleId: 'critic' },
+        { agentId: 'openai-codex' as any, roleId: 'reviewer' },
+      ],
+      context: [],
+      settings: collabSettings(),
+      panelId: 'panel-h2',
+    }));
+
+    // Child panel ids are `${panelId}-collab-${runId}-${collaboratorId}` where
+    // collaboratorId is `${index}-${agentId}` — match on run + provider.
+    // Child panel ids are `${panelId}-collab-${runId}-${index}-${agentId}-${roleId}`.
+    const disposed = pm.disposedChildren;
+    expect(disposed.some(
+      d => d.providerId === 'google-gemini' &&
+           d.panelId.startsWith(`panel-h2-collab-${result.runId}-`) &&
+           d.panelId.includes('google-gemini')
+    )).toBe(true);
+    expect(disposed.some(
+      d => d.providerId === 'openai-codex' &&
+           d.panelId.startsWith(`panel-h2-collab-${result.runId}-`) &&
+           d.panelId.includes('openai-codex')
+    )).toBe(true);
+  });
+
+  it('disposes children even when the consumer abandons the stream mid-run', async () => {
+    pm.setProviderAvailable('google-gemini');
+    pm.setProviderChunks('google-gemini', textChunks(['a', 'b', 'c']));
+
+    const manager = makeManager(pm);
+    const gen = manager.run({
+      brief: 'Check this',
+      collaborators: [{ agentId: 'google-gemini' as any, roleId: 'critic' }],
+      context: [],
+      settings: collabSettings(),
+      panelId: 'panel-h2b',
+    });
+
+    // Pull until the child has demonstrably started streaming, then abandon
+    // the generator (consumer teardown path — Stop/new-message).
+    let next = await gen.next();
+    while (!next.done && next.value.type !== 'collab_text') {
+      next = await gen.next();
+    }
+    await gen.return(undefined as any);
+
+    expect(pm.disposedChildren.some(
+      d => d.providerId === 'google-gemini' && d.panelId.startsWith('panel-h2b-collab-')
+    )).toBe(true);
+  });
+});

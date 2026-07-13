@@ -86,7 +86,7 @@ import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
 import { DevServerManager } from '../managers/DevServerManager';
 import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, MessageSegment, MessageThinking, MessageThinkingStyle, ToolCall, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualTestTrigger, VisualTestStreamChunk } from '../types';
-import { AUTONOMOUS_CONTINUATION_DELAY_MS, DEFAULT_PROVIDER, DEFAULT_FALLBACK_MODEL, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
+import { AUTONOMOUS_CONTINUATION_DELAY_MS, DEFAULT_PROVIDER, DEFAULT_FALLBACK_MODEL, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S, SUBAGENT_MAX_RETRIES } from '../constants';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
 import {
   buildProviderManifestPayload,
@@ -1147,6 +1147,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const retryPanelId = msg.panelId;
           const retryPayload = msg.payload as { agentId: AgentType };
           if (retryPanelId && retryPayload?.agentId) {
+            // A prior gate deny leaves the pass-cancel flag set (that is how
+            // the mention loop aborts); an explicit Retry is a fresh user
+            // action — clear it or the retry loop breaks on its first chunk.
+            this._cancelledPanels.delete(retryPanelId);
             const mentionCtx = this._lastMentionContext.get(retryPanelId);
             if (mentionCtx) {
               // Re-dispatch to just this single agent by creating a single-agent mention
@@ -1186,25 +1190,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                       });
                       break;
                     case 'subagent_tool_use':
-                      // Permission gate for sub-agent write operations (retry path)
-                      if (chunk.toolCall && this._shouldGateToolUse(mentionCtx.settings, chunk.toolCall.name)) {
-                        const retryGateAction = this._classifyToolAction(chunk.toolCall.name);
-                        if (retryGateAction !== 'file-read') {
-                          const retryInputPreview = JSON.stringify(chunk.toolCall.input || {}, null, 2).slice(0, 500);
-                          const retryRiskLevel = PermissionManager.classifyRisk(retryGateAction);
-                          const retryApproved = await this.requestPermissionInline(
-                            retryGateAction,
-                            chunk.toolCall.name,
-                            `${chunk.agentId || 'Sub-agent'} wants to: ${chunk.toolCall.name}`,
-                            { command: retryInputPreview, riskLevel: retryRiskLevel },
-                            retryPanelId,
-                            chunk.toolCall.id
-                          );
-                          if (!retryApproved) {
-                            this._providerManager.cancelRequest(retryPanelId);
-                            break;
-                          }
-                        }
+                      // H1 (retry path): same suspend-first gate as the main
+                      // mention loop — the old copy here had the identical
+                      // parent-panel-cancel + bare-break no-op deny.
+                      if (!(await this._gateSubAgentToolUse(chunk, mentionCtx.settings, retryPanelId))) {
+                        break;
                       }
                       this._postToPanel(retryPanelId, {
                         type: 'subAgentToolUse',
@@ -1433,12 +1423,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._cancelledPanels.add(panelId);
           this._providerManager.cancelRequest(panelId);
           this._brainstormManager.cancelSession(panelId);
+          // S1/S4: drop the brainstorm record AND its child provider sessions
+          // (composite `-brainstorm-` panels) so the new conversation can't
+          // resume a previous brainstorm's CLI sessions.
+          this._brainstormManager.clearSession(panelId);
           // C2: derive ids from the registry, never a hard-coded list
           this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
           this._cancelPendingSubAgentQuestions(panelId);
 
           this._providerManager.clearSession(panelId);  // Clear provider session for this panel
-          this._compactionManager.resetUsage(panelId);  // Reset compaction tracking
+          this._compactionManager.resetUsage(panelId);  // Reset compaction tracking (sweeps -brainstorm- child keys)
           this._lifecycleManager.removeSession(panelId);  // Clear lifecycle tracking
           const newConv = this._conversationManager.createNewConversation();
 
@@ -3061,6 +3055,81 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._handleToggleAutonomous();
   }
 
+  /**
+   * Gate a legacy `@agent` sub-agent tool_use (Plan 18 H1). Sub-agent CLIs run
+   * with CLI-level permissions bypassed, so this stream gate is the ONLY
+   * enforcement point — and a gate that merely awaits lets the child keep
+   * executing while the user reads the card. Mirror the main-path SIGSTOP
+   * gate: freeze the child panels BEFORE awaiting, resume on approve; on deny
+   * kill the actual children (`${panelId}-subagent-<agent>` plus retry/
+   * followup variants) and abort the whole mention pass via the loop's
+   * cancel flag. Returns true when processing may continue.
+   */
+  private async _gateSubAgentToolUse(
+    chunk: { agentId?: AgentType; toolCall?: ToolCall },
+    settings: Settings,
+    panelId: string
+  ): Promise<boolean> {
+    if (!chunk.toolCall || !this._shouldGateToolUse(settings, chunk.toolCall.name)) {
+      return true;
+    }
+    const action = this._classifyToolAction(chunk.toolCall.name);
+    // L5: providers emit tool_use twice per tool (start/stop pair, the first
+    // with {} input) — only gate the input-bearing event or every tool
+    // double-prompts.
+    const hasInput = Object.keys(chunk.toolCall.input || {}).length > 0;
+    if (action === 'file-read' || !hasInput) {
+      return true;
+    }
+
+    // Every panel variant this agent's child may be running under right now
+    // (MentionRouter: base, -retryN on auto-retry, -followup after a relayed
+    // question — and combinations).
+    const childPanels: string[] = [];
+    if (chunk.agentId) {
+      const base = `${panelId}-subagent-${chunk.agentId}`;
+      childPanels.push(base, `${base}-followup`);
+      for (let r = 1; r <= SUBAGENT_MAX_RETRIES; r++) {
+        childPanels.push(`${base}-retry${r}`, `${base}-retry${r}-followup`);
+      }
+    }
+
+    // Freeze BEFORE waiting on the user. Best-effort (returns false on
+    // Windows / no live process) — parity with the main-path gate.
+    const suspended = childPanels.filter(p => this._providerManager.suspendRequest(p));
+
+    const approved = await this.requestPermissionInline(
+      action,
+      chunk.toolCall.name,
+      `${chunk.agentId || 'Sub-agent'} wants to: ${chunk.toolCall.name}`,
+      {
+        command: JSON.stringify(chunk.toolCall.input || {}, null, 2).slice(0, 500),
+        riskLevel: PermissionManager.classifyRisk(action),
+        suspended: suspended.length > 0
+      },
+      panelId,
+      chunk.toolCall.id
+    );
+
+    if (approved) {
+      for (const p of suspended) {
+        this._providerManager.resumeRequest(p);
+      }
+      return true;
+    }
+
+    // Deny: kill the children (cancelRequest SIGKILLs suspended processes —
+    // never resume-then-terminate, which would give the CLI a window to run
+    // the tool) and abort the pass.
+    for (const p of childPanels) {
+      this._providerManager.cancelRequest(p);
+    }
+    this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
+    this._cancelPendingSubAgentQuestions(panelId);
+    this._cancelledPanels.add(panelId);
+    return false;
+  }
+
   private async _handleSendMessage(
     payload: {
       content: string;
@@ -3388,25 +3457,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               break;
 
             case 'subagent_tool_use':
-              // Permission gate for sub-agent write operations
-              if (chunk.toolCall && this._shouldGateToolUse(settings, chunk.toolCall.name)) {
-                const subGateAction = this._classifyToolAction(chunk.toolCall.name);
-                if (subGateAction !== 'file-read') {
-                  const subInputPreview = JSON.stringify(chunk.toolCall.input || {}, null, 2).slice(0, 500);
-                  const subRiskLevel = PermissionManager.classifyRisk(subGateAction);
-                  const subApproved = await this.requestPermissionInline(
-                    subGateAction,
-                    chunk.toolCall.name,
-                    `${chunk.agentId || 'Sub-agent'} wants to: ${chunk.toolCall.name}`,
-                    { command: subInputPreview, riskLevel: subRiskLevel },
-                    panelId,
-                    chunk.toolCall.id
-                  );
-                  if (!subApproved) {
-                    this._providerManager.cancelRequest(panelId);
-                    break;
-                  }
-                }
+              // H1: suspend-first permission gate; on deny it kills the real
+              // child panels and flags the pass cancelled (the loop-top guard
+              // exits and the post-loop check posts requestCancelled).
+              if (!(await this._gateSubAgentToolUse(chunk, settings, panelId))) {
+                break;
               }
               this._postToPanel(panelId, {
                 type: 'subAgentToolUse',
@@ -4779,11 +4834,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             } else {
               this._postToPanel(panelId, { type: 'brainstormComplete', payload: {} });
             }
+            // S4: children's CLI sessions deliberately survive a CLEAN end —
+            // composite `-brainstorm-` keys already isolate them from the
+            // main chat, and keeping them preserves cross-turn brainstorm
+            // continuity. Unclean ends (Stop → cancelSession, thrown error →
+            // catch below, new conversation / tab dispose → clearSession)
+            // retire them.
             break;
           }
         }
       }
     } catch (error) {
+      this._brainstormManager.disposeChildSessions(panelId);
       this._postToPanel(panelId, {
         type: 'brainstormError',
         payload: { error: error instanceof Error ? error.message : 'An unknown error occurred' }
@@ -6374,6 +6436,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       { modal: true },
       RUN
     );
+    return choice === RUN;
+  }
+
+  /**
+   * Modal, default-DENY confirmation for auto-starting the WORKSPACE's own
+   * dev script on a canvas /render (Plan 18 canvas M1). The command comes
+   * from the repo's package.json — not model output — but it still runs
+   * through `spawn(shell:true)`, so a freshly-cloned hostile repo's "dev"
+   * script must never execute unprompted. Approval can be remembered
+   * per-workspace per-command (workspaceState, so it never travels with
+   * the repo).
+   */
+  private async _confirmWorkspaceDevServerCommand(command: string): Promise<boolean> {
+    const APPROVED_KEY = 'mysti.canvas.approvedDevCommands';
+    const approved = this._extensionContext.workspaceState.get<string[]>(APPROVED_KEY, []);
+    if (approved.includes(command)) {
+      return true;
+    }
+    const RUN = 'Run once';
+    const ALWAYS = 'Always for this workspace';
+    const choice = await vscode.window.showWarningMessage(
+      `Canvas /render wants to start this workspace's dev server:\n\n${command}\n\nThis runs the repo's own package.json script through a shell. Only allow it if you trust this workspace.`,
+      { modal: true },
+      RUN,
+      ALWAYS
+    );
+    if (choice === ALWAYS) {
+      await this._extensionContext.workspaceState.update(APPROVED_KEY, [...approved, command]);
+      return true;
+    }
     return choice === RUN;
   }
 
@@ -8714,7 +8806,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 parsed.argument,
                 this._canvasBrowserManager,
                 this._canvasScreenshotService,
-                this._canvasDevServerManager
+                this._canvasDevServerManager,
+                (cmd) => this._confirmWorkspaceDevServerCommand(cmd)
               );
               for await (const chunk of stream) {
                 this._postToPanel(canvasPanelId, { type: 'canvasStreamChunk', payload: chunk } as any);
@@ -9511,6 +9604,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Clean up per-panel channel bridge state
       this._channelBridge.clearPanel(panelId);
       this._runningPanels.delete(panelId);
+      // S1/S7: cancel + fully clear any brainstorm session (its children run
+      // under composite `-brainstorm-` panel keys the plain-panelId loop
+      // below never reaches).
+      this._brainstormManager.cancelSession(panelId);
+      this._brainstormManager.clearSession(panelId);
+      // S7: drop the panel's compaction usage (sweeps -brainstorm- child keys
+      // too) — these outlived closed tabs before.
+      this._compactionManager.resetUsage(panelId);
       // Clean up per-panel provider sessions (including persistent processes)
       for (const provider of this._providerManager.getAllProviders()) {
         provider.cancelCurrentRequest(panelId);

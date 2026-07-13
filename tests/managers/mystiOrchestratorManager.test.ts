@@ -215,3 +215,45 @@ describe('MystiOrchestratorManager', () => {
     expect(result.synthesis).toBe('SYNTHESIZED ANSWER');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 18 Wave 1 (H2): the orchestrate path must reclaim every frontier's
+// children when the run ends — it previously never called disposeRun at all.
+// ---------------------------------------------------------------------------
+// Plan 18 Wave 1 (H2): the orchestrate path must reclaim every frontier's
+// children when the run ends — it previously never called disposeRun at all.
+// ---------------------------------------------------------------------------
+describe('MystiOrchestratorManager disposeRun (Plan 18 H2)', () => {
+  it('disposes every node child (all frontiers) after the run completes', async () => {
+    clearMockConfig();
+    const pm = new MockProviderManager();
+    pm.setProviderAvailable('claude-code');
+    pm.setProviderAvailable('google-gemini');
+    pm.setProviderChunks('claude-code', textChunks(['step one done']));
+    pm.setProviderChunks('google-gemini', textChunks(['step two done']));
+
+    const mgr = makeManager(pm, stubCoordinator({
+      nodes: [
+        { id: 'n1', task: 'first', backend: 'claude-code', dependsOn: [] },
+        { id: 'n2', task: 'second', backend: 'google-gemini', dependsOn: ['n1'] },
+      ],
+    }));
+
+    const { result } = await drain(mgr.run({
+      brief: 'two-step task',
+      context: [],
+      settings: collabSettings(),
+      panelId: 'panel-orch',
+      conversation: null,
+    } as any));
+
+    // Two frontiers (n2 depends on n1) — BOTH frontiers' children reclaimed.
+    expect(pm.disposedChildren.length).toBeGreaterThanOrEqual(2);
+    expect(pm.disposedChildren.some(
+      d => d.providerId === 'claude-code' && d.panelId.includes(`-collab-${result.runId}-f0-`)
+    )).toBe(true);
+    expect(pm.disposedChildren.some(
+      d => d.providerId === 'google-gemini' && d.panelId.includes(`-collab-${result.runId}-f1-`)
+    )).toBe(true);
+  });
+});

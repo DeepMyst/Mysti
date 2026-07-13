@@ -672,6 +672,13 @@ export interface BrainstormSession {
   unifiedSolution: string | null;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Child panel keys this session dispatched under (`${panelId}-brainstorm-
+   * ${agentId}`), with the owning provider recorded so teardown can target
+   * that provider directly even after the panel→provider map entry is gone.
+   * Includes the synthesis agent, which may not be one of `agents`.
+   */
+  childPanels?: { panelId: string; providerId: AgentType }[];
 }
 
 // Streaming chunk for brainstorm mode

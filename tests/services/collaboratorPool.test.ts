@@ -507,3 +507,88 @@ describe('CollaboratorPool', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 18 Wave 1 (H2 + Stop race): follow-up children are recorded for
+// end-of-run disposal, and a disposed run is tombstoned so parked children
+// resuming after Stop can't resurrect the tracking maps or spawn new children.
+// ---------------------------------------------------------------------------
+describe('CollaboratorPool disposeRun completeness (Plan 18)', () => {
+  beforeEach(() => {
+    clearMockConfig();
+  });
+
+  it('records question-relay follow-up children so disposeRun reclaims them', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    // Child asks a question, user answers, follow-up child streams the answer.
+    let call = 0;
+    mockPM.streamFactories.set('google-gemini', () => {
+      call++;
+      if (call === 1) {
+        return createMockStream([
+          { type: 'ask_user_question', askUserQuestion: { questions: [{ question: 'Which file?', header: 'Q', options: [], multiSelect: false }] } } as unknown as StreamChunk,
+          { type: 'done' } as StreamChunk,
+        ]);
+      }
+      return createMockStream([
+        { type: 'text', content: 'follow-up answer' } as StreamChunk,
+        { type: 'done' } as StreamChunk,
+      ]);
+    });
+
+    const spec = collabSpec('c1', 'google-gemini' as any);
+    const options = collabOptions({
+      runId: 'run-fu',
+      onQuestion: async () => ({ answers: { Q: 'main.ts' } }),
+    });
+    await collectCollabChunks(pool.dispatch([spec], options));
+
+    pool.disposeRun('run-fu');
+
+    const disposed = mockPM.disposedChildren.map(d => d.panelId);
+    expect(disposed.some(p => p.endsWith('-followup'))).toBe(true);
+  });
+
+  it('a parked child resuming after disposeRun cannot re-register or spawn a follow-up', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+
+    let releaseAnswer: (v: { answers: Record<string, string> }) => void = () => {};
+    const answerPromise = new Promise<{ answers: Record<string, string> }>(r => { releaseAnswer = r; });
+
+    let followUpDispatched = false;
+    let call = 0;
+    mockPM.streamFactories.set('google-gemini', () => {
+      call++;
+      if (call === 1) {
+        return createMockStream([
+          { type: 'ask_user_question', askUserQuestion: { questions: [{ question: 'Which?', header: 'Q', options: [], multiSelect: false }] } } as unknown as StreamChunk,
+          { type: 'done' } as StreamChunk,
+        ]);
+      }
+      followUpDispatched = true;
+      return createMockStream([{ type: 'done' } as StreamChunk]);
+    });
+
+    const spec = collabSpec('c1', 'google-gemini' as any);
+    const options = collabOptions({
+      runId: 'run-race',
+      onQuestion: () => answerPromise, // parks the child mid-run
+    });
+
+    const collecting = collectCollabChunks(pool.dispatch([spec], options));
+
+    // Give the child time to reach the parked await, then Stop the run.
+    await new Promise(r => setTimeout(r, 20));
+    pool.disposeRun('run-race');
+
+    // The user answers AFTER the run was reclaimed.
+    releaseAnswer({ answers: { Q: 'too late' } });
+    await collecting;
+
+    expect(followUpDispatched).toBe(false);
+    // The maps stay clean: a second disposeRun finds nothing new to reclaim.
+    const before = mockPM.disposedChildren.length;
+    pool.disposeRun('run-race');
+    expect(mockPM.disposedChildren.length).toBe(before);
+  });
+});

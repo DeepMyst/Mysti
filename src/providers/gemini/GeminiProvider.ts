@@ -305,10 +305,14 @@ export class GeminiProvider extends BaseCliProvider {
   private _addPermissionFlags(args: string[], settings: Settings): void {
     const { mode, accessLevel } = settings;
 
-    // Plan modes or read-only → sandbox mode
+    // Plan modes or read-only → the CLI's documented read-only mode.
+    // Plan 18 (4.3): this was `--sandbox`, which is a container/seatbelt
+    // boolean, NOT read-only — and it hard-fails to spawn on hosts where a
+    // container runtime is configured but absent. `--approval-mode plan`
+    // (gemini >= 0.2x) is the actual "analyze, don't act" mode.
     if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--sandbox');
-      console.log('[Mysti] Gemini: Using sandbox mode (read-only)');
+      args.push('--approval-mode', 'plan');
+      console.log('[Mysti] Gemini: Using approval-mode plan (read-only)');
       return;
     }
 

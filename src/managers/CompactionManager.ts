@@ -300,12 +300,22 @@ export class CompactionManager {
   }
 
   /**
-   * Reset usage tracking for a panel (on new conversation).
+   * Reset usage tracking for a panel (on new conversation). Also sweeps the
+   * panel's brainstorm-child keys (`${panelId}-brainstorm-<agent>`): those are
+   * written per agent during brainstorm but were never reset, so they
+   * accumulated across conversations (S7).
    */
   public resetUsage(panelId: string): void {
     this._panelUsage.delete(panelId);
     this._lastCompactionTime.delete(panelId);
     this._smart?.resetPanel(panelId);
+    const childPrefix = `${panelId}-brainstorm-`;
+    for (const key of Array.from(this._panelUsage.keys())) {
+      if (key.startsWith(childPrefix)) {
+        this._panelUsage.delete(key);
+        this._lastCompactionTime.delete(key);
+      }
+    }
   }
 
   /**

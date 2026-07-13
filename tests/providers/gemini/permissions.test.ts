@@ -19,19 +19,24 @@ describe('Gemini permission flag mapping', () => {
     provider = new TestableGeminiProvider();
   });
 
+  // Plan 18 (4.3): read-only/plan maps to the CLI's documented read-only mode
+  // `--approval-mode plan` — NOT `--sandbox`, which is a container/seatbelt
+  // boolean that can hard-fail to spawn where no container runtime exists.
   it.each([
     ['quick-plan'],
     ['detailed-plan'],
-  ] as const)('should use --sandbox for %s mode', (mode) => {
+  ] as const)('should use --approval-mode plan for %s mode', (mode) => {
     const args = provider.buildCliArgs(s({ mode }), createGeminiSession());
-    expect(args).toContain('--sandbox');
+    expect(args.join(' ')).toContain('--approval-mode plan');
     expect(args).not.toContain('--yolo');
+    expect(args).not.toContain('--sandbox');
   });
 
-  it('should use --sandbox for read-only access', () => {
+  it('should use --approval-mode plan for read-only access', () => {
     const args = provider.buildCliArgs(s({ accessLevel: 'read-only' }), createGeminiSession());
-    expect(args).toContain('--sandbox');
+    expect(args.join(' ')).toContain('--approval-mode plan');
     expect(args).not.toContain('--yolo');
+    expect(args).not.toContain('--sandbox');
   });
 
   it.each([
@@ -43,5 +48,6 @@ describe('Gemini permission flag mapping', () => {
     const args = provider.buildCliArgs(s({ mode, accessLevel }), createGeminiSession());
     expect(args).toContain('--yolo');
     expect(args).not.toContain('--sandbox');
+    expect(args).not.toContain('--approval-mode');
   });
 });

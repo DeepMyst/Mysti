@@ -553,3 +553,169 @@ describe('ChatViewProvider.requestPermissionInline panel-gone guard (review[21])
     expect(liveApproved).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 18 Wave 1 (H1): denying a legacy @agent sub-agent gate must kill the
+// ACTUAL child panels (`${panelId}-subagent-<agent>[-retryN]`) and abort the
+// whole mention pass. The old code cancelled the parent panel (a no-op — the
+// child never ran there) and `break`ed only out of the switch, so the denied
+// command executed anyway while its output kept streaming into the pass.
+// ---------------------------------------------------------------------------
+describe('Legacy @agent sub-agent gate deny (Plan 18 H1)', () => {
+  let h: Harness;
+
+  beforeEach(() => { clearMockConfig(); h = createHarness(); });
+  afterEach(() => { h.dispose(); });
+
+  it('deny cancels the sub-agent child panels and aborts the mention pass', async () => {
+    const pm = (h.provider as any)._providerManager;
+    pm.cancelRequest = vi.fn();
+    pm.suspendRequest = vi.fn(() => true);
+    pm.resumeRequest = vi.fn();
+    pm.getAllProviderIds = () => ['claude-code', 'openai-codex'];
+
+    // User denies the permission card.
+    (h.provider as any).requestPermissionInline = vi.fn(async () => false);
+
+    const cancelSubAgents = vi.fn();
+    (h.provider as any)._mentionRouter = {
+      processMentions: async function* () {
+        yield { type: 'subagent_started', agentId: 'openai-codex' };
+        yield {
+          type: 'subagent_tool_use',
+          agentId: 'openai-codex',
+          toolCall: { id: 't1', name: 'Bash', input: { command: 'rm -rf migrations' }, status: 'pending' }
+        };
+        // Everything after the deny must NOT be folded into the pass.
+        yield { type: 'subagent_text', agentId: 'openai-codex', content: 'AFTER-DENY' };
+        yield { type: 'main_start' };
+      },
+      cancelSubAgents,
+      stripMentions: (c: string) => c,
+      formatSubAgentContext: () => '',
+    };
+
+    await (h.provider as any)._handleSendMessage(
+      {
+        content: '@codex clean the old migrations',
+        context: [],
+        settings: { ...SETTINGS, accessLevel: 'ask-permission', mode: 'default' },
+        mentions: [{
+          type: 'agent', value: 'openai-codex', displayName: '@codex', startIndex: 0, endIndex: 6
+        }]
+      },
+      'sidebar'
+    );
+
+    // The child was FROZEN before the user was asked (suspend-before-gate) —
+    // an unfrozen permissions-bypassed CLI executes the tool during the wait.
+    expect(pm.suspendRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex');
+    const gateSpy = (h.provider as any).requestPermissionInline as ReturnType<typeof vi.fn>;
+    expect(Math.min(...pm.suspendRequest.mock.invocationCallOrder))
+      .toBeLessThan(Math.min(...gateSpy.mock.invocationCallOrder));
+    // No resume on deny — cancelRequest handles suspended children (SIGKILL).
+    expect(pm.resumeRequest).not.toHaveBeenCalled();
+
+    // The real children die — base panel plus retry AND followup variants.
+    expect(pm.cancelRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex');
+    expect(pm.cancelRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex-retry1');
+    expect(pm.cancelRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex-followup');
+    expect(pm.cancelRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex-retry1-followup');
+    expect(cancelSubAgents).toHaveBeenCalled();
+
+    // The pass aborted: cancellation surfaced, the denied tool card was never
+    // forwarded, and post-deny stream content never reached the webview.
+    expect(h.sidebarMessages.some(m => m.type === 'requestCancelled')).toBe(true);
+    expect(h.sidebarMessages.some(m => m.type === 'subAgentToolUse')).toBe(false);
+    expect(h.sidebarMessages.some(
+      m => m.type === 'subAgentChunk' && (m.payload as any)?.content === 'AFTER-DENY'
+    )).toBe(false);
+  });
+
+  it('approve resumes the suspended child and the pass continues', async () => {
+    const pm = (h.provider as any)._providerManager;
+    pm.cancelRequest = vi.fn();
+    pm.suspendRequest = vi.fn((p: string) => p === 'sidebar-subagent-openai-codex');
+    pm.resumeRequest = vi.fn();
+    pm.getAllProviderIds = () => ['claude-code', 'openai-codex'];
+    (h.provider as any).requestPermissionInline = vi.fn(async () => true);
+
+    (h.provider as any)._mentionRouter = {
+      processMentions: async function* () {
+        yield {
+          type: 'subagent_tool_use',
+          agentId: 'openai-codex',
+          toolCall: { id: 't1', name: 'Bash', input: { command: 'ls' }, status: 'pending' }
+        };
+        yield { type: 'main_start' };
+      },
+      cancelSubAgents: vi.fn(),
+      stripMentions: (c: string) => c,
+      formatSubAgentContext: () => '',
+    };
+
+    await (h.provider as any)._handleSendMessage(
+      {
+        content: '@codex list files',
+        context: [],
+        settings: { ...SETTINGS, accessLevel: 'ask-permission', mode: 'default' },
+        mentions: [{
+          type: 'agent', value: 'openai-codex', displayName: '@codex', startIndex: 0, endIndex: 6
+        }]
+      },
+      'sidebar'
+    );
+
+    // Only the panel that actually froze gets resumed; children survive.
+    expect(pm.resumeRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex');
+    expect(pm.resumeRequest).toHaveBeenCalledTimes(1);
+    expect(pm.cancelRequest).not.toHaveBeenCalledWith('sidebar-subagent-openai-codex');
+    expect(h.sidebarMessages.some(m => m.type === 'subAgentToolUse')).toBe(true);
+  });
+
+  it('gate is skipped for the inputless preamble tool_use event (L5 double-prompt guard)', async () => {
+    const pm = (h.provider as any)._providerManager;
+    pm.cancelRequest = vi.fn();
+    pm.suspendRequest = vi.fn(() => true);
+    pm.resumeRequest = vi.fn();
+    pm.getAllProviderIds = () => ['claude-code', 'openai-codex'];
+
+    const gateSpy = vi.fn(async () => true);
+    (h.provider as any).requestPermissionInline = gateSpy;
+
+    (h.provider as any)._mentionRouter = {
+      processMentions: async function* () {
+        // Preamble event: providers emit tool_use first with empty input.
+        yield {
+          type: 'subagent_tool_use',
+          agentId: 'openai-codex',
+          toolCall: { id: 't1', name: 'Bash', input: {}, status: 'pending' }
+        };
+        // Real event with input — this one gates.
+        yield {
+          type: 'subagent_tool_use',
+          agentId: 'openai-codex',
+          toolCall: { id: 't1', name: 'Bash', input: { command: 'ls' }, status: 'pending' }
+        };
+        yield { type: 'main_start' };
+      },
+      cancelSubAgents: vi.fn(),
+      stripMentions: (c: string) => c,
+      formatSubAgentContext: () => '',
+    };
+
+    await (h.provider as any)._handleSendMessage(
+      {
+        content: '@codex list files',
+        context: [],
+        settings: { ...SETTINGS, accessLevel: 'ask-permission', mode: 'default' },
+        mentions: [{
+          type: 'agent', value: 'openai-codex', displayName: '@codex', startIndex: 0, endIndex: 6
+        }]
+      },
+      'sidebar'
+    );
+
+    expect(gateSpy).toHaveBeenCalledTimes(1);
+  });
+});

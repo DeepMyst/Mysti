@@ -93,6 +93,15 @@ export class CollaboratorPool {
    * nothing else kills them (review [13]).
    */
   private _runChildProviders: Map<string, Map<string, string>> = new Map();
+  /**
+   * Runs already reclaimed by disposeRun (Plan 18). A child parked at an
+   * internal await (gate card, relayed question) survives cancelRun; when it
+   * resumes it must NOT re-register into the maps disposeRun just cleaned —
+   * that resurrects the leak — nor spawn follow-up children for a dead run.
+   * Bounded FIFO (one UUID per run).
+   */
+  private _closedRuns: Set<string> = new Set();
+  private static readonly CLOSED_RUNS_CAP = 256;
 
   constructor(providerManager: PoolProviderManager) {
     this._providerManager = providerManager;
@@ -148,6 +157,15 @@ export class CollaboratorPool {
    * agentic loop finishes (its finally), never between delegations.
    */
   public disposeRun(runId: string): void {
+    // Tombstone FIRST: a child parked at a gate/question can resume after
+    // this method returns — the guards in _recordRunChild/_dispatchWithRetry/
+    // _relayQuestion check this set so a closed run can't repopulate the maps
+    // or spawn new children (Plan 18 Stop race).
+    this._closedRuns.add(runId);
+    if (this._closedRuns.size > CollaboratorPool.CLOSED_RUNS_CAP) {
+      const oldest = this._closedRuns.values().next().value;
+      if (oldest !== undefined) { this._closedRuns.delete(oldest); }
+    }
     this.cancelRun(runId); // kill anything still live first
     const children = this._runChildProviders.get(runId);
     if (!children) { return; }
@@ -301,12 +319,18 @@ export class CollaboratorPool {
         yield { ...base, type: 'collab_retry', retryCount: attempt };
       }
 
+      // Plan 18: never (re)dispatch into a run disposeRun already reclaimed —
+      // a child that was parked at a gate when Stop hit resumes here on the
+      // 'crashed' retry path and would otherwise spawn a fresh child for a
+      // dead run.
+      if (this._closedRuns.has(options.runId)) {
+        return { responseText: '', hasError: true, failure: 'cancelled' };
+      }
+
       const childPanelId = this._childPanelId(options, spec, attempt);
       this._rememberChild(options.runId, childPanelId);
       // Record for end-of-run disposal (retained beyond completion).
-      let runChildren = this._runChildProviders.get(options.runId);
-      if (!runChildren) { runChildren = new Map(); this._runChildProviders.set(options.runId, runChildren); }
-      runChildren.set(childPanelId, spec.agentId);
+      this._recordRunChild(options.runId, childPanelId, spec.agentId);
 
       const childSettings: Settings = {
         ...options.settings,
@@ -641,10 +665,20 @@ export class CollaboratorPool {
       return { responseText, hasError: false };
     }
 
+    // Plan 18 Stop race: this generator was parked awaiting the user's answer
+    // — if disposeRun reclaimed the run meanwhile, do not spawn a follow-up
+    // child for a dead run.
+    if (this._closedRuns.has(options.runId)) {
+      return { responseText, hasError: true, failure: 'cancelled' };
+    }
+
     const answerText = this._formatAnswers(userResponse.answers);
     const followUpPrompt = `${spec.prompt}\n\n---\n\nUser answered your questions:\n${answerText}\n\nPlease continue.`;
     const followUpPanelId = `${childPanelId}-followup`;
     this._rememberChild(options.runId, followUpPanelId);
+    // Plan 18 (H2): follow-up children must be reclaimable at end-of-run too —
+    // they were previously never recorded, so disposeRun couldn't reach them.
+    this._recordRunChild(options.runId, followUpPanelId, spec.agentId);
 
     let hasError = false;
     let failure: CollaboratorFailure | undefined;
@@ -696,12 +730,33 @@ export class CollaboratorPool {
   }
 
   private _rememberChild(runId: string, childPanelId: string): void {
+    // Closed runs must stay empty — a parked child resuming after disposeRun
+    // would otherwise resurrect the cancel-tracking map (Plan 18 Stop race).
+    if (this._closedRuns.has(runId)) { return; }
     let set = this._activeChildPanels.get(runId);
     if (!set) {
       set = new Set();
       this._activeChildPanels.set(runId, set);
     }
     set.add(childPanelId);
+  }
+
+  /**
+   * Record a child for end-of-run disposal. If the run is already closed
+   * (disposeRun raced a parked child), reclaim the child immediately instead
+   * of re-registering into the just-cleaned map.
+   */
+  private _recordRunChild(runId: string, childPanelId: string, agentId: string): void {
+    if (this._closedRuns.has(runId)) {
+      try {
+        this._providerManager.disposePersistentProcessForProvider?.(agentId, childPanelId);
+        this._providerManager.cancelRequest(childPanelId);
+      } catch { /* best-effort */ }
+      return;
+    }
+    let runChildren = this._runChildProviders.get(runId);
+    if (!runChildren) { runChildren = new Map(); this._runChildProviders.set(runId, runChildren); }
+    runChildren.set(childPanelId, agentId);
   }
 
   private _forgetChild(runId: string, childPanelId: string): void {
