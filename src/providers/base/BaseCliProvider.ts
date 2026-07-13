@@ -34,7 +34,9 @@ import type {
   AgentConfiguration,
   AuthStatus,
   SlashCommandDefinition,
-  ProviderType
+  ProviderType,
+  DeveloperPersona,
+  Skill
 } from '../../types';
 import type { AgentContextManager } from '../../managers/AgentContextManager';
 import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TIMEOUT_MS } from '../../constants';
@@ -178,6 +180,16 @@ export abstract class BaseCliProvider implements ICliProvider {
    */
   protected abstract getThinkingTokens(thinkingLevel: string): number | undefined;
 
+  /**
+   * Provider-specific environment variables merged into the spawn env (both the
+   * single-shot and persistent processes). Default: none. Overridden e.g. by
+   * Claude Code to keep the `-p` process waiting for background subagents/
+   * workflows to finish before exiting (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS).
+   */
+  protected getExtraSpawnEnv(_settings: Settings): Record<string, string> {
+    return {};
+  }
+
   // ============================================================================
   // Per-panel session management
   // ============================================================================
@@ -259,6 +271,21 @@ export abstract class BaseCliProvider implements ICliProvider {
     ];
   }
 
+  /**
+   * review[24]: fully EVICT a panel's session record (not just null its id).
+   * Delegation child panels use a unique `${panelId}-collab-${runId}-…` key per
+   * run; clearSession only nulled `sessionId`, so those dead records accumulated
+   * in `_panelSessions` forever in a long-lived window. Kills any live process
+   * first, then removes the map entry. Called from CollaboratorPool.disposeRun.
+   */
+  disposeSession(panelId: string): void {
+    if (typeof this.disposePersistentProcess === 'function') {
+      try { this.disposePersistentProcess(panelId); } catch { /* best-effort */ }
+    }
+    try { this.cancelCurrentRequest(panelId); } catch { /* best-effort */ }
+    this._panelSessions.delete(panelId);
+  }
+
   clearSession(panelId?: string): void {
     if (panelId) {
       const session = this._panelSessions.get(panelId);
@@ -316,6 +343,25 @@ export abstract class BaseCliProvider implements ICliProvider {
     // Mark this session as user-cancelled so any in-flight sendMessage() does NOT
     // re-send the prompt via the single-shot fallback (bug B4).
     session.cancelled = true;
+    // A SIGSTOP-suspended process (frozen at the pre-execution permission gate)
+    // must be SIGKILLed, NOT interrupted: writing \x03 to a stopped process's
+    // stdin is never read, so a persistent process denied at the gate would stay
+    // alive-but-frozen and hang the NEXT delegation that reuses its panel/session
+    // (P0 review [12]). SIGKILL reaches a stopped process without SIGCONT (so the
+    // CLI never gets a window to run the denied tool); the on-disk CLI session
+    // survives, so the next delegation respawns and still --resumes.
+    if (session.suspended) {
+      const frozen = isProcessLive(session.persistentProcess) ? session.persistentProcess : session.process;
+      if (isProcessLive(frozen)) {
+        console.log(`[Mysti] ${this.displayName}: Killing SUSPENDED process (SIGKILL) for panel: ${session.panelId}`);
+        void killProcessTree(frozen, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName, initialSignal: 'SIGKILL' });
+      }
+      session.persistentProcess = null;
+      session.persistentReady = false;
+      session.process = null;
+      session.suspended = false;
+      return;
+    }
     // If using persistent process, send interrupt (Ctrl+C) instead of killing
     if (isProcessLive(session.persistentProcess)) {
       console.log(`[Mysti] ${this.displayName}: Interrupting persistent process for panel: ${session.panelId}`);
@@ -324,20 +370,12 @@ export abstract class BaseCliProvider implements ICliProvider {
       session.process = null;
       return;
     }
-    // Single-shot: kill the process
+    // Single-shot: kill the process. (The suspended case is handled by the
+    // early-return block above — both persistent and single-shot — so it is no
+    // longer re-checked here.)
     if (isProcessLive(session.process)) {
-      if (session.suspended) {
-        // Process is frozen by SIGSTOP. Use SIGKILL directly — it is delivered
-        // to stopped processes on macOS/Linux without needing SIGCONT first.
-        // Sending SIGCONT+SIGTERM would resume the process and give the CLI a
-        // window to execute the pending tool before SIGTERM arrives.
-        console.log(`[Mysti] ${this.displayName}: Killing suspended process (SIGKILL) for panel: ${session.panelId}`);
-        void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName, initialSignal: 'SIGKILL' });
-        session.suspended = false;
-      } else {
-        console.log(`[Mysti] ${this.displayName}: Cancelling request for panel: ${session.panelId}`);
-        void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
-      }
+      console.log(`[Mysti] ${this.displayName}: Cancelling request for panel: ${session.panelId}`);
+      void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
       session.process = null;
     }
   }
@@ -532,6 +570,9 @@ export abstract class BaseCliProvider implements ICliProvider {
    * Check if the persistent process is alive and responsive.
    */
   protected _isPersistentProcessHealthy(session: PanelSessionState): boolean {
+    // A SIGSTOP-suspended process is alive but FROZEN — handing it out would
+    // hang the next request on its stdin (review [12] defense-in-depth).
+    if (session.suspended) { return false; }
     // Liveness via exitCode/signalCode (not `.killed`, which only means a signal
     // was delivered) — a signalled-but-not-yet-exited process is not healthy.
     return isProcessLive(session.persistentProcess);
@@ -569,7 +610,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
 
     const thinkingTokens = this.getThinkingTokens(settings.thinkingLevel);
-    const extraEnv: Record<string, string> = {};
+    const extraEnv: Record<string, string> = { ...this.getExtraSpawnEnv(settings) };
     if (thinkingTokens && thinkingTokens > 0) {
       extraEnv.MAX_THINKING_TOKENS = String(thinkingTokens);
     }
@@ -749,6 +790,8 @@ export abstract class BaseCliProvider implements ICliProvider {
    * persistent-process respawn instead of being silently ignored (issue #39).
    */
   protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     return settings.model || undefined;
   }
 
@@ -1064,7 +1107,7 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     // Build environment with enriched PATH, thinking tokens, and permission port
     const thinkingTokens = this.getThinkingTokens(settings.thinkingLevel);
-    const spawnExtraEnv: Record<string, string> = {};
+    const spawnExtraEnv: Record<string, string> = { ...this.getExtraSpawnEnv(settings) };
     if (thinkingTokens && thinkingTokens > 0) {
       spawnExtraEnv.MAX_THINKING_TOKENS = String(thinkingTokens);
     }
@@ -1337,7 +1380,7 @@ export abstract class BaseCliProvider implements ICliProvider {
    * Build agent instructions from persona + skills configuration
    */
   protected async buildAgentInstructionsAsync(agentConfig?: AgentConfiguration): Promise<string> {
-    if (!agentConfig || (!agentConfig.personaId && agentConfig.enabledSkills.length === 0)) {
+    if (!agentConfig || (!agentConfig.personaId && agentConfig.enabledSkills.length === 0 && !agentConfig.roleId)) {
       return '';
     }
 
@@ -1366,8 +1409,11 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     const parts: string[] = [];
 
+    // Legacy static tables only know the built-in ids; custom (user/
+    // workspace/imported) agents resolve through AgentContextManager on
+    // the async path and are simply skipped here.
     if (agentConfig.personaId) {
-      const persona = DEVELOPER_PERSONAS[agentConfig.personaId];
+      const persona = (DEVELOPER_PERSONAS as Record<string, DeveloperPersona>)[agentConfig.personaId];
       if (persona) {
         parts.push(`[Persona: ${persona.name}]\n${persona.keyCharacteristics}`);
       }
@@ -1375,7 +1421,7 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     if (agentConfig.enabledSkills.length > 0) {
       const skillInstructions = agentConfig.enabledSkills
-        .map(skillId => DEVELOPER_SKILLS[skillId]?.instructions)
+        .map(skillId => (DEVELOPER_SKILLS as Record<string, Skill>)[skillId]?.instructions)
         .filter(Boolean)
         .join(' ');
       if (skillInstructions) {

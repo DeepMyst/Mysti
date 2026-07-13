@@ -14,6 +14,11 @@
 import * as vscode from 'vscode';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import { toolKind } from '../../utils/toolNames';
+import { clampEffort } from '../../utils/effort';
+import type { EffortLevel } from '../../types';
+
+/** LocalAI `reasoning_effort` supports low/medium/high (no xhigh/max; clamp down). */
+const LOCALAI_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high'];
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -106,6 +111,8 @@ export class LocalAIProvider extends BaseCliProvider {
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'none',
     thinkingLevelEffective: false,
+    effortLevels: LOCALAI_EFFORT_LEVELS,  // reasoning_effort (low/medium/high)
+    effortDefault: 'medium',
     planMode: 'detected',
     sessionKind: 'none',           // stateless HTTP requests
     emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
@@ -338,7 +345,10 @@ export class LocalAIProvider extends BaseCliProvider {
 
     // Read configurable settings
     const endpoint = this._getEndpoint();
-    const model = config.get<string>('localaiModel', '') || this.config.defaultModel;
+    // Model precedence: effective/routed model FIRST (so the Mysti coordinator's
+    // tier-routing / routedModel is honored, not silently dropped), then the
+    // user-configured provider model, then the provider default.
+    const model = this._getEffectiveModel(settings) || config.get<string>('localaiModel', '') || this.config.defaultModel;
     const temperature = config.get<number>('localaiTemperature', 0.7);
     const maxTokens = config.get<number>('localaiMaxTokens', 0);
     const apiKey = this._getApiKey();
@@ -363,6 +373,11 @@ export class LocalAIProvider extends BaseCliProvider {
       };
       if (maxTokens > 0) {
         body.max_tokens = maxTokens;
+      }
+      // Reasoning effort → `reasoning_effort` (LocalAI tops out at high; xhigh/max clamp down).
+      const localaiEffort = clampEffort(settings.effortLevel, LOCALAI_EFFORT_LEVELS);
+      if (localaiEffort) {
+        body.reasoning_effort = localaiEffort;
       }
 
       const headers: Record<string, string> = {

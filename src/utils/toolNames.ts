@@ -135,6 +135,13 @@ export const ACTION_TOOLS: Record<string, PermissionActionType> = {
   'web_search': 'web-request',
   'google_web_search': 'web-request',
   'search_web': 'web-request',
+  // Delegation tools (Plan 15 Phase 0) — spawning/handing off to a sub-agent.
+  // Gated like a write: a delegated agent can run arbitrary tools, and the
+  // outer call is the only thing Mysti can gate (a native CLI sub-agent's inner
+  // Write/Bash never surface separately).
+  'task': 'delegate',
+  'agent': 'delegate',
+  'dispatch_agent': 'delegate',
 };
 
 /**
@@ -155,9 +162,12 @@ export const READ_ONLY_TOOLS = new Set<string>([
   'glob', 'ls', 'list', 'list_directory', 'list_dir', 'list_files',
   'directory_tree',
   // Orchestration/UI tools with no direct file or system side effects.
-  // Sub-agent tool calls (Task/Agent) stream through the same gate and are
-  // classified individually; Todo tools only manage the in-chat task list.
-  'task', 'agent', 'toolsearch', 'tool_search',
+  // NOTE (Plan 15 Phase 0): `task`/`agent`/`dispatch_agent` are NO LONGER here —
+  // they are `delegate` (gated) in ACTION_TOOLS. Delegation spawns a sub-agent
+  // that can run arbitrary tools, so it must not be auto-allowed. `toolsearch`/
+  // `tool_search` (deferred tool-schema discovery, not agent-spawning) stay
+  // read-only for now; revisit when Plan 12 deferred-tool loading lands.
+  'toolsearch', 'tool_search',
   'todoread', 'todo_read', 'todowrite', 'todo_write',
   'askuserquestion', 'ask_user', 'ask_user_question', 'ask_followup_question',
   'exitplanmode', 'exit_plan_mode', 'bashoutput',
@@ -253,6 +263,7 @@ const KIND_TOOLS: Record<string, ToolCallKind> = {
   // Orchestration/UI tools
   'task': 'other',
   'agent': 'other',
+  'dispatch_agent': 'other',
   'toolsearch': 'other',
   'tool_search': 'other',
   'askuserquestion': 'other',

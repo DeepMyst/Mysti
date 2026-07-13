@@ -50,6 +50,9 @@ const PROVIDER_IDS = [
   'qwen-code',
   'ollama',
   'localai',
+  'hermes',
+  'continue',
+  'openrouter',
   'manus'
 ];
 

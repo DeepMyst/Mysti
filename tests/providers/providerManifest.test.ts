@@ -50,7 +50,7 @@ function createMockContext(): vscode.ExtensionContext {
 
 const ALL_PROVIDER_IDS = [
   'claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot',
-  'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'
+  'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code', 'hermes', 'continue', 'openrouter'
 ];
 
 describe('buildProviderManifest', () => {
@@ -64,7 +64,7 @@ describe('buildProviderManifest', () => {
     byId = new Map(manifest.map((e) => [e.id, e]));
   });
 
-  it('contains one entry per registered provider (all 11)', () => {
+  it('contains one entry per registered provider (all 14)', () => {
     expect(manifest.length).toBe(registry.getIds().length);
     for (const id of ALL_PROVIDER_IDS) {
       expect(byId.has(id), `missing manifest entry for ${id}`).toBe(true);
@@ -143,6 +143,21 @@ describe('buildProviderManifest', () => {
     const qwen = byId.get('qwen-code')!.capabilities;
     expect(qwen.thinkingStyle).toBe('complete-blocks');
     expect(qwen.sessionKind).toBe('cli-resume');
+
+    // Hermes: ACP persistent transport; model chosen inside hermes itself
+    const hermes = byId.get('hermes')!.capabilities;
+    expect(hermes.supportsPersistentProcess).toBe(true);
+    expect(hermes.modelSelection).toBe('none');
+    expect(hermes.sessionKind).toBe('cli-resume');
+    expect(hermes.emitsToolResults).toBe(true);
+
+    // Continue: headless final-text output — no tool events, no usage
+    const continueCaps = byId.get('continue')!.capabilities;
+    expect(continueCaps.supportsToolUse).toBe(false);
+    expect(continueCaps.emitsToolResults).toBe(false);
+    expect(continueCaps.emitsUsage).toBe(false);
+    expect(continueCaps.sessionKind).toBe('prompt-history');
+    expect(continueCaps.modelSelection).toBe('custom-only');
 
     // Lying flag corrected: Ollama attachments are dropped today
     const ollama = byId.get('ollama')!.capabilities;

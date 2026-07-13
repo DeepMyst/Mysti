@@ -4,6 +4,9 @@
 import type { PanelSessionState } from '../../src/providers/base/BaseCliProvider';
 import type { ClaudeSessionState } from '../../src/providers/claude/ClaudeCodeProvider';
 import type { QwenSessionState } from '../../src/providers/qwen/QwenCodeProvider';
+import type { HermesSessionState } from '../../src/providers/hermes/HermesProvider';
+import type { ContinueSessionState } from '../../src/providers/continue/ContinueProvider';
+import type { OpenRouterSessionState } from '../../src/providers/openrouter/OpenRouterProvider';
 
 // Re-export session state types for provider-specific fields
 // Some providers don't export their session type, so we define compatible objects inline.
@@ -101,6 +104,38 @@ export function createOpenCodeSession(panelId = 'test-panel') {
     ...baseSession(panelId),
     activeToolCalls: new Map<string, { id: string; name: string; input: Record<string, unknown> }>(),
     completedToolCalls: new Set<string>(),
+    lastUsageStats: null,
+  };
+}
+
+export function createContinueSession(panelId = 'test-panel'): ContinueSessionState {
+  return {
+    ...baseSession(panelId),
+    inThinkBlock: false,
+  };
+}
+
+export function createOpenRouterSession(panelId = 'test-panel'): OpenRouterSessionState {
+  return {
+    ...baseSession(panelId),
+    abortController: null,
+    lastUsage: null,
+  };
+}
+
+export function createHermesSession(panelId = 'test-panel'): HermesSessionState {
+  return {
+    ...baseSession(panelId),
+    rpcId: 0,
+    initializeId: null,
+    sessionNewId: null,
+    promptId: null,
+    acpSessionId: null,
+    pendingPrompt: null,
+    acpAccessLevel: 'ask-permission',
+    fallbackDiagnostics: false,
+    fallbackErrorEmitted: false,
+    activeToolCalls: new Map<string, { id: string; name: string; input: Record<string, unknown> }>(),
     lastUsageStats: null,
   };
 }

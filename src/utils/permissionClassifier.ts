@@ -91,7 +91,10 @@ export function shouldGateToolUse(settings: Settings, toolName: string): boolean
   if (settings.mode === 'edit-automatically' && settings.accessLevel === 'ask-permission') {
     return actionType === 'bash-command'
       || actionType === 'file-delete'
-      || actionType === 'web-request';
+      || actionType === 'web-request'
+      // Plan 15 Phase 0: delegation is not an "edit" — it must still be gated in
+      // the accept-edits tier (only explicit full-access/autonomous bypasses it).
+      || actionType === 'delegate';
   }
 
   // "Default"/legacy — gate when access is ask-permission and mode doesn't bypass.

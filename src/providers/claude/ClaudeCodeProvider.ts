@@ -165,6 +165,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'streamed',     // incremental thinking deltas
     thinkingLevelEffective: true,  // levels map to real token budgets (getThinkingTokens)
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],  // native --effort; CLI clamps per model
+    effortDefault: 'high',
     planMode: 'native',            // sole emitter of exit_plan_mode
     sessionKind: 'cli-resume',     // --resume with CLI-issued session IDs
     emitsToolResults: true,
@@ -199,12 +201,37 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
-    const configPath = path.join(os.homedir(), '.claude', 'config.json');
-    return {
-      type: 'cli-login',
-      isAuthenticated: fs.existsSync(configPath),
-      configPath
-    };
+    // Claude Code v2.x stores the signed-in account in ~/.claude.json (the
+    // `oauthAccount` object) plus the OS keychain; the file itself exists even
+    // before login (numStartups etc.), so EXISTENCE is not enough — we look for
+    // the account marker. Older installs used ~/.claude/config.json. API-key
+    // users authenticate via env vars. Accept any of these.
+    const homeConfig = path.join(os.homedir(), '.claude.json');            // v2.x
+    const legacyConfig = path.join(os.homedir(), '.claude', 'config.json'); // legacy
+
+    if (this._hasClaudeAccount(homeConfig)) {
+      return { type: 'cli-login', isAuthenticated: true, configPath: homeConfig };
+    }
+    if (fs.existsSync(legacyConfig)) {
+      return { type: 'cli-login', isAuthenticated: true, configPath: legacyConfig };
+    }
+    if (process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+      return { type: 'cli-login', isAuthenticated: true, configPath: homeConfig };
+    }
+    return { type: 'cli-login', isAuthenticated: false, configPath: homeConfig };
+  }
+
+  /** True when ~/.claude.json carries a signed-in account marker (v2.x). */
+  private _hasClaudeAccount(homeConfig: string): boolean {
+    try {
+      if (!fs.existsSync(homeConfig)) { return false; }
+      const j = JSON.parse(fs.readFileSync(homeConfig, 'utf-8')) as {
+        oauthAccount?: { emailAddress?: string; accountUuid?: string };
+      };
+      return !!(j.oauthAccount && (j.oauthAccount.emailAddress || j.oauthAccount.accountUuid));
+    } catch {
+      return false;
+    }
   }
 
   async checkAuthentication(): Promise<AuthStatus> {
@@ -212,19 +239,20 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     if (!auth.isAuthenticated) {
       return {
         authenticated: false,
-        error: 'Not authenticated. Please run "claude auth login" to sign in.'
+        error: 'Not authenticated. Please run "claude" and sign in (or "claude /login").'
       };
     }
 
-    // Try to get user info from config
+    // Try to surface the signed-in email/user for display.
     try {
       if (auth.configPath && fs.existsSync(auth.configPath)) {
-        const configContent = fs.readFileSync(auth.configPath, 'utf-8');
-        const config = JSON.parse(configContent);
-        return {
-          authenticated: true,
-          user: config.email || config.user || 'Authenticated'
+        const config = JSON.parse(fs.readFileSync(auth.configPath, 'utf-8')) as {
+          oauthAccount?: { emailAddress?: string; displayName?: string };
+          email?: string; user?: string;
         };
+        const user = config.oauthAccount?.emailAddress || config.oauthAccount?.displayName
+          || config.email || config.user || 'Authenticated';
+        return { authenticated: true, user };
       }
     } catch {
       // Config exists but couldn't parse - still authenticated
@@ -325,6 +353,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       args.push('--model', effectiveModel);
     }
 
+    // Reasoning effort (Claude Code parity). Claude clamps to the model's
+    // supported ceiling itself, so we pass the requested tier through directly.
+    if (settings.effortLevel) {
+      args.push('--effort', settings.effortLevel);
+    }
+
     // Inject channel system context as real system instructions (not user message)
     if (session.channelSystemContext) {
       args.push('--append-system-prompt', session.channelSystemContext);
@@ -367,6 +401,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     const effectiveModel = this._getEffectiveModel(settings);
     if (effectiveModel) {
       args.push('--model', effectiveModel);
+    }
+
+    // Reasoning effort (Claude Code parity). Claude clamps to the model's
+    // supported ceiling itself, so we pass the requested tier through directly.
+    if (settings.effortLevel) {
+      args.push('--effort', settings.effortLevel);
     }
 
     // Inject system context at spawn time (only way to set system prompt for persistent process)
@@ -425,6 +465,20 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   /**
+   * Keep the headless `claude -p` process waiting for BACKGROUND subagents and
+   * workflows to finish before it exits. Without this, when the model launches a
+   * background workflow (e.g. the Workflow tool) the turn ends and the detached
+   * task's completion is never reported. `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
+   * (claude ≥ v2.1.182) caps that wait; 0 = wait indefinitely. Configurable via
+   * `mysti.claude.backgroundWaitCeilingMs`.
+   */
+  protected override getExtraSpawnEnv(_settings: Settings): Record<string, string> {
+    const ceiling = vscode.workspace.getConfiguration('mysti').get<number>('claude.backgroundWaitCeilingMs', 600000);
+    const safe = Number.isFinite(ceiling) && ceiling >= 0 ? Math.floor(ceiling) : 600000;
+    return { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: String(safe) };
+  }
+
+  /**
    * Add permission flags based on mode and access level
    * Maps Mysti settings to Claude Code CLI permission modes
    */
@@ -460,6 +514,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
   protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('claudeCodeModel', '');
     if (customModel) {

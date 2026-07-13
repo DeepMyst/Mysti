@@ -75,7 +75,10 @@ export const PROVIDER_DISPLAY_META: Record<ProviderType, ProviderDisplayMeta> = 
   'opencode': { displayName: 'OpenCode', shortId: 'opencode', color: '#22C55E', icon: 'icons/opencode.png' },
   'ollama': { displayName: 'Ollama', shortId: 'ollama', color: '#FFFFFF', icon: 'icons/ollama.png' },
   'localai': { displayName: 'LocalAI', shortId: 'localai', color: '#06B6D4', icon: 'icons/localai.png' },
-  'qwen-code': { displayName: 'Qwen', shortId: 'qwen', color: '#6C5CE7', icon: 'icons/qwen.png' }
+  'qwen-code': { displayName: 'Qwen', shortId: 'qwen', color: '#6C5CE7', icon: 'icons/qwen.png' },
+  'hermes': { displayName: 'Hermes', shortId: 'hermes', color: '#D97706', icon: 'icons/hermes.png' },
+  'continue': { displayName: 'Continue', shortId: 'continue', color: '#14B8A6', icon: 'icons/continue.png' },
+  'openrouter': { displayName: 'OpenRouter', shortId: 'openrouter', color: '#64748B', icon: 'icons/openrouter.png' }
 };
 
 /**
@@ -94,7 +97,10 @@ export const PROVIDER_CUSTOM_MODEL_SETTING_KEYS: Record<ProviderType, string> = 
   'opencode': 'opencodeModel',
   'ollama': 'ollamaModel',
   'localai': 'localaiModel',
-  'qwen-code': 'qwenCodeModel'
+  'qwen-code': 'qwenCodeModel',
+  'hermes': 'hermesModel',
+  'continue': 'continueModel',
+  'openrouter': 'openrouterModel'
 };
 
 /**

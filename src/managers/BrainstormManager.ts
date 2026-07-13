@@ -46,7 +46,10 @@ const AGENT_BRAINSTORM_ICONS: Record<AgentType, string> = {
   'opencode': '🟩',
   'ollama': '🦙',
   'localai': '🏠',
-  'qwen-code': '🟪'
+  'qwen-code': '🟪',
+  'hermes': '🟤',
+  'continue': '⏩',
+  'openrouter': '🔀'
 };
 
 const FALLBACK_AGENT_COLOR = '#888888';
@@ -118,7 +121,10 @@ export class BrainstormManager {
       'opencode': 'opencode',
       'ollama': 'ollama',
       'localai': 'localai',
-      'qwen-code': 'qwenCode'
+      'qwen-code': 'qwenCode',
+      'hermes': 'hermes',
+      'continue': 'continue',
+      'openrouter': 'openrouter'
     };
     const agentKey = agentKeyMap[agentId] || 'claude';
 

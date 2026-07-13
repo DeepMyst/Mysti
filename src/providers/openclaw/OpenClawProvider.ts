@@ -198,16 +198,42 @@ export class OpenClawProvider extends BaseCliProvider {
   // --- Authentication ---
 
   async getAuthConfig(): Promise<AuthConfig> {
-    const configPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
-    const credentialsDir = path.join(os.homedir(), '.openclaw', 'credentials');
-
-    const hasConfig = fs.existsSync(configPath);
-    const hasCredentials = fs.existsSync(credentialsDir) &&
-      (() => { try { return fs.readdirSync(credentialsDir).length > 0; } catch { return false; } })();
+    const home = os.homedir();
+    const configPath = path.join(home, '.openclaw', 'openclaw.json');
+    // `openclaw login` writes an auth-profile store (auth-profiles.json, legacy
+    // auth.json) into the agent dir, NOT the ~/.openclaw/credentials/ dir the old
+    // code probed (that's channel-pairing creds). Honor the state/agent-dir env
+    // overrides so a relocated install isn't wrongly reported unauthenticated.
+    const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || process.env.LITECLAW_STATE_DIR?.trim() || path.join(home, '.openclaw');
+    const agentDir = process.env.LITECLAW_AGENT_DIR?.trim() || process.env.PI_CODING_AGENT_DIR?.trim() || path.join(stateDir, 'agents', 'main', 'agent');
+    const storeHasProfiles = (p: string): boolean => {
+      try {
+        if (!fs.existsSync(p)) { return false; }
+        const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'));
+        const profiles = parsed?.profiles ?? parsed;
+        return !!profiles && typeof profiles === 'object' && Object.keys(profiles).length > 0;
+      } catch {
+        return false;
+      }
+    };
+    const hasCredStore = storeHasProfiles(path.join(agentDir, 'auth-profiles.json')) || storeHasProfiles(path.join(agentDir, 'auth.json'));
+    const hasEnvAuth = !!(
+      process.env.OPENCLAW_GATEWAY_TOKEN ||
+      // OpenClaw is a Claude-family agent (default model claude-opus); an
+      // Anthropic key / OAuth token drives its backend directly. Other providers'
+      // keys (OPENAI_API_KEY / GEMINI_API_KEY / GOOGLE_API_KEY) are NOT openclaw
+      // auth — they were wrongly marking openclaw authenticated whenever any
+      // unrelated provider had a key in the environment, and are dropped.
+      process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN
+    );
 
     return {
       type: 'cli-login',
-      isAuthenticated: hasConfig || hasCredentials,
+      // Bare openclaw.json existence is NOT proof of auth: `openclaw onboard`
+      // writes the config file before/without login, so an abandoned onboard
+      // wrongly read as authenticated. Real auth = a populated credential store
+      // (auth-profiles.json / auth.json) or a gateway token / Anthropic backend key.
+      isAuthenticated: hasCredStore || hasEnvAuth,
       configPath,
     };
   }

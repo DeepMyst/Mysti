@@ -25,6 +25,9 @@ import { OpenCodeProvider } from './opencode/OpenCodeProvider';
 import { OllamaProvider } from './ollama/OllamaProvider';
 import { LocalAIProvider } from './localai/LocalAIProvider';
 import { QwenCodeProvider } from './qwen/QwenCodeProvider';
+import { HermesProvider } from './hermes/HermesProvider';
+import { ContinueProvider } from './continue/ContinueProvider';
+import { OpenRouterProvider } from './openrouter/OpenRouterProvider';
 
 /**
  * Registry for managing CLI providers
@@ -118,6 +121,21 @@ export class ProviderRegistry {
     const qwen = new QwenCodeProvider(this._extensionContext);
     this._providers.set(qwen.id, qwen);
     console.log(`[Mysti] Registered provider: ${qwen.displayName}`);
+
+    // Register Hermes (NousResearch hermes-agent, ACP transport)
+    const hermes = new HermesProvider(this._extensionContext);
+    this._providers.set(hermes.id, hermes);
+    console.log(`[Mysti] Registered provider: ${hermes.displayName}`);
+
+    // Register Continue (continuedev `cn` CLI, headless print mode)
+    const continueProvider = new ContinueProvider(this._extensionContext);
+    this._providers.set(continueProvider.id, continueProvider);
+    console.log(`[Mysti] Registered provider: ${continueProvider.displayName}`);
+
+    // Register OpenRouter (API-based, SSE — any of 300+ models, free by default)
+    const openrouter = new OpenRouterProvider(this._extensionContext);
+    this._providers.set(openrouter.id, openrouter);
+    console.log(`[Mysti] Registered provider: ${openrouter.displayName}`);
 
   }
 

@@ -11,6 +11,7 @@
  */
 
 import * as vscode from "vscode";
+import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from "../base/BaseCliProvider";
@@ -206,6 +207,33 @@ export class CursorProvider extends BaseCliProvider {
 		return paths;
 	}
 
+	/**
+	 * Durable offline login marker: `agent login` writes an `authInfo` block
+	 * ({ email, userId, authId }) into ~/.cursor/cli-config.json (the bearer token
+	 * itself is in the OS keychain). Reading this avoids a false-negative when the
+	 * network `agent status` spawn is slow (5s timeout) or changes its wording.
+	 * A missing/unparseable file is NOT a negative signal — fall through to the
+	 * status probe.
+	 */
+	private _readConfigAuthInfo(): { loggedIn: boolean; user?: string } {
+		try {
+			const cfgPath = path.join(os.homedir(), ".cursor", "cli-config.json");
+			if (!fs.existsSync(cfgPath)) {
+				return { loggedIn: false };
+			}
+			const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8")) as {
+				authInfo?: { email?: string; userId?: number | string; authId?: string };
+			};
+			const info = cfg.authInfo;
+			if (info && (info.email || info.userId || info.authId)) {
+				return { loggedIn: true, user: info.email || "Cursor Account" };
+			}
+			return { loggedIn: false };
+		} catch {
+			return { loggedIn: false };
+		}
+	}
+
 	async getAuthConfig(): Promise<AuthConfig> {
 		const apiKey = this._resolveApiKey();
 		if (apiKey) {
@@ -216,7 +244,13 @@ export class CursorProvider extends BaseCliProvider {
 			};
 		}
 
-		// Check CLI login status for browser-based auth
+		// Offline: signed-in via `agent login` (authInfo in cli-config.json).
+		const cfgAuth = this._readConfigAuthInfo();
+		if (cfgAuth.loggedIn) {
+			return { type: "cli-login", isAuthenticated: true, configPath: path.join(os.homedir(), ".cursor", "cli-config.json") };
+		}
+
+		// Fallback: network CLI login status (covers keychain-only edge).
 		const cliStatus = await this._checkCliLoginStatus();
 		return {
 			type: cliStatus.loggedIn ? "cli-login" : "api-key",
@@ -230,6 +264,12 @@ export class CursorProvider extends BaseCliProvider {
 		const apiKey = this._resolveApiKey();
 		if (apiKey) {
 			return { authenticated: true, user: "API Key" };
+		}
+
+		// Fast offline path: signed-in marker in cli-config.json (no spawn).
+		const cfgAuth = this._readConfigAuthInfo();
+		if (cfgAuth.loggedIn) {
+			return { authenticated: true, user: cfgAuth.user || "Cursor Account" };
 		}
 
 		// Slow path: check if user logged in via `agent login`
@@ -832,6 +872,8 @@ export class CursorProvider extends BaseCliProvider {
 	}
 
 	protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
 		const config = vscode.workspace.getConfiguration("mysti");
 		const customModel = config.get<string>("cursorModel", "");
 		if (customModel) {

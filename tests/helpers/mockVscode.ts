@@ -103,6 +103,7 @@ export const workspace = {
     onDidDelete: () => ({ dispose: () => {} }),
     dispose: () => {},
   }),
+  onDidSaveTextDocument: (_listener?: (doc: unknown) => void) => ({ dispose: () => {} }),
 };
 
 /**
@@ -201,6 +202,11 @@ export const Uri = {
 export const commands = {
   registerCommand: () => ({ dispose: () => {} }),
   executeCommand: () => Promise.resolve(),
+};
+
+export const extensions = {
+  getExtension: (_id: string) => undefined as unknown,
+  all: [] as unknown[],
 };
 
 export const EventEmitter = class<T = unknown> {

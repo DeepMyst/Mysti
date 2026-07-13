@@ -14,6 +14,10 @@ import { CursorProvider } from '../../src/providers/cursor/CursorProvider';
 import { OpenClawProvider } from '../../src/providers/openclaw/OpenClawProvider';
 import { OpenCodeProvider } from '../../src/providers/opencode/OpenCodeProvider';
 import { QwenCodeProvider } from '../../src/providers/qwen/QwenCodeProvider';
+import { HermesProvider } from '../../src/providers/hermes/HermesProvider';
+import { ContinueProvider } from '../../src/providers/continue/ContinueProvider';
+import { OpenRouterProvider } from '../../src/providers/openrouter/OpenRouterProvider';
+import type { OpenRouterClient } from '../../src/services/OpenRouterClient';
 
 // Mock extension context for provider constructors
 function createMockContext(): vscode.ExtensionContext {
@@ -57,6 +61,9 @@ export class TestableClaudeProvider extends ClaudeCodeProvider {
   }
   public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
     return super.buildCliArgs(settings, session);
+  }
+  public getExtraSpawnEnv(settings: Settings): Record<string, string> {
+    return super.getExtraSpawnEnv(settings);
   }
 }
 
@@ -137,5 +144,54 @@ export class TestableQwenProvider extends QwenCodeProvider {
   }
   public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
     return super.buildCliArgs(settings, session);
+  }
+}
+
+export class TestableContinueProvider extends ContinueProvider {
+  constructor() { super(createMockContext()); }
+  public parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    return super.parseStreamLine(line, session);
+  }
+  public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
+    return super.buildCliArgs(settings, session);
+  }
+}
+
+export class TestableOpenRouterProvider extends OpenRouterProvider {
+  constructor() { super(createMockContext()); }
+  public parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    return super.parseStreamLine(line, session);
+  }
+  public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
+    return super.buildCliArgs(settings, session);
+  }
+  /** Inject a mock OpenRouterClient (with a stubbed fetch) for sendMessage tests. */
+  public setClient(client: OpenRouterClient): void {
+    this._client = client;
+  }
+}
+
+export class TestableHermesProvider extends HermesProvider {
+  constructor() { super(createMockContext()); }
+  public parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    return super.parseStreamLine(line, session);
+  }
+  public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
+    return super.buildCliArgs(settings, session);
+  }
+  public buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] | null {
+    return super.buildPersistentCliArgs(settings, session);
+  }
+  public formatPersistentInput(prompt: string, session: PanelSessionState): string {
+    return super._formatPersistentInput(prompt, session);
+  }
+  public isResponseBoundary(line: string): boolean {
+    return super._isResponseBoundary(line);
+  }
+  public interruptPersistentProcess(session: PanelSessionState): void {
+    super._interruptPersistentProcess(session);
+  }
+  public persistentSettingsMatch(session: PanelSessionState, settings: Settings): boolean {
+    return super._persistentSettingsMatch(session, settings);
   }
 }

@@ -296,6 +296,18 @@ export class SafetyClassifier {
         recommendation: 'require-user',
       };
 
+    case 'delegate':
+      // Plan 15 Phase 0: delegating to a sub-agent hands it the ability to run
+      // arbitrary tools that Mysti cannot individually gate (a native CLI sub-
+      // agent's inner writes never surface). Never auto-approve in autonomous
+      // mode — always require the user.
+      return {
+        level: 'caution',
+        reason: 'Delegating to a sub-agent can run arbitrary tools',
+        category: 'delegation',
+        recommendation: 'require-user',
+      };
+
     default:
       return {
         level: 'caution',

@@ -2,7 +2,7 @@
   "name": "mysti",
   "displayName": "Mysti - AI Coding Agent",
   "description": "Multi-agent AI coding assistant. Claude Code, Codex, Gemini, and GitHub Copilot brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
-  "version": "0.4.0",
+  "version": "0.5.0-dev",
   "publisher": "DeepMyst",
   "author": {
     "name": "Baha Abunojaim",
@@ -123,6 +123,36 @@
         "category": "Mysti"
       },
       {
+        "command": "mysti.createPersona",
+        "title": "Create New Persona",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.createSkill",
+        "title": "Create New Skill",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.createRole",
+        "title": "Create New Collaboration Role",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.importSkills",
+        "title": "Import Skills from GitHub",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.reloadAgents",
+        "title": "Reload Agents (Personas, Skills & Roles)",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.setCoordinatorModel",
+        "title": "Set Mysti Agent Coordinator Model",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.openInNewTab",
         "title": "Open in Editor Tab",
         "shortTitle": "New Tab",
@@ -150,11 +180,6 @@
       {
         "command": "mysti.codeLensAction",
         "title": "CodeLens Action",
-        "category": "Mysti"
-      },
-      {
-        "command": "mysti.startVisualTest",
-        "title": "Start Visual Test",
         "category": "Mysti"
       },
       {
@@ -233,7 +258,10 @@
             "opencode",
             "ollama",
             "localai",
-            "qwen-code"
+            "qwen-code",
+            "hermes",
+            "continue",
+            "openrouter"
           ],
           "enumDescriptions": [
             "Claude Code CLI (Anthropic) - Deep reasoning, complex refactoring, thorough analysis",
@@ -246,7 +274,10 @@
             "OpenCode - Multi-provider AI coding agent with support for OpenAI, Anthropic, Gemini, Groq, and OpenRouter",
             "Ollama - Local LLM inference server supporting Llama, CodeLlama, Mistral, and more",
             "LocalAI - Self-hosted OpenAI-compatible local inference with GPU/CPU support",
-            "Qwen Code - Alibaba's AI coding agent with Qwen3-Coder models and multi-provider support"
+            "Qwen Code - Alibaba's AI coding agent with Qwen3-Coder models and multi-provider support",
+            "Hermes - NousResearch's self-improving agent with skills, memory, and 300+ models via Nous Portal, OpenRouter, or custom endpoints",
+            "Continue - continuedev's open-source coding agent (cn CLI) with hub assistants, rules, and any-model configs",
+            "OpenRouter - Unified API gateway routing to 300+ models across providers (free by default, OpenAI-compatible)"
           ],
           "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context."
         },
@@ -309,6 +340,16 @@
           "type": "string",
           "default": "qwen",
           "description": "Path to Qwen Code CLI executable"
+        },
+        "mysti.hermesPath": {
+          "type": "string",
+          "default": "hermes",
+          "description": "Path to Hermes Agent CLI executable"
+        },
+        "mysti.continuePath": {
+          "type": "string",
+          "default": "cn",
+          "description": "Path to Continue CLI (cn) executable"
         },
         "mysti.ollamaEndpoint": {
           "type": "string",
@@ -399,6 +440,25 @@
           ],
           "description": "Default thinking level for AI responses"
         },
+        "mysti.defaultEffortLevel": {
+          "type": "string",
+          "default": "high",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "enumDescriptions": [
+            "Low — fastest, least reasoning",
+            "Medium — balanced",
+            "High — thorough reasoning (default)",
+            "Extra high — deeper reasoning (newest models)",
+            "Max — maximum reasoning effort"
+          ],
+          "description": "Reasoning effort tier (Claude Code parity). Each backend maps this to its native reasoning control (Claude Code → --effort, Codex → model_reasoning_effort, OpenRouter → reasoning.effort, …). Backends with no reasoning control ignore it. Distinct from thinking level."
+        },
         "mysti.defaultModel": {
           "type": "string",
           "default": "claude-sonnet-4-6",
@@ -410,6 +470,12 @@
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
           "description": "Custom model for Claude Code. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4-8 (or claude-opus-4-8[1m] for the 1M-context variant)"
+        },
+        "mysti.claude.backgroundWaitCeilingMs": {
+          "type": "number",
+          "default": 600000,
+          "minimum": 0,
+          "markdownDescription": "How long (ms) the headless Claude Code process waits for **background subagents/workflows** to finish before exiting, so their results are reported back through the turn (sets `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`; requires `claude` ≥ v2.1.182). Default `600000` (10 min). `0` = wait indefinitely. Raise it if you run long background workflows. If a workflow launched via Claude Code never reports its result, first check `claude --version` is ≥ 2.1.182."
         },
         "mysti.codexModel": {
           "type": "string",
@@ -473,6 +539,27 @@
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
           "description": "Custom model for Qwen Code. Overrides the dropdown selection. Leave empty to use the default model. Example: qwen3-coder-plus"
+        },
+        "mysti.hermesModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
+          "maxLength": 128,
+          "description": "Reserved for Hermes model overrides. Hermes selects its model from its own config (`hermes model` / `hermes setup`); this setting currently has no effect on the ACP transport."
+        },
+        "mysti.continueModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
+          "maxLength": 128,
+          "description": "Custom model for Continue, passed as `cn --model <slug>`. Hub slug in owner/package format (e.g. anthropic/claude-sonnet-4-5). Leave empty to use the models in ~/.continue/config.yaml."
+        },
+        "mysti.openrouterModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
+          "maxLength": 128,
+          "markdownDescription": "Model for the OpenRouter backend, e.g. `openai/gpt-oss-120b:free`, `anthropic/claude-sonnet-4-5`, or `openrouter/free` (free auto-router). Append `:free` for a free variant. Leave empty to use the default (`openrouter/free`). Uses the same key as `mysti.openrouter.apiKey`."
         },
         "mysti.customModels": {
           "type": "object",
@@ -575,6 +662,82 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically refresh provider model lists in the background a few seconds after startup (live discovery via CLI/HTTP where supported). Disable to rely only on the bundled/curated and cached lists."
+        },
+        "mysti.mysti.coordinatorModel": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "**Pin** the **Mysti agent**'s coordinator to a single model, routed through the **DeepMyst gateway** using your signed-in DeepMyst account (no local key needed; a free account works). Leave **empty** (default) to rotate the curated free-model list in `mysti.mysti.freeModels` — on a rate-limit Mysti rolls over to the next free model, then to the paid `mysti.mysti.fallbackModel`. Set an id (e.g. `openrouter/openai/gpt-oss-120b:free` — the `openrouter/` prefix picks the OpenRouter provider via the gateway, or a bare gateway model like `claude-haiku-4-5`) to disable rotation. (Only used when no `mysti.openrouter.apiKey` is set — an OpenRouter key opts into OpenRouter directly instead.)"
+        },
+        "mysti.mysti.freeModels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "openrouter/openai/gpt-oss-120b:free",
+            "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+            "openrouter/google/gemma-4-31b-it:free"
+          ],
+          "scope": "machine",
+          "markdownDescription": "Ordered list of **free** models (routed through the DeepMyst gateway) the Mysti coordinator tries when `mysti.mysti.coordinatorModel` is empty. Defaults to STRONG concrete free models (strongest first, from https://openrouter.ai/collections/free-models) rather than OpenRouter's random `openrouter/free` auto-router — the coordinator has to follow the delegation protocol reliably, and the random router can pick weak models that can't. On any transient failure — rate-limit, provider drop, 5xx, mid-stream fallback — Mysti advances to the next entry (graceful degradation), and only after all are exhausted falls back to the paid `mysti.mysti.fallbackModel`. To use the random free auto-router instead, set this to `[\"openrouter/openrouter/free\"]` (note the doubled prefix: `openrouter/` selects the OpenRouter provider via litellm, `openrouter/free` is the router slug; a bare `openrouter/free` mis-parses to a 502). Reorder or trim to taste. Ignored when a single model is pinned in `mysti.mysti.coordinatorModel`."
+        },
+        "mysti.mysti.maxDelegations": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 16,
+          "scope": "machine",
+          "markdownDescription": "Max sub-agent **delegations** per Mysti-agent run (doubled at high effort). The coordinator's own read-only tools (read/ls/grep/diag) have a separate budget and never consume delegation slots. Machine-scoped so a workspace cannot raise your per-run spend ceiling (consistent with the coordinator-model settings)."
+        },
+        "mysti.mysti.maxTurns": {
+          "type": "number",
+          "default": 24,
+          "minimum": 2,
+          "maximum": 64,
+          "scope": "machine",
+          "markdownDescription": "Hard cap on coordinator **model streams** per Mysti-agent run (doubled at high effort) — the run's spend ceiling. One stream = one turn; a delegation result, a local read-tool result, and a length-continue each start a new turn. Machine-scoped so a workspace cannot raise your per-run spend ceiling. Lower it to cap spend more tightly."
+        },
+        "mysti.mysti.memory": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "**Unified cross-backend memory** for the Mysti agent: durable project facts (learned by the coordinator via a `remember` tool, or recorded by Mysti when a backend fails) are stored per-workspace and injected into every future Mysti run — so the 14 backends behave like one agent that knows your project. Injected as untrusted, nonce-fenced data. Disable to stop persisting/injecting learnings."
+        },
+        "mysti.mysti.crossReview": {
+          "type": "string",
+          "enum": ["off", "advisory"],
+          "enumDescriptions": [
+            "No cross-vendor review.",
+            "After a delegation edits files, a DIFFERENT-vendor agent reviews the change read-only and its findings are fed back to the coordinator (advisory — never blocks)."
+          ],
+          "default": "off",
+          "markdownDescription": "**Cross-vendor review** (the coordinator-only superpower): after a delegation modifies files, Mysti dispatches a *different-vendor* backend (e.g. Anthropic wrote it → OpenAI or Google reviews it) in READ-ONLY mode to catch bugs the writer's own model would miss — decorrelated blind spots no single-vendor agent gets. `advisory` runs one review per run and feeds findings back to the coordinator; `off` (default) disables it. Costs one extra read-only delegation; requires ≥2 different-vendor backends installed."
+        },
+        "mysti.mysti.verify": {
+          "type": "string",
+          "enum": ["off", "suggest"],
+          "enumDescriptions": [
+            "Never add a verification step.",
+            "After a delegation edits files, run a free diagnostics check and nudge the coordinator to verify (run tests/build) before finishing."
+          ],
+          "default": "suggest",
+          "markdownDescription": "Verification loop for the **Mysti agent**: after a delegation modifies files, Mysti automatically runs a read-only editor-diagnostics check and prompts its coordinator to verify the change (e.g. run the project's tests/build) before answering — the single biggest 'did it actually work' quality lever. `off` disables it."
+        },
+        "mysti.mysti.fallbackModel": {
+          "type": "string",
+          "default": "claude-haiku-4-5",
+          "scope": "machine",
+          "markdownDescription": "Cheap **paid** gateway model the Mysti agent falls back to when **every** free model (`mysti.mysti.freeModels`, or the pinned `mysti.mysti.coordinatorModel`) is rate-limited (free-tier OpenRouter models have a hard requests/min cap). Default `claude-haiku-4-5` — covered by a free DeepMyst account's monthly credit allowance. Set to empty (`\"\"`) for free-only (accept rate-limit errors, never spend credits)."
+        },
+        "mysti.openrouter.apiKey": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "**Optional power-user opt-in.** An OpenRouter API key (`sk-or-...`) to run the **Mysti agent**'s coordinator on OpenRouter **free** models INSTEAD of the DeepMyst gateway. Leave empty (default) to run through your DeepMyst account. Get one at https://openrouter.ai/keys. Machine-scoped so a workspace can't read or redirect it; only ever sent to `openrouter.ai`. The `OPENROUTER_API_KEY` environment variable is used as a fallback."
+        },
+        "mysti.openrouter.coordinatorModel": {
+          "type": "string",
+          "default": "auto",
+          "scope": "machine",
+          "markdownDescription": "Model the Mysti agent uses for its own coordination (decompose/synthesize). `auto` (default) discovers a currently-available OpenRouter **free** model at runtime (the roster rotates, so ids are never hardcoded). Set an explicit id (e.g. `openai/gpt-oss-120b:free`) to pin one, or `openrouter/free` to use OpenRouter's free meta-router."
         },
         "mysti.deepmyst.apiUrl": {
           "type": "string",
@@ -727,7 +890,10 @@
             "opencode",
             "ollama",
             "localai",
-            "qwen-code"
+            "qwen-code",
+            "hermes",
+            "continue",
+            "openrouter"
           ],
           "description": "Agent to use for synthesis in brainstorm mode"
         },
@@ -750,13 +916,16 @@
               "opencode",
               "ollama",
               "localai",
-              "qwen-code"
+              "qwen-code",
+              "hermes",
+              "continue",
+              "openrouter"
             ]
           },
           "minItems": 2,
           "maxItems": 2,
           "uniqueItems": true,
-          "description": "Select any 2 of 10 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
+          "description": "Select any 2 of 14 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
         },
         "mysti.agents.claudePersona": {
           "type": "string",
@@ -1057,6 +1226,63 @@
           "default": "",
           "description": "Custom persona prompt for Qwen Code (when persona is 'custom')"
         },
+        "mysti.agents.hermesPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "description": "Persona for Hermes agent in brainstorm mode"
+        },
+        "mysti.agents.hermesCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Hermes (when persona is 'custom')"
+        },
+        "mysti.agents.continuePersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "description": "Persona for Continue agent in brainstorm mode"
+        },
+        "mysti.agents.continueCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Continue (when persona is 'custom')"
+        },
+        "mysti.agents.openrouterPersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "description": "Persona for OpenRouter agent in brainstorm mode"
+        },
+        "mysti.agents.openrouterCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for OpenRouter (when persona is 'custom')"
+        },
         "mysti.agents.autoSuggest": {
           "type": "boolean",
           "default": true,
@@ -1069,15 +1295,36 @@
           "maximum": 16000,
           "description": "Limit tokens used for agent context. Set to 0 for unlimited (default). Use lower values to reduce API costs."
         },
+        "mysti.agents.skillSources": {
+          "type": "array",
+          "scope": "application",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "garrytan/gstack",
+            "anthropics/skills"
+          ],
+          "description": "GitHub repositories to discover skills from (SKILL.md convention). Format: owner/repo, optionally with /path and @branch — e.g. 'garrytan/gstack' or 'anthropics/skills@main'. Used by the 'Mysti: Import Skills from GitHub' command. Application-scoped so workspaces cannot inject sources."
+        },
+        "mysti.collab.maxConcurrent": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Maximum collaborators (advisor/critic/reviewer/coworker) dispatched at once when using @agent:role mentions or the /consult, /review, /critique, /panel commands. Higher values run more agents in parallel but use more resources."
+        },
         "mysti.permission.timeout": {
           "type": "number",
           "default": 30,
           "minimum": 0,
-          "description": "Seconds to wait for permission approval (0 = no timeout, requires explicit action)"
+          "scope": "machine",
+          "description": "Seconds to wait for permission approval (0 = no timeout, requires explicit action). Machine-scoped: a workspace cannot shorten it to fast-track an auto-accept."
         },
         "mysti.permission.timeoutBehavior": {
           "type": "string",
           "default": "auto-reject",
+          "scope": "machine",
           "enum": [
             "auto-accept",
             "auto-reject",
@@ -1090,7 +1337,7 @@
             "No timeout - require explicit user action",
             "AI makes an intelligent decision using safety classification and learned preferences when timeout expires"
           ],
-          "description": "Behavior when permission request times out"
+          "description": "Behavior when a permission request times out. Machine-scoped (security): a repository's workspace settings cannot flip this to auto-accept to silently approve delegation/edit writes — the workspace-raises-authority escalation review[0] closed."
         },
         "mysti.semiAutonomous.timeout": {
           "type": "number",

@@ -56,4 +56,22 @@ describe('CodexProvider.buildCliArgs', () => {
     const args = provider.buildCliArgs(defaultSettings(), createCodexSession());
     expect(args).toContain('--full-auto');
   });
+
+  it('should map effort to -c model_reasoning_effort', () => {
+    const args = provider.buildCliArgs(defaultSettings({ effortLevel: 'high' }), createCodexSession());
+    const i = args.indexOf('-c');
+    expect(args).toContain('-c');
+    // the -c value carrying the effort override
+    expect(args.some(a => a === 'model_reasoning_effort="high"')).toBe(true);
+  });
+
+  it('should clamp max down to xhigh (Codex has no max tier)', () => {
+    const args = provider.buildCliArgs(defaultSettings({ effortLevel: 'max' }), createCodexSession());
+    expect(args.some(a => a === 'model_reasoning_effort="xhigh"')).toBe(true);
+  });
+
+  it('should omit the effort override when effortLevel is unset', () => {
+    const args = provider.buildCliArgs(defaultSettings(), createCodexSession());
+    expect(args.some(a => a.startsWith('model_reasoning_effort'))).toBe(false);
+  });
 });

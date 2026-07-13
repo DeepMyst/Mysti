@@ -256,15 +256,51 @@ export class ClineProvider extends BaseCliProvider {
 	}
 
 	async checkAuthentication(): Promise<AuthStatus> {
-		// Check if Cline data directory exists -- proves user has run cline auth before.
-		// Auth config lives in the Cline core gRPC service which may not be running,
-		// so we check for the data dir as a proxy. Runtime errors handle actual failures.
-		const clineDataDir = path.join(os.homedir(), '.cline', 'data');
-		if (fs.existsSync(clineDataDir)) {
-			return { authenticated: true, user: 'Cline CLI' };
+		// `cline auth` persists credentials into the data dir (default ~/.cline/data,
+		// relocatable via CLINE_DATA_DIR): secrets.json (API keys / OAuth tokens) and
+		// settings/providers.json (per-provider apiKey + OAuth tokenSource). The old
+		// check keyed on mere data-dir EXISTENCE, which is created on first run before
+		// any login (false-positive) and ignored CLINE_DATA_DIR (false-negative on a
+		// relocated dir). Check the real creds instead.
+		const dataDir = (process.env.CLINE_DATA_DIR || '').trim() || path.join(os.homedir(), '.cline', 'data');
+
+		// 1) secrets.json — API keys / OAuth tokens (openRouterApiKey, clineAccountId, …)
+		try {
+			const p = path.join(dataDir, 'secrets.json');
+			if (fs.existsSync(p)) {
+				const raw = fs.readFileSync(p, 'utf-8').trim();
+				if (raw && raw !== '{}') {
+					const s = JSON.parse(raw) as Record<string, unknown>;
+					if (Object.values(s).some(v => typeof v === 'string' && v.length > 0)) {
+						return { authenticated: true, user: 'Cline CLI' };
+					}
+				}
+			}
+		} catch { /* fall through */ }
+
+		// 2) settings/providers.json — a provider with an apiKey OR an OAuth tokenSource
+		try {
+			const p = path.join(dataDir, 'settings', 'providers.json');
+			if (fs.existsSync(p)) {
+				const raw = fs.readFileSync(p, 'utf-8').trim();
+				if (raw) {
+					const providers = (JSON.parse(raw) as { providers?: Record<string, { settings?: { apiKey?: string }; tokenSource?: unknown }> }).providers ?? {};
+					const ok = Object.values(providers).some(pr => {
+						const key = pr?.settings?.apiKey;
+						return (typeof key === 'string' && key.length > 0) || !!pr?.tokenSource;
+					});
+					if (ok) { return { authenticated: true, user: 'Cline CLI' }; }
+				}
+			}
+		} catch { /* fall through */ }
+
+		// 3) env-var auth (Cline standalone mode reads provider keys from the env)
+		if (['OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'CLINE_API_KEY']
+			.some(k => (process.env[k] || '').trim().length > 0)) {
+			return { authenticated: true, user: 'Cline CLI (env)' };
 		}
 
-		// Fallback: check VSCode extension API key setting
+		// 4) Fallback: the Cline VSCode extension's apiKey setting
 		const auth = await this.getAuthConfig();
 		if (auth.isAuthenticated) {
 			return { authenticated: true };

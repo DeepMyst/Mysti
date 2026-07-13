@@ -111,30 +111,49 @@ export class QwenCodeProvider extends BaseCliProvider {
   // --- Authentication ---
 
   async getAuthConfig(): Promise<AuthConfig> {
+    // Qwen Code is a Gemini-CLI fork: OAuth login (/auth) writes
+    // ~/.qwen/oauth_creds.json; settings.json is only the config file and is
+    // written on first launch even without auth, so its mere existence is NOT
+    // proof of login (dropped as an auth marker). Recognize the real OAuth
+    // token file plus qwen-code's own env keys. ANTHROPIC_API_KEY /
+    // GEMINI_API_KEY are other providers' keys, not qwen-code auth — removed.
     const configPath = path.join(os.homedir(), '.qwen', 'settings.json');
+    const oauthPath = path.join(os.homedir(), '.qwen', 'oauth_creds.json');
     const hasApiKey = !!(
       process.env.QWEN_API_KEY ||
-      process.env.OPENAI_API_KEY ||
-      process.env.ANTHROPIC_API_KEY
+      process.env.DASHSCOPE_API_KEY ||
+      process.env.OPENAI_API_KEY // qwen-code's OpenAI-compatible endpoint path
     );
     return {
       type: hasApiKey ? 'api-key' : 'oauth',
-      isAuthenticated: hasApiKey || fs.existsSync(configPath),
+      isAuthenticated: hasApiKey || fs.existsSync(oauthPath),
       configPath
     };
   }
 
   async checkAuthentication(): Promise<AuthStatus> {
+    // Only qwen-code's own auth env keys count. ANTHROPIC_API_KEY /
+    // GEMINI_API_KEY belong to other providers and are not qwen-code auth.
     if (process.env.QWEN_API_KEY) {
       return { authenticated: true, user: 'Qwen API Key' };
     }
+    if (process.env.DASHSCOPE_API_KEY) {
+      return { authenticated: true, user: 'DashScope API Key' };
+    }
     if (process.env.OPENAI_API_KEY) {
+      // qwen-code supports an OpenAI-compatible endpoint — a real auth path.
       return { authenticated: true, user: 'OpenAI API Key' };
     }
-    if (process.env.ANTHROPIC_API_KEY) {
-      return { authenticated: true, user: 'Anthropic API Key' };
+
+    // OAuth login (Qwen account) writes oauth_creds.json.
+    if (fs.existsSync(path.join(os.homedir(), '.qwen', 'oauth_creds.json'))) {
+      return { authenticated: true, user: 'Qwen Account' };
     }
 
+    // settings.json is created on first launch even without auth, so its mere
+    // existence is NOT proof of login. Only a real provider/model marker
+    // (written when the user actually configures a provider) counts; otherwise
+    // fall through to not-authenticated.
     const configPath = path.join(os.homedir(), '.qwen', 'settings.json');
     if (fs.existsSync(configPath)) {
       try {
@@ -144,9 +163,8 @@ export class QwenCodeProvider extends BaseCliProvider {
           return { authenticated: true, user: 'Qwen Config' };
         }
       } catch {
-        // Config exists but couldn't parse
+        // Config exists but couldn't parse — treat as not authenticated
       }
-      return { authenticated: true, user: 'Qwen Account' };
     }
 
     return {
@@ -249,6 +267,8 @@ export class QwenCodeProvider extends BaseCliProvider {
   }
 
   protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('qwenCodeModel', '');
     if (customModel) {

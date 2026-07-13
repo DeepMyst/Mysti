@@ -78,7 +78,8 @@ export class PermissionManager {
     description: string,
     details: PermissionDetails,
     postToWebview: (message: unknown) => void,
-    toolCallId?: string
+    toolCallId?: string,
+    ownerKey?: string
   ): Promise<boolean> {
     // Check if session has been upgraded to full-access
     if (this._sessionAccessLevel === 'full-access') {
@@ -111,7 +112,8 @@ export class PermissionManager {
       createdAt: now,
       expiresAt,
       toolCallId,
-      semiAutonomous: isSemiAutonomous
+      semiAutonomous: isSemiAutonomous,
+      ownerKey
     };
 
     this._pendingRequests.set(request.id, request);
@@ -250,6 +252,26 @@ export class PermissionManager {
   }
 
   /**
+   * Cancel only the pending requests owned by `ownerKey` (a panelId for a
+   * foreground turn, a jobId for a background Mysti job). Returns the ids of the
+   * requests that were cancelled so the caller can dismiss exactly those cards —
+   * so Stopping one job / superseding one turn never denies a concurrent job's
+   * pending gate. Requests with no ownerKey are left untouched.
+   */
+  cancelRequestsByOwner(ownerKey: string): string[] {
+    const ids: string[] = [];
+    for (const [requestId, request] of this._pendingRequests) {
+      if (request.ownerKey === ownerKey) {
+        ids.push(requestId);
+      }
+    }
+    for (const id of ids) {
+      this.cancelRequest(id);
+    }
+    return ids;
+  }
+
+  /**
    * Get count of pending permission requests
    */
   getPendingCount(): number {
@@ -292,6 +314,7 @@ export class PermissionManager {
       case 'file-delete':
       case 'bash-command':
       case 'multi-file-edit':
+      case 'delegate':
         return 'high';
       default:
         return 'medium';
@@ -317,6 +340,8 @@ export class PermissionManager {
         return 'Web request';
       case 'multi-file-edit':
         return 'Edit multiple files';
+      case 'delegate':
+        return 'Delegate to a sub-agent';
       default:
         return 'Perform action';
     }

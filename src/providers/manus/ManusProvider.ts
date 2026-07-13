@@ -365,6 +365,8 @@ export class ManusProvider extends BaseCliProvider {
   }
 
   protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('manusModel', '');
     if (customModel) {

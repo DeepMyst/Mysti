@@ -49,6 +49,8 @@ export interface AgentPromptContext {
   estimatedTokens: number;
   includedPersona: AgentInstructions | null;
   includedSkills: AgentInstructions[];
+  /** Plan 14: the conversation's default collaboration role, if one is set. */
+  includedRole: AgentInstructions | null;
   warnings: string[];
 }
 
@@ -162,6 +164,7 @@ export class AgentContextManager {
     let systemPrompt = '';
     let includedPersona: AgentInstructions | null = null;
     const includedSkills: AgentInstructions[] = [];
+    let includedRole: AgentInstructions | null = null;
 
     // Load persona instructions if selected
     if (config.personaId) {
@@ -206,11 +209,28 @@ export class AgentContextManager {
       }
     }
 
+    // Load the conversation's default collaboration role, if one is set.
+    if (config.roleId) {
+      const role = await this._agentLoader.loadInstructions(config.roleId);
+      if (role) {
+        const rolePrompt = this.buildRolePrompt(role);
+        const roleTokens = this._estimateTokens(rolePrompt);
+        if (maxTokenBudget === 0 || totalTokens + roleTokens <= maxTokenBudget) {
+          systemPrompt += rolePrompt;
+          totalTokens += roleTokens;
+          includedRole = role;
+        } else {
+          warnings.push(`Role '${role.name}' exceeded remaining token budget`);
+        }
+      }
+    }
+
     return {
       systemPrompt,
       estimatedTokens: totalTokens,
       includedPersona,
       includedSkills,
+      includedRole,
       warnings
     };
   }
@@ -243,6 +263,52 @@ export class AgentContextManager {
    */
   public getAllSkills(): AgentMetadata[] {
     return this._agentLoader.getSkills();
+  }
+
+  /**
+   * Get all available collaboration roles for UI (Plan 14).
+   */
+  public getAllRoles(): AgentMetadata[] {
+    return this._agentLoader.getRoles();
+  }
+
+  /**
+   * Get role metadata for UI display (Plan 14).
+   */
+  public getRoleMetadata(roleId: string): AgentMetadata | null {
+    return this._agentLoader.getRoles().find(r => r.id === roleId) || null;
+  }
+
+  /**
+   * Resolve a role id into its assembled stance prompt + access/pattern profile
+   * (Plan 14). Returns null for an unknown role. Access defaults to the safe
+   * `read-only` when the role file omits the `access:` frontmatter.
+   */
+  public async buildRoleContext(roleId: string): Promise<{
+    prompt: string;
+    access: 'read-only' | 'gated-write';
+    pattern: 'one-shot' | 'rounds';
+    name: string;
+  } | null> {
+    const instructions = await this._agentLoader.loadInstructions(roleId);
+    if (!instructions) {
+      return null;
+    }
+    const meta = this.getRoleMetadata(roleId);
+    // Only bundled (core/plugin) roles may declare `gated-write`. A user- or
+    // workspace-authored role file (e.g. a cloned repo's `.mysti/agents/roles/`)
+    // is untrusted and is clamped to read-only, so it cannot silently escalate a
+    // collaborator's write access. Write-capable collaboration ships with the
+    // extension, not from the workspace.
+    const isBundled = meta?.source === 'core' || meta?.source === 'plugin';
+    const declaredAccess = meta?.roleAccess ?? 'read-only';
+    const access = isBundled ? declaredAccess : 'read-only';
+    return {
+      prompt: this.buildRolePrompt(instructions),
+      access,
+      pattern: meta?.rolePattern ?? 'one-shot',
+      name: instructions.name,
+    };
   }
 
   /**
@@ -324,6 +390,40 @@ export class AgentContextManager {
     let prompt = `[Skill: ${skill.name}]\n`;
     prompt += skill.instructions + '\n\n';
     return prompt;
+  }
+
+  /**
+   * Build a collaboration-role stance block (Plan 14). Public so the
+   * CollaborationManager assembles collaborator prompts through the same
+   * formatter used for a conversation's default role.
+   */
+  public buildRolePrompt(role: AgentInstructions): string {
+    let prompt = `[Collaboration Role: ${role.name}]\n`;
+    prompt += `${role.description}\n\n`;
+    prompt += `${role.instructions}\n`;
+
+    if (role.priorities && role.priorities.length > 0) {
+      prompt += `\nFocus on:\n`;
+      role.priorities.forEach((p, i) => {
+        prompt += `${i + 1}. ${p}\n`;
+      });
+    }
+
+    if (role.bestPractices && role.bestPractices.length > 0) {
+      prompt += `\nHow to respond:\n`;
+      role.bestPractices.forEach(bp => {
+        prompt += `- ${bp}\n`;
+      });
+    }
+
+    if (role.antiPatterns && role.antiPatterns.length > 0) {
+      prompt += `\nAvoid:\n`;
+      role.antiPatterns.forEach(ap => {
+        prompt += `- ${ap}\n`;
+      });
+    }
+
+    return prompt + '\n';
   }
 
   /**

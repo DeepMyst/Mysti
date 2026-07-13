@@ -14,6 +14,11 @@
 import * as vscode from 'vscode';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import { toolKind } from '../../utils/toolNames';
+import { clampEffort } from '../../utils/effort';
+import type { EffortLevel } from '../../types';
+
+/** Ollama `think` graded strings — reasoning models accept low/medium/high/max (no xhigh). */
+const OLLAMA_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'max'];
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -120,6 +125,8 @@ export class OllamaProvider extends BaseCliProvider {
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'none',
     thinkingLevelEffective: false,
+    effortLevels: OLLAMA_EFFORT_LEVELS,  // `think` graded strings (reasoning models)
+    effortDefault: 'medium',
     planMode: 'detected',
     sessionKind: 'none',           // stateless HTTP requests
     emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
@@ -331,7 +338,10 @@ export class OllamaProvider extends BaseCliProvider {
 
     // Read configurable settings
     const endpoint = this._getEndpoint();
-    const model = config.get<string>('ollamaModel', '') || this.config.defaultModel;
+    // Model precedence: effective/routed model FIRST (so the Mysti coordinator's
+    // tier-routing / routedModel is honored, not silently dropped), then the
+    // user-configured provider model, then the provider default.
+    const model = this._getEffectiveModel(settings) || config.get<string>('ollamaModel', '') || this.config.defaultModel;
     const temperature = config.get<number>('ollamaTemperature', 0.7);
     const contextLength = config.get<number>('ollamaContextLength', 0);
     const keepAlive = config.get<string>('ollamaKeepAlive', '5m');
@@ -357,6 +367,12 @@ export class OllamaProvider extends BaseCliProvider {
       };
       if (contextLength > 0) {
         (body.options as Record<string, unknown>).num_ctx = contextLength;
+      }
+      // Reasoning effort → Ollama `think` (top-level graded string). Reasoning
+      // models accept low/medium/high/max; non-reasoning models ignore it.
+      const ollamaEffort = clampEffort(settings.effortLevel, OLLAMA_EFFORT_LEVELS);
+      if (ollamaEffort) {
+        body.think = ollamaEffort;
       }
 
       console.log(`[Mysti] Ollama: Sending request to ${endpoint}/api/chat with model ${model}`);

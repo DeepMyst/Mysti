@@ -13,13 +13,22 @@
 
 export type OperationMode = 'default' | 'ask-before-edit' | 'edit-automatically' | 'quick-plan' | 'detailed-plan';
 export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
+/**
+ * Unified reasoning-effort scale, matching Claude Code's `--effort` tiers
+ * (low·medium·high·xhigh·max). Distinct from ThinkingLevel: effort controls how
+ * much adaptive reasoning a model invests, thinking controls reasoning-output
+ * visibility. Each backend maps these tiers to its own native control
+ * (Claude → --effort, Codex → model_reasoning_effort, OpenRouter → reasoning.effort,
+ * …); backends with no reasoning control declare no effortLevels and hide the UI.
+ */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type AccessLevel = 'read-only' | 'ask-permission' | 'full-access';
 export type ContextMode = 'auto' | 'manual';
-export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code';
+export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter';
 export type AutocompleteType = 'sentence' | 'paragraph' | 'message';
 
 // Agent and Brainstorm types
-export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code';
+export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter';
 export type PersonaType = 'neutral' | 'architect' | 'pragmatist' | 'engineer' | 'reviewer' | 'designer' | 'custom';
 export type BrainstormPhase = 'initial' | 'individual' | 'discussion' | 'synthesis' | 'complete';
 export type CollaborationStrategy = 'quick' | 'debate' | 'red-team' | 'perspectives' | 'delphi';
@@ -197,11 +206,20 @@ export interface Conversation {
 export interface Settings {
   mode: OperationMode;
   thinkingLevel: ThinkingLevel;
+  /** Reasoning-effort tier (Claude Code parity). Optional for back-compat; defaults to 'high'. */
+  effortLevel?: EffortLevel;
   accessLevel: AccessLevel;
   contextMode: ContextMode;
   model: string;
   provider: ProviderType;
   autonomousMode?: boolean;
+  /**
+   * An explicitly ROUTED model (Plan 17 P2.3 tier routing / P0.2b honoring) that
+   * must WIN over a per-provider `mysti.<provider>Model` custom-model setting.
+   * Set by CollaboratorPool from an explicit spec.model; `_getEffectiveModel`
+   * checks it before the config custom-model read. Undefined ⇒ normal precedence.
+   */
+  routedModel?: string;
 }
 
 export interface QuickAction {
@@ -548,6 +566,8 @@ export interface GatewayCompletion {
   /** True when the gateway call failed and the caller should fall back. */
   failed?: boolean;
   error?: string;
+  /** The concrete model the gateway resolved to (e.g. behind a router id). */
+  model?: string;
 }
 
 export interface AskUserQuestionItem {
@@ -687,6 +707,13 @@ export interface Mention {
   displayName: string;  // '@gemini' or '@types.ts'
   startIndex: number;   // Position in message string
   endIndex: number;
+  /**
+   * Plan 14: optional collaboration role for agent mentions, parsed from the
+   * `@agent:role` grammar (e.g. `@google-gemini:critic`). A role id resolves
+   * to a markdown role definition (advisor/critic/reviewer/…). Undefined for
+   * plain `@agent` mentions and all file mentions — those keep today's routing.
+   */
+  role?: string;
 }
 
 export interface SubAgentResponse {
@@ -745,6 +772,185 @@ export type SubAgentQuestionCallback = (
 ) => Promise<{ answers: Record<string, string | string[]> } | null>;
 
 // ============================================================================
+// Collaboration Roles (Plan 14) — any agent(s) as advisor/critic/reviewer/…
+// ============================================================================
+
+/**
+ * The access profile a collaborator runs under.
+ * - `read-only`: the pool hard-denies any non-file-read tool locally (advisory
+ *   roles never write, regardless of provider CLI flags).
+ * - `gated-write`: write/exec tools are routed through the caller's permission
+ *   gate before execution (coworker/collaborator roles).
+ */
+export type CollaboratorAccess = 'read-only' | 'gated-write';
+
+/**
+ * How a collaborator interacts with the run.
+ * - `one-shot`: a single dispatch (advisor/critic/reviewer/second-opinion/coworker).
+ * - `rounds`: participates in a multi-round exchange (collaborator) — the pool
+ *   still dispatches one turn at a time; the caller orchestrates rounds.
+ */
+export type CollaboratorPattern = 'one-shot' | 'rounds';
+
+/**
+ * Structured failure taxonomy for a collaborator dispatch. Every non-success
+ * outcome maps to exactly one of these so the UI can label the agent's card and
+ * a single failure never sinks the whole run.
+ */
+export type CollaboratorFailure =
+  | 'not-installed'
+  | 'not-authenticated'
+  | 'timeout'
+  | 'crashed'
+  | 'stream-error'
+  | 'empty-response'
+  | 'cancelled'
+  | 'denied';
+
+/**
+ * One collaborator to dispatch. `collaboratorId` is the run-unique key that
+ * distinguishes two dispatches of the same provider in different roles (e.g.
+ * `@claude-code:critic` + `@claude-code:reviewer`).
+ */
+export interface CollaboratorSpec {
+  /** Run-unique id (caller-assigned, stable for the run). */
+  collaboratorId: string;
+  /** The backend/provider to dispatch to. */
+  agentId: AgentType;
+  /** Optional role id (advisor/critic/…); undefined = plain dispatch. */
+  role?: string;
+  /** Human-facing label for cards (defaults to the provider display name). */
+  label?: string;
+  /** The fully-assembled prompt for this collaborator. */
+  prompt: string;
+  /** Access profile — advisory roles pass `read-only`. */
+  access: CollaboratorAccess;
+  /** Per-collaborator timeout override (ms); defaults to the role/pool default. */
+  timeoutMs?: number;
+  /** Optional model override; defaults to the provider's default model. */
+  model?: string;
+}
+
+/**
+ * A streaming event from the CollaboratorPool. Every chunk carries the
+ * `collaboratorId` it belongs to so the caller can route it to the right card.
+ */
+export interface CollaboratorChunk {
+  type:
+    | 'collab_started'
+    | 'collab_skipped'      // availability pre-check failed (never dispatched)
+    | 'collab_text'
+    | 'collab_thinking'
+    | 'collab_tool_use'
+    | 'collab_tool_result'
+    | 'collab_tool_denied'  // read-only deny or gate rejection
+    | 'collab_retry'
+    | 'collab_ask_user_question'
+    | 'collab_complete'
+    | 'collab_error';
+  collaboratorId: string;
+  agentId: AgentType;
+  role?: string;
+  label?: string;
+  content?: string;
+  toolCall?: ToolCall;
+  /** Present on collab_complete: the accumulated response text. */
+  responseText?: string;
+  /** Present on collab_complete/collab_error: whether the collaborator failed. */
+  hasError?: boolean;
+  /** Present on collab_error/collab_skipped: the structured failure reason. */
+  failure?: CollaboratorFailure;
+  /** Present on collab_skipped: install/auth hint for the user. */
+  hint?: string;
+  retryCount?: number;
+  askUserQuestion?: AskUserQuestionData;
+  usage?: UsageStats;
+}
+
+/**
+ * Optional gate hook: for `gated-write` collaborators the pool calls this
+ * before re-emitting a write/exec tool_use, having already SIGSTOPped the
+ * child process. Returns whether the tool is approved. The pool resumes on
+ * approval and cancels the child on rejection — enforcement targets the
+ * child's own derived panel (unlike the legacy MentionRouter gate).
+ */
+export type CollaboratorGateCallback = (
+  spec: CollaboratorSpec,
+  toolCall: ToolCall
+) => Promise<boolean>;
+
+/**
+ * Options for a CollaboratorPool.dispatch run.
+ */
+export interface CollaboratorDispatchOptions {
+  /** Base settings; the pool overrides provider/model/accessLevel per spec. */
+  settings: Settings;
+  /** Parent panel id; derived child panels are `${panelId}-collab-${runId}-${n}`. */
+  panelId: string;
+  /** Run id (UUID) — caller-supplied so cancel can target the run. */
+  runId: string;
+  /** Max collaborators dispatched concurrently (defaults to the pool cap). */
+  maxConcurrent?: number;
+  /** Conversation context passed to each collaborator (read-only). */
+  conversation?: Conversation | null;
+  /** Question relay for a collaborator's ask_user_question. */
+  onQuestion?: SubAgentQuestionCallback;
+  /** Gate hook for gated-write collaborators. */
+  onGate?: CollaboratorGateCallback;
+}
+
+// ============================================================================
+// Mysti Agent / Orchestrator (Plan 15 Phase 2)
+// ============================================================================
+
+/** A node in the coordinator's plan, as surfaced to the UI. */
+export interface OrchestratorPlanNode {
+  id: string;
+  task: string;
+  backend?: string;
+  dependsOn: string[];
+}
+
+/** A streaming event from the @mysti orchestrator run. */
+export interface OrchestratorEvent {
+  type:
+    | 'orch_status'      // phase transition (decompose/execute/synthesize)
+    | 'orch_plan'        // the decomposed DAG (surfaced once)
+    | 'orch_node_start'  // a node began executing on its backend
+    | 'orch_node_done'   // a node finished (text/error)
+    | 'orch_collab'      // a raw per-node CollaboratorChunk (live streaming)
+    | 'orch_synthesis'   // final synthesized text (streamed or whole)
+    | 'orch_error'       // a run-level error
+    | 'orch_done';       // the run completed
+  phase?: 'decompose' | 'execute' | 'synthesize';
+  content?: string;
+  plan?: { nodes: OrchestratorPlanNode[] };
+  nodeId?: string;
+  nodeBackend?: string;
+  hasError?: boolean;
+  collab?: CollaboratorChunk;
+  error?: string;
+}
+
+/** Per-node outcome accumulated during a run. */
+export interface OrchestratorNodeOutcome {
+  nodeId: string;
+  task: string;
+  backend: string;
+  text: string;
+  hasError: boolean;
+  failure?: string;
+}
+
+/** The result of an orchestrator run, returned when the generator completes. */
+export interface OrchestratorResult {
+  runId: string;
+  outcomes: OrchestratorNodeOutcome[];
+  /** Final synthesized answer folded from the node outputs. */
+  synthesis: string;
+}
+
+// ============================================================================
 // Permission System Types
 // ============================================================================
 
@@ -755,7 +961,12 @@ export type PermissionActionType =
   | 'file-delete'
   | 'bash-command'
   | 'web-request'
-  | 'multi-file-edit';
+  | 'multi-file-edit'
+  // Plan 15 Phase 0 (security floor): spawning/handing off to a sub-agent
+  // (task/agent/dispatch_agent). Gated like a write — a delegated agent can run
+  // arbitrary tools, so model-initiated delegation must be user-approved unless
+  // an explicit full-access/autonomous tier auto-approves it.
+  | 'delegate';
 
 export type PermissionStatus = 'pending' | 'approved' | 'denied' | 'expired';
 
@@ -805,6 +1016,13 @@ export interface PermissionRequest {
   expiresAt: number;          // Timestamp for timeout (0 = no expiry)
   toolCallId?: string;        // Link to originating tool call
   semiAutonomous?: boolean;   // True when AI will decide on timeout
+  /**
+   * Cancellation owner (Plan 16 / Phase D). A foreground turn owns its gates
+   * under its panelId; a background Mysti job owns them under its jobId. Lets a
+   * Stop / re-entrancy cancel scope to ONLY its own gates instead of denying
+   * every concurrent job's pending permission card.
+   */
+  ownerKey?: string;
 }
 
 export interface PermissionResponse {
@@ -951,11 +1169,19 @@ export interface Skill {
 }
 
 /**
- * Agent configuration for a conversation (persisted per-conversation)
+ * Agent configuration for a conversation (persisted per-conversation).
+ * Ids are open strings (not the built-in unions) because users can add
+ * their own personas/skills via ~/.mysti/agents, .mysti/agents, or
+ * skill import — the markdown-based AgentLoader is the source of truth.
  */
 export interface AgentConfiguration {
-  personaId: DeveloperPersonaId | null;
-  enabledSkills: SkillId[];
+  personaId: string | null;
+  enabledSkills: string[];
+  /**
+   * Plan 14: optional default collaboration role for this conversation's agent.
+   * Absent on legacy persisted configs — treat `undefined` as "no role".
+   */
+  roleId?: string | null;
 }
 
 // ============================================================================
@@ -1315,7 +1541,7 @@ export type AgentSource = 'core' | 'plugin' | 'user' | 'workspace';
 /**
  * Agent type discriminator
  */
-export type AgentTypeDiscriminator = 'persona' | 'skill';
+export type AgentTypeDiscriminator = 'persona' | 'skill' | 'role';
 
 /**
  * Loading tier level for progressive disclosure

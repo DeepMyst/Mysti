@@ -35,6 +35,11 @@ import type {
 import { validateModelName, validateProfileName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
+import { clampEffort } from '../../utils/effort';
+import type { EffortLevel } from '../../types';
+
+/** Codex `model_reasoning_effort` supports low→xhigh (no `max`; clamp down). */
+const CODEX_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
 
 /**
  * Per-panel session state for Codex, extending base with tool call tracking.
@@ -43,6 +48,8 @@ export interface CodexSessionState extends PanelSessionState {
   activeToolCalls: Map<string, { id: string; name: string; inputJson: string; status: 'running' | 'completed' | 'failed' }>;
   completedToolCalls: Set<string>;
   lastUsageStats: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null;
+  /** Rolling tail of the current run's stderr, surfaced in a non-zero-exit error. */
+  stderrTail: string;
 }
 
 /**
@@ -150,6 +157,8 @@ export class CodexProvider extends BaseCliProvider {
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'complete-blocks',  // whole 'reasoning' blocks per event
     thinkingLevelEffective: false,     // getThinkingTokens returns undefined
+    effortLevels: CODEX_EFFORT_LEVELS, // model_reasoning_effort (low→xhigh)
+    effortDefault: 'medium',
     planMode: 'detected',
     sessionKind: 'prompt-history',     // no actual resume today (F15) — history replayed into the prompt
     emitsToolResults: true,
@@ -191,6 +200,7 @@ export class CodexProvider extends BaseCliProvider {
       activeToolCalls: new Map(),
       completedToolCalls: new Set(),
       lastUsageStats: null,
+      stderrTail: '',
     };
   }
 
@@ -220,13 +230,19 @@ export class CodexProvider extends BaseCliProvider {
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
-    const configPath = path.join(os.homedir(), '.codex', 'config.toml');
-    const hasConfig = fs.existsSync(configPath);
-
+    // Codex OAuth (ChatGPT login) is stored in ~/.codex/auth.json. ~/.codex/config.toml
+    // is only the settings file: it can exist without ever logging in and it SURVIVES
+    // `codex logout` (which removes auth.json but not config.toml). So config.toml
+    // existence is NOT proof of auth — the only positive markers are auth.json and
+    // OPENAI_API_KEY. config.toml is still exposed as configPath purely for the
+    // email/user label lookup in checkAuthentication() when auth.json is absent.
+    const authJson = path.join(os.homedir(), '.codex', 'auth.json');
+    const configToml = path.join(os.homedir(), '.codex', 'config.toml');
+    const hasAuth = fs.existsSync(authJson);
     return {
       type: 'oauth', // ChatGPT account login
-      isAuthenticated: hasConfig,
-      configPath
+      isAuthenticated: hasAuth || !!process.env.OPENAI_API_KEY,
+      configPath: hasAuth ? authJson : configToml
     };
   }
 
@@ -403,12 +419,15 @@ export class CodexProvider extends BaseCliProvider {
         (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
       }
 
-      // Collect stderr for error reporting
+      // Collect stderr for error reporting. In --json mode activity goes to
+      // stderr and results to stdout, so keep a rolling tail to attach to a
+      // non-zero-exit error (otherwise a codex failure reaches the collaborator
+      // as an opaque, diagnostic-free 'empty-response').
+      session.stderrTail = '';
       if (session.process.stderr) {
         session.process.stderr.on('data', (data) => {
           const text = data.toString();
-          // In --json mode, activity goes to stderr, results to stdout
-          // So stderr might contain useful progress info
+          session.stderrTail = (session.stderrTail + text).slice(-2000);
           console.log(`[Mysti] ${this.displayName} stderr:`, text);
         });
       }
@@ -467,6 +486,14 @@ export class CodexProvider extends BaseCliProvider {
     const effectiveModel = this._getEffectiveModel(settings);
     if (effectiveModel) {
       args.push('--model', effectiveModel);
+    }
+
+    // Reasoning effort → model_reasoning_effort config override. Codex tops out
+    // at xhigh (max clamps down). The quotes are part of the TOML value the
+    // `-c` parser reads (no shell involved — the literal chars reach codex).
+    const effort = clampEffort(settings.effortLevel, CODEX_EFFORT_LEVELS);
+    if (effort) {
+      args.push('-c', `model_reasoning_effort="${effort}"`);
     }
 
     // Skip git repo check - useful if workspace isn't a git repo
@@ -546,7 +573,12 @@ export class CodexProvider extends BaseCliProvider {
    */
   private async *_processCodexStream(session: CodexSessionState): AsyncGenerator<StreamChunk> {
     let buffer = '';
-    let hasYieldedContent = false;
+    // Track whether codex produced actual ANSWER text (agent_message → 'text'),
+    // NOT merely any event: thread.started/reasoning/tool events are non-answer
+    // scaffolding. The old guard set a flag on any chunk, so a non-zero exit
+    // after just `session_active` was swallowed and the collaborator saw a bare
+    // `done` → mislabeled 'empty-response' with no diagnostic.
+    let hasYieldedText = false;
 
     if (session.process?.stdout) {
       for await (const chunk of session.process.stdout) {
@@ -561,7 +593,7 @@ export class CodexProvider extends BaseCliProvider {
           if (line.trim()) {
             const parsed = this._parseCodexEvent(line, session);
             if (parsed) {
-              hasYieldedContent = true;
+              if (parsed.type === 'text') { hasYieldedText = true; }
               yield parsed;
             }
           }
@@ -573,7 +605,7 @@ export class CodexProvider extends BaseCliProvider {
     if (buffer.trim()) {
       const parsed = this._parseCodexEvent(buffer, session);
       if (parsed) {
-        hasYieldedContent = true;
+        if (parsed.type === 'text') { hasYieldedText = true; }
         yield parsed;
       }
     }
@@ -581,8 +613,16 @@ export class CodexProvider extends BaseCliProvider {
     // Wait for process to complete
     const exitCode = await this.waitForProcess(session);
 
-    if (exitCode !== 0 && exitCode !== null && !hasYieldedContent) {
-      yield { type: 'error', content: `Codex exited with code ${exitCode}` };
+    // Surface a non-zero exit whenever no answer text was produced (matches the
+    // base contract), attaching the stderr tail so the failure is diagnosable
+    // instead of collapsing into an opaque 'empty-response'.
+    if (exitCode !== 0 && exitCode !== null && !hasYieldedText) {
+      const detail = session.stderrTail.trim().slice(-500);
+      const auth = detail && this.isAuthenticationError(detail);
+      yield {
+        type: auth ? 'auth_error' : 'error',
+        content: detail ? `Codex exited with code ${exitCode}: ${detail}` : `Codex exited with code ${exitCode}`,
+      };
     }
   }
 
@@ -999,6 +1039,8 @@ export class CodexProvider extends BaseCliProvider {
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
   protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('codexModel', '');
     if (customModel) {

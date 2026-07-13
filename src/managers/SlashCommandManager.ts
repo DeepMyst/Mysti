@@ -123,6 +123,31 @@ export class SlashCommandManager {
   }
 
   /**
+   * True when `commandId` is a command Mysti itself handles for the given panel/
+   * provider. Used to decide native pass-through: an UNKNOWN `/command` (e.g.
+   * Claude Code's `/deep-research`, a `/skill-name`, or a saved workflow) is not
+   * a Mysti command and is forwarded verbatim to the backend instead.
+   */
+  public isKnownCommand(
+    commandId: string,
+    panelId: string,
+    activeProvider: ProviderType,
+    callbacks: SlashCommandCallbacks,
+  ): boolean {
+    if (commandId.endsWith(':terminal')) {
+      return true;
+    }
+    try {
+      const { commands } = this.getCommands(panelId, activeProvider, callbacks);
+      return commands.some(c => c.id === commandId);
+    } catch {
+      // If we can't resolve the registry, treat as known so we never accidentally
+      // leak a Mysti command to the backend.
+      return true;
+    }
+  }
+
+  /**
    * Get all commands relevant to the given panel and active provider.
    * Merges universal + provider-specific commands, resolves dynamic values.
    */
@@ -350,6 +375,39 @@ export class SlashCommandManager {
         callbacks.postToPanel(panelId, { type: 'triggerOpenRules' });
         return;
       }
+
+      // ---- Collaboration (Plan 14) ----
+      // These open the collaborator picker in the webview, prebound to a role.
+      // The user picks which agents play the role; ChatViewProvider then runs
+      // the CollaborationManager. Typing `@agent:role <brief>` is the direct
+      // (picker-free) path to the same machinery.
+      case 'cmd:consult':
+        callbacks.postToPanel(panelId, {
+          type: 'composeCollaboration',
+          payload: { role: 'advisor', brief: trimmedArgs || '' }
+        });
+        return;
+
+      case 'cmd:review':
+        callbacks.postToPanel(panelId, {
+          type: 'composeCollaboration',
+          payload: { role: 'reviewer', brief: trimmedArgs || '', target: 'diff' }
+        });
+        return;
+
+      case 'cmd:critique':
+        callbacks.postToPanel(panelId, {
+          type: 'composeCollaboration',
+          payload: { role: 'critic', brief: trimmedArgs || '' }
+        });
+        return;
+
+      case 'cmd:panel':
+        callbacks.postToPanel(panelId, {
+          type: 'composeCollaboration',
+          payload: { role: 'advisor', brief: trimmedArgs || '', panel: true }
+        });
+        return;
 
       // ---- Settings ----
       case 'settings:mode': {
@@ -687,6 +745,48 @@ export class SlashCommandManager {
         keywords: ['rules', 'constraints', 'always', 'never'],
       },
 
+      // -- Collaboration (Plan 14): call other agents in a named role --
+      {
+        id: 'cmd:consult',
+        label: 'Consult',
+        description: 'Ask other agents for advice on the current thread',
+        section: 'commands' as SlashCommandSection,
+        icon: 'comment-discussion',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['consult', 'advisor', 'advice', 'second-opinion', 'ask'],
+      },
+      {
+        id: 'cmd:review',
+        label: 'Review',
+        description: 'Have other agents review the current diff or files',
+        section: 'commands' as SlashCommandSection,
+        icon: 'git-pull-request',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['review', 'code review', 'diff', 'pr'],
+      },
+      {
+        id: 'cmd:critique',
+        label: 'Critique',
+        description: 'Have other agents poke holes in the latest plan or answer',
+        section: 'commands' as SlashCommandSection,
+        icon: 'feedback',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['critique', 'red team', 'poke holes', 'challenge'],
+      },
+      {
+        id: 'cmd:panel',
+        label: 'Panel',
+        description: 'Convene a multi-agent panel on the current question',
+        section: 'commands' as SlashCommandSection,
+        icon: 'organization',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['panel', 'collaborate', 'multi-agent', 'advisors'],
+      },
+
       // -- Settings --
       {
         id: 'settings:mode',
@@ -840,6 +940,9 @@ export class SlashCommandManager {
       'ollama': 'Ollama',
       'localai': 'LocalAI',
       'qwen-code': 'Qwen Code',
+      'hermes': 'Hermes',
+      'continue': 'Continue',
+      'openrouter': 'OpenRouter',
       'brainstorm': 'Brainstorm',
     };
     return names[providerId] || providerId;

@@ -150,42 +150,99 @@ export class GeminiProvider extends BaseCliProvider {
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
-    // Check for API key in environment
-    const hasApiKey = !!process.env.GEMINI_API_KEY;
+    // API-key auth: the Gemini CLI honors GEMINI_API_KEY *and* GOOGLE_API_KEY.
+    // (Checking only GEMINI_API_KEY reported a working GOOGLE_API_KEY user as
+    // unauthenticated — a false negative that splices a live backend.)
+    const hasApiKey = !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
 
-    // Check for settings file
+    // Vertex AI mode (GOOGLE_GENAI_USE_VERTEXAI) authenticates via Application
+    // Default Credentials / the ambient GCP project, not a Gemini key.
+    const hasVertex = this._isTruthyEnv(process.env.GOOGLE_GENAI_USE_VERTEXAI) &&
+      !!(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CLOUD_PROJECT);
+
+    // OAuth login (gemini + Google account) stores tokens in ~/.gemini/oauth_creds.json.
+    // settings.json is only the config file (written on first launch without login),
+    // so its mere existence is NOT proof of auth — recognize the OAuth token file.
     const settingsPath = path.join(os.homedir(), '.gemini', 'settings.json');
-    const hasSettings = fs.existsSync(settingsPath);
+    const oauthPath = path.join(os.homedir(), '.gemini', 'oauth_creds.json');
 
     return {
-      type: hasApiKey ? 'api-key' : 'oauth',
-      isAuthenticated: hasApiKey || hasSettings,
+      type: (hasApiKey || hasVertex) ? 'api-key' : 'oauth',
+      isAuthenticated: hasApiKey || hasVertex || fs.existsSync(oauthPath),
       configPath: settingsPath
     };
   }
 
+  /**
+   * Parse a boolean-ish env var. The Gemini CLI treats "1"/"true"/"yes"/"on"
+   * as enabling GOOGLE_GENAI_USE_VERTEXAI; empty/undefined/"false"/"0" → false.
+   */
+  private _isTruthyEnv(value: string | undefined): boolean {
+    return /^(1|true|yes|on)$/i.test((value || '').trim());
+  }
+
   async checkAuthentication(): Promise<AuthStatus> {
-    // Check for GEMINI_API_KEY environment variable
-    if (process.env.GEMINI_API_KEY) {
+    // API-key auth: the Gemini CLI honors GEMINI_API_KEY and GOOGLE_API_KEY.
+    // (Only checking GEMINI_API_KEY made a working GOOGLE_API_KEY user look
+    // unauthenticated, splicing a live backend out of the coordinator.)
+    if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
       return {
         authenticated: true,
         user: 'API Key'
       };
     }
 
-    // Check for settings file with auth config
+    // Vertex AI: GOOGLE_GENAI_USE_VERTEXAI enables Vertex mode, authenticated via
+    // Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS) or the
+    // ambient project (GOOGLE_CLOUD_PROJECT). Missing this reported a working
+    // Vertex backend as unauthenticated (false negative).
+    if (this._isTruthyEnv(process.env.GOOGLE_GENAI_USE_VERTEXAI) &&
+        (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CLOUD_PROJECT)) {
+      return {
+        authenticated: true,
+        user: 'Vertex AI'
+      };
+    }
+
+    // OAuth login: tokens live in ~/.gemini/oauth_creds.json; the account email
+    // (if present) is in ~/.gemini/google_accounts.json.
+    const oauthPath = path.join(os.homedir(), '.gemini', 'oauth_creds.json');
+    if (fs.existsSync(oauthPath)) {
+      let user = 'Google Account';
+      try {
+        const accounts = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.gemini', 'google_accounts.json'), 'utf-8'));
+        user = accounts.active || accounts.email || (Array.isArray(accounts.accounts) ? accounts.accounts[0] : undefined) || user;
+      } catch {
+        // no/unparseable account file — fall back to the generic label
+      }
+      return { authenticated: true, user };
+    }
+
+    // Legacy fallback: settings.json records the selected auth method. This
+    // marker SURVIVES logout / an aborted OAuth flow, so it is NOT proof on its
+    // own. For an OAuth login type, require the actual oauth_creds.json token
+    // file (checked above — absent here, so a stale OAuth marker correctly falls
+    // through to not-authenticated). A non-OAuth selection (api-key / vertex) is
+    // trusted as before.
     const settingsPath = path.join(os.homedir(), '.gemini', 'settings.json');
     if (fs.existsSync(settingsPath)) {
       try {
         const content = fs.readFileSync(settingsPath, 'utf-8');
         const settings = JSON.parse(content);
+        const authCfg = settings.security?.auth || settings.auth;
 
-        // Check for auth configuration
-        if (settings.auth || settings.security?.auth) {
-          return {
-            authenticated: true,
-            user: settings.auth?.email || 'Google Account'
-          };
+        if (authCfg) {
+          const selectedType = String(
+            authCfg.selectedType || settings.selectedAuthType || ''
+          ).toLowerCase();
+          const isOAuthType = selectedType.includes('oauth') || selectedType.includes('google');
+
+          if (!isOAuthType || fs.existsSync(oauthPath)) {
+            return {
+              authenticated: true,
+              user: authCfg.email || 'Google Account'
+            };
+          }
         }
       } catch {
         // Settings file exists but couldn't parse
@@ -279,6 +336,8 @@ export class GeminiProvider extends BaseCliProvider {
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
   protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('geminiModel', '');
     if (customModel) {

@@ -16,6 +16,7 @@ import type {
   ContextItem,
   Attachment,
   Settings,
+  EffortLevel,
   Conversation,
   StreamChunk,
   ProviderConfig,
@@ -107,6 +108,14 @@ export interface ProviderCapabilities {
   thinkingStyle: ThinkingStyle;
   /** True only where the thinking-level setting maps to real CLI behavior (Claude, Cline) */
   thinkingLevelEffective: boolean;
+  /**
+   * Reasoning-effort tiers this backend actually honors (Claude Code parity).
+   * Undefined/empty ⇒ the backend has no reasoning-effort control and the webview
+   * hides the effort selector. Subset of EffortLevel, ordered low→high.
+   */
+  effortLevels?: EffortLevel[];
+  /** The backend's default effort tier when the setting is unset (e.g. Claude 'high'). */
+  effortDefault?: EffortLevel;
   /** Plan-mode support level */
   planMode: PlanModeSupport;
   /** Honest session/continuity semantics */

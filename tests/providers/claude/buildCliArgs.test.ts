@@ -76,11 +76,33 @@ describe('ClaudeCodeProvider.buildCliArgs', () => {
     expect(args).toContain('claude-opus-4-6');
   });
 
+  it('should pass --effort through directly (Claude clamps per-model itself)', () => {
+    const args = provider.buildCliArgs(defaultSettings({ effortLevel: 'xhigh' }), session);
+    const i = args.indexOf('--effort');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe('xhigh');
+  });
+
+  it('should omit --effort when effortLevel is unset', () => {
+    const args = provider.buildCliArgs(defaultSettings(), session);
+    expect(args).not.toContain('--effort');
+  });
+
   it('should prefer custom model from config over settings', () => {
     setMockConfig('claudeCodeModel', 'my-custom-model');
     const args = provider.buildCliArgs(defaultSettings({ model: 'claude-sonnet-4-5-20250929' }), session);
     expect(args).toContain('--model');
     expect(args).toContain('my-custom-model');
+  });
+
+  it('sets CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS so `-p` waits for background workflows', () => {
+    const env = provider.getExtraSpawnEnv(defaultSettings());
+    expect(env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS).toBe('600000'); // default 10 min
+  });
+
+  it('honors a configured background-wait ceiling (incl. 0 = wait indefinitely)', () => {
+    setMockConfig('claude.backgroundWaitCeilingMs', 0);
+    expect(provider.getExtraSpawnEnv(defaultSettings()).CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS).toBe('0');
   });
 
   it('should include --append-system-prompt for channel context', () => {

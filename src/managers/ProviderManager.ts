@@ -469,6 +469,27 @@ export class ProviderManager {
   }
 
   /**
+   * Dispose a persistent process for a panel on a SPECIFIC provider, bypassing
+   * the panel→provider map (which is cleared when a request completes). Used to
+   * reclaim delegation-child sessions at end-of-run (Plan 17 review [13]).
+   */
+  public disposePersistentProcessForProvider(providerId: string, panelId: string): void {
+    const provider = this._registry.get(providerId);
+    // review[24]: both callers are delegation CHILD panels (unique per run), so
+    // fully EVICT the session record rather than only nulling its id — otherwise
+    // dead child sessions accumulate unbounded in a long-lived window. Falls back
+    // to the old process-dispose + clearSession for providers without disposeSession.
+    if (provider && typeof (provider as { disposeSession?: unknown }).disposeSession === 'function') {
+      (provider as unknown as { disposeSession(panelId: string): void }).disposeSession(panelId);
+      return;
+    }
+    if (provider && 'disposePersistentProcess' in provider) {
+      (provider as { disposePersistentProcess(panelId?: string): void }).disposePersistentProcess(panelId);
+    }
+    provider?.clearSession(panelId);
+  }
+
+  /**
    * Check if the default provider has an active session
    */
   public hasSession(panelId?: string): boolean {

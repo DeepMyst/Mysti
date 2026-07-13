@@ -37,6 +37,11 @@ import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
+import { clampEffort } from '../../utils/effort';
+import type { EffortLevel } from '../../types';
+
+/** Copilot CLI `--effort` supports low→xhigh (no `max`; clamp down). */
+const COPILOT_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
 
 export interface CopilotSessionState extends PanelSessionState {
   activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
@@ -157,6 +162,8 @@ export class CopilotProvider extends BaseCliProvider {
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'none',
     thinkingLevelEffective: false,
+    effortLevels: COPILOT_EFFORT_LEVELS,  // --effort (low→xhigh)
+    effortDefault: 'medium',
     planMode: 'detected',
     sessionKind: 'prompt-history',  // fabricated --resume IDs (F4/B5) — honest value until Plan 00 Batch 2.4 lands
     emitsToolResults: false,        // plain-text output: no tool events at all
@@ -196,17 +203,50 @@ export class CopilotProvider extends BaseCliProvider {
     return config.get<string>('copilotPath', 'copilot');
   }
 
+  /** Copilot CLI home (honors COPILOT_HOME; default ~/.copilot). */
+  private _copilotHome(): string {
+    return process.env.COPILOT_HOME || path.join(os.homedir(), '.copilot');
+  }
+
+  /**
+   * Persisted login identity for the `@github/copilot` CLI. The token lives in
+   * the OS keychain; `/login` writes the signed-in identity into
+   * ~/.copilot/config.json (`logged_in_users` / `last_logged_in_user`). The old
+   * check looked at ~/.config/github-copilot — the OLD editor-plugin path, which
+   * is absent for the agentic CLI, so a signed-in user was wrongly blocked.
+   * Reads a non-empty identity marker (not mere file existence, which is created
+   * pre-login with only banner/theme keys → would false-positive).
+   */
+  private _copilotLoginState(): { loggedIn: boolean; login?: string } {
+    const home = this._copilotHome();
+    for (const name of ['config.json', 'settings.json']) {
+      const file = path.join(home, name);
+      if (!fs.existsSync(file)) { continue; }
+      try {
+        const d = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+          logged_in_users?: Array<{ host?: string; login?: string }>;
+          last_logged_in_user?: { host?: string; login?: string };
+        };
+        const users = Array.isArray(d.logged_in_users) ? d.logged_in_users : [];
+        if (users.length > 0 || d.last_logged_in_user?.login) {
+          return { loggedIn: true, login: d.last_logged_in_user?.login || users[0]?.login };
+        }
+      } catch {
+        return { loggedIn: true }; // present but unreadable → lean authenticated (avoid false-negative)
+      }
+    }
+    return { loggedIn: false };
+  }
+
   async getAuthConfig(): Promise<AuthConfig> {
     // Check for GH_TOKEN or GITHUB_TOKEN environment variables (per official docs)
     const hasToken = !!(process.env.GH_TOKEN || process.env.GITHUB_TOKEN);
-
-    // Check for copilot config directory
-    const configPath = path.join(os.homedir(), '.config', 'github-copilot');
-    const hasConfig = fs.existsSync(configPath);
+    const configPath = path.join(this._copilotHome(), 'config.json');
+    const login = this._copilotLoginState();
 
     return {
       type: hasToken ? 'api-key' : 'oauth',
-      isAuthenticated: hasToken || hasConfig,
+      isAuthenticated: hasToken || login.loggedIn,
       configPath
     };
   }
@@ -227,12 +267,12 @@ export class CopilotProvider extends BaseCliProvider {
       };
     }
 
-    // Check for copilot config (created after /login in the CLI)
-    const configPath = path.join(os.homedir(), '.config', 'github-copilot');
-    if (fs.existsSync(configPath)) {
+    // Signed-in via `copilot /login` (identity in ~/.copilot/config.json).
+    const login = this._copilotLoginState();
+    if (login.loggedIn) {
       return {
         authenticated: true,
-        user: 'GitHub Account'
+        user: login.login ? `GitHub (${login.login})` : 'GitHub Account'
       };
     }
 
@@ -386,6 +426,12 @@ export class CopilotProvider extends BaseCliProvider {
       args.push('--model', effectiveModel);
     }
 
+    // Reasoning effort → --effort (Copilot tops out at xhigh; max clamps down).
+    const effort = clampEffort(settings.effortLevel, COPILOT_EFFORT_LEVELS);
+    if (effort) {
+      args.push('--effort', effort);
+    }
+
     // Map Mysti modes/access levels to Copilot CLI flags
     this._addPermissionFlags(args, settings);
 
@@ -403,6 +449,8 @@ export class CopilotProvider extends BaseCliProvider {
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
   protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('copilotModel', '');
     if (customModel) {

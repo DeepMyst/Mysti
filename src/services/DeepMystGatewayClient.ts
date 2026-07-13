@@ -36,10 +36,39 @@ export interface GatewayChatMessage {
   content: string;
 }
 
+/** One streamed delta from the gateway (same shape as OpenRouterStreamEvent). */
+export interface GatewayStreamEvent {
+  text?: string;
+  reasoning?: string;
+  usage?: { inputTokens?: number; outputTokens?: number };
+  done?: boolean;
+  error?: string;
+  /**
+   * The concrete model the gateway actually resolved to (present when a router
+   * model like `openrouter/free` picks a real model). Lets the caller attribute
+   * the answer to the model that produced it, not the requested router id.
+   */
+  model?: string;
+  /**
+   * OpenAI finish_reason when the stream reports one ('stop' | 'length' | …).
+   * 'length' means max_tokens cut the answer mid-sentence — the caller can
+   * auto-continue instead of presenting a truncated reply as complete.
+   */
+  finishReason?: string;
+  /** Real billed cost (X-DeepMyst-Cost-USD header), when the gateway reports it. */
+  costUsd?: number;
+}
+
 export interface GatewayChatParams {
   model: string;
   messages: GatewayChatMessage[];
   maxTokens?: number;
+  /**
+   * OpenAI-/OpenRouter-style reasoning effort. Emitted as a `reasoning: { effort }`
+   * body field (OpenRouter translates it to a token budget for budget-based
+   * models). Undefined ⇒ omit the field entirely.
+   */
+  reasoningEffort?: 'low' | 'medium' | 'high';
   /** Abort signal so callers can cancel a slow call. */
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -117,18 +146,206 @@ export class DeepMystGatewayClient {
         costUsd,
         inputTokens: usage?.prompt_tokens,
         outputTokens: usage?.completion_tokens,
+        model: typeof data?.model === 'string' ? data.model : undefined,
       };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
+      const error = errMessage(err);
       console.warn(`[Mysti] DeepMyst gateway chat failed: ${error}`);
       return { text: '', failed: true, error };
     }
   }
+
+  /**
+   * Stream a chat completion over the gateway (OpenAI SSE). Powers the Mysti
+   * agent's token-by-token answer + inline delegation loop. Yields text/reasoning/
+   * usage/done/error. Same host-allowlist protection as chatCompletion.
+   */
+  public async *streamChat(params: GatewayChatParams): AsyncGenerator<GatewayStreamEvent> {
+    const key = this._getApiKey();
+    if (!key) {
+      yield { error: 'Not signed in to DeepMyst' };
+      return;
+    }
+    if (!isAllowedHost(this._baseUrl())) {
+      yield { error: 'gateway host not allowed' };
+      return;
+    }
+
+    // `timeoutMs` here is an INTER-CHUNK IDLE ceiling, NOT a total-stream
+    // deadline: a slow-but-alive free model that keeps emitting tokens must
+    // never be killed mid-generation. We arm a watchdog before the request and
+    // RESET it on every chunk read; only a genuinely stalled stream (no bytes
+    // for `timeoutMs`) aborts. A caller-provided signal is still honored.
+    const timeoutMs = params.timeoutMs ?? 120_000;
+    const idle = new AbortController();
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const armIdle = () => {
+      if (idleTimer) { clearTimeout(idleTimer); }
+      idleTimer = setTimeout(() => idle.abort(new Error(`gateway stream idle for ${timeoutMs}ms`)), timeoutMs);
+    };
+    const disarmIdle = () => { if (idleTimer) { clearTimeout(idleTimer); idleTimer = undefined; } };
+
+    armIdle();
+    let res: Response;
+    try {
+      res = await fetch(`${this._baseUrl()}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({
+          model: params.model,
+          messages: params.messages,
+          max_tokens: params.maxTokens ?? 2048,
+          stream: true,
+          stream_options: { include_usage: true },
+          ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
+        }),
+        signal: composeAbort(idle.signal, params.signal),
+      });
+    } catch (err) {
+      disarmIdle();
+      yield { error: errMessage(err) };
+      return;
+    }
+
+    if (!res.ok || !res.body) {
+      disarmIdle();
+      if (!res.ok) {
+        const detail = redactSecrets(await safeText(res));
+        yield { error: `HTTP ${res.status}${detail ? `: ${detail}` : ''}` };
+      } else {
+        yield { error: 'DeepMyst stream had no body' };
+      }
+      return;
+    }
+
+    // Real billed cost (P0.8): the gateway sets X-DeepMyst-Cost-USD on the
+    // response head when it can price the call — surface it when present.
+    const costUsd = parseFloatHeader(res.headers.get('x-deepmyst-cost-usd'));
+    if (costUsd !== undefined) { yield { costUsd }; }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let sentModel = false;
+    // Truncation guard: a clean SSE close that emitted text but NEVER sent
+    // [DONE] or a finish_reason (e.g. a Render worker recycle / early generator
+    // end) is almost certainly a cut-off answer, not a complete one.
+    let sawText = false;
+    let sawTerminal = false; // observed [DONE] or any finish_reason
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { break; }
+        armIdle(); // a chunk arrived — reset the idle watchdog (never kill a live stream)
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line.startsWith('data:')) { continue; }
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') { yield { done: true }; return; }
+          const parsed = parseSseData(data);
+          if (parsed.error) { yield { error: parsed.error }; return; }
+          // Surface the concrete model the router resolved to, once.
+          if (parsed.model && !sentModel) { sentModel = true; yield { model: parsed.model }; }
+          if (parsed.text) { sawText = true; yield { text: parsed.text }; }
+          if (parsed.reasoning) { yield { reasoning: parsed.reasoning }; }
+          if (parsed.usage) { yield { usage: parsed.usage }; }
+          if (parsed.finishReason) { sawTerminal = true; yield { finishReason: parsed.finishReason }; }
+        }
+      }
+      // Flush a final data frame that arrived without a trailing newline (abrupt
+      // close without [DONE]) so its last delta isn't silently dropped.
+      const tail = buffer.trim();
+      if (tail.startsWith('data:')) {
+        const data = tail.slice(5).trim();
+        if (data === '[DONE]') {
+          sawTerminal = true;
+        } else if (data) {
+          const parsed = parseSseData(data);
+          if (parsed.error) { yield { error: parsed.error }; return; }
+          // Mirror the main loop (review [20]): an abrupt close can carry the
+          // final usage/finish_reason/reasoning in this frame — don't drop them.
+          if (parsed.model && !sentModel) { sentModel = true; yield { model: parsed.model }; }
+          if (parsed.reasoning) { yield { reasoning: parsed.reasoning }; }
+          if (parsed.text) { sawText = true; yield { text: parsed.text }; }
+          if (parsed.usage) { yield { usage: parsed.usage }; }
+          if (parsed.finishReason) { sawTerminal = true; yield { finishReason: parsed.finishReason }; }
+        }
+      }
+    } catch (err) {
+      yield { error: errMessage(err) };
+      return;
+    } finally {
+      disarmIdle();
+      try { reader.releaseLock(); } catch { /* ignore */ }
+    }
+    // Clean close with text but no [DONE]/finish_reason ⇒ likely truncated: flag
+    // 'length' so the consumer auto-continues rather than accepting the partial
+    // reply as final. No text at all ⇒ nothing to continue (keep prior behavior).
+    if (sawText && !sawTerminal) { yield { finishReason: 'length' }; }
+    yield { done: true };
+  }
+}
+
+/**
+ * Parse one OpenAI-style SSE `data:` payload into a normalized event. Surfaces
+ * in-band error frames (`data: {"error": ...}`) which some gateways/proxies emit
+ * mid-stream instead of an HTTP status — otherwise a failed generation would be
+ * silently reported as complete.
+ */
+function parseSseData(data: string): GatewayStreamEvent {
+  let json: {
+    error?: { message?: string; code?: number | string; type?: string } | string;
+    model?: string;
+    choices?: Array<{ delta?: { content?: string; reasoning?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+  };
+  try { json = JSON.parse(data); } catch { return {}; }
+  if (json.error) {
+    if (typeof json.error === 'string') { return { error: json.error }; }
+    const msg = json.error.message || 'gateway stream error';
+    // Preserve the numeric status code (some providers put the human phrase in
+    // `message` and the 429/5xx code in `code`) so digit-based retry matching
+    // still fires when the message alone is code-less (e.g. "Too Many Requests").
+    const code = json.error.code;
+    return { error: code !== undefined && code !== null ? `${msg} (${code})` : msg };
+  }
+  const choice = (json.choices?.[0] ?? {}) as { delta?: { content?: string; reasoning?: string }; finish_reason?: string | null };
+  const delta = choice.delta;
+  const out: GatewayStreamEvent = {};
+  if (typeof json.model === 'string' && json.model) { out.model = json.model; }
+  if (delta?.content) { out.text = delta.content; }
+  if (typeof delta?.reasoning === 'string' && delta.reasoning) { out.reasoning = delta.reasoning; }
+  if (json.usage) { out.usage = { inputTokens: json.usage.prompt_tokens, outputTokens: json.usage.completion_tokens }; }
+  if (typeof choice.finish_reason === 'string' && choice.finish_reason) { out.finishReason = choice.finish_reason; }
+  return out;
 }
 
 interface GatewayChatResponse {
   choices?: Array<{ message?: { content?: string } }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  model?: string;
+}
+
+/**
+ * Extract a matchable error string from a thrown value. Node's native `fetch`
+ * (undici) collapses ALL transport failures to `err.message === 'fetch failed'`
+ * (or `'terminated'` mid-stream) and hides the real code (ECONNRESET / ENOTFOUND
+ * / ECONNREFUSED / EAI_AGAIN …) in `err.cause`. Keeping only `err.message` makes
+ * those undistinguishable from a hard failure, so we append the cause's code/
+ * message — restoring the transient signal the retry classifier looks for.
+ */
+function errMessage(err: unknown): string {
+  const base = err instanceof Error ? err.message : String(err);
+  const cause = (err as { cause?: { code?: string; message?: string } } | null)?.cause;
+  const extra = cause?.code || cause?.message;
+  return extra && !base.includes(String(extra)) ? `${base}: ${extra}` : base;
 }
 
 function parseFloatHeader(v: string | null): number | undefined {
@@ -169,4 +386,17 @@ function composeSignal(timeoutMs: number, caller?: AbortSignal): AbortSignal {
     return AbortSignal.any([caller, timeout]);
   }
   return caller.aborted ? caller : timeout;
+}
+
+/**
+ * Combine an internal abort signal (e.g. the idle watchdog) with an optional
+ * caller signal, leak-free (AbortSignal.any). Unlike composeSignal this carries
+ * NO built-in timeout — the primary signal owns the deadline semantics.
+ */
+function composeAbort(primary: AbortSignal, caller?: AbortSignal): AbortSignal {
+  if (!caller) { return primary; }
+  if (typeof (AbortSignal as { any?: unknown }).any === 'function') {
+    return AbortSignal.any([caller, primary]);
+  }
+  return caller.aborted ? caller : primary;
 }

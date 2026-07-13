@@ -134,57 +134,66 @@ export class OpenCodeProvider extends BaseCliProvider {
     return config.get<string>('opencodePath', 'opencode');
   }
 
+  /**
+   * Provider API keys OpenCode auto-loads from the environment. The old check
+   * saw only 4 — notably NOT OPENROUTER_API_KEY (the most common OpenCode setup)
+   * — so an OpenRouter-only user was wrongly reported unauthenticated.
+   */
+  private static readonly ENV_KEYS = [
+    'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY',
+    'OPENROUTER_API_KEY', 'GROQ_API_KEY', 'DEEPSEEK_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY',
+    'TOGETHER_API_KEY', 'FIREWORKS_API_KEY', 'PERPLEXITY_API_KEY', 'CEREBRAS_API_KEY', 'NVIDIA_API_KEY',
+  ];
+
+  /** ~/.local/share/opencode/auth.json (honors $XDG_DATA_HOME). */
+  private _ocAuthPath(): string {
+    const data = process.env.XDG_DATA_HOME?.trim();
+    const dir = data ? path.join(data, 'opencode') : path.join(os.homedir(), '.local', 'share', 'opencode');
+    return path.join(dir, 'auth.json');
+  }
+
+  /** Config candidates ~/.config/opencode/opencode.json[c] (honors $XDG_CONFIG_HOME). */
+  private _ocConfigPaths(): string[] {
+    const cfg = process.env.XDG_CONFIG_HOME?.trim();
+    const dir = cfg ? path.join(cfg, 'opencode') : path.join(os.homedir(), '.config', 'opencode');
+    return [path.join(dir, 'opencode.json'), path.join(dir, 'opencode.jsonc')];
+  }
+
+  private _ocEnvKey(): string | undefined {
+    return OpenCodeProvider.ENV_KEYS.find(k => (process.env[k] || '').trim().length > 0);
+  }
+
   async getAuthConfig(): Promise<AuthConfig> {
-    // OpenCode supports multiple provider API keys
-    const hasAnyApiKey = !!(
-      process.env.ANTHROPIC_API_KEY ||
-      process.env.OPENAI_API_KEY ||
-      process.env.GEMINI_API_KEY ||
-      process.env.GROQ_API_KEY
-    );
-
-    // Check for OpenCode auth config
-    const authPath = path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
+    const envKey = this._ocEnvKey();
+    const authPath = this._ocAuthPath();
     const hasAuth = fs.existsSync(authPath);
-
-    // Check for global config
-    const configPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-    const hasConfig = fs.existsSync(configPath);
+    const configPath = this._ocConfigPaths().find(p => fs.existsSync(p));
 
     return {
-      type: hasAnyApiKey ? 'api-key' : 'oauth',
-      isAuthenticated: hasAnyApiKey || hasAuth || hasConfig,
-      configPath: hasAuth ? authPath : configPath
+      type: envKey ? 'api-key' : 'oauth',
+      isAuthenticated: !!envKey || hasAuth || !!configPath,
+      configPath: hasAuth ? authPath : (configPath || this._ocConfigPaths()[0])
     };
   }
 
   async checkAuthentication(): Promise<AuthStatus> {
-    // Check for any provider API key
-    if (process.env.ANTHROPIC_API_KEY) {
-      return { authenticated: true, user: 'Anthropic API Key' };
-    }
-    if (process.env.OPENAI_API_KEY) {
-      return { authenticated: true, user: 'OpenAI API Key' };
-    }
-    if (process.env.GEMINI_API_KEY) {
-      return { authenticated: true, user: 'Gemini API Key' };
-    }
-    if (process.env.GROQ_API_KEY) {
-      return { authenticated: true, user: 'Groq API Key' };
+    // Any provider API key OpenCode reads from the environment.
+    const envKey = this._ocEnvKey();
+    if (envKey) {
+      return { authenticated: true, user: envKey };
     }
 
-    // Check for OpenCode auth file
-    const authPath = path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
-    if (fs.existsSync(authPath)) {
+    // `opencode auth login` credentials — the strong marker (don't parse/require
+    // fields inside it: an unreadable-but-present file must not false-negative).
+    if (fs.existsSync(this._ocAuthPath())) {
       return { authenticated: true, user: 'OpenCode Account' };
     }
 
-    // Check for global config with provider settings
-    const configPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-    if (fs.existsSync(configPath)) {
+    // Global config declaring a provider/model.
+    for (const configPath of this._ocConfigPaths()) {
+      if (!fs.existsSync(configPath)) { continue; }
       try {
-        const content = fs.readFileSync(configPath, 'utf-8');
-        const config = JSON.parse(content);
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
         if (config.provider || config.model) {
           return { authenticated: true, user: 'OpenCode Config' };
         }
@@ -195,7 +204,7 @@ export class OpenCodeProvider extends BaseCliProvider {
 
     return {
       authenticated: false,
-      error: 'Not authenticated. Run "opencode auth login" or set a provider API key (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY).'
+      error: 'Not authenticated. Run "opencode auth login" or set a provider API key (e.g., OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY).'
     };
   }
 
@@ -262,6 +271,8 @@ export class OpenCodeProvider extends BaseCliProvider {
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
   protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('opencodeModel', '');
     if (customModel) {
