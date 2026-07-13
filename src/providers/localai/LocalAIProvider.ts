@@ -500,6 +500,9 @@ export class LocalAIProvider extends BaseCliProvider {
       yield { type: 'done' };
     } finally {
       clearTimeout(timeoutId);
+      // Plan 18 (2.4 audit): abort on the way out — generator abandonment
+      // otherwise leaks the SSE connection. No-op if already finished.
+      session.abortController?.abort();
       session.abortController = null;
     }
   }

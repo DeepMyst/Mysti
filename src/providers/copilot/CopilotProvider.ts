@@ -306,54 +306,65 @@ export class CopilotProvider extends BaseCliProvider {
   ): AsyncGenerator<StreamChunk> {
     const session = this._getSession(panelId) as CopilotSessionState;
     const startTime = Date.now();
-    const cliPath = this.getCliPath();
 
-    // Get workspace folder for CWD
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
-
-    // Build prompt first (needed for -p flag)
-    const fullPrompt = await this.buildPromptAsync(
-      content, context, conversation, settings, persona, agentConfig,
-      undefined, session.channelSystemContext,
-    );
-    const promptTime = Date.now() - startTime;
-    console.log(`[Mysti] Copilot: Prompt built in ${promptTime}ms`);
-
-    // Build args with prompt using -p flag
-    const args = this.buildCliArgs(settings, session);
-    args.push('-p', fullPrompt);
-
-    console.log(`[Mysti] Copilot: Spawning CLI with -p flag...`);
-
-    session.process = spawn(cliPath, args, {
-      cwd,
-      env: getEnrichedEnv(),
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-
-    const spawnTime = Date.now() - startTime;
-    console.log(`[Mysti] Copilot: CLI spawned in ${spawnTime}ms`);
-
-    // Register process with ProviderManager for per-panel cancellation
-    if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-      (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
-    }
-
-    // Set up stderr handler
-    // Use a mutable object so processStream always sees the latest stderr content
+    // Plan 18 (2.4 audit): the entire setup — prompt build and spawn — runs
+    // INSIDE the try. Previously a synchronous spawn failure (Windows EINVAL
+    // on a .cmd shim, Node >= 18.20) escaped the generator with no
+    // handleError, no finally, and no cleanup: the provider was hard-broken
+    // for every default npm Windows install.
     const stderrRef = { output: '' };
+    // Declared outside the try — the finally detaches it during cleanup.
     const stderrHandler = (data: Buffer) => {
       const text = data.toString();
       stderrRef.output += text;
       console.log(`[Mysti] Copilot stderr:`, text);
     };
-
-    if (session.process.stderr) {
-      session.process.stderr.on('data', stderrHandler);
-    }
-
     try {
+      const cliPath = this.getCliPath();
+
+      // Get workspace folder for CWD
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
+
+      // Build prompt first (needed for -p flag)
+      const fullPrompt = await this.buildPromptAsync(
+        content, context, conversation, settings, persona, agentConfig,
+        undefined, session.channelSystemContext,
+      );
+      const promptTime = Date.now() - startTime;
+      console.log(`[Mysti] Copilot: Prompt built in ${promptTime}ms`);
+
+      // Build args with prompt using -p flag
+      const args = this.buildCliArgs(settings, session);
+      args.push('-p', fullPrompt);
+
+      console.log(`[Mysti] Copilot: Spawning CLI with -p flag...`);
+
+      session.process = spawn(cliPath, args, {
+        cwd,
+        env: getEnrichedEnv(),
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      // Plan 18 (2.4 audit): early error listener — an async spawn failure
+      // (ENOENT on a stale path) otherwise emits an unhandled 'error' event
+      // in the window before waitForProcess attaches its own listener.
+      session.process.on('error', (err) => {
+        console.error(`[Mysti] Copilot: Spawn error:`, err);
+        stderrRef.output += `\nspawn error: ${err.message}`;
+      });
+
+      const spawnTime = Date.now() - startTime;
+      console.log(`[Mysti] Copilot: CLI spawned in ${spawnTime}ms`);
+
+      // Register process with ProviderManager for per-panel cancellation
+      if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
+        (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
+      }
+
+      if (session.process.stderr) {
+        session.process.stderr.on('data', stderrHandler);
+      }
       console.log(`[Mysti] Copilot: ⏱️ TIMING BREAKDOWN:`);
       console.log(`  - Prompt build: ${promptTime}ms`);
       console.log(`  - CLI spawn: ${spawnTime - promptTime}ms`);

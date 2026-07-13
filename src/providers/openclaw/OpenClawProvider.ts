@@ -30,6 +30,8 @@ import type {
   ModelInfo,
 } from '../../types';
 import { getEnrichedEnv, readOpenClawToken } from '../../utils/platform';
+import { killProcessTree, isProcessLive } from '../../utils/processKill';
+import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
 import { toolKind } from '../../utils/toolNames';
 
 export interface OpenClawSessionState extends PanelSessionState {
@@ -618,18 +620,25 @@ export class OpenClawProvider extends BaseCliProvider {
       }
     }
 
-    // Handle errors (same pattern as base class)
-    if (exitCode !== 0 && exitCode !== null && stderrRef.output) {
-      if (this.isAuthenticationError(stderrRef.output)) {
-        yield { type: 'auth_error', content: stderrRef.output, authCommand: this.getAuthCommand(), providerName: this.displayName };
+    // Handle errors (same pattern as base class). Plan 18 (2.4 audit): these
+    // used to be gated on non-empty stderr — a non-zero exit (or an empty
+    // turn) with a silent stderr ended the request with NO error chunk: the
+    // spinner stopped and nothing was shown. The base always surfaces it.
+    if (exitCode !== 0 && exitCode !== null) {
+      const msg = stderrRef.output || `${this.displayName} exited with code ${exitCode}`;
+      if (this.isAuthenticationError(msg)) {
+        yield { type: 'auth_error', content: msg, authCommand: this.getAuthCommand(), providerName: this.displayName };
       } else {
-        yield { type: 'error', content: stderrRef.output };
+        yield { type: 'error', content: msg };
       }
-    } else if (!hasYieldedContent && stderrRef.output) {
-      if (this.isAuthenticationError(stderrRef.output)) {
+    } else if (!hasYieldedContent) {
+      const msg = stderrRef.output
+        ? `No response received. stderr: ${stderrRef.output}`
+        : 'No response received from CLI';
+      if (stderrRef.output && this.isAuthenticationError(stderrRef.output)) {
         yield { type: 'auth_error', content: stderrRef.output, authCommand: this.getAuthCommand(), providerName: this.displayName };
       } else {
-        yield { type: 'error', content: `No response received. stderr: ${stderrRef.output}` };
+        yield { type: 'error', content: msg };
       }
     }
   }
@@ -764,6 +773,14 @@ export class OpenClawProvider extends BaseCliProvider {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
+      // Plan 18 (2.4 audit): early error listener — an async spawn failure
+      // otherwise emits an unhandled 'error' event before waitForProcess
+      // attaches its own listener.
+      session.process.on('error', (err) => {
+        console.error('[Mysti] OpenClaw: Spawn error:', err);
+        stderrRef.output += `\nspawn error: ${err.message}`;
+      });
+
       // Register process for per-panel cancellation
       if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
         (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
@@ -785,11 +802,14 @@ export class OpenClawProvider extends BaseCliProvider {
       yield this.handleError(error);
       yield { type: 'done' };
     } finally {
-      if (session.process && !session.process.killed) {
-        if (session.process.stderr) {
-          session.process.stderr.removeListener('data', stderrHandler);
+      // Plan 18 (2.4 audit): liveness-gated tree kill with SIGKILL escalation —
+      // the old `.killed` guard skipped a signalled-but-alive CLI, and a bare
+      // SIGTERM left openclaw's own children running.
+      if (isProcessLive(session.process)) {
+        if (session.process!.stderr) {
+          session.process!.stderr.removeListener('data', stderrHandler);
         }
-        session.process.kill('SIGTERM');
+        void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
       }
       session.process = null;
       if (panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {

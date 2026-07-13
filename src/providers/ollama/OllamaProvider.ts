@@ -473,6 +473,11 @@ export class OllamaProvider extends BaseCliProvider {
       yield { type: 'done' };
     } finally {
       clearTimeout(timeoutId);
+      // Plan 18 (2.4 audit): ABORT on the way out — a consumer that abandons
+      // this generator (Stop, new message, collaborator teardown) otherwise
+      // leaks the connection and the local model keeps generating (GPU burn)
+      // to completion. Aborting an already-finished request is a no-op.
+      session.abortController?.abort();
       session.abortController = null;
     }
   }

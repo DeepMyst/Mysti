@@ -18,6 +18,8 @@ import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from "..
 import { validateModelName } from "../../utils/validation";
 import { normalizeToolName, toolKind } from "../../utils/toolNames";
 import { getEnrichedEnv } from "../../utils/platform";
+import { killProcessTree, isProcessLive } from "../../utils/processKill";
+import { PROCESS_KILL_GRACE_PERIOD_MS } from "../../constants";
 import type {
 	CliDiscoveryResult,
 	AuthConfig,
@@ -713,14 +715,23 @@ export class CursorProvider extends BaseCliProvider {
 			const envExtra: Record<string, string | undefined> = {};
 			const resolvedKey = this._resolveApiKey();
 			if (resolvedKey) {
+				// Plan 18 (2.4 audit): env only — the key on argv was visible to any
+				// local user via `ps`. CURSOR_API_KEY is the documented channel.
 				envExtra.CURSOR_API_KEY = resolvedKey;
-				args.push("--api-key", resolvedKey);
 			}
 
 			session.process = spawn(cliPath, args, {
 				cwd,
 				env: getEnrichedEnv(envExtra),
 				stdio: ["ignore", "pipe", "pipe"],
+			});
+
+			// Plan 18 (2.4 audit): early error listener — an async spawn failure
+			// otherwise emits an unhandled 'error' event before waitForProcess
+			// attaches its own listener.
+			session.process.on("error", (err) => {
+				console.error("[Mysti] Cursor: Spawn error:", err);
+				stderrRef.output += `\nspawn error: ${err.message}`;
 			});
 
 			// Register process for per-panel cancellation
@@ -756,11 +767,14 @@ export class CursorProvider extends BaseCliProvider {
 			yield this.handleError(error);
 			yield { type: "done" };
 		} finally {
-			if (session.process && !session.process.killed) {
-				if (session.process.stderr) {
-					session.process.stderr.removeListener("data", stderrHandler);
+			// Plan 18 (2.4 audit): liveness-gated tree kill with SIGKILL escalation —
+			// the old `.killed` guard skipped a signalled-but-alive CLI, and a bare
+			// SIGTERM orphaned cursor-agent's own children mid-tool-run.
+			if (isProcessLive(session.process)) {
+				if (session.process!.stderr) {
+					session.process!.stderr.removeListener("data", stderrHandler);
 				}
-				session.process.kill("SIGTERM");
+				void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
 			}
 			session.process = null;
 			if (

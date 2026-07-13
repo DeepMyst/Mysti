@@ -258,6 +258,10 @@ export class OpenRouterProvider extends BaseCliProvider {
       errored = true;
       yield { type: 'error', content: err instanceof Error ? err.message : String(err) };
     } finally {
+      // Plan 18 (2.4 audit): abort on the way out — generator abandonment
+      // otherwise leaks the SSE connection (billable on paid models). No-op
+      // if the stream already finished.
+      session.abortController?.abort();
       session.abortController = null;
     }
 

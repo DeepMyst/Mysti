@@ -826,6 +826,14 @@ export class ClineProvider extends BaseCliProvider {
 				shell: false,
 			});
 
+			// Plan 18 (2.4 audit): early error listener — an async spawn failure
+			// otherwise emits an unhandled 'error' event before waitForProcess
+			// attaches its own listener.
+			session.process.on("error", (err) => {
+				console.error("[Mysti] Cline: Spawn error:", err);
+				stderrRef.output += `\nspawn error: ${err.message}`;
+			});
+
 			// Send prompt via stdin for large prompts
 			if (useStdin && session.process.stdin) {
 				session.process.stdin.write(fullPrompt);
