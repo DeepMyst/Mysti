@@ -15,8 +15,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { spawn } from 'child_process';
-import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from '../base/BaseCliProvider';
+import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -360,100 +359,20 @@ export class CodexProvider extends BaseCliProvider {
     return fullPrompt;
   }
 
-  /**
-   * Override sendMessage to use codex exec with proper argument passing
-   * Codex exec expects: codex exec [flags] "prompt"
-   * @param panelId Optional panel ID for per-panel process tracking
-   * @param providerManager Optional ProviderManager for registering process
-   */
-  async *sendMessage(
-    content: string,
-    context: ContextItem[],
-    settings: Settings,
-    conversation: Conversation | null,
-    persona?: PersonaConfig,
-    panelId?: string,
-    providerManager?: unknown
-  ): AsyncGenerator<StreamChunk> {
-    const cliPath = this.getCliPath();
-    const session = this._getSession(panelId) as CodexSessionState;
-
-    // Build prompt with context and persona
-    const fullPrompt = this.buildPrompt(content, context, conversation, settings, persona);
-
-    // Build CLI arguments
-    const args = this._buildCodexArgs(settings);
-
-    // Inject channel system context as native Codex system instructions
-    if (session.channelSystemContext) {
-      args.push('-c', `developer_instructions=${session.channelSystemContext}`);
-      console.log('[Mysti] Codex: Injecting channel context as developer_instructions');
-    }
-
-    // Add prompt as the last argument (use '-' to read from stdin for long prompts)
-    // For shorter prompts we could pass directly, but stdin is safer for any length
-    args.push('-');
-
-    try {
-      // Get workspace folder for CWD
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
-
-      console.log(`[Mysti] ${this.displayName}: Starting CLI`);
-      console.log(`[Mysti] ${this.displayName}: Command: ${cliPath} ${args.join(' ')}`);
-      console.log(`[Mysti] ${this.displayName}: Working directory: ${cwd}`);
-
-      // Check if we should use shell for spawning
-      const useShell = vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
-
-      // Spawn the process
-      session.process = spawn(cliPath, args, {
-        cwd,
-        env: getEnrichedEnv(),
-        stdio: ['pipe', 'pipe', 'pipe'],
-        shell: useShell
-      });
-
-      // Register process with ProviderManager for per-panel cancellation
-      if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-        (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
-      }
-
-      // Collect stderr for error reporting. In --json mode activity goes to
-      // stderr and results to stdout, so keep a rolling tail to attach to a
-      // non-zero-exit error (otherwise a codex failure reaches the collaborator
-      // as an opaque, diagnostic-free 'empty-response').
-      session.stderrTail = '';
-      if (session.process.stderr) {
-        session.process.stderr.on('data', (data) => {
-          const text = data.toString();
-          session.stderrTail = (session.stderrTail + text).slice(-2000);
-          console.log(`[Mysti] ${this.displayName} stderr:`, text);
-        });
-      }
-
-      // Send prompt via stdin (using '-' argument)
-      if (session.process.stdin) {
-        session.process.stdin.write(fullPrompt);
-        session.process.stdin.end();
-      }
-
-      // Process stream output
-      yield* this._processCodexStream(session);
-
-      // Yield final done with any stored usage from stream parsing
-      const storedUsage = this.getStoredUsage(panelId);
-      yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
-    } catch (error) {
-      yield this.handleError(error);
-    } finally {
-      session.process = null;
-      // Clear process tracking when done
-      if (panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
-        (providerManager as ProcessTracker).clearProcess(panelId);
-      }
-    }
-  }
+  // Plan 18 (Wave 3 / providers H1): the bespoke sendMessage override is GONE.
+  // It re-implemented the spawn loop and silently missed the base-path
+  // hardening: Windows auto-shell (.cmd shims -> spawn EINVAL), the shell-mode
+  // arg injection gate + bracket quoting, the early spawn 'error' listener,
+  // kill-in-finally for abandoned generators, attachment lifecycle, and the
+  // three-tier agentConfig (personas/skills never reached Codex). The base
+  // _sendSingleShot now drives codex exec: buildCliArgs supplies the args
+  // (with the stdin marker), buildPromptAsync folds in channel context the
+  // same way as every other base-path provider (the old native
+  // `-c developer_instructions=` injection was ALSO the unquoted shell-mode
+  // injection vector), and parseStreamLine handles the JSONL events.
+  // Behavioral delta (accepted): the base surfaces a non-zero exit as an
+  // error chunk even after answer text was produced, where the old
+  // _processCodexStream stayed silent.
 
   /**
    * Build Codex-specific CLI arguments
@@ -552,78 +471,6 @@ export class CodexProvider extends BaseCliProvider {
     // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
     args.push('--full-auto');
     console.log(`[Mysti] Codex: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
-  }
-
-  /**
-   * Process Codex JSONL stream output
-   *
-   * Event types from codex exec --json:
-   * - thread.started, turn.started, turn.completed, turn.failed
-   * - item.started, item.updated, item.completed
-   * - error (unrecoverable errors)
-   *
-   * Item types:
-   * - agent_message: Text response from the agent
-   * - reasoning: Internal reasoning/thinking
-   * - command_execution: Shell command execution
-   * - file_change: File modifications
-   * - mcp_tool_call: MCP tool invocations
-   * - web_search: Web search operations
-   * - todo_list: Task tracking
-   */
-  private async *_processCodexStream(session: CodexSessionState): AsyncGenerator<StreamChunk> {
-    let buffer = '';
-    // Track whether codex produced actual ANSWER text (agent_message → 'text'),
-    // NOT merely any event: thread.started/reasoning/tool events are non-answer
-    // scaffolding. The old guard set a flag on any chunk, so a non-zero exit
-    // after just `session_active` was swallowed and the collaborator saw a bare
-    // `done` → mislabeled 'empty-response' with no diagnostic.
-    let hasYieldedText = false;
-
-    if (session.process?.stdout) {
-      for await (const chunk of session.process.stdout) {
-        const chunkStr = chunk.toString();
-        buffer += chunkStr;
-
-        // Process complete lines (JSONL format)
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.trim()) {
-            const parsed = this._parseCodexEvent(line, session);
-            if (parsed) {
-              if (parsed.type === 'text') { hasYieldedText = true; }
-              yield parsed;
-            }
-          }
-        }
-      }
-    }
-
-    // Process remaining buffer
-    if (buffer.trim()) {
-      const parsed = this._parseCodexEvent(buffer, session);
-      if (parsed) {
-        if (parsed.type === 'text') { hasYieldedText = true; }
-        yield parsed;
-      }
-    }
-
-    // Wait for process to complete
-    const exitCode = await this.waitForProcess(session);
-
-    // Surface a non-zero exit whenever no answer text was produced (matches the
-    // base contract), attaching the stderr tail so the failure is diagnosable
-    // instead of collapsing into an opaque 'empty-response'.
-    if (exitCode !== 0 && exitCode !== null && !hasYieldedText) {
-      const detail = session.stderrTail.trim().slice(-500);
-      const auth = detail && this.isAuthenticationError(detail);
-      yield {
-        type: auth ? 'auth_error' : 'error',
-        content: detail ? `Codex exited with code ${exitCode}: ${detail}` : `Codex exited with code ${exitCode}`,
-      };
-    }
   }
 
   /**
@@ -1088,7 +935,10 @@ export class CodexProvider extends BaseCliProvider {
 
   // These methods are required by abstract base but we override sendMessage
   protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
-    return this._buildCodexArgs(settings);
+    // Plan 18 (Wave 3): the base single-shot path sends the prompt via stdin;
+    // `-` tells `codex exec` to read it from there (this used to live in the
+    // deleted sendMessage override).
+    return [...this._buildCodexArgs(settings), '-'];
   }
 
   protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {

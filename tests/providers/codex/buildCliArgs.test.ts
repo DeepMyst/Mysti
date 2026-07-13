@@ -75,3 +75,14 @@ describe('CodexProvider.buildCliArgs', () => {
     expect(args.some(a => a.startsWith('model_reasoning_effort'))).toBe(false);
   });
 });
+
+// Plan 18 Wave 3: the bespoke sendMessage override is gone — the base
+// single-shot path sends the prompt on stdin, so buildCliArgs MUST end with
+// the `-` stdin marker or `codex exec` waits on argv it never gets.
+describe('stdin marker (Plan 18 Wave 3)', () => {
+  it('args end with "-" so the base stdin path feeds the prompt', () => {
+    const provider = new TestableCodexProvider();
+    const args = provider.buildCliArgs(defaultSettings(), createCodexSession());
+    expect(args[args.length - 1]).toBe('-');
+  });
+});
