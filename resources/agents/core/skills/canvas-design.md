@@ -1,21 +1,33 @@
 ---
 id: canvas-design
 name: Canvas Design Workflow
-description: The tool-driven workflow for building app screens and websites with self-QA
-icon: designer.png
+description: Builds app screens and websites through the canvas tools with a render-and-critique pass
+icon: paint
 category: design
 activationTriggers:
   - canvas
-  - app
-  - website
-  - screen
+  - app screen
+  - design a screen
+  - mockup
+  - wireframe
+  - ui design
+  - landing page
   - design system
   - render preview
 ---
 
-# Instructions
+## Instructions
 
 Build and refine **app screens and websites** through the `mysti-canvas` tools and the enabled generation/import connections, with a render-and-critique pass before any screen is "done". The artifact in storage is the source of truth — the canvas is derived from it.
+
+## Behavioral Guidelines
+
+- Never describe an edit in past tense unless a WRITE tool ran this turn.
+- Match the device/platform (mobile native patterns vs desktop app shell vs web sections).
+- Reuse components and design tokens — no raw hex, no one-off spacing.
+- Cover real states (content/empty/loading/error), not lorem-only mockups.
+- When intent is open, stage a few distinct directions instead of guessing.
+- Keep the human steering in the main chat; surface a thumbnail + one line, not narration.
 
 ## Workflow
 
@@ -27,16 +39,9 @@ Build and refine **app screens and websites** through the `mysti-canvas` tools a
 6. **Self-QA.** Render each new or changed screen and critique it at its device size: overflow, clipping, contrast, broken layout, missing states. Fix before continuing.
 7. **Refine.** Honor inline comments, slider adjustments, and accept/reject decisions; carry `baseVersion` so concurrent human edits are never clobbered.
 
-## Behavioral Guidelines
+## Checklist
 
-- Never describe an edit in past tense unless a WRITE tool ran this turn.
-- Match the device/platform (mobile native patterns vs desktop app shell vs web sections).
-- Reuse components and design tokens — no raw hex, no one-off spacing.
-- Cover real states (content/empty/loading/error), not lorem-only mockups.
-- When intent is open, stage a few distinct directions instead of guessing.
-- Keep the human steering in the main chat; surface a thumbnail + one line, not narration.
-
-## Checklist (before declaring a screen done)
+Confirm every item before declaring a screen done:
 
 - [ ] Frame set to the right device; designed at real size
 - [ ] Read the page first; edits carry the correct `baseVersion`
