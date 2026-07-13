@@ -444,3 +444,112 @@ describe('ChatViewProvider exit_plan_mode routing (Plan 02 Phase 3.5)', () => {
     expect(h.sidebarMessages.some(m => m.type === 'planOptions')).toBe(false);
   });
 });
+
+// review[19]: the _runMystiAgentic ReAct loop had ZERO coverage. Pin its core
+// contract: a delegate directive routes to _runMystiDelegation, its result is
+// fed back FENCED as UNTRUSTED, the delegation is counted, and the run persists
+// an assistant message carrying the delegate tool card + the final prose.
+describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
+  let h: Harness;
+  beforeEach(() => { clearMockConfig(); h = createHarness(); });
+  afterEach(() => { h.dispose(); });
+
+  it('routes a delegate directive, fences the result UNTRUSTED, counts it, and persists the card', async () => {
+    const streamCalls: any[][] = [];
+    // Extract the per-run nonce from the coordinator system prompt so the stub
+    // can emit a *valid* (unforgeable) directive, exactly as the real model would.
+    function nonceFrom(messages: any[]): string {
+      const sys = messages.map(m => String(m.content || '')).join('\n');
+      const m = sys.match(/<delegate:([A-Za-z0-9]{6,})\s+agent/);
+      return m ? m[1] : 'NONCE';
+    }
+    // The mysti branch needs a live conversation id on the panel + a resolvable
+    // conversation object (the harness defaults currentConversationId to null).
+    (h.provider as any)._panelStates.get('sidebar').currentConversationId = 'conv-1';
+    (h.provider as any)._conversationManager.getConversation = () => ({ id: 'conv-1', messages: [] });
+    // The harness providerManager doesn't enumerate installed CLIs — declare the
+    // backend available so the delegate directive resolves.
+    (h.provider as any)._availableMystiBackends = () => ['claude-code'];
+    let turn = 0;
+    (h.provider as any)._mystiCoordinator = {
+      status: () => ({ ready: true }),
+      resolveCoordinatorModel: async () => 'coordinator-model',
+      stream: async function* (messages: any[]) {
+        streamCalls.push(messages);
+        const N = nonceFrom(messages);
+        if (turn++ === 0) {
+          yield { text: `<delegate:${N} agent="claude-code">implement the thing</delegate>` };
+          yield { done: true };
+        } else {
+          yield { text: 'All done — the change is in place.' };
+          yield { done: true };
+        }
+      },
+    };
+    const delegateCalls: any[] = [];
+    (h.provider as any)._runMystiDelegation = vi.fn(async (agentId: string, task: string) => {
+      delegateCalls.push({ agentId, task });
+      return { text: 'edited src/a.ts successfully', hasError: false, wrote: false };
+    });
+
+    await (h.provider as any)._handleSendMessage(
+      { content: 'implement the thing', context: [], settings: { ...SETTINGS, provider: 'mysti' } },
+      'sidebar',
+    );
+
+    // (1) the delegation ran, to the requested backend
+    expect(delegateCalls).toHaveLength(1);
+    expect(delegateCalls[0].agentId).toBe('claude-code');
+
+    // (2) the result was fed back to the coordinator FENCED as UNTRUSTED
+    expect(streamCalls.length).toBeGreaterThanOrEqual(2);
+    const fedBack = streamCalls[1].map((m: any) => String(m.content || '')).join('\n');
+    expect(fedBack).toContain('<<<UNTRUSTED');
+    expect(fedBack).toContain('edited src/a.ts successfully');
+
+    // (3) the persisted assistant message carries the delegate tool card + prose
+    const call = getAssistantPersistCall(h);
+    const content = call[2];
+    const extras = call[6] || {};
+    expect(content).toContain('All done');
+    expect(Array.isArray(extras.toolCalls)).toBe(true);
+    expect(extras.toolCalls.some((tc: any) => tc.name === 'delegate' && tc.input?.agent === 'claude-code')).toBe(true);
+    expect(extras.provider).toBe('mysti');
+  });
+});
+
+// review[21]/[39]: the permission-gate panel-gone behaviour is the sole guard
+// keeping a detached background job (whose origin tab closed) from parking a
+// write forever at an unanswerable gate — and it must take precedence over
+// autonomous auto-approve so a gone panel never gets an invisible, unauditable
+// auto-approved write. Nothing exercised requestPermissionInline before.
+describe('ChatViewProvider.requestPermissionInline panel-gone guard (review[21])', () => {
+  let h: Harness;
+  beforeEach(() => { clearMockConfig(); h = createHarness(); });
+  afterEach(() => { h.dispose(); });
+
+  it('auto-DENIES a write gate whose owning panel is gone', async () => {
+    const approved = await (h.provider as any).requestPermissionInline(
+      'file-edit', 'edit', 'a delegation wants to edit', {}, 'closed-tab-panel', 'tc-1', 'job-1',
+    );
+    expect(approved).toBe(false);
+  });
+
+  it('panel-gone deny WINS over autonomous auto-approve (no invisible write)', async () => {
+    // Autonomous mode active and classifying this write as auto-approve.
+    (h.provider as any)._autonomousManager = {
+      isActive: () => true,
+      shouldAutoApprovePermission: () => ({ decision: 'auto-approve', type: 'permission-approve' }),
+    };
+    // Gone panel → the panel-gone guard (now ordered FIRST) denies regardless.
+    const goneApproved = await (h.provider as any).requestPermissionInline(
+      'file-edit', 'edit', 'x', {}, 'closed-tab-panel', 'tc-2', 'job-2',
+    );
+    expect(goneApproved).toBe(false);
+    // Live panel → the autonomous auto-approve applies as designed.
+    const liveApproved = await (h.provider as any).requestPermissionInline(
+      'file-edit', 'edit', 'x', {}, 'sidebar', 'tc-3', 'sidebar',
+    );
+    expect(liveApproved).toBe(true);
+  });
+});

@@ -28,6 +28,8 @@ import { CompactionManager } from './managers/CompactionManager';
 import { SmartCompactor } from './managers/SmartCompactor';
 import { SavingsLedger } from './managers/SavingsLedger';
 import { DeepMystGatewayClient } from './services/DeepMystGatewayClient';
+import { OpenRouterClient } from './services/OpenRouterClient';
+import { CoordinatorModelClient, MYSTI_DEFAULT_FREE_MODELS } from './services/CoordinatorModelClient';
 import { AgentLifecycleManager } from './managers/AgentLifecycleManager';
 import { SlashCommandManager } from './managers/SlashCommandManager';
 import { ActiveModeManager } from './managers/ActiveModeManager';
@@ -86,6 +88,10 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   console.log('Mysti extension is now active');
+  // Build stamp — lets us confirm the running bundle is the freshly compiled dev
+  // build (not a stale installed copy). Bump BUILD_STAMP on notable rebuilds.
+  const BUILD_STAMP = 'plan17-full-review-fix-pass-43findings (2026-07-12)';
+  console.log(`[Mysti] BUILD ${BUILD_STAMP} — extensionPath=${context.extensionPath}`);
 
   // Manager construction block (telemetry through ChatViewProvider).
   // Note: provider init below is fire-and-forget (Plan 03 Phase 2), so this
@@ -207,6 +213,39 @@ export async function activate(context: vscode.ExtensionContext) {
   compactionManager.setSmartCompactor(
     new SmartCompactor(deepMystAuthManager, deepMystGatewayClient, savingsLedger),
   );
+
+  // OpenRouter client — used by the Mysti coordinator ONLY as a power-user opt-in
+  // when the EXPLICIT `mysti.openrouter.apiKey` setting is present. An ambient
+  // OPENROUTER_API_KEY env var must NOT silently override the DeepMyst-gateway
+  // default, so it is intentionally not consulted here.
+  const openRouterClient = new OpenRouterClient(() => {
+    const fromSetting = vscode.workspace.getConfiguration('mysti').get<string>('openrouter.apiKey', '').trim();
+    return fromSetting || undefined;
+  });
+  // Plan 16: the Mysti coordinator runs through the DeepMyst gateway by default,
+  // using the signed-in account's dm_ key (a DeepMyst account is required — free
+  // works; not gated on paid entitlement). OpenRouter is used instead only when a
+  // key is explicitly configured.
+  const coordinatorModelClient = new CoordinatorModelClient(
+    deepMystGatewayClient,
+    openRouterClient,
+    () => deepMystAuthManager.isSignedIn(),
+    () => {
+      const cfg = vscode.workspace.getConfiguration('mysti');
+      // A non-empty coordinatorModel PINS the coordinator to one model (no
+      // rotation). Empty (default) ⇒ rotate the curated free-models list, which
+      // rolls over to the next free model on a rate-limit before the paid fallback.
+      const pinned = (cfg.get<string>('mysti.coordinatorModel', '') || '').trim();
+      const freeModels = pinned
+        ? [pinned]
+        : cfg.get<string[]>('mysti.freeModels', MYSTI_DEFAULT_FREE_MODELS);
+      return {
+        freeModels: Array.isArray(freeModels) && freeModels.length > 0 ? freeModels : MYSTI_DEFAULT_FREE_MODELS,
+        gatewayFallbackModel: cfg.get<string>('mysti.fallbackModel', 'claude-haiku-4-5'),
+        openRouterModel: cfg.get<string>('openrouter.coordinatorModel', 'auto'),
+      };
+    },
+  );
   lifecycleManager = new AgentLifecycleManager(context);
   // B16: let ProviderManager report child PIDs to the lifecycle manager as
   // processes are registered (enables idle/child-protection tracking).
@@ -315,6 +354,7 @@ export async function activate(context: vscode.ExtensionContext) {
   chatViewProvider.setDeepMystAuth(deepMystAuthManager);
   chatViewProvider.setSavingsLedger(savingsLedger);
   chatViewProvider.setAnnouncementManager(announcementManager);
+  chatViewProvider.setMystiCoordinator(coordinatorModelClient);
 
   PerfTracker.measure('activation.managerConstruction', 'activation.managerConstruction.start');
 
@@ -460,6 +500,40 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('mysti.deepmyst.signIn', () => deepMystAuthManager.signIn()),
     vscode.commands.registerCommand('mysti.deepmyst.signOut', () => deepMystAuthManager.signOut()),
     vscode.commands.registerCommand('mysti.openConnections', () => connectionsPanelManager.open()),
+  );
+
+  // Agent authoring: create/import/reload personas and skills
+  const runAgentCommand = (label: string, run: () => Promise<void>) =>
+    run().catch((error: Error) => {
+      console.error(`[Mysti] ${label} failed:`, error);
+      vscode.window.showErrorMessage(`Mysti: ${label} failed — ${error.message}`);
+    });
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.createPersona', () => runAgentCommand('create persona', () => chatViewProvider.createAgentInteractive('persona'))),
+    vscode.commands.registerCommand('mysti.createSkill', () => runAgentCommand('create skill', () => chatViewProvider.createAgentInteractive('skill'))),
+    vscode.commands.registerCommand('mysti.createRole', () => runAgentCommand('create role', () => chatViewProvider.createAgentInteractive('role'))),
+    vscode.commands.registerCommand('mysti.importSkills', () => runAgentCommand('skill import', () => chatViewProvider.importSkillsInteractive())),
+    vscode.commands.registerCommand('mysti.reloadAgents', () => runAgentCommand('agent reload', () => chatViewProvider.reloadAgents())),
+    // Plan 17 P1.4a: pick the Mysti coordinator's brain without editing settings.
+    vscode.commands.registerCommand('mysti.setCoordinatorModel', async () => {
+      const cfg = vscode.workspace.getConfiguration('mysti');
+      const current = (cfg.get<string>('mysti.coordinatorModel', '') || '').trim();
+      const items: Array<vscode.QuickPickItem & { value: string | null }> = [
+        { label: 'Auto — strong free models (default)', description: 'gpt-oss-120b → nemotron → gemma, no credit spend', value: '', picked: current === '' },
+        { label: 'claude-haiku-4-5 — cheap paid', description: 'Reliable, fast; covered by free DeepMyst monthly credits', value: 'claude-haiku-4-5' },
+        { label: 'claude-sonnet-4-6 — strongest paid', description: 'Best coordination quality; spends more credits', value: 'claude-sonnet-4-6' },
+        { label: 'Custom…', description: 'Enter any gateway model id', value: null },
+      ];
+      const pick = await vscode.window.showQuickPick(items, { title: 'Mysti coordinator model', placeHolder: current ? `Current: ${current}` : 'Current: Auto (free)' });
+      if (!pick) { return; }
+      let value = pick.value;
+      if (value === null) {
+        value = (await vscode.window.showInputBox({ title: 'Custom coordinator model id', value: current, prompt: 'e.g. claude-opus-4-8, or openrouter/openai/gpt-oss-120b:free' }))?.trim() ?? undefined as unknown as string;
+        if (value === undefined) { return; }
+      }
+      await cfg.update('mysti.coordinatorModel', value, vscode.ConfigurationTarget.Global);
+      vscode.window.showInformationMessage(`Mysti coordinator model: ${value || 'Auto (free)'}`);
+    }),
   );
 
   context.subscriptions.push(

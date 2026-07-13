@@ -48,9 +48,22 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   // Base URI for everything under resources/ (library scripts, logos, icons).
   const resourceBase = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources')).toString();
 
-  // Extracted chat assets.
-  const chatCssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'chat', 'chat.css')).toString();
-  const chatJsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'chat', 'chat.js')).toString();
+  // Extracted chat assets. VSCode caches webview resources by URI and the cache
+  // survives a window reload, so a stable URI serves a stale chat.js/chat.css
+  // after edits. Append the file's mtime as a cache-busting query so every
+  // change forces a fresh fetch (and unchanged files still cache).
+  const assetUri = (rel: string[]): string => {
+    const fileUri = vscode.Uri.joinPath(extensionUri, ...rel);
+    let ver = version;
+    try {
+      ver = String(fs.statSync(fileUri.fsPath).mtimeMs);
+    } catch {
+      /* fall back to the extension version */
+    }
+    return `${webview.asWebviewUri(fileUri).toString()}?v=${ver}`;
+  };
+  const chatCssUri = assetUri(['media', 'chat', 'chat.css']);
+  const chatJsUri = assetUri(['media', 'chat', 'chat.js']);
 
   // URIs for library scripts loaded lazily by the chat script.
   const mermaidUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'mermaid.min.js'));
@@ -81,6 +94,9 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   const ollamaLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'ollama.png')).toString();
   const localaiLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'localai.png')).toString();
   const qwenLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'qwen.png')).toString();
+  const hermesLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'hermes.png')).toString();
+  const continueLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'continue.png')).toString();
+  const openrouterLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openrouter.png')).toString();
 
   // Every value the embedded script used to receive via template-literal
   // interpolation now travels through ONE inline nonce'd bootstrap script
@@ -102,6 +118,9 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     ollamaLogoUri,
     localaiLogoUri,
     qwenLogoUri,
+    hermesLogoUri,
+    continueLogoUri,
+    openrouterLogoUri,
     manifestSchemaVersion: PROVIDER_MANIFEST_SCHEMA_VERSION
   };
   // Defensive: keep '<' out of the inline <script> body (e.g. '</script>').

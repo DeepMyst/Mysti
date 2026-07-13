@@ -1177,6 +1177,27 @@
     .config-section-hint {
       font-size: 10px;
       color: var(--vscode-descriptionForeground);
+      margin-right: auto;
+      margin-left: 6px;
+    }
+
+    .config-action-btn {
+      background: transparent;
+      border: 1px solid var(--vscode-button-secondaryBackground, var(--vscode-panel-border));
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      padding: 1px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      line-height: 16px;
+      margin-left: 4px;
+      opacity: 0.85;
+    }
+
+    .config-action-btn:hover {
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-foreground);
+      opacity: 1;
     }
 
     /* Persona Grid */
@@ -1222,6 +1243,24 @@
       width: 16px;
       height: 16px;
       object-fit: contain;
+    }
+
+    .persona-card-emoji {
+      font-size: 13px;
+      line-height: 16px;
+    }
+
+    .persona-card-letter {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      font-size: 10px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     .persona-card-name {
@@ -2162,6 +2201,17 @@
       background: var(--mysti-surface-2);
     }
     .input-status-line .status-seg-glyph { font-weight: 700; }
+    /* Compact model + effort quick-pickers in the status line. */
+    .input-status-line .status-select {
+      max-width: 130px;
+      text-overflow: ellipsis;
+      appearance: none;
+      -webkit-appearance: none;
+      font-family: inherit;
+    }
+    .input-status-line .status-select:hover { color: var(--mysti-fg); background: var(--mysti-surface-2); }
+    .input-status-line .status-select:focus { outline: 1px solid var(--vscode-focusBorder); }
+    .input-status-line .status-select.hidden { display: none; }
     /* Plan 08: smart-compaction savings chip — one accent (green = savings). */
     .input-status-line .savings-indicator .savings-glyph { color: var(--vscode-charts-green); }
     .input-status-line .savings-indicator .savings-text { font-variant-numeric: tabular-nums; }
@@ -8261,4 +8311,297 @@
         padding: 6px;
       }
     }
-  
+
+    /* ====================================================================
+       Mysti orchestrator progress cards (Plan 15)
+       Reuses the brainstorm container/stepper/agent-message scaffolding;
+       these rules add the header, per-node status pills, and node output.
+       ==================================================================== */
+    .mysti-container {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 10px;
+      background: var(--vscode-editor-background);
+    }
+
+    .mysti-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .mysti-header-logo {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+
+    .mysti-header-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+
+    .mysti-status {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .mysti-nodes {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .mysti-node-status {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--vscode-panel-border);
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .mysti-node-status.pending {
+      opacity: 0.7;
+    }
+
+    .mysti-node-status.running {
+      color: var(--mysti-accent, var(--vscode-textLink-foreground));
+      border-color: var(--mysti-accent, var(--vscode-textLink-foreground));
+      animation: mystiPulse 1.4s ease-in-out infinite;
+    }
+
+    .mysti-node-status.done {
+      color: var(--vscode-testing-iconPassed, #3fb950);
+      border-color: var(--vscode-testing-iconPassed, #3fb950);
+    }
+
+    .mysti-node-status.error {
+      color: var(--vscode-errorForeground, #f85149);
+      border-color: var(--vscode-errorForeground, #f85149);
+    }
+
+    @keyframes mystiPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+
+    .mysti-node-dep {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--vscode-badge-background);
+    }
+
+    .mysti-node-task {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 6px;
+    }
+
+    .mysti-node-output {
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .mysti-node-output:empty {
+      display: none;
+    }
+
+    .mysti-node-failure {
+      font-size: 12px;
+      color: var(--vscode-errorForeground, #f85149);
+    }
+
+    .mysti-error-line {
+      font-size: 12px;
+      color: var(--vscode-errorForeground, #f85149);
+      padding: 6px 12px;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+
+    /* Per-node activity zone: tool cards (reusing .subagent-tool-*) + thinking,
+       kept separate from the streamed text output. */
+    .mysti-node-activity {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .mysti-node-activity:empty {
+      display: none;
+    }
+
+    /* Plan 17 P0.3 — live sub-agent trace nested inside an inline delegate
+       tool card (the default agentic loop; same components as orchestrate). */
+    .tool-call .mysti-delegate-activity {
+      padding: 6px 10px 8px 26px;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+
+    .mysti-delegate-retry-note {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+    }
+
+    .mysti-node-thinking {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      border-left: 2px solid var(--vscode-panel-border);
+      padding-left: 8px;
+    }
+
+    .mysti-node-thinking > summary {
+      cursor: pointer;
+      user-select: none;
+      opacity: 0.85;
+    }
+
+    .mysti-node-thinking-body {
+      margin: 4px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 11px;
+      opacity: 0.9;
+    }
+
+    .mysti-cancelled .mysti-status {
+      color: var(--vscode-errorForeground, #f85149);
+    }
+
+    /* ====================================================================
+       Background Mysti jobs (Phase D)
+       ==================================================================== */
+    .mysti-job {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 10px;
+      background: var(--vscode-editor-background);
+      margin: 8px 0;
+      overflow: hidden;
+    }
+
+    .mysti-job-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
+    .mysti-job-spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--vscode-panel-border);
+      border-top-color: var(--mysti-accent, var(--vscode-textLink-foreground));
+      border-radius: 50%;
+      animation: mystiSpin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes mystiSpin { to { transform: rotate(360deg); } }
+
+    .mysti-job-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mysti-job-status {
+      margin-left: auto;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--vscode-panel-border);
+      color: var(--vscode-descriptionForeground);
+      flex-shrink: 0;
+    }
+    .mysti-job-status.done { color: var(--vscode-testing-iconPassed, #3fb950); border-color: var(--vscode-testing-iconPassed, #3fb950); }
+    .mysti-job-status.failed, .mysti-job-status.cancelled { color: var(--vscode-errorForeground, #f85149); border-color: var(--vscode-errorForeground, #f85149); }
+
+    .mysti-job-stop {
+      font-size: 11px;
+      padding: 2px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-panel-border);
+      background: transparent;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .mysti-job-stop:hover { background: var(--vscode-toolbar-hoverBackground); }
+
+    .mysti-job-activity {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px 12px 0;
+    }
+    .mysti-job-activity:empty { display: none; }
+
+    .mysti-job-tool {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .mysti-job-tool-label { font-weight: 600; color: var(--vscode-foreground); }
+    .mysti-job-tool-task { opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mysti-job-tool.done .mysti-job-tool-icon { color: var(--vscode-testing-iconPassed, #3fb950); }
+    .mysti-job-tool.failed .mysti-job-tool-icon { color: var(--vscode-errorForeground, #f85149); }
+    .mysti-job-tool-spinner {
+      width: 9px; height: 9px;
+      border: 2px solid var(--vscode-panel-border);
+      border-top-color: var(--mysti-accent, var(--vscode-textLink-foreground));
+      border-radius: 50%;
+      animation: mystiSpin 0.8s linear infinite;
+    }
+
+    .mysti-job-thinking {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      border-left: 2px solid var(--vscode-panel-border);
+      padding-left: 8px;
+    }
+    .mysti-job-thinking > summary { cursor: pointer; user-select: none; opacity: 0.85; }
+    .mysti-job-thinking-body { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; opacity: 0.9; }
+
+    .mysti-job-output {
+      padding: 8px 12px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .mysti-job-output:empty { display: none; }
+
+    .mysti-job-error {
+      font-size: 12px;
+      color: var(--vscode-errorForeground, #f85149);
+      padding: 6px 12px 12px;
+    }
+
+    .mysti-signin-btn {
+      margin-top: 10px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: none;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .mysti-signin-btn:hover { background: var(--vscode-button-hoverBackground); }
+

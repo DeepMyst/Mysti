@@ -24,6 +24,9 @@ const AGENT_DISPLAY: Record<string, { shortId: string }> = {
   'ollama': { shortId: 'ollama' },
   'localai': { shortId: 'localai' },
   'qwen-code': { shortId: 'qwen' },
+  'hermes': { shortId: 'hermes' },
+  'continue': { shortId: 'continue' },
+  'openrouter': { shortId: 'openrouter' },
 };
 
 // Build reverse map
@@ -38,6 +41,7 @@ interface ParsedMention {
   displayName: string;
   startIndex: number;
   endIndex: number;
+  role?: string;
 }
 
 /**
@@ -45,19 +49,22 @@ interface ParsedMention {
  */
 function parseMentionsFromContent(content: string, workspaceFileCache: string[] = []): ParsedMention[] {
   const mentions: ParsedMention[] = [];
-  // M3: Refined regex — allows alphanumeric, hyphens, dots, slashes, underscores
-  const regex = /@([\w\-./]+)/g;
+  // M3/Plan 14: allows alphanumeric, hyphens, dots, slashes, underscores, plus
+  // an optional ":role" suffix for the @agent:role collaboration grammar.
+  const regex = /@([\w\-./]+)(?::([\w-]+))?/g;
   let match;
   while ((match = regex.exec(content)) !== null) {
     const word = match[1].toLowerCase();
+    const role = match[2] ? match[2].toLowerCase() : undefined;
     // M5: Check if it's a known agent shortname
     if (MENTION_SHORT_MAP[word]) {
       mentions.push({
         type: 'agent',
         value: MENTION_SHORT_MAP[word],
-        displayName: '@' + word,
+        displayName: '@' + word + (role ? ':' + role : ''),
         startIndex: match.index,
         endIndex: match.index + match[0].length,
+        role,
       });
     } else {
       // M4: File matching with path boundary check — require minimum 3 chars
@@ -196,5 +203,39 @@ describe('Mention parsing (webview)', () => {
     // The full path should match via endsWith
     expect(mentions).toHaveLength(1);
     expect(mentions[0].type).toBe('file');
+  });
+
+  // =========================================================================
+  // Plan 14: @agent:role collaboration grammar
+  // =========================================================================
+  it('should parse an @agent:role mention with the role attached', () => {
+    const mentions = parseMentionsFromContent('@gemini:critic here is my plan');
+    expect(mentions).toHaveLength(1);
+    expect(mentions[0].value).toBe('google-gemini');
+    expect(mentions[0].role).toBe('critic');
+    expect(mentions[0].displayName).toBe('@gemini:critic');
+  });
+
+  it('should leave role undefined for a plain @agent mention', () => {
+    const mentions = parseMentionsFromContent('@claude rewrite this');
+    expect(mentions[0].role).toBeUndefined();
+  });
+
+  it('should parse multiple @agent:role mentions in one message', () => {
+    const mentions = parseMentionsFromContent('@gemini:critic @codex:reviewer weigh in');
+    expect(mentions).toHaveLength(2);
+    expect(mentions[0]).toMatchObject({ value: 'google-gemini', role: 'critic' });
+    expect(mentions[1]).toMatchObject({ value: 'openai-codex', role: 'reviewer' });
+  });
+
+  it('should parse a hyphenated role id', () => {
+    const mentions = parseMentionsFromContent('@claude:second-opinion');
+    expect(mentions[0].role).toBe('second-opinion');
+  });
+
+  it('should not treat a bare trailing colon as a role', () => {
+    const mentions = parseMentionsFromContent('@gemini: what do you think');
+    expect(mentions[0].value).toBe('google-gemini');
+    expect(mentions[0].role).toBeUndefined();
   });
 });

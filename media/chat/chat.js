@@ -17,6 +17,9 @@
       var OLLAMA_LOGO = window.__MYSTI_BOOT__.ollamaLogoUri;
       var LOCALAI_LOGO = window.__MYSTI_BOOT__.localaiLogoUri;
       var QWEN_LOGO = window.__MYSTI_BOOT__.qwenLogoUri;
+      var HERMES_LOGO = window.__MYSTI_BOOT__.hermesLogoUri;
+      var CONTINUE_LOGO = window.__MYSTI_BOOT__.continueLogoUri;
+      var OPENROUTER_LOGO = window.__MYSTI_BOOT__.openrouterLogoUri;
       var MYSTI_LOGO = window.__MYSTI_BOOT__.logoUri;
 
       // Theme detection for theme-aware provider logos
@@ -47,7 +50,10 @@
         'icons/opencode.png': OPENCODE_LOGO,
         'icons/ollama.png': OLLAMA_LOGO,
         'icons/localai.png': LOCALAI_LOGO,
-        'icons/qwen.png': QWEN_LOGO
+        'icons/qwen.png': QWEN_LOGO,
+        'icons/hermes.png': HERMES_LOGO,
+        'icons/continue.png': CONTINUE_LOGO,
+        'icons/openrouter.png': OPENROUTER_LOGO
       };
 
       // Mermaid lazy loading
@@ -276,6 +282,7 @@
         settings: {
           mode: 'ask-before-edit',
           thinkingLevel: 'none',
+          effortLevel: 'high',
           accessLevel: 'ask-permission',
           contextMode: 'auto',
           model: 'claude-sonnet-4-5-20250929',
@@ -355,6 +362,11 @@
         mentionMenuIndex: 0,
         mentionItems: [],
         mentionStartPos: 0,
+        // Plan 14: role autocomplete (@agent:role). mode is 'agent' or 'role';
+        // in role mode mentionRoleAgent holds the agent shortname being tagged.
+        mentionMode: 'agent',
+        mentionRoleAgent: null,
+        availableRoles: [],
         workspaceFileCache: [],
         // Setup wizard state (enhanced onboarding)
         wizard: {
@@ -480,9 +492,11 @@
         var html = providers.map(function(p) {
           return '<option value="' + p.id + '">' + escapeHtml(p.displayName) + '</option>';
         }).join('');
+        html += '<option value="mysti">Mysti</option>';
         html += '<option value="brainstorm">Brainstorm</option>';
         providerSelect.innerHTML = html;
-        var desired = (state.settings && state.settings.provider) || (state.activeAgent !== 'brainstorm' ? state.activeAgent : null);
+        var isPseudo = state.activeAgent === 'brainstorm' || state.activeAgent === 'mysti';
+        var desired = (state.settings && state.settings.provider) || (!isPseudo ? state.activeAgent : null);
         if (desired) providerSelect.value = desired;
       }
 
@@ -811,8 +825,130 @@
         });
       }
 
+      // Resolve an agent token (shortname or full id) to its canonical shortId,
+      // or null if it is not a known agent. Used to detect @agent:role.
+      function resolveAgentShortName(word) {
+        if (!word) return null;
+        var lower = word.toLowerCase();
+        if (MENTION_SHORT_MAP[lower]) return lower; // already a shortId
+        var providers = (state.providerManifest && state.providerManifest.providers) || [];
+        for (var i = 0; i < providers.length; i++) {
+          if (providers[i].id === lower) return providers[i].shortId || lower;
+        }
+        return null;
+      }
+
+      // Plan 14: role picker shown after "@agent:". Reuses the mention-menu DOM.
+      function showRoleMenu(agentShort, query) {
+        var mentionMenu = document.getElementById('mention-menu');
+        var agentsList = document.getElementById('mention-agents-list');
+        var filesList = document.getElementById('mention-files-list');
+        var filesHeader = document.getElementById('mention-files-header');
+        var agentsHeader = mentionMenu ? mentionMenu.querySelector('.mention-menu-header') : null;
+        if (!mentionMenu || !agentsList || !filesList) return;
+
+        var roles = state.availableRoles || [];
+        var scoredRoles = [];
+        roles.forEach(function(r) {
+          var bestScore = Math.max(fuzzyScore(r.id, query), fuzzyScore(r.name, query));
+          if (bestScore >= 0) {
+            scoredRoles.push({
+              type: 'role',
+              value: r.id,
+              agentShort: agentShort,
+              displayName: r.name || r.id,
+              shortName: r.id,
+              description: r.description || '',
+              icon: r.icon || '🎭',
+              access: r.access || 'read-only',
+              score: bestScore
+            });
+          }
+        });
+        scoredRoles.sort(function(a, b) { return b.score - a.score; });
+
+        state.mentionItems = scoredRoles;
+        state.mentionMenuIndex = Math.min(state.mentionMenuIndex, Math.max(0, scoredRoles.length - 1));
+
+        // Files section is irrelevant when picking a role
+        if (filesHeader) filesHeader.style.display = 'none';
+        filesList.innerHTML = '';
+        if (agentsHeader) {
+          agentsHeader.style.display = '';
+          agentsHeader.textContent = 'Roles for @' + agentShort;
+        }
+
+        agentsList.innerHTML = scoredRoles.map(function(item, idx) {
+          // Role frontmatter icons are codicon names (ascii) — render a generic
+          // glyph for those; use the value directly only if it's already an emoji.
+          var iconChar = (item.icon && /[^\x00-\x7F]/.test(item.icon)) ? item.icon : '🎭';
+          var iconHtml = '<span class="mention-file-icon">' + iconChar + '</span>';
+          var nameHtml = highlightMatch(item.displayName, query);
+          var accessBadge = item.access === 'gated-write'
+            ? '<span class="mention-shortname" title="can edit files (gated)">writes</span>'
+            : '<span class="mention-shortname" title="advisory, read-only">read-only</span>';
+          return '<div class="mention-menu-item' + (idx === state.mentionMenuIndex ? ' selected' : '') + '" data-index="' + idx + '" data-type="role" data-value="' + item.value + '">'
+            + iconHtml
+            + '<span class="mention-name">' + nameHtml + '</span>'
+            + accessBadge
+            + '</div>';
+        }).join('');
+
+        if (scoredRoles.length === 0 && roles.length === 0) {
+          // Roles never arrived from the extension. Show the actual list counts
+          // (diagnostic: personas>0 but roles=0 ⇒ the running extension predates
+          // the roles wiring) and self-heal by re-requesting the agent lists.
+          state.mentionItems = [];
+          var pc = (state.availablePersonas || []).length;
+          var sc = (state.availableSkills || []).length;
+          var rc = (state.availableRoles || []).length;
+          agentsList.innerHTML = '<div class="mention-menu-item mention-menu-empty" style="opacity:0.7;cursor:default;">No roles loaded (personas ' + pc + ', skills ' + sc + ', roles ' + rc + '). Fetching… if this persists, fully restart the extension host (Stop, then F5).</div>';
+          if (!state._rolesRequested) {
+            state._rolesRequested = true;
+            postMessageWithPanelId({ type: 'requestAgentLists' });
+          }
+        }
+
+        if (scoredRoles.length > 0 || roles.length === 0) {
+          mentionMenu.classList.remove('hidden');
+          state.mentionMenuVisible = true;
+          var inputArea = document.querySelector('.input-area');
+          if (inputArea) {
+            var rect = inputArea.getBoundingClientRect();
+            mentionMenu.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+          }
+        } else {
+          // Roles exist but none match the current filter — hide quietly.
+          hideMentionMenu();
+        }
+
+        mentionMenu.querySelectorAll('.mention-menu-item').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var idx = parseInt(el.dataset.index, 10);
+            if (state.mentionItems[idx]) {
+              insertMention(state.mentionItems[idx]);
+            }
+          });
+        });
+      }
+
+      // Re-render whichever mention menu is currently active (agent or role) —
+      // used by keyboard navigation so arrows don't reset a role menu to agents.
+      function refreshMentionMenu() {
+        if (state.mentionMode === 'role') {
+          showRoleMenu(state.mentionRoleAgent || '', state.mentionQuery || '');
+        } else {
+          showMentionMenu(state.mentionQuery || '');
+        }
+      }
+
       function hideMentionMenu() {
         var mentionMenu = document.getElementById('mention-menu');
+        // Restore the agents header text (role mode overwrites it)
+        var agentsHeader = mentionMenu ? mentionMenu.querySelector('.mention-menu-header') : null;
+        if (agentsHeader) agentsHeader.textContent = 'Agents';
+        state.mentionMode = 'agent';
+        state.mentionRoleAgent = null;
         if (mentionMenu) {
           mentionMenu.classList.add('hidden');
         }
@@ -826,7 +962,9 @@
 
         var before = inputEl.value.substring(0, state.mentionStartPos);
         var after = inputEl.value.substring(inputEl.selectionStart);
-        var mentionText = '@' + item.shortName + ' ';
+        var mentionText = item.type === 'role'
+          ? '@' + item.agentShort + ':' + item.value + ' '
+          : '@' + item.shortName + ' ';
 
         inputEl.value = before + mentionText + after;
         var newPos = state.mentionStartPos + mentionText.length;
@@ -839,19 +977,22 @@
 
       function parseMentionsFromContent(content) {
         var mentions = [];
-        // M3: Refined regex — allows alphanumeric, hyphens, dots, slashes, underscores
-        var regex = /@([\w\-.\/]+)/g;
+        // M3/Plan 14: allows alphanumeric, hyphens, dots, slashes, underscores,
+        // plus an optional ":role" suffix for the @agent:role collaboration grammar.
+        var regex = /@([\w\-.\/]+)(?::([\w-]+))?/g;
         var match;
         while ((match = regex.exec(content)) !== null) {
           var word = match[1].toLowerCase();
+          var role = match[2] ? match[2].toLowerCase() : undefined;
           // M5: Check if it's a known agent shortname (not just any string)
           if (MENTION_SHORT_MAP[word]) {
             mentions.push({
               type: 'agent',
               value: MENTION_SHORT_MAP[word],
-              displayName: '@' + word,
+              displayName: '@' + word + (role ? ':' + role : ''),
               startIndex: match.index,
-              endIndex: match.index + match[0].length
+              endIndex: match.index + match[0].length,
+              role: role
             });
           } else {
             // M4: File matching with path boundary check — require minimum 3 chars
@@ -1575,7 +1716,11 @@
       const newTabBtn = document.getElementById('new-tab-btn');
       const modeSelect = document.getElementById('mode-select');
       const thinkingSelect = document.getElementById('thinking-select');
+      const effortSelect = document.getElementById('effort-select');
       const modelSelect = document.getElementById('model-select');
+      // Prompt-box quick pickers (mirror the settings selects above).
+      const modelSelectInline = document.getElementById('model-select-inline');
+      const effortSelectInline = document.getElementById('effort-select-inline');
       const customModelSection = document.getElementById('custom-model-section');
       const customModelInput = document.getElementById('custom-model-input');
       const customModelError = document.getElementById('custom-model-error');
@@ -1971,13 +2116,13 @@
           if (e.key === 'ArrowDown') {
             e.preventDefault();
             state.mentionMenuIndex = Math.min(state.mentionMenuIndex + 1, state.mentionItems.length - 1);
-            showMentionMenu(state.mentionQuery || '');
+            refreshMentionMenu();
             return;
           }
           if (e.key === 'ArrowUp') {
             e.preventDefault();
             state.mentionMenuIndex = Math.max(state.mentionMenuIndex - 1, 0);
-            showMentionMenu(state.mentionQuery || '');
+            refreshMentionMenu();
             return;
           }
           if (e.key === 'Tab' || e.key === 'Enter') {
@@ -2180,9 +2325,20 @@
         // @-mention detection
         var cursorPos = inputEl.selectionStart;
         var textBeforeCursor = inputEl.value.substring(0, cursorPos);
+        // Plan 14: "@<knownAgent>:<partial>" → role picker; otherwise agent/file picker.
+        var roleMatch = textBeforeCursor.match(/@([\w\-.\/]+):([\w-]*)$/);
+        var roleAgentShort = roleMatch ? resolveAgentShortName(roleMatch[1]) : null;
         var mentionMatch = textBeforeCursor.match(/@(\S*)$/);
 
-        if (mentionMatch) {
+        if (roleMatch && roleAgentShort) {
+          state.mentionMode = 'role';
+          state.mentionRoleAgent = roleAgentShort;
+          state.mentionQuery = roleMatch[2].toLowerCase();
+          state.mentionStartPos = cursorPos - roleMatch[0].length;
+          showRoleMenu(roleAgentShort, state.mentionQuery);
+        } else if (mentionMatch) {
+          state.mentionMode = 'agent';
+          state.mentionRoleAgent = null;
           state.mentionQuery = mentionMatch[1].toLowerCase();
           state.mentionStartPos = cursorPos - mentionMatch[0].length;
           showMentionMenu(state.mentionQuery);
@@ -2340,6 +2496,29 @@
         });
       }
 
+      // Agent authoring: create persona/skill, import skills from GitHub
+      var createPersonaBtn = document.getElementById('create-persona-btn');
+      if (createPersonaBtn) {
+        createPersonaBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          vscode.postMessage({ type: 'createAgent', payload: { agentType: 'persona' } });
+        });
+      }
+      var createSkillBtn = document.getElementById('create-skill-btn');
+      if (createSkillBtn) {
+        createSkillBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          vscode.postMessage({ type: 'createAgent', payload: { agentType: 'skill' } });
+        });
+      }
+      var importSkillsBtn = document.getElementById('import-skills-btn');
+      if (importSkillsBtn) {
+        importSkillsBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          vscode.postMessage({ type: 'importSkills' });
+        });
+      }
+
       // Map persona ID to icon key for ICON_URIS
       function getPersonaIconKey(personaId) {
         var mapping = {
@@ -2363,6 +2542,26 @@
         return mapping[personaId] || personaId;
       }
 
+      // Icon HTML for a persona card. Built-in personas map to bundled
+      // PNGs; custom personas (user/workspace/imported) fall back to a
+      // frontmatter icon key, an emoji, or a letter avatar — never a
+      // broken <img>.
+      function personaIconHtml(p) {
+        var key = getPersonaIconKey(p.id);
+        if (ICON_URIS[key]) {
+          return '<img src="' + ICON_URIS[key] + '" alt="" loading="lazy" />';
+        }
+        if (p.icon && ICON_URIS[p.icon]) {
+          return '<img src="' + ICON_URIS[p.icon] + '" alt="" loading="lazy" />';
+        }
+        // Short non-filename icon values are treated as emoji/text
+        if (p.icon && p.icon.indexOf('.') === -1 && p.icon.length <= 4) {
+          return '<span class="persona-card-emoji">' + escapeHtml(p.icon) + '</span>';
+        }
+        var letter = (p.name || p.id || '?').charAt(0).toUpperCase();
+        return '<span class="persona-card-letter">' + escapeHtml(letter) + '</span>';
+      }
+
       // Render agent config panel
       function renderAgentConfigPanel() {
         var personaGrid = document.getElementById('persona-grid');
@@ -2378,7 +2577,7 @@
           card.dataset.persona = p.id;
           card.title = p.description;
           card.innerHTML =
-            '<span class="persona-card-icon"><img src="' + ICON_URIS[getPersonaIconKey(p.id)] + '" alt="" loading="lazy" /></span>' +
+            '<span class="persona-card-icon">' + personaIconHtml(p) + '</span>' +
             '<span class="persona-card-name">' + escapeHtml(p.name) + '</span>';
 
           card.onclick = function() {
@@ -2847,6 +3046,63 @@
         postMessageWithPanelId({ type: 'updateSettings', payload: { thinkingLevel: thinkingSelect.value } });
       });
 
+      if (effortSelect) {
+        effortSelect.addEventListener('change', function() {
+          state.settings.effortLevel = effortSelect.value;
+          postMessageWithPanelId({ type: 'updateSettings', payload: { effortLevel: effortSelect.value } });
+          syncInlineSelectors();
+        });
+      }
+
+      // Prompt-box quick pickers reuse the settings selects' handlers: set the
+      // settings value and re-dispatch, then mirror back. One source of truth.
+      if (modelSelectInline) {
+        modelSelectInline.addEventListener('change', function() {
+          if (!modelSelect) return;
+          modelSelect.value = modelSelectInline.value;
+          modelSelect.dispatchEvent(new Event('change'));
+        });
+      }
+      if (effortSelectInline) {
+        effortSelectInline.addEventListener('change', function() {
+          if (!effortSelect) return;
+          effortSelect.value = effortSelectInline.value;
+          effortSelect.dispatchEvent(new Event('change'));
+        });
+      }
+
+      // Copy the (authoritative) settings selects into the inline prompt-box
+      // pickers: model options minus the "Custom…" entry, and effort options +
+      // the capability-driven visibility.
+      function syncInlineSelectors() {
+        if (modelSelectInline && modelSelect) {
+          // Pseudo-agents (mysti/brainstorm) have no user-pickable model list —
+          // hide the inline picker rather than show the previous provider's stale
+          // options (Mysti's model is its coordinator model, set in settings).
+          var isPseudo = state.activeAgent === 'mysti' || state.activeAgent === 'brainstorm';
+          var customActive = modelSelect.value === '__custom__';
+          var opts = Array.prototype.slice.call(modelSelect.options)
+            .filter(function(o) { return o.value !== '__custom__'; })
+            .map(function(o) { return '<option value="' + o.value.replace(/"/g, '&quot;') + '">' + escapeHtml(o.textContent) + '</option>'; })
+            .join('');
+          // When a custom model is active, show a disabled "Custom" indicator so
+          // the picker doesn't imply a stock model is selected.
+          if (customActive) { opts = '<option value="__custom__" selected>Custom…</option>' + opts; }
+          modelSelectInline.innerHTML = opts;
+          if (!customActive) { modelSelectInline.value = modelSelect.value; }
+          modelSelectInline.classList.toggle('hidden', isPseudo || modelSelectInline.options.length === 0);
+        }
+        if (effortSelectInline && effortSelect) {
+          var section = document.getElementById('effort-section');
+          var effortHidden = !section || section.classList.contains('hidden');
+          effortSelectInline.classList.toggle('hidden', effortHidden);
+          if (!effortHidden) {
+            effortSelectInline.innerHTML = effortSelect.innerHTML;
+            effortSelectInline.value = effortSelect.value;
+          }
+        }
+      }
+
       modelSelect.addEventListener('change', function() {
         if (modelSelect.value === '__custom__') {
           customModelSection.classList.remove('hidden');
@@ -2859,6 +3115,7 @@
           state.settings.model = modelSelect.value;
           postMessageWithPanelId({ type: 'updateSettings', payload: { model: modelSelect.value, customModel: '' } });
         }
+        syncInlineSelectors();
       });
 
       // Custom model input validation
@@ -3288,13 +3545,14 @@
         state.activeAgent = newProvider;
         updateAgentMenuSelection();
 
-        if (newProvider !== 'brainstorm') {
-          // Update model dropdown with provider-specific models (brainstorm doesn't have its own models)
+        if (newProvider !== 'brainstorm' && newProvider !== 'mysti') {
+          // Pseudo-agents (brainstorm, mysti) have no model list of their own.
           updateModelsForProvider(newProvider);
         }
 
         // W1: thinking selector visibility is capability-driven
         updateThinkingSectionVisibility(newProvider);
+        updateEffortSectionVisibility(newProvider);
 
         // Show/hide strategy indicator chip for brainstorm
         updateStrategyIndicatorVisibility(newProvider);
@@ -3320,6 +3578,44 @@
           var advisory = !hidden && !!caps && caps.thinkingLevelEffective === false;
           advisoryHint.classList.toggle('hidden', !advisory);
         }
+      }
+
+      // Reasoning-effort selector: shown only for backends that declare
+      // effortLevels (capability-gated), with options rebuilt to exactly the
+      // tiers that backend honors (Claude low→max, Codex/Copilot low→xhigh,
+      // OpenRouter low→high, …). Hidden entirely for backends with no control.
+      var EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' };
+      function updateEffortSectionVisibility(provider) {
+        var section = document.getElementById('effort-section');
+        if (!section) return;
+        var levels, effortDefault;
+        if (provider === 'mysti') {
+          // The Mysti coordinator honors settings.effortLevel (clamped low→high),
+          // so expose the picker even though it's a pseudo-agent with no manifest.
+          levels = ['low', 'medium', 'high'];
+          effortDefault = 'medium';
+        } else {
+          var entry = getManifestEntry(provider);
+          var caps = entry && entry.capabilities;
+          levels = caps && caps.effortLevels;
+          effortDefault = caps && caps.effortDefault;
+        }
+        if (!levels || !levels.length) {
+          section.classList.add('hidden');
+          syncInlineSelectors();
+          return;
+        }
+        section.classList.remove('hidden');
+        if (effortSelect) {
+          var current = state.settings.effortLevel || effortDefault || 'high';
+          effortSelect.innerHTML = levels.map(function(lv) {
+            return '<option value="' + lv + '">' + (EFFORT_LABELS[lv] || lv) + '</option>';
+          }).join('');
+          // Keep the current selection if the backend supports it, else fall
+          // back to the backend's default (or the closest supported tier).
+          effortSelect.value = levels.indexOf(current) >= 0 ? current : (effortDefault || levels[levels.length - 1]);
+        }
+        syncInlineSelectors();
       }
 
       // Function to show/hide strategy indicator chip based on provider
@@ -3540,11 +3836,14 @@
 
             if (providerSelect) providerSelect.value = agent;
 
-            if (agent !== 'brainstorm') {
+            // brainstorm + mysti are Mysti-branded pseudo-agents with no model list.
+            if (agent !== 'brainstorm' && agent !== 'mysti') {
               updateModelsForProvider(agent);
             }
 
             updateThinkingSectionVisibility(agent);
+
+            updateEffortSectionVisibility(agent);
             updateStrategyIndicatorVisibility(agent);
             updateAgentMenuSelection();
             agentMenu.classList.add('hidden');
@@ -3586,6 +3885,7 @@
 
         // W4: render this provider's declarative settings sections
         renderProviderSettingsSections(providerId);
+        syncInlineSelectors();
       }
 
       function updateAgentMenuSelection() {
@@ -3608,22 +3908,24 @@
           }
         });
         // Update agent button label and icon (W6: identity from the manifest;
-        // 'brainstorm' is a pseudo-agent with Mysti branding)
+        // 'brainstorm' and 'mysti' are pseudo-agents with Mysti branding)
         var agentNameEl = document.getElementById('agent-name');
         var agentIconEl = document.getElementById('agent-icon');
         var isBrainstorm = state.activeAgent === 'brainstorm';
+        var isMysti = state.activeAgent === 'mysti';
+        var isPseudoAgent = isBrainstorm || isMysti;
         if (agentNameEl) {
-          agentNameEl.textContent = isBrainstorm ? 'Brainstorm' : getAgentDisplay(state.activeAgent).name;
+          agentNameEl.textContent = isBrainstorm ? 'Brainstorm' : isMysti ? 'Mysti' : getAgentDisplay(state.activeAgent).name;
         }
         if (agentIconEl) {
           var img = agentIconEl.querySelector('img');
           if (img) {
-            var logo = isBrainstorm ? MYSTI_LOGO : getAgentLogo(state.activeAgent);
+            var logo = isPseudoAgent ? MYSTI_LOGO : getAgentLogo(state.activeAgent);
             img.src = logo || MYSTI_LOGO;
           }
         }
-        // Sync settings provider dropdown (only for actual providers, not brainstorm)
-        if (providerSelect && state.activeAgent !== 'brainstorm' && providerSelect.value !== state.activeAgent) {
+        // Sync settings provider dropdown (only for actual providers, not pseudo-agents)
+        if (providerSelect && !isPseudoAgent && providerSelect.value !== state.activeAgent) {
           providerSelect.value = state.activeAgent;
         }
       }
@@ -3771,9 +4073,10 @@
           }
         });
 
-        // Auto-select first available provider if current is unavailable
+        // Auto-select first available provider if current is unavailable.
+        // Pseudo-agents (brainstorm, mysti) are never in the availability map.
         var currentProvider = state.settings.provider;
-        if (currentProvider && currentProvider !== 'brainstorm') {
+        if (currentProvider && currentProvider !== 'brainstorm' && currentProvider !== 'mysti') {
           if (availability[currentProvider] && !availability[currentProvider].available) {
             if (firstAvailable) {
               console.log('[Mysti Webview] Current provider unavailable, switching to:', firstAvailable);
@@ -3900,6 +4203,15 @@
           case 'responseChunk':
             handleResponseChunk(message.payload);
             break;
+          case 'mystiDelegateTrace':
+            handleMystiDelegateTrace(message.payload);
+            break;
+          case 'systemNotice':
+            // Small inline system note (e.g. workspace-settings clamp warning)
+            if (message.payload && message.payload.message) {
+              addSystemMessage(message.payload.message);
+            }
+            break;
           case 'responseComplete':
             // Perf: post the per-response chunk-cost summary + heap sample
             // ("done" report). No-op (single boolean check) when disabled.
@@ -3918,7 +4230,22 @@
                 getMessageAttribution(completedMessage),
                 []
               );
+              // review[15]: resolve any leftover Mysti sub-agent trace spinners
+              // (e.g. an orphaned card from a collab_retry that restarted the
+              // child with fresh tool ids) so a completed run never leaves an
+              // eternal spinner — the main path's auto-resolve only covers
+              // .tool-call, not .subagent-tool-call.
+              finalizedEl.querySelectorAll('.subagent-tool-call.running').forEach(function(card) {
+                card.classList.remove('running');
+                card.classList.add('completed');
+                var sp = card.querySelector('.subagent-tool-spinner');
+                if (sp) { sp.outerHTML = '<span class="subagent-tool-icon completed">&#10003;</span>'; }
+              });
             }
+            // review[34]: the default agentic run ends with responseComplete (not
+            // handleMystiComplete), which never cleared the per-delegation thinking
+            // buffers — over a long session they grew unbounded. Reclaim them here.
+            mystiNodeThinkingText = {};
             // Update context usage from response
             // Total context = input_tokens + cache_read_input_tokens (cached context being used)
             if (responsePayload.usage) {
@@ -3944,6 +4271,19 @@
             break;
           case 'requestCancelled':
             hideLoading();
+            // Resolve any still-running tool cards in the active streaming
+            // message so Stop never leaves an eternal spinner (review [5]).
+            var streamingForCancel = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
+            if (streamingForCancel) {
+              streamingForCancel.querySelectorAll('.tool-call.running, .tool-call.pending, .subagent-tool-call.running').forEach(function(card) {
+                card.classList.remove('running', 'pending');
+                card.classList.add('failed');
+                var st = card.querySelector('.tool-call-status');
+                if (st) { st.className = 'tool-call-status failed'; st.textContent = 'stopped'; }
+                var sp = card.querySelector('.subagent-tool-spinner');
+                if (sp) { sp.outerHTML = '<span class="subagent-tool-icon failed">&#10005;</span>'; }
+              });
+            }
             // Hide suggestion skeleton if showing
             var quickActionsContainer = document.getElementById('quick-actions');
             if (quickActionsContainer) {
@@ -4021,6 +4361,7 @@
               if (state.settings && state.settings.provider) {
                 renderProviderSettingsSections(state.settings.provider);
                 updateThinkingSectionVisibility(state.settings.provider);
+                updateEffortSectionVisibility(state.settings.provider);
               }
               updateAgentMenuSelection();
               updateThemeAwareLogos();
@@ -4138,15 +4479,24 @@
             handlePermissionExpired(message.payload);
             break;
           case 'permissionDismissed':
-            // Remove all pending permission cards (new message superseded the old request)
-            document.querySelectorAll('.permission-card.pending').forEach(function(card) {
-              card.classList.remove('pending');
-              card.classList.add('expired');
-              var actionsEl = card.querySelector('.permission-actions');
-              if (actionsEl) {
-                actionsEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">Cancelled — new message sent</span>';
-              }
-            });
+            // Dismiss pending permission cards. Scoped when payload.requestIds is
+            // present (only those cards — so Stopping one background job never
+            // cancels another job's / the foreground turn's gate); otherwise all.
+            (function() {
+              var ids = message.payload && message.payload.requestIds;
+              var cards = (ids && ids.length)
+                ? ids.map(function(id) { return document.querySelector('.permission-card[data-id="' + String(id).replace(/"/g, '\\"') + '"]'); }).filter(Boolean)
+                : Array.prototype.slice.call(document.querySelectorAll('.permission-card.pending'));
+              cards.forEach(function(card) {
+                if (!card || !card.classList.contains('pending')) return;
+                card.classList.remove('pending');
+                card.classList.add('expired');
+                var actionsEl = card.querySelector('.permission-actions');
+                if (actionsEl) {
+                  actionsEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">Cancelled</span>';
+                }
+              });
+            })();
             break;
           case 'semiAutonomousDecision':
             handleSemiAutonomousDecision(message.payload);
@@ -4207,6 +4557,40 @@
             break;
           case 'agentRecommendations':
             renderRecommendations(message.payload);
+            break;
+          case 'agentsUpdated':
+            // Catalog changed (created/imported/reloaded agents) — refresh lists
+            if (message.payload) {
+              state.availablePersonas = message.payload.availablePersonas || [];
+              state.availableSkills = message.payload.availableSkills || [];
+              state.availableRoles = message.payload.availableRoles || [];
+              // If the role picker is open (self-heal re-fetch just arrived),
+              // re-render it now that roles are available.
+              if (state.mentionMenuVisible && state.mentionMode === 'role') {
+                showRoleMenu(state.mentionRoleAgent || '', state.mentionQuery || '');
+              }
+              // Drop selections that no longer exist — and persist the
+              // prune so reloading the window doesn't resurrect ghosts
+              var configPruned = false;
+              if (state.agentConfig) {
+                var personaStillExists = state.availablePersonas.some(function(p) { return p.id === state.agentConfig.personaId; });
+                if (state.agentConfig.personaId && !personaStillExists) {
+                  state.agentConfig.personaId = null;
+                  configPruned = true;
+                }
+                var keptSkills = (state.agentConfig.enabledSkills || []).filter(function(id) {
+                  return state.availableSkills.some(function(s) { return s.id === id; });
+                });
+                if (keptSkills.length !== (state.agentConfig.enabledSkills || []).length) {
+                  configPruned = true;
+                }
+                state.agentConfig.enabledSkills = keptSkills;
+              }
+              renderAgentConfigPanel();
+              if (configPruned) {
+                saveAgentConfig();
+              }
+            }
             break;
           case 'conversationHistory':
             renderHistoryMenu(message.payload.conversations, message.payload.currentId);
@@ -4324,6 +4708,47 @@
           case 'brainstormAgentError':
             handleBrainstormAgentErrorEvent(message.payload);
             break;
+          // Mysti orchestrator (@mysti / "Mysti" pseudo-agent) progress cards
+          case 'mystiStarted':
+            handleMystiStarted(message.payload);
+            break;
+          case 'mystiEvent':
+            handleMystiEvent(message.payload);
+            break;
+          case 'mystiComplete':
+            handleMystiComplete(message.payload);
+            break;
+          case 'mystiError':
+            handleMystiError(message.payload);
+            break;
+          // Background Mysti jobs (Phase D)
+          case 'jobStarted':
+            handleJobStarted(message.payload);
+            break;
+          case 'jobProgress':
+            handleJobProgress(message.payload);
+            break;
+          case 'jobToolUse':
+            handleJobToolUse(message.payload);
+            break;
+          case 'jobToolResult':
+            handleJobToolResult(message.payload);
+            break;
+          case 'jobComplete':
+            handleJobComplete(message.payload);
+            break;
+          case 'jobError':
+            handleJobError(message.payload);
+            break;
+          case 'jobCancelled':
+            handleJobCancelled(message.payload);
+            break;
+          case 'jobsList':
+            handleJobsList(message.payload);
+            break;
+          case 'mystiSignInRequired':
+            handleMystiSignInRequired(message.payload);
+            break;
           case 'agentChanged':
             state.activeAgent = message.payload.agent;
             state.settings.provider = message.payload.agent;
@@ -4335,6 +4760,7 @@
             // Update model dropdown when backend auto-switches model (e.g. provider change)
             state.settings.model = message.payload.model;
             if (modelSelect) modelSelect.value = message.payload.model;
+            syncInlineSelectors();
             break;
           case 'modeChanged':
             // Update mode when plan is executed
@@ -5438,9 +5864,15 @@
         });
       }
 
+      // The SOLE escapeHtml — attribute-safe (escapes " and ' too). A second,
+      // weaker textContent-based definition used to shadow this one for the whole
+      // scope (JS hoisting: last wins), silently disabling quote-escaping for every
+      // caller and leaving a reachable attribute-breakout XSS (e.g. a prompt-
+      // injected coordinator DAG node.id in data-node="…"). Coerces non-strings so
+      // it is a drop-in for the deleted textContent version.
       function escapeHtml(str) {
-        if (!str) return '';
-        return str.replace(/&/g, '&amp;')
+        if (str === null || str === undefined || str === '') return '';
+        return String(str).replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;')
           .replace(/"/g, '&quot;')
@@ -6187,6 +6619,684 @@
         scrollToBottom();
       }
 
+      // ======================================================================
+      // Mysti orchestrator progress cards (Plan 15)
+      // The @mysti / "Mysti" pseudo-agent decomposes a brief into a DAG of
+      // backend steps and streams OrchestratorEvents. We render a progress
+      // container (stepper + per-node cards); the final synthesis is emitted as
+      // a normal streaming assistant message that the follow-up responseComplete
+      // finalizes (id + footer) through the standard path.
+      // ======================================================================
+      var mystiNodeText = {}; // nodeId -> accumulated streamed text (active run)
+
+      function mystiContainerEl() {
+        return state.mystiSession
+          ? document.getElementById('mysti-container-' + state.mystiSession)
+          : null;
+      }
+
+      // Find a node card by its (coordinator-assigned, not-CSS-safe) id without
+      // relying on selector escaping — iterate and compare dataset.node.
+      function mystiNodeEl(nodeId) {
+        var container = mystiContainerEl();
+        if (!container) return null;
+        var cards = container.querySelectorAll('.mysti-node');
+        for (var i = 0; i < cards.length; i++) {
+          if (cards[i].dataset.node === nodeId) return cards[i];
+        }
+        return null;
+      }
+
+      function mystiBackendDisplay(backendId) {
+        if (!backendId || backendId === 'auto') {
+          return { name: 'auto', logo: MYSTI_LOGO, color: '#8b5cf6' };
+        }
+        var disp = getAgentDisplay(backendId);
+        return {
+          name: disp.name || backendId,
+          logo: disp.logo || MYSTI_LOGO,
+          color: disp.color || '#888'
+        };
+      }
+
+      function buildMystiStepper() {
+        var steps = [
+          { phase: 'decompose', label: 'Plan' },
+          { phase: 'execute', label: 'Execute' },
+          { phase: 'synthesize', label: 'Synthesize' },
+          { phase: 'complete', label: 'Complete' }
+        ];
+        var html = '<div class="brainstorm-progress-stepper" id="mysti-stepper">';
+        steps.forEach(function(step, i) {
+          var cls = i === 0 ? ' active' : '';
+          html += '<div class="brainstorm-step' + cls + '" data-phase="' + step.phase + '">' +
+            '<span class="brainstorm-step-number">' + (i + 1) + '</span>' +
+            '<span>' + step.label + '</span></div>';
+          if (i < steps.length - 1) {
+            html += '<div class="brainstorm-step-connector" data-after="' + step.phase + '"></div>';
+          }
+        });
+        html += '</div>';
+        return html;
+      }
+
+      function updateMystiStepper(currentPhase) {
+        var stepper = document.getElementById('mysti-stepper');
+        if (!stepper) return;
+        var allSteps = stepper.querySelectorAll('.brainstorm-step');
+        var allConns = stepper.querySelectorAll('.brainstorm-step-connector');
+        var phases = [];
+        allSteps.forEach(function(s) { phases.push(s.dataset.phase); });
+        var currentIdx = phases.indexOf(currentPhase);
+        if (currentIdx < 0) return;
+        allSteps.forEach(function(step, i) {
+          step.classList.remove('active', 'completed');
+          if (i < currentIdx) step.classList.add('completed');
+          else if (i === currentIdx) step.classList.add('active');
+        });
+        allConns.forEach(function(conn) {
+          var afterIdx = phases.indexOf(conn.dataset.after);
+          if (afterIdx < currentIdx) conn.classList.add('completed');
+          else conn.classList.remove('completed');
+        });
+      }
+
+      function buildMystiNode(node, index) {
+        var disp = mystiBackendDisplay(node.backend);
+        var deps = (node.dependsOn && node.dependsOn.length)
+          ? '<span class="mysti-node-dep">after ' + node.dependsOn.map(escapeHtml).join(', ') + '</span>'
+          : '';
+        return '<div class="brainstorm-agent-message mysti-node" data-node="' + escapeHtml(node.id) + '" style="--agent-color:' + disp.color + ';">' +
+          '<div class="brainstorm-agent-message-header"><div class="brainstorm-agent-role-container">' +
+            '<span class="brainstorm-agent-role">' +
+              '<img src="' + (disp.logo || MYSTI_LOGO) + '" alt="" class="brainstorm-agent-role-logo mysti-node-logo" />' +
+              '<span class="mysti-node-step" style="color:' + disp.color + ';">Step ' + (index + 1) + '</span>' +
+              '<span class="mysti-node-backend-name" style="color:' + disp.color + ';"> · ' + escapeHtml(disp.name) + '</span>' +
+            '</span>' + deps +
+            '<span class="mysti-node-status pending">pending</span>' +
+          '</div></div>' +
+          '<div class="brainstorm-agent-message-body">' +
+            '<div class="mysti-node-task">' + escapeHtml(node.task || '') + '</div>' +
+            // Activity zone (thinking + tool cards). Kept SEPARATE from the text
+            // output so the per-chunk innerHTML re-render of .mysti-node-output
+            // never wipes the appended tool cards.
+            '<div class="mysti-node-activity"></div>' +
+            '<div class="mysti-node-output"></div>' +
+          '</div></div>';
+      }
+
+      function mystiSetNodeStatus(nodeId, statusClass, label) {
+        var el = mystiNodeEl(nodeId);
+        if (!el) return;
+        var statusEl = el.querySelector('.mysti-node-status');
+        if (statusEl) {
+          statusEl.className = 'mysti-node-status ' + statusClass;
+          statusEl.textContent = label;
+        }
+      }
+
+      function handleMystiStarted(payload) {
+        payload = payload || {};
+        var sessionId = payload.sessionId || Date.now().toString();
+        state.mystiSession = sessionId;
+        mystiNodeText = {};
+        mystiNodeThinkingText = {};
+
+        setProcessing(true);
+
+        var container = document.createElement('div');
+        container.className = 'brainstorm-container mysti-container';
+        container.id = 'mysti-container-' + sessionId;
+        container.innerHTML =
+          '<div class="mysti-header">' +
+            '<img src="' + MYSTI_LOGO + '" alt="Mysti" class="mysti-header-logo" />' +
+            '<div class="mysti-header-text">' +
+              '<div class="mysti-header-title">Mysti</div>' +
+              '<div class="mysti-status">Planning the task…</div>' +
+            '</div>' +
+          '</div>' +
+          buildMystiStepper() +
+          '<div class="mysti-nodes" id="mysti-nodes-' + sessionId + '"></div>';
+        messagesEl.appendChild(container);
+        scrollToBottom();
+      }
+
+      function handleMystiEvent(evt) {
+        if (!evt || !evt.type) return;
+        switch (evt.type) {
+          case 'orch_status': {
+            var container = mystiContainerEl();
+            if (container) {
+              var statusEl = container.querySelector('.mysti-status');
+              if (statusEl && evt.content) statusEl.textContent = evt.content;
+            }
+            if (evt.phase) updateMystiStepper(evt.phase);
+            break;
+          }
+          case 'orch_plan': {
+            var nodesEl = state.mystiSession
+              ? document.getElementById('mysti-nodes-' + state.mystiSession)
+              : null;
+            var nodes = (evt.plan && evt.plan.nodes) || [];
+            if (nodesEl) {
+              nodesEl.innerHTML = nodes.map(function(n, i) { return buildMystiNode(n, i); }).join('');
+              scrollToBottom();
+            }
+            break;
+          }
+          case 'orch_node_start': {
+            mystiSetNodeStatus(evt.nodeId, 'running', 'running');
+            var el = mystiNodeEl(evt.nodeId);
+            if (el && evt.nodeBackend) {
+              var disp = mystiBackendDisplay(evt.nodeBackend);
+              var logoEl = el.querySelector('.mysti-node-logo');
+              if (logoEl) logoEl.src = disp.logo || MYSTI_LOGO;
+              var nameEl = el.querySelector('.mysti-node-backend-name');
+              if (nameEl) { nameEl.textContent = ' · ' + disp.name; nameEl.style.color = disp.color; }
+              var stepEl = el.querySelector('.mysti-node-step');
+              if (stepEl) stepEl.style.color = disp.color;
+              el.style.setProperty('--agent-color', disp.color);
+            }
+            scrollToBottom();
+            break;
+          }
+          case 'orch_collab': {
+            handleMystiCollab(evt);
+            break;
+          }
+          case 'orch_node_done': {
+            mystiSetNodeStatus(evt.nodeId, evt.hasError ? 'error' : 'done', evt.hasError ? 'failed' : 'done');
+            break;
+          }
+          case 'orch_synthesis': {
+            handleMystiSynthesis(evt);
+            break;
+          }
+          case 'orch_error': {
+            var c2 = mystiContainerEl();
+            if (c2) {
+              var errEl = document.createElement('div');
+              errEl.className = 'mysti-error-line';
+              errEl.textContent = evt.error || 'Orchestration error';
+              c2.appendChild(errEl);
+            }
+            break;
+          }
+          case 'orch_done': {
+            updateMystiStepper('complete');
+            break;
+          }
+          default:
+            break;
+        }
+      }
+
+      function handleMystiCollab(evt) {
+        var chunk = evt.collab || {};
+        var el = mystiNodeEl(evt.nodeId);
+        var out = el ? el.querySelector('.mysti-node-output') : null;
+        if (chunk.type === 'collab_text' && chunk.content) {
+          if (!out) return;
+          mystiNodeText[evt.nodeId] = (mystiNodeText[evt.nodeId] || '') + chunk.content;
+          out.innerHTML = formatContent(mystiNodeText[evt.nodeId]);
+          scrollToBottom();
+        } else if (chunk.type === 'collab_thinking' && chunk.content) {
+          // Surface the leaf backend's reasoning (parity with a normal turn's
+          // thinking zone) — accumulated into one collapsible block per node.
+          mystiNodeThinking(el, evt.nodeId, chunk.content);
+        } else if (chunk.type === 'collab_tool_use' && chunk.toolCall) {
+          // Show what the real backend actually did (file reads/writes, commands).
+          mystiNodeToolUse(el, chunk.toolCall);
+        } else if (chunk.type === 'collab_tool_result' && chunk.toolCall) {
+          mystiNodeToolResult(el, chunk.toolCall);
+        } else if (chunk.type === 'collab_retry') {
+          // A transport retry restarts the leaf's stream — reset accumulated
+          // partial text so a retry doesn't concatenate stale output.
+          mystiNodeText[evt.nodeId] = '';
+          if (out) { out.innerHTML = ''; }
+          mystiSetNodeStatus(evt.nodeId, 'running', 'retrying');
+        } else if (chunk.type === 'collab_complete') {
+          // Ensure final text is shown even if no incremental text streamed.
+          if (out && !mystiNodeText[evt.nodeId] && chunk.responseText) {
+            out.innerHTML = formatContent(chunk.responseText);
+          }
+        } else if (chunk.type === 'collab_skipped' || chunk.type === 'collab_error') {
+          mystiSetNodeStatus(evt.nodeId, 'error', chunk.type === 'collab_skipped' ? 'skipped' : 'failed');
+          if (out) {
+            var reason = chunk.failure || chunk.hint || 'unavailable';
+            out.innerHTML = '<div class="mysti-node-failure">' + escapeHtml(String(reason)) + '</div>';
+          }
+        } else if (chunk.type === 'collab_tool_denied') {
+          var actEl = el ? el.querySelector('.mysti-node-activity') : null;
+          if (actEl) {
+            var denied = document.createElement('div');
+            denied.className = 'mysti-node-failure';
+            // Prefer the specific denial reason the pool supplied.
+            denied.textContent = chunk.content ? String(chunk.content) : 'permission denied for a tool';
+            actEl.appendChild(denied);
+          }
+        }
+      }
+
+      // --- Per-node activity rendering (tool cards + thinking) ---------------
+      // These reuse the .subagent-tool-* CSS so a leaf's tool activity looks the
+      // same as a normal sub-agent's, but scoped to the node's activity zone.
+
+      function mystiNodeActivityEl(nodeEl) {
+        return nodeEl ? nodeEl.querySelector('.mysti-node-activity') : null;
+      }
+
+      function mystiToolSummary(input) {
+        if (!input) return '';
+        if (input.file_path || input.path) return String(input.file_path || input.path);
+        if (input.command) return String(input.command);
+        if (input.pattern) return String(input.pattern);
+        var keys = Object.keys(input);
+        if (keys.length > 0) {
+          var v = String(input[keys[0]]);
+          return v.length > 60 ? v.substring(0, 60) + '...' : v;
+        }
+        return '';
+      }
+
+      function mystiNodeToolUse(nodeEl, toolCall) {
+        var act = mystiNodeActivityEl(nodeEl);
+        if (!act || !toolCall) return;
+        var inputJson = '';
+        try { inputJson = JSON.stringify(toolCall.input || {}, null, 2); }
+        catch (e) { inputJson = String(toolCall.input || '{}'); }
+        // review[15]: UPSERT by id. Claude/Qwen sub-agents emit tool_use TWICE
+        // per tool with the same id (content_block_start with empty input, then
+        // content_block_stop with the parsed input). Without this, every tool
+        // rendered two cards and the second (real-input) card spun forever
+        // because tool_result only resolves the first. Update in place instead —
+        // same fix handleToolUse already does for the main path.
+        var idSel = (window.CSS && CSS.escape ? CSS.escape(String(toolCall.id)) : String(toolCall.id));
+        var existing = act.querySelector('.subagent-tool-call[data-id="' + idSel + '"]');
+        if (existing) {
+          var exName = existing.querySelector('.subagent-tool-name');
+          if (exName) { exName.textContent = toolCall.name || 'tool'; }
+          var exSummary = existing.querySelector('.subagent-tool-summary');
+          if (exSummary) { exSummary.textContent = mystiToolSummary(toolCall.input); }
+          var exCode = existing.querySelector('.subagent-tool-detail-code code');
+          if (exCode) { exCode.textContent = inputJson; }
+          return;
+        }
+        var toolDiv = document.createElement('div');
+        toolDiv.className = 'subagent-tool-call running';
+        toolDiv.dataset.id = toolCall.id;
+        toolDiv.innerHTML =
+          '<div class="subagent-tool-header">' +
+            '<span class="subagent-tool-spinner"></span>' +
+            '<span class="subagent-tool-name">' + escapeHtml(toolCall.name || 'tool') + '</span>' +
+            '<span class="subagent-tool-summary">' + escapeHtml(mystiToolSummary(toolCall.input)) + '</span>' +
+            '<span class="subagent-tool-toggle">&#9656;</span>' +
+          '</div>' +
+          '<div class="subagent-tool-detail">' +
+            '<div class="subagent-tool-detail-section">' +
+              '<span class="subagent-tool-detail-label">Input</span>' +
+              '<pre class="subagent-tool-detail-code"><code class="language-json">' + escapeHtml(inputJson) + '</code></pre>' +
+            '</div>' +
+            '<div class="subagent-tool-detail-section subagent-tool-output" style="display:none;">' +
+              '<span class="subagent-tool-detail-label">Output</span>' +
+              '<pre class="subagent-tool-detail-code"><code class="subagent-tool-output-code"></code></pre>' +
+            '</div>' +
+          '</div>';
+        var header = toolDiv.querySelector('.subagent-tool-header');
+        if (header) {
+          header.addEventListener('click', function() {
+            toolDiv.classList.toggle('detail-open');
+            var toggle = toolDiv.querySelector('.subagent-tool-toggle');
+            if (toggle) { toggle.innerHTML = toolDiv.classList.contains('detail-open') ? '&#9662;' : '&#9656;'; }
+            if (toolDiv.classList.contains('detail-open') && typeof Prism !== 'undefined') {
+              Prism.highlightAllUnder(toolDiv);
+            }
+          });
+        }
+        act.appendChild(toolDiv);
+        scrollToBottom();
+      }
+
+      function mystiNodeToolResult(nodeEl, toolCall) {
+        var act = mystiNodeActivityEl(nodeEl);
+        if (!act || !toolCall) return;
+        // CSS.escape the id (review [21]): a sub-agent-supplied id with a quote/
+        // backslash would make querySelector throw and freeze the trace card.
+        var toolDiv = act.querySelector('.subagent-tool-call[data-id="' + (window.CSS && CSS.escape ? CSS.escape(String(toolCall.id)) : String(toolCall.id)) + '"]');
+        if (!toolDiv) return;
+        toolDiv.classList.remove('running');
+        var resultStatus = (toolCall.status === 'failed') ? 'failed' : 'completed';
+        toolDiv.classList.add(resultStatus);
+        var spinner = toolDiv.querySelector('.subagent-tool-spinner');
+        if (spinner) {
+          spinner.outerHTML = resultStatus === 'failed'
+            ? '<span class="subagent-tool-icon failed">&#10005;</span>'
+            : '<span class="subagent-tool-icon completed">&#10003;</span>';
+        }
+        var outputSection = toolDiv.querySelector('.subagent-tool-output');
+        var outputCode = toolDiv.querySelector('.subagent-tool-output-code');
+        if (outputSection && outputCode && toolCall.output) {
+          var outputText = typeof toolCall.output === 'string'
+            ? toolCall.output
+            : JSON.stringify(toolCall.output, null, 2);
+          if (outputText.length > 2000) { outputText = outputText.substring(0, 2000) + '\n... (truncated)'; }
+          outputCode.textContent = outputText;
+          outputSection.style.display = '';
+          if (toolDiv.classList.contains('detail-open') && typeof Prism !== 'undefined') {
+            Prism.highlightAllUnder(toolDiv);
+          }
+        }
+      }
+
+      var mystiNodeThinkingText = {}; // nodeId -> accumulated thinking text
+
+      function mystiNodeThinking(nodeEl, nodeId, text) {
+        var act = mystiNodeActivityEl(nodeEl);
+        if (!act) return;
+        mystiNodeThinkingText[nodeId] = (mystiNodeThinkingText[nodeId] || '') + text;
+        var block = act.querySelector('.mysti-node-thinking');
+        if (!block) {
+          block = document.createElement('details');
+          block.className = 'mysti-node-thinking';
+          block.innerHTML = '<summary>Thinking</summary><pre class="mysti-node-thinking-body"></pre>';
+          act.appendChild(block);
+        }
+        var body = block.querySelector('.mysti-node-thinking-body');
+        if (body) { body.textContent = mystiNodeThinkingText[nodeId]; }
+        scrollToBottom();
+      }
+
+      // ==================================================================
+      // Plan 17 P0.3 — live nested trace under an inline delegate card.
+      // The extension forwards the sub-agent's inner tool_use / tool_result /
+      // thinking / retry events; we render them with the same subagent-tool
+      // components the orchestrate path uses, inside the delegate tool card,
+      // so a delegation is a live activity feed instead of a blank spinner.
+      // ==================================================================
+      function handleMystiDelegateTrace(payload) {
+        if (!payload || !payload.parentId || !payload.chunk) return;
+        var pid = (window.CSS && CSS.escape) ? CSS.escape(String(payload.parentId)) : String(payload.parentId);
+        var card = messagesEl.querySelector('.tool-call[data-id="' + pid + '"]');
+        if (!card) return;
+        var act = card.querySelector('.mysti-node-activity');
+        if (!act) {
+          act = document.createElement('div');
+          act.className = 'mysti-node-activity mysti-delegate-activity';
+          card.appendChild(act);
+        }
+        var chunk = payload.chunk;
+        if (chunk.type === 'tool_use' && chunk.toolCall) {
+          mystiNodeToolUse(card, chunk.toolCall);
+        } else if (chunk.type === 'tool_result' && chunk.toolCall) {
+          mystiNodeToolResult(card, chunk.toolCall);
+        } else if (chunk.type === 'thinking' && chunk.content) {
+          mystiNodeThinking(card, 'deleg-' + payload.parentId, chunk.content);
+        } else if (chunk.type === 'retry') {
+          var note = document.createElement('div');
+          note.className = 'mysti-delegate-retry-note';
+          note.textContent = '↻ ' + (chunk.content || 'retrying');
+          act.appendChild(note);
+          scrollToBottom();
+        }
+      }
+
+      // Render the orchestrated synthesis as a normal streaming assistant
+      // message. The send-flow posts responseComplete right after the run
+      // returns, and finalizeStreamingMessage picks up this bubble (it is not
+      // tagged data-brainstorm-synthesis) to attach the persisted id + footer.
+      function handleMystiSynthesis(evt) {
+        var content = evt.content || '';
+        var el = messagesEl.querySelector('.message.assistant.streaming[data-mysti-synthesis]');
+        if (!el) {
+          el = document.createElement('div');
+          el.className = 'message assistant streaming';
+          el.setAttribute('data-mysti-synthesis', 'pending');
+          el.innerHTML =
+            '<div class="message-header"><div class="message-role-container">' +
+            '<span class="message-role assistant">Mysti</span>' +
+            '<span class="message-model-info">Orchestrated</span>' +
+            '</div></div>' +
+            '<div class="message-body"><div class="message-content"></div></div>';
+          messagesEl.appendChild(el);
+        }
+        var contentEl = el.querySelector('.message-content');
+        if (contentEl) contentEl.innerHTML = formatContent(content);
+        scrollToBottom();
+      }
+
+      function handleMystiComplete(payload) {
+        payload = payload || {};
+        setProcessing(false);
+        var container = mystiContainerEl();
+        if (payload.cancelled) {
+          // A stopped run must not read as successfully complete — leave the
+          // stepper where it was and mark the container cancelled.
+          if (container) {
+            container.classList.add('mysti-done', 'mysti-cancelled');
+            var statusEl = container.querySelector('.mysti-status');
+            if (statusEl) statusEl.textContent = 'Cancelled';
+          }
+        } else {
+          updateMystiStepper('complete');
+          if (container) container.classList.add('mysti-done');
+        }
+        state.mystiSession = null;
+        mystiNodeText = {};
+        mystiNodeThinkingText = {};
+      }
+
+      function handleMystiError(payload) {
+        payload = payload || {};
+        setProcessing(false);
+        var container = mystiContainerEl();
+        if (container) {
+          container.classList.add('mysti-done');
+          var errEl = document.createElement('div');
+          errEl.className = 'mysti-error-line';
+          errEl.textContent = payload.message || 'Mysti orchestration failed';
+          container.appendChild(errEl);
+        } else {
+          showError(payload.message || 'Mysti orchestration failed');
+        }
+        state.mystiSession = null;
+        mystiNodeText = {};
+        mystiNodeThinkingText = {};
+      }
+
+      // ======================================================================
+      // Background Mysti jobs (Phase D): detached runs that report when done.
+      // A job renders a self-contained card that streams progress + inline
+      // delegation lines, while the chat input stays free for other work.
+      // ======================================================================
+      var jobOutputText = {}; // jobId -> accumulated answer text
+
+      function jobCardEl(jobId) {
+        return document.getElementById('mysti-job-' + jobId);
+      }
+
+      function handleJobStarted(payload) {
+        payload = payload || {};
+        var jobId = payload.jobId;
+        if (!jobId) return;
+        // The turn becomes a background job — free the input AND remove the
+        // bottom "thinking" spinner that responseStarted appended.
+        hideLoading();
+        jobOutputText[jobId] = '';
+        var card = document.createElement('div');
+        card.className = 'mysti-job';
+        card.id = 'mysti-job-' + jobId;
+        card.setAttribute('data-job', jobId);
+        card.innerHTML =
+          '<div class="mysti-job-header">' +
+            '<span class="mysti-job-spinner"></span>' +
+            '<span class="mysti-job-title"></span>' +
+            '<span class="mysti-job-status running">running in background</span>' +
+            '<button class="mysti-job-stop" type="button">Stop</button>' +
+          '</div>' +
+          '<div class="mysti-job-activity"></div>' +
+          '<div class="mysti-job-output"></div>';
+        card.querySelector('.mysti-job-title').textContent = payload.title || 'Background task';
+        var stopBtn = card.querySelector('.mysti-job-stop');
+        if (stopBtn) {
+          stopBtn.addEventListener('click', function() {
+            postMessageWithPanelId({ type: 'cancelJob', payload: { jobId: jobId } });
+          });
+        }
+        messagesEl.appendChild(card);
+        scrollToBottom();
+      }
+
+      function handleJobProgress(payload) {
+        payload = payload || {};
+        var card = jobCardEl(payload.jobId);
+        if (!card) return;
+        if (payload.kind === 'thinking') {
+          var think = card.querySelector('.mysti-job-thinking');
+          if (!think) {
+            think = document.createElement('details');
+            think.className = 'mysti-job-thinking';
+            think.innerHTML = '<summary>Thinking</summary><pre class="mysti-job-thinking-body"></pre>';
+            card.querySelector('.mysti-job-activity').appendChild(think);
+          }
+          var tbody = think.querySelector('.mysti-job-thinking-body');
+          if (tbody) tbody.textContent += payload.content || '';
+          return;
+        }
+        jobOutputText[payload.jobId] = (jobOutputText[payload.jobId] || '') + (payload.content || '');
+        var out = card.querySelector('.mysti-job-output');
+        if (out) out.innerHTML = formatContent(jobOutputText[payload.jobId]);
+        scrollToBottom();
+      }
+
+      function jobToolLine(card, toolCall) {
+        var act = card.querySelector('.mysti-job-activity');
+        if (!act || !toolCall) return null;
+        var line = act.querySelector('.mysti-job-tool[data-id="' + cssAttr(toolCall.id) + '"]');
+        if (!line) {
+          line = document.createElement('div');
+          line.className = 'mysti-job-tool running';
+          line.setAttribute('data-id', toolCall.id);
+          act.appendChild(line);
+        }
+        return line;
+      }
+      // Minimal attribute-value escaper for the selector lookup above.
+      function cssAttr(v) { return String(v).replace(/"/g, '\\"'); }
+
+      function handleJobToolUse(payload) {
+        payload = payload || {};
+        var card = jobCardEl(payload.jobId);
+        var tc = payload.toolCall;
+        if (!card || !tc) return;
+        var line = jobToolLine(card, tc);
+        if (!line) return;
+        // review[35]: label by the tool NAME, not always "delegate → agent" — a
+        // background run also uses read/ls/grep/diag/remember/review, whose inputs
+        // have no .agent/.task, so the old code showed identical blank
+        // "delegate → agent" lines that hid what actually ran.
+        var input = tc.input || {};
+        var name = tc.name || 'delegate';
+        var label, task;
+        if (name === 'delegate') { label = 'delegate → ' + String(input.agent || 'agent'); task = String(input.task || ''); }
+        else if (name === 'review') { label = 'review → ' + String(input.reviewer || '?') + ' reviews ' + String(input.of || '?'); task = ''; }
+        else if (name === 'remember') { label = 'remember'; task = String(input.fact || ''); }
+        else if (name === 'read' || name === 'ls' || name === 'grep' || name === 'diag') {
+          label = name; task = String(input.path || input.pattern || input.target || '');
+        } else { label = name; task = String(input.task || input.path || ''); }
+        line.innerHTML = '<span class="mysti-job-tool-spinner"></span>' +
+          '<span class="mysti-job-tool-label">' + escapeHtml(label) + '</span>' +
+          '<span class="mysti-job-tool-task">' + escapeHtml(task.slice(0, 80)) + '</span>';
+        scrollToBottom();
+      }
+
+      function handleJobToolResult(payload) {
+        payload = payload || {};
+        var card = jobCardEl(payload.jobId);
+        var tc = payload.toolCall;
+        if (!card || !tc) return;
+        var line = jobToolLine(card, tc);
+        if (!line) return;
+        line.classList.remove('running');
+        line.classList.add(tc.status === 'failed' ? 'failed' : 'done');
+        var spinner = line.querySelector('.mysti-job-tool-spinner');
+        if (spinner) spinner.outerHTML = '<span class="mysti-job-tool-icon">' + (tc.status === 'failed' ? '✗' : '✓') + '</span>';
+      }
+
+      function jobFinish(jobId, statusText, statusClass) {
+        var card = jobCardEl(jobId);
+        if (!card) return card;
+        card.classList.add('mysti-job-done');
+        var spinner = card.querySelector('.mysti-job-spinner');
+        if (spinner) spinner.remove();
+        var stop = card.querySelector('.mysti-job-stop');
+        if (stop) stop.remove();
+        var status = card.querySelector('.mysti-job-status');
+        if (status) { status.className = 'mysti-job-status ' + statusClass; status.textContent = statusText; }
+        return card;
+      }
+
+      function handleJobComplete(payload) {
+        payload = payload || {};
+        var msg = payload.message;
+        var n = payload.delegations || 0;
+        var card = jobFinish(payload.jobId, 'done' + (n ? ' · ' + n + ' delegation' + (n > 1 ? 's' : '') : ''), 'done');
+        // Ensure the final answer is shown (in case no incremental text streamed).
+        if (card && msg && msg.content && !(jobOutputText[payload.jobId] || '').trim()) {
+          var out = card.querySelector('.mysti-job-output');
+          if (out) out.innerHTML = formatContent(msg.content);
+        }
+        if (card && msg && msg.id) card.dataset.messageId = msg.id;
+        delete jobOutputText[payload.jobId];
+      }
+
+      function handleJobError(payload) {
+        payload = payload || {};
+        var card = jobFinish(payload.jobId, 'failed', 'failed');
+        if (card) {
+          var err = document.createElement('div');
+          err.className = 'mysti-job-error';
+          err.textContent = payload.error || 'Background job failed';
+          card.appendChild(err);
+        }
+        delete jobOutputText[payload.jobId];
+      }
+
+      function handleJobCancelled(payload) {
+        payload = payload || {};
+        jobFinish(payload.jobId, 'cancelled', 'cancelled');
+        delete jobOutputText[payload.jobId];
+      }
+
+      function handleJobsList(payload) {
+        payload = payload || {};
+        var jobs = payload.jobs || [];
+        if (!jobs.length) { addSystemMessage('No background jobs.'); return; }
+        var lines = jobs.map(function(j) {
+          return '• [' + j.status + '] ' + j.title + (j.delegations ? ' (' + j.delegations + ' delegations)' : '');
+        }).join('\n');
+        addSystemMessage('Background jobs:\n' + lines);
+      }
+
+      // Mysti runs on the user's DeepMyst account — prompt sign-in when needed.
+      function handleMystiSignInRequired(payload) {
+        payload = payload || {};
+        hideLoading();
+        var div = document.createElement('div');
+        div.className = 'message assistant mysti-signin-card';
+        div.innerHTML =
+          '<div class="message-body"><div class="message-content">' +
+            escapeHtml(payload.message || 'Sign in to DeepMyst to use the Mysti agent.') +
+          '</div><button class="mysti-signin-btn" type="button">Sign in to DeepMyst</button></div>';
+        var btn = div.querySelector('.mysti-signin-btn');
+        if (btn) {
+          btn.addEventListener('click', function() {
+            postMessageWithPanelId({ type: 'signInDeepMyst' });
+          });
+        }
+        messagesEl.appendChild(div);
+        scrollToBottom();
+      }
+
       function makeCollapsible(sectionId, label) {
         var section = document.getElementById(sectionId);
         if (!section || section.previousElementSibling && section.previousElementSibling.classList.contains('brainstorm-section-toggle')) return;
@@ -6732,6 +7842,7 @@
           state.activeAgent = state.settings.provider;
           // W1: thinking selector visibility is capability-driven
           updateThinkingSectionVisibility(state.settings.provider);
+          updateEffortSectionVisibility(state.settings.provider);
           // Show strategy chip if brainstorm is active
           updateStrategyIndicatorVisibility(state.settings.provider);
         }
@@ -6758,6 +7869,10 @@
         // W4: render the selected provider's declarative settings sections
         // (values restored from state.providerSettings by settingKey)
         renderProviderSettingsSections(state.settings.provider);
+
+        // Mirror model + effort into the prompt-box quick pickers now that both
+        // the model list and the effort selector have been populated.
+        syncInlineSelectors();
 
         // Update agent menu to match settings
         updateAgentMenuSelection();
@@ -7162,10 +8277,13 @@
           var parts = content.slice(1).split(' ');
           var command = parts[0];
           var args = parts.slice(1).join(' ');
-          // Send with both old and new format for backward compatibility
+          // Send settings + context too: an UNKNOWN command (not a Mysti command)
+          // is forwarded to the backend as a normal message so Claude Code's
+          // native /deep-research, /skill-name, and saved workflows run — the
+          // passthrough needs the same send context a normal message carries.
           postMessageWithPanelId({
             type: 'executeSlashCommand',
-            payload: { command: command, args: args }
+            payload: { command: command, args: args, settings: state.settings, context: state.context }
           });
           inputEl.value = '';
           inputEl.style.height = 'auto';
@@ -7306,6 +8424,15 @@
         });
 
         if (msg.segments && msg.segments.length > 0) {
+          // review[16]: the Mysti coordinator persists its reasoning as msg.thinking
+          // but its segments only ever contain 'text'/'tool' (never 'thinking'), so
+          // a reload dropped the live Thinking zone entirely. If there is thinking
+          // to show but no thinking segment carries it, render it up front (its
+          // live position, before the first text) so replay matches the stream.
+          var hasThinkingSegment = msg.segments.some(function(s) { return s && s.type === 'thinking'; });
+          if (thinkingInfo && !hasThinkingSegment) {
+            renderThinkingZone(body, thinkingStyle, thinkingInfo.content);
+          }
           var segmentIndex = 0;
           msg.segments.forEach(function(segment) {
             if (!segment) return;
@@ -7621,6 +8748,29 @@
         // 2) Raw-name fallback (legacy tool calls without kind, and kinds
         //    whose inputs had no recognizable fields).
         switch (name) {
+          case 'delegate': {
+            // Mysti coordinator delegation card: "agent: task…" (P0.3 — was blank)
+            var dTask = String(input.task || '');
+            var dAgent = String(input.agent || '');
+            if (dTask.length > 60) dTask = dTask.substring(0, 60) + '...';
+            return dAgent && dTask ? dAgent + ': ' + dTask : (dAgent || dTask);
+          }
+          case 'review': {
+            // Cross-vendor review card (P2.1): "reviewer reviews writer"
+            var rBy = String(input.reviewer || '');
+            var rOf = String(input.of || '');
+            return rBy && rOf ? rBy + ' reviews ' + rOf : (rBy || rOf);
+          }
+          case 'remember': {
+            // Cross-backend memory card (P2.5)
+            var fact = String(input.fact || '');
+            return fact.length > 70 ? fact.substring(0, 70) + '...' : fact;
+          }
+          case 'diag':
+            // Mysti local diagnostics tool
+            return String(input.target || 'all');
+          case 'ls':
+            return makeRelativePath(input.path || '.');
           case 'bash':
             // Show description if available (often contains what the command does)
             // Otherwise show command with paths cleaned up
@@ -9310,8 +10460,19 @@
 
         var parts = [];
         if (usage && (usage.input_tokens || usage.output_tokens)) {
-          parts.push('<span class="message-footer-item message-footer-tokens" title="Tokens in / out">' +
-            (usage.input_tokens || 0) + ' in \u00b7 ' + (usage.output_tokens || 0) + ' out</span>');
+          // '~' when some per-directive turns were estimated (review [10]).
+          var approx = usage.tokensPartial ? '~' : '';
+          parts.push('<span class="message-footer-item message-footer-tokens" title="Tokens in / out' + (usage.tokensPartial ? ' (delegation turns estimated)' : '') + '">' +
+            approx + (usage.input_tokens || 0) + ' in \u00b7 ' + approx + (usage.output_tokens || 0) + ' out</span>');
+        }
+        // P0.8: coordinator cost (estimated \u2014 streaming cost is not exact) + delegation count
+        if (usage && typeof usage.costUsd === 'number' && usage.costUsd > 0) {
+          var costStr = usage.costUsd < 0.01 ? '$' + usage.costUsd.toFixed(4) : '$' + usage.costUsd.toFixed(2);
+          parts.push('<span class="message-footer-item message-footer-cost" title="Estimated coordinator cost (billed via your DeepMyst account)">~' + costStr + '</span>');
+        }
+        if (usage && typeof usage.delegations === 'number' && usage.delegations > 0) {
+          parts.push('<span class="message-footer-pill" title="Sub-agent delegations in this turn">' +
+            usage.delegations + ' delegation' + (usage.delegations !== 1 ? 's' : '') + '</span>');
         }
         if (sessionInfo && sessionInfo.sessionId) {
           var shortSession = String(sessionInfo.sessionId).substring(0, 8);
@@ -9990,11 +11151,9 @@
         return modelId.replace(/-/g, ' ').replace(/\d{8}$/, '').trim();
       }
 
-      function escapeHtml(text) {
-        var div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-      }
+      // (Removed the weaker duplicate escapeHtml that only escaped &<> — the
+      // attribute-safe definition earlier in this scope is now the sole one,
+      // closing the data-node="…" attribute-breakout XSS. self-review fix.)
 
       // ========================================
       // Edit Report Card Functions

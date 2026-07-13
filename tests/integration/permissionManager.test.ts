@@ -228,4 +228,28 @@ describe('PermissionManager', () => {
       expect(pm.getPendingCount()).toBe(0);
     });
   });
+
+  describe('cancelRequestsByOwner (scoped cancellation — background jobs)', () => {
+    it('cancels only the requests owned by the given key, leaving siblings pending', async () => {
+      const pA = pm.requestPermission('file-edit', 'A', 'd', {}, postToWebview, 'tcA', 'ownerA');
+      const pB = pm.requestPermission('file-edit', 'B', 'd', {}, postToWebview, 'tcB', 'ownerB');
+      expect(pm.getPendingCount()).toBe(2);
+
+      const ids = pm.cancelRequestsByOwner('ownerA');
+      expect(ids).toHaveLength(1);
+      await expect(pA).resolves.toBe(false); // A denied
+      expect(pm.getPendingCount()).toBe(1);  // B still pending
+
+      pm.cancelAllRequests();
+      await expect(pB).resolves.toBe(false);
+    });
+
+    it('leaves requests with no owner untouched', async () => {
+      const p = pm.requestPermission('file-edit', 'X', 'd', {}, postToWebview); // no ownerKey
+      expect(pm.cancelRequestsByOwner('nobody')).toHaveLength(0);
+      expect(pm.getPendingCount()).toBe(1);
+      pm.cancelAllRequests();
+      await expect(p).resolves.toBe(false);
+    });
+  });
 });

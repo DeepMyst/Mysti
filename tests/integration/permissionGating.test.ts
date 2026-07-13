@@ -62,11 +62,20 @@ describe('classifyToolAction', () => {
 
   // Read-only allowlist (explicitly safe — never gated)
   it.each([
-    'Read', 'Glob', 'Grep', 'Agent', 'TodoRead', 'TodoWrite', 'Task',
+    'Read', 'Glob', 'Grep', 'TodoRead', 'TodoWrite',
     'ToolSearch', 'AskUserQuestion', 'NotebookRead', 'read_file',
     'list_directory', 'search_file_content', 'ls', 'codebase_search',
   ])('should classify %s as file-read (read-only allowlist)', (toolName) => {
     expect(classifyToolAction(toolName)).toBe('file-read');
+  });
+
+  // Plan 15 Phase 0: delegation tools are `delegate`, NOT `file-read` — closing
+  // the security-floor hole where task/agent were auto-allowed.
+  it.each([
+    'Task', 'Agent', 'dispatch_agent', 'DISPATCH_AGENT',
+  ])('should classify %s as delegate (gated, not read-only)', (toolName) => {
+    expect(classifyToolAction(toolName)).toBe('delegate');
+    expect(classifyToolAction(toolName)).not.toBe('file-read');
   });
 
   // Case-insensitive classification (Cursor/OpenCode emit lowercase names)
@@ -141,9 +150,15 @@ describe('shouldGateToolUse', () => {
     });
 
     it('should NOT gate allowlisted orchestration tools', () => {
-      expect(shouldGateToolUse(settings, 'Agent')).toBe(false);
       expect(shouldGateToolUse(settings, 'TodoWrite')).toBe(false);
-      expect(shouldGateToolUse(settings, 'Task')).toBe(false);
+      expect(shouldGateToolUse(settings, 'ToolSearch')).toBe(false);
+      expect(shouldGateToolUse(settings, 'AskUserQuestion')).toBe(false);
+    });
+
+    it('should gate delegation tools (Plan 15 Phase 0 security floor)', () => {
+      expect(shouldGateToolUse(settings, 'Agent')).toBe(true);
+      expect(shouldGateToolUse(settings, 'Task')).toBe(true);
+      expect(shouldGateToolUse(settings, 'dispatch_agent')).toBe(true);
     });
 
     it('should gate unknown tools (fail closed)', () => {
@@ -194,6 +209,12 @@ describe('shouldGateToolUse', () => {
       expect(shouldGateToolUse(settings, 'Bash')).toBe(true);
       expect(shouldGateToolUse(settings, 'delete_file')).toBe(true);
       expect(shouldGateToolUse(settings, 'WebFetch')).toBe(true);
+    });
+
+    it('still gates delegation — it is not an "edit" (Plan 15 Phase 0)', () => {
+      expect(shouldGateToolUse(settings, 'Task')).toBe(true);
+      expect(shouldGateToolUse(settings, 'Agent')).toBe(true);
+      expect(shouldGateToolUse(settings, 'dispatch_agent')).toBe(true);
     });
 
     it('gates unknown tools (fail closed → bash-command)', () => {
