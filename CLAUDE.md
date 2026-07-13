@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Mysti is a VSCode extension providing a unified AI coding assistant interface supporting 12 AI backends (Claude Code, OpenAI Codex, Google Gemini, Cline, GitHub Copilot, Cursor, OpenClaw, OpenCode, Qwen Code, Ollama, LocalAI, and Manus). It features sidebar/tab chat panels, conversation persistence, multi-agent brainstorm mode (any 2 of 11 agents with 5 collaboration strategies), autonomous mode with safety classification, @-mention agent routing, permission controls, plan selection, context compaction, and a three-tier agent loading system for personas and skills.
+Mysti is a VSCode extension providing a unified AI coding assistant interface supporting 14 AI backends (Claude Code, OpenAI Codex, Google Gemini, Cline, GitHub Copilot, Cursor, OpenClaw, OpenCode, Qwen Code, Ollama, LocalAI, Hermes, Continue, and Manus). It features sidebar/tab chat panels, conversation persistence, multi-agent brainstorm mode (any 2 of 11 agents with 5 collaboration strategies), autonomous mode with safety classification, @-mention agent routing, permission controls, plan selection, context compaction, and a three-tier agent loading system for personas and skills.
 
 ## Build Commands
 
@@ -19,7 +19,9 @@ npx vsce package          # Package extension as .vsix
 
 Output: `dist/extension.js` from entry point `src/extension.ts` (webpack bundles with ts-loader, target: node, CommonJS2).
 
-**Note:** Tests are not yet implemented (`npm run test` exists but has no test files).
+**Tests:** the repo has a Vitest suite (`npm test` → `vitest run`, ~135 files / 1800+ tests) plus `npx tsc --noEmit` for type-checking. Run BOTH before and after changes — regressions in the coordinator/provider code are caught here. `vscode` is aliased to `tests/helpers/mockVscode.ts`.
+
+**Mysti agent (coordinator):** beyond the 14 CLI backends, Mysti has a first-class *coordinator* agent (`settings.provider === 'mysti'`) that streams its OWN model (OpenRouter free chain / DeepMyst gateway) and acts through a per-run nonce-fenced directive protocol — `<delegate:NONCE agent="…" tier="fast|strong">`, `<read:>`, `<ls:>`, `<grep:>`, `<diag:>`, `<remember:>` — parsed mid-stream by `MystiTagScanner`. The ReAct loop is `ChatViewProvider._runMystiAgentic`; local read-only tools are `MystiLocalTools`; delegations run through the gated `CollaboratorPool`; durable background jobs are `BackgroundJobManager`. Security invariants: the coordinator has NO local write/bash tool; every untrusted result re-entering the model is nonce-redacted + UNTRUSTED-fenced; the `dm_` gateway key is sent only to `*.deepmyst.com`; workspace settings may only LOWER authority (see `settingsClamp` + machine-scoped `mysti.mysti.*` spend/permission settings).
 
 ## Development
 
@@ -37,12 +39,14 @@ npm-based (cross-OS):
 - `npm install -g openclaw@latest` (OpenClaw — then `openclaw onboard --install-daemon` for the Gateway daemon)
 - `npm i -g opencode-ai@latest` (OpenCode)
 - `npm install -g @qwen-code/qwen-code@latest` (Qwen Code)
+- `npm i -g @continuedev/cli` (Continue — binary `cn`; models/keys configured in `~/.continue/config.yaml`, first interactive run walks through onboarding)
 
 OS-specific (handled per-platform by the wizard):
 
 - **Cursor** — macOS/Linux: `curl https://cursor.com/install -fsS | bash`; Windows (PowerShell): `irm 'https://cursor.com/install?win32=true' | iex` (binary is `cursor-agent`/`agent`; login: `agent login`)
 - **Ollama** — Linux: `curl -fsSL https://ollama.com/install.sh | sh`; macOS: `brew install ollama` (or download from ollama.com); Windows: `OllamaSetup.exe` from ollama.com/download
 - **LocalAI** — Docker (all OSes): `docker run -p 8080:8080 --name local-ai -ti localai/localai:latest`; macOS/Linux can also use the prebuilt binary; Windows requires Docker Desktop or WSL (there is no `localai.io/install.sh`)
+- **Hermes** — macOS/Linux/WSL2: `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`; Windows (PowerShell): `iex (irm https://hermes-agent.nousresearch.com/install.ps1)` (auth: `hermes setup` or `hermes setup --portal`; Mysti drives it over the ACP transport `hermes acp`)
 
 ## Architecture
 
@@ -63,6 +67,7 @@ extension.ts (entry — activate() wires everything)
     │   ├── SetupManager          - CLI auto-setup & authentication
     │   ├── AgentLoader           - Three-tier agent loading from markdown
     │   ├── AgentContextManager   - Recommendations & prompt building
+    │   ├── AgentStudio           - Create/import/reload personas & skills (uses SkillDiscoveryService)
     │   ├── TelemetryManager      - Anonymous usage analytics
     │   ├── AutocompleteManager   - Autocomplete functionality
     │   ├── AutonomousManager     - Semi/full autonomous mode orchestration
@@ -91,13 +96,15 @@ extension.ts (entry — activate() wires everything)
                 ├── QwenCodeProvider    (extends BaseCliProvider)
                 ├── OllamaProvider      (extends BaseCliProvider)
                 ├── LocalAIProvider     (extends BaseCliProvider)
+                ├── HermesProvider      (extends BaseCliProvider, ACP JSON-RPC via persistent process)
+                ├── ContinueProvider    (extends BaseCliProvider, cn headless print mode)
                 └── ManusProvider       (extends BaseCliProvider, API-based)
 ```
 
 ### Key Design Decisions
 
 - **Per-panel isolation**: Each webview panel (sidebar or tab) has independent state, conversation, and child process. Provider instances are singletons but mutable state is per-panel via `_panelSessions: Map<string, PanelSessionState>`. Each provider subclass extends the base session type (e.g., `ClaudeSessionState`, `CodexSessionState`).
-- **CLI-based providers**: Spawn CLI processes with `--output-format stream-json`, parse line-delimited JSON events. OpenClaw additionally supports WebSocket streaming via its Gateway daemon.
+- **CLI-based providers**: Spawn CLI processes with `--output-format stream-json`, parse line-delimited JSON events. OpenClaw additionally supports WebSocket streaming via its Gateway daemon. Hermes uses the Agent Client Protocol (`hermes acp`, JSON-RPC 2.0 over stdio) through the base persistent-process machinery — the handshake is driven reactively from `parseStreamLine`.
 - **AsyncGenerator streaming**: Providers yield `StreamChunk` items for real-time response updates
 - **Webview communication**: Extension ↔ webview via `postMessage()` with typed `WebviewMessage`
 - **Stream-level permission gate**: All CLI providers bypass interactive permissions (piped stdin can't prompt). `ChatViewProvider._shouldGateToolUse()` intercepts `tool_use` stream events and shows permission cards in the webview when mode/access settings require approval.
@@ -134,7 +141,7 @@ extension.ts (entry — activate() wires everything)
 - `Message` / `Conversation` - Persistent chat data
 - `OperationMode` - "default" | "ask-before-edit" | "edit-automatically" | "quick-plan" | "detailed-plan"
 - `AccessLevel` - "read-only" | "ask-permission" | "full-access"
-- `ProviderType` / `AgentType` - "claude-code" | "openai-codex" | "google-gemini" | "cline" | "github-copilot" | "cursor" | "openclaw" | "opencode" | "qwen-code" | "ollama" | "localai"
+- `ProviderType` / `AgentType` - "claude-code" | "openai-codex" | "google-gemini" | "cline" | "github-copilot" | "cursor" | "openclaw" | "opencode" | "qwen-code" | "ollama" | "localai" | "hermes" | "continue"
 - `CollaborationStrategy` - "quick" | "debate" | "red-team" | "perspectives" | "delphi"
 - `SafetyLevel` - "safe" | "caution" | "blocked"
 - `AutonomousSafetyMode` - "conservative" | "balanced" | "aggressive"
@@ -169,7 +176,7 @@ extension.ts (entry — activate() wires everything)
 ## VSCode Integration Points
 
 - View: `mysti.chatView` (webview sidebar)
-- Commands: `mysti.openChat`, `mysti.newConversation`, `mysti.addToContext`, `mysti.clearContext`, `mysti.openInNewTab`, `mysti.toggleAutonomous`, `mysti.debugSetup`, `mysti.debugSetupFailure`
+- Commands: `mysti.openChat`, `mysti.newConversation`, `mysti.addToContext`, `mysti.clearContext`, `mysti.openInNewTab`, `mysti.toggleAutonomous`, `mysti.debugSetup`, `mysti.debugSetupFailure`, `mysti.createPersona`, `mysti.createSkill`, `mysti.importSkills`, `mysti.reloadAgents`
 - Keybindings: `Ctrl+Shift+M` / `Cmd+Shift+M` (open chat), `Ctrl+Shift+N` / `Cmd+Shift+N` (new tab), `Ctrl+Shift+A` / `Cmd+Shift+A` (toggle autonomous)
 - Settings namespace: `mysti.*` (50+ settings covering provider, mode, access, brainstorm, agents, permissions, autonomous, compaction, lifecycle, active mode)
 - Custom language IDs: `claude-prompt`, `prompt-markdown`, `gpt-prompt`, `gemini-prompt`, `codex-prompt`
@@ -192,9 +199,12 @@ Libraries loaded from `resources/` folder: Marked.js (markdown), Prism.js (synta
 2. Implement abstract methods: `discoverCli()`, `getCliPath()`, `buildCliArgs()`, `parseStreamLine()`, `getAuthConfig()`, `checkAuthentication()`, `getAuthCommand()`, `getInstallCommand()`
 3. Implement `_createSession(panelId)` to return provider-specific session state
 4. Register in `src/providers/ProviderRegistry.ts` (add to `_registerBuiltInProviders()`)
-5. Add to `ProviderType` union in `src/types.ts`
-6. Add agent style entry in `BrainstormManager.ts` `AGENT_STYLES` record
-7. Add configuration options in `package.json` (`mysti.*` settings)
+5. Add to `ProviderType` AND `AgentType` unions in `src/types.ts`
+6. Add entries to the two TS-enforced maps in `src/providers/base/ProviderManifest.ts` (`PROVIDER_DISPLAY_META`, `PROVIDER_CUSTOM_MODEL_SETTING_KEYS`) and the two in `BrainstormManager.ts` (`AGENT_BRAINSTORM_ICONS`, `agentKeyMap`) — these fail `tsc` if missed
+7. Add configuration options in `package.json`: `defaultProvider` enum + enumDescription, `<provider>Path`, `<provider>Model`, `brainstorm.synthesisAgent` + `brainstorm.agents` enums, `agents.<key>Persona` + `agents.<key>CustomPrompt`
+8. Webview: logo asset in `resources/icons/`, boot URI in `src/webview/webviewContent.ts`, `LOGO_BY_ICON_PATH` in `media/chat/chat.js`, agent-menu item + wizard provider-card in `media/chat/index.html` (inside the provider-literals allowlist markers)
+9. Add the id to `scripts/check-provider-literals.js` `PROVIDER_IDS` (lint guard) and `_getProviderDisplayName` in `SlashCommandManager.ts`
+10. Tests: `TestableXProvider` in `tests/helpers/providerFactory.ts`, `createXSession` in `tests/helpers/sessionFactory.ts`, a `tests/providers/<name>/` suite, and the provider-id enumerations in `tests/providers/providerManifest.test.ts`, `tests/integration/chatViewDebranding.test.ts`, `tests/webview/mentionParsing.test.ts`
 
 ### Adding a New Persona (Markdown-based)
 
@@ -246,9 +256,18 @@ Main instructions for the AI...
 
 ### Adding a New Skill (Markdown-based)
 
-Create a markdown file in one of the agent source directories (same priority order as personas, under `skills/` instead of `personas/`).
+Create a markdown file in one of the agent source directories (same priority order as personas, under `skills/` instead of `personas/`). Two layouts are supported:
+
+- **Flat**: `skills/my-skill.md`
+- **Directory (SKILL.md convention)**: `skills/my-skill/SKILL.md` — the Anthropic Agent Skills / gstack format. `skills.md`, `persona.md`, `agent.md`, and `index.md` basenames are also accepted (case-insensitive). When frontmatter has no `id`, it is derived from the `name` or directory name (slugified); unsafe ids are slugified. Shared parsing helpers live in `src/managers/agentMarkdown.ts`; later sources override earlier ones by id (workspace > user > plugin > core).
+
+**User-created agents**: `mysti.createPersona` / `mysti.createSkill` (also "+ New" buttons in the webview agent panel) scaffold a template into `~/.mysti/agents/` (user scope) or `.mysti/agents/` (workspace scope) and open it. `mysti.reloadAgents` re-reads all sources; create/import flows reload automatically and broadcast `agentsUpdated` to all panels. Interactive flows: `src/managers/AgentStudio.ts`.
+
+**Skill discovery (gstack etc.)**: `mysti.importSkills` discovers `SKILL.md` files in GitHub repos configured via `mysti.agents.skillSources` (`owner/repo[/path][@branch]`; defaults `garrytan/gstack`, `anthropics/skills`), lets the user multi-select, requires a modal confirmation (imported skills are prompt-injected content — untrusted until reviewed), and installs into `<scope>/skills/<id>/SKILL.md` with a provenance comment. Implementation: `src/services/SkillDiscoveryService.ts` (fetch-injectable, unit-tested).
 
 **Syncing agents**: Run `npm run sync-agents` to fetch curated plugins from the `wshobson/agents` GitHub repository into `resources/agents/plugins/`. Caches for 24 hours; use `--force` to bypass.
+
+**Content conformance**: `tests/resources/agentContentConformance.test.ts` validates every bundled file in `resources/agents/core` (frontmatter completeness, kebab-case ids, required sections). Run it after editing bundled agent content.
 
 ### Legacy: Static Personas/Skills (Fallback)
 

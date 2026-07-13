@@ -31,7 +31,7 @@
 
 <p align="center">
   <strong>Your AI Coding team for VSCode</strong><br>
-  <em>12 AI providers — Claude Code, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, Manus, OpenCode, Qwen Code, Ollama & LocalAI — working solo or in teams</em><br>
+  <em>14 AI providers — Claude Code, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, Manus, OpenCode, Qwen Code, Ollama, LocalAI, Hermes & Continue — working solo or in teams</em><br>
   <em>Wisdom of the crowd where the collective intelligence of several agents outperforms a single one.</em>
 </p>
 
@@ -114,6 +114,8 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | **Qwen Code** | Alibaba's AI coding agent, deep reasoning |
 | **Ollama** | Local LLM inference, privacy-first, no subscription |
 | **LocalAI** | Self-hosted AI models, full control |
+| **Hermes** | NousResearch's self-improving agent — skills, persistent memory, 300+ models via Nous Portal/OpenRouter |
+| **Continue** | Open-source coding agent (cn CLI) — hub assistants, custom rules, any model |
 
 **Switch providers with one click. No lock-in.**
 
@@ -122,7 +124,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | vs Copilot/Cursor | Mysti Advantage |
 |-------------------|-----------------|
 | Single AI | **Multi-agent brainstorming** — two AIs collaborate with 5 strategies |
-| Locked to one provider | **12 providers** — Claude, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, Manus, OpenCode, Qwen, Ollama, LocalAI |
+| Locked to one provider | **14 providers** — Claude, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, Manus, OpenCode, Qwen, Ollama, LocalAI, Hermes, Continue |
 | Black box | **Full permission control** — read-only to full-access |
 | Generic responses | **16 personas** — architect, debugger, security expert... |
 | Manual workflow | **Autonomous mode** — AI works independently with safety controls |

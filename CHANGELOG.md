@@ -2,6 +2,35 @@
 
 All notable changes to the Mysti extension will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **The Mysti Agent (`@mysti`) — a coordinator that plans and delegates (Plan 15, sync MVP)**: type `@mysti <request>` (or `/mysti …`) and Mysti decomposes it into a task DAG, runs the steps across your backends, and synthesizes one answer.
+  - **How it works**: the coordinator (running on a **free OpenRouter model** by default) emits a validated JSON DAG (not fragile tool-calling); the steps execute frontier-by-frontier through the shared, bounded, **gated** `CollaboratorPool` (Plan 14), with each step's output threaded into its dependents; a final pass synthesizes the results. Routing is **backend-only** (each step runs on a provider using its own model — no per-call model routing, which would thrash persistent-process respawn). `mysti` can never route to itself, and node/depth caps bound fan-out.
+  - **OpenRouter is now a full backend** (the 14th provider): any of 300+ models via the OpenAI-compatible API with real SSE streaming, **free by default** (`openrouter/free`). It's a completion backend (no tool execution), so the coordinator sends file-editing work to agentic CLI backends and text/analysis to OpenRouter free. Key: `mysti.openrouter.apiKey` / `OPENROUTER_API_KEY`; model: `mysti.openrouterModel`.
+  - **Free by default, opt-in paid fallback**: the coordinator discovers a live free model at runtime (the roster rotates, so nothing is hardcoded) and is 20-rpm-aware (semaphore + backoff). It only touches a paid model if you set `mysti.openrouter.fallbackModel` — otherwise it degrades gracefully and never spends.
+  - **Security floor**: delegation (`task`/`agent`/`dispatch_agent`) is now a first-class **gated `delegate` action** (previously ungated `file-read`) — default-deny, auto-approved only under explicit full-access/autonomous, and never silently approved in autonomous mode.
+
+- **Agent Collaboration Roles (Plan 14)**: call any agent(s) as an advisor, critic, reviewer, second-opinion, coworker, or collaborator — across every provider, in one message
+  - **Grammar**: `@agent:role` (e.g. `@google-gemini:critic @openai-codex:reviewer here's my plan`) — role-tagged mentions run as a **parallel group**; plain `@agent` mentions keep today's sequential MentionRouter routing. Slash commands `/consult`, `/review`, `/critique`, `/panel` prebind a role.
+  - **Autocomplete**: typing `:` after a known agent (`@gemini:`) opens a role picker filtered as you type, with a read-only/writes badge; Tab/Enter/click completes `@agent:role`. Roles flow to the chat UI via `availableRoles` (initial state + live `agentsUpdated`).
+  - **Roles are markdown** in the three-tier agent system (`resources/agents/core/roles/`, `~/.mysti/agents/roles/`, `.mysti/agents/roles/`), authored like personas/skills (`mysti.createRole` / "Reload Agents"). Each role declares an **access profile** (`read-only` advisory vs `gated-write`) and a return contract. Six built-ins ship: advisor, critic, reviewer, second-opinion, coworker, collaborator.
+  - **`CollaboratorPool`** — one shared bounded dispatch primitive: a real concurrency cap (`mysti.collab.maxConcurrent`, default 3), per-collaborator timeout + transport retry, a cached availability pre-check (uninstalled/unauthenticated CLI → skip-with-hint, never a hang), a structured failure taxonomy (`not-installed`/`not-authenticated`/`timeout`/`crashed`/`stream-error`/`empty-response`/`cancelled`/`denied`), UUID-scoped derived child panels, and cancel fan-out.
+  - **Read-only enforcement**: advisory roles hard-deny any non-file-read tool locally, regardless of provider CLI flags. Gated-write roles SIGSTOP the child before the tool runs, await the permission gate, and resume/cancel the **child's own** panel (fixing the legacy sub-agent gate, which cancelled the parent).
+  - **Reliability**: completion is a transport signal (the provider `done` chunk), never keyword matching; a `_withDeadline` wrapper races each pull so a provider that ignores cancel still times out; the main agent synthesizes a role-labeled block that surfaces any failed collaborators rather than dropping them silently. Reference material (conversation history + context files) is wrapped in a delimited low-trust block.
+- **Continue Provider**: continuedev's open-source coding agent (`cn` CLI, npm: `@continuedev/cli`)
+  - Headless print mode (`cn -p`) with the prompt piped via stdin; `<think>` blocks parsed into thinking chunks (response text is never dropped on mixed thinking/prose lines)
+  - Permission policy **fails closed** (mirrors Copilot): `cn` emits plain final text with no tool events, so Mysti's stream gate can't fire — `--auto` (full autonomy) is used only for the autonomous tiers (edit-automatically, or full-access) and every ask-tier setting runs `--readonly` instead of silently writing files / running shell commands
+  - Custom model as a hub slug via `mysti.continueModel` (`cn --model owner/package`); the base injects channel/system context into the prompt (no `--rule` flag — a multi-line arg would break Windows spawns and double-inject)
+  - Honest capabilities: no tool events or usage stats reach headless stdout (`supportsToolUse: false`, `emitsUsage: false`)
+- **Hermes Provider**: NousResearch's hermes-agent (self-improving agent with skills, persistent memory, and 300+ models via Nous Portal, OpenRouter, OpenAI, or custom endpoints)
+  - Transport: Agent Client Protocol (`hermes acp`, JSON-RPC 2.0 over stdio) via the persistent-process path — real streaming and tool-call visibility; the handshake is driven reactively from the stream parser
+  - Permission model **fails closed**: ACP is a blocking protocol answered synchronously (before Mysti's async gate can run), so Hermes auto-allows a tool only when the settings mean "don't ask me" (Full access, or edits in the accept-edits tier) and **denies** in every ask/plan/read-only mode — a prompt-injected agent cannot get a dangerous command auto-approved. Read-only kinds (read/search) always run. The access-level snapshot is kept fresh by forcing a respawn on any access/mode change.
+  - Cancellation and New Conversation **drop the ACP process** (rather than sending `session/cancel`) so a stale cancelled-prompt response can never terminate or be misattributed to the next turn; the next turn re-handshakes cleanly and re-sends history
+  - Auth via `hermes setup` / `hermes setup --portal`; install script shown per-OS by the setup wizard
+  - Model selection stays in Hermes (`hermes model`) — the provider honestly reports `modelSelection: none`
+
 ## [0.4.0] - March 2026
 
 ### Added
