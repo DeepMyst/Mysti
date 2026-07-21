@@ -79,10 +79,14 @@ export class PermissionManager {
     details: PermissionDetails,
     postToWebview: (message: unknown) => void,
     toolCallId?: string,
-    ownerKey?: string
+    ownerKey?: string,
+    forceInteractive = false
   ): Promise<boolean> {
-    // Check if session has been upgraded to full-access
-    if (this._sessionAccessLevel === 'full-access') {
+    // Check if session has been upgraded to full-access. Plan 19: a caller may
+    // FORCE an interactive card (a non-safe coordinator `bash`) that must be
+    // confirmed even under session full-access — the session upgrade grants
+    // authority for CLI-backend tools, not for the coordinator's own shell.
+    if (this._sessionAccessLevel === 'full-access' && !forceInteractive) {
       console.log('[Mysti] PermissionManager: Auto-approved (session full-access)');
       return true;
     }
@@ -113,7 +117,8 @@ export class PermissionManager {
       expiresAt,
       toolCallId,
       semiAutonomous: isSemiAutonomous,
-      ownerKey
+      ownerKey,
+      forceInteractive,
     };
 
     this._pendingRequests.set(request.id, request);
@@ -134,7 +139,10 @@ export class PermissionManager {
       // Set up timeout if configured
       if (effectiveTimeout > 0 && this._config.timeoutBehavior !== 'require-action') {
         const timeoutHandle = setTimeout(() => {
-          if (isSemiAutonomous && this._onSemiAutonomousTimeout) {
+          // Plan 19: a forceInteractive card must never be auto-approved by a
+          // timeout — route it through _handleTimeout (which auto-DENIES it),
+          // never the semi-autonomous auto-approver.
+          if (isSemiAutonomous && !request.forceInteractive && this._onSemiAutonomousTimeout) {
             this._onSemiAutonomousTimeout(request.id, postToWebview);
           } else {
             this._handleTimeout(request.id, postToWebview);
@@ -196,8 +204,11 @@ export class PermissionManager {
     this._pendingRequests.delete(requestId);
     this._timeoutHandles.delete(requestId);
 
-    // Determine result based on timeout behavior
-    const approved = this._config.timeoutBehavior === 'auto-accept';
+    // Determine result based on timeout behavior. Plan 19: a forceInteractive
+    // card (un-undoable coordinator side effect) NEVER auto-approves on timeout —
+    // it auto-DENIES regardless of timeoutBehavior, so an unattended external
+    // tool call / non-safe bash can only run on an explicit user click.
+    const approved = !request.forceInteractive && this._config.timeoutBehavior === 'auto-accept';
 
     // Notify webview
     postToWebview({

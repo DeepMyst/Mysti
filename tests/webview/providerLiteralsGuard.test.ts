@@ -48,8 +48,8 @@ describe('check-provider-literals scanner', () => {
     expect(scanSource(src).violations).toHaveLength(0);
   });
 
-  it('covers all 15 provider ids including dormant manus', () => {
-    expect(PROVIDER_IDS).toHaveLength(15);
+  it('covers all 16 provider ids including dormant manus', () => {
+    expect(PROVIDER_IDS).toHaveLength(16);
     for (const id of PROVIDER_IDS) {
       const result = scanSource(`var p = '${id}';`);
       expect(result.violations, id).toHaveLength(1);

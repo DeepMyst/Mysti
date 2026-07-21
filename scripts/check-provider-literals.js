@@ -53,6 +53,7 @@ const PROVIDER_IDS = [
   'hermes',
   'continue',
   'openrouter',
+  'kimi-code',
   'manus'
 ];
 

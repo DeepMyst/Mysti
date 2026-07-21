@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Mysti is a VSCode extension providing a unified AI coding assistant interface supporting 14 AI backends (Claude Code, OpenAI Codex, Google Gemini, Cline, GitHub Copilot, Cursor, OpenClaw, OpenCode, Qwen Code, Ollama, LocalAI, Hermes, Continue, and Manus). It features sidebar/tab chat panels, conversation persistence, multi-agent brainstorm mode (any 2 of 11 agents with 5 collaboration strategies), autonomous mode with safety classification, @-mention agent routing, permission controls, plan selection, context compaction, and a three-tier agent loading system for personas and skills.
+Mysti is a VSCode extension providing a unified AI coding assistant interface supporting 15 AI backends (Claude Code, OpenAI Codex, Google Gemini, Cline, GitHub Copilot, Cursor, OpenClaw, OpenCode, Qwen Code, Ollama, LocalAI, Hermes, Continue, OpenRouter, and Kimi Code). It features sidebar/tab chat panels, conversation persistence, multi-agent brainstorm mode (any 2 of 11 agents with 5 collaboration strategies), autonomous mode with safety classification, @-mention agent routing, permission controls, plan selection, context compaction, and a three-tier agent loading system for personas and skills.
 
 ## Build Commands
 

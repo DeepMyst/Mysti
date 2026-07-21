@@ -34,9 +34,11 @@ const BLOCKED_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   // arbitrary commands, despite `find` reading like a read-only search.
   { pattern: /\bfind\b[^\n]*\s-delete\b/, reason: 'find -delete removes matched files' },
   { pattern: /\bfind\b[^\n]*\s-(exec|execdir)\b/, reason: 'find -exec runs arbitrary commands on matches' },
-  // Destructive git operations
-  { pattern: /\bgit\s+push\s+.*--force\b/, reason: 'Force push can overwrite remote history' },
-  { pattern: /\bgit\s+push\s+-f\b/, reason: 'Force push can overwrite remote history' },
+  // Destructive git operations.
+  // NOTE: force push is detected in screenBashCommand() via the tokenized
+  // isForcePush() — NOT a regex here. The previous two-`[^\n]*` pattern straddling
+  // a literal `push` was a confirmed cubic ReDoS (a long injected `git push …`
+  // hung the classifier synchronously). Tokenization is linear and unbackable.
   { pattern: /\bgit\s+reset\s+--hard\b/, reason: 'Hard reset discards all uncommitted changes' },
   { pattern: /\bgit\s+clean\s+(-[a-zA-Z]*f|--force)/, reason: 'Git clean removes untracked files permanently' },
   { pattern: /\bgit\s+branch\s+(-[a-zA-Z]*D|--delete\s+--force)/, reason: 'Force delete branch' },
@@ -86,16 +88,205 @@ const COMPOUND_OPERATOR_PATTERN = /(&&|\|\||;|\||\n|\$\(|`|>>?\s*\/(?:dev|etc|sy
  * this list is consulted (see classifyBashCommand).
  */
 const SAFE_BASH_PATTERNS: RegExp[] = [
-  /^\s*(ls|cat|head|tail|less|more|wc|grep|which|where|pwd|date|whoami)\b/,
-  /^\s*(npm\s+(test|run|list|info|ls|outdated|audit))\b/,
-  /^\s*(node\s+-[ev]|node\s+--version)\b/,
-  /^\s*(git\s+(status|log|diff|branch|show|stash\s+list|remote|fetch))\b/,
+  // `less`/`more` dropped — pagers with exec-capable preprocessors don't belong
+  // on the auto-approve list (review MED-5).
+  /^\s*(ls|cat|head|tail|wc|grep|which|where|pwd|date|whoami)\b/,
+  // `npm run <script>` executes arbitrary package.json code (`npm run deploy`),
+  // so it is NOT auto-safe — only the fixed read/test subcommands are (review #2).
+  /^\s*(npm\s+(test|list|info|ls|outdated|audit))\b/,
+  // `node -v/--version` only — NOT `node -e/-p` (arbitrary JS). Review HIGH-2.
+  /^\s*node\s+(-v|--version)\b/,
+  // Read-only git only — NOT branch/remote/fetch: `git remote set-url`,
+  // `git branch -m/-d/<new>`, `git fetch`/`remote update` WRITE .git or hit the
+  // network (a `set-url origin <evil>` persists past the sandbox and redirects
+  // the user's next push). Review round-3 HIGH.
+  /^\s*git\s+(status|log|diff|show|stash\s+list)\b/,
   /^\s*(tsc|eslint|prettier|jest|vitest|mocha|pytest|cargo\s+test)\b/,
   /^\s*(pip\s+(list|show|freeze))\b/,
   /^\s*(cargo\s+(check|clippy|test|build))\b/,
   /^\s*(go\s+(test|vet|build))\b/,
   /^\s*(make\s+(test|check|lint|build))\b/,
 ];
+
+/**
+ * Extra binaries the Mysti COORDINATOR refuses outright (a possibly-weak,
+ * prompt-injectable coordinator model must never reach an UNsandboxed sibling
+ * or a privileged daemon). Kept separate from the shared BLOCKED_BASH_PATTERNS
+ * so CLI-backend autonomous decisions are unchanged.
+ *  - macOS launchers/AppleScript (`open`, `osascript`, …) hand work to a
+ *    process spawned by launchd OUTSIDE the seatbelt sandbox (Plan 19 review C1).
+ *  - unix-socket / daemon-control (`--unix-socket`, `docker`, `socat`, …) can
+ *    reach a privileged daemon that the network/fs isolation does not cover.
+ */
+const COORDINATOR_BLOCKED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /\b(open|osascript|osacompile|automator|launchctl|plutil|caffeinate)\b/, reason: 'macOS launcher/AppleScript can run code outside the sandbox' },
+  { pattern: /\b(unlink|shred)\b/, reason: 'File deletion/wipe' },
+  { pattern: /--unix-socket\b/, reason: 'Connecting to a unix-domain socket (e.g. a privileged daemon) bypasses network isolation' },
+  { pattern: /\bnc\s+-U\b/, reason: 'netcat to a unix socket' },
+  { pattern: /\bsocat\b/, reason: 'socat can bridge to unix sockets / the network' },
+  { pattern: /\b(docker|podman|nerdctl|containerd|ctr|kubectl)\b/, reason: 'Container/orchestration control can escape the sandbox' },
+];
+
+/**
+ * Chaining/backgrounding/redirect operators — the coordinator treats a command
+ * containing ANY of these as compound, so a benign prefix can never vouch for a
+ * smuggled payload (`git fetch & curl …`, `cat p > ~/.ssh/authorized_keys`).
+ * Stricter than the shared COMPOUND_OPERATOR_PATTERN: catches a lone `&` and
+ * ALL redirects (Plan 19 review C2/H-redirect).
+ */
+const COORDINATOR_COMPOUND = /(&|;|\||\n|\r|\$\(|`|<|>)/;
+
+/**
+ * Truly READ-ONLY commands — safe even with NO sandbox (unlike npm test /
+ * pytest / make, which execute repo-defined code). Deliberately EXCLUDES:
+ *  - `env` (a program LAUNCHER: `env node x` runs x; plain `env` also dumps the
+ *    host environment incl. secrets) — review HIGH-3;
+ *  - `less`/`more` (pagers with exec-capable preprocessors) — review MED-5;
+ *  - bare `version` (`npm version patch` REWRITES package.json + git-commits) —
+ *    only `-v`/`--version` are read-only — review MED-4.
+ */
+const READ_ONLY_BASH_PATTERNS: RegExp[] = [
+  /^\s*(ls|cat|head|tail|wc|grep|which|where|pwd|date|whoami)\b/,
+  /^\s*git\s+(status|log|diff|show|stash\s+list)\b/,
+  /^\s*(node|npm|pnpm|yarn|python[0-9.]*|tsc|cargo|go|rustc|deno|bun)\s+(-v|--version)\b/,
+];
+
+/**
+ * Normalize a command to defeat shell quoting/backslash EVASION of the pattern
+ * matchers (`r\m -rf`, `s""udo`, `f""ind … -de""lete`): drop escaping
+ * backslashes and surrounding quotes. Screening runs against BOTH the raw and
+ * the normalized form (Plan 19 review H-quoting).
+ */
+function normalizeForScreen(cmd: string): string {
+  return cmd.replace(/\\(.)/g, '$1').replace(/['"]/g, '');
+}
+
+/**
+ * Pure bash screening for the Mysti coordinator's local execution layer
+ * (Plan 19). Fail-safe classification of an UNTRUSTED, possibly-injected model
+ * command:
+ *  - `blockedReason` set ⇒ hard-deny (never gate, never run),
+ *  - `compound` ⇒ chained/redirecting — never auto-approved,
+ *  - `safe` ⇒ matches the read-only/build allowlist (auto-run only when ALSO
+ *    sandboxed),
+ *  - `readOnly` ⇒ genuinely read-only (the ONLY thing allowed with no sandbox).
+ * Blocked patterns are matched against both the raw and normalized command.
+ */
+/**
+ * Commands that touch a REMOTE system or otherwise CANNOT be rewound by a
+ * checkpoint (push, publish, deploy, rsync/scp/ssh, cloud/infra CLIs). Plan 19
+ * Phase 3 routes these through a MODAL default-DENY confirmation — the same
+ * "checkpoints don't cover remote systems" rule Claude Code uses. Deliberately
+ * broad: over-confirming a remote-effect command is cheap; missing one isn't.
+ */
+const REMOTE_EFFECT_PATTERN = /\b(gh\s|(npm|yarn|pnpm|bun)\s+publish|(npm|yarn|pnpm|bun)\s+run\s+\S*(deploy|publish|release|ship|push|start)|netlify|vercel|(fly|flyctl)\s+(deploy|launch)|wrangler\s+(publish|deploy)|terraform\s+(apply|destroy)|(serverless|sls)\s+deploy|heroku|aws|gcloud|az|firebase\s+deploy|rsync|scp|sftp|ssh|curl|wget|nc|netcat|telnet|rclone|gsutil|s3cmd|mc|b2|doctl|railway|pulumi|cdk|sam\s+deploy|eb\s+deploy|surge|deployctl|http-server|python[0-9.]*\s+-m\s+http\.server|php\s+-S|kubectl\s+(apply|delete|rollout)|helm\s+(install|upgrade|uninstall)|ansible)\b/;
+
+/** git global options that consume the FOLLOWING token as their argument. */
+const GIT_ARG_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix']);
+
+/**
+ * Split a command into segments on shell separators so EACH simple command's
+ * leading git subcommand is classified independently. A compound like
+ * `git status && git push -f` must not hide the push behind a benign first
+ * subcommand (review round-5 HIGH). Linear split; over-splitting only ever
+ * screens MORE segments (fail-closed), never fewer.
+ */
+function shellSegments(command: string): string[] {
+  return (command || '').split(/[\n\r;|&]+/);
+}
+
+/**
+ * The git SUBCOMMAND of ONE segment, skipping global options — TOKENIZED (not a
+ * regex), so `git -C /r push` is detected without the catastrophic backtracking
+ * a nested-quantifier regex would have (a hostile command must never hang the
+ * classifier). Returns null when the segment isn't a git invocation.
+ * NOTE: no `$` end-anchor — a trailing newline / following line must NOT hide
+ * the subcommand (review round-5 HIGH); `.` already stops at `\n` and segments
+ * are separator-free after the split.
+ */
+function gitSubcommandOf(segment: string): string | null {
+  const m = /(^|[\s(])git\s+(.+)/.exec(segment);
+  if (!m) { return null; }
+  const tokens = m[2].trim().split(/\s+/);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.startsWith('-')) {
+      if (GIT_ARG_OPTS.has(t)) { i++; } // its value token is not the subcommand
+      continue;
+    }
+    return t; // first non-option token = the subcommand
+  }
+  return null;
+}
+
+/** The git subcommand of EVERY git segment in a (possibly compound) command. */
+function gitSubcommands(command: string): string[] {
+  const out: string[] = [];
+  for (const seg of shellSegments(command)) {
+    const s = gitSubcommandOf(seg);
+    if (s) { out.push(s); }
+  }
+  return out;
+}
+
+/** Whether a shell command affects a remote system / can't be undone (Plan 19 Phase 3). */
+export function isRemoteEffectCommand(command: string): boolean {
+  const c = command || '';
+  // Any git segment (not just the first) that reaches a remote counts.
+  if (gitSubcommands(c).some(s => s === 'push' || s === 'pull' || s === 'fetch')) { return true; }
+  return REMOTE_EFFECT_PATTERN.test(c);
+}
+
+/**
+ * Force-push detection — TOKENIZED + per-segment, so it can never hang the
+ * classifier (the old two-`[^\n]*` regex was a cubic ReDoS) AND can't be hidden
+ * behind a benign first subcommand or a trailing newline (round-5). True when
+ * ANY git segment is a `push` carrying a force: `--force`, `--force-with-lease[=…]`,
+ * a short cluster containing `f` (`-f`, `-fq`), OR a forced refspec (`+ref:ref`).
+ */
+export function isForcePush(command: string): boolean {
+  return shellSegments(command).some(seg => {
+    if (gitSubcommandOf(seg) !== 'push') { return false; }
+    const m = /(^|[\s(])git\s+(.+)/.exec(seg);
+    if (!m) { return false; }
+    return m[2].trim().split(/\s+/).some(t =>
+      t === '--force' ||
+      t === '--force-with-lease' || t.startsWith('--force-with-lease=') ||
+      /^-[a-zA-Z]*f[a-zA-Z]*$/.test(t) ||
+      /^\+/.test(t)); // forced refspec: git push origin +main:main
+  });
+}
+
+/**
+ * Hard ceiling on the command length screened by regex. A single legitimate
+ * shell command is never this long (the coordinator's bash tool is "one command,
+ * no chaining"); the cap guarantees NO blocklist pattern — present or future —
+ * can be weaponized into a synchronous ReDoS by a long injected command. Fail
+ * closed: an over-length command is blocked, never silently un-screened.
+ */
+const MAX_SCREEN_COMMAND_LEN = 4096;
+
+export function screenBashCommand(command: string): { blockedReason?: string; compound: boolean; safe: boolean; readOnly: boolean } {
+  const raw = command || '';
+  // Length cap BEFORE any regex runs (defense-in-depth, Plan 19 round-4).
+  if (raw.length > MAX_SCREEN_COMMAND_LEN) {
+    return { blockedReason: 'Command too long to screen safely', compound: false, safe: false, readOnly: false };
+  }
+  const norm = normalizeForScreen(raw);
+  // Force push (tokenized, ReDoS-safe) — replaces the removed two-`[^\n]*` regex.
+  if (isForcePush(raw) || isForcePush(norm)) {
+    return { blockedReason: 'Force push can overwrite remote history', compound: false, safe: false, readOnly: false };
+  }
+  for (const { pattern, reason } of [...BLOCKED_BASH_PATTERNS, ...COORDINATOR_BLOCKED_PATTERNS]) {
+    if (pattern.test(raw) || pattern.test(norm)) {
+      return { blockedReason: reason, compound: false, safe: false, readOnly: false };
+    }
+  }
+  const compound = COORDINATOR_COMPOUND.test(raw) || COORDINATOR_COMPOUND.test(norm);
+  const safe = !compound && SAFE_BASH_PATTERNS.some(p => p.test(raw));
+  const readOnly = !compound && READ_ONLY_BASH_PATTERNS.some(p => p.test(raw));
+  return { compound, safe, readOnly };
+}
 
 export class SafetyClassifier {
   private _config: AutonomousConfig;
@@ -146,6 +337,15 @@ export class SafetyClassifier {
    * Classify a bash command for safety
    */
   classifyBashCommand(command: string): SafetyClassification {
+    // Round-4 ReDoS fix: mirror screenBashCommand — a length cap before any
+    // regex runs, and the tokenized force-push block (its regex was removed
+    // from BLOCKED_BASH_PATTERNS because two `[^\n]*` straddling `push` was cubic).
+    if ((command || '').length > MAX_SCREEN_COMMAND_LEN) {
+      return { level: 'blocked', reason: 'Command too long to screen safely', category: 'bash', recommendation: 'auto-deny' };
+    }
+    if (isForcePush(command)) {
+      return { level: 'blocked', reason: 'Force push can overwrite remote history', category: 'bash', recommendation: 'auto-deny' };
+    }
     // Check hardcoded blocked patterns first
     for (const { pattern, reason } of BLOCKED_BASH_PATTERNS) {
       if (pattern.test(command)) {

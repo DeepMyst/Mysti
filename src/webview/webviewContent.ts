@@ -97,6 +97,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   const hermesLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'hermes.png')).toString();
   const continueLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'continue.png')).toString();
   const openrouterLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openrouter.png')).toString();
+  const kimiLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'kimi.png')).toString();
 
   // Every value the embedded script used to receive via template-literal
   // interpolation now travels through ONE inline nonce'd bootstrap script
@@ -121,6 +122,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     hermesLogoUri,
     continueLogoUri,
     openrouterLogoUri,
+    kimiLogoUri,
     manifestSchemaVersion: PROVIDER_MANIFEST_SCHEMA_VERSION
   };
   // Defensive: keep '<' out of the inline <script> body (e.g. '</script>').

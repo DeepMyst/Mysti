@@ -1,8 +1,125 @@
 import { describe, it, expect } from 'vitest';
-import { DelegateScanner } from '../../src/utils/mystiDelegateParser';
+import { DelegateScanner, MystiTagScanner, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_CONNECT_KINDS, type MystiDirective } from '../../src/utils/mystiDelegateParser';
 
 const N = 'abc123'; // per-run nonce
 const D = (agent: string, task: string) => `<delegate:${N} agent="${agent}">${task}</delegate>`;
+
+/** Scan char-by-char with a given kind set (defaults to read-only + exec kinds). */
+function scanKinds(input: string, kinds = [...ALL_MYSTI_KINDS, ...MYSTI_EXEC_KINDS], nonce = N) {
+  const s = new MystiTagScanner(nonce, kinds);
+  let text = '';
+  const directives: MystiDirective[] = [];
+  for (const ch of input) {
+    const r = s.feed(ch);
+    text += r.text;
+    if (r.directive) { directives.push(r.directive); }
+  }
+  const f = s.flush();
+  text += f.text;
+  if (f.directive) { directives.push(f.directive); }
+  return { text, directives };
+}
+
+describe('MystiTagScanner write/edit kinds (Plan 19)', () => {
+  it('parses write, preserving content and stripping one leading newline', () => {
+    const input = `<write:${N} path="src/new.ts">\nexport const x = 1;\n</write>`;
+    expect(scanKinds(input).directives).toEqual([{ kind: 'write', path: 'src/new.ts', content: 'export const x = 1;\n' }]);
+  });
+  it('parses edit with old/new (default replace=first)', () => {
+    const input = `<edit:${N} path="a.ts"><old>foo</old><new>bar</new></edit>`;
+    expect(scanKinds(input).directives).toEqual([{ kind: 'edit', path: 'a.ts', oldString: 'foo', newString: 'bar', replaceAll: false }]);
+  });
+  it('honors replace="all"', () => {
+    const input = `<edit:${N} path="a.ts" replace="all"><old>foo</old><new>bar</new></edit>`;
+    expect(scanKinds(input).directives[0]).toMatchObject({ kind: 'edit', replaceAll: true });
+  });
+  it('allows an empty <new> (deletion) but rejects an empty <old>', () => {
+    expect(scanKinds(`<edit:${N} path="a.ts"><old>x</old><new></new></edit>`).directives)
+      .toEqual([{ kind: 'edit', path: 'a.ts', oldString: 'x', newString: '', replaceAll: false }]);
+    const bad = `<edit:${N} path="a.ts"><old></old><new>y</new></edit>`;
+    const r = scanKinds(bad);
+    expect(r.directives).toHaveLength(0); // malformed → shown as text (fail-open)
+    expect(r.text).toBe(bad);
+  });
+  it('write/edit are UNFORGEABLE without the nonce', () => {
+    const input = `Example: <write path="x">danger</write> and <edit path="y"><old>a</old><new>b</new></edit>`;
+    const r = scanKinds(input);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(input);
+  });
+  it('does NOT recognize write/edit when only read-only kinds are active (capability off)', () => {
+    const input = `<write:${N} path="x">content</write>`;
+    const r = scanKinds(input, ALL_MYSTI_KINDS); // no MYSTI_EXEC_KINDS
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(input); // degrades to visible text
+  });
+  it('parses a bash directive', () => {
+    expect(scanKinds(`<bash:${N}>npm test</bash>`).directives).toEqual([{ kind: 'bash', command: 'npm test' }]);
+  });
+  it('bash is UNFORGEABLE without the nonce', () => {
+    const input = `Example: <bash>rm -rf /</bash> — do not run`;
+    const r = scanKinds(input);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(input);
+  });
+  it('does NOT recognize bash when exec kinds are off', () => {
+    const input = `<bash:${N}>ls</bash>`;
+    const r = scanKinds(input, ALL_MYSTI_KINDS);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(input);
+  });
+  it('parses a patch directive, preserving the envelope body', () => {
+    const body = '*** Delete: a.ts\n*** End';
+    const r = scanKinds(`<patch:${N}>\n${body}</patch>`);
+    expect(r.directives).toEqual([{ kind: 'patch', patchText: `${body}` }]);
+  });
+  it('patch is unforgeable + off when exec kinds disabled', () => {
+    expect(scanKinds(`<patch>*** Delete: a.ts</patch>`).directives).toHaveLength(0);
+    expect(scanKinds(`<patch:${N}>*** Delete: a.ts</patch>`, ALL_MYSTI_KINDS).directives).toHaveLength(0);
+  });
+});
+
+describe('MystiTagScanner connect + mcptool kinds (Plan 19 Phase 6)', () => {
+  const withMcp = [...ALL_MYSTI_KINDS, ...MYSTI_MCP_KINDS, ...MYSTI_CONNECT_KINDS];
+
+  it('parses a connect directive (service normalized to a lowercase slug)', () => {
+    expect(scanKinds(`<connect:${N} service="Gmail">need email</connect>`, withMcp).directives)
+      .toEqual([{ kind: 'connect', service: 'gmail' }]);
+  });
+  it('rejects an invalid service slug (fails open to text)', () => {
+    const input = `<connect:${N} service="../evil space">x</connect>`;
+    const r = scanKinds(input, withMcp);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(input);
+  });
+  it('connect is UNFORGEABLE without the nonce and OFF when its kind is disabled', () => {
+    expect(scanKinds(`<connect service="gmail">x</connect>`, withMcp).directives).toHaveLength(0);
+    const input = `<connect:${N} service="gmail">x</connect>`;
+    expect(scanKinds(input, ALL_MYSTI_KINDS).directives).toHaveLength(0); // capability off → visible text
+    expect(scanKinds(input, ALL_MYSTI_KINDS).text).toBe(input);
+  });
+
+  it('parses an mcptool directive with JSON args', () => {
+    expect(scanKinds(`<mcptool:${N} tool="GMAIL_SEND">{"to":"a@b.com","subject":"hi"}</mcptool>`, withMcp).directives)
+      .toEqual([{ kind: 'mcptool', tool: 'GMAIL_SEND', args: { to: 'a@b.com', subject: 'hi' } }]);
+  });
+  it('mcptool with empty / malformed args degrades to {} (never voids the directive)', () => {
+    expect(scanKinds(`<mcptool:${N} tool="T"></mcptool>`, withMcp).directives)
+      .toEqual([{ kind: 'mcptool', tool: 'T', args: {} }]);
+    expect(scanKinds(`<mcptool:${N} tool="T">not json</mcptool>`, withMcp).directives)
+      .toEqual([{ kind: 'mcptool', tool: 'T', args: {} }]);
+    // a JSON array is not an args object → {}
+    expect(scanKinds(`<mcptool:${N} tool="T">[1,2]</mcptool>`, withMcp).directives)
+      .toEqual([{ kind: 'mcptool', tool: 'T', args: {} }]);
+  });
+  it('mcptool is UNFORGEABLE without the nonce and OFF when its kind is disabled', () => {
+    expect(scanKinds(`<mcptool tool="GMAIL_SEND">{"to":"x"}</mcptool>`, withMcp).directives).toHaveLength(0);
+    const input = `<mcptool:${N} tool="T">{}</mcptool>`;
+    const r = scanKinds(input, ALL_MYSTI_KINDS); // no MCP kind
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(input);
+  });
+});
 
 /** Feed a full string one char at a time to stress the incremental parser. */
 function scanCharByChar(input: string, nonce = N) {

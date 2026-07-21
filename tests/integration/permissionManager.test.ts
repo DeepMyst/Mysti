@@ -43,6 +43,18 @@ describe('PermissionManager', () => {
       expect(result).toBe(true);
       expect(webviewMessages).toHaveLength(0);
     });
+
+    it('forceInteractive OVERRIDES full-access — shows a card instead of auto-approving (Plan 19 HIGH-1)', async () => {
+      pm.resetSessionAccessLevel('full-access');
+      const promise = pm.requestPermission('bash-command', 'Run', 'desc', { command: 'npm run deploy' }, postToWebview, 'tc', 'owner', true);
+      // A card WAS posted (not short-circuited by full-access)…
+      await vi.advanceTimersByTimeAsync(0);
+      expect(webviewMessages.length).toBeGreaterThan(0);
+      const msg = webviewMessages[0] as { payload: { id: string } };
+      // …and the user's decision governs the outcome.
+      pm.handleResponse({ requestId: msg.payload.id, decision: 'deny' });
+      expect(await promise).toBe(false);
+    });
   });
 
   describe('requestPermission — blocking flow', () => {
@@ -137,6 +149,21 @@ describe('PermissionManager', () => {
 
       const expired = webviewMessages.find((m: any) => m.type === 'permissionExpired') as any;
       expect(expired.payload.approved).toBe(true);
+    });
+
+    it('forceInteractive AUTO-DENIES on timeout even under auto-accept (Plan 19 round-7)', async () => {
+      // An un-undoable coordinator side effect (external MCP call / non-safe bash)
+      // must never be satisfied by a timeout, whatever the timeoutBehavior.
+      setMockConfig('permission.timeout', 5);
+      setMockConfig('permission.timeoutBehavior', 'auto-accept');
+      pm = new PermissionManager('ask-permission');
+
+      const promise = pm.requestPermission('web-request', 'External tool', 'desc', {}, postToWebview, 'tc', 'owner', /* forceInteractive */ true);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(await promise).toBe(false); // denied, NOT auto-accepted
+      const expired = webviewMessages.find((m: any) => m.type === 'permissionExpired') as any;
+      expect(expired.payload.approved).toBe(false);
     });
 
     it('should wait forever with require-action', async () => {

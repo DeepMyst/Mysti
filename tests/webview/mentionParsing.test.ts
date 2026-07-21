@@ -27,6 +27,7 @@ const AGENT_DISPLAY: Record<string, { shortId: string }> = {
   'hermes': { shortId: 'hermes' },
   'continue': { shortId: 'continue' },
   'openrouter': { shortId: 'openrouter' },
+  'kimi-code': { shortId: 'kimi' },
 };
 
 // Build reverse map

@@ -266,7 +266,8 @@
             "qwen-code",
             "hermes",
             "continue",
-            "openrouter"
+            "openrouter",
+            "kimi-code"
           ],
           "enumDescriptions": [
             "Claude Code CLI (Anthropic) - Deep reasoning, complex refactoring, thorough analysis",
@@ -282,7 +283,8 @@
             "Qwen Code - Alibaba's AI coding agent with Qwen3-Coder models and multi-provider support",
             "Hermes - NousResearch's self-improving agent with skills, memory, and 300+ models via Nous Portal, OpenRouter, or custom endpoints",
             "Continue - continuedev's open-source coding agent (cn CLI) with hub assistants, rules, and any-model configs",
-            "OpenRouter - Unified API gateway routing to 300+ models across providers (free by default, OpenAI-compatible)"
+            "OpenRouter - Unified API gateway routing to 300+ models across providers (free by default, OpenAI-compatible)",
+            "Kimi Code - Moonshot AI's terminal coding agent (kimi CLI) with Kimi K2.7 Code / K3 models over the Agent Client Protocol"
           ],
           "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context."
         },
@@ -355,6 +357,11 @@
           "type": "string",
           "default": "cn",
           "description": "Path to Continue CLI (cn) executable"
+        },
+        "mysti.kimiCodePath": {
+          "type": "string",
+          "default": "kimi",
+          "description": "Path to Kimi Code CLI (kimi) executable"
         },
         "mysti.ollamaEndpoint": {
           "type": "string",
@@ -566,6 +573,13 @@
           "maxLength": 128,
           "markdownDescription": "Model for the OpenRouter backend, e.g. `openai/gpt-oss-120b:free`, `anthropic/claude-sonnet-4-5`, or `openrouter/free` (free auto-router). Append `:free` for a free variant. Leave empty to use the default (`openrouter/free`). Uses the same key as `mysti.openrouter.apiKey`."
         },
+        "mysti.kimiCodeModel": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
+          "maxLength": 128,
+          "description": "Custom model for Kimi Code (e.g. kimi-for-coding, kimi-for-coding-highspeed, k3, kimi-k2.7-code). Passed to the CLI via the ANTHROPIC_MODEL env; the model is otherwise chosen inside Kimi with `/model`. Leave empty to use the account default."
+        },
         "mysti.customModels": {
           "type": "object",
           "default": {},
@@ -725,6 +739,47 @@
           ],
           "default": "suggest",
           "markdownDescription": "Verification loop for the **Mysti agent**: after a delegation modifies files, Mysti automatically runs a read-only editor-diagnostics check and prompts its coordinator to verify the change (e.g. run the project's tests/build) before answering — the single biggest 'did it actually work' quality lever. `off` disables it."
+        },
+        "mysti.mysti.localExecution": {
+          "type": "string",
+          "enum": ["off", "on"],
+          "enumDescriptions": [
+            "The Mysti agent coordinates and delegates only — it cannot write files or run commands itself (default).",
+            "The Mysti agent can create/edit files ITSELF (gated write/edit tools), so it works even with no backend installed."
+          ],
+          "default": "off",
+          "scope": "machine",
+          "markdownDescription": "**Standalone execution for the Mysti agent (Plan 19).** When `on`, the `@mysti` coordinator gets its OWN gated `write` / `edit` tools AND a **sandboxed `bash`** tool (run tests/builds/linters) — so it works even with no CLI backend installed. Every op goes through the **same permission gate** as CLI backends (default-deny in ask modes), is **workspace-scoped** (secret files blocked), and is **checkpointed** (undoable); `bash` additionally runs in an **OS sandbox** (macOS Seatbelt / Linux bwrap — no network, writes limited to the workspace; on platforms without a sandbox only genuinely read-only commands run). Destructive commands (`rm`, `sudo`, `git push --force`, `curl|sh`, container/daemon control, …) are hard-blocked; chained/compound commands and anything not on the read-only allowlist ALWAYS require explicit approval (a command auto-runs only when it is read-only-safe, non-compound, sandboxed, and a capable coordinator model is pinned). Machine-scoped on purpose: a workspace cannot enable it. Disabled in untrusted workspaces and in plan / read-only tiers. A pinned capable coordinator model (`mysti.mysti.coordinatorModel`) is recommended."
+        },
+        "mysti.mysti.bashNetwork": {
+          "type": "string",
+          "enum": ["off", "on"],
+          "enumDescriptions": [
+            "The Mysti agent's sandboxed bash has NO network access (default).",
+            "Allow network access inside the Mysti agent's bash sandbox (needed for installs/downloads — increases the prompt-injection surface)."
+          ],
+          "default": "off",
+          "scope": "machine",
+          "markdownDescription": "Whether the `@mysti` agent's sandboxed `bash` tool may access the **network**. Default `off` (the sandbox blocks all egress) — the safest posture, since the coordinator model is prompt-injectable. Turn `on` only if you need the agent to run installs/downloads itself; it widens the attack surface. Requires `mysti.mysti.localExecution` = `on`. Machine-scoped."
+        },
+        "mysti.mysti.mcpTools": {
+          "type": "string",
+          "enum": ["off", "on"],
+          "enumDescriptions": [
+            "The Mysti agent cannot call your connected external tools (default).",
+            "The Mysti agent can call your CONNECTED external MCP tools (Gmail, Slack, Notion, databases, …) — every call requires explicit approval."
+          ],
+          "default": "off",
+          "scope": "machine",
+          "markdownDescription": "**External MCP tools for the Mysti agent (Plan 19).** When `on`, the `@mysti` coordinator can call the external tools you've **connected via DeepMyst** (Gmail, Slack, Trello, Notion, databases, …), discovered live through the DeepMyst broker. Every call is an un-undoable network side effect (sending mail, creating a ticket), so it **always** requires an explicit approval card — it is never auto-approved, even in full-access or autonomous-aggressive. Only your already-connected tools are callable (a model-invented tool name is refused); results re-enter the model as untrusted, nonce-fenced data. Requires a signed-in DeepMyst account and a trusted workspace. Off by default; machine-scoped so a workspace cannot enable it. Budget: `mysti.mysti.maxMcpCalls` per run."
+        },
+        "mysti.mysti.maxMcpCalls": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 32,
+          "scope": "machine",
+          "markdownDescription": "Max **external MCP tool calls** the `@mysti` agent may make per run (each still requires explicit approval). NOT effort-scaled. Machine-scoped so a workspace cannot raise your per-run external-call ceiling. Requires `mysti.mysti.mcpTools` = `on`."
         },
         "mysti.mysti.fallbackModel": {
           "type": "string",
@@ -898,7 +953,8 @@
             "qwen-code",
             "hermes",
             "continue",
-            "openrouter"
+            "openrouter",
+            "kimi-code"
           ],
           "description": "Agent to use for synthesis in brainstorm mode"
         },
@@ -924,13 +980,14 @@
               "qwen-code",
               "hermes",
               "continue",
-              "openrouter"
+              "openrouter",
+              "kimi-code"
             ]
           },
           "minItems": 2,
           "maxItems": 2,
           "uniqueItems": true,
-          "description": "Select any 2 of 14 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
+          "description": "Select any 2 of 15 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
         },
         "mysti.agents.claudePersona": {
           "type": "string",
@@ -1287,6 +1344,25 @@
           "type": "string",
           "default": "",
           "description": "Custom persona prompt for OpenRouter (when persona is 'custom')"
+        },
+        "mysti.agents.kimiCodePersona": {
+          "type": "string",
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "description": "Persona for Kimi Code agent in brainstorm mode"
+        },
+        "mysti.agents.kimiCodeCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom persona prompt for Kimi Code (when persona is 'custom')"
         },
         "mysti.agents.autoSuggest": {
           "type": "boolean",
@@ -1693,7 +1769,7 @@
           {
             "id": "mysti.walkthrough.brainstorm",
             "title": "Try Multi-Agent Brainstorm",
-            "description": "Enable Brainstorm Mode to have two AI agents collaborate, debate, and synthesize solutions together. Pick any 2 of 7 providers.\n\n[Open Settings](command:workbench.action.openSettings?%5B%22mysti.brainstorm.enabled%22%5D)",
+            "description": "Enable Brainstorm Mode to have two AI agents collaborate, debate, and synthesize solutions together. Pick any 2 of 15 providers.\n\n[Open Settings](command:workbench.action.openSettings?%5B%22mysti.brainstorm.enabled%22%5D)",
             "media": {
               "image": "docs/screenshots/brainstorm-mode.png",
               "altText": "Brainstorm mode with two AI agents collaborating"

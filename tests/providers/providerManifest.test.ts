@@ -50,7 +50,7 @@ function createMockContext(): vscode.ExtensionContext {
 
 const ALL_PROVIDER_IDS = [
   'claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot',
-  'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code', 'hermes', 'continue', 'openrouter'
+  'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code', 'hermes', 'continue', 'openrouter', 'kimi-code'
 ];
 
 describe('buildProviderManifest', () => {

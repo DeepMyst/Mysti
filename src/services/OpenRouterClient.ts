@@ -31,6 +31,7 @@
 
 import type { GatewayCompletion } from '../types';
 import type { GatewayChatParams } from './DeepMystGatewayClient';
+import { ToolCallAccumulator, type AccumulatedToolCall, type ToolCallDelta } from '../utils/toolCallAccumulator';
 
 /** Fixed OpenRouter API base — deliberately not a workspace setting (key safety). */
 export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
@@ -47,6 +48,10 @@ export interface OpenRouterModel {
   contextLength?: number;
   /** Whether the model advertises tool/function calling (varies on free tier). */
   supportsTools: boolean;
+  /** True for zero-cost models (a `:free` id, or all-zero pricing). */
+  free: boolean;
+  /** USD per token (prompt/completion) when advertised; absent ⇒ unknown. */
+  pricing?: { prompt: number; completion: number };
 }
 
 export interface OpenRouterClientOptions {
@@ -150,6 +155,7 @@ export class OpenRouterClient {
           // Reasoning effort — OpenRouter translates effort→token budget for
           // budget-based models (Anthropic/Gemini). Omitted when unset.
           ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
+          ...(params.tools && params.tools.length ? { tools: params.tools, tool_choice: 'auto' } : {}),
         }),
         signal: composeSignal(timeoutMs, params.signal),
       });
@@ -177,6 +183,9 @@ export class OpenRouterClient {
     // loop continues rather than accepting the truncated text as the final answer.
     let sawText = false;
     let sawTerminal = false;
+    // Plan 19 P4: accumulate native tool_call deltas; emit once at the boundary.
+    const toolAcc = new ToolCallAccumulator();
+    let emittedTools = false;
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -193,6 +202,7 @@ export class OpenRouterClient {
           }
           const data = line.slice(5).trim();
           if (data === '[DONE]') {
+            if (!emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
             yield { done: true };
             return;
           }
@@ -216,12 +226,14 @@ export class OpenRouterClient {
           if (typeof delta?.reasoning === 'string' && delta.reasoning) {
             yield { reasoning: delta.reasoning };
           }
+          if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length) { toolAcc.add(delta.tool_calls); }
           if (json.usage) {
             yield { usage: { inputTokens: json.usage.prompt_tokens, outputTokens: json.usage.completion_tokens } };
           }
           const fr = json.choices?.[0]?.finish_reason;
           if (typeof fr === 'string' && fr) {
             sawTerminal = true;
+            if (fr === 'tool_calls' && !emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
             yield { finishReason: fr };
           }
         }
@@ -230,6 +242,7 @@ export class OpenRouterClient {
       yield { error: err instanceof Error ? err.message : String(err) };
       return;
     }
+    if (!emittedTools && toolAcc.hasAny()) { yield { toolCalls: toolAcc.finalize() }; }
     // Clean close without [DONE] (which returns above) or a finish_reason: if we
     // streamed text, treat it as an incomplete generation, not a clean finish.
     if (sawText && !sawTerminal) {
@@ -303,8 +316,19 @@ export class OpenRouterClient {
    */
   public async listFreeModels(opts: { toolsOnly?: boolean } = {}): Promise<OpenRouterModel[]> {
     const all = await this._fetchModels();
-    const free = all.filter(m => m.id.endsWith(':free'));
+    const free = all.filter(m => m.free);
     return opts.toolsOnly ? free.filter(m => m.supportsTools) : free;
+  }
+
+  /**
+   * The FULL OpenRouter catalog (free + paid), for the coordinator model picker.
+   * Cached like listFreeModels. `toolsOnly` filters to tool-calling-capable
+   * models (recommended for a coordinator that emits structured output).
+   * Returns [] on failure — callers fall back to a curated list.
+   */
+  public async listAllModels(opts: { toolsOnly?: boolean } = {}): Promise<OpenRouterModel[]> {
+    const all = await this._fetchModels();
+    return opts.toolsOnly ? all.filter(m => m.supportsTools) : all;
   }
 
   /**
@@ -396,6 +420,8 @@ export interface OpenRouterStreamEvent {
   error?: string;
   /** OpenAI finish_reason ('length' ⇒ max_tokens truncation). */
   finishReason?: string;
+  /** Plan 19 P4: finalized native tool calls for this turn (emitted once). */
+  toolCalls?: AccumulatedToolCall[];
 }
 
 interface OpenRouterChatResponse {
@@ -404,7 +430,7 @@ interface OpenRouterChatResponse {
 }
 
 interface OpenRouterStreamChunk {
-  choices?: Array<{ delta?: { content?: string; reasoning?: string }; finish_reason?: string | null }>;
+  choices?: Array<{ delta?: { content?: string; reasoning?: string; tool_calls?: ToolCallDelta[] }; finish_reason?: string | null }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 }
 
@@ -414,15 +440,25 @@ interface OpenRouterModelsResponse {
     name?: string;
     context_length?: number;
     supported_parameters?: string[];
+    /** Per-token USD prices as strings, e.g. { prompt: "0.000003", completion: "0.000015" }. */
+    pricing?: { prompt?: string | number; completion?: string | number };
   }>;
 }
 
 function normalizeModel(m: NonNullable<OpenRouterModelsResponse['data']>[number]): OpenRouterModel {
+  const id = String(m.id ?? '');
+  const prompt = Number(m.pricing?.prompt);
+  const completion = Number(m.pricing?.completion);
+  const hasPricing = Number.isFinite(prompt) && Number.isFinite(completion);
+  // Free when the id is a `:free` variant, or the advertised price is all-zero.
+  const free = id.endsWith(':free') || (hasPricing && prompt === 0 && completion === 0);
   return {
-    id: String(m.id ?? ''),
+    id,
     name: m.name,
     contextLength: typeof m.context_length === 'number' ? m.context_length : undefined,
     supportsTools: Array.isArray(m.supported_parameters) && m.supported_parameters.includes('tools'),
+    free,
+    ...(hasPricing ? { pricing: { prompt, completion } } : {}),
   };
 }
 

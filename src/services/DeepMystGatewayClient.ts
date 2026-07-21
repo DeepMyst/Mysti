@@ -30,10 +30,17 @@
  */
 
 import type { GatewayCompletion } from '../types';
+import { ToolCallAccumulator, type AccumulatedToolCall, type ToolCallDelta } from '../utils/toolCallAccumulator';
 
 export interface GatewayChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /** Plan 19 P4: an assistant turn that requested native tool calls (OpenAI shape). */
+  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+  /** Plan 19 P4: a tool-result message — which tool_call id it answers. */
+  tool_call_id?: string;
+  /** Plan 19 P4: the tool name on a tool-result message (some providers require it). */
+  name?: string;
 }
 
 /** One streamed delta from the gateway (same shape as OpenRouterStreamEvent). */
@@ -57,6 +64,10 @@ export interface GatewayStreamEvent {
   finishReason?: string;
   /** Real billed cost (X-DeepMyst-Cost-USD header), when the gateway reports it. */
   costUsd?: number;
+  /** Plan 19 P4: raw streamed tool_call deltas (accumulated by streamChat, not surfaced). */
+  toolCallDeltas?: ToolCallDelta[];
+  /** Plan 19 P4: the finalized native tool calls for this turn (emitted once). */
+  toolCalls?: AccumulatedToolCall[];
 }
 
 export interface GatewayChatParams {
@@ -72,6 +83,8 @@ export interface GatewayChatParams {
   /** Abort signal so callers can cancel a slow call. */
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Plan 19 P4: OpenAI-style function tools; when present the model may emit tool_calls. */
+  tools?: unknown[];
 }
 
 export class DeepMystGatewayClient {
@@ -202,6 +215,7 @@ export class DeepMystGatewayClient {
           stream: true,
           stream_options: { include_usage: true },
           ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
+          ...(params.tools && params.tools.length ? { tools: params.tools, tool_choice: 'auto' } : {}),
         }),
         signal: composeAbort(idle.signal, params.signal),
       });
@@ -236,6 +250,9 @@ export class DeepMystGatewayClient {
     // end) is almost certainly a cut-off answer, not a complete one.
     let sawText = false;
     let sawTerminal = false; // observed [DONE] or any finish_reason
+    // Plan 19 P4: accumulate native tool_call deltas; emit once at the boundary.
+    const toolAcc = new ToolCallAccumulator();
+    let emittedTools = false;
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -248,15 +265,24 @@ export class DeepMystGatewayClient {
           buffer = buffer.slice(nl + 1);
           if (!line.startsWith('data:')) { continue; }
           const data = line.slice(5).trim();
-          if (data === '[DONE]') { yield { done: true }; return; }
+          if (data === '[DONE]') {
+            if (!emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
+            yield { done: true };
+            return;
+          }
           const parsed = parseSseData(data);
           if (parsed.error) { yield { error: parsed.error }; return; }
           // Surface the concrete model the router resolved to, once.
           if (parsed.model && !sentModel) { sentModel = true; yield { model: parsed.model }; }
           if (parsed.text) { sawText = true; yield { text: parsed.text }; }
           if (parsed.reasoning) { yield { reasoning: parsed.reasoning }; }
+          if (parsed.toolCallDeltas) { toolAcc.add(parsed.toolCallDeltas); }
           if (parsed.usage) { yield { usage: parsed.usage }; }
-          if (parsed.finishReason) { sawTerminal = true; yield { finishReason: parsed.finishReason }; }
+          if (parsed.finishReason) {
+            sawTerminal = true;
+            if (parsed.finishReason === 'tool_calls' && !emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
+            yield { finishReason: parsed.finishReason };
+          }
         }
       }
       // Flush a final data frame that arrived without a trailing newline (abrupt
@@ -274,6 +300,7 @@ export class DeepMystGatewayClient {
           if (parsed.model && !sentModel) { sentModel = true; yield { model: parsed.model }; }
           if (parsed.reasoning) { yield { reasoning: parsed.reasoning }; }
           if (parsed.text) { sawText = true; yield { text: parsed.text }; }
+          if (parsed.toolCallDeltas) { toolAcc.add(parsed.toolCallDeltas); }
           if (parsed.usage) { yield { usage: parsed.usage }; }
           if (parsed.finishReason) { sawTerminal = true; yield { finishReason: parsed.finishReason }; }
         }
@@ -288,6 +315,7 @@ export class DeepMystGatewayClient {
     // Clean close with text but no [DONE]/finish_reason ⇒ likely truncated: flag
     // 'length' so the consumer auto-continues rather than accepting the partial
     // reply as final. No text at all ⇒ nothing to continue (keep prior behavior).
+    if (!emittedTools && toolAcc.hasAny()) { yield { toolCalls: toolAcc.finalize() }; }
     if (sawText && !sawTerminal) { yield { finishReason: 'length' }; }
     yield { done: true };
   }
@@ -303,7 +331,7 @@ function parseSseData(data: string): GatewayStreamEvent {
   let json: {
     error?: { message?: string; code?: number | string; type?: string } | string;
     model?: string;
-    choices?: Array<{ delta?: { content?: string; reasoning?: string } }>;
+    choices?: Array<{ delta?: { content?: string; reasoning?: string; tool_calls?: ToolCallDelta[] } }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
   try { json = JSON.parse(data); } catch { return {}; }
@@ -316,12 +344,13 @@ function parseSseData(data: string): GatewayStreamEvent {
     const code = json.error.code;
     return { error: code !== undefined && code !== null ? `${msg} (${code})` : msg };
   }
-  const choice = (json.choices?.[0] ?? {}) as { delta?: { content?: string; reasoning?: string }; finish_reason?: string | null };
+  const choice = (json.choices?.[0] ?? {}) as { delta?: { content?: string; reasoning?: string; tool_calls?: ToolCallDelta[] }; finish_reason?: string | null };
   const delta = choice.delta;
   const out: GatewayStreamEvent = {};
   if (typeof json.model === 'string' && json.model) { out.model = json.model; }
   if (delta?.content) { out.text = delta.content; }
   if (typeof delta?.reasoning === 'string' && delta.reasoning) { out.reasoning = delta.reasoning; }
+  if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length) { out.toolCallDeltas = delta.tool_calls; }
   if (json.usage) { out.usage = { inputTokens: json.usage.prompt_tokens, outputTokens: json.usage.completion_tokens }; }
   if (typeof choice.finish_reason === 'string' && choice.finish_reason) { out.finishReason = choice.finish_reason; }
   return out;

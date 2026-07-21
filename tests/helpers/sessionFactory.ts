@@ -7,6 +7,7 @@ import type { QwenSessionState } from '../../src/providers/qwen/QwenCodeProvider
 import type { HermesSessionState } from '../../src/providers/hermes/HermesProvider';
 import type { ContinueSessionState } from '../../src/providers/continue/ContinueProvider';
 import type { OpenRouterSessionState } from '../../src/providers/openrouter/OpenRouterProvider';
+import type { KimiCodeSessionState } from '../../src/providers/kimi/KimiCodeProvider';
 
 // Re-export session state types for provider-specific fields
 // Some providers don't export their session type, so we define compatible objects inline.
@@ -133,6 +134,24 @@ export function createHermesSession(panelId = 'test-panel'): HermesSessionState 
     acpSessionId: null,
     pendingPrompt: null,
     acpAccessLevel: 'ask-permission',
+    fallbackDiagnostics: false,
+    fallbackErrorEmitted: false,
+    activeToolCalls: new Map<string, { id: string; name: string; input: Record<string, unknown> }>(),
+    lastUsageStats: null,
+  };
+}
+
+export function createKimiSession(panelId = 'test-panel'): KimiCodeSessionState {
+  return {
+    ...baseSession(panelId),
+    rpcId: 0,
+    initializeId: null,
+    sessionNewId: null,
+    promptId: null,
+    acpSessionId: null,
+    pendingPrompt: null,
+    acpAccessLevel: 'ask-permission',
+    acpMode: 'default',
     fallbackDiagnostics: false,
     fallbackErrorEmitted: false,
     activeToolCalls: new Map<string, { id: string; name: string; input: Record<string, unknown> }>(),

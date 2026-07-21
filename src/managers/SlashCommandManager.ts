@@ -943,6 +943,7 @@ export class SlashCommandManager {
       'hermes': 'Hermes',
       'continue': 'Continue',
       'openrouter': 'OpenRouter',
+      'kimi-code': 'Kimi Code',
       'brainstorm': 'Brainstorm',
     };
     return names[providerId] || providerId;

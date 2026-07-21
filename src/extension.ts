@@ -38,6 +38,7 @@ import { CommitSignatureManager } from './managers/CommitSignatureManager';
 import { TeamPresenceManager } from './managers/TeamPresenceManager';
 import { MystiFileDecorationProvider } from './providers/MystiFileDecorationProvider';
 import { MystiCodeLensProvider } from './providers/MystiCodeLensProvider';
+import { getProviderDisplayName } from './providers/base/ProviderManifest';
 import { ProjectContextManager } from './managers/ProjectContextManager';
 import { VisualTestManager } from './managers/VisualTestManager';
 import { CanvasManager } from './managers/CanvasManager';
@@ -515,24 +516,91 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('mysti.importSkills', () => runAgentCommand('skill import', () => chatViewProvider.importSkillsInteractive())),
     vscode.commands.registerCommand('mysti.reloadAgents', () => runAgentCommand('agent reload', () => chatViewProvider.reloadAgents())),
     // Plan 17 P1.4a: pick the Mysti coordinator's brain without editing settings.
+    // Lists the FULL OpenRouter catalog (free + paid) plus the DeepMyst gateway
+    // models, path-aware. Free by default; a paid pick is a deliberate,
+    // confirmed opt-in that spends per turn (bounded by mysti.mysti.maxTurns /
+    // maxDelegations). Written to a machine-scoped setting so a workspace can
+    // never redirect the coordinator to an expensive model.
     vscode.commands.registerCommand('mysti.setCoordinatorModel', async () => {
       const cfg = vscode.workspace.getConfiguration('mysti');
-      const current = (cfg.get<string>('mysti.coordinatorModel', '') || '').trim();
-      const items: Array<vscode.QuickPickItem & { value: string | null }> = [
-        { label: 'Auto — strong free models (default)', description: 'gpt-oss-120b → nemotron → gemma, no credit spend', value: '', picked: current === '' },
-        { label: 'claude-haiku-4-5 — cheap paid', description: 'Reliable, fast; covered by free DeepMyst monthly credits', value: 'claude-haiku-4-5' },
-        { label: 'claude-sonnet-4-6 — strongest paid', description: 'Best coordination quality; spends more credits', value: 'claude-sonnet-4-6' },
-        { label: 'Custom…', description: 'Enter any gateway model id', value: null },
-      ];
-      const pick = await vscode.window.showQuickPick(items, { title: 'Mysti coordinator model', placeHolder: current ? `Current: ${current}` : 'Current: Auto (free)' });
-      if (!pick) { return; }
-      let value = pick.value;
-      if (value === null) {
-        value = (await vscode.window.showInputBox({ title: 'Custom coordinator model id', value: current, prompt: 'e.g. claude-opus-4-8, or openrouter/openai/gpt-oss-120b:free' }))?.trim() ?? undefined as unknown as string;
-        if (value === undefined) { return; }
+      // Direct-key path is active when an OpenRouter key is configured; otherwise
+      // the coordinator runs through the DeepMyst gateway.
+      const useDirect = !!((cfg.get<string>('openrouter.apiKey', '') || '').trim());
+      const settingKey = useDirect ? 'openrouter.coordinatorModel' : 'mysti.coordinatorModel';
+      const autoValue = useDirect ? 'auto' : '';
+      const current = (cfg.get<string>(settingKey, autoValue) || '').trim();
+
+      type Item = vscode.QuickPickItem & { value: string | null; paid?: boolean };
+      const sep = (label: string): Item => ({ label, kind: vscode.QuickPickItemKind.Separator, value: '' });
+      // On the gateway path an OpenRouter model needs the litellm `openrouter/` prefix.
+      const toValue = (slug: string): string => useDirect ? slug : `openrouter/${slug}`;
+      const perMillion = (p?: { prompt: number; completion: number }): string =>
+        p ? `$${(p.prompt * 1e6).toFixed(2)}/$${(p.completion * 1e6).toFixed(2)} per 1M` : 'paid';
+
+      let models: Awaited<ReturnType<typeof openRouterClient.listAllModels>> = [];
+      try {
+        models = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Window, title: 'Mysti: loading OpenRouter models…' },
+          () => openRouterClient.listAllModels()
+        );
+      } catch { /* fall back to curated gateway options */ }
+
+      const freeModels = models.filter(m => m.free).sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+      const paidModels = models.filter(m => !m.free).sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+
+      const items: Item[] = [];
+      items.push({
+        label: useDirect ? 'Auto — best free model' : 'Auto — strong free models (default)',
+        description: useDirect ? 'first tool-capable free model, no spend' : 'gpt-oss-120b → nemotron → gemma, no spend',
+        value: autoValue, picked: current === autoValue,
+      });
+      if (!useDirect) {
+        items.push(sep('DeepMyst gateway (paid — free monthly credits)'));
+        items.push({ label: 'claude-haiku-4-5', description: 'cheap, fast; covered by free DeepMyst credits', value: 'claude-haiku-4-5', paid: true });
+        items.push({ label: 'claude-sonnet-4-6', description: 'strongest coordination; spends more credits', value: 'claude-sonnet-4-6', paid: true });
       }
-      await cfg.update('mysti.coordinatorModel', value, vscode.ConfigurationTarget.Global);
-      vscode.window.showInformationMessage(`Mysti coordinator model: ${value || 'Auto (free)'}`);
+      if (freeModels.length) {
+        items.push(sep(`OpenRouter — free (${freeModels.length})`));
+        for (const m of freeModels) { items.push({ label: m.name || m.id, description: m.id, value: toValue(m.id) }); }
+      }
+      if (paidModels.length) {
+        items.push(sep(`OpenRouter — paid · spends credits (${paidModels.length})`));
+        for (const m of paidModels) { items.push({ label: m.name || m.id, description: `${m.id} · ${perMillion(m.pricing)}`, value: toValue(m.id), paid: true }); }
+      }
+      items.push(sep('Advanced'));
+      items.push({ label: 'Custom…', description: useDirect ? 'e.g. anthropic/claude-sonnet-4.6' : 'e.g. claude-opus-4-8, or openrouter/openai/gpt-oss-120b:free', value: null });
+
+      const pick = await vscode.window.showQuickPick(items, {
+        title: `Mysti coordinator model — ${useDirect ? 'OpenRouter (direct key)' : 'DeepMyst gateway'}`,
+        placeHolder: current ? `Current: ${current}` : 'Current: Auto (free)',
+        matchOnDescription: true,
+      });
+      if (!pick) { return; }
+
+      let value = pick.value;
+      let isPaid = !!pick.paid;
+      if (value === null) {
+        const entered = await vscode.window.showInputBox({
+          title: 'Custom coordinator model id', value: current,
+          prompt: useDirect ? 'e.g. anthropic/claude-sonnet-4.6' : 'e.g. claude-opus-4-8, or openrouter/openai/gpt-oss-120b:free',
+        });
+        if (entered === undefined) { return; }
+        value = entered.trim();
+        isPaid = value.length > 0 && value !== autoValue && !/:free$/.test(value);
+      }
+
+      // Free-by-default: a paid pick spends on EVERY turn, not just on fallback —
+      // require an explicit, non-silent confirmation.
+      if (isPaid) {
+        const ok = await vscode.window.showWarningMessage(
+          `"${value}" is a paid model. The Mysti coordinator will spend ${useDirect ? 'OpenRouter' : 'DeepMyst'} credits on every turn (spend is bounded by mysti.mysti.maxTurns / maxDelegations). Continue?`,
+          { modal: true }, 'Use paid model'
+        );
+        if (ok !== 'Use paid model') { return; }
+      }
+
+      await cfg.update(settingKey, value, vscode.ConfigurationTarget.Global);
+      vscode.window.showInformationMessage(`Mysti coordinator model: ${value || 'Auto (free)'}${isPaid ? ' (paid)' : ''}`);
     }),
     // Plan 18 (F4): model-authored memory is a persistent cross-session bias
     // channel — give the user a way to SEE and PRUNE it. Multi-select deletes;
@@ -870,6 +938,10 @@ async function _addToWorkspaceRecommendations(): Promise<void> {
 
 /** Format provider ID to a human-readable label for the status bar */
 function _formatProviderLabel(provider: string): string {
+  // A few status-bar-specific overrides (shorter than the canonical names);
+  // everything else falls back to the single source of truth in the manifest
+  // so newly-added providers (kimi-code, continue, openrouter, …) never render
+  // as a raw id.
   const labels: Record<string, string> = {
     'claude-code': 'Claude Code',
     'openai-codex': 'Codex',
@@ -879,7 +951,7 @@ function _formatProviderLabel(provider: string): string {
     'cursor': 'Cursor',
     'openclaw': 'OpenClaw',
   };
-  return labels[provider] || provider;
+  return labels[provider] || getProviderDisplayName(provider);
 }
 
 export function deactivate() {

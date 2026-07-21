@@ -4,22 +4,23 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * HermesProvider ACP parsing: the reactive JSON-RPC handshake
+ * KimiCodeProvider ACP parsing: the reactive JSON-RPC handshake
  * (initialize → session/new → session/prompt driven from parseStreamLine),
- * session/update mapping, permission auto-response, and the diagnostic
- * fallback path.
+ * session/update mapping, permission auto-response, the diagnostic fallback
+ * path, and Kimi-specific model env injection. Mirrors the Hermes ACP suite —
+ * both backends speak the Agent Client Protocol over `<cli> acp`.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { ChildProcess } from 'child_process';
-import { TestableHermesProvider } from '../../helpers/providerFactory';
-import { createHermesSession } from '../../helpers/sessionFactory';
-import type { HermesSessionState } from '../../../src/providers/hermes/HermesProvider';
+import { TestableKimiProvider } from '../../helpers/providerFactory';
+import { createKimiSession } from '../../helpers/sessionFactory';
+import type { KimiCodeSessionState } from '../../../src/providers/kimi/KimiCodeProvider';
 import type { Settings } from '../../../src/types';
 
 function settings(overrides?: Partial<Settings>): Settings {
   return {
     mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission',
-    contextMode: 'auto', model: '', provider: 'hermes', ...overrides,
+    contextMode: 'auto', model: '', provider: 'kimi-code', ...overrides,
   } as Settings;
 }
 
@@ -39,14 +40,14 @@ function writtenJson(written: string[]): Record<string, unknown>[] {
   return written.flatMap(w => w.split('\n').filter(Boolean).map(l => JSON.parse(l)));
 }
 
-describe('Hermes ACP handshake', () => {
-  let provider: TestableHermesProvider;
-  let session: HermesSessionState;
+describe('Kimi Code ACP handshake', () => {
+  let provider: TestableKimiProvider;
+  let session: KimiCodeSessionState;
   let written: string[];
 
   beforeEach(() => {
-    provider = new TestableHermesProvider();
-    session = createHermesSession();
+    provider = new TestableKimiProvider();
+    session = createKimiSession();
     const fake = fakeProc();
     session.persistentProcess = fake.proc;
     written = fake.written;
@@ -54,13 +55,13 @@ describe('Hermes ACP handshake', () => {
 
   it('first input on a fresh process is an initialize request; the prompt is stashed', () => {
     provider.buildPersistentCliArgs(settings(), session);
-    const input = provider.formatPersistentInput('hello hermes', session);
+    const input = provider.formatPersistentInput('hello kimi', session);
     const msg = JSON.parse(input);
 
     expect(msg.method).toBe('initialize');
     expect(msg.params.protocolVersion).toBe(1);
     expect(msg.params.clientCapabilities.fs.readTextFile).toBe(false);
-    expect(session.pendingPrompt).toBe('hello hermes');
+    expect(session.pendingPrompt).toBe('hello kimi');
   });
 
   it('initialize response triggers session/new with the workspace cwd', () => {
@@ -89,7 +90,6 @@ describe('Hermes ACP handshake', () => {
       session
     );
 
-    // No chunk: usedPersistent must flip only at the prompt boundary
     expect(chunk).toBeNull();
     expect(session.acpSessionId).toBe('sess_42');
     expect(session.sessionId).toBe('sess_42');
@@ -102,7 +102,7 @@ describe('Hermes ACP handshake', () => {
     expect(params.prompt[0].text).toBe('do the thing');
   });
 
-  it('session/new error maps to auth_error with the setup command', () => {
+  it('session/new error maps to auth_error with the login command', () => {
     provider.buildPersistentCliArgs(settings(), session);
     provider.formatPersistentInput('x', session);
     provider.parseStreamLine(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }), session);
@@ -112,7 +112,8 @@ describe('Hermes ACP handshake', () => {
       session
     );
     expect(chunk?.type).toBe('auth_error');
-    expect(chunk?.authCommand).toBe('hermes setup');
+    expect(chunk?.authCommand).toBe('kimi');
+    expect(chunk?.providerName).toBe('Kimi Code');
   });
 
   it('subsequent prompts on a live session go straight to session/prompt', () => {
@@ -133,30 +134,41 @@ describe('Hermes ACP handshake', () => {
       session
     );
     expect(chunk?.type).toBe('session_active');
-    expect(provider.getStoredUsage('test-panel')).toBeNull(); // different panel id — not stored there
     expect(session.lastUsageStats).toEqual({ input_tokens: 900, output_tokens: 120 });
   });
 
-  it('buildPersistentCliArgs resets protocol state and snapshots access level', () => {
+  it('refusal stopReason surfaces as an error', () => {
+    session.acpSessionId = 'sess_42';
+    provider.formatPersistentInput('turn', session);
+    const chunk = provider.parseStreamLine(
+      JSON.stringify({ jsonrpc: '2.0', id: session.promptId, result: { stopReason: 'refusal' } }),
+      session
+    );
+    expect(chunk?.type).toBe('error');
+    expect(chunk?.content).toContain('refusal');
+  });
+
+  it('buildPersistentCliArgs resets protocol state and snapshots access level + mode', () => {
     session.acpSessionId = 'stale';
     session.sessionId = 'stale';
     session.rpcId = 9;
-    const args = provider.buildPersistentCliArgs(settings({ accessLevel: 'read-only' }), session);
+    const args = provider.buildPersistentCliArgs(settings({ accessLevel: 'read-only', mode: 'quick-plan' }), session);
     expect(args).toEqual(['acp']);
     expect(session.acpSessionId).toBeNull();
     expect(session.sessionId).toBeNull();
     expect(session.rpcId).toBe(0);
     expect(session.acpAccessLevel).toBe('read-only');
+    expect(session.acpMode).toBe('quick-plan');
   });
 });
 
-describe('Hermes ACP session updates', () => {
-  let provider: TestableHermesProvider;
-  let session: HermesSessionState;
+describe('Kimi Code ACP session updates', () => {
+  let provider: TestableKimiProvider;
+  let session: KimiCodeSessionState;
 
   beforeEach(() => {
-    provider = new TestableHermesProvider();
-    session = createHermesSession();
+    provider = new TestableKimiProvider();
+    session = createKimiSession();
     session.persistentProcess = fakeProc().proc;
   });
 
@@ -171,7 +183,7 @@ describe('Hermes ACP session updates', () => {
     expect(chunk).toEqual({ type: 'text', content: 'Hello!' });
   });
 
-  it('maps agent_thought_chunk to thinking', () => {
+  it('maps agent_thought_chunk to thinking (Kimi models reason)', () => {
     const chunk = provider.parseStreamLine(
       update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'hmm' } }),
       session
@@ -188,7 +200,6 @@ describe('Hermes ACP session updates', () => {
   });
 
   it('names tool_use from the semantic ACP kind, not the display title', () => {
-    // Title is "terminal: rm -rf …" — must NOT leak into the tool name
     const chunk = provider.parseStreamLine(
       update({ sessionUpdate: 'tool_call', toolCallId: 'tc1', title: 'terminal: rm -rf /tmp/x', kind: 'execute', status: 'pending', rawInput: { command: 'rm -rf /tmp/x' } }),
       session
@@ -242,9 +253,9 @@ describe('Hermes ACP session updates', () => {
   });
 });
 
-describe('Hermes ACP permission auto-response', () => {
-  let provider: TestableHermesProvider;
-  let session: HermesSessionState;
+describe('Kimi Code ACP permission auto-response', () => {
+  let provider: TestableKimiProvider;
+  let session: KimiCodeSessionState;
   let written: string[];
 
   const requestFor = (kind: string) => JSON.stringify({
@@ -263,8 +274,8 @@ describe('Hermes ACP permission auto-response', () => {
     ((writtenJson(written)[0].result as { outcome: { optionId?: string; outcome: string } }).outcome);
 
   beforeEach(() => {
-    provider = new TestableHermesProvider();
-    session = createHermesSession();
+    provider = new TestableKimiProvider();
+    session = createKimiSession();
     const fake = fakeProc();
     session.persistentProcess = fake.proc;
     written = fake.written;
@@ -335,6 +346,8 @@ describe('Hermes ACP permission auto-response', () => {
   });
 
   it('fails CLOSED (cancelled) when denying but ONLY allow options are offered', () => {
+    // A non-conforming agent that presents an all-allow option list for a
+    // dangerous kind must NOT get auto-approved: with no deny option we cancel.
     session.acpAccessLevel = 'read-only';
     const request = JSON.stringify({
       jsonrpc: '2.0', id: 77, method: 'session/request_permission',
@@ -353,24 +366,21 @@ describe('Hermes ACP permission auto-response', () => {
   });
 });
 
-describe('Hermes response boundary + interrupt + fallback', () => {
-  let provider: TestableHermesProvider;
-  let session: HermesSessionState;
+describe('Kimi Code response boundary + interrupt + fallback + model env', () => {
+  let provider: TestableKimiProvider;
+  let session: KimiCodeSessionState;
 
   beforeEach(() => {
-    provider = new TestableHermesProvider();
-    session = createHermesSession();
+    provider = new TestableKimiProvider();
+    session = createKimiSession();
   });
 
   it('boundary fires only on prompt responses (stopReason) and error responses', () => {
     expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 3, result: { stopReason: 'end_turn' } }))).toBe(true);
     expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 2, error: { code: -32000, message: 'auth' } }))).toBe(true);
-    // initialize / session-new success responses do NOT end the turn
     expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: 1 } }))).toBe(false);
     expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { sessionId: 's' } }))).toBe(false);
-    // server→client requests carry method — never a boundary
     expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'session/request_permission', params: {} }))).toBe(false);
-    // notifications and junk
     expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {} }))).toBe(false);
     expect(provider.isResponseBoundary('not json')).toBe(false);
   });
@@ -381,33 +391,35 @@ describe('Hermes response boundary + interrupt + fallback', () => {
     session.persistentReady = true;
     session.acpSessionId = 'sess_42';
     provider.interruptPersistentProcess(session);
-    // No JSON-RPC written, no \x03 — the process is simply dropped
     expect(fake.written).toEqual([]);
     expect(session.persistentProcess).toBeNull();
     expect(session.persistentReady).toBe(false);
   });
 
   it('_persistentSettingsMatch forces a respawn when access level changes under a plan mode (fresh permission snapshot)', () => {
-    // Spawn snapshot: detailed-plan + full-access. The base collapses both
-    // detailed-plan+full-access and detailed-plan+read-only to permissionMode
-    // 'plan', so WITHOUT the override a read-only flip would NOT respawn and
-    // the permission snapshot would go stale (the confirmed bug).
     provider.buildPersistentCliArgs(settings({ accessLevel: 'full-access', mode: 'detailed-plan' }), session);
     session.persistentSettings = { model: undefined, permissionMode: 'plan', thinkingLevel: 'none', effortLevel: '' };
 
     expect(provider.persistentSettingsMatch(session, settings({ accessLevel: 'full-access', mode: 'detailed-plan' }))).toBe(true);
-    // Flip access to read-only under the same plan mode → must break the match
     expect(provider.persistentSettingsMatch(session, settings({ accessLevel: 'read-only', mode: 'detailed-plan' }))).toBe(false);
   });
 
   it('fallback diagnostics yield exactly one actionable error', () => {
     provider.buildCliArgs({} as Settings, session);
     expect(session.fallbackDiagnostics).toBe(true);
+    expect(provider.buildCliArgs({} as Settings, session)).toEqual(['acp', '--check']);
 
-    const first = provider.parseStreamLine('ACP dependency missing: acp>=0.4', session);
+    const first = provider.parseStreamLine('ACP dependency missing', session);
     expect(first?.type).toBe('error');
-    expect(first?.content).toContain('hermes acp');
-    // subsequent lines are swallowed
+    expect(first?.content).toContain('kimi acp');
     expect(provider.parseStreamLine('more output', session)).toBeNull();
+  });
+
+  it('getExtraSpawnEnv injects ANTHROPIC_MODEL only when a model is selected', () => {
+    expect(provider.getExtraSpawnEnv(settings({ model: '' }))).toEqual({});
+    expect(provider.getExtraSpawnEnv(settings({ model: 'default' }))).toEqual({});
+    expect(provider.getExtraSpawnEnv(settings({ model: 'kimi-for-coding-highspeed' }))).toEqual({ ANTHROPIC_MODEL: 'kimi-for-coding-highspeed' });
+    // An explicitly routed model wins.
+    expect(provider.getExtraSpawnEnv(settings({ model: 'x', routedModel: 'k3' }))).toEqual({ ANTHROPIC_MODEL: 'k3' });
   });
 });

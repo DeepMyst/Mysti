@@ -24,6 +24,7 @@ import {
   TestableClineProvider,
   TestableOpenClawProvider,
   TestableHermesProvider,
+  TestableKimiProvider,
 } from '../helpers/providerFactory';
 
 const AUTH_ENV_KEYS = [
@@ -32,6 +33,7 @@ const AUTH_ENV_KEYS = [
   'CONTINUE_API_KEY', 'CLINE_API_KEY', 'NOUS_API_KEY', 'GLM_API_KEY', 'OPENCLAW_GATEWAY_TOKEN',
   'COPILOT_HOME', 'CLINE_DATA_DIR', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'HERMES_HOME',
   'CONTINUE_GLOBAL_DIR', 'OPENCLAW_STATE_DIR', 'LITECLAW_STATE_DIR', 'LITECLAW_AGENT_DIR',
+  'MOONSHOT_API_KEY', 'KIMI_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'KIMI_HOME',
 ];
 
 describe('provider auth detection (wrong-path false-negative fixes)', () => {
@@ -131,5 +133,28 @@ describe('provider auth detection (wrong-path false-negative fixes)', () => {
     realFs.rmSync(path.join(tmpHome, '.hermes'), { recursive: true, force: true });
     process.env.GLM_API_KEY = 'glm-x';
     expect((await new TestableHermesProvider().checkAuthentication()).authenticated).toBe(true);
+  });
+
+  it('kimi: OAuth via ~/.kimi/auth.json, an API-keyed config, and MOONSHOT_API_KEY env all authenticate', async () => {
+    // 1) OAuth session file from `/login`
+    write('.kimi/auth.json', JSON.stringify({ access_token: 'x' }));
+    const p = new TestableKimiProvider();
+    expect((await p.getAuthConfig()).isAuthenticated).toBe(true);
+    expect((await p.checkAuthentication()).authenticated).toBe(true);
+    realFs.rmSync(path.join(tmpHome, '.kimi'), { recursive: true, force: true });
+
+    // 2) config.toml carrying an api key
+    write('.kimi/config.toml', 'api_key = "sk-moonshot-123"');
+    expect((await new TestableKimiProvider().checkAuthentication()).authenticated).toBe(true);
+    realFs.rmSync(path.join(tmpHome, '.kimi'), { recursive: true, force: true });
+
+    // 3) env key
+    process.env.MOONSHOT_API_KEY = 'sk-moonshot-env';
+    expect((await new TestableKimiProvider().checkAuthentication()).authenticated).toBe(true);
+  });
+
+  it('kimi: a bare ~/.kimi config with no key is NOT authenticated (existence is not proof)', async () => {
+    write('.kimi/config.toml', '# scaffold only\ntheme = "dark"\n');
+    expect((await new TestableKimiProvider().checkAuthentication()).authenticated).toBe(false);
   });
 });

@@ -31,6 +31,7 @@ export const VENDOR_FAMILY: Partial<Record<AgentType, string>> = {
   'openclaw': 'openclaw',
   'hermes': 'nous',
   'continue': 'continue',
+  'kimi-code': 'moonshot',
   'ollama': 'local',
   'localai': 'local',
 };

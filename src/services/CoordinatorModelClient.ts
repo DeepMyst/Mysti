@@ -23,6 +23,8 @@
  */
 
 import type { GatewayChatMessage, DeepMystGatewayClient } from './DeepMystGatewayClient';
+import type { AccumulatedToolCall } from '../utils/toolCallAccumulator';
+import { modelSupportsToolCalls } from './coordinatorTools';
 import type { OpenRouterClient } from './OpenRouterClient';
 
 export interface CoordinatorConfig {
@@ -92,6 +94,8 @@ export interface CoordinatorStreamEvent {
   finishReason?: string;
   /** Real billed cost for this stream (X-DeepMyst-Cost-USD), when reported (P0.8). */
   costUsd?: number;
+  /** Plan 19 P4: the coordinator model requested native tool calls this turn. */
+  toolCalls?: AccumulatedToolCall[];
 }
 
 /** Message shown when the Mysti agent has no credential to run on. */
@@ -238,14 +242,19 @@ export class CoordinatorModelClient {
   /** Stream a completion token-by-token (Mysti's default answer + delegation loop). */
   public async *stream(
     messages: GatewayChatMessage[],
-    opts: { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal } = {},
+    opts: { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal; tools?: unknown[] } = {},
   ): AsyncGenerator<CoordinatorStreamEvent> {
     if (this._useOpenRouter()) {
       // Match the gateway path's generous ceiling (was OpenRouterClient's 120s
       // default, which killed any coordinator turn > 2 min). OpenRouterClient
       // treats this as a total-stream timeout; the idle-watchdog refinement
       // lives in the gateway client's read loop.
-      yield* this._drain(this._openRouter.streamChat({ model: await this.resolveCoordinatorModel(), messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS }));
+      // Gate tools on the ACTUAL resolved model — the caller decides coordTools
+      // from the primary, but only attach them when THIS model is tool-capable
+      // so a non-capable model never 400s on an unsupported `tools` field
+      // (review round-5 #5/#9).
+      const orModel = await this.resolveCoordinatorModel();
+      yield* this._drain(this._openRouter.streamChat({ model: orModel, messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: modelSupportsToolCalls(orModel) ? opts.tools : undefined }));
       return;
     }
     if (!this._isSignedIn()) {
@@ -266,7 +275,7 @@ export class CoordinatorModelClient {
   private async *_streamGatewayChain(
     models: string[],
     messages: GatewayChatMessage[],
-    opts: { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal },
+    opts: { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal; tools?: unknown[] },
   ): AsyncGenerator<CoordinatorStreamEvent> {
     // Empty-chain guard, symmetric with complete() (review [19]) — otherwise a
     // fresh sticky computes Math.min(0, -1) = -1 ⇒ models[-1] undefined ⇒ a
@@ -286,7 +295,12 @@ export class CoordinatorModelClient {
       // answer — a failed pre-text attempt that advances must not add its head
       // cost to the total (review [18]).
       let attemptCost: number | undefined;
-      for await (const ev of this._gateway.streamChat({ model: models[i], messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS })) {
+      // Per-model tool gating (review round-5 #5/#9): coordTools is decided from
+      // the PRIMARY, but the chain walks free→paid — attach `tools` only to a
+      // model that actually supports them so a non-capable fallback can't 400 on
+      // an unsupported field and break a run the text protocol would've survived.
+      const modelTools = modelSupportsToolCalls(models[i]) ? opts.tools : undefined;
+      for await (const ev of this._gateway.streamChat({ model: models[i], messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: modelTools })) {
         if (ev.error) { streamErr = ev.error; break; }
         if (ev.model) { resolvedModel = ev.model; yield { model: ev.model }; }
         if (ev.reasoning) { yield { reasoning: ev.reasoning }; }
@@ -301,6 +315,22 @@ export class CoordinatorModelClient {
           yield { text: ev.text };
         }
         if (ev.usage) { yield { usage: { input_tokens: ev.usage.inputTokens ?? 0, output_tokens: ev.usage.outputTokens ?? 0 } }; }
+        if (ev.toolCalls && ev.toolCalls.length) {
+          // A finalized tool_call set means THIS attempt OWNS the turn (mirrors
+          // first-text ownership at L297): stamp sticky + surface the held cost,
+          // and — via sawText — never fail over to the next chain model
+          // afterwards. Without this, a retryable error AFTER the toolCalls were
+          // emitted would `continue` to the next model and merge two models into
+          // one turn, or a to-be-abandoned attempt's toolCalls would still reach
+          // the consumer and get dispatched (review round-5 #4/#6).
+          if (!sawText) {
+            sawText = true;
+            this._stampSticky(i);
+            if (!resolvedModel) { yield { model: models[i] }; }
+            if (attemptCost !== undefined) { yield { costUsd: attemptCost }; attemptCost = undefined; }
+          }
+          yield { toolCalls: ev.toolCalls };
+        }
         if (ev.finishReason) { yield { finishReason: ev.finishReason }; }
         if (ev.done) {
           if (!resolvedModel && !sawText) { yield { model: models[i] }; }
@@ -327,14 +357,16 @@ export class CoordinatorModelClient {
   }
 
   /** Normalize an OpenRouter/gateway stream into CoordinatorStreamEvents. */
-  private async *_drain(source: AsyncGenerator<{ text?: string; reasoning?: string; usage?: { inputTokens?: number; outputTokens?: number }; done?: boolean; error?: string; finishReason?: string; costUsd?: number }>): AsyncGenerator<CoordinatorStreamEvent> {
+  private async *_drain(source: AsyncGenerator<{ text?: string; reasoning?: string; usage?: { inputTokens?: number; outputTokens?: number }; done?: boolean; error?: string; finishReason?: string; costUsd?: number; toolCalls?: AccumulatedToolCall[] }>): AsyncGenerator<CoordinatorStreamEvent> {
     let sawText = false;
+    let sawToolCalls = false;
     let streamErr: string | undefined;
     for await (const ev of source) {
       if (ev.error) { streamErr = ev.error; break; }
       if (ev.reasoning) { yield { reasoning: ev.reasoning }; }
       if (ev.text) { sawText = true; yield { text: ev.text }; }
       if (ev.usage) { yield { usage: { input_tokens: ev.usage.inputTokens ?? 0, output_tokens: ev.usage.outputTokens ?? 0 } }; }
+      if (ev.toolCalls) { sawToolCalls = true; yield { toolCalls: ev.toolCalls }; }
       // [8]: forward finish_reason so the OpenRouter-key path also auto-continues
       // on a length truncation (was gateway-path-only).
       if (ev.finishReason) { yield { finishReason: ev.finishReason }; }
@@ -342,7 +374,8 @@ export class CoordinatorModelClient {
       if (ev.done) { yield { done: true }; return; }
     }
     if (streamErr) { yield { error: streamErr }; return; }
-    if (sawText) { yield { done: true }; return; }
+    // A tool-call-only turn legitimately emits no text; treat it as complete.
+    if (sawText || sawToolCalls) { yield { done: true }; return; }
     yield { error: 'No response from the coordinator model' };
   }
 

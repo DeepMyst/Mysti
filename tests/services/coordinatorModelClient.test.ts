@@ -362,3 +362,105 @@ describe('CoordinatorModelClient — OpenRouter opt-in when keyed', () => {
     expect(getDefaultFreeModel).not.toHaveBeenCalled();
   });
 });
+
+describe('CoordinatorModelClient — native tool-calling (Plan 19 P4)', () => {
+  const TOOL_CALLS = [{ id: 'call_1', name: 'read', arguments: '{"path":"a.ts"}' }];
+
+  it('forwards a toolCalls event from the gateway path (with done)', async () => {
+    const gw = stubGateway({ streamChat: () => mkStream([{ toolCalls: TOOL_CALLS }, { finishReason: 'tool_calls' }, { done: true }]) });
+    const client = make({ gw });
+    const out: any[] = [];
+    for await (const ev of client.stream([])) { out.push(ev); }
+    expect(out.find(e => e.toolCalls)?.toolCalls).toEqual(TOOL_CALLS);
+    expect(out.some(e => e.done)).toBe(true);
+  });
+
+  it('forwards a toolCalls event from the OpenRouter path', async () => {
+    const or = stubOpenRouter({ isConfigured: () => true, streamChat: () => mkStream([{ toolCalls: TOOL_CALLS }, { done: true }]) });
+    const client = make({ or, signedIn: false });
+    const out: any[] = [];
+    for await (const ev of client.stream([])) { out.push(ev); }
+    expect(out.find(e => e.toolCalls)?.toolCalls).toEqual(TOOL_CALLS);
+    expect(out.some(e => e.done)).toBe(true);
+  });
+
+  it('completes a tool-call-only turn even with no text (drain marks done)', async () => {
+    // A pure tool-call turn emits no text; the OpenRouter drain must still end
+    // with { done } rather than "No response from the coordinator model".
+    const or = stubOpenRouter({ isConfigured: () => true, streamChat: () => mkStream([{ toolCalls: TOOL_CALLS }]) });
+    const client = make({ or, signedIn: false });
+    const out: any[] = [];
+    for await (const ev of client.stream([])) { out.push(ev); }
+    expect(out.some(e => e.error)).toBe(false);
+    expect(out[out.length - 1]).toEqual({ done: true });
+  });
+
+  it('passes the tools array through to the gateway streamChat', async () => {
+    const seen: any = {};
+    const gw = stubGateway({ streamChat: (p: any) => { seen.tools = p.tools; return mkStream([{ text: 'ok' }, { done: true }]); } });
+    const client = make({ gw });
+    const tools = [{ type: 'function', function: { name: 'read', description: 'd', parameters: {} } }];
+    for await (const _ of client.stream([], { tools })) { /* drain */ }
+    expect(seen.tools).toEqual(tools);
+  });
+
+  it('passes the tools array through to the OpenRouter streamChat (tool-capable model)', async () => {
+    const seen: any = {};
+    const or = stubOpenRouter({ isConfigured: () => true, streamChat: (p: any) => { seen.tools = p.tools; return mkStream([{ text: 'ok' }, { done: true }]); } });
+    // Pin a tool-capable resolved model so the per-model gate attaches tools.
+    const client = make({ or, signedIn: false, config: cfg({ openRouterModel: 'openai/gpt-oss-120b:free' }) });
+    const tools = [{ type: 'function', function: { name: 'ls', description: 'd', parameters: {} } }];
+    for await (const _ of client.stream([], { tools })) { /* drain */ }
+    expect(seen.tools).toEqual(tools);
+  });
+
+  it('does NOT attach tools when the resolved OpenRouter model is not tool-capable (round-5 #5/#9)', async () => {
+    const seen: any = { set: false };
+    const or = stubOpenRouter({ isConfigured: () => true, getDefaultFreeModel: async () => 'mystery/unknown-model:free', streamChat: (p: any) => { seen.tools = p.tools; seen.set = true; return mkStream([{ text: 'ok' }, { done: true }]); } });
+    const client = make({ or, signedIn: false, config: cfg({ openRouterModel: 'auto' }) });
+    const tools = [{ type: 'function', function: { name: 'ls', description: 'd', parameters: {} } }];
+    for await (const _ of client.stream([], { tools })) { /* drain */ }
+    expect(seen.set).toBe(true);
+    expect(seen.tools).toBeUndefined();
+  });
+
+  it('does NOT fail over to the next chain model after a model already emitted toolCalls (round-5 #4/#6)', async () => {
+    // Model A emits a finalized tool_call, then a retryable transport error
+    // before [DONE]. The attempt OWNS the turn — the chain must NOT advance and
+    // merge a second model's output into the same coordinator turn.
+    const models: string[] = [];
+    const gw = stubGateway({
+      streamChat: (p: any) => {
+        models.push(p.model);
+        return p.model === 'free/a:free'
+          ? mkStream([{ toolCalls: TOOL_CALLS }, { error: 'Stream interrupted: MidStreamFallbackError' }])
+          : mkStream([{ text: 'second model answer' }, { done: true }]);
+      },
+    });
+    const client = make({ gw, signedIn: true, config: cfg({ freeModels: ['free/a:free', 'free/b:free'] }) });
+    const out: any[] = [];
+    for await (const ev of client.stream([])) { out.push(ev); }
+    expect(models).toEqual(['free/a:free']); // never advanced to free/b:free
+    expect(out.find(e => e.toolCalls)?.toolCalls).toEqual(TOOL_CALLS);
+    expect(out.some(e => e.text === 'second model answer')).toBe(false);
+  });
+
+  it('attaches tools only to the tool-capable models in the chain (round-5 #5/#9)', async () => {
+    // Primary is tool-capable (gets tools); a non-capable fallback must NOT
+    // receive the tools field (it would 400 on it).
+    const seen: Record<string, unknown> = {};
+    const gw = stubGateway({
+      streamChat: (p: any) => {
+        seen[p.model] = p.tools;
+        return p.model === 'openrouter/openai/gpt-oss-120b:free'
+          ? mkStream([{ error: '429 rate-limited' }]) // force failover
+          : mkStream([{ text: 'ok' }, { done: true }]);
+      },
+    });
+    const client = make({ gw, signedIn: true, config: cfg({ freeModels: ['openrouter/openai/gpt-oss-120b:free'], gatewayFallbackModel: 'noncapable/mystery-model' }) });
+    const tools = [{ type: 'function', function: { name: 'read', description: 'd', parameters: {} } }];
+    for await (const _ of client.stream([], { tools })) { /* drain */ }
+    expect(seen['openrouter/openai/gpt-oss-120b:free']).toEqual(tools); // capable → tools
+    expect(seen['noncapable/mystery-model']).toBeUndefined();            // non-capable → no tools
+  });
+});

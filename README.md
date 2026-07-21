@@ -31,7 +31,7 @@
 
 <p align="center">
   <strong>Your AI Coding team for VSCode</strong><br>
-  <em>14 AI providers — Claude Code, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, Manus, OpenCode, Qwen Code, Ollama, LocalAI, Hermes & Continue — working solo or in teams</em><br>
+  <em>15 AI providers — Claude Code, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, OpenCode, Qwen Code, Ollama, LocalAI, Hermes, Continue, OpenRouter & Kimi Code — working solo or in teams</em><br>
   <em>Wisdom of the crowd where the collective intelligence of several agents outperforms a single one.</em>
 </p>
 
@@ -116,6 +116,8 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | **LocalAI** | Self-hosted AI models, full control |
 | **Hermes** | NousResearch's self-improving agent — skills, persistent memory, 300+ models via Nous Portal/OpenRouter |
 | **Continue** | Open-source coding agent (cn CLI) — hub assistants, custom rules, any model |
+| **OpenRouter** | Unified API to 300+ models (OpenAI-compatible) — free by default |
+| **Kimi Code** | Moonshot AI's terminal coding agent (kimi CLI) — Kimi K2.7 Code / K3, up to 1M context, via ACP |
 
 **Switch providers with one click. No lock-in.**
 
@@ -124,7 +126,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | vs Copilot/Cursor | Mysti Advantage |
 |-------------------|-----------------|
 | Single AI | **Multi-agent brainstorming** — two AIs collaborate with 5 strategies |
-| Locked to one provider | **14 providers** — Claude, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, Manus, OpenCode, Qwen, Ollama, LocalAI, Hermes, Continue |
+| Locked to one provider | **15 providers** — Claude, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, OpenCode, Qwen, Ollama, LocalAI, Hermes, Continue, OpenRouter, Kimi Code |
 | Black box | **Full permission control** — read-only to full-access |
 | Generic responses | **16 personas** — architect, debugger, security expert... |
 | Manual workflow | **Autonomous mode** — AI works independently with safety controls |

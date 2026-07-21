@@ -92,6 +92,11 @@ export class MystiLocalTools {
     return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   }
 
+  /** The workspace root, or undefined when no folder is open (public for MystiLocalExec's bash cwd). */
+  workspaceRoot(): string | undefined {
+    return this._root();
+  }
+
   /**
    * Resolve a model-supplied path INSIDE the workspace, rejecting absolute
    * escapes, `..` traversal, and symlinks pointing outside. Returns the real
@@ -125,6 +130,41 @@ export class MystiLocalTools {
   /** Workspace-relative POSIX path (for secret-file matching, stable across OS). */
   private _relPosix(root: string, abs: string): string {
     return path.relative(root, abs).split(path.sep).join('/');
+  }
+
+  /**
+   * Resolve + secret-check a WRITE / edit target for the coordinator's gated
+   * local-execution layer (Plan 19). Returns the safe absolute path (which may
+   * not exist yet — that's fine for a create), or an actionable error.
+   *
+   * This is PATH-SAFETY ONLY — it applies the exact same workspace-scoping
+   * (`_safeResolve`: absolute-escape / `..` / symlink-out rejection) and secret
+   * filter (`looksLikeSecret`) as `read()`. Mutation itself never happens here;
+   * it stays behind the permission gate + checkpoint in `MystiLocalExec`.
+   */
+  async resolveWriteTarget(relPath: string): Promise<{ ok: true; abs: string; relPosix: string } | { ok: false; output: string }> {
+    const r = await this._safeResolve(relPath);
+    if (!r) {
+      return { ok: false, output: `"${relPath}" is not inside the workspace (or no workspace is open).` };
+    }
+    // Refuse to write THROUGH a symlink leaf. `_safeResolve`'s existence probe
+    // (`fs.existsSync`) FOLLOWS symlinks, so a DANGLING symlink (target absent)
+    // reads as non-existent, slips past the containment check, and `writeFile`
+    // would then create the file at the link's out-of-workspace target
+    // (e.g. `notes.txt -> ~/.ssh/authorized_keys`). A write/patch target must
+    // never itself be a symlink — lstat does NOT follow, so it catches both the
+    // dangling and the in-workspace-alias cases (review round-4 HIGH).
+    const linkStat = await fs.promises.lstat(r.abs).catch(() => null);
+    if (linkStat?.isSymbolicLink()) {
+      return { ok: false, output: `"${relPath}" is a symlink — refusing to write through it.` };
+    }
+    const relAbs = this._relPosix(r.root, r.abs);
+    // Check both the lexical path and the symlink-resolved real path so a
+    // `notes.txt -> .env` target can't smuggle a secret write past the filter.
+    if (looksLikeSecret(relAbs) || looksLikeSecret(this._relPosix(r.root, r.real))) {
+      return { ok: false, output: `"${relPath}" looks like a credentials/secret file — writing secret files is blocked.` };
+    }
+    return { ok: true, abs: r.abs, relPosix: relAbs };
   }
 
   /** read — file contents with line numbers; optional 1-based inclusive range. */

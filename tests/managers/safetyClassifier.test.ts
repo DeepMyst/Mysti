@@ -175,4 +175,19 @@ describe('SafetyClassifier — existing hard blocks still enforced', () => {
     expect(c.classifyBashCommand('sudo apt install x').level).toBe('blocked');
     expect(c.classifyBashCommand('git push origin main --force').level).toBe('blocked');
   });
+
+  it('blocks force-push hidden behind a benign first subcommand / trailing newline / refspec (round-5 regression, aggressive mode)', () => {
+    // The round-4 tokenizer only looked at the FIRST git subcommand and anchored
+    // to end-of-string, so these auto-approved in aggressive mode. Must be blocked.
+    const c = classifierFor('aggressive');
+    for (const cmd of [
+      'git status && git push -f',
+      'git add -A && git commit -m x && git push --force',
+      'git push --force\n',
+      'echo hi; git push --force-with-lease',
+      'git push origin +main:main',
+    ]) {
+      expect(c.classifyBashCommand(cmd).level, cmd).toBe('blocked');
+    }
+  });
 });

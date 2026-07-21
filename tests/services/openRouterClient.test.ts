@@ -141,6 +141,46 @@ describe('OpenRouterClient', () => {
     });
   });
 
+  describe('full catalog (listAllModels) + free/paid + pricing', () => {
+    const CATALOG = {
+      data: [
+        { id: 'openai/gpt-oss-120b:free', name: 'GPT OSS Free', context_length: 131000, supported_parameters: ['tools'], pricing: { prompt: '0', completion: '0' } },
+        { id: 'anthropic/claude-sonnet-4.6', name: 'Claude Sonnet 4.6', context_length: 200000, supported_parameters: ['tools'], pricing: { prompt: '0.000003', completion: '0.000015' } },
+        { id: 'zero/priced-no-suffix', name: 'Zero Priced', context_length: 8000, supported_parameters: [], pricing: { prompt: '0', completion: '0' } },
+        { id: 'nopricing/model', name: 'No Pricing', context_length: 4000, supported_parameters: ['tools'] },
+      ],
+    };
+
+    it('returns BOTH free and paid models (unlike listFreeModels)', async () => {
+      const client = makeClient((async () => jsonResponse(CATALOG)) as unknown as typeof fetch);
+      const all = await client.listAllModels();
+      expect(all.map(m => m.id).sort()).toEqual(CATALOG.data.map(m => m.id).sort());
+    });
+
+    it('marks :free suffix and all-zero pricing as free; priced/unknown as paid', async () => {
+      const client = makeClient((async () => jsonResponse(CATALOG)) as unknown as typeof fetch);
+      const byId = Object.fromEntries((await client.listAllModels()).map(m => [m.id, m]));
+      expect(byId['openai/gpt-oss-120b:free'].free).toBe(true);    // :free suffix
+      expect(byId['zero/priced-no-suffix'].free).toBe(true);        // all-zero pricing, no suffix
+      expect(byId['anthropic/claude-sonnet-4.6'].free).toBe(false); // priced
+      expect(byId['nopricing/model'].free).toBe(false);            // unknown pricing → treat as paid
+    });
+
+    it('parses per-token pricing (absent when the API omits it)', async () => {
+      const client = makeClient((async () => jsonResponse(CATALOG)) as unknown as typeof fetch);
+      const all = await client.listAllModels();
+      expect(all.find(m => m.id === 'anthropic/claude-sonnet-4.6')!.pricing).toEqual({ prompt: 0.000003, completion: 0.000015 });
+      expect(all.find(m => m.id === 'nopricing/model')!.pricing).toBeUndefined();
+    });
+
+    it('toolsOnly filters to tool-capable models', async () => {
+      const client = makeClient((async () => jsonResponse(CATALOG)) as unknown as typeof fetch);
+      const tools = await client.listAllModels({ toolsOnly: true });
+      expect(tools.map(m => m.id)).not.toContain('zero/priced-no-suffix');
+      expect(tools.every(m => m.supportsTools)).toBe(true);
+    });
+  });
+
   describe('concurrency cap', () => {
     it('never runs more than maxConcurrent requests at once', async () => {
       let active = 0;
@@ -158,6 +198,44 @@ describe('OpenRouterClient', () => {
       );
       expect(peak).toBeLessThanOrEqual(2);
       expect(fetchImpl).toHaveBeenCalledTimes(6);
+    });
+  });
+
+  describe('streamChat — native tool_calls (Plan 19 P4)', () => {
+    function sseResponse(frames: string[]): Response {
+      return new Response(frames.map(f => `data: ${f}\n\n`).join(''), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+
+    it('accumulates streamed tool_call deltas and emits one toolCalls event', async () => {
+      const fetchImpl = vi.fn(async () => sseResponse([
+        JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'read', arguments: '' } }] } }] }),
+        JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"path":' } }] } }] }),
+        JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"a.ts"}' } }] } }] }),
+        JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+        '[DONE]',
+      ]));
+      const client = makeClient(fetchImpl as unknown as typeof fetch);
+      const out: any[] = [];
+      for await (const ev of client.streamChat({ model: 'x:free', messages: [], tools: [{ type: 'function', function: { name: 'read', description: 'd', parameters: {} } }] })) { out.push(ev); }
+      const tc = out.find(e => e.toolCalls)?.toolCalls;
+      expect(tc).toEqual([{ id: 'call_1', name: 'read', arguments: '{"path":"a.ts"}' }]);
+      // emitted exactly once, and the stream still completes cleanly
+      expect(out.filter(e => e.toolCalls).length).toBe(1);
+      expect(out.some(e => e.done)).toBe(true);
+    });
+
+    it('sends the tools field in the request body only when provided', async () => {
+      const bodies: any[] = [];
+      const fetchImpl = vi.fn(async (_url: string, init: any) => { bodies.push(JSON.parse(init.body)); return sseResponse([JSON.stringify({ choices: [{ delta: { content: 'hi' } }] }), '[DONE]']); });
+      const client = makeClient(fetchImpl as unknown as typeof fetch);
+      for await (const _ of client.streamChat({ model: 'x:free', messages: [], tools: [{ type: 'function', function: { name: 'ls', description: 'd', parameters: {} } }] })) { /* drain */ }
+      for await (const _ of client.streamChat({ model: 'x:free', messages: [] })) { /* drain */ }
+      expect(bodies[0].tools).toBeDefined();
+      expect(bodies[0].tool_choice).toBe('auto');
+      expect(bodies[1].tools).toBeUndefined();
     });
   });
 });

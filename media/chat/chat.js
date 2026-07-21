@@ -20,6 +20,7 @@
       var HERMES_LOGO = window.__MYSTI_BOOT__.hermesLogoUri;
       var CONTINUE_LOGO = window.__MYSTI_BOOT__.continueLogoUri;
       var OPENROUTER_LOGO = window.__MYSTI_BOOT__.openrouterLogoUri;
+      var KIMI_LOGO = window.__MYSTI_BOOT__.kimiLogoUri;
       var MYSTI_LOGO = window.__MYSTI_BOOT__.logoUri;
 
       // Theme detection for theme-aware provider logos
@@ -53,7 +54,8 @@
         'icons/qwen.png': QWEN_LOGO,
         'icons/hermes.png': HERMES_LOGO,
         'icons/continue.png': CONTINUE_LOGO,
-        'icons/openrouter.png': OPENROUTER_LOGO
+        'icons/openrouter.png': OPENROUTER_LOGO,
+        'icons/kimi.png': KIMI_LOGO
       };
 
       // Mermaid lazy loading
@@ -3070,6 +3072,15 @@
           effortSelect.dispatchEvent(new Event('change'));
         });
       }
+      // Mysti coordinator model button → opens the extension's model QuickPick
+      // (full OpenRouter catalog + gateway models). The choice is a machine-scoped
+      // setting, so a searchable QuickPick fits better than a 300-item dropdown.
+      var mystiModelBtn = document.getElementById('mysti-model-btn');
+      if (mystiModelBtn) {
+        mystiModelBtn.addEventListener('click', function() {
+          postMessageWithPanelId({ type: 'setCoordinatorModel' });
+        });
+      }
 
       // Copy the (authoritative) settings selects into the inline prompt-box
       // pickers: model options minus the "Custom…" entry, and effort options +
@@ -3100,6 +3111,12 @@
             effortSelectInline.innerHTML = effortSelect.innerHTML;
             effortSelectInline.value = effortSelect.value;
           }
+        }
+        // The coordinator-model button is shown ONLY for the Mysti agent (its
+        // model is the machine-scoped coordinator model, not a stock provider model).
+        var mystiModelBtnEl = document.getElementById('mysti-model-btn');
+        if (mystiModelBtnEl) {
+          mystiModelBtnEl.classList.toggle('hidden', state.activeAgent !== 'mysti');
         }
       }
 

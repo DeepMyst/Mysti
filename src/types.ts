@@ -24,11 +24,11 @@ export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type AccessLevel = 'read-only' | 'ask-permission' | 'full-access';
 export type ContextMode = 'auto' | 'manual';
-export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter';
+export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code';
 export type AutocompleteType = 'sentence' | 'paragraph' | 'message';
 
 // Agent and Brainstorm types
-export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter';
+export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code';
 export type PersonaType = 'neutral' | 'architect' | 'pragmatist' | 'engineer' | 'reviewer' | 'designer' | 'custom';
 export type BrainstormPhase = 'initial' | 'individual' | 'discussion' | 'synthesis' | 'complete';
 export type CollaborationStrategy = 'quick' | 'debate' | 'red-team' | 'perspectives' | 'delphi';
@@ -1030,6 +1030,14 @@ export interface PermissionRequest {
    * every concurrent job's pending permission card.
    */
   ownerKey?: string;
+  /**
+   * Plan 19: a caller FORCED an interactive card for an un-undoable side effect
+   * (a coordinator external MCP call / non-safe bash). Such a card must NEVER be
+   * satisfied by an auto-approve — not by session full-access, not by autonomous
+   * mode, and NOT by a permission timeout (it auto-DENIES on expiry regardless
+   * of timeoutBehavior, and is never handed to the semi-autonomous approver).
+   */
+  forceInteractive?: boolean;
 }
 
 export interface PermissionResponse {

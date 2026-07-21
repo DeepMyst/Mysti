@@ -30,14 +30,25 @@ export interface McpToolCallResult {
   content: Array<{ type: string; [k: string]: unknown }>;
 }
 
+/** Race a promise against a timeout; rejects with a clear error if it wins. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    p.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+  });
+}
+
 export class McpClient {
   private _url: string;
   private _bearer?: string;
   private _client: Client | null = null;
+  /** Per-request timeout (ms). A hung MCP server must never hang a coordinator turn. */
+  private readonly _timeoutMs: number;
 
-  constructor(opts: { url: string; bearer?: string }) {
+  constructor(opts: { url: string; bearer?: string; timeoutMs?: number }) {
     this._url = opts.url;
     this._bearer = opts.bearer;
+    this._timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 30_000;
   }
 
   private async _connect(): Promise<Client> {
@@ -46,23 +57,41 @@ export class McpClient {
     const transport = new StreamableHTTPClientTransport(new URL(this._url), {
       requestInit: this._bearer ? { headers: { authorization: `Bearer ${this._bearer}` } } : undefined,
     });
-    await client.connect(transport);
+    // The transport connect has no built-in deadline — bound it so an
+    // unreachable/hung endpoint can't stall the caller indefinitely.
+    await withTimeout(client.connect(transport), this._timeoutMs, 'MCP connect');
     this._client = client;
     return client;
   }
 
-  async listTools(): Promise<Array<{ name: string; description?: string }>> {
-    const client = await this._connect();
-    const { tools } = await client.listTools();
-    return tools.map(t => ({ name: t.name, description: t.description }));
+  /**
+   * List the server's tools. Surfaces `inputSchema` so callers can advertise
+   * argument shapes to a model. On timeout/error the session is dropped so the
+   * next call reconnects fresh.
+   */
+  async listTools(): Promise<Array<{ name: string; description?: string; inputSchema?: unknown }>> {
+    try {
+      const client = await this._connect();
+      const { tools } = await client.listTools(undefined, { timeout: this._timeoutMs });
+      return tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+    } catch (e) {
+      await this.close();
+      throw e;
+    }
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<McpToolCallResult> {
-    const client = await this._connect();
-    const res = await client.callTool({ name, arguments: args });
-    const content = Array.isArray(res.content) ? (res.content as McpToolCallResult['content']) : [];
-    const text = content.filter(c => c.type === 'text').map(c => String((c as { text?: unknown }).text ?? '')).join('\n');
-    return { isError: res.isError === true, text, content };
+    try {
+      const client = await this._connect();
+      const res = await client.callTool({ name, arguments: args }, undefined, { timeout: this._timeoutMs });
+      const content = Array.isArray(res.content) ? (res.content as McpToolCallResult['content']) : [];
+      const text = content.filter(c => c.type === 'text').map(c => String((c as { text?: unknown }).text ?? '')).join('\n');
+      return { isError: res.isError === true, text, content };
+    } catch (e) {
+      // Drop the (possibly wedged) session so a retry reconnects; surface the error.
+      await this.close();
+      throw e;
+    }
   }
 
   async close(): Promise<void> {

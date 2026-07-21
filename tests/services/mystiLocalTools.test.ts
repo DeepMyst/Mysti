@@ -184,4 +184,24 @@ describe('MystiLocalTools', () => {
     fs.writeFileSync(path.join(root, 'credentials.json'), '{"key":"v"}');
     expect((await tools.read('credentials.json')).ok).toBe(false);
   });
+
+  // ── resolveWriteTarget: symlink write escape (round-4 HIGH #1) ──
+  it('resolveWriteTarget resolves a normal new path but REJECTS symlink leaves', async () => {
+    // a normal (non-existent) target is fine
+    const ok = await tools.resolveWriteTarget('src/new.ts');
+    expect(ok.ok).toBe(true);
+
+    // a DANGLING symlink pointing outside the workspace must be refused — else a
+    // write would follow it and create a file outside the workspace.
+    const escapeTarget = path.join(outside, 'evil.txt'); // does NOT exist
+    fs.symlinkSync(escapeTarget, path.join(root, 'sneaky.txt'));
+    const dangling = await tools.resolveWriteTarget('sneaky.txt');
+    expect(dangling.ok).toBe(false);
+    if (!dangling.ok) { expect(dangling.output).toMatch(/symlink/i); }
+
+    // an EXISTING in-workspace symlink is also refused as a write target.
+    fs.writeFileSync(path.join(root, 'real.ts'), 'x');
+    fs.symlinkSync(path.join(root, 'real.ts'), path.join(root, 'alias.ts'));
+    expect((await tools.resolveWriteTarget('alias.ts')).ok).toBe(false);
+  });
 });

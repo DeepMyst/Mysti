@@ -40,7 +40,7 @@
  *     text rather than silently swallowing the coordinator's output.
  */
 
-export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember';
+export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool';
 
 export type ModelTier = 'fast' | 'strong';
 
@@ -50,7 +50,23 @@ export type MystiDirective =
   | { kind: 'ls'; path: string }
   | { kind: 'grep'; pattern: string; include?: string }
   | { kind: 'diag'; target: string }
-  | { kind: 'remember'; fact: string };
+  | { kind: 'remember'; fact: string }
+  // Plan 19 Phase 0 — GATED local execution (write/edit). These carry a body
+  // (file content / old+new). They are NOT read-only: the coordinator loop
+  // routes them through MystiLocalExec → the permission gate + checkpoint.
+  | { kind: 'write'; path: string; content: string }
+  | { kind: 'edit'; path: string; oldString: string; newString: string; replaceAll: boolean }
+  // Plan 19 Phase 2 — GATED, SANDBOXED shell execution.
+  | { kind: 'bash'; command: string }
+  // Plan 19 Phase 1 — atomic multi-file patch (add/update/delete/move).
+  | { kind: 'patch'; patchText: string }
+  // Plan 19 Phase 6 — surface an in-chat "Connect <service>" button (DeepMyst).
+  // SAFE: grants no authority — it only offers the user a one-click OAuth link.
+  | { kind: 'connect'; service: string }
+  // Plan 19 Phase 6 — call one of the user's CONNECTED external MCP tools
+  // (Gmail/Slack/Trello/…). GATED like exec: an un-undoable network side effect,
+  // always user-approved. `args` is untrusted model JSON (may be {} on parse fail).
+  | { kind: 'mcptool'; tool: string; args: Record<string, unknown> };
 
 export interface TagScanResult {
   /** Prose that is safe to show/stream to the user right now. */
@@ -59,8 +75,33 @@ export interface TagScanResult {
   directive?: MystiDirective;
 }
 
-/** All directive kinds the coordinator loop understands. */
+/** Read-only + delegate directive kinds — always active in the coordinator loop. */
 export const ALL_MYSTI_KINDS: MystiDirectiveKind[] = ['delegate', 'read', 'ls', 'grep', 'diag', 'remember'];
+
+/**
+ * Local EXECUTION directive kinds (Plan 19 Phase 0) — gated `write`/`edit`.
+ * Deliberately NOT in ALL_MYSTI_KINDS: the coordinator loop only adds these to
+ * the scanner when local execution is enabled AND the workspace is trusted (and
+ * not in a plan / read-only tier). When off, a `<write:…>` / `<edit:…>` tag is
+ * never even recognized — it degrades to visible text, so the capability simply
+ * does not exist rather than existing-but-erroring.
+ */
+export const MYSTI_EXEC_KINDS: MystiDirectiveKind[] = ['write', 'edit', 'bash', 'patch'];
+
+/**
+ * Connect directive (Plan 19 Phase 6) — added to the scanner only when DeepMyst
+ * is wired. SAFE (offers a button, no authority) but kept out of ALL_MYSTI_KINDS
+ * so the tag is only recognized when the connect capability actually exists.
+ */
+export const MYSTI_CONNECT_KINDS: MystiDirectiveKind[] = ['connect'];
+
+/**
+ * External MCP tool directive (Plan 19 Phase 6) — added to the scanner only when
+ * MCP tools are enabled AND a live handshake to the user's connected tools
+ * succeeded. GATED (every call is user-approved); when off the tag degrades to
+ * visible text, so the capability simply does not exist.
+ */
+export const MYSTI_MCP_KINDS: MystiDirectiveKind[] = ['mcptool'];
 
 export class MystiTagScanner {
   private _buf = '';
@@ -110,6 +151,24 @@ export class MystiTagScanner {
         return new RegExp(`^<diag:${esc}\\s*>([\\s\\S]*?)<\\/diag>$`);
       case 'remember':
         return new RegExp(`^<remember:${esc}\\s*>([\\s\\S]*?)<\\/remember>$`);
+      case 'write':
+        // <write:NONCE path="rel/path">FILE CONTENT</write> — body captured verbatim.
+        return new RegExp(`^<write:${esc}\\s+path\\s*=\\s*"([^"]+)"\\s*>([\\s\\S]*?)<\\/write>$`);
+      case 'edit':
+        // <edit:NONCE path="rel" replace="all|first"?><old>…</old><new>…</new></edit>
+        return new RegExp(`^<edit:${esc}\\s+path\\s*=\\s*"([^"]+)"(?:\\s+replace\\s*=\\s*"(all|first)")?\\s*>\\s*<old>([\\s\\S]*?)<\\/old>\\s*<new>([\\s\\S]*?)<\\/new>\\s*<\\/edit>$`);
+      case 'bash':
+        // <bash:NONCE>a single shell command</bash>
+        return new RegExp(`^<bash:${esc}\\s*>([\\s\\S]*?)<\\/bash>$`);
+      case 'patch':
+        // <patch:NONCE>*** Add/Update/Delete/Move envelope ***</patch>
+        return new RegExp(`^<patch:${esc}\\s*>([\\s\\S]*?)<\\/patch>$`);
+      case 'connect':
+        // <connect:NONCE service="slug">optional reason (ignored)</connect>
+        return new RegExp(`^<connect:${esc}\\s+service\\s*=\\s*"([^"]+)"\\s*>([\\s\\S]*?)<\\/connect>$`);
+      case 'mcptool':
+        // <mcptool:NONCE tool="TOOL_NAME">{ "json": "args" }</mcptool>
+        return new RegExp(`^<mcptool:${esc}\\s+tool\\s*=\\s*"([^"]+)"\\s*>([\\s\\S]*?)<\\/mcptool>$`);
     }
   }
 
@@ -321,6 +380,60 @@ export class MystiTagScanner {
       case 'remember': {
         const fact = m[1].trim();
         return fact ? { kind: 'remember', fact } : null;
+      }
+      case 'write': {
+        const p = m[1].trim();
+        if (!p) { return null; }
+        let content = m[2];
+        // Strip a single leading newline the model naturally emits after `>`;
+        // everything else (incl. a trailing newline) is preserved verbatim.
+        if (content.startsWith('\r\n')) { content = content.slice(2); }
+        else if (content.startsWith('\n')) { content = content.slice(1); }
+        return { kind: 'write', path: p, content };
+      }
+      case 'edit': {
+        const p = m[1].trim();
+        if (!p) { return null; }
+        const oldString = m[3];
+        const newString = m[4];
+        // old_string must be non-empty (an empty match can't anchor); new_string
+        // may be empty (a deletion).
+        if (!oldString) { return null; }
+        return { kind: 'edit', path: p, oldString, newString, replaceAll: m[2] === 'all' };
+      }
+      case 'bash': {
+        const command = m[1].trim();
+        return command ? { kind: 'bash', command } : null;
+      }
+      case 'patch': {
+        // Preserve the body verbatim (content whitespace matters); strip one
+        // leading newline the model emits after `>`.
+        let patchText = m[1];
+        if (patchText.startsWith('\r\n')) { patchText = patchText.slice(2); }
+        else if (patchText.startsWith('\n')) { patchText = patchText.slice(1); }
+        return patchText.trim() ? { kind: 'patch', patchText } : null;
+      }
+      case 'connect': {
+        // m[1] = service slug; m[2] = optional reason (ignored — the card shows
+        // the service name). Normalize to a safe lowercase slug.
+        const service = m[1].trim().toLowerCase();
+        if (!service || !/^[a-z0-9][a-z0-9._-]*$/.test(service)) { return null; }
+        return { kind: 'connect', service };
+      }
+      case 'mcptool': {
+        const tool = m[1].trim();
+        if (!tool) { return null; }
+        // Args are UNTRUSTED model JSON — a parse failure degrades to {} and lets
+        // the dispatch feed a correction back rather than voiding the directive.
+        let args: Record<string, unknown> = {};
+        const raw = m[2].trim();
+        if (raw) {
+          try {
+            const p = JSON.parse(raw);
+            if (p && typeof p === 'object' && !Array.isArray(p)) { args = p as Record<string, unknown>; }
+          } catch { /* leave {} — dispatch reports the parse error to the model */ }
+        }
+        return { kind: 'mcptool', tool, args };
       }
     }
   }

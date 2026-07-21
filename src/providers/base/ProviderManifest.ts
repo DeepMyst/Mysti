@@ -78,7 +78,8 @@ export const PROVIDER_DISPLAY_META: Record<ProviderType, ProviderDisplayMeta> = 
   'qwen-code': { displayName: 'Qwen', shortId: 'qwen', color: '#6C5CE7', icon: 'icons/qwen.png' },
   'hermes': { displayName: 'Hermes', shortId: 'hermes', color: '#D97706', icon: 'icons/hermes.png' },
   'continue': { displayName: 'Continue', shortId: 'continue', color: '#14B8A6', icon: 'icons/continue.png' },
-  'openrouter': { displayName: 'OpenRouter', shortId: 'openrouter', color: '#64748B', icon: 'icons/openrouter.png' }
+  'openrouter': { displayName: 'OpenRouter', shortId: 'openrouter', color: '#64748B', icon: 'icons/openrouter.png' },
+  'kimi-code': { displayName: 'Kimi Code', shortId: 'kimi', color: '#93C5FD', icon: 'icons/kimi.png' }
 };
 
 /**
@@ -100,7 +101,8 @@ export const PROVIDER_CUSTOM_MODEL_SETTING_KEYS: Record<ProviderType, string> = 
   'qwen-code': 'qwenCodeModel',
   'hermes': 'hermesModel',
   'continue': 'continueModel',
-  'openrouter': 'openrouterModel'
+  'openrouter': 'openrouterModel',
+  'kimi-code': 'kimiCodeModel'
 };
 
 /**

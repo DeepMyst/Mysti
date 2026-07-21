@@ -17,6 +17,7 @@ import { QwenCodeProvider } from '../../src/providers/qwen/QwenCodeProvider';
 import { HermesProvider } from '../../src/providers/hermes/HermesProvider';
 import { ContinueProvider } from '../../src/providers/continue/ContinueProvider';
 import { OpenRouterProvider } from '../../src/providers/openrouter/OpenRouterProvider';
+import { KimiCodeProvider } from '../../src/providers/kimi/KimiCodeProvider';
 import type { OpenRouterClient } from '../../src/services/OpenRouterClient';
 
 // Mock extension context for provider constructors
@@ -193,5 +194,33 @@ export class TestableHermesProvider extends HermesProvider {
   }
   public persistentSettingsMatch(session: PanelSessionState, settings: Settings): boolean {
     return super._persistentSettingsMatch(session, settings);
+  }
+}
+
+export class TestableKimiProvider extends KimiCodeProvider {
+  constructor() { super(createMockContext()); }
+  public parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    return super.parseStreamLine(line, session);
+  }
+  public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
+    return super.buildCliArgs(settings, session);
+  }
+  public buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] | null {
+    return super.buildPersistentCliArgs(settings, session);
+  }
+  public formatPersistentInput(prompt: string, session: PanelSessionState): string {
+    return super._formatPersistentInput(prompt, session);
+  }
+  public isResponseBoundary(line: string): boolean {
+    return super._isResponseBoundary(line);
+  }
+  public interruptPersistentProcess(session: PanelSessionState): void {
+    super._interruptPersistentProcess(session);
+  }
+  public persistentSettingsMatch(session: PanelSessionState, settings: Settings): boolean {
+    return super._persistentSettingsMatch(session, settings);
+  }
+  public getExtraSpawnEnv(settings: Settings): Record<string, string> {
+    return super.getExtraSpawnEnv(settings);
   }
 }
