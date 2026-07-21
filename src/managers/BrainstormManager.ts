@@ -49,7 +49,8 @@ const AGENT_BRAINSTORM_ICONS: Record<AgentType, string> = {
   'qwen-code': '🟪',
   'hermes': '🟤',
   'continue': '⏩',
-  'openrouter': '🔀'
+  'openrouter': '🔀',
+  'kimi-code': '🌙'
 };
 
 const FALLBACK_AGENT_COLOR = '#888888';
@@ -124,7 +125,8 @@ export class BrainstormManager {
       'qwen-code': 'qwenCode',
       'hermes': 'hermes',
       'continue': 'continue',
-      'openrouter': 'openrouter'
+      'openrouter': 'openrouter',
+      'kimi-code': 'kimiCode'
     };
     const agentKey = agentKeyMap[agentId] || 'claude';
 
@@ -306,6 +308,11 @@ export class BrainstormManager {
         type: 'agent_error',
         content: error instanceof Error ? error.message : 'Unknown error in brainstorm session'
       };
+      // 5.2: the webview derives brainstormComplete from `done` — without it
+      // the error path left the UI waiting forever. Mark the session terminal
+      // too so isSessionActive() doesn't report a dead session as running.
+      session.phase = 'complete';
+      yield { type: 'done' };
     }
   }
 
@@ -410,8 +417,13 @@ export class BrainstormManager {
         roleAssignments
       });
 
-      // Assess convergence
-      if (config.autoConverge && round < config.maxDiscussionRounds) {
+      // 5.3a: assess convergence after EVERY round, including the last. The
+      // final round's assessment still feeds the UI (convergence_update) and
+      // the synthesis prompt's convergence status, even though there is no
+      // next round left to skip — previously the `round < maxDiscussionRounds`
+      // guard meant the default 2-round debate was only ever assessed once,
+      // with no stability data, making 'converged' unreachable.
+      if (config.autoConverge) {
         const convergence = this._assessConvergence(sessionId, round);
         session.convergenceHistory.push(convergence);
         yield { type: 'convergence_update', convergence, roundNumber: round };
@@ -745,7 +757,13 @@ export class BrainstormManager {
 
       // Parse convergence score from facilitator summary
       if (config.autoConverge) {
-        const convergence = this._assessConvergence(sessionId, round);
+        // 5.3b: delphi pushes discussion rounds in facilitator/refiner PAIRS
+        // (roundNumber round*2-1 / round*2). Stride 2 makes the heuristic's
+        // position-stability (and oscillation) comparisons pair each agent's
+        // refinement with its PREVIOUS refinement (even pushes) — not with the
+        // facilitator summary, which is a different role and made "stability"
+        // meaningless.
+        const convergence = this._assessConvergence(sessionId, round, 2);
         // B5: Broadened regex to match common convergence score phrasings
         const scoreMatch = facilitatorSummary.match(/(?:convergence|consensus|agreement)\s*(?:score|level|rating)?:?\s*(\d+)\s*\/\s*10/i);
         if (scoreMatch) {
@@ -757,8 +775,11 @@ export class BrainstormManager {
         session.convergenceHistory.push(convergence);
         yield { type: 'convergence_update', convergence, roundNumber: round };
 
-        if (convergence.recommendation === 'converged') {
-          console.log(`[Mysti] Brainstorm: Delphi converged at round ${round}`);
+        // 5.3c: break on 'stalled' too (like debate) — grinding through more
+        // facilitator/refinement rounds after a detected stall only burns
+        // tokens restating the same positions.
+        if (convergence.recommendation === 'converged' || convergence.recommendation === 'stalled') {
+          console.log(`[Mysti] Brainstorm: Delphi ${convergence.recommendation} at round ${round}`);
           break;
         }
       }
@@ -1043,18 +1064,32 @@ export class BrainstormManager {
       );
 
       let synthesis = '';
-      for await (const chunk of stream) {
+      // 5.1: wrap in the silence timeout like every other brainstorm stream
+      // (a hung synthesis previously stalled to the 5-min process timeout),
+      // and treat a streamed 'error' chunk OR an empty accumulated synthesis
+      // at stream end as failure — providers surface CLI failures as
+      // {type:'error'} chunks, not throws, so an error-only stream completed
+      // "normally" with an empty synthesis and the fallback chain never fired.
+      for await (const chunk of this._iterateWithSilenceTimeout(stream)) {
         if (chunk.type === 'text' && chunk.content) {
           synthesis += chunk.content;
           yield {
             type: 'synthesis_text',
             content: chunk.content
           };
+        } else if (chunk.type === 'error') {
+          throw new Error(chunk.content || `Synthesis agent ${synthesisAgentId} reported an error`);
         }
+      }
+      if (!synthesis.trim()) {
+        throw new Error(`Synthesis agent ${synthesisAgentId} returned an empty synthesis`);
       }
 
       session.unifiedSolution = synthesis;
     } catch (error) {
+      // W4 review: a silence-timeout abandons the stream but the child CLI
+      // kept running — cancel it before failing over.
+      this._providerManager.cancelRequest(this._childPanelId(sessionId, synthesisAgentId));
       // B3: Notify UI before attempting fallback
       console.warn(`[Mysti] Brainstorm: Synthesis agent ${synthesisAgentId} failed, trying fallback`);
       const fallbackAgent = session.agents.find(a => a.id !== synthesisAgentId);
@@ -1076,16 +1111,24 @@ export class BrainstormManager {
           );
 
           let synthesis = '';
-          for await (const chunk of fallbackStream) {
+          // 5.1: same hardening as the primary loop — silence timeout, error
+          // chunks and empty output all fail over to the concatenation path.
+          for await (const chunk of this._iterateWithSilenceTimeout(fallbackStream)) {
             if (chunk.type === 'text' && chunk.content) {
               synthesis += chunk.content;
               yield { type: 'synthesis_text', content: chunk.content };
+            } else if (chunk.type === 'error') {
+              throw new Error(chunk.content || `Fallback synthesis agent ${fallbackAgent.id} reported an error`);
             }
+          }
+          if (!synthesis.trim()) {
+            throw new Error(`Fallback synthesis agent ${fallbackAgent.id} returned an empty synthesis`);
           }
           session.unifiedSolution = synthesis;
           return;
         } catch {
-          // Both failed
+          // Both failed — cancel the abandoned fallback child too (W4 review).
+          this._providerManager.cancelRequest(this._childPanelId(sessionId, fallbackAgent.id));
         }
       }
 
@@ -1573,9 +1616,17 @@ Your updated recommendation incorporating insights from the facilitator summary.
   // ============================================================================
 
   /**
-   * Assess convergence after a discussion round using heuristic analysis
+   * Assess convergence after a discussion round using heuristic analysis.
+   *
+   * @param roundStride How many entries back in `session.discussionRounds`
+   *   the previous COMPARABLE round lives (5.3b). Debate/red-team push one
+   *   entry per round → stride 1 compares consecutive rounds. Delphi pushes
+   *   facilitator/refiner PAIRS per round → stride 2 compares an agent's
+   *   refinement with its previous refinement (same agent, same role) instead
+   *   of with the facilitator's summary. The oscillation check (B4) uses
+   *   2×stride for the same reason.
    */
-  private _assessConvergence(sessionId: string, round: number): ConvergenceMetrics {
+  private _assessConvergence(sessionId: string, round: number, roundStride: number = 1): ConvergenceMetrics {
     const session = this._panelSessions.get(sessionId)!;
     const lastRound = session.discussionRounds[session.discussionRounds.length - 1];
 
@@ -1607,9 +1658,10 @@ Your updated recommendation incorporating insights from the facilitator summary.
           if (matches) {disagreementCount += matches.length;}
         }
 
-        // Position stability: compare with previous round contribution
-        if (session.discussionRounds.length >= 2) {
-          const prevRound = session.discussionRounds[session.discussionRounds.length - 2];
+        // Position stability: compare with the previous COMPARABLE round's
+        // contribution (stride entries back — see roundStride doc above).
+        if (session.discussionRounds.length >= 1 + roundStride) {
+          const prevRound = session.discussionRounds[session.discussionRounds.length - 1 - roundStride];
           const prevContribution = prevRound.contributions.get(agentId);
           if (prevContribution && prevContribution.trim()) {
             positionStability.set(agentId, this._calculateTextSimilarity(prevContribution, contribution));
@@ -1623,14 +1675,28 @@ Your updated recommendation incorporating insights from the facilitator summary.
     const agreementRatio = hasEmptyContribution ? 0.5 : (total > 0 ? agreementCount / total : 0.5);
 
     const stabilityValues = Array.from(positionStability.values());
-    const avgStability = stabilityValues.length > 0
+    // 5.3a: with no cross-round stability data (e.g. the first assessed
+    // round), EXCLUDE stability instead of fabricating a 0.5 neutral — the
+    // old default both dragged the score down and made the 0.8 stability
+    // gate unreachable, so a 2-round debate could never report 'converged'.
+    const hasStability = stabilityValues.length > 0;
+    const avgStability = hasStability
       ? stabilityValues.reduce((a, b) => a + b, 0) / stabilityValues.length
       : 0.5;
 
-    const overallConvergence = (agreementRatio * 0.6) + (avgStability * 0.4);
+    const overallConvergence = hasStability
+      ? (agreementRatio * 0.6) + (avgStability * 0.4)
+      : agreementRatio; // documented: agreement-ratio-only score when stability is unknowable
 
     let recommendation: 'continue' | 'converged' | 'stalled' = 'continue';
-    if (!hasEmptyContribution && agreementRatio >= 0.7 && avgStability >= 0.8) {
+    // W4 review: 'converged' REQUIRES cross-round stability evidence — waiving
+    // it when absent let a debate end after the very first assessed round on
+    // agreement keywords alone (critiques are full of "I agree… but"),
+    // skipping the rebuttal phase entirely. Without stability data the honest
+    // recommendation is 'continue'; the score above still reports the
+    // agreement-only number to the UI. At the default maxDiscussionRounds=2
+    // the final round HAS stability data, so 'converged' stays reachable.
+    if (!hasEmptyContribution && agreementRatio >= 0.7 && hasStability && avgStability >= 0.8) {
       recommendation = 'converged';
     } else if (session.convergenceHistory.length >= 2) {
       const prevConvergence = session.convergenceHistory[session.convergenceHistory.length - 1];
@@ -1639,8 +1705,9 @@ Your updated recommendation incorporating insights from the facilitator summary.
         recommendation = 'stalled';
       }
       // B4: Detect oscillation — round N similar to round N-2 but different from N-1
-      if (recommendation === 'continue' && session.discussionRounds.length >= 3) {
-        const twoRoundsAgo = session.discussionRounds[session.discussionRounds.length - 3];
+      // (comparable rounds are `roundStride` entries apart, so N-2 comparable = 2×stride back)
+      if (recommendation === 'continue' && session.discussionRounds.length >= 1 + 2 * roundStride) {
+        const twoRoundsAgo = session.discussionRounds[session.discussionRounds.length - 1 - 2 * roundStride];
         let oscillating = true;
         for (const [agentId, contribution] of lastRound.contributions.entries()) {
           const oldContribution = twoRoundsAgo.contributions.get(agentId);
@@ -1710,56 +1777,101 @@ Your updated recommendation incorporating insights from the facilitator summary.
   /**
    * Interleave chunks from multiple async generators
    * Uses result queue to capture all completions and prevent race condition data loss
+   *
+   * 5.4 hardening:
+   * (a) every child `next()` carries a rejection handler — a child that
+   *     rejects (children normally catch their own errors, so this is
+   *     defense-in-depth) is converted to a terminal result plus one
+   *     agent_error chunk, instead of killing the whole interleave and
+   *     orphaning the sibling's pending promise as an unhandled rejection;
+   * (b) try/finally — when the CONSUMER breaks/returns (or a yield throws),
+   *     every still-active child generator gets `.return()` so it isn't left
+   *     suspended at a yield forever.
    */
   private async *_interleaveGenerators(
     generators: AsyncGenerator<BrainstormStreamChunk>[]
   ): AsyncGenerator<BrainstormStreamChunk> {
     type IteratorType = AsyncIterator<BrainstormStreamChunk>;
-    type ResultType = { iterator: IteratorType; result: IteratorResult<BrainstormStreamChunk> };
+    type ResultType = {
+      iterator: IteratorType;
+      result: IteratorResult<BrainstormStreamChunk>;
+      /** 5.4a: set when the child REJECTED instead of yielding — terminal for that child. */
+      failed?: boolean;
+      error?: unknown;
+    };
 
     const iterators = generators.map(g => g[Symbol.asyncIterator]());
     const active = new Set<IteratorType>(iterators);
 
     // Queue to store completed results (prevents race condition data loss)
     const resultQueue: ResultType[] = [];
-
-    // Start all iterators
     const pending = new Map<IteratorType, Promise<ResultType>>();
-    for (const iterator of iterators) {
+
+    // Advance one child, capturing rejection as a terminal per-child result
+    // (5.4a) so the chain itself can never reject.
+    const advance = (iterator: IteratorType): Promise<ResultType> => {
       const promise = iterator.next()
-        .then(result => ({ iterator, result }))
+        .then(
+          (result): ResultType => ({ iterator, result }),
+          (error): ResultType => ({
+            iterator,
+            result: { done: true, value: undefined },
+            failed: true,
+            error
+          })
+        )
         .then(r => {
           resultQueue.push(r);
           return r;
         });
       pending.set(iterator, promise);
+      return promise;
+    };
+
+    // Start all iterators
+    for (const iterator of iterators) {
+      advance(iterator);
     }
 
-    while (active.size > 0) {
-      const activePending = Array.from(active)
-        .filter(it => pending.has(it))
-        .map(it => pending.get(it)!);
+    try {
+      while (active.size > 0) {
+        const activePending = Array.from(active)
+          .filter(it => pending.has(it))
+          .map(it => pending.get(it)!);
 
-      if (activePending.length === 0) {break;}
+        if (activePending.length === 0) {break;}
 
-      await Promise.race(activePending);
+        await Promise.race(activePending);
 
-      while (resultQueue.length > 0) {
-        const { iterator, result } = resultQueue.shift()!;
-        pending.delete(iterator);
+        while (resultQueue.length > 0) {
+          const { iterator, result, failed, error } = resultQueue.shift()!;
+          pending.delete(iterator);
 
-        if (result.done) {
-          active.delete(iterator);
-        } else {
-          yield result.value;
-          const promise = iterator.next()
-            .then(r => ({ iterator, result: r }))
-            .then(r => {
-              resultQueue.push(r);
-              return r;
-            });
-          pending.set(iterator, promise);
+          if (failed) {
+            // 5.4a: terminal for this child only — the sibling keeps streaming.
+            active.delete(iterator);
+            console.error('[Mysti] Brainstorm: Interleaved agent stream rejected', error);
+            yield {
+              type: 'agent_error',
+              content: error instanceof Error ? error.message : 'Agent stream failed unexpectedly'
+            };
+          } else if (result.done) {
+            active.delete(iterator);
+          } else {
+            yield result.value;
+            advance(iterator);
+          }
         }
+      }
+    } finally {
+      // 5.4b: close any child still suspended at a yield (consumer broke, or
+      // a yield above threw). Fire-and-forget — a hung child's return() may
+      // never settle, and cancellation is handled separately via
+      // cancelSession — but swallow rejections so none escape as unhandled.
+      for (const iterator of active) {
+        try {
+          void iterator.return?.(undefined)?.catch(() => { /* child cleanup errors are non-fatal */ });
+        } catch { /* synchronous return() failures are non-fatal */ }
       }
     }
   }

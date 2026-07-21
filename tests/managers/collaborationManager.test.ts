@@ -310,3 +310,52 @@ describe('CollaborationManager disposeRun (Plan 18 H2)', () => {
     )).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 18 Wave 4 (1.3): Stop reaches -collab- children DIRECTLY via
+// cancelPanel — previously teardown waited for the consumer loop to notice a
+// flag between chunks, so a mid-operation child ran to its 1h deadline.
+// ---------------------------------------------------------------------------
+describe('CollaborationManager cancelPanel (Plan 18 1.3)', () => {
+  let pm: MockProviderManager;
+
+  beforeEach(() => {
+    clearMockConfig();
+    pm = new MockProviderManager();
+  });
+
+  it('cancels all live children for the panel while a run is active', async () => {
+    pm.setProviderAvailable('google-gemini');
+    let release: () => void = () => {};
+    const parked = new Promise<void>(r => { release = r; });
+    let started: () => void = () => {};
+    const startedP = new Promise<void>(r => { started = r; });
+    pm.streamFactories.set('google-gemini', () => (async function* () {
+      yield { type: 'text', content: 'working…' } as StreamChunk;
+      started();
+      await parked;
+      yield { type: 'done' } as StreamChunk;
+    })());
+
+    const manager = makeManager(pm);
+    const collecting = drain(manager.run({
+      brief: 'long task',
+      collaborators: [{ agentId: 'google-gemini' as any, roleId: 'critic' }],
+      context: [],
+      settings: collabSettings(),
+      panelId: 'panel-stop13',
+    }));
+
+    await startedP;
+    manager.cancelPanel('panel-stop13');
+
+    expect(pm.cancelledPanelIds.some(id => id.startsWith('panel-stop13-collab-'))).toBe(true);
+
+    release();
+    await collecting;
+    // Registry cleaned: a second cancelPanel reaches nothing new.
+    const count = pm.cancelledPanelIds.length;
+    manager.cancelPanel('panel-stop13');
+    expect(pm.cancelledPanelIds.length).toBe(count);
+  });
+});

@@ -64,19 +64,8 @@ export class CodexProvider extends BaseCliProvider {
   readonly id = 'openai-codex';
   readonly displayName = 'OpenAI Codex';
 
-  // Track active tool calls for state management through lifecycle
-  private _activeToolCalls: Map<string, {
-    id: string;
-    name: string;
-    inputJson: string;
-    status: 'running' | 'completed' | 'failed';
-  }> = new Map();
-
-  // Track completed tool calls to prevent duplicate tool_result emissions
-  private _completedToolCalls: Set<string> = new Set();
-
-  // Usage stats from turn.completed
-  private _lastUsageStats: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null = null;
+  // NOTE: all mutable stream state (active/completed tool calls, usage stats)
+  // lives on CodexSessionState — per-panel, never on the provider singleton.
 
   readonly config: ProviderConfig = {
     name: 'openai-codex',
@@ -504,8 +493,28 @@ export class CodexProvider extends BaseCliProvider {
           return null; // Don't return done here - let sendMessage handle it
         }
 
-        case 'turn.failed':
-          return { type: 'error', content: event.error || 'Turn failed' };
+        case 'turn.failed': {
+          // event.error may be a raw object ({ message, ... }) — stringify
+          // safely so the webview never renders "[object Object]" (Plan 18 4.6a).
+          const rawError: unknown = event.error;
+          let content: string;
+          if (typeof rawError === 'string' && rawError) {
+            content = rawError;
+          } else if (rawError && typeof rawError === 'object'
+              && typeof (rawError as { message?: unknown }).message === 'string'
+              && (rawError as { message: string }).message) {
+            content = (rawError as { message: string }).message;
+          } else if (rawError !== undefined && rawError !== null && rawError !== '') {
+            try {
+              content = JSON.stringify(rawError);
+            } catch {
+              content = 'Turn failed';
+            }
+          } else {
+            content = 'Turn failed';
+          }
+          return { type: 'error', content };
+        }
 
         // Item events - these contain the actual content
         case 'item.started':
@@ -598,11 +607,16 @@ export class CodexProvider extends BaseCliProvider {
           command: item.command || ''
         };
 
-        // Codex uses exit_code and status for completion detection
+        // Codex uses exit_code and status for completion detection.
+        // A completion WITHOUT an exit_code (null/undefined) is success-unknown,
+        // NOT a failure — only status:'failed' or an explicit non-zero exit code
+        // marks failure (Plan 18 4.6b: `undefined !== null && undefined !== 0`
+        // used to flag exit-code-less item.completed events as failed).
+        const hasExitCode = item.exit_code !== null && item.exit_code !== undefined;
         const isCompleted = eventType === 'item.completed' ||
                            item.status === 'completed' ||
-                           item.exit_code !== null && item.exit_code !== undefined;
-        const isFailed = item.status === 'failed' || (item.exit_code !== null && item.exit_code !== 0);
+                           hasExitCode;
+        const isFailed = item.status === 'failed' || (hasExitCode && item.exit_code !== 0);
 
         if (isCompleted) {
           // Mark as completed to prevent duplicate tool_result emissions

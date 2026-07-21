@@ -298,11 +298,14 @@ export class VideoGenerationService {
 
     const createResponse = await this._httpsRequest({
       hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/veo-3.1-generate-preview:predictLongRunning?key=${apiKey}`,
+      // 6.5: the key travels in the x-goog-api-key header, never the query
+      // string (URLs end up in logs/proxies/referrers).
+      path: '/v1beta/models/veo-3.1-generate-preview:predictLongRunning',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(createBody),
+        'x-goog-api-key': apiKey,
       },
     }, createBody);
 
@@ -360,9 +363,10 @@ export class VideoGenerationService {
 
       const response = await this._httpsRequest({
         hostname: 'generativelanguage.googleapis.com',
-        path: `/v1beta/${operationName}?key=${apiKey}`,
+        // 6.5: key in the x-goog-api-key header, never the query string.
+        path: `/v1beta/${operationName}`,
         method: 'GET',
-        headers: {},
+        headers: { 'x-goog-api-key': apiKey },
       });
 
       const status = JSON.parse(response);

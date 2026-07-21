@@ -211,7 +211,22 @@ export class GeminiProvider extends BaseCliProvider {
       let user = 'Google Account';
       try {
         const accounts = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.gemini', 'google_accounts.json'), 'utf-8'));
-        user = accounts.active || accounts.email || (Array.isArray(accounts.accounts) ? accounts.accounts[0] : undefined) || user;
+        // The account entry may be a plain string OR an object ({email,...}).
+        // Never assign an object to the label — it renders "[object Object]"
+        // in the UI (Plan 18 4.7b). Strings pass through; objects surface
+        // their email/account/user field; anything else keeps the generic label.
+        const candidate: unknown = accounts.active || accounts.email ||
+          (Array.isArray(accounts.accounts) ? accounts.accounts[0] : undefined);
+        if (typeof candidate === 'string' && candidate) {
+          user = candidate;
+        } else if (candidate && typeof candidate === 'object') {
+          const obj = candidate as { email?: unknown; account?: unknown; user?: unknown };
+          const field = [obj.email, obj.account, obj.user]
+            .find((v): v is string => typeof v === 'string' && v.length > 0);
+          if (field) {
+            user = field;
+          }
+        }
       } catch {
         // no/unparseable account file — fall back to the generic label
       }
@@ -382,9 +397,14 @@ export class GeminiProvider extends BaseCliProvider {
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
     if (!apiKey) { return null; }
     try {
+      // API key travels in the x-goog-api-key header, NOT the URL query string
+      // (Plan 18 4.7a — query-string keys leak into logs/proxies/history).
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(apiKey)}`,
-        { signal: AbortSignal.timeout(timeoutMs) },
+        'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',
+        {
+          signal: AbortSignal.timeout(timeoutMs),
+          headers: { 'x-goog-api-key': apiKey },
+        },
       );
       if (!response.ok) { return null; }
       const data = await response.json() as {

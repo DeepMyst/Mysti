@@ -37,6 +37,7 @@ import type {
 import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
+import { clampEffort } from '../../utils/effort';
 
 /**
  * Extended per-panel session state for Claude Code provider.
@@ -47,6 +48,15 @@ export interface ClaudeSessionState extends PanelSessionState {
   lastUsageStats: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null;
   hasStreamedText: boolean;
   awaitingCompactSummary: boolean;
+  /**
+   * Overflow queue for lines that decode to MORE than one chunk (e.g. a `user`
+   * message carrying multiple parallel tool_result blocks). parseStreamLine
+   * returns the first chunk and queues the rest here; the processStream /
+   * _sendViaPersistentProcess overrides drain the queue immediately after each
+   * yielded chunk (and once more at end-of-stream) so nothing is dropped.
+   * Optional so pre-existing session fixtures stay type-valid.
+   */
+  pendingChunks?: StreamChunk[];
 }
 
 /**
@@ -319,6 +329,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       lastUsageStats: null,
       hasStreamedText: false,
       awaitingCompactSummary: false,
+      pendingChunks: [],
     };
   }
 
@@ -353,10 +364,14 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       args.push('--model', effectiveModel);
     }
 
-    // Reasoning effort (Claude Code parity). Claude clamps to the model's
-    // supported ceiling itself, so we pass the requested tier through directly.
-    if (settings.effortLevel) {
-      args.push('--effort', settings.effortLevel);
+    // Reasoning effort (Claude Code parity). Clamp to the declared tiers so a
+    // hand-edited/invalid defaultEffortLevel in settings.json degrades to a
+    // supported tier instead of hard-failing the CLI spawn (Plan 18 4.4 —
+    // Codex already clamps). Valid tiers pass through unchanged; the CLI still
+    // clamps per-model on its side.
+    const effort = clampEffort(settings.effortLevel, this.capabilities.effortLevels);
+    if (effort) {
+      args.push('--effort', effort);
     }
 
     // Inject channel system context as real system instructions (not user message)
@@ -403,10 +418,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       args.push('--model', effectiveModel);
     }
 
-    // Reasoning effort (Claude Code parity). Claude clamps to the model's
-    // supported ceiling itself, so we pass the requested tier through directly.
-    if (settings.effortLevel) {
-      args.push('--effort', settings.effortLevel);
+    // Reasoning effort (Claude Code parity). Clamped like the single-shot path
+    // so an invalid settings.json value degrades instead of erroring (Plan 18 4.4).
+    const effort = clampEffort(settings.effortLevel, this.capabilities.effortLevels);
+    if (effort) {
+      args.push('--effort', effort);
     }
 
     // Inject system context at spawn time (only way to set system prompt for persistent process)
@@ -785,19 +801,34 @@ export class ClaudeCodeProvider extends BaseCliProvider {
           }
           return null; // skip "Compacted" echo and other noise
         }
-        // Handle tool_result blocks (array content)
-        for (const block of data.message.content) {
-          if (block.type === 'tool_result') {
-            return {
-              type: 'tool_result',
-              toolCall: {
-                id: block.tool_use_id || '',
-                name: '',
-                input: {},
-                output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
-                status: block.is_error ? 'failed' : 'completed'
-              }
-            };
+        // Handle tool_result blocks (array content). A single `user` message can
+        // carry MULTIPLE tool_result blocks (parallel tool calls) — returning
+        // only the first silently dropped the siblings (Plan 18 4.5). Since
+        // parseStreamLine returns exactly one chunk per call, the first result
+        // is returned and the rest are queued on the session; the
+        // processStream/_sendViaPersistentProcess wrappers drain the queue
+        // right after each yielded chunk and again at end-of-stream.
+        if (Array.isArray(data.message.content)) {
+          const results: StreamChunk[] = [];
+          for (const block of data.message.content) {
+            if (block.type === 'tool_result') {
+              results.push({
+                type: 'tool_result',
+                toolCall: {
+                  id: block.tool_use_id || '',
+                  name: '',
+                  input: {},
+                  output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
+                  status: block.is_error ? 'failed' : 'completed'
+                }
+              });
+            }
+          }
+          if (results.length > 0) {
+            if (results.length > 1) {
+              (claudeSession.pendingChunks ??= []).push(...results.slice(1));
+            }
+            return results[0];
           }
         }
       }
@@ -824,6 +855,58 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     }
 
     return null;
+  }
+
+  /**
+   * Drain chunks queued by parseStreamLine for lines that decoded to more than
+   * one chunk (parallel tool_results — Plan 18 4.5).
+   */
+  private *_drainPendingChunks(session: ClaudeSessionState): Generator<StreamChunk> {
+    const pending = session.pendingChunks;
+    if (!pending) { return; }
+    while (pending.length > 0) {
+      yield pending.shift()!;
+    }
+  }
+
+  /**
+   * Single-shot stream wrapper: emit queued sibling chunks immediately after
+   * each base-yielded chunk, and flush once more after the stream ends so
+   * queued chunks are emitted even when no further lines arrive (Plan 18 4.5).
+   */
+  protected async *processStream(stderrRef: { output: string }, session: PanelSessionState): AsyncGenerator<StreamChunk> {
+    const claudeSession = session as ClaudeSessionState;
+    claudeSession.pendingChunks = []; // drop any stale leftovers from a cancelled run
+    for await (const chunk of super.processStream(stderrRef, session)) {
+      yield chunk;
+      yield* this._drainPendingChunks(claudeSession);
+    }
+    yield* this._drainPendingChunks(claudeSession);
+  }
+
+  /**
+   * Persistent-process stream wrapper — same pending-chunk drain contract as
+   * the single-shot processStream override above (Plan 18 4.5).
+   */
+  protected async *_sendViaPersistentProcess(
+    content: string,
+    context: ContextItem[],
+    settings: Settings,
+    conversation: Conversation | null,
+    session: PanelSessionState,
+    persona?: PersonaConfig,
+    agentConfig?: AgentConfiguration,
+    attachments?: Attachment[],
+  ): AsyncGenerator<StreamChunk> {
+    const claudeSession = session as ClaudeSessionState;
+    claudeSession.pendingChunks = []; // drop any stale leftovers from a cancelled run
+    for await (const chunk of super._sendViaPersistentProcess(
+      content, context, settings, conversation, session, persona, agentConfig, attachments,
+    )) {
+      yield chunk;
+      yield* this._drainPendingChunks(claudeSession);
+    }
+    yield* this._drainPendingChunks(claudeSession);
   }
 
   /**

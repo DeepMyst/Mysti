@@ -117,11 +117,14 @@ export class ImageGenerationService {
 
     const response = await this._httpsRequest({
       hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      // 6.5: the key travels in the x-goog-api-key header, never the query
+      // string (URLs end up in logs/proxies/referrers).
+      path: '/v1beta/models/gemini-2.5-flash:generateContent',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
+        'x-goog-api-key': apiKey,
       },
     }, body);
 
@@ -344,11 +347,13 @@ export class ImageGenerationService {
 
     const response = await this._httpsRequest({
       hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      // 6.5: key in the x-goog-api-key header, never the query string.
+      path: `/v1beta/models/${model}:generateContent`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
+        'x-goog-api-key': apiKey,
       },
     }, body);
 

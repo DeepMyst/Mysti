@@ -20,6 +20,7 @@ import {
   VISUAL_TEST_SERVER_HEALTH_POLL_MS,
   VISUAL_TEST_SERVER_KILL_GRACE_MS
 } from '../constants';
+import { killProcessTree, isProcessLive } from '../utils/processKill';
 
 interface DevServerProcess {
   process: ChildProcess;
@@ -51,9 +52,19 @@ export class DevServerManager {
 
     const args = command.split(' ');
     const cmd = args.shift()!;
+    // POSIX: spawn DETACHED so the shell (`sh -c "npm run dev"`) becomes the
+    // leader of its own process group and stop() can kill the WHOLE tree via a
+    // negative-pid group signal — a plain SIGTERM to the shell would orphan the
+    // real node/vite child underneath it. Nothing relies on the dev server
+    // sharing the extension host's group (terminal Ctrl+C semantics don't apply
+    // in an extension host), and we keep stdio piped + the 'exit' listener, so
+    // readiness detection and liveness tracking are unchanged.
+    // Windows: keep detached: false (detached would allocate a new console);
+    // stop() uses `taskkill /T /F` there, which walks the child tree itself.
     const proc = spawn(cmd, args, {
       cwd,
       shell: true,
+      detached: process.platform !== 'win32',
       env: { ...process.env, BROWSER: 'none', FORCE_COLOR: '0' },
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -206,32 +217,20 @@ export class DevServerManager {
   }
 
   /**
-   * Stop the dev server for a panel.
+   * Stop the dev server for a panel — killing the whole process TREE, not just
+   * the `shell: true` wrapper we spawned. On POSIX the server was spawned
+   * detached (its own process group), so killProcessTree signals the group
+   * (SIGTERM, then SIGKILL after the grace period); on Windows it uses
+   * `taskkill /PID <pid> /T /F`. Signalling only the shell pid (the old
+   * behaviour) orphaned the real node/vite child.
    */
   async stop(panelId: string): Promise<void> {
     const entry = this._processes.get(panelId);
     if (!entry) { return; }
 
-    const proc = entry.process;
-    if (proc.exitCode !== null) {
-      this._processes.delete(panelId);
-      return;
-    }
-
-    // SIGTERM first
-    proc.kill('SIGTERM');
-
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        // Force kill after grace period
-        try { proc.kill('SIGKILL'); } catch { /* already dead */ }
-        resolve();
-      }, VISUAL_TEST_SERVER_KILL_GRACE_MS);
-
-      proc.on('exit', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
+    await killProcessTree(entry.process, VISUAL_TEST_SERVER_KILL_GRACE_MS, {
+      useProcessGroup: process.platform !== 'win32',
+      label: `DevServer(${panelId})`
     });
 
     this._processes.delete(panelId);
@@ -242,7 +241,9 @@ export class DevServerManager {
    */
   isRunning(panelId: string): boolean {
     const entry = this._processes.get(panelId);
-    return !!entry && entry.process.exitCode === null;
+    // W4 review: exitCode-only misses a signal-killed process (exitCode stays
+    // null, signalCode set) — real liveness, same lesson as processKill B3/B4.
+    return !!entry && isProcessLive(entry.process);
   }
 
   /**

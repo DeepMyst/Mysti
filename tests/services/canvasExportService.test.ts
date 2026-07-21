@@ -55,6 +55,17 @@ describe('exportHtmlBundle', () => {
   it('all files are utf8', () => {
     expect(files.every(f => f.encoding === 'utf8')).toBe(true);
   });
+
+  it('exported pages carry a CSP that allows only the bundled runtime (6.2)', () => {
+    for (const p of ['pages/page-0.html', 'pages/page-1.html']) {
+      const content = byPath[p].content;
+      expect(content).toContain('<meta http-equiv="Content-Security-Policy"');
+      expect(content).toContain("default-src 'none'");
+      expect(content).toContain("connect-src 'none'");
+      // Relative ../runtime scripts need 'self'.
+      expect(content).toContain("script-src 'unsafe-inline' 'unsafe-eval' 'self'");
+    }
+  });
 });
 
 describe('exportPng', () => {

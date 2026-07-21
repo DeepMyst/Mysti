@@ -30,6 +30,20 @@ import type { ArtifactPage, DesignTheme, CanvasFormatSpec } from '../types';
 export const PAGE_ROOT_ID = '__mysti_page';
 export const PAGE_JSX_SCRIPT_ID = '__mysti_page_jsx';
 
+/**
+ * Default inner CSP for the built page document (Plan 18 W4 6.2: export-bundle
+ * pages previously shipped with NO CSP). MIRROR: this string must stay in sync
+ * with `SANDBOX_INNER_CSP` in src/webview/canvasContent.ts, which injects the
+ * same policy into the JS mirror builder `buildPageSrcdoc` in
+ * media/canvas/canvas.js — the TS and JS builders are mirrors of each other.
+ * The webview path inlines the runtime as text, so no script source-list
+ * entries are needed there; `buildPageDocument` widens `script-src` only when
+ * the runtime arrives via `<script src>` (see `defaultCspFor`).
+ */
+export const SANDBOX_INNER_CSP =
+  "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; " +
+  "style-src 'unsafe-inline'; img-src data: blob: https:; font-src data: https:; connect-src 'none';";
+
 export interface SandboxRuntime {
   /**
    * Script *contents* inlined into <head> in load order (React, ReactDOM,
@@ -58,6 +72,14 @@ export interface BuildPageDocOptions {
   runtime: SandboxRuntime;
   /** Resolve an `asset://…` ref to a URL the iframe can load (webview/asset URI). */
   resolveAsset?: (ref: string) => string;
+  /**
+   * Content-Security-Policy meta for the document. Defaults to
+   * {@link SANDBOX_INNER_CSP}, widened with `'self'`/`data:` script sources
+   * when the runtime is `<script src>`-loaded (export bundle / PNG capture).
+   * Pass a string to override, or `false` to omit the meta entirely (only for
+   * consumers whose host already enforces a stricter policy).
+   */
+  csp?: string | false;
 }
 
 const ASSET_REF_RE = /asset:\/\/[^\s"'`)<>]+/g;
@@ -102,6 +124,13 @@ export function buildPageDocument(opts: BuildPageDocOptions): string {
     : runtime.harness ? inlineScript(runtime.harness) : '';
   const themeVars = buildThemeCssVars(theme);
   const baseCss = buildBaseCss(format);
+  // 6.2: pages are self-contained + potentially model-authored — always carry a
+  // CSP (no network beyond the whitelisted image/font sources) unless the
+  // caller explicitly opts out. Mirrors the webview's inner CSP (canvas.js).
+  const cspContent = opts.csp === false ? '' : (opts.csp ?? defaultCspFor(runtime));
+  const cspMeta = cspContent
+    ? `\n<meta http-equiv="Content-Security-Policy" content="${escapeAttr(cspContent)}">`
+    : '';
 
   let body: string;
   if (isJsx) {
@@ -117,7 +146,7 @@ export function buildPageDocument(opts: BuildPageDocOptions): string {
   return `<!doctype html>
 <html lang="en" data-mode="${isJsx ? 'jsx' : 'html'}" data-format="${escapeAttr(format.formatId)}">
 <head>
-<meta charset="utf-8">
+<meta charset="utf-8">${cspMeta}
 <meta name="viewport" content="width=${format.width}, initial-scale=1">
 <style>
 ${themeVars}
@@ -134,6 +163,36 @@ ${harness}
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * The default CSP for a runtime delivery mode: inlined runtime → the exact
+ * webview mirror policy; `<script src>` runtime → `script-src` additionally
+ * allows `'self'` (bundle-relative runtime files) and/or `data:` (the PNG
+ * capture path inlines the runtime as data: URIs). Everything else (no
+ * connect-src, no frames, restricted img/font sources) stays identical.
+ */
+function defaultCspFor(runtime: SandboxRuntime): string {
+  const srcs = [...(runtime.headScriptSrcs ?? []), ...(runtime.harnessSrc ? [runtime.harnessSrc] : [])];
+  const extras: string[] = [];
+  if (srcs.some(s => s.startsWith('data:'))) { extras.push('data:'); }
+  if (srcs.some(s => !s.startsWith('data:'))) {
+    // W4 review: exported bundles with relative <script src> are opened from
+    // DISK — Chromium gives file:// pages an opaque origin where 'self' does
+    // not match, so the runtime scripts would be blocked. `file:` keeps the
+    // export working while still blocking all network script sources.
+    extras.push("'self'", 'file:');
+  }
+  if (extras.length === 0) { return SANDBOX_INNER_CSP; }
+  let csp = SANDBOX_INNER_CSP.replace(
+    "script-src 'unsafe-inline' 'unsafe-eval'",
+    `script-src 'unsafe-inline' 'unsafe-eval' ${extras.join(' ')}`,
+  );
+  if (extras.includes("'self'")) {
+    // Same file://-origin problem for relative image assets in the export.
+    csp = csp.replace('img-src data: blob: https:', 'img-src data: blob: https: file:');
+  }
+  return csp;
+}
 
 function buildBaseCss(format: CanvasFormatSpec): string {
   return [

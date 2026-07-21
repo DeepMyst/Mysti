@@ -33,6 +33,12 @@ export const DEFAULT_FALLBACK_MODEL = 'claude-sonnet-4-6';
  * Process management constants
  */
 export const PROCESS_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+// Plan 18 (4.2, W4 review): inactivity bound for an OPEN stdout stream. Must be
+// far more generous than PROCESS_TIMEOUT_MS — stream-json CLIs legitimately
+// emit NOTHING between a tool_use start and its tool_result (long test runs,
+// builds), so a 5-min inter-chunk kill would murder approved work mid-tool.
+// 30 min of zero stdout+stderr is a wedge, not a quiet tool.
+export const STREAM_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 export const PROCESS_KILL_GRACE_PERIOD_MS = 5000; // 5 seconds
 export const PROCESS_FORCE_KILL_TIMEOUT_MS = 10000; // 10 seconds for final force kill
 

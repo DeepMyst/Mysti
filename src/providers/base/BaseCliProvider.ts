@@ -39,7 +39,7 @@ import type {
   Skill
 } from '../../types';
 import type { AgentContextManager } from '../../managers/AgentContextManager';
-import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TIMEOUT_MS } from '../../constants';
+import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TIMEOUT_MS, STREAM_INACTIVITY_TIMEOUT_MS } from '../../constants';
 import { getCommonSearchPaths, validateCliPath, checkCommandExists, getEnrichedEnv, filterInstallMethodsForOS } from '../../utils/platform';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import type { CliSearchConfig } from '../../utils/platform';
@@ -555,9 +555,31 @@ export abstract class BaseCliProvider implements ICliProvider {
           yield chunks.shift()!;
         }
         if (done) { break; }
-        // Wait for more data
-        await new Promise<void>(r => { waitResolve = r; });
+        // Wait for more data — BOUNDED (Plan 18 4.2, W4 review): the
+        // single-shot watchdog didn't cover this path, so a persistent CLI
+        // (Claude's default mode, Hermes, Kimi) wedged with stdout open
+        // parked here forever. Same generous inactivity bound; on timeout the
+        // wedged process is killed and evicted so the next turn respawns.
+        const parkInactivityMs = session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : STREAM_INACTIVITY_TIMEOUT_MS;
+        let parkTimer: ReturnType<typeof setTimeout> | undefined;
+        const parked = new Promise<void>(r => { waitResolve = r; });
+        const parkTimeout = new Promise<'timeout'>(resolve => {
+          parkTimer = setTimeout(() => resolve('timeout'), parkInactivityMs);
+        });
+        const winner = await Promise.race([parked, parkTimeout]);
+        clearTimeout(parkTimer);
         waitResolve = null;
+        if (winner === 'timeout' && !done && session.process === proc) {
+          console.error(`[Mysti] ${this.displayName}: persistent process silent for ${Math.round(parkInactivityMs / 60000)}min — killing wedged process`);
+          void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: `${this.displayName} persistent-inactivity` });
+          session.persistentProcess = null;
+          session.persistentReady = false;
+          yield {
+            type: 'error',
+            content: `${this.displayName} produced no output for ${Math.round(parkInactivityMs / 60000)} minutes — the request timed out and the process was terminated (a fresh one will spawn on the next message).`,
+          };
+          break;
+        }
       }
       // Yield remaining chunks
       while (chunks.length > 0) {
@@ -1275,33 +1297,83 @@ export abstract class BaseCliProvider implements ICliProvider {
     let firstContentTime: number | null = null;
     const streamStartTime = Date.now();
 
+    // Plan 18 (4.2): inactivity watchdog. The process timeout previously only
+    // bounded the "stdout closed but process not exited" window inside
+    // waitForProcess — a CLI that wedged with stdout OPEN and no data spun
+    // forever. Each stdout read races a resettable timer. W4 review: the
+    // bound is deliberately GENEROUS (30 min; 4h autonomous) and resets on
+    // STDERR activity too — stream-json CLIs are legitimately silent for the
+    // whole duration of a long tool run, and killing an approved build/test
+    // mid-execution is worse than a slow wedge detection. SIGTERM-first so
+    // the CLI can clean up; killProcessTree escalates to SIGKILL itself.
+    const inactivityMs = session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : STREAM_INACTIVITY_TIMEOUT_MS;
+    let lastStderrLen = stderrRef.output.length;
+    let timedOut = false;
     if (session.process?.stdout) {
-      for await (const chunk of session.process.stdout) {
-        if (firstChunkTime === null) {
-          firstChunkTime = Date.now();
-          console.log(`[Mysti] ${this.displayName}: First stdout data received in ${firstChunkTime - streamStartTime}ms`);
-        }
+      const stdoutIt = session.process.stdout[Symbol.asyncIterator]();
+      try {
+        while (true) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const timeoutP = new Promise<'timeout'>(resolve => {
+            timer = setTimeout(() => resolve('timeout'), inactivityMs);
+          });
+          const result = await Promise.race([stdoutIt.next(), timeoutP]);
+          clearTimeout(timer);
+          if (result === 'timeout') {
+            // stderr progress counts as liveness (many CLIs log there
+            // between tool events) — re-arm instead of killing.
+            if (stderrRef.output.length > lastStderrLen) {
+              lastStderrLen = stderrRef.output.length;
+              continue;
+            }
+            timedOut = true;
+            console.error(`[Mysti] ${this.displayName}: No stdout/stderr activity for ${Math.round(inactivityMs / 60000)}min — killing wedged process`);
+            void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, {
+              label: `${this.displayName} inactivity-timeout`,
+            });
+            break;
+          }
+          if (result.done) {
+            break;
+          }
+          const chunk = result.value;
+          if (firstChunkTime === null) {
+            firstChunkTime = Date.now();
+            console.log(`[Mysti] ${this.displayName}: First stdout data received in ${firstChunkTime - streamStartTime}ms`);
+          }
 
-        const chunkStr = chunk.toString();
-        buffer += chunkStr;
+          const chunkStr = chunk.toString();
+          buffer += chunkStr;
 
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          if (line.trim()) {
-            const parsed = this.parseStreamLine(line, session);
-            if (parsed) {
-              if (firstContentTime === null && (parsed.type === 'text' || parsed.type === 'thinking')) {
-                firstContentTime = Date.now();
-                console.log(`[Mysti] ${this.displayName}: First content chunk in ${firstContentTime - streamStartTime}ms (type: ${parsed.type})`);
+          for (const line of lines) {
+            if (line.trim()) {
+              const parsed = this.parseStreamLine(line, session);
+              if (parsed) {
+                if (firstContentTime === null && (parsed.type === 'text' || parsed.type === 'thinking')) {
+                  firstContentTime = Date.now();
+                  console.log(`[Mysti] ${this.displayName}: First content chunk in ${firstContentTime - streamStartTime}ms (type: ${parsed.type})`);
+                }
+                hasYieldedContent = true;
+                yield parsed;
               }
-              hasYieldedContent = true;
-              yield parsed;
             }
           }
         }
+      } finally {
+        // Consumer abandonment must release the stdout reader.
+        try { void stdoutIt.return?.(undefined); } catch { /* best-effort */ }
       }
+    }
+
+    if (timedOut) {
+      yield {
+        type: 'error',
+        content: `${this.displayName} produced no output for ${Math.round(inactivityMs / 60000)} minutes — the request timed out and the process was terminated.`,
+      };
+      return;
     }
 
     if (buffer.trim()) {

@@ -102,6 +102,10 @@ export class CollaboratorPool {
    */
   private _closedRuns: Set<string> = new Set();
   private static readonly CLOSED_RUNS_CAP = 256;
+  /** Child panels where a gated WRITE was approved this run — a later crash/
+   * timeout on such an attempt must NOT retry (double-apply risk). Pruned in
+   * disposeRun. */
+  private _approvedWriteChildren: Set<string> = new Set();
 
   constructor(providerManager: PoolProviderManager) {
     this._providerManager = providerManager;
@@ -176,6 +180,7 @@ export class CollaboratorPool {
       } catch (err) {
         console.warn(`[Mysti] CollaboratorPool: disposeRun failed for ${childPanelId}:`, err);
       }
+      this._approvedWriteChildren.delete(childPanelId);
     }
     this._runChildProviders.delete(runId);
   }
@@ -328,6 +333,16 @@ export class CollaboratorPool {
       }
 
       const childPanelId = this._childPanelId(options, spec, attempt);
+      if (attempt === 0) {
+        // W4 review: stable P0.2e collaboratorIds mean successive delegations
+        // to the same agent REUSE these childPanelIds — the approved-write
+        // flag is per-DISPATCH state, not per-run, or one approved write
+        // would make every later delegation's transient failure terminal.
+        // Clear every attempt variant (retry ids are reused too).
+        for (let a = 0; a <= SUBAGENT_MAX_RETRIES; a++) {
+          this._approvedWriteChildren.delete(this._childPanelId(options, spec, a));
+        }
+      }
       this._rememberChild(options.runId, childPanelId);
       // Record for end-of-run disposal (retained beyond completion).
       this._recordRunChild(options.runId, childPanelId, spec.agentId);
@@ -366,6 +381,12 @@ export class CollaboratorPool {
       // Denials and cancellations are terminal — retrying would re-trigger the
       // same forbidden action or fight a user cancel.
       if (outcome.failure === 'denied' || outcome.failure === 'cancelled') {
+        return outcome;
+      }
+      // Plan 18 (1.3/M4b): so is any attempt where a gated write was already
+      // APPROVED — re-running the prompt from scratch could apply the write
+      // twice. Surface the failure instead.
+      if (this._approvedWriteChildren.has(childPanelId)) {
         return outcome;
       }
       attempt++;
@@ -628,6 +649,15 @@ export class CollaboratorPool {
     }
 
     if (approved) {
+      // Plan 18 (1.3/M4b): record that a gated non-read action was APPROVED on
+      // this child — if the attempt later crashes/times out, retrying the
+      // whole prompt could re-apply the write (e.g. a duplicate append-edit).
+      // _dispatchWithRetry treats attempts with an approved write as terminal
+      // (mirrors the Mysti reroute's `!result.wrote` rule). Normalize the
+      // question-relay suffix: a write approved during a `-followup` stream
+      // belongs to the same attempt (W4 review: the un-normalized id made
+      // follow-up writes invisible to the retry gate).
+      this._approvedWriteChildren.add(childPanelId.replace(/-followup$/, ''));
       if (suspended) {
         this._providerManager.resumeRequest(childPanelId);
       }
@@ -712,7 +742,14 @@ export class CollaboratorPool {
         undefined,
         followUpPanelId
       );
-      for await (const chunk of followUpStream) {
+      // Plan 18 (1.3/M4a): same deadline discipline as the primary stream — a
+      // hung follow-up otherwise parks the collaborator until run teardown.
+      const followUpDeadlineMs = spec.timeoutMs ?? SUBAGENT_TIMEOUT_MS;
+      let followUpTimedOut = false;
+      for await (const chunk of this._withDeadline(followUpStream, followUpDeadlineMs, () => {
+        followUpTimedOut = true;
+        this._providerManager.cancelRequest(followUpPanelId);
+      })) {
         if (chunk.type === 'text' && chunk.content) {
           responseText += chunk.content;
           yield { ...base, type: 'collab_text', content: chunk.content };
@@ -729,6 +766,10 @@ export class CollaboratorPool {
           yield { ...base, type: 'collab_error', failure, content: chunk.content, hasError: true };
           break;
         }
+      }
+      if (followUpTimedOut) {
+        hasError = true; failure = 'timeout';
+        yield { ...base, type: 'collab_error', failure, content: 'Follow-up response timed out.', hasError: true };
       }
     } catch (err) {
       hasError = true; failure = 'crashed';

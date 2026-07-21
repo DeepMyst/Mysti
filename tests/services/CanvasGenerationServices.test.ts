@@ -95,6 +95,73 @@ describe('VideoGenerationService key injection (F-11)', () => {
   });
 });
 
+// ── 6.5: the Gemini key must travel in the x-goog-api-key header, never the
+// URL query string (URLs land in logs/proxies). The services build requests
+// through the private _httpsRequest seam, which we stub per instance.
+describe('Gemini key transport (6.5 — header, not query string)', () => {
+  it('vision analyze sends x-goog-api-key and a key-free path', async () => {
+    const svc = new ImageGenerationService();
+    svc.setKeys({ gemini: 'gem-secret' });
+    const calls: any[] = [];
+    (svc as any)._httpsRequest = async (opts: any) => {
+      calls.push(opts);
+      return JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+    };
+    await expect(svc.analyzeImage('', 'describe')).resolves.toBe('ok');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].hostname).toBe('generativelanguage.googleapis.com');
+    expect(String(calls[0].path)).not.toContain('key=');
+    expect(calls[0].headers['x-goog-api-key']).toBe('gem-secret');
+  });
+
+  it('nano-banana image generation sends x-goog-api-key and a key-free path', async () => {
+    setMockConfig('canvas.imageGenerationProvider', 'nano-banana');
+    const svc = new ImageGenerationService();
+    svc.setKeys({ gemini: 'gem-secret' });
+    const calls: any[] = [];
+    (svc as any)._httpsRequest = async (opts: any) => {
+      calls.push(opts);
+      return JSON.stringify({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'AAAA' } }] } }],
+      });
+    };
+    const res = await svc.generate('a cat');
+    expect(res.imageBase64).toBe('AAAA');
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0].path)).not.toContain('key=');
+    expect(calls[0].headers['x-goog-api-key']).toBe('gem-secret');
+  });
+
+  it('Veo create + poll both send x-goog-api-key and key-free paths', async () => {
+    setMockConfig('canvas.videoGenerationProvider', 'veo');
+    const svc = new VideoGenerationService();
+    svc.setKeys({ gemini: 'gem-secret' });
+    const calls: any[] = [];
+    (svc as any)._sleep = async () => {};
+    (svc as any)._downloadUrl = async () => 'VIDEO64';
+    (svc as any)._httpsRequest = async (opts: any) => {
+      calls.push(opts);
+      if (opts.method === 'POST') { return JSON.stringify({ name: 'operations/op-1' }); }
+      return JSON.stringify({
+        done: true,
+        response: {
+          generateVideoResponse: {
+            generatedSamples: [{ video: { uri: 'https://generativelanguage.googleapis.com/dl/v1' } }],
+          },
+        },
+      });
+    };
+    const res = await svc.generate('a clip');
+    expect(res.videoBase64).toBe('VIDEO64');
+    expect(calls.length).toBe(2); // create + one poll
+    for (const c of calls) {
+      expect(c.hostname).toBe('generativelanguage.googleapis.com');
+      expect(String(c.path)).not.toContain('key=');
+      expect(c.headers['x-goog-api-key']).toBe('gem-secret');
+    }
+  });
+});
+
 /** Minimal ImageGenerationService stand-in that captures the prompt. */
 function fakeImageService(response: string) {
   const calls: Array<{ image: string; prompt: string }> = [];

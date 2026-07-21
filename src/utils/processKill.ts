@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
 
@@ -41,12 +42,14 @@ export interface KillProcessTreeOptions {
    */
   graceMs?: number;
   /**
-   * When the process was spawned with `detached: true` it is the leader of its
-   * own process group, so signals can be delivered to the whole group via the
-   * negative pid (`process.kill(-pid, signal)`). Set this to true ONLY when the
-   * spawn used `detached: true`; otherwise group signalling will target an
-   * unrelated group (or throw ESRCH). Defaults to false to match the current
-   * spawn options (no provider currently spawns detached).
+   * POSIX only. When the process was spawned with `detached: true` it is the
+   * leader of its own process group, so signals can be delivered to the whole
+   * group via the negative pid (`process.kill(-pid, signal)`). Set this to true
+   * ONLY when the spawn used `detached: true`; otherwise group signalling will
+   * target an unrelated group (or throw ESRCH — in which case we fall back to
+   * signalling the single pid). Defaults to false: no provider spawns detached;
+   * DevServerManager does (and opts in). Ignored on Windows, where the tree is
+   * always killed via `taskkill /T`.
    */
   useProcessGroup?: boolean;
   /**
@@ -62,9 +65,75 @@ export interface KillProcessTreeOptions {
 }
 
 /**
- * Send a signal to a process — or, when `useProcessGroup` is set, to the entire
- * process group it leads. Swallows ESRCH/EPERM so callers never have to guard
- * a kill on an already-exited / reaped process.
+ * Windows tree kill: `taskkill /PID <pid> /T /F` terminates the process AND all
+ * of its descendants. This matters because every provider spawn on Windows uses
+ * `shell: true`, so the tracked pid is a cmd.exe shim — signalling only that pid
+ * kills the shell and ORPHANS the actual CLI underneath it. taskkill /T walks
+ * the child tree, so it is safe and correct for every call site (no opt-in).
+ *
+ * Fallback: if taskkill cannot be spawned, or exits non-zero while the process
+ * is still live (e.g. taskkill missing from PATH, access denied), we fall back
+ * to the single-pid `proc.kill(signal)` so behaviour is never worse than before.
+ *
+ * @returns true if a termination attempt was issued without throwing.
+ */
+function killWindowsProcessTree(proc: ChildProcess, fallbackSignal: NodeJS.Signals): boolean {
+  const pid = proc.pid;
+  if (typeof pid !== 'number') {
+    // No pid (spawn failed very early) — nothing for taskkill to target.
+    try {
+      proc.kill(fallbackSignal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const singlePidFallback = () => {
+    if (!isProcessLive(proc)) {
+      return;
+    }
+    try {
+      proc.kill(fallbackSignal);
+    } catch {
+      // ESRCH/EPERM — process already gone or unreachable.
+    }
+  };
+  try {
+    const taskkill = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    taskkill.on('error', () => {
+      // taskkill itself failed to spawn — fall back to signalling the one pid.
+      singlePidFallback();
+    });
+    taskkill.on('exit', (code) => {
+      if (code !== 0) {
+        // Non-zero exit (128 = no such process, 1 = access denied, ...). Only
+        // fall back if the target is actually still live.
+        singlePidFallback();
+      }
+    });
+    return true;
+  } catch {
+    try {
+      proc.kill(fallbackSignal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * Send a signal to a process — or to its entire process tree where possible:
+ *  - Windows: always `taskkill /PID <pid> /T /F` (kills the cmd.exe shim's
+ *    children too), with a single-pid fallback if taskkill fails.
+ *  - POSIX with `useProcessGroup`: negative-pid group signal for detached
+ *    spawns, falling back to the single pid if the group signal throws.
+ *  - POSIX default: single-pid `proc.kill(signal)` (unchanged behaviour).
+ * Swallows ESRCH/EPERM so callers never have to guard a kill on an
+ * already-exited / reaped process.
  *
  * @returns true if the signal was sent without throwing.
  */
@@ -73,13 +142,21 @@ function sendSignal(
   signal: NodeJS.Signals,
   useProcessGroup: boolean,
 ): boolean {
-  try {
-    if (useProcessGroup && typeof proc.pid === 'number') {
+  if (process.platform === 'win32') {
+    return killWindowsProcessTree(proc, signal);
+  }
+  if (useProcessGroup && typeof proc.pid === 'number') {
+    try {
       // Negative pid targets the process group led by proc (detached spawns).
       process.kill(-proc.pid, signal);
-    } else {
-      proc.kill(signal);
+      return true;
+    } catch {
+      // ESRCH/EPERM on the group (child not spawned detached, or already
+      // reaped) — fall back to signalling the single pid below.
     }
+  }
+  try {
+    proc.kill(signal);
     return true;
   } catch {
     // ESRCH (no such process) / EPERM — process is already gone or unreachable.
@@ -88,8 +165,11 @@ function sendSignal(
 }
 
 /**
- * Gracefully terminate a child process (and, when applicable, its process group)
- * with reliable SIGKILL escalation.
+ * Gracefully terminate a child process — and its process TREE where possible —
+ * with reliable SIGKILL escalation. On Windows every signal step is delivered
+ * as `taskkill /PID <pid> /T /F` (whole tree — reaches through the `shell:true`
+ * cmd.exe shim); on POSIX, pass `useProcessGroup: true` for `detached: true`
+ * spawns to signal the whole process group.
  *
  * Behaviour:
  *  - If the process is already dead (exitCode/signalCode set, or null handle),

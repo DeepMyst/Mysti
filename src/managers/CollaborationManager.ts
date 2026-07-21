@@ -78,6 +78,8 @@ export interface CollaborationResult {
  * collaboratorIds, and the role-labeled synthesis block.
  */
 export class CollaborationManager {
+  /** panelId -> active collaboration runIds (Plan 18 1.3 Stop reachability). */
+  private _activeRunsByPanel: Map<string, Set<string>> = new Map();
   private _pool: CollaboratorPool;
   private _agentContext: AgentContextManager;
 
@@ -93,6 +95,13 @@ export class CollaborationManager {
   public async *run(input: CollaborationRunInput): AsyncGenerator<CollaboratorChunk, CollaborationResult> {
     const runId = crypto.randomUUID();
     const specs = await this._buildSpecs(input, runId);
+    // Plan 18 (1.3): register the run under its panel so Stop can reach the
+    // children DIRECTLY (cancelPanel). Registered AFTER setup that can throw
+    // (W4 review: a _buildSpecs throw would leak the entry — the deregistering
+    // finally guards only the dispatch loop below).
+    let panelRuns = this._activeRunsByPanel.get(input.panelId);
+    if (!panelRuns) { panelRuns = new Set(); this._activeRunsByPanel.set(input.panelId, panelRuns); }
+    panelRuns.add(runId);
 
     const outcomes = new Map<string, CollaboratorOutcome>();
     for (const spec of specs) {
@@ -145,6 +154,9 @@ export class CollaborationManager {
       // `hermes acp` per consult) and per-UUID session records until the
       // window reloaded. In a finally so consumer breaks/throws clean up too.
       try { this._pool.disposeRun(runId); } catch { /* best-effort */ }
+      const runs = this._activeRunsByPanel.get(input.panelId);
+      runs?.delete(runId);
+      if (runs && runs.size === 0) { this._activeRunsByPanel.delete(input.panelId); }
     }
 
     const list = Array.from(outcomes.values());
@@ -161,6 +173,20 @@ export class CollaborationManager {
    */
   public cancelRun(runId: string): void {
     this._pool.cancelRun(runId);
+  }
+
+  /**
+   * Cancel every active collaboration run for a panel (Stop button / new
+   * conversation / panel dispose). Plan 18 (1.3): previously nothing called
+   * into the pool on Stop — teardown relied on the consumer loop noticing a
+   * flag between chunks, so a mid-operation child ran to its deadline.
+   */
+  public cancelPanel(panelId: string): void {
+    const runs = this._activeRunsByPanel.get(panelId);
+    if (!runs) { return; }
+    for (const runId of runs) {
+      this._pool.cancelRun(runId);
+    }
   }
 
   /**

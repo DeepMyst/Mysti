@@ -60,7 +60,18 @@ export class CanvasSessionLinker {
    */
   link(panelId: string, endpoint: McpHttpEndpoint): string {
     const file = path.join(this._tmpDir, `mysti-canvas-${sanitize(panelId)}.json`);
-    fs.writeFileSync(file, JSON.stringify(buildClaudeMcpConfig(this._serverName, endpoint), null, 2), 'utf8');
+    // 6.3a: the config embeds the per-session MCP bearer token + URL and lives
+    // at a predictable path in the SHARED os.tmpdir() — write it owner-only
+    // (0o600) so other local users can't read the token. `mode` only applies
+    // when the file is created, so chmod too in case a prior link (or another
+    // process) left it behind with looser permissions. Best-effort on
+    // non-POSIX filesystems (Windows ACLs ignore the mode bits).
+    fs.writeFileSync(
+      file,
+      JSON.stringify(buildClaudeMcpConfig(this._serverName, endpoint), null, 2),
+      { encoding: 'utf8', mode: 0o600 },
+    );
+    try { fs.chmodSync(file, 0o600); } catch { /* best-effort */ }
     this._configByPanel.set(panelId, file);
     return file;
   }

@@ -73,6 +73,8 @@ export interface OrchestratorRunInput {
 }
 
 export class MystiOrchestratorManager {
+  /** panelId -> active orchestration runIds (Plan 18 1.3 Stop reachability). */
+  private _activeRunsByPanel: Map<string, Set<string>> = new Map();
   constructor(
     private readonly _pool: CollaboratorPool,
     private readonly _coordinator: CoordinatorModelClient,
@@ -92,6 +94,13 @@ export class MystiOrchestratorManager {
       yield { type: 'orch_error', error: `orchestration depth cap (${ORCH_MAX_DEPTH}) reached` };
       return { runId, outcomes: [], synthesis: '' };
     }
+
+    // Plan 18 (1.3): register under the panel so Stop can cancel all frontiers
+    // directly (cancelPanel) instead of waiting for the consumer loop.
+    let panelRuns = this._activeRunsByPanel.get(input.panelId);
+    if (!panelRuns) { panelRuns = new Set(); this._activeRunsByPanel.set(input.panelId, panelRuns); }
+    panelRuns.add(runId);
+    try {
 
     // --- 1. Decompose into a DAG (on the free coordinator model) ---
     yield { type: 'orch_status', phase: 'decompose', content: 'Planning the task…' };
@@ -170,12 +179,26 @@ export class MystiOrchestratorManager {
     yield { type: 'orch_done' };
 
     return { runId, outcomes: list, synthesis };
+    } finally {
+      const runs = this._activeRunsByPanel.get(input.panelId);
+      runs?.delete(runId);
+      if (runs && runs.size === 0) { this._activeRunsByPanel.delete(input.panelId); }
+    }
   }
 
   /** Cancel every frontier of a run (Stop). */
   public cancelRun(runId: string, frontierCount = 32): void {
     for (let i = 0; i < frontierCount; i++) {
       this._pool.cancelRun(`${runId}-f${i}`);
+    }
+  }
+
+  /** Plan 18 (1.3): cancel every active orchestration for a panel (Stop). */
+  public cancelPanel(panelId: string): void {
+    const runs = this._activeRunsByPanel.get(panelId);
+    if (!runs) { return; }
+    for (const runId of runs) {
+      this.cancelRun(runId);
     }
   }
 

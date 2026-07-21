@@ -745,3 +745,87 @@ describe('CollaboratorPool web-request corrections (Plan 18 W2 review)', () => {
     expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 18 Wave 4 (1.3): follow-up deadline + approved-write terminal retry.
+// ---------------------------------------------------------------------------
+describe('CollaboratorPool Wave 4 (follow-up deadline, write-terminal retry)', () => {
+  beforeEach(() => { clearMockConfig(); });
+
+  it('an approved gated write makes a later crash TERMINAL (no retry, no double-apply)', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
+    let dispatches = 0;
+    mockPM.streamFactories.set('claude-code', () => {
+      dispatches++;
+      return (async function* (): AsyncGenerator<StreamChunk> {
+        yield { type: 'tool_use', toolCall: { id: 'w1', name: 'Write', input: { path: 'a.ts' } } } as StreamChunk;
+        throw new Error('CLI crashed after the write');
+      })();
+    });
+
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'claude-code' as any, { access: 'gated-write' })],
+      collabOptions({ runId: 'run-write-term', onGate: async () => true })
+    ));
+
+    expect(dispatches).toBe(1); // crashed AFTER an approved write → no retry
+    const complete = chunks.find(c => c.type === 'collab_complete');
+    expect(complete?.hasError).toBe(true);
+  });
+
+  it('a crash with NO approved write still retries (unchanged)', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    let dispatches = 0;
+    mockPM.streamFactories.set('claude-code', () => {
+      dispatches++;
+      if (dispatches === 1) {
+        return (async function* (): AsyncGenerator<StreamChunk> {
+          yield { type: 'text', content: 'partial' } as StreamChunk;
+          throw new Error('transient crash');
+        })();
+      }
+      return createMockStream([
+        { type: 'text', content: 'recovered' } as StreamChunk,
+        { type: 'done' } as StreamChunk,
+      ]);
+    });
+
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'claude-code' as any)],
+      collabOptions({ runId: 'run-retry-ok' })
+    ));
+
+    expect(dispatches).toBe(2);
+    const complete = chunks.find(c => c.type === 'collab_complete');
+    expect(complete?.hasError).toBeFalsy();
+  });
+
+  it('a hung question follow-up stream is terminated by the deadline', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    let call = 0;
+    mockPM.streamFactories.set('google-gemini', () => {
+      call++;
+      if (call === 1) {
+        return createMockStream([
+          { type: 'ask_user_question', askUserQuestion: { questions: [{ question: 'Q?', header: 'Q', options: [], multiSelect: false }] } } as unknown as StreamChunk,
+          { type: 'done' } as StreamChunk,
+        ]);
+      }
+      // Follow-up: yields once then hangs forever.
+      return createMockStream([{ type: 'text', content: 'starting…' } as StreamChunk], { hang: true });
+    });
+
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { timeoutMs: 150 })],
+      collabOptions({
+        runId: 'run-fu-hang',
+        onQuestion: async () => ({ answers: { Q: 'ok' } }),
+      })
+    ));
+
+    const complete = chunks.find(c => c.type === 'collab_complete');
+    expect(complete).toBeTruthy();
+    expect(complete?.hasError).toBe(true);
+  }, 10000);
+});

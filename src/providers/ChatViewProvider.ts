@@ -16,7 +16,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { clampEffort } from '../utils/effort';
-import { MystiTagScanner, type MystiDirective } from '../utils/mystiDelegateParser';
+import { MystiTagScanner, type MystiDirective, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_CONNECT_KINDS } from '../utils/mystiDelegateParser';
+import { coordinatorToolSchemas, modelSupportsToolCalls, toolCallToDirective } from '../services/coordinatorTools';
+import { parseToolArgs, type AccumulatedToolCall } from '../utils/toolCallAccumulator';
+import { runBounded } from '../utils/boundedConcurrency';
+import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
 import { MystiLocalTools } from '../services/MystiLocalTools';
 import { MystiMemoryStore } from '../services/MystiMemoryStore';
 import { clampSettingsToUserPolicy } from '../utils/settingsClamp';
@@ -56,6 +60,7 @@ import { DeepMystAuthManager } from '../managers/DeepMystAuthManager';
 import type { SavingsLedger } from '../managers/SavingsLedger';
 import type { AnnouncementManager } from '../managers/AnnouncementManager';
 import type { InAppMessage } from '../services/DeepMystClient';
+import { isDeepMystHost } from '../services/DeepMystClient';
 import { getWebviewContent } from '../webview/webviewContent';
 import { getVisualTestDashboardContent } from '../webview/visualTestDashboardContent';
 import { getCanvasContent, buildEmptyCanvasArtifact } from '../webview/canvasContent';
@@ -158,6 +163,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _mystiCoordinator?: CoordinatorModelClient;
   /** Read-only local tools for the Mysti coordinator (Plan 17 P0.1). */
   private readonly _mystiLocalTools = new MystiLocalTools();
+  /** Gated local execution (write/edit) for the Mysti coordinator (Plan 19 Phase 0). */
+  private readonly _mystiLocalExec = new MystiLocalExec(this._mystiLocalTools);
   /** Unified cross-backend project memory (Plan 17 P2.5) — lazily bound to workspaceState. */
   private _mystiMemory?: MystiMemoryStore;
   /** Per-panel abort controllers for the Mysti-direct stream (Stop support). */
@@ -235,6 +242,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // Short-lived cache of the user's DeepMyst connection names (lowercased) for
   // already-linked suppression; refreshed at most once per TTL.
   private _connectionsCache?: { at: number; names: string[] };
+  /** Plan 19 Phase 6: cached, sanitized connected-MCP-tool list (per DeepMyst account). */
+  private _mcpToolsCache?: { at: number; tools: Array<{ name: string; description?: string }> };
   // Per-panel cancel tracking for isolated cancellation
   private _cancelledPanels: Set<string> = new Set();
   // Perf (Plan 03 Phase 1): panels whose webview has not yet posted `uiReady`.
@@ -476,6 +485,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._cancelledPanels.add(panelId);
         this._providerManager.cancelRequest(panelId);
         this._brainstormManager.cancelSession(panelId);
+        // Plan 18 (1.3): also reach -collab-/orchestrate children directly.
+        this._collaborationManager.cancelPanel(panelId);
+        this._mystiOrchestrator?.cancelPanel(panelId);
         this._postToPanel(panelId, { type: 'requestCancelled' });
       },
       injectChannelMessage: (panelId: string, channelName: string, content: string, sender?: string) => {
@@ -1108,6 +1120,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this._providerManager.cancelRequest(panelId);
             this._abortMystiDirect(panelId);
             this._brainstormManager.cancelSession(panelId);
+            // Plan 18 (1.3): reach @agent:role and orchestrate children
+            // DIRECTLY — previously Stop relied on the consumer loop noticing
+            // the flag between chunks, so a mid-operation -collab- child ran
+            // to its 1h deadline.
+            this._collaborationManager.cancelPanel(panelId);
+            this._mystiOrchestrator?.cancelPanel(panelId);
             // Cancel any running sub-agent processes from @-mentions
             // (C2: derive ids from the registry, never a hard-coded list)
             this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
@@ -1427,6 +1445,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // (composite `-brainstorm-` panels) so the new conversation can't
           // resume a previous brainstorm's CLI sessions.
           this._brainstormManager.clearSession(panelId);
+          // Plan 18 (1.3): stop any live collab/orchestrate children too.
+          this._collaborationManager.cancelPanel(panelId);
+          this._mystiOrchestrator?.cancelPanel(panelId);
           // C2: derive ids from the registry, never a hard-coded list
           this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
           this._cancelPendingSubAgentQuestions(panelId);
@@ -1620,6 +1641,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'openConnections':
         vscode.commands.executeCommand('mysti.openConnections');
+        break;
+
+      case 'setCoordinatorModel':
+        // Mysti-agent model picker (full OpenRouter catalog + gateway models).
+        vscode.commands.executeCommand('mysti.setCoordinatorModel');
         break;
 
       case 'connectService':
@@ -5565,7 +5591,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     details: import('../types').PermissionDetails,
     panelId: string,
     toolCallId?: string,
-    ownerKey?: string
+    ownerKey?: string,
+    forceInteractive = false
   ): Promise<boolean> {
     // review[4]/[21]: if the owning webview is gone (e.g. a background Mysti job
     // whose origin tab was closed), there is nothing that can render or audit
@@ -5578,8 +5605,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return false;
     }
 
-    // Autonomous mode: try to auto-decide on permission
-    if (this._autonomousManager.isActive()) {
+    // Autonomous mode: try to auto-decide on permission — UNLESS the caller
+    // forces an interactive card (Plan 19: a non-safe coordinator `bash` must
+    // never be silently auto-approved by autonomous-aggressive, review #10).
+    if (this._autonomousManager.isActive() && !forceInteractive) {
       const request = {
         id: `auto_${Date.now()}`,
         actionType,
@@ -5613,7 +5642,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       toolCallId,
       // Default owner is the panel (foreground turn); Mysti delegations pass a
       // cancelKey (jobId for background) so a Stop scopes to just that run.
-      ownerKey ?? panelId
+      ownerKey ?? panelId,
+      forceInteractive
     );
   }
 
@@ -6429,6 +6459,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * output. Returns true only when the user explicitly approves; dismissing the
    * dialog (Escape / click-away) returns false.
    */
+  /**
+   * Modal, default-DENY confirmation for a coordinator `bash` command that
+   * affects a REMOTE system / cannot be rewound (git push, publish, deploy,
+   * ssh, cloud CLIs) — Plan 19 Phase 3. A checkpoint can't undo a push, so this
+   * gets a prominent modal rather than an inline card; dismissing = deny.
+   */
+  private async _confirmRemoteEffectCommand(command: string): Promise<boolean> {
+    const RUN = 'Run (affects a remote system)';
+    const choice = await vscode.window.showWarningMessage(
+      `Mysti (coordinator) wants to run a command that affects a REMOTE system and CANNOT be undone by a checkpoint:\n\n${command}\n\nOnly allow this if you trust it — a command from the AI can be influenced by content it was asked to read.`,
+      { modal: true },
+      RUN
+    );
+    return choice === RUN;
+  }
+
   private async _confirmModelDevServerCommand(command: string): Promise<boolean> {
     const RUN = 'Run command';
     const choice = await vscode.window.showWarningMessage(
@@ -6662,6 +6708,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // (media tools included when available), then registered into the linked
       // CLI session (Claude Code --mcp-config). Falls back to the fenced
       // canvas-op parser for providers without it.
+      // Plan 18 (6.1, DEFERRED): `renderPagePreview` (vision self-QA) is
+      // deliberately not passed — CanvasPreviewService has no production
+      // capturePng/analyze implementations yet (BrowserManager cannot render
+      // an HTML string, and there is no vision bridge). Wiring it is feature
+      // work tracked in Plan 05 / plans/18 Wave 4 log, not a hook one-liner;
+      // without the hook the tool is simply not advertised to the model.
       this._canvasToolServer = new CanvasToolServer({ resolveContext: () => this._canvasToolContext(), mediaService });
       this._canvasMcpHttp = new CanvasMcpHttpServer(this._canvasToolServer);
       this._canvasMcpHttp.start().then(handle => {
@@ -6754,7 +6806,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public setDeepMystAuth(auth: DeepMystAuthManager): void {
     this._deepMystAuth = auth;
     // A sign-in/out invalidates any cached connection list.
-    auth.onDidChangeAuth(() => { this._connectionsCache = undefined; });
+    auth.onDidChangeAuth(() => { this._connectionsCache = undefined; this._mcpToolsCache = undefined; });
   }
 
   /**
@@ -6844,12 +6896,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private static readonly _MYSTI_MAX_TURNS = 24;
   /** Local read-only tool calls per run (read/ls/grep/diag) — cheap, capped separately. */
   private static readonly _MYSTI_MAX_LOCAL_TOOLS = 20;
+  /** Local EXECUTION ops per run (write/edit) — heavier + gated, capped tighter (Plan 19). */
+  private static readonly _MYSTI_MAX_LOCAL_EXEC = 12;
+  /** External MCP tool calls per run (Plan 19 Phase 6) — gated network side effects, capped tight. */
+  private static readonly _MYSTI_MAX_MCP_CALLS = 6;
+
+  /**
+   * Bounded concurrency for a native parallel-tool-call batch of READ-ONLY local
+   * tools (Plan 19 Phase 5) — matches CollaboratorPool's cap 3. Only read-only
+   * tools batch (no gate, no write race, no interactive-card collision); every
+   * mutating/gated op stays on the serial one-at-a-time path.
+   */
+  private static readonly _MYSTI_READONLY_BATCH_CONCURRENCY = 3;
 
   /**
    * Resolve the run governors: settings-backed and effort-scaled (high effort
    * doubles the budget — a deep task earns a deeper loop). Plan 17 P0.5.
    */
-  private _mystiGovernors(settings: Settings): { maxDelegations: number; maxTurns: number; maxLocalTools: number } {
+  private _mystiGovernors(settings: Settings): { maxDelegations: number; maxTurns: number; maxLocalTools: number; maxLocalExec: number; maxMcpCalls: number } {
     const cfg = vscode.workspace.getConfiguration('mysti');
     const clampInt = (v: unknown, def: number, lo: number, hi: number): number => {
       const n = typeof v === 'number' && Number.isFinite(v) ? Math.floor(v) : def;
@@ -6860,7 +6924,219 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       maxDelegations: clampInt(cfg.get('mysti.maxDelegations'), ChatViewProvider._MYSTI_MAX_DELEGATIONS, 1, 16) * scale,
       maxTurns: clampInt(cfg.get('mysti.maxTurns'), ChatViewProvider._MYSTI_MAX_TURNS, 2, 64) * scale,
       maxLocalTools: ChatViewProvider._MYSTI_MAX_LOCAL_TOOLS * scale,
+      maxLocalExec: ChatViewProvider._MYSTI_MAX_LOCAL_EXEC * scale,
+      // External MCP tool calls per run (Plan 19 Phase 6) — each is a gated,
+      // un-undoable network side effect, so capped tight and NOT effort-scaled.
+      maxMcpCalls: clampInt(cfg.get('mysti.maxMcpCalls'), ChatViewProvider._MYSTI_MAX_MCP_CALLS, 1, 32),
     };
+  }
+
+  /**
+   * Whether the Mysti coordinator may execute local mutations (write/edit) this
+   * run (Plan 19 Phase 0). Requires: the machine-scoped `mysti.mysti.localExecution`
+   * setting `on`, a TRUSTED workspace, and NOT a plan / read-only tier
+   * (investigation-only mirrors the read-only delegation spec). Off by default.
+   */
+  private _mystiLocalExecEnabled(settings: Settings): boolean {
+    const on = vscode.workspace.getConfiguration('mysti').get<string>('mysti.localExecution', 'off') === 'on';
+    if (!on || !vscode.workspace.isTrusted) { return false; }
+    if (settings.mode === 'quick-plan' || settings.mode === 'detailed-plan' || settings.accessLevel === 'read-only') { return false; }
+    return true;
+  }
+
+  /**
+   * Run one gated local execution directive (write/edit) through MystiLocalExec.
+   * The gate routes through the SAME _shouldGateToolUse → requestPermissionInline
+   * path as CLI backends; checkpoint snapshots before any byte changes.
+   */
+  private async _runMystiLocalExec(
+    d: Extract<MystiDirective, { kind: 'write' | 'edit' | 'bash' | 'patch' }>,
+    settings: Settings, panelId: string, toolId: string, ownerKey?: string
+  ): Promise<{ ok: boolean; output: string }> {
+    const cfg = vscode.workspace.getConfiguration('mysti');
+    // A pinned coordinator model = the user's deliberate, capable choice; the
+    // free auto-rotation is not. bash may only AUTO-run (skip the card in an
+    // otherwise-non-gating mode) when a model is pinned — otherwise every shell
+    // command is confirmed, even in full access (Plan 19 §3.4 layer 6).
+    const modelPinned = !!(cfg.get<string>('mysti.coordinatorModel', '') || '').trim();
+    const ctx: LocalExecContext = {
+      enabled: this._mystiLocalExecEnabled(settings),
+      workspaceTrusted: vscode.workspace.isTrusted,
+      bashNetwork: cfg.get<string>('mysti.bashNetwork', 'off') === 'on',
+      bashTimeoutMs: undefined,
+      gate: async (info) => {
+        const action = this._classifyToolAction(info.kind);
+        const riskLevel = PermissionManager.classifyRisk(action);
+        const modeGates = this._shouldGateToolUse(settings, info.kind);
+        if (info.kind === 'bash') {
+          // Remote-effect / deploy (push, publish, deploy, ssh…) can't be undone
+          // by a checkpoint → a MODAL, default-DENY confirmation (Phase 3),
+          // always, never auto-run.
+          if (info.remoteEffect) {
+            return this._confirmRemoteEffectCommand(info.command || '');
+          }
+          // Auto-run (no card) ONLY for a genuinely safe, NON-compound, SANDBOXED
+          // command, and only when the mode wouldn't gate AND a capable model is
+          // pinned. Everything else ALWAYS shows an interactive card — which
+          // autonomous-aggressive cannot silently approve (forceInteractive).
+          const mayAutoRun = !modeGates && modelPinned && !!info.safe && !info.compound && !!info.sandboxed;
+          if (mayAutoRun) { return true; }
+          const netDesc = info.network ? 'NETWORK ENABLED (can reach the internet)' : 'no network';
+          return this.requestPermissionInline(
+            'bash-command',
+            'Mysti wants to run a command',
+            info.sandboxed
+              ? `Mysti (coordinator) will run this command in a sandbox (${netDesc}, writes limited to the workspace):`
+              : 'Mysti (coordinator) will run this UNSANDBOXED read-only command (no OS sandbox on this platform):',
+            { command: info.command, workingDirectory: '.', riskLevel },
+            panelId, toolId, ownerKey, /* forceInteractive */ true,
+          );
+        }
+        // write/edit/patch: honor the access the user already granted — modes
+        // that don't gate this op (accept-edits / full-access) approve without a card.
+        if (!modeGates) { return true; }
+        if (info.kind === 'patch') {
+          return this.requestPermissionInline(
+            'multi-file-edit',
+            'Mysti wants to apply a multi-file patch',
+            `Mysti (coordinator) will change ${info.files?.length ?? 0} file(s): ${(info.files || []).slice(0, 8).join(', ')}${(info.files?.length || 0) > 8 ? '…' : ''}`,
+            { files: (info.files || []).map(f => ({ path: f, action: 'edit' as const })), linesAdded: info.linesAdded, linesRemoved: info.linesRemoved, riskLevel },
+            panelId, toolId, ownerKey,
+          );
+        }
+        const verb = info.kind === 'write' ? (info.exists ? 'overwrite' : 'create') : 'edit';
+        return this.requestPermissionInline(
+          action,
+          `Mysti wants to ${verb} a file`,
+          `Mysti (coordinator) will ${verb} ${info.relPath}`,
+          { filePath: info.relPath, fileName: (info.relPath || '').split('/').pop(), linesAdded: info.linesAdded, linesRemoved: info.linesRemoved, riskLevel },
+          panelId, toolId, ownerKey,
+        );
+      },
+      checkpoint: async (label) => { try { return !!(await this._checkpointManager.snapshot(label)); } catch { return false; } },
+    };
+    try {
+      if (d.kind === 'write') { return await this._mystiLocalExec.write(d.path, d.content, ctx); }
+      if (d.kind === 'edit') { return await this._mystiLocalExec.edit(d.path, d.oldString, d.newString, d.replaceAll, ctx); }
+      if (d.kind === 'patch') { return await this._mystiLocalExec.applyPatch(d.patchText, ctx); }
+      return await this._mystiLocalExec.bash(d.command, ctx);
+    } catch (error) {
+      return { ok: false, output: `${d.kind}: failed — ${error instanceof Error ? error.message : error}` };
+    }
+  }
+
+  /** Whether the coordinator may call the user's CONNECTED external MCP tools this run (Plan 19 Phase 6). */
+  private _mystiMcpToolsEnabled(settings: Settings): boolean {
+    const on = vscode.workspace.getConfiguration('mysti').get<string>('mysti.mcpTools', 'off') === 'on';
+    if (!on || !vscode.workspace.isTrusted) { return false; }
+    // read-only access still allows external READS in principle, but every MCP
+    // call is gated anyway; require sign-in (the tools live on the DeepMyst account).
+    return !!this._deepMystAuth?.isSignedIn();
+  }
+
+  /**
+   * Discover the user's connected external MCP tools via the DeepMyst broker
+   * (`/api/v1/me/mcp`) for offering to the coordinator. Returns null when
+   * disabled / signed-out / no connections / the handshake fails — the MCP block
+   * is then simply omitted (a missing backend route degrades to a no-op, never a
+   * broken run). SECURITY: the dm_ bearer is sent ONLY to the DeepMyst-host
+   * broker URL from `auth.client.getMyMcpEndpointUrl()` — never a model- or
+   * connection-supplied url (the upstream `mcpUrl` is not CLI-reachable anyway).
+   */
+  /** Max external tools advertised to the model (bounds prompt AND native-schema size). */
+  private static readonly _MYSTI_MCP_MAX_TOOLS = 60;
+  private static readonly _MCP_TOOLS_CACHE_TTL_MS = 5 * 60_000;
+
+  /**
+   * Sanitize + bound a discovered tool list. listTools() metadata is UNTRUSTED
+   * (third-party MCP servers). A tool NAME must be a safe identifier — it is
+   * echoed into the SYSTEM prompt AND used verbatim as the callTool name and the
+   * allowlist key, so a name that isn't a plain identifier is DROPPED (never
+   * mutated — a mutated name wouldn't match the real broker tool). Descriptions
+   * are free text → newlines/controls stripped and length-bounded so a malicious
+   * description can't inject instructions. Capped to _MYSTI_MCP_MAX_TOOLS.
+   */
+  private _sanitizeMcpTools(tools: Array<{ name: string; description?: string }>): Array<{ name: string; description?: string }> {
+    const out: Array<{ name: string; description?: string }> = [];
+    for (const t of tools) {
+      const name = String(t.name || '');
+      if (!/^[A-Za-z0-9_.-]{1,80}$/.test(name)) { continue; } // unsafe/malformed → drop
+      const desc = t.description ? String(t.description).replace(/[\r\n\t\f\v\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200) : undefined;
+      out.push({ name, description: desc });
+      if (out.length >= ChatViewProvider._MYSTI_MCP_MAX_TOOLS) { break; }
+    }
+    return out;
+  }
+
+  private async _mystiMcpToolset(settings: Settings): Promise<{ client: McpClient; tools: Array<{ name: string; description?: string }> } | null> {
+    if (!this._mystiMcpToolsEnabled(settings)) { return null; }
+    const auth = this._deepMystAuth;
+    const key = auth?.getApiKey();
+    if (!auth || !key) { return null; }
+    const url = auth.client.getMyMcpEndpointUrl();
+    // Defense-in-depth (parity with the REST client): never attach the dm_ bearer
+    // to a non-DeepMyst host — the base URL comes from a setting a workspace could
+    // try to override. McpClient itself does not re-check the host.
+    if (!isDeepMystHost(url)) {
+      console.warn('[Mysti] MCP toolset: refusing to send key to non-DeepMyst broker host');
+      return null;
+    }
+    // Reuse a recently-discovered tool list so a normal message doesn't re-handshake
+    // (a fresh client still connects lazily on the first actual callTool). Short
+    // handshake timeout so a wedged broker can't stall the turn for long.
+    const now = Date.now();
+    if (this._mcpToolsCache && now - this._mcpToolsCache.at < ChatViewProvider._MCP_TOOLS_CACHE_TTL_MS) {
+      if (!this._mcpToolsCache.tools.length) { return null; }
+      return { client: new McpClient({ url, bearer: key, timeoutMs: 30_000 }), tools: this._mcpToolsCache.tools };
+    }
+    const client = new McpClient({ url, bearer: key, timeoutMs: 8_000 });
+    try {
+      const tools = this._sanitizeMcpTools(await client.listTools());
+      this._mcpToolsCache = { at: now, tools };
+      if (!tools.length) { await client.close(); return null; }
+      // Reconnect with a generous per-CALL timeout for actual tool invocations.
+      await client.close();
+      return { client: new McpClient({ url, bearer: key, timeoutMs: 30_000 }), tools };
+    } catch (e) {
+      console.warn('[Mysti] MCP toolset handshake failed:', e instanceof Error ? e.message : e);
+      this._mcpToolsCache = { at: now, tools: [] }; // negative-cache a failed handshake briefly
+      await client.close();
+      return null;
+    }
+  }
+
+  /**
+   * Run ONE external MCP tool call, ALWAYS behind an interactive permission card
+   * (Plan 19 Phase 6). An external tool call is an un-undoable network side
+   * effect (sending mail, creating a ticket) — never auto-approved, even in
+   * full-access / autonomous-aggressive (forceInteractive). The result is fed
+   * back only through _fenceLocalToolResult (untrusted, nonce-redacted).
+   */
+  private async _runMystiMcpTool(
+    d: Extract<MystiDirective, { kind: 'mcptool' }>,
+    client: McpClient, panelId: string, toolId: string, ownerKey?: string,
+  ): Promise<{ ok: boolean; output: string }> {
+    let argPreview: string;
+    try { argPreview = JSON.stringify(d.args, null, 1); } catch { argPreview = '{…}'; }
+    // Show the FULL args the user is approving (an un-undoable send). Only clip a
+    // pathologically large payload, and say so — never hide recipients/targets
+    // behind a silent 600-char prefix (review round-7 #9).
+    const MAX_PREVIEW = 8000;
+    const shown = argPreview.length > MAX_PREVIEW ? `${argPreview.slice(0, MAX_PREVIEW)}\n… (${argPreview.length - MAX_PREVIEW} more chars truncated)` : argPreview;
+    const approved = await this.requestPermissionInline(
+      'web-request',
+      'Mysti wants to use an external tool',
+      `Mysti (coordinator) will call your connected tool "${d.tool}" with:`,
+      { command: `${d.tool} ${shown}`, riskLevel: 'high' },
+      panelId, toolId, ownerKey, /* forceInteractive */ true,
+    );
+    if (!approved) { return { ok: false, output: '(denied by user)' }; }
+    try {
+      const res = await client.callTool(d.tool, d.args);
+      return { ok: !res.isError, output: res.text || (res.isError ? '(tool error, no message)' : '(no output)') };
+    } catch (e) {
+      return { ok: false, output: `mcptool "${d.tool}" failed — ${e instanceof Error ? e.message : e}` };
+    }
   }
 
   /**
@@ -6928,6 +7204,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const effort = clampEffort(settings.effortLevel, ['low', 'medium', 'high']) as
       'low' | 'medium' | 'high' | undefined;
     const gov = this._mystiGovernors(settings);
+    // Plan 19: whether the coordinator may write/edit locally this run (off by
+    // default; requires the setting + a trusted workspace + a non-plan tier).
+    const execEnabled = this._mystiLocalExecEnabled(settings);
+
+    // Plan 19 Phase 6: in-chat "Connect" button — only when DeepMyst is wired.
+    // SAFE (offers an OAuth button, no authority); the coordinator DETECTS a
+    // capability gap and emits <connect:NONCE …>.
+    const connectEnabled = !!this._deepMystAuth;
+    // Plan 19 Phase 6: the user's CONNECTED external MCP tools (Gmail/Slack/…),
+    // discovered via the DeepMyst broker. null when disabled/signed-out/handshake
+    // fails ⇒ the whole MCP capability is silently absent (block omitted, tag not
+    // even recognized). Off by default (mysti.mysti.mcpTools, machine-scoped).
+    const mcpToolset = await this._mystiMcpToolset(settings);
+    // Per-RUN connect-card dedupe (review round-7 #8/#10): a run-LOCAL set, not
+    // the shared instance field — so a background job dedupes correctly and one
+    // run can never suppress or reset another concurrent run's connect cards.
+    const connectSeen = new Set<string>();
+
+    // Plan 19 P4 (native tool-calling): offer OpenAI-style function `tools`
+    // ALONGSIDE the text-directive protocol, but ONLY when the resolved
+    // coordinator model is on the conservative allowlist. Unknown/free models
+    // keep using the proven `MystiTagScanner` untouched — a broken native path
+    // must never break the coordinator. Both encodings share one op set and the
+    // SAME gated dispatch below, so a native call is never more trusted than a
+    // text directive. Resolution can't fail the run: on error we simply omit
+    // tools (fail-safe to text). Same `tools` for every turn (stable per run).
+    const coordModelId = await this._mystiCoordinator.resolveCoordinatorModel().catch(() => undefined);
+    const coordTools = modelSupportsToolCalls(coordModelId)
+      ? coordinatorToolSchemas(execEnabled, mcpToolset?.tools ?? [], connectEnabled)
+      : undefined;
 
     // P1.3: honor the user's plan mode — the coordinator plans instead of editing.
     const planMode = settings.mode === 'quick-plan' || settings.mode === 'detailed-plan';
@@ -6939,7 +7245,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // free-tier coordinator models weakest at honoring fence instructions.
     const projectBrain = await this._buildMystiProjectBrain(nonce, delegateNonce);
     const messages: GatewayChatMessage[] = [
-      { role: 'system', content: this._mystiAgenticSystemPrompt(backends, delegateNonce, gov, planMode, settings.accessLevel === 'read-only') },
+      { role: 'system', content: this._mystiAgenticSystemPrompt(backends, delegateNonce, gov, planMode, settings.accessLevel === 'read-only', execEnabled, connectEnabled, mcpToolset?.tools ?? []) },
       {
         role: 'user',
         content: this._buildMystiDirectPrompt(brief, context, conversation, nonce, delegateNonce)
@@ -7052,19 +7358,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // HARD per-run stream cap that bounds total spend (review [6]).
       const liveBackends = [...backends];
       let localTools = 0;
+      let localExec = 0;
+      let mcpCalls = 0;
       let streams = 0;
       let lengthContinues = 0;
+      // Plan 19: EXECUTION kinds (write/edit/bash/patch) are added to the scanner
+      // only when local execution is enabled; the MCP tool kind only when a live
+      // toolset handshake succeeded; the connect kind only when DeepMyst is wired.
+      // When a group is off its tag isn't even recognized (it degrades to visible
+      // text) — the capability simply does not exist rather than existing-but-erroring.
+      const scanKinds = [
+        ...ALL_MYSTI_KINDS,
+        ...(execEnabled ? MYSTI_EXEC_KINDS : []),
+        ...(mcpToolset ? MYSTI_MCP_KINDS : []),
+        ...(connectEnabled ? MYSTI_CONNECT_KINDS : []),
+      ];
       // The scanner is hoisted so a length-continuation can REUSE it (review
       // [9]/[17]): a max_tokens cut mid-directive-tag leaves a partial tag held
       // in its buffer; a fresh scanner would never reassemble the split marker,
       // leaking raw tags (incl. the nonce) into the answer. carryScanner keeps
       // the same instance across the continuation so the tag completes normally.
-      let scanner = new MystiTagScanner(delegateNonce);
+      let scanner = new MystiTagScanner(delegateNonce, scanKinds);
       let carryScanner = false;
       while (streams < gov.maxTurns) {
         streams++;
         if (isCancelled()) { break; }
-        if (!carryScanner) { scanner = new MystiTagScanner(delegateNonce); }
+        if (!carryScanner) { scanner = new MystiTagScanner(delegateNonce, scanKinds); }
         carryScanner = false;
 
         const controller = new AbortController();
@@ -7072,15 +7391,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         else { this._registerMystiAbort(panelId, controller); }
         let turnText = '';
         let directive: MystiDirective | undefined;
+        let turnToolCalls: AccumulatedToolCall[] | undefined;
         let abortedForDirective = false;
         let finishReason: string | undefined;
 
         try {
-          for await (const ev of this._mystiCoordinator.stream(messages, { maxTokens: 4096, reasoningEffort: effort, signal: controller.signal })) {
+          for await (const ev of this._mystiCoordinator.stream(messages, { maxTokens: 4096, reasoningEffort: effort, signal: controller.signal, tools: coordTools })) {
             if (isCancelled()) { break; }
             if (ev.error) { errored = true; errorMsg = this._friendlyMystiError(ev.error); if (!bg) { this._postToPanel(panelId, { type: 'error', payload: errorMsg }); } break; }
             if (ev.model) { resolvedModel = ev.model; }
             if (ev.reasoning) { postThinking(ev.reasoning); }
+            if (ev.toolCalls && ev.toolCalls.length) { turnToolCalls = ev.toolCalls; }
             if (ev.finishReason) { finishReason = ev.finishReason; }
             if (ev.costUsd !== undefined) { costTotal += ev.costUsd; sawCost = true; }
             if (ev.text) {
@@ -7117,7 +7438,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // no directive closed — auto-continue instead of presenting a truncated
         // reply as complete. Checked BEFORE flush and carrying the scanner, so a
         // tag split by the cut is completed by the continuation (review [9]/[17]).
-        if (!directive && finishReason === 'length' && turnText.trim() && lengthContinues < 2) {
+        if (!directive && !(turnToolCalls && turnToolCalls.length) && finishReason === 'length' && turnText.trim() && lengthContinues < 2) {
           lengthContinues++;
           carryScanner = true; // keep the same scanner (held partial tag)
           messages.push({ role: 'assistant', content: turnText });
@@ -7130,13 +7451,91 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // not a final answer. Nudge it to answer briefly (bounded) instead of
         // falling through to naturalEnd → the "did not produce a result"
         // placeholder. Append to the last user turn to avoid user/user adjacency.
-        if (!directive && finishReason === 'length' && !turnText.trim() && lengthContinues < 2) {
+        if (!directive && !(turnToolCalls && turnToolCalls.length) && finishReason === 'length' && !turnText.trim() && lengthContinues < 2) {
           lengthContinues++;
           const nudge = 'You used your token budget without emitting a visible answer. Answer the user now, briefly and directly — do not think at length first.';
           const lastMsg = messages[messages.length - 1];
           if (lastMsg && lastMsg.role === 'user') { lastMsg.content += `\n\n${nudge}`; }
           else { messages.push({ role: 'user', content: nudge }); }
           continue;
+        }
+
+        // ── Native tool-calling (Plan 19 P4): a capable model may drive the
+        // SAME op set through OpenAI-style function calls instead of text tags.
+        // Only reachable when coordTools was offered (allowlisted model). The
+        // call is converted to a MystiDirective so the EXACT gated dispatch below
+        // runs it — a native call is never more trusted than a text directive.
+        // Precedence: a text directive the scanner already captured wins
+        // (first-seen), so this fires only when the scanner found none. One call
+        // per turn: a model that emitted several has the extras dropped and
+        // re-issues them next turn (tools are offered every turn).
+        if (!directive && turnToolCalls && turnToolCalls.length) {
+          // Emit any visible prose streamed alongside the call(s), and don't let
+          // the flush below re-consume the scanner (directive is set by then).
+          const held = scanner.flush();
+          if (held.text) { emit(held.text); }
+          // Native tool turns usually carry no visible text — keep the assistant
+          // history entry non-empty so every downstream push is a well-formed
+          // request (some endpoints reject an empty assistant content).
+          if (!turnText.trim()) { turnText = `(tool: ${turnToolCalls.map(c => c.name).join(', ')})`; }
+          // Convert every call up front so we can choose batch vs single.
+          const convs = turnToolCalls.map(c => ({ name: c.name, conv: toolCallToDirective(c.name, parseToolArgs(c.arguments)) }));
+
+          // ── Phase 5: bounded-parallel READ-ONLY batch. A capable model often
+          // emits several tool_calls at once (parallel tool-calling). When EVERY
+          // call is a read-only local tool (read/ls/grep/diag — no gate, no write
+          // race, no interactive-card collision), run them together (cap 3) and
+          // feed ALL results back in ONE turn instead of dropping the extras. Any
+          // mutating/gated call (or a lone call) falls through to the serial
+          // one-at-a-time path below — every write/exec/delegate stays gated.
+          const batchable = convs.length > 1 && convs.every(c => !('error' in c.conv) && this._isReadOnlyLocalKind((c.conv as MystiDirective).kind));
+          if (batchable) {
+            if (localTools >= gov.maxLocalTools) {
+              messages.push({ role: 'assistant', content: turnText });
+              messages.push({ role: 'user', content: `Local tool budget exhausted (${gov.maxLocalTools} calls). Answer with what you have, or delegate the remaining investigation to an agent.` });
+              continue;
+            }
+            const remaining = gov.maxLocalTools - localTools;
+            const runList = convs.slice(0, remaining).map(c => c.conv as Extract<MystiDirective, { kind: 'read' | 'ls' | 'grep' | 'diag' }>);
+            const trimmed = convs.length - runList.length;
+            localTools += runList.length;
+            // Post every card first (all show as running), then run bounded-
+            // parallel, then resolve + fence IN ORDER for deterministic replay.
+            const jobs = runList.map(d => {
+              const toolId = `mysti-local-${runId}-${delegId++}`;
+              const input = this._localToolCardInput(d);
+              postToolUse({ id: toolId, name: d.kind, input });
+              return { d, toolId, input };
+            });
+            // Honor Stop per-tool (matching the serial path): once cancelled, the
+            // remaining jobs short-circuit instead of scanning the repo — a big
+            // parallel-grep batch must not keep running for seconds after Stop.
+            const outcomes = await runBounded(jobs, ChatViewProvider._MYSTI_READONLY_BATCH_CONCURRENCY, async (j) =>
+              isCancelled()
+                ? { j, res: { ok: false, output: '(cancelled by user)' } }
+                : { j, res: await this._runMystiLocalTool(j.d) });
+            const fenced: string[] = [];
+            for (const { j, res } of outcomes) {
+              postToolResult({ id: j.toolId, name: j.d.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
+              recordLocalCard(j.toolId, j.d.kind, j.input, res.output, !res.ok);
+              fenced.push(this._fenceLocalToolResult(j.d.kind, res.output, nonce, delegateNonce));
+            }
+            if (isCancelled()) { break; }
+            const trimNote = trimmed > 0 ? `\n\n(${trimmed} further tool call(s) were not run — the local tool budget was reached. Ask again if still needed.)` : '';
+            messages.push({ role: 'assistant', content: turnText });
+            messages.push({ role: 'user', content: fenced.join('\n\n') + trimNote });
+            continue;
+          }
+
+          // Single-call path (unchanged): first call this turn; a model that
+          // emitted extras (or a mutating mix) re-issues the rest next turn.
+          const first = convs[0];
+          if ('error' in first.conv) {
+            messages.push({ role: 'assistant', content: turnText });
+            messages.push({ role: 'user', content: `Tool call error: ${first.conv.error} Reissue with corrected arguments, or answer directly.` });
+            continue;
+          }
+          directive = first.conv;
         }
 
         // Not continuing → flush now (fail-open) to finalize any held text and a
@@ -7192,6 +7591,92 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (isCancelled()) { break; }
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: this._fenceLocalToolResult(directive.kind, res.output, nonce, delegateNonce) });
+          continue;
+        }
+
+        // ── Local EXECUTION (write/edit): the coordinator's OWN gated mutation
+        // (Plan 19 Phase 0). Only reachable when execEnabled (the scanner never
+        // parses these kinds otherwise). Routes through MystiLocalExec: the SAME
+        // permission gate + a pre-write checkpoint; the (untrusted) result is
+        // nonce-fenced back like any other local tool. Separate tighter budget.
+        if (directive && (directive.kind === 'write' || directive.kind === 'edit' || directive.kind === 'bash' || directive.kind === 'patch')) {
+          const toolId = `mysti-exec-${runId}-${delegId++}`;
+          const input: Record<string, unknown> = directive.kind === 'write'
+            ? { path: directive.path }
+            : directive.kind === 'edit'
+              ? { path: directive.path, replace: directive.replaceAll ? 'all' : 'first' }
+              : directive.kind === 'bash'
+                ? { command: directive.command }
+                : { patch: directive.patchText.slice(0, 200) };
+          if (localExec >= gov.maxLocalExec) {
+            messages.push({ role: 'assistant', content: turnText });
+            messages.push({ role: 'user', content: `Local edit budget exhausted (${gov.maxLocalExec} writes/edits this run). Finish with what you have, or delegate the remaining changes to a coding agent.` });
+            continue;
+          }
+          localExec++;
+          postToolUse({ id: toolId, name: directive.kind, input });
+          const res = await this._runMystiLocalExec(directive, settings, panelId, toolId, cancelKey);
+          postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
+          recordLocalCard(toolId, directive.kind, input, res.output, !res.ok);
+          if (isCancelled()) { break; }
+          messages.push({ role: 'assistant', content: turnText });
+          messages.push({ role: 'user', content: this._fenceLocalToolResult(directive.kind, res.output, nonce, delegateNonce) });
+          continue;
+        }
+
+        // ── Connect (Plan 19 Phase 6): the coordinator detected a capability gap
+        // and offers an in-chat "Connect <service>" button. SAFE — it grants no
+        // authority (just an OAuth link the user must click); reuses the entire
+        // existing connect flow (_emitConnectionCard → connect card → OAuth).
+        // Only reachable when connectEnabled (the tag isn't parsed otherwise).
+        if (directive && directive.kind === 'connect') {
+          const service = directive.service;
+          if (!connectSeen.has(service)) {
+            connectSeen.add(service);
+            void this._emitConnectionCard(panelId, service);
+          }
+          messages.push({ role: 'assistant', content: turnText });
+          messages.push({ role: 'user', content: `A "Connect ${service}" button was shown to the user. In one short sentence, tell them to click it to connect ${service}; then continue or finish. Do NOT emit another connect for ${service}.` });
+          continue;
+        }
+
+        // ── External MCP tool call (Plan 19 Phase 6): call one of the user's
+        // CONNECTED external tools. GATED like exec (an un-undoable network side
+        // effect) via _runMystiMcpTool → a mandatory permission card; the result
+        // re-enters the model UNTRUSTED + nonce-fenced. Serial only (NOT batched).
+        if (directive && directive.kind === 'mcptool') {
+          const toolId = `mysti-mcp-${runId}-${delegId++}`;
+          postToolUse({ id: toolId, name: 'mcptool', input: { tool: directive.tool, args: directive.args } });
+          if (!mcpToolset) {
+            postToolResult({ id: toolId, name: 'mcptool', output: 'External tools are not enabled.', status: 'failed' });
+            recordLocalCard(toolId, 'mcptool', { tool: directive.tool }, 'External tools are not enabled.', true);
+            messages.push({ role: 'assistant', content: turnText });
+            messages.push({ role: 'user', content: 'External tools are not available. Answer without them or delegate.' });
+            continue;
+          }
+          if (mcpCalls >= gov.maxMcpCalls) {
+            postToolResult({ id: toolId, name: 'mcptool', output: `External tool budget reached (${gov.maxMcpCalls} calls).`, status: 'failed' });
+            recordLocalCard(toolId, 'mcptool', { tool: directive.tool }, `External tool budget reached (${gov.maxMcpCalls} calls).`, true);
+            messages.push({ role: 'assistant', content: turnText });
+            messages.push({ role: 'user', content: `External tool budget reached (${gov.maxMcpCalls} calls this run). Finish with what you have.` });
+            continue;
+          }
+          // Reject a model-invented tool name BEFORE any call — only the
+          // discovered, connected tools are callable.
+          if (!mcpToolset.tools.some(t => t.name === directive.tool)) {
+            postToolResult({ id: toolId, name: 'mcptool', output: `No such tool "${directive.tool}".`, status: 'failed' });
+            recordLocalCard(toolId, 'mcptool', { tool: directive.tool }, `No such tool "${directive.tool}".`, true);
+            messages.push({ role: 'assistant', content: turnText });
+            messages.push({ role: 'user', content: `No connected tool "${directive.tool}". Available: ${mcpToolset.tools.map(t => t.name).slice(0, 40).join(', ')} — or answer without it.` });
+            continue;
+          }
+          mcpCalls++;
+          const res = await this._runMystiMcpTool(directive, mcpToolset.client, panelId, toolId, cancelKey);
+          postToolResult({ id: toolId, name: 'mcptool', output: res.output, status: res.ok ? 'completed' : 'failed' });
+          recordLocalCard(toolId, 'mcptool', { tool: directive.tool }, res.output, !res.ok);
+          if (isCancelled()) { break; }
+          messages.push({ role: 'assistant', content: turnText });
+          messages.push({ role: 'user', content: this._fenceLocalToolResult(`mcptool:${directive.tool}`, res.output, nonce, delegateNonce) });
           continue;
         }
 
@@ -7403,7 +7888,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const lastFinalize = finalizeMessages[finalizeMessages.length - 1];
           if (lastFinalize && lastFinalize.role === 'user') { lastFinalize.content += `\n\n${finalizeNudge}`; }
           else { finalizeMessages.push({ role: 'user', content: finalizeNudge }); }
-          const fScanner = new MystiTagScanner(delegateNonce);
+          // Use the SAME kinds as the main loop (incl. exec kinds when enabled),
+          // else a `<write:NONCE …>`/`<bash:…>` tag emitted at finalize is not
+          // recognized → its raw text + the live nonce leak into the answer
+          // (review round-5 #7). The finalize loop ignores rf.directive, so
+          // recognizing the tag only redacts it — nothing is dispatched.
+          const fScanner = new MystiTagScanner(delegateNonce, scanKinds);
           for await (const ev of this._mystiCoordinator.stream(finalizeMessages, { maxTokens: 4096, reasoningEffort: effort, signal: finalizeController.signal })) {
             if (isCancelled()) { break; }
             if (ev.error) { break; } // keep whatever we have; don't flip to errored
@@ -7425,6 +7915,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Reclaim delegation-child persistent processes for this run (review
       // [13]) — after the loop, so within-run --resume reuse still worked.
       try { this._collaboratorPool.disposeRun(runId); } catch { /* best-effort */ }
+      // Plan 19 Phase 6: drop the run's MCP broker session (persistent HTTP).
+      if (mcpToolset) { void mcpToolset.client.close(); }
       if (bg) {
         this._jobAbortControllers.delete(jobId!);
       } else if ((this._mystiRunGen.get(panelId) ?? 0) === myGen) {
@@ -7667,7 +8159,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let models: { id: string; contextWindow?: number }[] = [];
     try { models = this._providerManager.getModels(agentId) ?? []; } catch { return undefined; }
     if (models.length === 0) { return undefined; }
-    const FAST = /(haiku|flash|mini|small|lite|nano|8b|7b|turbo|fast)/i;
+    const FAST = /(haiku|flash|mini|small|lite|nano|8b|7b|turbo|fast|highspeed|high-speed)/i;
     const STRONG = /(opus|-pro|sonnet|ultra|large|max|405b|70b|72b|deep)/i;
     if (tier === 'fast') {
       const m = models.find(x => FAST.test(x.id));
@@ -7817,9 +8309,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _mystiAgenticSystemPrompt(
     backends: AgentType[],
     delegateNonce: string,
-    gov: { maxDelegations: number; maxLocalTools: number },
+    gov: { maxDelegations: number; maxLocalTools: number; maxLocalExec?: number; maxMcpCalls?: number },
     planMode = false,
     readOnlyAccess = false,
+    execEnabled = false,
+    connectEnabled = false,
+    mcpTools: Array<{ name: string; description?: string }> = [],
   ): string {
     const list = backends.map(b => {
       const name = this._providerManager.getProvider(b)?.displayName || b;
@@ -7841,6 +8336,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       '## PLAN MODE — do NOT edit files or run commands this turn',
       'The user is in a plan mode. Investigate with your read-only tools, then present a clear, numbered step-by-step PLAN (files to change, approach, risks, how to verify) for the user to approve. Do NOT delegate edits/commands — the user will switch to an edit mode to execute. You MAY delegate a read-only investigation if you truly cannot answer from your own read tools.',
     ] : [];
+    // Plan 19: local write/edit tools, only when execution is enabled.
+    const execBlock = execEnabled ? [
+      '',
+      '## Editing files YOURSELF (you have gated local write/edit tools)',
+      'You can change files directly — no backend needed. Emit EXACTLY ONE tag on its own line, then STOP — I apply it (the user approves each change unless they turned approvals off) and reply with the result:',
+      `<write:${N} path="rel/path.ts">FULL NEW FILE CONTENT</write> — create a new file or overwrite an existing one with the entire content.`,
+      `<edit:${N} path="rel/path.ts"><old>EXACT existing snippet — copy it verbatim incl. whitespace; must be UNIQUE in the file</old><new>the replacement</new></edit> — a targeted edit. To replace every occurrence add replace="all": <edit:${N} path="…" replace="all"><old>…</old><new>…</new></edit>.`,
+      `<patch:${N}>*** Add: new/file.ts\\n<full content>\\n*** Update: existing.ts\\n<<<<<<< SEARCH\\nexact old (unique)\\n=======\\nnew\\n>>>>>>> REPLACE\\n*** Delete: gone.ts\\n*** Move: a.ts >>> b.ts\\n*** End</patch> — ONE ATOMIC multi-file change (all-or-nothing: if any hunk can't apply, nothing is written). Use this instead of several <write>/<edit> when a change spans files. Do NOT patch a file whose content itself contains lines starting with "*** " or the conflict markers "=======" / ">>>>>>> REPLACE" — use <write:${N}> for that file instead (the patch grammar would mis-split it).`,
+      `ALWAYS <read:${N}> a file right before you <edit:${N}>/patch it so the SEARCH/old text matches exactly. Every write/edit/patch is checkpointed (undoable) and workspace-scoped; secret files are blocked. Budget: ${gov.maxLocalExec ?? 12} writes/edits/patches+commands per run.`,
+      '',
+      '## Running commands YOURSELF (gated, SANDBOXED shell)',
+      `<bash:${N}>a single shell command</bash> — run tests, builds, linters, formatters, git status/diff, etc. Runs in an OS sandbox: NO network and writes limited to the workspace. Use it to VERIFY your edits (e.g. run the tests, then read failures and fix).`,
+      'One command per tag — chaining with && / | / ; is refused; destructive commands (rm, sudo, git push --force, curl|sh, …) are blocked. For anything the sandbox forbids (network, installs, deploys) or heavy multi-file work, DELEGATE to a specialist backend instead.',
+    ] : [];
+    // Plan 19 Phase 6: connected external MCP tools (Gmail/Slack/Trello/…),
+    // advertised only when a live handshake surfaced the user's connected tools.
+    const mcpBlock = (mcpTools.length > 0) ? [
+      '',
+      '## Using the user\'s CONNECTED external tools',
+      'The user has connected external services via DeepMyst. You can call their tools. Emit EXACTLY ONE tag on its own line, then STOP — the user approves EACH call (these are real external side effects: sending mail, creating tickets), and I reply with the result:',
+      `<mcptool:${N} tool="TOOL_NAME">{ "arg": "value" }</mcptool> — the body is a JSON object of arguments (or {} if none).`,
+      `Budget: ${gov.maxMcpCalls ?? 6} external tool calls per run. Available tools:`,
+      ...mcpTools.slice(0, 60).map(t => `- ${t.name}${t.description ? ` — ${String(t.description).replace(/\s+/g, ' ').slice(0, 160)}` : ''}`),
+    ] : [];
+    // Plan 19 Phase 6: offer an in-chat "Connect" button for an unconnected service.
+    const connectBlock = connectEnabled ? [
+      '',
+      '## Connecting a NEW external service (in-chat button)',
+      'If the task needs an external service (Gmail, Slack, Notion, a database, GitHub, …) the user has NOT connected yet, do NOT ask for API keys. Offer a one-click connect button by emitting EXACTLY ONE tag on its own line:',
+      `<connect:${N} service="slug">why it is needed (one short phrase)</connect> — slug is a short lowercase id (gmail, slack, notion, postgres, github). I render it as a "Connect <service>" button; then tell the user, in one sentence, to click it. It grants no access until they complete the sign-in.`,
+    ] : [];
     return [
       'You are Mysti, an AI coding coordinator working inside the user\'s repository.',
       ...planBlock,
@@ -7853,7 +8379,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       `<grep:${N} path="src/**">regex</grep> — search file contents across the repo (path glob optional)`,
       `<diag:${N}>all</diag> — live compiler/linter diagnostics from the editor (or a single file path)`,
       `<remember:${N}>a durable project fact worth keeping across sessions/backends</remember> — persist a learning (e.g. "tests run via npm run test:unit", "auth lives in src/auth"). Use sparingly for genuinely reusable facts.`,
-      `These cost nothing and do NOT count against your delegation limit (budget: ${gov.maxLocalTools}/run). You CANNOT write files or run commands yourself — there is no local write or shell tool.`,
+      execEnabled
+        ? `These read tools cost nothing and do NOT count against your edit/delegation budgets (${gov.maxLocalTools} reads/run). Use them to LOOK before you write.`
+        : `These cost nothing and do NOT count against your delegation limit (budget: ${gov.maxLocalTools}/run). You CANNOT write files or run commands yourself — there is no local write or shell tool.`,
+      ...execBlock,
+      ...mcpBlock,
+      ...connectBlock,
       '',
       '## Delegation (mutations, tests, builds, heavy multi-file work)',
       'When a step needs to EDIT files, RUN commands/tests, or do deep multi-file work, delegate it to a specialist coding agent by writing EXACTLY, on its own line:',
@@ -7996,6 +8527,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Execute a local read-only directive via MystiLocalTools (Plan 17 P0.1). */
+  /** True for the read-only local tool kinds that are safe to batch in parallel. */
+  private _isReadOnlyLocalKind(kind: MystiDirective['kind']): kind is 'read' | 'ls' | 'grep' | 'diag' {
+    return kind === 'read' || kind === 'ls' || kind === 'grep' || kind === 'diag';
+  }
+
   private async _runMystiLocalTool(d: Extract<MystiDirective, { kind: 'read' | 'ls' | 'grep' | 'diag' }>): Promise<{ ok: boolean; output: string }> {
     try {
       switch (d.kind) {
@@ -9649,6 +10185,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // below never reaches).
       this._brainstormManager.cancelSession(panelId);
       this._brainstormManager.clearSession(panelId);
+      // Plan 18 (1.3): stop any live collab/orchestrate children for this tab.
+      this._collaborationManager.cancelPanel(panelId);
+      this._mystiOrchestrator?.cancelPanel(panelId);
       // S7: drop the panel's compaction usage (sweeps -brainstorm- child keys
       // too) — these outlived closed tabs before.
       this._compactionManager.resetUsage(panelId);

@@ -76,16 +76,71 @@ describe('ClaudeCodeProvider.buildCliArgs', () => {
     expect(args).toContain('claude-opus-4-6');
   });
 
-  it('should pass --effort through directly (Claude clamps per-model itself)', () => {
+  it('should pass a supported --effort tier through unchanged', () => {
     const args = provider.buildCliArgs(defaultSettings({ effortLevel: 'xhigh' }), session);
     const i = args.indexOf('--effort');
     expect(i).toBeGreaterThanOrEqual(0);
     expect(args[i + 1]).toBe('xhigh');
   });
 
+  it('should pass max (top of the declared tier list) through unchanged', () => {
+    const args = provider.buildCliArgs(defaultSettings({ effortLevel: 'max' }), session);
+    const i = args.indexOf('--effort');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe('max');
+  });
+
+  // Plan 18 4.4 — a hand-edited/invalid defaultEffortLevel in settings.json used
+  // to be passed RAW, hard-failing the CLI spawn. It must clamp to a supported
+  // tier (clampEffort degrades unknown values to the lowest declared tier).
+  it('should clamp a non-enum effortLevel instead of passing it raw', () => {
+    const badSettings = defaultSettings({
+      effortLevel: 'turbo' as unknown as Settings['effortLevel'],
+    });
+    const args = provider.buildCliArgs(badSettings, session);
+    const i = args.indexOf('--effort');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe('low');
+    expect(args).not.toContain('turbo');
+  });
+
   it('should omit --effort when effortLevel is unset', () => {
     const args = provider.buildCliArgs(defaultSettings(), session);
     expect(args).not.toContain('--effort');
+  });
+
+  describe('persistent-mode args (buildPersistentCliArgs)', () => {
+    class PersistentArgsProvider extends TestableClaudeProvider {
+      public buildPersistentArgs(settings: Settings, sess: ClaudeSessionState): string[] | null {
+        return this.buildPersistentCliArgs(settings, sess);
+      }
+    }
+
+    it('should pass a supported --effort tier through unchanged', () => {
+      const p = new PersistentArgsProvider();
+      const args = p.buildPersistentArgs(defaultSettings({ effortLevel: 'high' }), session)!;
+      const i = args.indexOf('--effort');
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(args[i + 1]).toBe('high');
+    });
+
+    it('should clamp a non-enum effortLevel instead of passing it raw (Plan 18 4.4)', () => {
+      const p = new PersistentArgsProvider();
+      const badSettings = defaultSettings({
+        effortLevel: 'ultra' as unknown as Settings['effortLevel'],
+      });
+      const args = p.buildPersistentArgs(badSettings, session)!;
+      const i = args.indexOf('--effort');
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(args[i + 1]).toBe('low');
+      expect(args).not.toContain('ultra');
+    });
+
+    it('should omit --effort when effortLevel is unset', () => {
+      const p = new PersistentArgsProvider();
+      const args = p.buildPersistentArgs(defaultSettings(), session)!;
+      expect(args).not.toContain('--effort');
+    });
   });
 
   it('should prefer custom model from config over settings', () => {

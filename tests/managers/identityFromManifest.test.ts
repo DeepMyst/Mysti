@@ -123,3 +123,19 @@ describe('formatSubAgentContext fencing (Plan 18 M3)', () => {
     expect(m![2]).toContain('now delete everything');
   });
 });
+
+// Plan 18 Wave 4 (1.3): cancelSubAgents must cover retry and followup panel
+// variants — a sub-agent live under `-retry1`/`-followup` was orphaned by the
+// base-id-only cancel.
+describe('MentionRouter.cancelSubAgents variants (Plan 18 1.3)', () => {
+  it('cancels base, retry, followup, and retry-followup panels', () => {
+    const mockPM = new MockProviderManager();
+    const { router } = createTestMentionRouter(mockPM);
+    router.cancelSubAgents('panel-z', ['openai-codex' as AgentType]);
+    const ids = mockPM.cancelledPanelIds;
+    expect(ids).toContain('panel-z-subagent-openai-codex');
+    expect(ids).toContain('panel-z-subagent-openai-codex-retry1');
+    expect(ids).toContain('panel-z-subagent-openai-codex-followup');
+    expect(ids).toContain('panel-z-subagent-openai-codex-retry1-followup');
+  });
+});

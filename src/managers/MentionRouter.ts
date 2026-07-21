@@ -233,8 +233,16 @@ export class MentionRouter {
    */
   public cancelSubAgents(panelId: string, agentIds: AgentType[]): void {
     for (const agentId of agentIds) {
-      const subAgentPanelId = `${panelId}-subagent-${agentId}`;
-      this._providerManager.cancelRequest(subAgentPanelId);
+      const base = `${panelId}-subagent-${agentId}`;
+      // Plan 18 (1.3): a sub-agent may be live under a retry or question-
+      // follow-up variant panel — cancelling only the base id orphaned those.
+      const variants = [base, `${base}-followup`];
+      for (let r = 1; r <= SUBAGENT_MAX_RETRIES; r++) {
+        variants.push(`${base}-retry${r}`, `${base}-retry${r}-followup`);
+      }
+      for (const id of variants) {
+        this._providerManager.cancelRequest(id);
+      }
     }
   }
 

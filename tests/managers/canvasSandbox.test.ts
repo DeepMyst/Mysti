@@ -10,6 +10,7 @@ import {
   buildPageDocument,
   PAGE_ROOT_ID,
   PAGE_JSX_SCRIPT_ID,
+  SANDBOX_INNER_CSP,
 } from '../../src/managers/CanvasSandbox';
 import type { SandboxRuntime } from '../../src/managers/CanvasSandbox';
 import { DesignSpecManager } from '../../src/managers/DesignSpecManager';
@@ -115,6 +116,62 @@ describe('CanvasSandbox', () => {
       expect(doc).toContain('<script src="./react.js"></script>');
       expect(doc).toContain('<script src="./babel.js"></script>');
       expect(doc).toContain('<script src="./harness.js"></script>');
+    });
+
+    it('carries the sandbox CSP meta by default (6.2 — inlined runtime = exact webview mirror)', () => {
+      const doc = buildPageDocument({
+        page: page({ mode: 'html', htmlSource: '<h1>Hi</h1>' }),
+        theme,
+        format: getFormat('desktop')!,
+        runtime,
+      });
+      expect(doc).toContain('<meta http-equiv="Content-Security-Policy"');
+      expect(doc).toContain("default-src 'none'");
+      expect(doc).toContain("connect-src 'none'");
+      expect(doc).toContain("script-src 'unsafe-inline' 'unsafe-eval'");
+      // Inlined runtime needs no script source-list entries.
+      expect(doc).not.toContain("script-src 'unsafe-inline' 'unsafe-eval' 'self'");
+    });
+
+    it("widens script-src with 'self' for src-loaded runtimes (export bundle)", () => {
+      const doc = buildPageDocument({
+        page: page({ mode: 'html', htmlSource: '<h1>Hi</h1>' }),
+        theme,
+        format: getFormat('desktop')!,
+        runtime: { headScriptSrcs: ['../runtime/react.js'], harnessSrc: '../runtime/harness.js' },
+      });
+      expect(doc).toContain("script-src 'unsafe-inline' 'unsafe-eval' 'self'");
+      expect(doc).toContain("default-src 'none'");
+    });
+
+    it('widens script-src with data: for data-URI runtimes (PNG capture path)', () => {
+      const doc = buildPageDocument({
+        page: page({ mode: 'html', htmlSource: '<h1>Hi</h1>' }),
+        theme,
+        format: getFormat('desktop')!,
+        runtime: { headScriptSrcs: ['data:text/javascript;base64,QQ=='], harnessSrc: 'data:text/javascript;base64,QQ==' },
+      });
+      expect(doc).toContain("script-src 'unsafe-inline' 'unsafe-eval' data:");
+      expect(doc).not.toContain("'self'");
+    });
+
+    it('csp: false omits the meta; a custom string is used verbatim', () => {
+      const base = {
+        page: page({ mode: 'html', htmlSource: '<h1>Hi</h1>' }),
+        theme,
+        format: getFormat('desktop')!,
+        runtime,
+      };
+      const noCsp = buildPageDocument({ ...base, csp: false });
+      expect(noCsp).not.toContain('Content-Security-Policy');
+      const custom = buildPageDocument({ ...base, csp: "default-src 'self';" });
+      expect(custom).toContain(`content="default-src 'self';"`);
+    });
+
+    it('exports the mirror CSP constant (must match media/canvas/canvas.js via canvasContent)', () => {
+      expect(SANDBOX_INNER_CSP).toContain("default-src 'none'");
+      expect(SANDBOX_INNER_CSP).toContain("script-src 'unsafe-inline' 'unsafe-eval'");
+      expect(SANDBOX_INNER_CSP).toContain("connect-src 'none'");
     });
 
     it('rewrites asset tokens inside JSX', () => {

@@ -4,6 +4,7 @@
  * validating the live path end-to-end. Also checks the bearer-token gate.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as http from 'http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { CanvasMcpHttpServer } from '../../src/services/CanvasMcpHttpServer';
@@ -62,5 +63,64 @@ describe('CanvasMcpHttpServer (live HTTP transport)', () => {
 
   it('rejects a wrong bearer token', async () => {
     await expect(connect('wrong-token')).rejects.toBeTruthy();
+  });
+
+  // 6.3b — defensive Host/Origin validation (DNS-rebinding / cross-site).
+  describe('Host/Origin validation (6.3b)', () => {
+    /** Raw request against the loopback socket with attacker-controlled headers. */
+    function rawRequest(headers: Record<string, string>): Promise<{ status: number }> {
+      return new Promise((resolve, reject) => {
+        const req = http.request(
+          { host: '127.0.0.1', port: handle.port, path: '/mcp', method: 'POST', headers },
+          (res) => { res.resume(); res.on('end', () => resolve({ status: res.statusCode ?? 0 })); },
+        );
+        req.on('error', reject);
+        req.end('{}');
+      });
+    }
+
+    it('403s a non-loopback Host header even with a valid bearer (DNS rebinding)', async () => {
+      const { status } = await rawRequest({
+        host: 'evil.example.com',
+        authorization: `Bearer ${handle.token}`,
+        'content-type': 'application/json',
+      });
+      expect(status).toBe(403);
+    });
+
+    it('403s a rebound Host with port and a null Origin', async () => {
+      expect((await rawRequest({ host: 'evil.example.com:8080' })).status).toBe(403);
+      expect((await rawRequest({
+        host: `127.0.0.1:${handle.port}`,
+        origin: 'null',
+      })).status).toBe(403);
+    });
+
+    it('403s a non-localhost Origin even when Host is loopback', async () => {
+      const { status } = await rawRequest({
+        host: `127.0.0.1:${handle.port}`,
+        origin: 'https://evil.example.com',
+        authorization: `Bearer ${handle.token}`,
+      });
+      expect(status).toBe(403);
+    });
+
+    it('passes loopback Host + localhost Origin through to the bearer gate', async () => {
+      // No/bad token → the request must reach the 401 bearer check, proving the
+      // new gates did not reject it.
+      const unauthed = await rawRequest({
+        host: 'localhost',
+        origin: 'http://localhost:3000',
+      });
+      expect(unauthed.status).toBe(401);
+      const ipv6 = await rawRequest({ host: '[::1]:9999', origin: 'http://127.0.0.1' });
+      expect(ipv6.status).toBe(401);
+    });
+
+    it('the real SDK client flow still works after the new gates', async () => {
+      client = await connect(handle.token);
+      const { tools } = await client.listTools();
+      expect(tools.length).toBeGreaterThan(0);
+    });
   });
 });

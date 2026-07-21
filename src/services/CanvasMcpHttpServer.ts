@@ -68,6 +68,20 @@ export class CanvasMcpHttpServer {
   }
 
   private async _handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    // 6.3b defense-in-depth vs DNS-rebinding / cross-site requests: the server
+    // only listens on 127.0.0.1, so a legitimate client always addresses a
+    // loopback host — a rebound browser request carries the attacker's domain
+    // in Host (and a non-localhost Origin). Reject both BEFORE the transport
+    // (or the bearer check) sees the request.
+    if (!isLoopbackHostHeader(req.headers.host)) {
+      res.writeHead(403, { 'content-type': 'text/plain' }).end('forbidden');
+      return;
+    }
+    const origin = req.headers.origin;
+    if (origin !== undefined && !isLoopbackOrigin(String(origin))) {
+      res.writeHead(403, { 'content-type': 'text/plain' }).end('forbidden');
+      return;
+    }
     // Loopback + bearer-token gate.
     const auth = req.headers['authorization'];
     if (auth !== `Bearer ${this._token}`) {
@@ -85,6 +99,27 @@ export class CanvasMcpHttpServer {
     }
     const body = req.method === 'POST' ? await readJson(req) : undefined;
     await this._transport.handleRequest(req, res, body);
+  }
+}
+
+/** True when a Host header names a loopback host (`127.0.0.1`/`localhost`/`[::1]`, optional port). */
+function isLoopbackHostHeader(host: string | undefined): boolean {
+  if (!host) { return false; }
+  const m = host.match(/^(\[[^\]]*\]|[^:]+)(:\d+)?$/);
+  if (!m) { return false; }
+  const h = m[1].toLowerCase();
+  return h === '127.0.0.1' || h === 'localhost' || h === '[::1]';
+}
+
+/** True when an Origin header (if a browser sent one) is a localhost origin. */
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const u = new URL(origin);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') { return false; }
+    const h = u.hostname.toLowerCase();
+    return h === '127.0.0.1' || h === 'localhost' || h === '[::1]';
+  } catch {
+    return false; // includes the opaque "null" origin
   }
 }
 

@@ -38,6 +38,23 @@ describe('CanvasSessionLinker', () => {
       expect(cfg.mcpServers['mysti-canvas'].headers.Authorization).toBe('Bearer t');
     });
 
+    // Mode bits are meaningless on Windows ACLs — POSIX-only assertions.
+    const itPosix = process.platform === 'win32' ? it.skip : it;
+
+    itPosix('writes the config owner-only (0o600) — it embeds the bearer token (6.3a)', () => {
+      const file = linker.link('canvas-1', { url: 'http://127.0.0.1:5/mcp', token: 'secret' });
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    });
+
+    itPosix('tightens permissions on a pre-existing looser file (6.3a)', () => {
+      const file = path.join(dir, 'mysti-canvas-canvas-1.json');
+      fs.writeFileSync(file, '{}', 'utf8');
+      fs.chmodSync(file, 0o644);
+      const linked = linker.link('canvas-1', { url: 'http://127.0.0.1:5/mcp', token: 'secret' });
+      expect(linked).toBe(file);
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    });
+
     it('no args for an unlinked panel', () => {
       expect(linker.cliArgs('nope')).toEqual([]);
       expect(linker.isLinked('nope')).toBe(false);

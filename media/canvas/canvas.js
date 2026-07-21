@@ -246,11 +246,28 @@
     window.addEventListener('resize', renderBoard);
     window.addEventListener('message', function (ev) {
       var d = ev.data || {};
+      // Message-source guard (Plan 18 W4 6.4a): the sandboxed page iframe
+      // (allow-scripts, opaque origin) can postMessage arbitrary data at this
+      // window, so a model-authored page could spoof canvasArtifactUpdate /
+      // canvasJobEvent and repaint local state. event.source can't be forged:
+      // a message from an embedded frame has source === that frame's
+      // contentWindow, while extension-host messages never do. Only the
+      // harness's render-error ping is accepted from an embedded frame.
+      // W4 review: ALLOWLIST, not blocklist — scanning direct iframe
+      // contentWindows missed NESTED iframes (a frame inside the sandboxed
+      // page posts with a source no scan entry matches). Extension-host
+      // messages arrive on this window itself: source is null or this window
+      // in the VS Code webview host; ANY other source is an embedded frame
+      // at some depth. (F5-verify: if host messages ever arrive with a
+      // different source in a future VS Code build, canvas live-updates stop
+      // — fail-safe direction.)
+      var fromEmbeddedFrame = !!(ev.source && ev.source !== window);
       // Page render errors from the iframe harness (future: inline "Fix with AI").
       if (d.source === 'mysti-canvas-page' && d.type === 'page_render_error') {
         console.warn('[Mysti canvas] page render error:', d.message);
         return;
       }
+      if (fromEmbeddedFrame) { return; }
       // Live artifact update from the chat agent (pages added/edited, theme set).
       if (d.type === 'canvasArtifactUpdate' && d.payload) {
         var prev = (state.artifact.pages || []).length;

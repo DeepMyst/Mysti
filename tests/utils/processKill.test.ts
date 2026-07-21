@@ -9,7 +9,8 @@
  */
 
 /**
- * Unit tests for killProcessTree / isProcessLive (Plan 00 Batch 2.1, bug B3).
+ * Unit tests for killProcessTree / isProcessLive (Plan 00 Batch 2.1, bug B3;
+ * Plan 18 Wave 4 item 1.2, real tree kill).
  *
  * The crux of B3: the old code gated SIGKILL escalation on `ChildProcess.killed`,
  * which flips true once a signal is *delivered* (not on exit), making escalation
@@ -18,11 +19,32 @@
  *   - alive → SIGTERM → still alive after grace → SIGKILL
  *   - already-exited process → no-op, no throw
  *   - escalation timer cleared on the 'exit' event (no leaked timers)
+ *
+ * Plan 18 Wave 4 adds REAL tree-kill semantics:
+ *   - Windows: every signal step is `taskkill /PID <pid> /T /F` (reaches the
+ *     children of the `shell:true` cmd.exe shim), with single-pid fallback when
+ *     taskkill can't spawn or exits non-zero while the target is still live
+ *   - POSIX + useProcessGroup: negative-pid group signal, falling back to the
+ *     single pid when the group signal throws (child not spawned detached)
  */
 import { EventEmitter } from 'events';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ChildProcess } from 'child_process';
+import { spawn } from 'child_process';
 import { killProcessTree, isProcessLive } from '../../src/utils/processKill';
+
+vi.mock('child_process', () => ({
+  spawn: vi.fn(),
+}));
+
+const spawnMock = vi.mocked(spawn);
+
+/** The real platform, restored after every test that overrides it. */
+const REAL_PLATFORM = process.platform;
+
+function setPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+}
 
 /**
  * Minimal EventEmitter-based fake ChildProcess.
@@ -102,9 +124,14 @@ describe('killProcessTree', () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
+    // Pin a POSIX platform so these tests are deterministic on any host OS
+    // (on win32 the util routes every signal through taskkill instead).
+    setPlatform('darwin');
+    spawnMock.mockReset();
   });
 
   afterEach(() => {
+    setPlatform(REAL_PLATFORM);
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -228,5 +255,144 @@ describe('killProcessTree', () => {
     expect(proc.signals).toEqual(['SIGTERM', 'SIGKILL']);
 
     await done;
+  });
+
+  it('falls back to the single pid when the group signal throws (child not detached)', async () => {
+    const proc = new FakeProc();
+    const err = new Error('kill ESRCH') as NodeJS.ErrnoException;
+    err.code = 'ESRCH';
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw err;
+    });
+
+    const done = killProcessTree(proc.asChildProcess(), 5000, { useProcessGroup: true });
+
+    // Group signal was attempted (negative pid) and threw...
+    expect(killSpy).toHaveBeenCalledWith(-proc.pid, 'SIGTERM');
+    // ...so the util fell back to signalling the single pid via proc.kill().
+    expect(proc.signals).toEqual(['SIGTERM']);
+
+    proc.simulateExit(null, 'SIGTERM');
+    await done;
+    killSpy.mockRestore();
+  });
+
+  it('never routes through taskkill on POSIX', async () => {
+    const proc = new FakeProc();
+    const done = killProcessTree(proc.asChildProcess(), 5000);
+    proc.simulateExit(0);
+    await done;
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('killProcessTree on Windows (taskkill tree kill)', () => {
+  /** Fake taskkill child process handle returned by the mocked spawn(). */
+  class FakeTaskkill extends EventEmitter {}
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    setPlatform('win32');
+    spawnMock.mockReset();
+  });
+
+  afterEach(() => {
+    setPlatform(REAL_PLATFORM);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('kills the whole tree via `taskkill /PID <pid> /T /F` (not the single pid)', async () => {
+    const taskkill = new FakeTaskkill();
+    spawnMock.mockReturnValue(taskkill as unknown as ReturnType<typeof spawn>);
+    const proc = new FakeProc();
+
+    const done = killProcessTree(proc.asChildProcess(), 5000);
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'taskkill',
+      ['/PID', String(proc.pid), '/T', '/F'],
+      expect.objectContaining({ windowsHide: true })
+    );
+    // No direct single-pid signal — that would kill only the cmd.exe shim.
+    expect(proc.signals).toEqual([]);
+
+    taskkill.emit('exit', 0);
+    proc.simulateExit(1);
+    await done;
+    expect(proc.signals).toEqual([]);
+  });
+
+  it('escalation after the grace period issues another taskkill, still no raw signal', async () => {
+    spawnMock.mockImplementation(() => new FakeTaskkill() as unknown as ReturnType<typeof spawn>);
+    const proc = new FakeProc();
+
+    const done = killProcessTree(proc.asChildProcess(), 5000);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    // Process survives the grace period → escalation re-runs taskkill /T /F.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(proc.signals).toEqual([]);
+
+    await done;
+  });
+
+  it('falls back to proc.kill when taskkill cannot be spawned (spawn throws)', async () => {
+    spawnMock.mockImplementation(() => {
+      throw new Error('spawn taskkill ENOENT');
+    });
+    const proc = new FakeProc();
+
+    const done = killProcessTree(proc.asChildProcess(), 5000);
+    expect(proc.signals).toEqual(['SIGTERM']);
+
+    proc.simulateExit(null, 'SIGTERM');
+    await done;
+  });
+
+  it("falls back to proc.kill when the taskkill child emits 'error'", async () => {
+    const taskkill = new FakeTaskkill();
+    spawnMock.mockReturnValue(taskkill as unknown as ReturnType<typeof spawn>);
+    const proc = new FakeProc();
+
+    const done = killProcessTree(proc.asChildProcess(), 5000);
+    expect(proc.signals).toEqual([]);
+
+    taskkill.emit('error', new Error('spawn taskkill ENOENT'));
+    expect(proc.signals).toEqual(['SIGTERM']);
+
+    proc.simulateExit(null, 'SIGTERM');
+    await done;
+  });
+
+  it('falls back to proc.kill when taskkill exits non-zero and the process is still live', async () => {
+    const taskkill = new FakeTaskkill();
+    spawnMock.mockReturnValue(taskkill as unknown as ReturnType<typeof spawn>);
+    const proc = new FakeProc();
+
+    const done = killProcessTree(proc.asChildProcess(), 5000);
+    expect(proc.signals).toEqual([]);
+
+    taskkill.emit('exit', 128); // "no such process" / access denied etc.
+    expect(proc.signals).toEqual(['SIGTERM']);
+
+    proc.simulateExit(null, 'SIGTERM');
+    await done;
+  });
+
+  it('does NOT fall back when taskkill exits non-zero but the process already exited', async () => {
+    const taskkill = new FakeTaskkill();
+    spawnMock.mockReturnValue(taskkill as unknown as ReturnType<typeof spawn>);
+    const proc = new FakeProc();
+
+    const done = killProcessTree(proc.asChildProcess(), 5000);
+    proc.simulateExit(1); // process died before taskkill reported back
+    await done;
+
+    taskkill.emit('exit', 128);
+    expect(proc.signals).toEqual([]); // liveness-gated: no redundant signal
   });
 });

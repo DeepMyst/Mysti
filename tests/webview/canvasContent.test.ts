@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getCanvasContent } from '../../src/webview/canvasContent';
 import { ArtifactStore } from '../../src/managers/ArtifactStore';
+import { SANDBOX_INNER_CSP } from '../../src/managers/CanvasSandbox';
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 
@@ -115,5 +116,29 @@ describe('F-6 sandbox guarantees preserved', () => {
     expect(html).toContain('Content-Security-Policy');
     const boot = extractBoot();
     expect(boot.innerCsp).toContain("script-src 'unsafe-inline' 'unsafe-eval'");
+  });
+
+  it('the webview inner CSP stays in sync with the TS builder mirror (6.2)', () => {
+    // buildPageSrcdoc (media/canvas/canvas.js, fed innerCsp by canvasContent.ts)
+    // and buildPageDocument (src/managers/CanvasSandbox.ts) are mirrors; the
+    // TS builder's default CSP must be the same policy the webview injects.
+    const boot = extractBoot();
+    expect(boot.innerCsp).toBe(SANDBOX_INNER_CSP);
+  });
+
+  it('the message handler guards against spoofed events from the page iframe (6.4a)', () => {
+    // canvas.js is untypechecked webview JS that no test executes, so this is
+    // a text-level guard: state-mutating messages (canvasArtifactUpdate) must
+    // be dropped for ANY embedded-frame source. W4 review upgraded the guard
+    // from a direct-contentWindow blocklist (bypassable via a NESTED iframe)
+    // to an allowlist: only null/this-window sources pass.
+    const js = fs.readFileSync(path.join(repoRoot, 'media', 'canvas', 'canvas.js'), 'utf8');
+    const handler = js.slice(js.indexOf("window.addEventListener('message'"));
+    expect(handler).toContain('fromEmbeddedFrame');
+    expect(handler).toMatch(/ev\.source && ev\.source !== window/);
+    // The guard must run before the artifact-update branch mutates state.
+    expect(handler.indexOf('if (fromEmbeddedFrame) { return; }')).toBeGreaterThan(-1);
+    expect(handler.indexOf('if (fromEmbeddedFrame) { return; }'))
+      .toBeLessThan(handler.indexOf("d.type === 'canvasArtifactUpdate'"));
   });
 });

@@ -320,13 +320,25 @@ export class ArtifactStore {
     return artifact.assets.find(a => a.id === assetId);
   }
 
-  /** Resolve an `asset://<artifactId>/assets/<file>` ref to an absolute path. */
+  /**
+   * Resolve an `asset://<artifactId>/assets/<file>` ref to an absolute path.
+   * Hardened (Plan 18 W4 6.4b): both captured segments are normalized and the
+   * result is confined to the artifact's `assets/` dir — refs that escape it
+   * (`..` in the id or file segment) return null.
+   */
   resolveAssetPath(ref: string): string | null {
     const m = ref.match(/^asset:\/\/([^/]+)\/assets\/(.+)$/);
     if (!m) { return null; }
-    const dir = this.artifactDir(m[1]);
+    const artifactId = m[1];
+    // The id becomes a path segment; reject dot-segments and separators
+    // outright (the regex already blocks '/', but not '\\' or '..').
+    if (artifactId === '.' || artifactId === '..' || artifactId.includes('\\')) { return null; }
+    const dir = this.artifactDir(artifactId);
     if (!dir) { return null; }
-    return path.join(dir, 'assets', m[2]);
+    const assetsDir = path.resolve(dir, 'assets');
+    const resolved = path.resolve(assetsDir, m[2]);
+    if (!resolved.startsWith(assetsDir + path.sep)) { return null; }
+    return resolved;
   }
 
   // ========================================================================

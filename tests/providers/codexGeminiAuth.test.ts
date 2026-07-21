@@ -19,6 +19,27 @@ vi.mock('os', async (importOriginal) => {
 
 import { TestableCodexProvider, TestableGeminiProvider } from './../helpers/providerFactory';
 
+/**
+ * Every env var the Claude/Codex/Gemini checkAuthentication/getAuthConfig
+ * implementations consult (Plan 18 4.8). Scrubbing only OPENAI_API_KEY +
+ * GEMINI_API_KEY let an ambient GOOGLE_API_KEY / Vertex config / Claude token
+ * on the dev machine flip the negative-auth tests (fail, or pass for the
+ * wrong reason via the API-key branch instead of the OAuth-file branch).
+ */
+const PROVIDER_AUTH_ENV_VARS = [
+  // Codex (CodexProvider.getAuthConfig/checkAuthentication)
+  'OPENAI_API_KEY',
+  // Gemini API-key + Vertex AI mode (GeminiProvider.getAuthConfig/checkAuthentication)
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GOOGLE_GENAI_USE_VERTEXAI',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'GOOGLE_CLOUD_PROJECT',
+  // Claude (ClaudeCodeProvider.getAuthConfig)
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+] as const;
+
 describe('Codex + Gemini OAuth auth detection', () => {
   let tmpHome: string;
   const originalEnv = { ...process.env };
@@ -26,8 +47,9 @@ describe('Codex + Gemini OAuth auth detection', () => {
   beforeEach(() => {
     tmpHome = realFs.mkdtempSync(path.join(realOs.tmpdir(), 'mysti-oauth-home-'));
     hoisted.home = tmpHome;
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.GEMINI_API_KEY;
+    for (const key of PROVIDER_AUTH_ENV_VARS) {
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
@@ -79,8 +101,59 @@ describe('Codex + Gemini OAuth auth detection', () => {
       expect((await new TestableGeminiProvider().checkAuthentication()).user).toBe('dev@example.com');
     });
 
+    // Plan 18 4.7b — accounts.accounts[0] may be an OBJECT; the label must never
+    // render "[object Object]".
+    it('uses the .email field when accounts.accounts[0] is an object', async () => {
+      write('.gemini/oauth_creds.json', JSON.stringify({ access_token: 'x' }));
+      write('.gemini/google_accounts.json', JSON.stringify({
+        accounts: [{ email: 'obj@example.com', scopes: ['a'] }],
+      }));
+      expect((await new TestableGeminiProvider().checkAuthentication()).user).toBe('obj@example.com');
+    });
+
+    it('falls back to .account/.user fields on an object account entry', async () => {
+      write('.gemini/oauth_creds.json', JSON.stringify({ access_token: 'x' }));
+      write('.gemini/google_accounts.json', JSON.stringify({
+        accounts: [{ account: 'acct@example.com' }],
+      }));
+      expect((await new TestableGeminiProvider().checkAuthentication()).user).toBe('acct@example.com');
+
+      write('.gemini/google_accounts.json', JSON.stringify({
+        accounts: [{ user: 'user@example.com' }],
+      }));
+      expect((await new TestableGeminiProvider().checkAuthentication()).user).toBe('user@example.com');
+    });
+
+    it('falls back to the generic label when the object account entry has no known fields', async () => {
+      write('.gemini/oauth_creds.json', JSON.stringify({ access_token: 'x' }));
+      write('.gemini/google_accounts.json', JSON.stringify({
+        accounts: [{ id: 12345 }],
+      }));
+      const status = await new TestableGeminiProvider().checkAuthentication();
+      expect(status.user).toBe('Google Account');
+      expect(status.user).not.toContain('[object Object]');
+    });
+
     it('is NOT authenticated with nothing present', async () => {
       expect((await new TestableGeminiProvider().checkAuthentication()).authenticated).toBe(false);
+    });
+
+    // Plan 18 4.8 — these branches consult exactly the env vars the scrub list
+    // covers; with an ambient GOOGLE_API_KEY/Vertex config the negative tests
+    // above would fail (or pass through the wrong branch) without the scrub.
+    it('authenticates via GOOGLE_API_KEY (scrubbed by the harness, set explicitly here)', async () => {
+      process.env.GOOGLE_API_KEY = 'g-key';
+      const status = await new TestableGeminiProvider().checkAuthentication();
+      expect(status.authenticated).toBe(true);
+      expect(status.user).toBe('API Key');
+    });
+
+    it('authenticates via Vertex AI env config (GOOGLE_GENAI_USE_VERTEXAI + GOOGLE_CLOUD_PROJECT)', async () => {
+      process.env.GOOGLE_GENAI_USE_VERTEXAI = 'true';
+      process.env.GOOGLE_CLOUD_PROJECT = 'my-project';
+      const status = await new TestableGeminiProvider().checkAuthentication();
+      expect(status.authenticated).toBe(true);
+      expect(status.user).toBe('Vertex AI');
     });
   });
 });

@@ -154,6 +154,24 @@ describe('ArtifactStore', () => {
       expect(fs.existsSync(resolved!)).toBe(true);
     });
 
+    it('resolveAssetPath confines the result to the assets dir (6.4b traversal guard)', () => {
+      const a = store.createArtifact({ name: 'Sec' });
+      // `..` in the file segment escapes to the artifact dir (or beyond) → null.
+      expect(store.resolveAssetPath(`asset://${a.id}/assets/../artifact.json`)).toBeNull();
+      expect(store.resolveAssetPath(`asset://${a.id}/assets/../../../../etc/passwd`)).toBeNull();
+      // `..`/backslash artifact ids are rejected outright.
+      expect(store.resolveAssetPath('asset://../assets/x.png')).toBeNull();
+      expect(store.resolveAssetPath('asset://..\\..\\x/assets/y.png')).toBeNull();
+      // The bare assets dir itself is not a valid asset path.
+      expect(store.resolveAssetPath(`asset://${a.id}/assets/.`)).toBeNull();
+      // Normalization that stays inside the dir still resolves.
+      expect(store.resolveAssetPath(`asset://${a.id}/assets/sub/../x.png`))
+        .toBe(path.join(store.artifactDir(a.id)!, 'assets', 'x.png'));
+      // A plain valid ref is unaffected.
+      expect(store.resolveAssetPath(`asset://${a.id}/assets/abc123.png`))
+        .toBe(path.join(store.artifactDir(a.id)!, 'assets', 'abc123.png'));
+    });
+
     it('dedups identical bytes to the same file', async () => {
       const a = store.createArtifact({ name: 'Media' });
       const png = Buffer.from('same').toString('base64');

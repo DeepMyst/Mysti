@@ -106,22 +106,46 @@ export class VisualTestManager {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
     const screenshotDir = path.join(workspaceRoot, '.mysti', 'visual-test', panelId);
 
+    // True when THIS test run spawned the dev server (config.devServerCommand
+    // set and no server was already tracked for this panel). Test-owned servers
+    // are stopped in the finally below so they don't pile up over a session —
+    // the model-triggered headless flow has no UI affordance to stop them. A
+    // server that was already running before the test (user-started) is left
+    // alone.
+    let devServerStartedByTest = false;
+
     try {
       // ── Step 1: Start dev server if configured ──
       if (config.devServerCommand) {
         report.status = 'starting-server';
         yield { type: 'visual_test_started', status: 'starting-server', message: `Starting dev server: ${config.devServerCommand}` };
 
+        // Set BEFORE start() so a half-started server (spawned but never became
+        // ready) is still cleaned up by the finally on the failure path.
+        const preExistingServer = this._devServer.isRunning(panelId);
+        devServerStartedByTest = !preExistingServer;
+
         try {
-          const readyPattern = vscode.workspace.getConfiguration('mysti').get<string>(
-            'visualTest.serverReadyPattern',
-            'localhost:\\d+|ready in|compiled successfully|VITE|started server on'
-          );
-          const { url } = await this._devServer.start(panelId, config.devServerCommand, workspaceRoot, readyPattern);
-          // Override URL if server reported a different one
-          if (url && url !== config.url) {
-            console.log(`[Mysti] Dev server ready at ${url} (overriding configured ${config.url})`);
-            config.url = url;
+          if (preExistingServer) {
+            // W4 review: a user-started server must be REUSED, not silently
+            // replaced — start() would swap it for a test-owned one and the
+            // "left alone" ownership contract would point at the wrong server.
+            const existingUrl = this._devServer.getUrl(panelId);
+            if (existingUrl && existingUrl !== config.url) {
+              console.log(`[Mysti] Reusing running dev server at ${existingUrl} (user-managed)`);
+              config.url = existingUrl;
+            }
+          } else {
+            const readyPattern = vscode.workspace.getConfiguration('mysti').get<string>(
+              'visualTest.serverReadyPattern',
+              'localhost:\\d+|ready in|compiled successfully|VITE|started server on'
+            );
+            const { url } = await this._devServer.start(panelId, config.devServerCommand, workspaceRoot, readyPattern);
+            // Override URL if server reported a different one
+            if (url && url !== config.url) {
+              console.log(`[Mysti] Dev server ready at ${url} (overriding configured ${config.url})`);
+              config.url = url;
+            }
           }
         } catch (err: any) {
           yield { type: 'visual_test_error', status: 'failed', message: `Dev server failed: ${err.message}` };
@@ -332,7 +356,18 @@ export class VisualTestManager {
     } finally {
       // Cleanup
       await this._browser.close(panelId);
-      // Don't auto-stop dev server — user may want it running
+      // Stop the dev server ONLY if this test started it — otherwise servers
+      // started by the headless flow (which has no stop-server UI) pile up
+      // over a session. A server that was already running for this panel
+      // before the test began is user-managed: leave it running.
+      if (devServerStartedByTest) {
+        try {
+          await this._devServer.stop(panelId);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[Mysti] Failed to stop visual-test dev server for ${panelId}: ${msg}`);
+        }
+      }
     }
   }
 
