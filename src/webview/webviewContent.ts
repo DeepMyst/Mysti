@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getWebviewLocalizationScript } from '../localization';
 
 export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri, version: string = '0.0.0'): string {
   const nonce = getNonce();
@@ -49,10 +50,11 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   const localaiLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'localai.png')).toString();
   const qwenLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'qwen.png')).toString();
 
+  const localizationScript = getWebviewLocalizationScript();
   const script = getScript(mermaidUri.toString(), logoUri.toString(), iconUris, claudeLogoUri, openaiLogoLightUri, openaiLogoDarkUri, geminiLogoUri, clineLogoUri, copilotLogoUri, cursorLogoUri, openclawLogoUri, opencodeLogoUri, ollamaLogoUri, localaiLogoUri, qwenLogoUri, version);
 
-  return `<!DOCTYPE html>
-<html lang="en">
+  const html = `<!DOCTYPE html>
+<html lang="${vscode.env.language}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -767,9 +769,9 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
       <div id="badge-toast" class="badge-toast" onclick="this.classList.remove('show')">
         <span class="badge-toast-icon" id="badge-toast-icon"></span>
         <div class="badge-toast-content">
-          <span class="badge-toast-tier" id="badge-toast-tier"></span>
-          <span class="badge-toast-title" id="badge-toast-title"></span>
-          <span class="badge-toast-subtitle" id="badge-toast-subtitle"></span>
+          <div class="badge-toast-tier" id="badge-toast-tier"></div>
+          <div class="badge-toast-title" id="badge-toast-title"></div>
+          <div class="badge-toast-subtitle" id="badge-toast-subtitle"></div>
         </div>
       </div>
       <div class="input-container">
@@ -1147,10 +1149,13 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   </div>
 
   <script nonce="${nonce}">
+    ${localizationScript}
     ${script}
   </script>
 </body>
 </html>`;
+
+  return html;
 }
 
 function getNonce(): string {
@@ -9021,6 +9026,24 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       var QWEN_LOGO = '${qwenLogoUri}';
       var MYSTI_LOGO = '${logoUri}';
 
+      function l10nText(value) {
+        var api = globalThis.mystiL10n;
+        return api && api.translate ? api.translate(value) : value;
+      }
+
+      function l10nFormat(source) {
+        var api = globalThis.mystiL10n;
+        var args = Array.prototype.slice.call(arguments, 1);
+        if (api && api.format) {
+          return api.format.apply(api, [source].concat(args));
+        }
+        var text = source;
+        for (var i = 0; i < args.length; i++) {
+          text = text.split('{' + i + '}').join(String(args[i]));
+        }
+        return text;
+      }
+
       // Theme detection for OpenAI logo
       function isDarkTheme() {
         return document.body.classList.contains('vscode-dark') ||
@@ -9238,15 +9261,15 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               (additions > 0 ? '<span class="file-edit-additions">+' + additions + '</span>' : '') +
               (deletions > 0 ? '<span class="file-edit-deletions">-' + deletions + '</span>' : '') +
             '</div>' +
-            '<button class="file-edit-collapse-btn" title="Toggle">' + chevronSvg + '</button>' +
+            '<button class="file-edit-collapse-btn" title="' + escapeHtmlForMarked(l10nText('Toggle')) + '">' + chevronSvg + '</button>' +
           '</div>' +
           '<div class="file-edit-diff">' +
             '<div class="file-edit-diff-content">' + previewHtml + '</div>' +
-            (hasMore ? '<button class="file-edit-show-more">Show more... (' + remainingCount + ' lines)</button>' : '') +
+            (hasMore ? '<button class="file-edit-show-more">' + escapeHtmlForMarked(l10nFormat('Show more... ({0} lines)', remainingCount)) + '</button>' : '') +
           '</div>' +
           '<div class="file-edit-actions">' +
-            '<button class="file-edit-btn file-edit-revert">Revert</button>' +
-            '<button class="file-edit-btn file-edit-review">Review</button>' +
+            '<button class="file-edit-btn file-edit-revert">' + escapeHtmlForMarked(l10nText('Revert')) + '</button>' +
+            '<button class="file-edit-btn file-edit-review">' + escapeHtmlForMarked(l10nText('Review')) + '</button>' +
           '</div>' +
         '</div>';
 
@@ -9667,8 +9690,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         card.innerHTML =
           '<div class="subagent-header">'
           + logoHtml
-          + '<span class="subagent-name">' + agentInfo.name + ' (sub-agent)</span>'
-          + '<span class="subagent-status streaming">Working...</span>'
+          + '<span class="subagent-name">' + escapeHtml(l10nFormat('{0} (sub-agent)', agentInfo.name)) + '</span>'
+          + '<span class="subagent-status streaming">' + escapeHtml(l10nText('Working...')) + '</span>'
           + '<span class="subagent-collapse-icon">&#9660;</span>'
           + '</div>'
           + '<div class="subagent-content" id="subagent-content-' + getAgentShortId(agentId) + '"></div>';
@@ -9702,8 +9725,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var card = document.getElementById('subagent-' + shortId);
         if (card) {
           var statusEl = card.querySelector('.subagent-status');
-          if (statusEl && statusEl.textContent !== 'Streaming...') {
-            statusEl.textContent = 'Streaming...';
+          if (statusEl && statusEl.textContent !== l10nText('Streaming...')) {
+            statusEl.textContent = l10nText('Streaming...');
           }
         }
 
@@ -9746,7 +9769,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           if (!thinkingEl) {
             thinkingEl = document.createElement('div');
             thinkingEl.className = 'subagent-thinking';
-            thinkingEl.innerHTML = '<div class="subagent-thinking-label">Thinking</div><div class="subagent-thinking-text"></div>';
+            thinkingEl.innerHTML = '<div class="subagent-thinking-label">' + escapeHtml(l10nText('Thinking')) + '</div><div class="subagent-thinking-text"></div>';
             contentEl.insertBefore(thinkingEl, contentEl.firstChild);
           }
           var thinkingText = thinkingEl.querySelector('.subagent-thinking-text');
@@ -9769,10 +9792,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var statusEl = card.querySelector('.subagent-status');
         if (statusEl) {
           if (payload.hasError) {
-            statusEl.textContent = 'Partial';
+            statusEl.textContent = l10nText('Partial');
             statusEl.className = 'subagent-status error';
           } else {
-            statusEl.textContent = 'Done';
+            statusEl.textContent = l10nText('Done');
             statusEl.className = 'subagent-status complete';
           }
         }
@@ -9811,10 +9834,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             if (!existingBtn) {
               var expandBtn = document.createElement('button');
               expandBtn.className = 'subagent-expand-btn';
-              expandBtn.textContent = 'Show full output';
+              expandBtn.textContent = l10nText('Show full output');
               expandBtn.addEventListener('click', function() {
                 card.classList.toggle('expanded');
-                expandBtn.textContent = card.classList.contains('expanded') ? 'Show less' : 'Show full output';
+                expandBtn.textContent = card.classList.contains('expanded') ? l10nText('Show less') : l10nText('Show full output');
               });
               contentEl.appendChild(expandBtn);
             }
@@ -9840,8 +9863,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (contentEl) {
           contentEl.innerHTML =
             '<div class="subagent-error-content">' +
-              '<span class="subagent-error-text">Error: ' + escapeHtml(payload.error || 'Unknown error') + '</span>' +
-              '<button class="subagent-retry-btn">Retry</button>' +
+              '<span class="subagent-error-text">' + escapeHtml(l10nFormat('Error: {0}', payload.error || l10nText('Unknown error'))) + '</span>' +
+              '<button class="subagent-retry-btn">' + escapeHtml(l10nText('Retry')) + '</button>' +
             '</div>';
 
           var retryBtn = contentEl.querySelector('.subagent-retry-btn');
@@ -9868,7 +9891,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (card) {
           var statusEl = card.querySelector('.subagent-status');
           if (statusEl) {
-            statusEl.textContent = 'Tool: ' + toolCall.name;
+            statusEl.textContent = l10nFormat('Tool: {0}', toolCall.name);
           }
         }
 
@@ -9912,11 +9935,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           '</div>' +
           '<div class="subagent-tool-detail">' +
             '<div class="subagent-tool-detail-section">' +
-              '<span class="subagent-tool-detail-label">Input</span>' +
+              '<span class="subagent-tool-detail-label">' + escapeHtml(l10nText('Input')) + '</span>' +
               '<pre class="subagent-tool-detail-code"><code class="language-json">' + escapeHtml(inputJson) + '</code></pre>' +
             '</div>' +
             '<div class="subagent-tool-detail-section subagent-tool-output" style="display:none;">' +
-              '<span class="subagent-tool-detail-label">Output</span>' +
+              '<span class="subagent-tool-detail-label">' + escapeHtml(l10nText('Output')) + '</span>' +
               '<pre class="subagent-tool-detail-code"><code class="subagent-tool-output-code"></code></pre>' +
             '</div>' +
           '</div>';
@@ -9971,7 +9994,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               : JSON.stringify(toolCall.output, null, 2);
             // Truncate very long outputs
             if (outputText.length > 2000) {
-              outputText = outputText.substring(0, 2000) + '\\n... (truncated)';
+              outputText = outputText.substring(0, 2000) + '\\n' + l10nText('... (truncated)');
             }
             outputCode.textContent = outputText;
             outputSection.style.display = '';
@@ -10506,8 +10529,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
           card.innerHTML =
             '<div class="welcome-card-icon"><img src="' + ICON_URIS[s.icon] + '" alt="" /></div>' +
-            '<div class="welcome-card-title">' + escapeHtml(s.title) + '</div>' +
-            '<div class="welcome-card-desc">' + escapeHtml(s.description) + '</div>';
+            '<div class="welcome-card-title">' + escapeHtml(l10nText(s.title)) + '</div>' +
+            '<div class="welcome-card-desc">' + escapeHtml(l10nText(s.description)) + '</div>';
 
           card.onclick = function() {
             // Get provider-specific message at click time (provider may have changed)
@@ -10711,12 +10734,12 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             var sizeLimitLabel = isImage ? '5 MB' : '10 MB';
 
             if (blob.size > sizeLimit) {
-              showToast('File too large (max ' + sizeLimitLabel + ')', 'error');
+              showToast(l10nFormat('File too large (max {0})', sizeLimitLabel), 'error');
               continue;
             }
 
             if (state.attachments.length >= 10) {
-              showToast('Maximum 10 attachments per message', 'error');
+              showToast(l10nFormat('Maximum {0} attachments per message', 10), 'error');
               continue;
             }
 
@@ -11246,8 +11269,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
 
         if (state.agentConfig.enabledSkills.length > 0) {
-          parts.push(state.agentConfig.enabledSkills.length + ' skill' +
-                     (state.agentConfig.enabledSkills.length > 1 ? 's' : ''));
+          parts.push(l10nFormat('{0} skills', state.agentConfig.enabledSkills.length));
         }
 
         if (parts.length === 0) {
@@ -11275,7 +11297,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           });
           nameEl.textContent = persona ? persona.name : 'Unknown';
           btn.classList.add('has-persona');
-          btn.title = 'Active: ' + (persona ? persona.name : 'Unknown') + ' (click to change)';
+          btn.title = l10nFormat('Active: {0} (click to change)', persona ? persona.name : l10nText('Unknown'));
           if (clearBtn) clearBtn.classList.remove('hidden');
         } else {
           nameEl.textContent = 'No persona';
@@ -12029,7 +12051,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (!strategyIndicator) return;
         var current = state.brainstormStrategy || 'quick';
         strategyIndicator.textContent = strategyLabels[current] || current;
-        strategyIndicator.title = 'Strategy: ' + (strategyDescriptions[current] || current) + ' (click to cycle)';
+        strategyIndicator.title = l10nFormat('Strategy: {0} (click to cycle)', l10nText(strategyDescriptions[current] || current));
       }
 
       if (strategyIndicator) {
@@ -12293,10 +12315,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             } else if (availability[providerId]) {
               if (!availability[providerId].available) {
                 option.disabled = true;
-                option.textContent = option.textContent.replace(' (not installed)', '') + ' (not installed)';
+                option.textContent = option.textContent.replace(' ' + l10nText('(not installed)'), '').replace(' (not installed)', '') + ' ' + l10nText('(not installed)');
               } else {
                 option.disabled = false;
-                option.textContent = option.textContent.replace(' (not installed)', '');
+                option.textContent = option.textContent.replace(' ' + l10nText('(not installed)'), '').replace(' (not installed)', '');
               }
             }
           });
@@ -12568,7 +12590,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           case 'providerSwitched':
             if (message.payload && message.payload.provider) {
               var switchedInfo = AGENT_DISPLAY[message.payload.provider];
-              showToast('Switched to ' + (switchedInfo ? switchedInfo.name : message.payload.provider), 'info');
+              showToast(l10nFormat('Switched to {0}', switchedInfo ? switchedInfo.name : message.payload.provider), 'info');
             }
             break;
 
@@ -12583,7 +12605,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             if (message.payload && message.payload.attachments) {
               for (var fai = 0; fai < message.payload.attachments.length; fai++) {
                 if (state.attachments.length >= 10) {
-                  showToast('Maximum 10 attachments per message', 'error');
+                  showToast(l10nFormat('Maximum {0} attachments per message', 10), 'error');
                   break;
                 }
                 state.attachments.push(message.payload.attachments[fai]);
@@ -12770,7 +12792,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
             // Show error briefly in the input area
             var originalPlaceholder = inputEl.placeholder;
-            inputEl.placeholder = 'Enhancement failed: ' + (message.payload || 'Try again');
+            inputEl.placeholder = l10nFormat('Enhancement failed: {0}', message.payload || l10nText('Try again'));
             setTimeout(function() {
               inputEl.placeholder = originalPlaceholder;
             }, 3000);
@@ -12947,11 +12969,13 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
                 postMessageWithPanelId({ type: 'updateSettings', payload: { 'permission.timeoutBehavior': tbValue } });
                 // Show stats summary
                 if (message.payload.totalDecisions > 0) {
-                  var statsText = 'Autonomous session ended: ' +
-                    message.payload.permissionsApproved + ' approved, ' +
-                    message.payload.actionsBlocked + ' blocked, ' +
-                    message.payload.questionsAnswered + ' questions answered, ' +
-                    message.payload.tasksCompleted + ' tasks completed.';
+                  var statsText = l10nFormat(
+                    'Autonomous session ended: {0} approved, {1} blocked, {2} questions answered, {3} tasks completed.',
+                    message.payload.permissionsApproved,
+                    message.payload.actionsBlocked,
+                    message.payload.questionsAnswered,
+                    message.payload.tasksCompleted
+                  );
                   console.log('[Mysti] ' + statsText);
                   var feedEl = document.getElementById('autonomous-decision-feed');
                   if (feedEl) feedEl.remove();
@@ -12985,7 +13009,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               var card = document.createElement('div');
               card.className = 'autonomous-decision-card' + (payload.safetyLevel === 'blocked' ? ' blocked' : payload.safetyLevel === 'caution' ? ' caution' : '');
               var icon = payload.safetyLevel === 'blocked' ? '&#x2717;' : payload.safetyLevel === 'caution' ? '&#x26A0;' : '&#x2713;';
-              card.innerHTML = '<span>' + icon + '</span><span class="decision-text">' + escapeHtml(payload.description) + '</span><span class="decision-time">now</span>';
+              card.innerHTML = '<span>' + icon + '</span><span class="decision-text">' + escapeHtml(l10nText(payload.description)) + '</span><span class="decision-time">' + escapeHtml(l10nText('now')) + '</span>';
               feedContainer.appendChild(card);
               feedContainer.scrollTop = feedContainer.scrollHeight;
               // Limit visible cards
@@ -13035,10 +13059,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             var toastEl = document.getElementById('badge-toast');
             if (toastIcon && toastTier && toastTitle && toastSubtitle && toastEl) {
               toastIcon.textContent = badge.icon;
-              toastTier.textContent = badge.tier;
+              toastTier.textContent = l10nText(badge.tier);
               toastTier.className = 'badge-toast-tier ' + badge.tier;
-              toastTitle.textContent = "You've been Mysting! " + badge.name;
-              toastSubtitle.textContent = badge.description;
+              toastTitle.textContent = l10nFormat("You've been Mysting! {0}", l10nText(badge.name));
+              toastSubtitle.textContent = l10nText(badge.description);
               toastEl.classList.add('show');
               setTimeout(function() { toastEl.classList.remove('show'); }, 6000);
             }
@@ -13061,7 +13085,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             break;
           }
           case 'badgeShareCopied': {
-            showExportToast('Badge share text copied to clipboard!');
+            showExportToast(l10nText('Badge share text copied to clipboard!'));
             break;
           }
         }
@@ -13092,7 +13116,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (status && status.running) {
           dot.classList.add('connected');
           const chCount = status.channelCount || 0;
-          label.textContent = 'OpenClaw Active' + (chCount > 0 ? ' \\u00B7 ' + chCount + ' channel' + (chCount !== 1 ? 's' : '') : '');
+          label.textContent = l10nText('OpenClaw Active') + (chCount > 0 ? ' \\u00B7 ' + l10nFormat('{0} channels', chCount) : '');
           if (daemonActions) daemonActions.style.display = 'none';
           if (headerDot) { headerDot.className = 'active-mode-btn-dot connected'; }
         } else {
@@ -13231,7 +13255,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
           var name = document.createElement('span');
           name.className = 'badge-name';
-          name.textContent = b.name;
+          name.textContent = l10nText(b.name);
           item.appendChild(name);
 
           // Progress bar for locked badges
@@ -13251,28 +13275,28 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
           var titleRow = document.createElement('div');
           titleRow.className = 'badge-tooltip-title';
-          titleRow.textContent = b.name;
+          titleRow.textContent = l10nText(b.name);
           var tierTag = document.createElement('span');
           tierTag.className = 'badge-tooltip-tier ' + b.tier;
-          tierTag.textContent = b.tier;
+          tierTag.textContent = l10nText(b.tier);
           titleRow.appendChild(tierTag);
           tooltip.appendChild(titleRow);
 
           var howTo = document.createElement('div');
           howTo.className = 'badge-tooltip-howto';
-          howTo.textContent = b.howTo || b.description;
+          howTo.textContent = l10nText(b.howTo || b.description);
           tooltip.appendChild(howTo);
 
           if (b.unlocked) {
             var unlockedLine = document.createElement('div');
             unlockedLine.className = 'badge-tooltip-unlocked';
             var d = new Date(b.unlockedAt);
-            unlockedLine.textContent = 'Unlocked ' + d.toLocaleDateString() + ' — click to share';
+            unlockedLine.textContent = l10nFormat('Unlocked {0} — click to share', d.toLocaleDateString());
             tooltip.appendChild(unlockedLine);
           } else if (b.progressMax && b.progressMax > 0) {
             var progressLine = document.createElement('div');
             progressLine.className = 'badge-tooltip-progress';
-            progressLine.textContent = 'Progress: ' + (b.progress || 0) + ' / ' + b.progressMax;
+            progressLine.textContent = l10nFormat('Progress: {0} / {1}', (b.progress || 0), b.progressMax);
             tooltip.appendChild(progressLine);
           }
 
@@ -13502,7 +13526,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           var stepText = state.setup.currentStep === 'checking' ? 'Checking...' :
                          state.setup.currentStep === 'installing' ? 'Installing...' :
                          state.setup.currentStep === 'authenticating' ? 'Authenticating...' :
-                         state.setup.currentStep === 'ready' ? 'Ready!' :
+                         state.setup.currentStep === 'ready' ? l10nText('Ready!') :
                          state.setup.currentStep === 'failed' ? 'Setup Failed' : '';
           stepEl.textContent = stepText;
         }
@@ -13890,7 +13914,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       function requestDiagnostics() {
         var btn = document.querySelector('.wizard-diagnose-btn');
         if (btn) {
-          btn.textContent = '\\u23F3 Running diagnostics...';
+          btn.textContent = '\\u23F3 ' + l10nText('Running diagnostics...');
           btn.disabled = true;
         }
         postMessageWithPanelId({ type: 'runDiagnostics' });
@@ -13902,38 +13926,38 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         var btn = document.querySelector('.wizard-diagnose-btn');
         if (btn) {
-          btn.textContent = '\\uD83D\\uDD0D Run Diagnostics';
+          btn.textContent = '\\uD83D\\uDD0D ' + l10nText('Run Diagnostics');
           btn.disabled = false;
         }
 
         var result = payload;
-        var html = '<h4>System Diagnostics</h4>';
+        var html = '<h4>' + escapeHtml(l10nText('System Diagnostics')) + '</h4>';
 
         // Platform info
         html += '<div class="diagnostics-section">' +
-          '<h5>Platform</h5>' +
-          '<div class="diagnostics-row"><span class="label">OS</span><span class="value">' + (result.platform ? result.platform.os : 'Unknown') + '</span></div>' +
-          '<div class="diagnostics-row"><span class="label">Architecture</span><span class="value">' + (result.platform ? result.platform.arch : 'Unknown') + '</span></div>' +
-          '<div class="diagnostics-row"><span class="label">Shell</span><span class="value">' + (result.platform ? result.platform.shell : 'Unknown') + '</span></div>' +
-          '<div class="diagnostics-row"><span class="label">NVM</span><span class="value ' + (result.platform && result.platform.hasNvm ? 'ok' : 'warn') + '">' + (result.platform && result.platform.hasNvm ? 'Detected' : 'Not found') + '</span></div>' +
+          '<h5>' + escapeHtml(l10nText('Platform')) + '</h5>' +
+          '<div class="diagnostics-row"><span class="label">' + escapeHtml(l10nText('OS')) + '</span><span class="value">' + (result.platform ? result.platform.os : escapeHtml(l10nText('Unknown'))) + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">' + escapeHtml(l10nText('Architecture')) + '</span><span class="value">' + (result.platform ? result.platform.arch : escapeHtml(l10nText('Unknown'))) + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">' + escapeHtml(l10nText('Shell')) + '</span><span class="value">' + (result.platform ? result.platform.shell : escapeHtml(l10nText('Unknown'))) + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">NVM</span><span class="value ' + (result.platform && result.platform.hasNvm ? 'ok' : 'warn') + '">' + escapeHtml(l10nText(result.platform && result.platform.hasNvm ? 'Detected' : 'Not found')) + '</span></div>' +
           '</div>';
 
         // Node & npm
         html += '<div class="diagnostics-section">' +
-          '<h5>Node.js & npm</h5>' +
-          '<div class="diagnostics-row"><span class="label">Node.js</span><span class="value ' + (result.nodeStatus && result.nodeStatus.meetsMinimum ? 'ok' : 'error') + '">' + (result.nodeStatus && result.nodeStatus.version ? result.nodeStatus.version : 'Not found') + '</span></div>' +
-          '<div class="diagnostics-row"><span class="label">npm</span><span class="value ' + (result.npmStatus && result.npmStatus.available ? 'ok' : 'error') + '">' + (result.npmStatus && result.npmStatus.version ? result.npmStatus.version : 'Not found') + '</span></div>' +
-          '<div class="diagnostics-row"><span class="label">npm global dir writable</span><span class="value ' + (result.npmStatus && result.npmStatus.canWriteGlobalDir ? 'ok' : 'warn') + '">' + (result.npmStatus && result.npmStatus.canWriteGlobalDir ? 'Yes' : 'No') + '</span></div>' +
-          '<div class="diagnostics-row"><span class="label">Network</span><span class="value ' + (result.networkReachable ? 'ok' : 'error') + '">' + (result.networkReachable ? 'Connected' : 'Unreachable') + '</span></div>' +
+          '<h5>' + escapeHtml(l10nText('Node.js & npm')) + '</h5>' +
+          '<div class="diagnostics-row"><span class="label">Node.js</span><span class="value ' + (result.nodeStatus && result.nodeStatus.meetsMinimum ? 'ok' : 'error') + '">' + (result.nodeStatus && result.nodeStatus.version ? result.nodeStatus.version : escapeHtml(l10nText('Not found'))) + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">npm</span><span class="value ' + (result.npmStatus && result.npmStatus.available ? 'ok' : 'error') + '">' + (result.npmStatus && result.npmStatus.version ? result.npmStatus.version : escapeHtml(l10nText('Not found'))) + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">' + escapeHtml(l10nText('npm global dir writable')) + '</span><span class="value ' + (result.npmStatus && result.npmStatus.canWriteGlobalDir ? 'ok' : 'warn') + '">' + escapeHtml(l10nText(result.npmStatus && result.npmStatus.canWriteGlobalDir ? 'Yes' : 'No')) + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">' + escapeHtml(l10nText('Network')) + '</span><span class="value ' + (result.networkReachable ? 'ok' : 'error') + '">' + escapeHtml(l10nText(result.networkReachable ? 'Connected' : 'Unreachable')) + '</span></div>' +
           '</div>';
 
         // Providers
         if (result.providers && result.providers.length > 0) {
-          html += '<div class="diagnostics-section"><h5>Providers</h5>';
+          html += '<div class="diagnostics-section"><h5>' + escapeHtml(l10nText('Providers')) + '</h5>';
           result.providers.forEach(function(p) {
             var statusClass = p.installed ? (p.authenticated ? 'ok' : 'warn') : 'error';
-            var statusText = p.installed ? (p.authenticated ? 'Ready' : 'Not authenticated') : 'Not installed';
-            if (p.error) statusText = p.error;
+            var statusText = l10nText(p.installed ? (p.authenticated ? 'Ready' : 'Not authenticated') : 'Not installed');
+            if (p.error) statusText = l10nText(p.error);
             html += '<div class="diagnostics-row"><span class="label">' + escapeHtml(p.id) + '</span><span class="value ' + statusClass + '">' + escapeHtml(statusText) + (p.version ? ' (v' + escapeHtml(p.version) + ')' : '') + '</span></div>';
           });
           html += '</div>';
@@ -13941,15 +13965,15 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         // Recommendations
         if (result.recommendations && result.recommendations.length > 0) {
-          html += '<div class="diagnostics-section"><h5>Recommendations</h5>';
+          html += '<div class="diagnostics-section"><h5>' + escapeHtml(l10nText('Recommendations')) + '</h5>';
           result.recommendations.forEach(function(rec) {
-            html += '<div class="diagnostics-recommendation">' + escapeHtml(rec) + '</div>';
+            html += '<div class="diagnostics-recommendation">' + escapeHtml(l10nText(rec)) + '</div>';
           });
           html += '</div>';
         }
 
         // Copy button
-        html += '<button class="diagnostics-copy-btn" onclick="copyDiagnostics()">&#128203; Copy to Clipboard</button>';
+        html += '<button class="diagnostics-copy-btn" onclick="copyDiagnostics()">&#128203; ' + escapeHtml(l10nText('Copy to Clipboard')) + '</button>';
 
         panel.innerHTML = html;
         panel.classList.remove('hidden');
@@ -13966,8 +13990,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           copyToClipboard(data);
           var btn = panel.querySelector('.diagnostics-copy-btn');
           if (btn) {
-            btn.textContent = '\\u2713 Copied!';
-            setTimeout(function() { btn.textContent = '\\uD83D\\uDCCB Copy to Clipboard'; }, 2000);
+            btn.textContent = '\\u2713 ' + l10nText('Copied!');
+            setTimeout(function() { btn.textContent = '\\uD83D\\uDCCB ' + l10nText('Copy to Clipboard'); }, 2000);
           }
         }
       }
@@ -14044,7 +14068,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         var subtitle = document.getElementById('auth-options-subtitle');
         if (subtitle) {
-          subtitle.textContent = 'Select how to authenticate with ' + payload.displayName;
+          subtitle.textContent = l10nFormat('Select how to authenticate with {0}', payload.displayName);
         }
 
         var optionsList = document.getElementById('auth-options-list');
@@ -14124,7 +14148,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         var title = document.getElementById('install-provider-title');
         if (title) {
-          title.textContent = 'Install ' + payload.displayName;
+          title.textContent = l10nFormat('Install {0}', payload.displayName);
         }
 
         var commandText = document.getElementById('install-command-text');
@@ -14399,8 +14423,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               type: 'refreshProviderDetection',
               payload: {}
             });
-            refreshBtn.textContent = '⟳ Refreshing...';
-            setTimeout(function() { refreshBtn.innerHTML = '&#8635; Refresh Detection'; }, 2000);
+            refreshBtn.textContent = '⟳ ' + l10nText('Refreshing...');
+            setTimeout(function() { refreshBtn.textContent = '↻ ' + l10nText('Refresh Detection'); }, 2000);
           });
         }
 
@@ -14503,7 +14527,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         synthEl.innerHTML =
           '<div class="message-header"><div class="message-role-container">' +
           '<span class="message-role assistant">Mysti</span>' +
-          '<span class="message-model-info">Brainstorm Synthesis</span>' +
+          '<span class="message-model-info">' + escapeHtml(l10nText('Brainstorm Synthesis')) + '</span>' +
           '</div></div>' +
           '<div class="message-body"><div class="message-content"></div></div>';
         messagesEl.appendChild(synthEl);
@@ -14536,7 +14560,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           brainstormAgentTimeouts[agentId] = setTimeout(function() {
             var typingEl = document.getElementById('brainstorm-' + getAgentShortId(agentId) + '-typing');
             if (typingEl) {
-              typingEl.innerHTML = '<span class="brainstorm-agent-timeout">&#9888;&#65039; Taking longer than expected...</span>';
+              typingEl.innerHTML = '<span class="brainstorm-agent-timeout">&#9888;&#65039; ' + escapeHtml(l10nText('Taking longer than expected...')) + '</span>';
             }
           }, 30000);
         });
@@ -14769,7 +14793,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var bubblesContainer = document.getElementById('brainstorm-discussion-bubbles-' + state.brainstormSession);
         if (!bubblesContainer) return;
 
-        var roundLabel = payload.label || ('Round ' + payload.roundNumber);
+        var roundLabel = payload.label || l10nFormat('Round {0}', payload.roundNumber);
         var marker = document.createElement('div');
         marker.className = 'discussion-round-divider';
         marker.textContent = roundLabel;
@@ -14846,12 +14870,12 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var meter = document.createElement('div');
         meter.className = 'convergence-meter';
         meter.innerHTML =
-          '<span class="convergence-label">Convergence</span>' +
+          '<span class="convergence-label">' + escapeHtml(l10nText('Convergence')) + '</span>' +
           '<div class="convergence-bar-container">' +
             '<div class="convergence-bar ' + level + '" style="width: ' + pct + '%"></div>' +
           '</div>' +
           '<span class="convergence-label">' + pct + '%</span>' +
-          '<span class="convergence-status ' + convergence.recommendation + '">' + convergence.recommendation + '</span>';
+          '<span class="convergence-status ' + convergence.recommendation + '">' + escapeHtml(l10nText(convergence.recommendation)) + '</span>';
         bubblesContainer.appendChild(meter);
         scrollToBottom();
       }
@@ -14863,7 +14887,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var agentInfo = AGENT_DISPLAY[payload.agentId] || { name: payload.agentId };
         var errorEl = document.createElement('div');
         errorEl.className = 'brainstorm-error';
-        errorEl.innerHTML = '<span class="error-icon">&#9888;&#65039;</span> ' + escapeHtml(agentInfo.name) + ' encountered an error: ' + escapeHtml(payload.error || 'Unknown error');
+        errorEl.innerHTML = '<span class="error-icon">&#9888;&#65039;</span> ' + escapeHtml(l10nFormat('{0} encountered an error: {1}', agentInfo.name, payload.error || l10nText('Unknown error')));
         bubblesContainer.appendChild(errorEl);
       }
 
@@ -14922,7 +14946,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           div.className = 'message assistant';
           div.innerHTML = '<div class="message-header"><div class="message-role-container">' +
             '<span class="message-role assistant">Mysti</span>' +
-            '<span class="message-model-info">Brainstorm Synthesis</span>' +
+            '<span class="message-model-info">' + escapeHtml(l10nText('Brainstorm Synthesis')) + '</span>' +
             '</div></div><div class="message-body"><div class="message-content">' +
             formatContent(payload.unifiedSolution) + '</div></div>';
           if (payload.message) div.dataset.id = payload.message.id;
@@ -14992,13 +15016,13 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var type = payload.type;
         if (type === 'session-idle') {
           sessionIndicator.className = 'session-indicator idle';
-          sessionIndicator.querySelector('.session-dot').nextSibling.textContent = ' Idle';
+          sessionIndicator.querySelector('.session-dot').nextSibling.textContent = ' ' + l10nText('Idle');
         } else if (type === 'shutdown-blocked') {
           sessionIndicator.className = 'session-indicator blocked';
           var childCount = (payload.childPids && payload.childPids.length) || 0;
           sessionIndicator.querySelector('.session-dot').nextSibling.textContent =
-            ' Active (' + childCount + ' process' + (childCount !== 1 ? 'es' : '') + ')';
-          addSystemMessage('Agent shutdown blocked: ' + (payload.detail || 'active child processes'));
+            ' ' + l10nFormat('Active ({0} processes)', childCount);
+          addSystemMessage(l10nFormat('Agent shutdown blocked: {0}', payload.detail || l10nText('active child processes')));
         } else if (type === 'session-expired' || type === 'session-shutdown') {
           sessionIndicator.style.display = 'none';
           sessionIndicator.className = 'session-indicator';
@@ -15266,11 +15290,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           var sizeLimitLabel = isImage ? '5 MB' : '10 MB';
 
           if (file.size > sizeLimit) {
-            showToast('"' + file.name + '" too large (max ' + sizeLimitLabel + ')', 'error');
+            showToast(l10nFormat('"{0}" too large (max {1})', file.name, sizeLimitLabel), 'error');
             continue;
           }
           if (state.attachments.length >= MAX_ATTACHMENTS) {
-            showToast('Maximum ' + MAX_ATTACHMENTS + ' attachments per message', 'error');
+            showToast(l10nFormat('Maximum {0} attachments per message', MAX_ATTACHMENTS), 'error');
             break;
           }
 
@@ -15292,7 +15316,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               renderAttachmentPreviews();
             };
             reader.onerror = function() {
-              showToast('Failed to read: ' + f.name, 'error');
+              showToast(l10nFormat('Failed to read: {0}', f.name), 'error');
             };
             reader.readAsDataURL(f);
           })(file, isImage, ext);
@@ -15320,7 +15344,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             html += '<div class="attachment-file-icon" title="' + att.fileName + '">&#128196;</div>';
           }
           html += '<span class="attachment-name">' + att.fileName + '</span>';
-          html += '<button class="attachment-remove" data-id="' + att.id + '" title="Remove">&times;</button>';
+          html += '<button class="attachment-remove" data-id="' + att.id + '" title="' + escapeHtml(l10nText('Remove')) + '">&times;</button>';
           html += '</div>';
         }
         container.innerHTML = html;
@@ -15436,7 +15460,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         }
         html += '</div>';
         if (msg.role === 'assistant') {
-          html += '<button class="message-copy-btn" data-message-id="' + msg.id + '" title="Copy message as Markdown">' +
+          html += '<button class="message-copy-btn" data-message-id="' + msg.id + '" title="' + escapeHtml(l10nText('Copy message as Markdown')) + '">' +
             '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/></svg>' +
             '</button>';
         }
@@ -15668,12 +15692,12 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             // Show pattern and relative path if specified
             var globPattern = input.pattern || '';
             var globPath = input.path ? makeRelativePath(input.path) : '';
-            return globPath ? globPattern + ' in ' + globPath : globPattern;
+            return globPath ? l10nFormat('{0} in {1}', globPattern, globPath) : globPattern;
           case 'grep':
             // Show pattern and relative path if specified
             var grepPattern = input.pattern || '';
             var grepPath = input.path ? makeRelativePath(input.path) : '';
-            return grepPath ? grepPattern + ' in ' + grepPath : grepPattern;
+            return grepPath ? l10nFormat('{0} in {1}', grepPattern, grepPath) : grepPattern;
           case 'webfetch':
             return input.url || '';
           case 'websearch':
@@ -15682,7 +15706,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             return input.description || input.prompt?.substring(0, 50) || '';
           case 'todowrite':
             var todos = input.todos || [];
-            return todos.length + ' item' + (todos.length !== 1 ? 's' : '');
+            return l10nFormat('{0} items', todos.length);
           default:
             // Try common field names - apply makeRelativePath to potential file paths
             var filePath = input.file_path || input.path || '';
@@ -15894,19 +15918,19 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var statusClass = '';
 
         if (actionType === 'send') {
-          statusText = payload.success ? 'Sent' : 'Failed';
+          statusText = l10nText(payload.success ? 'Sent' : 'Failed');
           statusClass = payload.success ? '' : 'failed';
         } else if (actionType === 'ask') {
-          statusText = 'Waiting for reply...';
+          statusText = l10nText('Waiting for reply...');
           statusClass = 'waiting';
         } else if (actionType === 'delegate') {
-          statusText = payload.success ? 'Delegated' : 'Failed';
+          statusText = l10nText(payload.success ? 'Delegated' : 'Failed');
           statusClass = payload.success ? '' : 'failed';
         } else if (actionType === 'inbound') {
-          statusText = 'Received';
+          statusText = l10nText('Received');
           statusClass = '';
         } else if (actionType === 'queued') {
-          statusText = 'Queued';
+          statusText = l10nText('Queued');
           statusClass = 'waiting';
           icon = '\u{1F4E9}';
         }
@@ -15968,7 +15992,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
                          timeRemaining > 0 && timeRemaining < 20000 ? 'warning' : '';
         var timerText;
         if (request.semiAutonomous && request.expiresAt > 0) {
-          timerText = 'AI decides in ' + formatTimeRemaining(timeRemaining);
+          timerText = l10nFormat('AI decides in {0}', formatTimeRemaining(timeRemaining));
         } else if (request.expiresAt > 0) {
           timerText = formatTimeRemaining(timeRemaining);
         } else {
@@ -15977,34 +16001,34 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         // Paused indicator
         var pausedHtml = request.details.suspended
-          ? '<span><span class="permission-paused-dot"></span>Paused</span>'
+          ? '<span><span class="permission-paused-dot"></span>' + escapeHtml(l10nText('Paused')) + '</span>'
           : '';
 
         card.innerHTML =
           '<div class="permission-question">' + escapeHtml(questionTitle) + '</div>' +
-          '<div class="permission-details-toggle" data-target="details-' + request.id + '">Show details</div>' +
+          '<div class="permission-details-toggle" data-target="details-' + request.id + '">' + escapeHtml(l10nText('Show details')) + '</div>' +
           '<div class="permission-details" id="details-' + request.id + '">' +
             renderPermissionDetails(request) +
           '</div>' +
           '<div class="permission-options">' +
             '<button class="permission-option approve-option" data-action="approve">' +
               '<span class="option-number">1</span>' +
-              '<span>Yes</span>' +
+              '<span>' + escapeHtml(l10nText('Yes')) + '</span>' +
             '</button>' +
             '<button class="permission-option" data-action="always-allow">' +
               '<span class="option-number">2</span>' +
-              "<span>Yes, and don't ask again this session</span>" +
+              '<span>' + escapeHtml(l10nText("Yes, and don't ask again this session")) + '</span>' +
             '</button>' +
             '<button class="permission-option" data-action="deny">' +
               '<span class="option-number">3</span>' +
-              '<span>No</span>' +
+              '<span>' + escapeHtml(l10nText('No')) + '</span>' +
             '</button>' +
           '</div>' +
           '<div class="permission-custom-input">' +
-            '<input type="text" placeholder="Tell Mysti what to do instead..." data-request-id="' + request.id + '" />' +
+            '<input type="text" placeholder="' + escapeHtml(l10nText('Tell Mysti what to do instead...')) + '" data-request-id="' + request.id + '" />' +
           '</div>' +
           '<div class="permission-footer">' +
-            '<span>Esc to cancel' + (pausedHtml ? ' · ' : '') + pausedHtml + '</span>' +
+            '<span>' + escapeHtml(l10nText('Esc to cancel')) + (pausedHtml ? ' · ' : '') + pausedHtml + '</span>' +
             (timerText ? '<span class="permission-timer ' + timerClass + '" data-expires="' + request.expiresAt + '">' + timerText + '</span>' : '') +
           '</div>';
 
@@ -16025,7 +16049,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             if (details) {
               var isExpanded = details.classList.contains('expanded');
               details.classList.toggle('expanded');
-              toggle.textContent = isExpanded ? 'Show details' : 'Hide details';
+              toggle.textContent = l10nText(isExpanded ? 'Show details' : 'Hide details');
             }
           });
         }
@@ -16061,25 +16085,25 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         // Map tool names to question-framed titles
         if (toolName.toLowerCase().includes('edit') || toolName.toLowerCase().includes('write')) {
           if (filePath) {
-            return 'Allow write to ' + makeRelativePath(filePath) + '?';
+            return l10nFormat('Allow write to {0}?', makeRelativePath(filePath));
           }
-          return 'Allow file write?';
+          return l10nText('Allow file write?');
         }
         if (toolName.toLowerCase().includes('bash') || toolName.toLowerCase().includes('command')) {
           var cmd = request.details.command || '';
           if (cmd) {
-            return 'Allow ' + cmd.substring(0, 60) + (cmd.length > 60 ? '...' : '') + '?';
+            return l10nFormat('Allow {0}?', cmd.substring(0, 60) + (cmd.length > 60 ? '...' : ''));
           }
-          return 'Allow command execution?';
+          return l10nText('Allow command execution?');
         }
         if (toolName.toLowerCase().includes('read')) {
           if (filePath) {
-            return 'Allow read of ' + makeRelativePath(filePath) + '?';
+            return l10nFormat('Allow read of {0}?', makeRelativePath(filePath));
           }
-          return 'Allow file read?';
+          return l10nText('Allow file read?');
         }
         // Fallback
-        return 'Allow ' + escapeHtml(toolName || request.title) + '?';
+        return l10nFormat('Allow {0}?', toolName || request.title);
       }
 
       function renderPermissionDetails(request) {
@@ -16088,32 +16112,32 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         if (details.filePath) {
           html += '<div class="permission-detail-row">' +
-            '<span class="permission-detail-label">File:</span>' +
+            '<span class="permission-detail-label">' + escapeHtml(l10nText('File:')) + '</span>' +
             '<span class="permission-detail-value">' + makeRelativePath(details.filePath) + '</span>' +
           '</div>';
         }
 
         if (details.command) {
           html += '<div class="permission-detail-row">' +
-            '<span class="permission-detail-label">Command:</span>' +
+            '<span class="permission-detail-label">' + escapeHtml(l10nText('Command:')) + '</span>' +
             '<span class="permission-detail-value">' + escapeHtml(details.command.substring(0, 100)) + (details.command.length > 100 ? '...' : '') + '</span>' +
           '</div>';
         }
 
         if (details.linesAdded !== undefined || details.linesRemoved !== undefined) {
           html += '<div class="permission-detail-row">' +
-            '<span class="permission-detail-label">Changes:</span>' +
+            '<span class="permission-detail-label">' + escapeHtml(l10nText('Changes:')) + '</span>' +
             '<span class="permission-detail-value">' +
-              (details.linesAdded ? '+' + details.linesAdded + ' lines ' : '') +
-              (details.linesRemoved ? '-' + details.linesRemoved + ' lines' : '') +
+              (details.linesAdded ? '+' + l10nFormat('{0} lines', details.linesAdded) + ' ' : '') +
+              (details.linesRemoved ? '-' + l10nFormat('{0} lines', details.linesRemoved) : '') +
             '</span>' +
           '</div>';
         }
 
         if (details.files && details.files.length > 0) {
           html += '<div class="permission-detail-row">' +
-            '<span class="permission-detail-label">Files:</span>' +
-            '<span class="permission-detail-value">' + details.files.length + ' files</span>' +
+            '<span class="permission-detail-label">' + escapeHtml(l10nText('Files:')) + '</span>' +
+            '<span class="permission-detail-value">' + escapeHtml(l10nFormat('{0} files', details.files.length)) + '</span>' +
           '</div>';
         }
 
@@ -16122,7 +16146,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
       function formatTimeRemaining(ms) {
         var seconds = Math.ceil(ms / 1000);
-        return seconds + 's';
+        return l10nFormat('{0}s', seconds);
       }
 
       function startPermissionTimer(requestId, expiresAt) {
@@ -16145,13 +16169,13 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           if (remaining <= 0) {
             clearInterval(interval);
             if (isSemiAuto && timerEl) {
-              timerEl.textContent = 'AI deciding...';
+              timerEl.textContent = l10nText('AI deciding...');
             }
             return; // Backend will handle expiration
           }
 
           timerEl.textContent = isSemiAuto
-            ? 'AI decides in ' + formatTimeRemaining(remaining)
+            ? l10nFormat('AI decides in {0}', formatTimeRemaining(remaining))
             : formatTimeRemaining(remaining);
           timerEl.className = 'permission-timer ' +
             (remaining < 10000 ? 'critical' : remaining < 20000 ? 'warning' : '');
@@ -16197,7 +16221,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         // Update UI to show expired state
         var timerEl = card.querySelector('.permission-timer');
         if (timerEl) {
-          timerEl.textContent = payload.behavior === 'auto-accept' ? 'Auto-approved' : 'Expired';
+          timerEl.textContent = l10nText(payload.behavior === 'auto-accept' ? 'Auto-approved' : 'Expired');
         }
 
         // Hide options and custom input, show status in footer
@@ -16208,15 +16232,15 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var footerEl = card.querySelector('.permission-footer');
         if (footerEl) {
           footerEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">' +
-            (payload.behavior === 'auto-accept' ? 'Auto-approved' : 'Auto-denied') +
-            ' (timeout)</span>';
+            escapeHtml(l10nFormat('{0} (timeout)', l10nText(payload.behavior === 'auto-accept' ? 'Auto-approved' : 'Auto-denied'))) +
+            '</span>';
         }
         // Legacy fallback
         var actionsEl = card.querySelector('.permission-actions');
         if (actionsEl) {
-          actionsEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">Action was ' +
-            (payload.behavior === 'auto-accept' ? 'automatically approved' : 'automatically denied') +
-            ' due to timeout.</span>';
+          actionsEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">' +
+            escapeHtml(l10nFormat('Action was {0} due to timeout.', l10nText(payload.behavior === 'auto-accept' ? 'automatically approved' : 'automatically denied'))) +
+            '</span>';
         }
 
         // Remove from state
@@ -16239,7 +16263,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           // Update timer to show decision
           var timerEl = card.querySelector('.permission-timer');
           if (timerEl) {
-            timerEl.textContent = payload.approved ? 'AI Approved' : 'AI Denied';
+            timerEl.textContent = l10nText(payload.approved ? 'AI Approved' : 'AI Denied');
           }
 
           // Replace actions with decision feedback
@@ -16251,7 +16275,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
               '<div class="semi-autonomous-feedback">' +
                 '<span class="feedback-icon">' + safetyIcon + '</span>' +
                 '<div>' +
-                  '<div>AI ' + (payload.approved ? 'approved' : 'denied') + ' this action</div>' +
+                  '<div>' + escapeHtml(l10nText(payload.approved ? 'AI approved this action' : 'AI denied this action')) + '</div>' +
                   '<div class="feedback-reasoning">' + escapeHtml(payload.reasoning || '') + '</div>' +
                 '</div>' +
               '</div>';
@@ -16280,7 +16304,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             '<div class="semi-autonomous-feedback">' +
               '<span class="feedback-icon">&#x1F916;</span>' +
               '<div>' +
-                '<div>AI answered on your behalf</div>' +
+                '<div>' + escapeHtml(l10nText('AI answered on your behalf')) + '</div>' +
                 '<div class="feedback-reasoning">' + escapeHtml(payload.reasoning || '') + '</div>' +
               '</div>' +
             '</div>';
@@ -16303,8 +16327,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var timerBar = document.createElement('div');
         timerBar.className = 'auq-semi-auto-timer';
         timerBar.innerHTML =
-          '<span>&#x1F916; AI will answer if no response</span>' +
-          '<span class="timer-text">in ' + payload.timeout + 's</span>';
+          '<span>&#x1F916; ' + escapeHtml(l10nText('AI will answer if no response')) + '</span>' +
+          '<span class="timer-text">' + escapeHtml(l10nFormat('in {0}s', payload.timeout)) + '</span>';
         container.insertBefore(timerBar, container.firstChild);
 
         // Start countdown
@@ -16317,11 +16341,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           if (remaining <= 0) {
             clearInterval(interval);
             var timerText = timerBar.querySelector('.timer-text');
-            if (timerText) timerText.textContent = 'AI deciding...';
+            if (timerText) timerText.textContent = l10nText('AI deciding...');
             return;
           }
           var timerText = timerBar.querySelector('.timer-text');
-          if (timerText) timerText.textContent = 'in ' + Math.ceil(remaining / 1000) + 's';
+          if (timerText) timerText.textContent = l10nFormat('in {0}s', Math.ceil(remaining / 1000));
         }, 1000);
       }
 
@@ -16338,8 +16362,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var timerBar = document.createElement('div');
         timerBar.className = 'auq-semi-auto-timer plan-semi-auto-timer';
         timerBar.innerHTML =
-          '<span>&#x1F916; AI will select an approach if no response</span>' +
-          '<span class="timer-text">in ' + payload.timeout + 's</span>';
+          '<span>&#x1F916; ' + escapeHtml(l10nText('AI will select an approach if no response')) + '</span>' +
+          '<span class="timer-text">' + escapeHtml(l10nFormat('in {0}s', payload.timeout)) + '</span>';
         container.insertBefore(timerBar, container.firstChild);
 
         // Start countdown (reuse same pattern as question timer)
@@ -16352,11 +16376,11 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           if (remaining <= 0) {
             clearInterval(interval);
             var timerText = timerBar.querySelector('.timer-text');
-            if (timerText) timerText.textContent = 'AI selecting...';
+            if (timerText) timerText.textContent = l10nText('AI selecting...');
             return;
           }
           var timerText = timerBar.querySelector('.timer-text');
-          if (timerText) timerText.textContent = 'in ' + Math.ceil(remaining / 1000) + 's';
+          if (timerText) timerText.textContent = l10nFormat('in {0}s', Math.ceil(remaining / 1000));
         }, 1000);
       }
 
@@ -16443,14 +16467,14 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var header = document.createElement('div');
         header.className = 'plan-options-header';
         header.innerHTML =
-          '<span class="plan-options-title">\uD83D\uDCCB Select an approach</span>' +
-          '<span class="plan-options-hint">Choose how to proceed</span>';
+          '<span class="plan-options-title">\uD83D\uDCCB ' + escapeHtml(l10nText('Select an approach')) + '</span>' +
+          '<span class="plan-options-hint">' + escapeHtml(l10nText('Choose how to proceed')) + '</span>';
 
         // Add dismiss button
         var skipBtn = document.createElement('button');
         skipBtn.className = 'plan-options-skip-btn';
         skipBtn.textContent = '\u2715';
-        skipBtn.title = 'Dismiss';
+        skipBtn.title = l10nText('Dismiss');
         skipBtn.style.cssText = 'background: none; border: none; color: var(--vscode-descriptionForeground); padding: 4px; cursor: pointer; font-size: 14px; margin-left: auto; opacity: 0.6; line-height: 1;';
         skipBtn.onmouseenter = function() { skipBtn.style.opacity = '1'; };
         skipBtn.onmouseleave = function() { skipBtn.style.opacity = '0.6'; };
@@ -16486,7 +16510,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var prosHtml = '';
         if (option.pros && option.pros.length > 0) {
           prosHtml = '<div class="plan-option-pros">' +
-            '<div class="plan-option-pros-title">✓ Pros</div>' +
+            '<div class="plan-option-pros-title">✓ ' + escapeHtml(l10nText('Pros')) + '</div>' +
             '<ul class="plan-option-list">' +
             option.pros.map(function(p) { return '<li>' + escapeHtml(p) + '</li>'; }).join('') +
             '</ul></div>';
@@ -16496,7 +16520,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         var consHtml = '';
         if (option.cons && option.cons.length > 0) {
           consHtml = '<div class="plan-option-cons">' +
-            '<div class="plan-option-cons-title">✗ Cons</div>' +
+            '<div class="plan-option-cons-title">✗ ' + escapeHtml(l10nText('Cons')) + '</div>' +
             '<ul class="plan-option-list">' +
             option.cons.map(function(p) { return '<li>' + escapeHtml(p) + '</li>'; }).join('') +
             '</ul></div>';
@@ -16514,8 +16538,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             '<div class="plan-option-title-area">' +
               '<div class="plan-option-title">' +
                 escapeHtml(option.title) +
-                '<span class="plan-option-complexity ' + (option.complexity || 'medium') + '">' +
-                  (option.complexity || 'medium') +
+                '<span class="plan-option-complexity ' + escapeHtml(l10nText(option.complexity || 'medium')) + '">' +
+                  escapeHtml(l10nText(option.complexity || 'medium')) +
                 '</span>' +
               '</div>' +
               '<div class="plan-option-summary">' + escapeHtml(option.summary || '') + '</div>' +
@@ -16524,14 +16548,14 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           '</div>' +
           prosConsHtml +
           '<div class="plan-option-actions">' +
-            '<button class="plan-execute-btn edit-auto" data-mode="edit-automatically">Execute Automatically</button>' +
-            '<button class="plan-execute-btn ask-first" data-mode="ask-before-edit">Ask Before Each Edit</button>' +
-            '<button class="plan-execute-btn keep-planning" data-mode="quick-plan">Keep Planning</button>' +
+            '<button class="plan-execute-btn edit-auto" data-mode="edit-automatically">' + escapeHtml(l10nText('Execute Automatically')) + '</button>' +
+            '<button class="plan-execute-btn ask-first" data-mode="ask-before-edit">' + escapeHtml(l10nText('Ask Before Each Edit')) + '</button>' +
+            '<button class="plan-execute-btn keep-planning" data-mode="quick-plan">' + escapeHtml(l10nText('Keep Planning')) + '</button>' +
           '</div>' +
           '<div class="plan-custom-instructions">' +
-            '<button class="custom-instructions-toggle">Add custom instructions</button>' +
+            '<button class="custom-instructions-toggle">' + escapeHtml(l10nText('Add custom instructions')) + '</button>' +
             '<div class="custom-instructions-input hidden">' +
-              '<textarea class="custom-instructions-textarea" placeholder="Add any additional instructions or constraints..."></textarea>' +
+              '<textarea class="custom-instructions-textarea" placeholder="' + escapeHtml(l10nText('Add any additional instructions or constraints...')) + '"></textarea>' +
             '</div>' +
           '</div>';
 
@@ -16554,8 +16578,8 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             e.stopPropagation();
             inputDiv.classList.toggle('hidden');
             toggleBtn.textContent = inputDiv.classList.contains('hidden')
-              ? 'Add custom instructions'
-              : 'Hide custom instructions';
+              ? l10nText('Add custom instructions')
+              : l10nText('Hide custom instructions');
           };
         }
 
@@ -17115,7 +17139,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
       function showError(error) {
         var div = document.createElement('div');
         div.className = 'message error';
-        div.innerHTML = '<div class="message-content" style="color: var(--vscode-errorForeground);">Error: ' + escapeHtml(error) + '</div>';
+        div.innerHTML = '<div class="message-content" style="color: var(--vscode-errorForeground);">' + escapeHtml(l10nFormat('Error: {0}', error)) + '</div>';
         messagesEl.appendChild(div);
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
@@ -17125,16 +17149,16 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         div.className = 'message error auth-error';
         div.innerHTML = '<div class="message-content">' +
           '<div style="color: var(--vscode-errorForeground); margin-bottom: 8px;">' +
-            '<strong>Authentication Required</strong>' +
+            '<strong>' + escapeHtml(l10nText('Authentication Required')) + '</strong>' +
           '</div>' +
-          '<p style="margin: 8px 0;">' + escapeHtml(data.providerName) + ' is not authenticated.</p>' +
+          '<p style="margin: 8px 0;">' + escapeHtml(l10nFormat('{0} is not authenticated.', data.providerName)) + '</p>' +
           '<div style="margin: 12px 0; padding: 8px; background: var(--vscode-textCodeBlock-background); border-radius: 4px; font-family: monospace;">' +
-            '<strong>To authenticate, run:</strong><br>' +
+            '<strong>' + escapeHtml(l10nText('To authenticate, run:')) + '</strong><br>' +
             '<code style="color: var(--vscode-textPreformat-foreground);">' + escapeHtml(data.authCommand) + '</code>' +
           '</div>' +
           '<button id="auth-terminal-btn" ' +
             'style="padding: 6px 12px; cursor: pointer; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px;">' +
-            'Open Terminal & Authenticate' +
+            escapeHtml(l10nText('Open Terminal & Authenticate')) +
           '</button>' +
         '</div>';
         messagesEl.appendChild(div);
@@ -17328,7 +17352,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
           // Update tooltip
           var usedK = Math.round(state.contextUsage.usedTokens / 1000);
           var totalK = Math.round(state.contextUsage.contextWindow / 1000);
-          usageContainer.title = 'Context usage: ' + usedK + 'k / ' + totalK + 'k tokens (' + percentage + '%) — Click to compact';
+          usageContainer.title = l10nFormat('Context usage: {0}k / {1}k tokens ({2}%) — Click to compact', usedK, totalK, percentage);
 
           // Update color based on usage level
           usageContainer.classList.remove('warning', 'danger', 'threshold-warning');
@@ -17394,7 +17418,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
             if (event.summary) {
               addSystemMessage(event.summary);
             } else {
-              addSystemMessage('Conversation compacted');
+              addSystemMessage(l10nText('Conversation compacted'));
             }
 
             setTimeout(function() {
@@ -17404,10 +17428,10 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
           case 'error':
             if (usageContainer) { usageContainer.classList.remove('compacting'); }
-            statusEl.textContent = 'Compaction failed';
-            statusEl.title = event.error || 'Unknown error';
+            statusEl.textContent = l10nText('Compaction failed');
+            statusEl.title = event.error || l10nText('Unknown error');
             statusEl.classList.remove('hidden');
-            addSystemMessage('Compaction failed: ' + (event.error || 'Unknown error'));
+            addSystemMessage(l10nFormat('Compaction failed: {0}', event.error || l10nText('Unknown error')));
             setTimeout(function() {
               statusEl.classList.add('hidden');
             }, 5000);
@@ -17844,7 +17868,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         if (!container) return;
         var countEl = container.querySelector('.sticky-progress-count');
         if (countEl) {
-          countEl.textContent = stuckTodos.size + ' in progress';
+          countEl.textContent = l10nFormat('{0} in progress', stuckTodos.size);
         }
       }
 
@@ -18119,7 +18143,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
       function renderEditReportCard(editInfo, thinkingContent) {
         var actionClass = editInfo.action;
-        var actionLabel = editInfo.action.charAt(0).toUpperCase() + editInfo.action.slice(1);
+        var actionLabel = l10nText(editInfo.action.charAt(0).toUpperCase() + editInfo.action.slice(1));
         var bullet = '●';
 
         // Chevron SVG
@@ -18130,7 +18154,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         // Thinking section (if available)
         if (thinkingContent && thinkingContent.trim()) {
           html += '<div class="edit-report-thinking">' +
-            '<div class="edit-report-thinking-header">Thinking</div>' +
+            '<div class="edit-report-thinking-header">' + escapeHtml(l10nText('Thinking')) + '</div>' +
             '<div class="edit-report-thinking-content">' + escapeHtml(thinkingContent) + '</div>' +
           '</div>';
         }
@@ -18146,14 +18170,14 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
         // Stats line with tree connector
         var statsText = '';
         if (editInfo.linesAdded > 0) {
-          statsText += '<span class="edit-report-stats-added">Added ' + editInfo.linesAdded + ' line' + (editInfo.linesAdded !== 1 ? 's' : '') + '</span>';
+          statsText += '<span class="edit-report-stats-added">' + escapeHtml(l10nFormat(editInfo.linesAdded === 1 ? 'Added {0} line' : 'Added {0} lines', editInfo.linesAdded)) + '</span>';
         }
         if (editInfo.linesRemoved > 0) {
           if (statsText) statsText += ', ';
-          statsText += '<span class="edit-report-stats-removed">Removed ' + editInfo.linesRemoved + ' line' + (editInfo.linesRemoved !== 1 ? 's' : '') + '</span>';
+          statsText += '<span class="edit-report-stats-removed">' + escapeHtml(l10nFormat(editInfo.linesRemoved === 1 ? 'Removed {0} line' : 'Removed {0} lines', editInfo.linesRemoved)) + '</span>';
         }
         if (!statsText) {
-          statsText = 'No changes';
+          statsText = l10nText('No changes');
         }
 
         html += '<div class="edit-report-stats">' +
@@ -18181,7 +18205,7 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         if (diffLines.length > maxPreviewLines) {
           html += '<div class="edit-report-show-more" data-full-diff="' + encodeURIComponent(JSON.stringify(diffLines)) + '" data-language="' + language + '">' +
-            '... ' + (diffLines.length - maxPreviewLines) + ' more lines' +
+            escapeHtml(l10nFormat('... {0} more lines', diffLines.length - maxPreviewLines)) +
           '</div>';
         }
 
@@ -18189,9 +18213,9 @@ function getScript(mermaidUri: string, logoUri: string, iconUris: Record<string,
 
         // Actions
         html += '<div class="edit-report-actions">' +
-          '<button class="edit-report-btn edit-report-btn-revert" title="Revert changes (git checkout)">Revert</button>' +
-          '<button class="edit-report-btn edit-report-btn-copy" title="Copy file path">Copy path</button>' +
-          '<button class="edit-report-btn edit-report-btn-open" title="Open file in editor">Open file</button>' +
+          '<button class="edit-report-btn edit-report-btn-revert" title="' + escapeHtml(l10nText('Revert changes (git checkout)')) + '">' + escapeHtml(l10nText('Revert')) + '</button>' +
+          '<button class="edit-report-btn edit-report-btn-copy" title="' + escapeHtml(l10nText('Copy file path')) + '">' + escapeHtml(l10nText('Copy path')) + '</button>' +
+          '<button class="edit-report-btn edit-report-btn-open" title="' + escapeHtml(l10nText('Open file in editor')) + '">' + escapeHtml(l10nText('Open file')) + '</button>' +
         '</div>';
 
         html += '</div>'; // end card

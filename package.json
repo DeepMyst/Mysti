@@ -1,7 +1,7 @@
 {
   "name": "mysti",
-  "displayName": "Mysti - AI Coding Agent",
-  "description": "Multi-agent AI coding assistant. Claude Code, Codex, Gemini, and GitHub Copilot brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
+  "displayName": "%extension.displayName%",
+  "description": "%extension.description%",
   "version": "0.4.0",
   "publisher": "DeepMyst",
   "author": {
@@ -103,31 +103,31 @@
     "commands": [
       {
         "command": "mysti.openChat",
-        "title": "Open Chat",
-        "shortTitle": "Chat",
+        "title": "%command.mysti.openChat.title%",
+        "shortTitle": "%command.mysti.openChat.shortTitle%",
         "category": "Mysti"
       },
       {
         "command": "mysti.newConversation",
-        "title": "New Conversation",
-        "shortTitle": "New",
+        "title": "%command.mysti.newConversation.title%",
+        "shortTitle": "%command.mysti.newConversation.shortTitle%",
         "category": "Mysti"
       },
       {
         "command": "mysti.addToContext",
-        "title": "Add to Context",
-        "shortTitle": "Add Context",
+        "title": "%command.mysti.addToContext.title%",
+        "shortTitle": "%command.mysti.addToContext.shortTitle%",
         "category": "Mysti"
       },
       {
         "command": "mysti.clearContext",
-        "title": "Clear Context",
+        "title": "%command.mysti.clearContext.title%",
         "category": "Mysti"
       },
       {
         "command": "mysti.openInNewTab",
-        "title": "Open in Editor Tab",
-        "shortTitle": "New Tab",
+        "title": "%command.mysti.openInNewTab.title%",
+        "shortTitle": "%command.mysti.openInNewTab.shortTitle%",
         "category": "Mysti",
         "icon": {
           "light": "resources/Mysti-Logo.png",
@@ -136,22 +136,22 @@
       },
       {
         "command": "mysti.debugSetup",
-        "title": "Debug: Test Setup Flow",
+        "title": "%command.mysti.debugSetup.title%",
         "category": "Mysti"
       },
       {
         "command": "mysti.debugSetupFailure",
-        "title": "Debug: Test Setup Failure",
+        "title": "%command.mysti.debugSetupFailure.title%",
         "category": "Mysti"
       },
       {
         "command": "mysti.toggleAutonomous",
-        "title": "Toggle Autonomous Mode",
+        "title": "%command.mysti.toggleAutonomous.title%",
         "category": "Mysti"
       },
       {
         "command": "mysti.codeLensAction",
-        "title": "CodeLens Action",
+        "title": "%command.mysti.codeLensAction.title%",
         "category": "Mysti"
       }
     ],
@@ -202,147 +202,147 @@
             "qwen-code"
           ],
           "enumDescriptions": [
-            "Claude Code CLI (Anthropic) - Deep reasoning, complex refactoring, thorough analysis",
-            "OpenAI Codex CLI - Quick iterations, familiar GPT style, rapid prototyping",
-            "Google Gemini CLI - Fast responses, Google ecosystem integration",
-            "Cline - Autonomous coding agent with browser use, file editing, and command execution",
-            "GitHub Copilot CLI - GitHub-native AI assistant with seamless GitHub integration",
-            "Cursor - AI-powered coding with fast editing and multi-file changes",
-            "OpenClaw - Open-source personal AI assistant with multi-model support and Gateway streaming",
-            "OpenCode - Multi-provider AI coding agent with support for OpenAI, Anthropic, Gemini, Groq, and OpenRouter",
-            "Ollama - Local LLM inference server supporting Llama, CodeLlama, Mistral, and more",
-            "LocalAI - Self-hosted OpenAI-compatible local inference with GPU/CPU support",
-            "Qwen Code - Alibaba's AI coding agent with Qwen3-Coder models and multi-provider support"
+            "%config.mysti.defaultProvider.enumDescriptions.0%",
+            "%config.mysti.defaultProvider.enumDescriptions.1%",
+            "%config.mysti.defaultProvider.enumDescriptions.2%",
+            "%config.mysti.defaultProvider.enumDescriptions.3%",
+            "%config.mysti.defaultProvider.enumDescriptions.4%",
+            "%config.mysti.defaultProvider.enumDescriptions.5%",
+            "%config.mysti.defaultProvider.enumDescriptions.6%",
+            "%config.mysti.defaultProvider.enumDescriptions.7%",
+            "%config.mysti.defaultProvider.enumDescriptions.8%",
+            "%config.mysti.defaultProvider.enumDescriptions.9%",
+            "%config.mysti.defaultProvider.enumDescriptions.10%"
           ],
-          "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context."
+          "description": "%config.mysti.defaultProvider.description%"
         },
         "mysti.claudeCodePath": {
           "type": "string",
           "default": "claude",
-          "description": "Path to Claude Code CLI executable"
+          "description": "%config.mysti.claudeCodePath.description%"
         },
         "mysti.codexPath": {
           "type": "string",
           "default": "codex",
-          "description": "Path to OpenAI Codex CLI executable"
+          "description": "%config.mysti.codexPath.description%"
         },
         "mysti.geminiPath": {
           "type": "string",
           "default": "gemini",
-          "description": "Path to Google Gemini CLI executable"
+          "description": "%config.mysti.geminiPath.description%"
         },
         "mysti.clinePath": {
           "type": "string",
           "default": "cline",
-          "description": "Path to Cline CLI executable"
+          "description": "%config.mysti.clinePath.description%"
         },
         "mysti.copilotPath": {
           "type": "string",
           "default": "copilot",
-          "description": "Path to GitHub Copilot CLI executable"
+          "description": "%config.mysti.copilotPath.description%"
         },
         "mysti.cursorPath": {
           "type": "string",
           "default": "agent",
-          "description": "Path to Cursor CLI (agent) executable"
+          "description": "%config.mysti.cursorPath.description%"
         },
         "mysti.cursorApiKey": {
           "type": "string",
           "default": "",
-          "description": "Cursor API key. Set this instead of the CURSOR_API_KEY environment variable. Get your key from Cursor settings."
+          "description": "%config.mysti.cursorApiKey.description%"
         },
         "mysti.openclawPath": {
           "type": "string",
           "default": "openclaw",
-          "description": "Path to OpenClaw CLI executable"
+          "description": "%config.mysti.openclawPath.description%"
         },
         "mysti.openclawGatewayUrl": {
           "type": "string",
           "default": "ws://127.0.0.1:18789",
-          "description": "URL of the OpenClaw Gateway WebSocket server"
+          "description": "%config.mysti.openclawGatewayUrl.description%"
         },
         "mysti.openclawUseGateway": {
           "type": "boolean",
           "default": true,
-          "description": "Use OpenClaw Gateway WebSocket for streaming (falls back to CLI if unavailable)"
+          "description": "%config.mysti.openclawUseGateway.description%"
         },
         "mysti.opencodePath": {
           "type": "string",
           "default": "opencode",
-          "description": "Path to OpenCode CLI executable"
+          "description": "%config.mysti.opencodePath.description%"
         },
         "mysti.qwenCodePath": {
           "type": "string",
           "default": "qwen",
-          "description": "Path to Qwen Code CLI executable"
+          "description": "%config.mysti.qwenCodePath.description%"
         },
         "mysti.ollamaEndpoint": {
           "type": "string",
           "default": "http://localhost:11434",
-          "description": "Ollama API server URL (host and port)"
+          "description": "%config.mysti.ollamaEndpoint.description%"
         },
         "mysti.ollamaModel": {
           "type": "string",
           "default": "",
-          "description": "Model to use with Ollama (e.g., llama3.2, codellama, deepseek-coder). Leave empty to use the default model."
+          "description": "%config.mysti.ollamaModel.description%"
         },
         "mysti.ollamaTemperature": {
           "type": "number",
           "default": 0.7,
           "minimum": 0,
           "maximum": 2,
-          "description": "Sampling temperature for Ollama (0.0-2.0). Lower values produce more deterministic output."
+          "description": "%config.mysti.ollamaTemperature.description%"
         },
         "mysti.ollamaContextLength": {
           "type": "number",
           "default": 0,
           "minimum": 0,
-          "description": "Context window size in tokens for Ollama (0 = use model default). Increase for longer conversations."
+          "description": "%config.mysti.ollamaContextLength.description%"
         },
         "mysti.ollamaKeepAlive": {
           "type": "string",
           "default": "5m",
-          "description": "How long Ollama keeps the model loaded in memory after the last request (e.g., '5m', '1h', '0' to unload immediately)."
+          "description": "%config.mysti.ollamaKeepAlive.description%"
         },
         "mysti.ollamaRequestTimeout": {
           "type": "number",
           "default": 120000,
           "minimum": 5000,
-          "description": "Request timeout in milliseconds for Ollama. Increase for large models or slow hardware."
+          "description": "%config.mysti.ollamaRequestTimeout.description%"
         },
         "mysti.localaiEndpoint": {
           "type": "string",
           "default": "http://localhost:8080",
-          "description": "LocalAI API server URL (host and port)"
+          "description": "%config.mysti.localaiEndpoint.description%"
         },
         "mysti.localaiModel": {
           "type": "string",
           "default": "",
-          "description": "Model to use with LocalAI. Leave empty to use the default model."
+          "description": "%config.mysti.localaiModel.description%"
         },
         "mysti.localaiTemperature": {
           "type": "number",
           "default": 0.7,
           "minimum": 0,
           "maximum": 2,
-          "description": "Sampling temperature for LocalAI (0.0-2.0). Lower values produce more deterministic output."
+          "description": "%config.mysti.localaiTemperature.description%"
         },
         "mysti.localaiMaxTokens": {
           "type": "number",
           "default": 0,
           "minimum": 0,
-          "description": "Maximum tokens to generate with LocalAI (0 = no limit). Useful for controlling response length."
+          "description": "%config.mysti.localaiMaxTokens.description%"
         },
         "mysti.localaiApiKey": {
           "type": "string",
           "default": "",
-          "description": "API key for LocalAI (if authentication is configured on your server). Leave empty if not required."
+          "description": "%config.mysti.localaiApiKey.description%"
         },
         "mysti.localaiRequestTimeout": {
           "type": "number",
           "default": 120000,
           "minimum": 5000,
-          "description": "Request timeout in milliseconds for LocalAI. Increase for large models or slow hardware."
+          "description": "%config.mysti.localaiRequestTimeout.description%"
         },
         "mysti.defaultMode": {
           "type": "string",
@@ -352,7 +352,7 @@
             "edit-automatically",
             "plan"
           ],
-          "description": "Default operation mode"
+          "description": "%config.mysti.defaultMode.description%"
         },
         "mysti.defaultThinkingLevel": {
           "type": "string",
@@ -363,87 +363,87 @@
             "medium",
             "high"
           ],
-          "description": "Default thinking level for AI responses"
+          "description": "%config.mysti.defaultThinkingLevel.description%"
         },
         "mysti.defaultModel": {
           "type": "string",
           "default": "claude-sonnet-4-5-20250929",
-          "description": "Default model to use"
+          "description": "%config.mysti.defaultModel.description%"
         },
         "mysti.claudeCodeModel": {
           "type": "string",
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
           "maxLength": 128,
-          "description": "Custom model for Claude Code. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-sonnet-4-5-20250929"
+          "description": "%config.mysti.claudeCodeModel.description%"
         },
         "mysti.codexModel": {
           "type": "string",
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
           "maxLength": 128,
-          "description": "Custom model for OpenAI Codex. Overrides the dropdown selection. Leave empty to use the selected model. Example: gpt-5.3-codex"
+          "description": "%config.mysti.codexModel.description%"
         },
         "mysti.codexProfile": {
           "type": "string",
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-]*$",
           "maxLength": 64,
-          "description": "Codex profile from ~/.codex/config.toml. Leave empty to use default profile."
+          "description": "%config.mysti.codexProfile.description%"
         },
         "mysti.geminiModel": {
           "type": "string",
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
           "maxLength": 128,
-          "description": "Custom model for Google Gemini. Overrides the dropdown selection. Leave empty to use the selected model. Example: gemini-3-pro-preview"
+          "description": "%config.mysti.geminiModel.description%"
         },
         "mysti.clineModel": {
           "type": "string",
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
           "maxLength": 128,
-          "description": "Custom model for Cline. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-sonnet-4-5-20250929"
+          "description": "%config.mysti.clineModel.description%"
         },
         "mysti.copilotModel": {
           "type": "string",
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
           "maxLength": 128,
-          "description": "Custom model for GitHub Copilot. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4.6"
+          "description": "%config.mysti.copilotModel.description%"
         },
         "mysti.cursorModel": {
           "type": "string",
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
           "maxLength": 128,
-          "description": "Custom model for Cursor. Overrides the dropdown selection. Leave empty to use the default model. Example: claude-sonnet-4-5-20250929"
+          "description": "%config.mysti.cursorModel.description%"
         },
         "mysti.openclawModel": {
           "type": "string",
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
           "maxLength": 128,
-          "description": "Custom model for OpenClaw. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4-6"
+          "description": "%config.mysti.openclawModel.description%"
         },
         "mysti.opencodeModel": {
           "type": "string",
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
           "maxLength": 128,
-          "description": "Custom model for OpenCode. Overrides the dropdown selection. Leave empty to use the default model. Example: anthropic/claude-sonnet-4-5"
+          "description": "%config.mysti.opencodeModel.description%"
         },
         "mysti.qwenCodeModel": {
           "type": "string",
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/]*$",
           "maxLength": 128,
-          "description": "Custom model for Qwen Code. Overrides the dropdown selection. Leave empty to use the default model. Example: qwen3-coder-plus"
+          "description": "%config.mysti.qwenCodeModel.description%"
         },
         "mysti.codeLens.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show 'Mysti: Explain | Refactor | Write Tests' CodeLens above functions in the editor."
+          "description": "%config.mysti.codeLens.enabled.description%"
         },
         "mysti.accessLevel": {
           "type": "string",
@@ -454,101 +454,101 @@
             "full-access"
           ],
           "enumDescriptions": [
-            "AI can only read files, never modify - safest option for exploring codebases",
-            "AI asks before each file change - balanced control and productivity",
-            "AI can edit files autonomously - maximum speed for trusted tasks"
+            "%config.mysti.accessLevel.enumDescriptions.0%",
+            "%config.mysti.accessLevel.enumDescriptions.1%",
+            "%config.mysti.accessLevel.enumDescriptions.2%"
           ],
-          "description": "Control what the AI can do with your files. Choose based on your trust level and task requirements."
+          "description": "%config.mysti.accessLevel.description%"
         },
         "mysti.autoContext": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically include open files and selections as context for better AI responses"
+          "description": "%config.mysti.autoContext.description%"
         },
         "mysti.planDetection.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Detect and show implementation plan options in AI responses. Disable to reduce post-response latency."
+          "description": "%config.mysti.planDetection.enabled.description%"
         },
         "mysti.compaction.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable automatic context compaction when token usage exceeds the threshold"
+          "description": "%config.mysti.compaction.enabled.description%"
         },
         "mysti.compaction.threshold": {
           "type": "number",
           "default": 75,
           "minimum": 50,
           "maximum": 95,
-          "description": "Context usage percentage at which automatic compaction triggers (50-95%)"
+          "description": "%config.mysti.compaction.threshold.description%"
         },
         "mysti.activeMode.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show Active Mode panel and connect to OpenClaw daemon automatically (provider-independent)"
+          "description": "%config.mysti.activeMode.enabled.description%"
         },
         "mysti.activeMode.pollInterval": {
           "type": "number",
           "default": 30,
           "minimum": 10,
           "maximum": 300,
-          "description": "Seconds between daemon status polls"
+          "description": "%config.mysti.activeMode.pollInterval.description%"
         },
         "mysti.activeMode.showActivityFeed": {
           "type": "boolean",
           "default": true,
-          "description": "Show cross-channel activity feed in Active Mode panel"
+          "description": "%config.mysti.activeMode.showActivityFeed.description%"
         },
         "mysti.activeMode.activityLimit": {
           "type": "number",
           "default": 50,
           "minimum": 10,
           "maximum": 200,
-          "description": "Maximum number of activity entries to display"
+          "description": "%config.mysti.activeMode.activityLimit.description%"
         },
         "mysti.activeMode.autoStartDaemon": {
           "type": "boolean",
           "default": false,
-          "description": "Automatically start OpenClaw daemon if not running on extension activation"
+          "description": "%config.mysti.activeMode.autoStartDaemon.description%"
         },
         "mysti.lifecycle.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable agent lifecycle management with idle timeout and process tree protection"
+          "description": "%config.mysti.lifecycle.enabled.description%"
         },
         "mysti.lifecycle.idleTimeoutMinutes": {
           "type": "number",
           "default": 60,
           "minimum": 1,
           "maximum": 1440,
-          "description": "Minutes of inactivity before an agent session is automatically cleared (1-1440)"
+          "description": "%config.mysti.lifecycle.idleTimeoutMinutes.description%"
         },
         "mysti.lifecycle.processTreeTracking": {
           "type": "boolean",
           "default": true,
-          "description": "Track child processes spawned by CLI agents to prevent premature shutdown"
+          "description": "%config.mysti.lifecycle.processTreeTracking.description%"
         },
         "mysti.lifecycle.protectActiveChildren": {
           "type": "boolean",
           "default": true,
-          "description": "Block automatic shutdown when the agent has active child processes (requires explicit user action)"
+          "description": "%config.mysti.lifecycle.protectActiveChildren.description%"
         },
         "mysti.lifecycle.checkIntervalSeconds": {
           "type": "number",
           "default": 30,
           "minimum": 10,
           "maximum": 300,
-          "description": "Seconds between process tree scans for idle sessions (10-300)"
+          "description": "%config.mysti.lifecycle.checkIntervalSeconds.description%"
         },
         "mysti.showSuggestions": {
           "type": "boolean",
           "default": true,
-          "description": "Show quick action suggestions after AI responses"
+          "description": "%config.mysti.showSuggestions.description%"
         },
         "mysti.brainstorm.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable multi-agent brainstorm mode where two AI providers collaborate, debate, and synthesize solutions"
+          "description": "%config.mysti.brainstorm.enabled.description%"
         },
         "mysti.brainstorm.strategy": {
           "type": "string",
@@ -561,13 +561,13 @@
             "delphi"
           ],
           "enumDescriptions": [
-            "Quick - Direct synthesis without discussion (fastest)",
-            "Structured Debate - Agents critique each other's reasoning with rebuttals",
-            "Red Team - One agent proposes, the other challenges, then defense",
-            "Perspective Lenses - Risk analysis vs. opportunity analysis",
-            "Delphi Convergence - Facilitator-mediated iterative refinement"
+            "%config.mysti.brainstorm.strategy.enumDescriptions.0%",
+            "%config.mysti.brainstorm.strategy.enumDescriptions.1%",
+            "%config.mysti.brainstorm.strategy.enumDescriptions.2%",
+            "%config.mysti.brainstorm.strategy.enumDescriptions.3%",
+            "%config.mysti.brainstorm.strategy.enumDescriptions.4%"
           ],
-          "description": "Collaboration strategy for brainstorm mode. Determines how agents interact as a team."
+          "description": "%config.mysti.brainstorm.strategy.description%"
         },
         "mysti.brainstorm.discussionMode": {
           "type": "string",
@@ -577,10 +577,10 @@
             "full"
           ],
           "enumDescriptions": [
-            "Direct synthesis - faster, agents don't explicitly discuss",
-            "Full discussion - agents review and comment on each other's responses (maps to 'debate' strategy)"
+            "%config.mysti.brainstorm.discussionMode.enumDescriptions.0%",
+            "%config.mysti.brainstorm.discussionMode.enumDescriptions.1%"
           ],
-          "description": "Deprecated: Use mysti.brainstorm.strategy instead. Kept for backward compatibility.",
+          "description": "%config.mysti.brainstorm.discussionMode.description%",
           "deprecationMessage": "Use mysti.brainstorm.strategy instead"
         },
         "mysti.brainstorm.maxDiscussionRounds": {
@@ -588,20 +588,20 @@
           "default": 2,
           "minimum": 1,
           "maximum": 3,
-          "description": "Maximum discussion rounds for debate and delphi strategies (may stop early with auto-converge)"
+          "description": "%config.mysti.brainstorm.maxDiscussionRounds.description%"
         },
         "mysti.brainstorm.discussionRounds": {
           "type": "number",
           "default": 2,
           "minimum": 1,
           "maximum": 3,
-          "description": "Deprecated: Use mysti.brainstorm.maxDiscussionRounds instead.",
+          "description": "%config.mysti.brainstorm.discussionRounds.description%",
           "deprecationMessage": "Use mysti.brainstorm.maxDiscussionRounds instead"
         },
         "mysti.brainstorm.autoConverge": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically stop discussion when agents reach consensus (reduces unnecessary rounds)"
+          "description": "%config.mysti.brainstorm.autoConverge.description%"
         },
         "mysti.brainstorm.synthesisAgent": {
           "type": "string",
@@ -619,7 +619,7 @@
             "localai",
             "qwen-code"
           ],
-          "description": "Agent to use for synthesis in brainstorm mode"
+          "description": "%config.mysti.brainstorm.synthesisAgent.description%"
         },
         "mysti.brainstorm.agents": {
           "type": "array",
@@ -646,7 +646,7 @@
           "minItems": 2,
           "maxItems": 2,
           "uniqueItems": true,
-          "description": "Select any 2 of 10 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths."
+          "description": "%config.mysti.brainstorm.agents.description%"
         },
         "mysti.agents.claudePersona": {
           "type": "string",
@@ -661,20 +661,20 @@
             "custom"
           ],
           "enumDescriptions": [
-            "No additional framing",
-            "Focus on system design and patterns",
-            "Focus on practical implementation",
-            "Focus on technical correctness and performance",
-            "Focus on code quality and issues",
-            "Focus on API design and UX",
-            "Use custom prompt"
+            "%config.mysti.agents.claudePersona.enumDescriptions.0%",
+            "%config.mysti.agents.claudePersona.enumDescriptions.1%",
+            "%config.mysti.agents.claudePersona.enumDescriptions.2%",
+            "%config.mysti.agents.claudePersona.enumDescriptions.3%",
+            "%config.mysti.agents.claudePersona.enumDescriptions.4%",
+            "%config.mysti.agents.claudePersona.enumDescriptions.5%",
+            "%config.mysti.agents.claudePersona.enumDescriptions.6%"
           ],
-          "description": "Persona for Claude agent in brainstorm mode"
+          "description": "%config.mysti.agents.claudePersona.description%"
         },
         "mysti.agents.claudeCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for Claude (when persona is 'custom')"
+          "description": "%config.mysti.agents.claudeCustomPrompt.description%"
         },
         "mysti.agents.codexPersona": {
           "type": "string",
@@ -689,20 +689,20 @@
             "custom"
           ],
           "enumDescriptions": [
-            "No additional framing",
-            "Focus on system design and patterns",
-            "Focus on practical implementation",
-            "Focus on technical correctness and performance",
-            "Focus on code quality and issues",
-            "Focus on API design and UX",
-            "Use custom prompt"
+            "%config.mysti.agents.codexPersona.enumDescriptions.0%",
+            "%config.mysti.agents.codexPersona.enumDescriptions.1%",
+            "%config.mysti.agents.codexPersona.enumDescriptions.2%",
+            "%config.mysti.agents.codexPersona.enumDescriptions.3%",
+            "%config.mysti.agents.codexPersona.enumDescriptions.4%",
+            "%config.mysti.agents.codexPersona.enumDescriptions.5%",
+            "%config.mysti.agents.codexPersona.enumDescriptions.6%"
           ],
-          "description": "Persona for Codex agent in brainstorm mode"
+          "description": "%config.mysti.agents.codexPersona.description%"
         },
         "mysti.agents.codexCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for Codex (when persona is 'custom')"
+          "description": "%config.mysti.agents.codexCustomPrompt.description%"
         },
         "mysti.agents.geminiPersona": {
           "type": "string",
@@ -717,20 +717,20 @@
             "custom"
           ],
           "enumDescriptions": [
-            "No additional framing",
-            "Focus on system design and patterns",
-            "Focus on practical implementation",
-            "Focus on technical correctness and performance",
-            "Focus on code quality and issues",
-            "Focus on API design and UX",
-            "Use custom prompt"
+            "%config.mysti.agents.geminiPersona.enumDescriptions.0%",
+            "%config.mysti.agents.geminiPersona.enumDescriptions.1%",
+            "%config.mysti.agents.geminiPersona.enumDescriptions.2%",
+            "%config.mysti.agents.geminiPersona.enumDescriptions.3%",
+            "%config.mysti.agents.geminiPersona.enumDescriptions.4%",
+            "%config.mysti.agents.geminiPersona.enumDescriptions.5%",
+            "%config.mysti.agents.geminiPersona.enumDescriptions.6%"
           ],
-          "description": "Persona for Gemini agent in brainstorm mode"
+          "description": "%config.mysti.agents.geminiPersona.description%"
         },
         "mysti.agents.geminiCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for Gemini (when persona is 'custom')"
+          "description": "%config.mysti.agents.geminiCustomPrompt.description%"
         },
         "mysti.agents.clinePersona": {
           "type": "string",
@@ -745,20 +745,20 @@
             "custom"
           ],
           "enumDescriptions": [
-            "No additional framing",
-            "Focus on system design and patterns",
-            "Focus on practical implementation",
-            "Focus on technical correctness and performance",
-            "Focus on code quality and issues",
-            "Focus on API design and UX",
-            "Use custom prompt"
+            "%config.mysti.agents.clinePersona.enumDescriptions.0%",
+            "%config.mysti.agents.clinePersona.enumDescriptions.1%",
+            "%config.mysti.agents.clinePersona.enumDescriptions.2%",
+            "%config.mysti.agents.clinePersona.enumDescriptions.3%",
+            "%config.mysti.agents.clinePersona.enumDescriptions.4%",
+            "%config.mysti.agents.clinePersona.enumDescriptions.5%",
+            "%config.mysti.agents.clinePersona.enumDescriptions.6%"
           ],
-          "description": "Persona for Cline agent in brainstorm mode"
+          "description": "%config.mysti.agents.clinePersona.description%"
         },
         "mysti.agents.clineCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for Cline (when persona is 'custom')"
+          "description": "%config.mysti.agents.clineCustomPrompt.description%"
         },
         "mysti.agents.copilotPersona": {
           "type": "string",
@@ -773,20 +773,20 @@
             "custom"
           ],
           "enumDescriptions": [
-            "No additional framing",
-            "Focus on system design and patterns",
-            "Focus on practical implementation",
-            "Focus on technical correctness and performance",
-            "Focus on code quality and issues",
-            "Focus on API design and UX",
-            "Use custom prompt"
+            "%config.mysti.agents.copilotPersona.enumDescriptions.0%",
+            "%config.mysti.agents.copilotPersona.enumDescriptions.1%",
+            "%config.mysti.agents.copilotPersona.enumDescriptions.2%",
+            "%config.mysti.agents.copilotPersona.enumDescriptions.3%",
+            "%config.mysti.agents.copilotPersona.enumDescriptions.4%",
+            "%config.mysti.agents.copilotPersona.enumDescriptions.5%",
+            "%config.mysti.agents.copilotPersona.enumDescriptions.6%"
           ],
-          "description": "Persona for Copilot agent in brainstorm mode"
+          "description": "%config.mysti.agents.copilotPersona.description%"
         },
         "mysti.agents.copilotCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for Copilot (when persona is 'custom')"
+          "description": "%config.mysti.agents.copilotCustomPrompt.description%"
         },
         "mysti.agents.cursorPersona": {
           "type": "string",
@@ -801,20 +801,20 @@
             "custom"
           ],
           "enumDescriptions": [
-            "No additional framing",
-            "Focus on system design and patterns",
-            "Focus on practical implementation",
-            "Focus on technical correctness and performance",
-            "Focus on code quality and issues",
-            "Focus on API design and UX",
-            "Use custom prompt"
+            "%config.mysti.agents.cursorPersona.enumDescriptions.0%",
+            "%config.mysti.agents.cursorPersona.enumDescriptions.1%",
+            "%config.mysti.agents.cursorPersona.enumDescriptions.2%",
+            "%config.mysti.agents.cursorPersona.enumDescriptions.3%",
+            "%config.mysti.agents.cursorPersona.enumDescriptions.4%",
+            "%config.mysti.agents.cursorPersona.enumDescriptions.5%",
+            "%config.mysti.agents.cursorPersona.enumDescriptions.6%"
           ],
-          "description": "Persona for Cursor agent in brainstorm mode"
+          "description": "%config.mysti.agents.cursorPersona.description%"
         },
         "mysti.agents.cursorCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for Cursor (when persona is 'custom')"
+          "description": "%config.mysti.agents.cursorCustomPrompt.description%"
         },
         "mysti.agents.openclawPersona": {
           "type": "string",
@@ -829,20 +829,20 @@
             "custom"
           ],
           "enumDescriptions": [
-            "No additional framing",
-            "Focus on system design and patterns",
-            "Focus on practical implementation",
-            "Focus on technical correctness and performance",
-            "Focus on code quality and issues",
-            "Focus on API design and UX",
-            "Use custom prompt"
+            "%config.mysti.agents.openclawPersona.enumDescriptions.0%",
+            "%config.mysti.agents.openclawPersona.enumDescriptions.1%",
+            "%config.mysti.agents.openclawPersona.enumDescriptions.2%",
+            "%config.mysti.agents.openclawPersona.enumDescriptions.3%",
+            "%config.mysti.agents.openclawPersona.enumDescriptions.4%",
+            "%config.mysti.agents.openclawPersona.enumDescriptions.5%",
+            "%config.mysti.agents.openclawPersona.enumDescriptions.6%"
           ],
-          "description": "Persona for OpenClaw agent in brainstorm mode"
+          "description": "%config.mysti.agents.openclawPersona.description%"
         },
         "mysti.agents.openclawCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for OpenClaw (when persona is 'custom')"
+          "description": "%config.mysti.agents.openclawCustomPrompt.description%"
         },
         "mysti.agents.opencodePersona": {
           "type": "string",
@@ -857,20 +857,20 @@
             "custom"
           ],
           "enumDescriptions": [
-            "Balanced, no specific bias",
-            "Focus on system design and patterns",
-            "Focus on practical, working solutions",
-            "Focus on implementation quality and performance",
-            "Focus on code review and best practices",
-            "Focus on API design and UX",
-            "Use custom prompt"
+            "%config.mysti.agents.opencodePersona.enumDescriptions.0%",
+            "%config.mysti.agents.opencodePersona.enumDescriptions.1%",
+            "%config.mysti.agents.opencodePersona.enumDescriptions.2%",
+            "%config.mysti.agents.opencodePersona.enumDescriptions.3%",
+            "%config.mysti.agents.opencodePersona.enumDescriptions.4%",
+            "%config.mysti.agents.opencodePersona.enumDescriptions.5%",
+            "%config.mysti.agents.opencodePersona.enumDescriptions.6%"
           ],
-          "description": "Persona for OpenCode agent in brainstorm mode"
+          "description": "%config.mysti.agents.opencodePersona.description%"
         },
         "mysti.agents.opencodeCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for OpenCode (when persona is 'custom')"
+          "description": "%config.mysti.agents.opencodeCustomPrompt.description%"
         },
         "mysti.agents.ollamaPersona": {
           "type": "string",
@@ -885,20 +885,20 @@
             "custom"
           ],
           "enumDescriptions": [
-            "Balanced, no specific bias",
-            "Focus on system design and patterns",
-            "Focus on practical, working solutions",
-            "Focus on implementation quality and performance",
-            "Focus on code review and best practices",
-            "Focus on API design and UX",
-            "Use custom prompt"
+            "%config.mysti.agents.ollamaPersona.enumDescriptions.0%",
+            "%config.mysti.agents.ollamaPersona.enumDescriptions.1%",
+            "%config.mysti.agents.ollamaPersona.enumDescriptions.2%",
+            "%config.mysti.agents.ollamaPersona.enumDescriptions.3%",
+            "%config.mysti.agents.ollamaPersona.enumDescriptions.4%",
+            "%config.mysti.agents.ollamaPersona.enumDescriptions.5%",
+            "%config.mysti.agents.ollamaPersona.enumDescriptions.6%"
           ],
-          "description": "Persona for Ollama agent in brainstorm mode"
+          "description": "%config.mysti.agents.ollamaPersona.description%"
         },
         "mysti.agents.ollamaCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for Ollama (when persona is 'custom')"
+          "description": "%config.mysti.agents.ollamaCustomPrompt.description%"
         },
         "mysti.agents.localaiPersona": {
           "type": "string",
@@ -913,20 +913,20 @@
             "custom"
           ],
           "enumDescriptions": [
-            "Balanced, no specific bias",
-            "Focus on system design and patterns",
-            "Focus on practical, working solutions",
-            "Focus on implementation quality and performance",
-            "Focus on code review and best practices",
-            "Focus on API design and UX",
-            "Use custom prompt"
+            "%config.mysti.agents.localaiPersona.enumDescriptions.0%",
+            "%config.mysti.agents.localaiPersona.enumDescriptions.1%",
+            "%config.mysti.agents.localaiPersona.enumDescriptions.2%",
+            "%config.mysti.agents.localaiPersona.enumDescriptions.3%",
+            "%config.mysti.agents.localaiPersona.enumDescriptions.4%",
+            "%config.mysti.agents.localaiPersona.enumDescriptions.5%",
+            "%config.mysti.agents.localaiPersona.enumDescriptions.6%"
           ],
-          "description": "Persona for LocalAI agent in brainstorm mode"
+          "description": "%config.mysti.agents.localaiPersona.description%"
         },
         "mysti.agents.localaiCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for LocalAI (when persona is 'custom')"
+          "description": "%config.mysti.agents.localaiCustomPrompt.description%"
         },
         "mysti.agents.qwenCodePersona": {
           "type": "string",
@@ -940,30 +940,30 @@
             "designer",
             "custom"
           ],
-          "description": "Persona for Qwen Code agent in brainstorm mode"
+          "description": "%config.mysti.agents.qwenCodePersona.description%"
         },
         "mysti.agents.qwenCodeCustomPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom persona prompt for Qwen Code (when persona is 'custom')"
+          "description": "%config.mysti.agents.qwenCodeCustomPrompt.description%"
         },
         "mysti.agents.autoSuggest": {
           "type": "boolean",
           "default": true,
-          "description": "Smart persona suggestions: Mysti analyzes your message and recommends the best persona (Architect, Debugger, etc.) for your task"
+          "description": "%config.mysti.agents.autoSuggest.description%"
         },
         "mysti.agents.maxTokenBudget": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "maximum": 16000,
-          "description": "Limit tokens used for agent context. Set to 0 for unlimited (default). Use lower values to reduce API costs."
+          "description": "%config.mysti.agents.maxTokenBudget.description%"
         },
         "mysti.permission.timeout": {
           "type": "number",
           "default": 30,
           "minimum": 0,
-          "description": "Seconds to wait for permission approval (0 = no timeout, requires explicit action)"
+          "description": "%config.mysti.permission.timeout.description%"
         },
         "mysti.permission.timeoutBehavior": {
           "type": "string",
@@ -975,29 +975,29 @@
             "semi-autonomous"
           ],
           "enumDescriptions": [
-            "Automatically approve the action when timeout expires",
-            "Automatically deny the action when timeout expires",
-            "No timeout - require explicit user action",
-            "AI makes an intelligent decision using safety classification and learned preferences when timeout expires"
+            "%config.mysti.permission.timeoutBehavior.enumDescriptions.0%",
+            "%config.mysti.permission.timeoutBehavior.enumDescriptions.1%",
+            "%config.mysti.permission.timeoutBehavior.enumDescriptions.2%",
+            "%config.mysti.permission.timeoutBehavior.enumDescriptions.3%"
           ],
-          "description": "Behavior when permission request times out"
+          "description": "%config.mysti.permission.timeoutBehavior.description%"
         },
         "mysti.semiAutonomous.timeout": {
           "type": "number",
           "default": 60,
           "minimum": 10,
           "maximum": 300,
-          "description": "Seconds before AI takes over in semi-autonomous mode. Applies to both permission requests and questions."
+          "description": "%config.mysti.semiAutonomous.timeout.description%"
         },
         "mysti.useShellForCli": {
           "type": "boolean",
           "default": false,
-          "description": "Run AI provider CLIs using a shell (sets shell=true when spawning processes). Enable this on Windows if you see \"spawn EINVAL\" errors with CLI .cmd wrappers."
+          "description": "%config.mysti.useShellForCli.description%"
         },
         "mysti.debugVerbose": {
           "type": "boolean",
           "default": false,
-          "description": "Pass --verbose flag to CLI providers (Claude Code, Cline). Adds extra diagnostic output but may slow responses. Only enable for debugging."
+          "description": "%config.mysti.debugVerbose.description%"
         },
         "mysti.autonomous.safetyMode": {
           "type": "string",
@@ -1008,25 +1008,25 @@
             "aggressive"
           ],
           "enumDescriptions": [
-            "Only auto-approve read and create operations",
-            "Auto-approve edits to existing files within workspace",
-            "Auto-approve most operations (destructive actions always blocked)"
+            "%config.mysti.autonomous.safetyMode.enumDescriptions.0%",
+            "%config.mysti.autonomous.safetyMode.enumDescriptions.1%",
+            "%config.mysti.autonomous.safetyMode.enumDescriptions.2%"
           ],
-          "description": "Safety level for autonomous mode decisions"
+          "description": "%config.mysti.autonomous.safetyMode.description%"
         },
         "mysti.autonomous.maxSessionDuration": {
           "type": "number",
           "default": 24,
           "minimum": 0,
           "maximum": 168,
-          "description": "Maximum hours for an autonomous session (0 = unlimited)"
+          "description": "%config.mysti.autonomous.maxSessionDuration.description%"
         },
         "mysti.autonomous.maxMemoryEntries": {
           "type": "number",
           "default": 500,
           "minimum": 50,
           "maximum": 5000,
-          "description": "Maximum number of memory entries to store"
+          "description": "%config.mysti.autonomous.maxMemoryEntries.description%"
         },
         "mysti.autonomous.blockPatterns": {
           "type": "array",
@@ -1034,22 +1034,22 @@
             "type": "string"
           },
           "default": [],
-          "description": "Additional regex patterns to block in autonomous mode (e.g. dangerous commands)"
+          "description": "%config.mysti.autonomous.blockPatterns.description%"
         },
         "mysti.autonomous.allowFileCreation": {
           "type": "boolean",
           "default": true,
-          "description": "Allow autonomous mode to create new files"
+          "description": "%config.mysti.autonomous.allowFileCreation.description%"
         },
         "mysti.autonomous.allowFileEdit": {
           "type": "boolean",
           "default": true,
-          "description": "Allow autonomous mode to edit existing files"
+          "description": "%config.mysti.autonomous.allowFileEdit.description%"
         },
         "mysti.autonomous.allowBashCommands": {
           "type": "boolean",
           "default": true,
-          "description": "Allow autonomous mode to run bash commands (destructive commands always blocked)"
+          "description": "%config.mysti.autonomous.allowBashCommands.description%"
         },
         "mysti.autonomous.continuationMode": {
           "type": "string",
@@ -1059,35 +1059,35 @@
             "task-queue"
           ],
           "enumDescriptions": [
-            "Provide a high-level goal and the agent continues until it's met",
-            "Provide a list of tasks and the agent works through them sequentially"
+            "%config.mysti.autonomous.continuationMode.enumDescriptions.0%",
+            "%config.mysti.autonomous.continuationMode.enumDescriptions.1%"
           ],
-          "description": "How autonomous mode handles task continuation"
+          "description": "%config.mysti.autonomous.continuationMode.description%"
         },
         "mysti.commitSignature.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Track when Mysti creates git commits for the Trail Blazer badge"
+          "description": "%config.mysti.commitSignature.enabled.description%"
         },
         "mysti.fileDecorations.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show sparkle 'M' badge on files modified by Mysti in the VS Code Explorer"
+          "description": "%config.mysti.fileDecorations.enabled.description%"
         },
         "mysti.fileDecorations.duration": {
           "type": "number",
           "default": 24,
-          "description": "How long (in hours) to show file decoration badges after a file is modified by Mysti"
+          "description": "%config.mysti.fileDecorations.duration.description%"
         },
         "mysti.projectContext.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Read mysti.md and .mysti/rules/ for project-specific instructions (like CLAUDE.md)"
+          "description": "%config.mysti.projectContext.enabled.description%"
         },
         "mysti.autoMemory.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically learn and remember project patterns across sessions (like Claude Code's auto-memory)"
+          "description": "%config.mysti.autoMemory.enabled.description%"
         }
       }
     },
@@ -1122,16 +1122,16 @@
     "walkthroughs": [
       {
         "id": "mysti.gettingStarted",
-        "title": "Get Started with Mysti",
-        "description": "Set up your multi-agent AI coding assistant in 2 minutes",
+        "title": "%walkthrough.mysti.gettingStarted.title%",
+        "description": "%walkthrough.mysti.gettingStarted.description%",
         "steps": [
           {
             "id": "mysti.walkthrough.openChat",
-            "title": "Open the Mysti Panel",
-            "description": "Click the Mysti icon in the Activity Bar or press ``Cmd+Shift+M`` (``Ctrl+Shift+M`` on Windows/Linux) to open the chat panel.\n\n[Open Mysti](command:mysti.openChat)",
+            "title": "%walkthrough.mysti.walkthrough.openChat.title%",
+            "description": "%walkthrough.mysti.walkthrough.openChat.description%",
             "media": {
-              "image": "docs/screenshots/quick-actions-welcome.png",
-              "altText": "Mysti chat panel with welcome screen"
+              "image": "resources/walkthrough/quick-actions-welcome.png",
+              "altText": "%walkthrough.mysti.walkthrough.openChat.altText%"
             },
             "completionEvents": [
               "onCommand:mysti.openChat"
@@ -1139,47 +1139,107 @@
           },
           {
             "id": "mysti.walkthrough.setupProvider",
-            "title": "Set Up an AI Provider",
-            "description": "Install and authenticate at least one AI CLI tool. Claude Code is recommended for the best experience.\n\n[Open Settings](command:workbench.action.openSettings?%5B%22mysti.defaultProvider%22%5D)",
+            "title": "%walkthrough.mysti.walkthrough.setupProvider.title%",
+            "description": "%walkthrough.mysti.walkthrough.setupProvider.description%",
             "media": {
-              "image": "docs/screenshots/settings-panel.png",
-              "altText": "Mysti settings panel showing provider options"
+              "image": "resources/walkthrough/settings-panel.png",
+              "altText": "%walkthrough.mysti.walkthrough.setupProvider.altText%"
             },
             "completionEvents": [
               "onSettingChanged:mysti.defaultProvider"
             ]
           },
           {
-            "id": "mysti.walkthrough.firstMessage",
-            "title": "Send Your First Message",
-            "description": "Ask Mysti to explain code, fix a bug, write tests, or generate new features. You're Mysting now!\n\n[Open Chat](command:mysti.openChat)",
+            "id": "mysti.walkthrough.installCli",
+            "title": "%walkthrough.mysti.walkthrough.installCli.title%",
+            "description": "%walkthrough.mysti.walkthrough.installCli.description%",
             "media": {
-              "image": "docs/screenshots/user-experience.png",
-              "altText": "Mysti chat with AI response"
+              "image": "resources/walkthrough/settings-panel.png",
+              "altText": "%walkthrough.mysti.walkthrough.installCli.altText%"
             },
             "completionEvents": [
               "onCommand:mysti.openChat"
             ]
           },
           {
-            "id": "mysti.walkthrough.brainstorm",
-            "title": "Try Multi-Agent Brainstorm",
-            "description": "Enable Brainstorm Mode to have two AI agents collaborate, debate, and synthesize solutions together. Pick any 2 of 7 providers.\n\n[Open Settings](command:workbench.action.openSettings?%5B%22mysti.brainstorm.enabled%22%5D)",
+            "id": "mysti.walkthrough.authenticate",
+            "title": "%walkthrough.mysti.walkthrough.authenticate.title%",
+            "description": "%walkthrough.mysti.walkthrough.authenticate.description%",
             "media": {
-              "image": "docs/screenshots/brainstorm-mode.png",
-              "altText": "Brainstorm mode with two AI agents collaborating"
+              "image": "resources/walkthrough/user-experience.png",
+              "altText": "%walkthrough.mysti.walkthrough.authenticate.altText%"
+            },
+            "completionEvents": [
+              "onCommand:mysti.openChat"
+            ]
+          },
+          {
+            "id": "mysti.walkthrough.permissions",
+            "title": "%walkthrough.mysti.walkthrough.permissions.title%",
+            "description": "%walkthrough.mysti.walkthrough.permissions.description%",
+            "media": {
+              "image": "resources/walkthrough/settings-panel.png",
+              "altText": "%walkthrough.mysti.walkthrough.permissions.altText%"
+            },
+            "completionEvents": [
+              "onSettingChanged:mysti.accessLevel"
+            ]
+          },
+          {
+            "id": "mysti.walkthrough.firstMessage",
+            "title": "%walkthrough.mysti.walkthrough.firstMessage.title%",
+            "description": "%walkthrough.mysti.walkthrough.firstMessage.description%",
+            "media": {
+              "image": "resources/walkthrough/user-experience.png",
+              "altText": "%walkthrough.mysti.walkthrough.firstMessage.altText%"
+            },
+            "completionEvents": [
+              "onCommand:mysti.openChat"
+            ]
+          },
+          {
+            "id": "mysti.walkthrough.context",
+            "title": "%walkthrough.mysti.walkthrough.context.title%",
+            "description": "%walkthrough.mysti.walkthrough.context.description%",
+            "media": {
+              "image": "resources/walkthrough/user-experience.png",
+              "altText": "%walkthrough.mysti.walkthrough.context.altText%"
+            },
+            "completionEvents": [
+              "onCommand:mysti.addToContext"
+            ]
+          },
+          {
+            "id": "mysti.walkthrough.brainstorm",
+            "title": "%walkthrough.mysti.walkthrough.brainstorm.title%",
+            "description": "%walkthrough.mysti.walkthrough.brainstorm.description%",
+            "media": {
+              "image": "resources/walkthrough/brainstorm-mode.png",
+              "altText": "%walkthrough.mysti.walkthrough.brainstorm.altText%"
             },
             "completionEvents": [
               "onSettingChanged:mysti.brainstorm.enabled"
             ]
           },
           {
+            "id": "mysti.walkthrough.troubleshoot",
+            "title": "%walkthrough.mysti.walkthrough.troubleshoot.title%",
+            "description": "%walkthrough.mysti.walkthrough.troubleshoot.description%",
+            "media": {
+              "image": "resources/walkthrough/settings-panel.png",
+              "altText": "%walkthrough.mysti.walkthrough.troubleshoot.altText%"
+            },
+            "completionEvents": [
+              "onCommand:mysti.openChat"
+            ]
+          },
+          {
             "id": "mysti.walkthrough.star",
-            "title": "Star Mysti on GitHub",
-            "description": "If Mysti is useful, [star it on GitHub](https://github.com/DeepMyst/Mysti) to help other developers discover it!\n\nJoin the community and help shape the future of multi-agent AI coding.",
+            "title": "%walkthrough.mysti.walkthrough.star.title%",
+            "description": "%walkthrough.mysti.walkthrough.star.description%",
             "media": {
               "image": "resources/Mysti-Logo.png",
-              "altText": "Mysti logo"
+              "altText": "%walkthrough.mysti.walkthrough.star.altText%"
             },
             "completionEvents": [
               "onLink:https://github.com/DeepMyst/Mysti"
@@ -1255,7 +1315,8 @@
     "test:watch": "vitest",
     "sync-agents": "node scripts/sync-agents.js",
     "sync-agents:force": "node scripts/sync-agents.js --force",
-    "fetch-stargazers": "node scripts/fetch-stargazers.js"
+    "fetch-stargazers": "node scripts/fetch-stargazers.js",
+    "verify:l10n": "node scripts/verify-localization.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
@@ -1278,5 +1339,6 @@
     "prismjs": "^1.29.0",
     "uuid": "^9.0.1",
     "ws": "^8.19.0"
-  }
+  },
+  "l10n": "./l10n"
 }

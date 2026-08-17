@@ -31,6 +31,7 @@ import { EngagementManager } from './managers/EngagementManager';
 import { CommitSignatureManager } from './managers/CommitSignatureManager';
 import { TeamPresenceManager } from './managers/TeamPresenceManager';
 import { MystiFileDecorationProvider } from './providers/MystiFileDecorationProvider';
+import { runOnboarding } from './onboarding';
 import { MystiCodeLensProvider } from './providers/MystiCodeLensProvider';
 import { ProjectContextManager } from './managers/ProjectContextManager';
 
@@ -194,7 +195,7 @@ export async function activate(context: vscode.ExtensionContext) {
   const defaultProvider = vscode.workspace.getConfiguration('mysti').get<string>('defaultProvider', 'claude-code');
   const providerLabel = _formatProviderLabel(defaultProvider);
   mystiStatusBar.text = `$(sparkle) Mysti: ${providerLabel}`;
-  mystiStatusBar.tooltip = `You're Mysting with ${providerLabel} — click to open chat`;
+  mystiStatusBar.tooltip = vscode.l10n.t("You're Mysting with {0} — click to open chat", providerLabel);
   mystiStatusBar.show();
   context.subscriptions.push(mystiStatusBar);
 
@@ -205,37 +206,13 @@ export async function activate(context: vscode.ExtensionContext) {
         const provider = vscode.workspace.getConfiguration('mysti').get<string>('defaultProvider', 'claude-code');
         const label = _formatProviderLabel(provider);
         mystiStatusBar.text = `$(sparkle) Mysti: ${label}`;
-        mystiStatusBar.tooltip = `You're Mysting with ${label} — click to open chat`;
+        mystiStatusBar.tooltip = vscode.l10n.t("You're Mysting with {0} — click to open chat", label);
       }
     })
   );
 
-  // "What's New" notification and first-install walkthrough
-  const currentVersion = context.extension.packageJSON.version as string;
-  const previousVersion = context.globalState.get<string>('mysti.lastVersion');
-
-  if (!previousVersion) {
-    // First install — open walkthrough
-    vscode.commands.executeCommand(
-      'workbench.action.openWalkthrough',
-      'DeepMyst.mysti#mysti.gettingStarted',
-      false
-    );
-  } else if (previousVersion !== currentVersion) {
-    // Extension updated — show What's New
-    vscode.window.showInformationMessage(
-      `Mysti updated to v${currentVersion}! See what's new.`,
-      "What's New",
-      'Rate Mysti'
-    ).then((selection) => {
-      if (selection === "What's New") {
-        vscode.env.openExternal(vscode.Uri.parse('https://github.com/DeepMyst/Mysti/blob/main/CHANGELOG.md'));
-      } else if (selection === 'Rate Mysti') {
-        vscode.env.openExternal(vscode.Uri.parse('https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti&ssr=false#review-details'));
-      }
-    });
-  }
-  context.globalState.update('mysti.lastVersion', currentVersion);
+  // First-run / upgraded onboarding.
+  await runOnboarding(context);
 
   // Active Mode status bar item (provider-independent)
   const activeStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
@@ -246,12 +223,12 @@ export async function activate(context: vscode.ExtensionContext) {
     if (!activeModeManager.isInstalled()) {
       activeStatusBar.hide();
     } else if (status?.running) {
-      activeStatusBar.text = '$(radio-tower) Mysti: OpenClaw Active';
-      activeStatusBar.tooltip = `Mysti \u00B7 OpenClaw daemon running \u00B7 ${status.channelCount} channel${status.channelCount !== 1 ? 's' : ''}`;
+      activeStatusBar.text = `$(radio-tower) ${vscode.l10n.t('Mysti: OpenClaw Active')}`;
+      activeStatusBar.tooltip = vscode.l10n.t('Mysti · OpenClaw daemon running · {0} channels', status.channelCount);
       activeStatusBar.show();
     } else {
-      activeStatusBar.text = '$(radio-tower) Mysti: OpenClaw Offline';
-      activeStatusBar.tooltip = 'Mysti \u00B7 OpenClaw daemon not running';
+      activeStatusBar.text = `$(radio-tower) ${vscode.l10n.t('Mysti: OpenClaw Offline')}`;
+      activeStatusBar.tooltip = vscode.l10n.t('Mysti · OpenClaw daemon not running');
       activeStatusBar.show();
     }
   });
@@ -264,11 +241,11 @@ export async function activate(context: vscode.ExtensionContext) {
   teamPresenceManager.onDidChange((summary) => {
     if (summary.totalActions > 0) {
       const parts: string[] = [];
-      if (summary.filesWritten > 0) { parts.push(`${summary.filesWritten} file${summary.filesWritten !== 1 ? 's' : ''} edited`); }
-      if (summary.filesRead > 0) { parts.push(`${summary.filesRead} read`); }
-      if (summary.commandsRun > 0) { parts.push(`${summary.commandsRun} cmd${summary.commandsRun !== 1 ? 's' : ''}`); }
+      if (summary.filesWritten > 0) { parts.push(vscode.l10n.t('{0} files edited', summary.filesWritten)); }
+      if (summary.filesRead > 0) { parts.push(vscode.l10n.t('{0} files read', summary.filesRead)); }
+      if (summary.commandsRun > 0) { parts.push(vscode.l10n.t('{0} commands run', summary.commandsRun)); }
       actionsStatusBar.text = `$(tools) Mysti: ${parts.join(', ')}`;
-      actionsStatusBar.tooltip = `Mysti session activity\n${summary.filesWritten} files edited, ${summary.filesRead} files read, ${summary.commandsRun} commands run`;
+      actionsStatusBar.tooltip = vscode.l10n.t('Mysti session activity\n{0}, {1}, {2}', vscode.l10n.t('{0} files edited', summary.filesWritten), vscode.l10n.t('{0} files read', summary.filesRead), vscode.l10n.t('{0} commands run', summary.commandsRun));
       actionsStatusBar.show();
     } else {
       actionsStatusBar.hide();
@@ -344,14 +321,14 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.debugSetup', () => {
       chatViewProvider.debugForceSetup();
-      vscode.window.showInformationMessage('Debug: Setup flow triggered');
+      vscode.window.showInformationMessage(vscode.l10n.t('Debug: Setup flow triggered'));
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.debugSetupFailure', () => {
       chatViewProvider.debugForceSetupFailure();
-      vscode.window.showInformationMessage('Debug: Setup failure triggered');
+      vscode.window.showInformationMessage(vscode.l10n.t('Debug: Setup failure triggered'));
     })
   );
 
@@ -366,9 +343,9 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.codeLensAction', (action: string, functionCode: string, filePath: string, functionName: string) => {
       const prompts: Record<string, string> = {
-        explain: `Explain what the function \`${functionName}\` does:\n\n\`\`\`\n${functionCode}\n\`\`\``,
-        refactor: `Refactor the function \`${functionName}\` for better readability and performance:\n\n\`\`\`\n${functionCode}\n\`\`\``,
-        test: `Write comprehensive tests for the function \`${functionName}\`:\n\n\`\`\`\n${functionCode}\n\`\`\``
+        explain: `${vscode.l10n.t('Explain what the function `{0}` does:', functionName)}\n\n\`\`\`\n${functionCode}\n\`\`\``,
+        refactor: `${vscode.l10n.t('Refactor the function `{0}` for better readability and performance:', functionName)}\n\n\`\`\`\n${functionCode}\n\`\`\``,
+        test: `${vscode.l10n.t('Write comprehensive tests for the function `{0}`:', functionName)}\n\n\`\`\`\n${functionCode}\n\`\`\``
       };
       const prompt = prompts[action] || prompts['explain'];
 
@@ -398,10 +375,10 @@ export async function activate(context: vscode.ExtensionContext) {
             if (imported) {
               vscode.commands.executeCommand('mysti.chatView.focus');
               chatViewProvider.postMessage({ type: 'conversationChanged' });
-              vscode.window.showInformationMessage(`Conversation loaded: "${imported.title}"`);
+              vscode.window.showInformationMessage(vscode.l10n.t('Conversation loaded: "{0}"', imported.title));
               telemetryManager.sendEvent('deeplink.imported', {});
             } else {
-              vscode.window.showErrorMessage('Could not load this conversation. The link may be invalid or expired.');
+              vscode.window.showErrorMessage(vscode.l10n.t('Could not load this conversation. The link may be invalid or expired.'));
             }
           }
         }
@@ -425,12 +402,13 @@ export async function activate(context: vscode.ExtensionContext) {
     Promise.any(mystiMarkers.map(uri => vscode.workspace.fs.stat(uri))).then(async () => {
       const hasSetup = context.globalState.get<boolean>('mysti.hasCompletedSetup');
       if (!hasSetup) {
+        const openMysti = vscode.l10n.t('Open Mysti');
         const choice = await vscode.window.showInformationMessage(
-          'This project has a Mysti configuration. Open Mysti to get started?',
-          'Open Mysti',
-          'Dismiss'
+          vscode.l10n.t('This project has a Mysti configuration. Open Mysti to get started?'),
+          openMysti,
+          vscode.l10n.t('Dismiss')
         );
-        if (choice === 'Open Mysti') {
+        if (choice === openMysti) {
           vscode.commands.executeCommand('mysti.chatView.focus');
         }
         context.workspaceState.update('mysti.hasPromptedTeamOnboarding', true);
@@ -444,12 +422,13 @@ export async function activate(context: vscode.ExtensionContext) {
   if (!hasPromptedRec && hasCompletedSetup) {
     // Defer to avoid blocking activation
     setTimeout(async () => {
+      const sure = vscode.l10n.t('Sure');
       const choice = await vscode.window.showInformationMessage(
-        'Would you like to recommend Mysti to other contributors on this project?',
-        'Sure',
-        'Not now'
+        vscode.l10n.t('Would you like to recommend Mysti to other contributors on this project?'),
+        sure,
+        vscode.l10n.t('Not now')
       );
-      if (choice === 'Sure') {
+      if (choice === sure) {
         await _addToWorkspaceRecommendations();
         engagementManager.trackWorkspaceRecommendation();
         telemetryManager.sendEvent('workspace.recommendation', { action: 'accepted' });
