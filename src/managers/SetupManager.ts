@@ -223,13 +223,13 @@ export class SetupManager {
    */
   private _getSuggestedFix(category: InstallErrorCategory, installCommand: string): string {
     const fixes: Record<InstallErrorCategory, string> = {
-      'permission': `No write permission to npm global directory. Mysti installed to ~/.mysti/cli instead.\n\nTo install globally, either:\n\u2022 Run with sudo: sudo ${installCommand}\n\u2022 Fix npm permissions: npm config set prefix ~/.npm-global\n\u2022 See https://docs.npmjs.com/resolving-eacces-permissions-errors`,
-      'network': 'Check your internet connection and proxy settings. If behind a firewall, try: npm config list to verify proxy settings.',
-      'version': `Node.js ${MIN_NODE_VERSION}+ is required. Visit nodejs.org to install the latest LTS version, or run: nvm install --lts`,
-      'not-found': 'npm is not installed. Install Node.js from nodejs.org or use nvm (https://github.com/nvm-sh/nvm).',
-      'command-failed': `Installation failed. Try running the install command manually in a terminal: ${installCommand}`,
-      'timeout': 'Installation timed out. Check your network speed and try again.',
-      'unknown': `An unexpected error occurred. Try running manually: ${installCommand}`
+      'permission': vscode.l10n.t('No write permission to npm global directory. Mysti installed to ~/.mysti/cli instead.\n\nTo install globally, either:\n• Run with sudo: sudo {0}\n• Fix npm permissions: npm config set prefix ~/.npm-global\n• See https://docs.npmjs.com/resolving-eacces-permissions-errors', installCommand),
+      'network': vscode.l10n.t('Check your internet connection and proxy settings. If behind a firewall, try: npm config list to verify proxy settings.'),
+      'version': vscode.l10n.t('Node.js {0}+ is required. Visit nodejs.org to install the latest LTS version, or run: nvm install --lts', MIN_NODE_VERSION),
+      'not-found': vscode.l10n.t('npm is not installed. Install Node.js from nodejs.org or use nvm (https://github.com/nvm-sh/nvm).'),
+      'command-failed': vscode.l10n.t('Installation failed. Try running the install command manually in a terminal: {0}', installCommand),
+      'timeout': vscode.l10n.t('Installation timed out. Check your network speed and try again.'),
+      'unknown': vscode.l10n.t('An unexpected error occurred. Try running manually: {0}', installCommand)
     };
     return fixes[category];
   }
@@ -253,14 +253,14 @@ export class SetupManager {
           return {
             meets: false,
             version,
-            error: `Node.js ${MIN_NODE_VERSION}+ required, found ${version}`
+            error: vscode.l10n.t('Node.js {0}+ required, found {1}', MIN_NODE_VERSION, version)
           };
         }
         return { meets: true, version };
       }
       return { meets: true, version };
     } catch {
-      return { meets: false, error: 'Node.js is not installed' };
+      return { meets: false, error: vscode.l10n.t('Node.js is not installed') };
     }
   }
 
@@ -306,7 +306,7 @@ export class SetupManager {
       if (!['network', 'timeout'].includes(category) || attempt >= INSTALL_MAX_RETRIES) {
         return {
           success: false,
-          error: result.error || 'Installation failed',
+          error: result.error ? vscode.l10n.t(result.error) : vscode.l10n.t('Installation failed'),
           errorCategory: category,
           errorDetails: result.error,
           retryable: ['network', 'timeout'].includes(category),
@@ -315,13 +315,13 @@ export class SetupManager {
       }
 
       console.log(`[Mysti] SetupManager: Attempt ${attempt} failed (${category}), retrying in ${INSTALL_RETRY_DELAY_MS / 1000}s...`);
-      onProgress?.('installing', `Attempt ${attempt} failed, retrying...`, 35);
+      onProgress?.('installing', vscode.l10n.t('Attempt {0} failed, retrying...', attempt), 35);
       await this._delay(INSTALL_RETRY_DELAY_MS);
     }
 
     return {
       success: false,
-      error: 'Installation failed after multiple attempts',
+      error: vscode.l10n.t('Installation failed after multiple attempts'),
       errorCategory: 'unknown',
       retryable: false
     };
@@ -388,12 +388,12 @@ export class SetupManager {
         success: false,
         installed: false,
         authenticated: false,
-        error: `Provider "${providerId}" not found`
+        error: vscode.l10n.t('Provider "{0}" not found', providerId)
       };
     }
 
     // Step 1: Check Node.js version
-    onProgress?.('checking', 'Checking system requirements...', 5);
+    onProgress?.('checking', vscode.l10n.t('Checking system requirements...'), 5);
     const nodeCheck = await this._checkNodeVersion();
     if (!nodeCheck.meets) {
       const suggestedFix = this._getSuggestedFix('version', provider.getInstallCommand());
@@ -401,19 +401,19 @@ export class SetupManager {
         success: false,
         installed: false,
         authenticated: false,
-        error: nodeCheck.error || `Node.js ${MIN_NODE_VERSION}+ required`,
+        error: nodeCheck.error || vscode.l10n.t('Node.js {0}+ required', MIN_NODE_VERSION),
         errorCategory: 'version',
         suggestedFix
       };
     }
 
     // Step 2: Check if already installed
-    onProgress?.('checking', 'Checking CLI installation...', 10);
+    onProgress?.('checking', vscode.l10n.t('Checking CLI installation...'), 10);
     const discovery = await provider.discoverCli();
 
     if (!discovery.found) {
       // Step 3: Try to auto-install
-      onProgress?.('installing', `Installing ${provider.displayName} CLI...`, 20);
+      onProgress?.('installing', vscode.l10n.t('Installing {0} CLI...', provider.displayName), 20);
       const installResult = await this.autoInstallCli(providerId, onProgress);
 
       if (!installResult.success) {
@@ -430,7 +430,7 @@ export class SetupManager {
     }
 
     // Step 4: Check authentication
-    onProgress?.('authenticating', 'Checking authentication...', 80);
+    onProgress?.('authenticating', vscode.l10n.t('Checking authentication...'), 80);
     const authStatus = await provider.checkAuthentication();
 
     if (!authStatus.authenticated) {
@@ -443,7 +443,7 @@ export class SetupManager {
       };
     }
 
-    onProgress?.('ready', `${provider.displayName} is ready!`, 100);
+    onProgress?.('ready', vscode.l10n.t('{0} is ready!', provider.displayName), 100);
     return {
       success: true,
       installed: true,
@@ -462,7 +462,7 @@ export class SetupManager {
     if (!provider) {
       return {
         success: false,
-        error: `Provider "${providerId}" not found`,
+        error: vscode.l10n.t('Provider "{0}" not found', providerId),
         errorCategory: 'unknown'
       };
     }
@@ -472,7 +472,7 @@ export class SetupManager {
       console.log(`[Mysti] SetupManager: Provider "${providerId}" does not support auto-install, requires manual setup`);
       return {
         success: false,
-        error: `${provider.displayName} requires interactive setup and cannot be installed automatically. Please use the manual installation instructions.`,
+        error: vscode.l10n.t('{0} requires interactive setup and cannot be installed automatically. Please use the manual installation instructions.', provider.displayName),
         requiresManual: true,
         errorCategory: 'command-failed'
       };
@@ -481,13 +481,13 @@ export class SetupManager {
     const installCommand = provider.getInstallCommand();
 
     // Check npm availability
-    onProgress?.('installing', 'Verifying npm availability...', 15);
+    onProgress?.('installing', vscode.l10n.t('Verifying npm availability...'), 15);
     const npmAvailable = await this.checkNpmAvailable();
     if (!npmAvailable) {
       const suggestedFix = this._getSuggestedFix('not-found', installCommand);
       return {
         success: false,
-        error: 'npm is not available. Install Node.js from nodejs.org or use nvm.',
+        error: vscode.l10n.t('npm is not available. Install Node.js from nodejs.org or use nvm.'),
         requiresManual: true,
         errorCategory: 'not-found',
         suggestedFix
@@ -495,13 +495,13 @@ export class SetupManager {
     }
 
     // Check network connectivity
-    onProgress?.('installing', 'Verifying network connectivity...', 20);
+    onProgress?.('installing', vscode.l10n.t('Verifying network connectivity...'), 20);
     const networkOk = await this.checkNetworkConnectivity();
     if (!networkOk) {
       const suggestedFix = this._getSuggestedFix('network', installCommand);
       return {
         success: false,
-        error: 'Cannot reach npm registry. Check your internet connection.',
+        error: vscode.l10n.t('Cannot reach npm registry. Check your internet connection.'),
         requiresManual: false,
         errorCategory: 'network',
         suggestedFix,
@@ -515,17 +515,17 @@ export class SetupManager {
       const useLoginShell = this._npmPath === 'npm' && !(await this._checkNpmDirect());
 
       // Pre-flight permission check: detect if npm global dir is writable BEFORE attempting install
-      onProgress?.('installing', 'Checking write permissions to npm global directory...', 25);
+      onProgress?.('installing', vscode.l10n.t('Checking write permissions to npm global directory...'), 25);
       const hasGlobalWriteAccess = await canWriteNpmGlobalDir();
 
       if (!hasGlobalWriteAccess) {
         // Skip global install entirely — go straight to local install (saves 2-120s)
         console.log('[Mysti] SetupManager: No write access to npm global directory, installing locally');
-        onProgress?.('installing', 'No global write permissions \u2014 installing to user directory (~/.mysti/cli)...', 30);
+        onProgress?.('installing', vscode.l10n.t('No global write permissions — installing to user directory (~/.mysti/cli)...'), 30);
 
         const localResult = await this._installToLocalPrefix(installCommand, useLoginShell);
         if (localResult.success) {
-          onProgress?.('installing', 'Verifying local installation...', 65);
+          onProgress?.('installing', vscode.l10n.t('Verifying local installation...'), 65);
 
           const localDiscovery = await provider.discoverCli();
           if (localDiscovery.found) {
@@ -537,7 +537,7 @@ export class SetupManager {
         const suggestedFix = this._getSuggestedFix('permission', installCommand);
         return {
           success: false,
-          error: 'No write permission to npm global directory and local install failed.',
+          error: vscode.l10n.t('No write permission to npm global directory and local install failed.'),
           requiresManual: true,
           errorCategory: 'permission',
           suggestedFix,
@@ -546,18 +546,18 @@ export class SetupManager {
       }
 
       // Has global write access — proceed with normal global install
-      onProgress?.('installing', `Installing globally: ${installCommand}`, 30);
+      onProgress?.('installing', vscode.l10n.t('Installing globally: {0}', installCommand), 30);
       const result = await this._retryableInstall(installCommand, useLoginShell, onProgress);
 
       if (!result.success) {
         // Permission error at runtime (edge case: pre-check passed but install still failed)
         if (result.errorCategory === 'permission') {
           console.log('[Mysti] SetupManager: Permission denied at runtime, trying user-local install...');
-          onProgress?.('installing', 'Permission issue detected \u2014 installing to user directory...', 50);
+          onProgress?.('installing', vscode.l10n.t('Permission issue detected — installing to user directory...'), 50);
 
           const localResult = await this._installToLocalPrefix(installCommand, useLoginShell);
           if (localResult.success) {
-            onProgress?.('installing', 'Verifying local installation...', 65);
+            onProgress?.('installing', vscode.l10n.t('Verifying local installation...'), 65);
 
             const localDiscovery = await provider.discoverCli();
             if (localDiscovery.found) {
@@ -575,26 +575,26 @@ export class SetupManager {
         return result;
       }
 
-      onProgress?.('installing', 'Verifying installation...', 70);
+      onProgress?.('installing', vscode.l10n.t('Verifying installation...'), 70);
 
       // Verify installation
       const discovery = await provider.discoverCli();
       if (!discovery.found) {
         return {
           success: false,
-          error: 'Installation completed but CLI not found. You may need to restart your terminal or VS Code.',
+          error: vscode.l10n.t('Installation completed but CLI not found. You may need to restart your terminal or VS Code.'),
           requiresManual: true,
           errorCategory: 'command-failed',
-          suggestedFix: 'Try restarting VS Code, or run the install command in a terminal and verify with: ' + installCommand.split(' ').pop() + ' --version'
+          suggestedFix: vscode.l10n.t('Try restarting VS Code, or run the install command in a terminal and verify with: {0} --version', installCommand.split(' ').pop() || '')
         };
       }
 
       return { success: true };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorMessage = error instanceof Error ? error.message : vscode.l10n.t('Unknown error');
       return {
         success: false,
-        error: `Installation failed: ${errorMessage}`,
+        error: vscode.l10n.t('Installation failed: {0}', errorMessage),
         requiresManual: true,
         errorCategory: 'unknown',
         suggestedFix: this._getSuggestedFix('unknown', installCommand)
@@ -660,7 +660,7 @@ export class SetupManager {
     if (!provider) {
       return {
         authenticated: false,
-        error: `Provider "${providerId}" not found`
+        error: vscode.l10n.t('Provider "{0}" not found', providerId)
       };
     }
 
@@ -668,7 +668,7 @@ export class SetupManager {
     console.log(`[Mysti] SetupManager: Running auth command: ${authCommand}`);
 
     const terminal = vscode.window.createTerminal({
-      name: `${provider.displayName} Authentication`,
+      name: vscode.l10n.t('{0} Authentication', provider.displayName),
       shellPath: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash'
     });
 
@@ -677,7 +677,7 @@ export class SetupManager {
 
     return {
       authenticated: false,
-      error: 'Please complete authentication in the terminal window'
+      error: vscode.l10n.t('Please complete authentication in the terminal window')
     };
   }
 
@@ -693,7 +693,7 @@ export class SetupManager {
     if (!provider) {
       return {
         authenticated: false,
-        error: `Provider "${providerId}" not found`
+        error: vscode.l10n.t('Provider "{0}" not found', providerId)
       };
     }
 
@@ -703,7 +703,7 @@ export class SetupManager {
       console.log('[Mysti] SetupManager: Set GOOGLE_GENAI_USE_GCA=true');
 
       const terminal = vscode.window.createTerminal({
-        name: 'Gemini GCA Setup',
+        name: vscode.l10n.t('Gemini GCA Setup'),
         shellPath: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash'
       });
       terminal.show();
@@ -764,41 +764,41 @@ export class SetupManager {
       'claude-code': {
         docsUrl: 'https://docs.anthropic.com/claude/docs/claude-code',
         authInstructions: [
-          'Run "claude auth login" in your terminal',
-          'A browser window will open for authentication',
-          'Sign in with your Anthropic account',
-          'Return to VS Code once complete'
+          vscode.l10n.t('Run "claude auth login" in your terminal'),
+          vscode.l10n.t('A browser window will open for authentication'),
+          vscode.l10n.t('Sign in with your Anthropic account'),
+          vscode.l10n.t('Return to VS Code once complete')
         ]
       },
       'openai-codex': {
         docsUrl: 'https://platform.openai.com/docs/guides/codex',
         authInstructions: [
-          'Option 1: Run "codex auth login" to sign in with ChatGPT account',
-          'Option 2: Set OPENAI_API_KEY environment variable',
-          'Requires ChatGPT Plus/Pro subscription or API credits'
+          vscode.l10n.t('Option 1: Run "codex auth login" to sign in with ChatGPT account'),
+          vscode.l10n.t('Option 2: Set OPENAI_API_KEY environment variable'),
+          vscode.l10n.t('Requires ChatGPT Plus/Pro subscription or API credits')
         ]
       },
       'google-gemini': {
         docsUrl: 'https://ai.google.dev/gemini-api/docs/aistudio-quickstart',
         authInstructions: [
-          'Option 1: Run "gemini" and sign in with your Google account',
-          'Option 2: Set GEMINI_API_KEY environment variable',
-          'Option 3: Set GOOGLE_GENAI_USE_GCA=true for Google Cloud subscribers'
+          vscode.l10n.t('Option 1: Run "gemini" and sign in with your Google account'),
+          vscode.l10n.t('Option 2: Set GEMINI_API_KEY environment variable'),
+          vscode.l10n.t('Option 3: Set GOOGLE_GENAI_USE_GCA=true for Google Cloud subscribers')
         ]
       },
       'cursor': {
         docsUrl: 'https://cursor.com/docs/cli/headless',
         authInstructions: [
-          'Option 1 (recommended): Run "agent login" to sign in with your Cursor account',
-          'Option 2: Set CURSOR_API_KEY in VS Code settings (mysti.cursorApiKey) or as environment variable',
-          'Get API keys at cursor.com/dashboard'
+          vscode.l10n.t('Option 1 (recommended): Run "agent login" to sign in with your Cursor account'),
+          vscode.l10n.t('Option 2: Set CURSOR_API_KEY in VS Code settings (mysti.cursorApiKey) or as environment variable'),
+          vscode.l10n.t('Get API keys at cursor.com/dashboard')
         ]
       }
     };
 
     const config = providerConfigs[providerId] || {
       docsUrl: undefined,
-      authInstructions: ['Run the authentication command shown above']
+      authInstructions: [vscode.l10n.t('Run the authentication command shown above')]
     };
 
     return {
@@ -817,22 +817,22 @@ export class SetupManager {
       return [
         {
           id: 'oauth',
-          label: 'Sign in with Google',
-          description: 'Use your Google account (recommended)',
+          label: vscode.l10n.t('Sign in with Google'),
+          description: vscode.l10n.t('Use your Google account (recommended)'),
           icon: '🔐',
           action: 'oauth'
         },
         {
           id: 'api-key',
-          label: 'API Key',
-          description: 'Use a Gemini API key from Google AI Studio',
+          label: vscode.l10n.t('API Key'),
+          description: vscode.l10n.t('Use a Gemini API key from Google AI Studio'),
           icon: '🔑',
           action: 'api-key'
         },
         {
           id: 'gca',
-          label: 'Google Cloud Auth (GCA)',
-          description: 'Use Application Default Credentials for Cloud subscribers',
+          label: vscode.l10n.t('Google Cloud Auth (GCA)'),
+          description: vscode.l10n.t('Use Application Default Credentials for Cloud subscribers'),
           icon: '☁️',
           action: 'gca'
         }
@@ -843,15 +843,15 @@ export class SetupManager {
       return [
         {
           id: 'oauth',
-          label: 'Sign in with ChatGPT',
-          description: 'Use your ChatGPT Plus/Pro account',
+          label: vscode.l10n.t('Sign in with ChatGPT'),
+          description: vscode.l10n.t('Use your ChatGPT Plus/Pro account'),
           icon: '🔐',
           action: 'oauth'
         },
         {
           id: 'api-key',
-          label: 'API Key',
-          description: 'Use an OpenAI API key',
+          label: vscode.l10n.t('API Key'),
+          description: vscode.l10n.t('Use an OpenAI API key'),
           icon: '🔑',
           action: 'api-key'
         }
@@ -862,15 +862,15 @@ export class SetupManager {
       return [
         {
           id: 'cli-login',
-          label: 'Sign in with Cursor',
-          description: 'Use your Cursor account (recommended)',
+          label: vscode.l10n.t('Sign in with Cursor'),
+          description: vscode.l10n.t('Use your Cursor account (recommended)'),
           icon: '🔷',
           action: 'cli-login'
         },
         {
           id: 'api-key',
-          label: 'API Key',
-          description: 'Use a Cursor API key from cursor.com/dashboard',
+          label: vscode.l10n.t('API Key'),
+          description: vscode.l10n.t('Use a Cursor API key from cursor.com/dashboard'),
           icon: '🔑',
           action: 'api-key'
         }
@@ -987,25 +987,25 @@ export class SetupManager {
     const recommendations: string[] = [];
 
     if (!nodeCheck.meets) {
-      recommendations.push(`Install Node.js ${MIN_NODE_VERSION}+ from nodejs.org`);
+      recommendations.push(vscode.l10n.t('Install Node.js {0}+ from nodejs.org', MIN_NODE_VERSION));
     }
     if (!npmAvailable) {
-      recommendations.push('Install npm (comes with Node.js from nodejs.org)');
+      recommendations.push(vscode.l10n.t('Install npm (comes with Node.js from nodejs.org)'));
     }
     if (npmAvailable && !npmWritable) {
-      recommendations.push('Fix npm permissions: npm config set prefix ~/.npm-global');
+      recommendations.push(vscode.l10n.t('Fix npm permissions: npm config set prefix ~/.npm-global'));
     }
     if (!networkReachable) {
-      recommendations.push('Check internet connection - cannot reach npm registry');
+      recommendations.push(vscode.l10n.t('Check internet connection - cannot reach npm registry'));
     }
     if (providers.every(p => !p.installed)) {
-      recommendations.push('No CLI providers installed. Install at least one to get started.');
+      recommendations.push(vscode.l10n.t('No CLI providers installed. Install at least one to get started.'));
     }
     if (providers.some(p => p.installed && !p.authenticated)) {
       const unauthenticated = providers
         .filter(p => p.installed && !p.authenticated)
         .map(p => p.displayName);
-      recommendations.push(`Authenticate: ${unauthenticated.join(', ')}`);
+      recommendations.push(vscode.l10n.t('Authenticate: {0}', unauthenticated.join(', ')));
     }
 
     return {
@@ -1076,7 +1076,7 @@ export class SetupManager {
         proc.kill();
         resolve({
           success: false,
-          error: 'Command timed out',
+          error: vscode.l10n.t('Command timed out'),
           exitCode: undefined
         });
       }, timeout);

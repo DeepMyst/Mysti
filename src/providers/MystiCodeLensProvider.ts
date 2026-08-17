@@ -79,19 +79,19 @@ export class MystiCodeLensProvider implements vscode.CodeLensProvider {
 
           // Three branded CodeLens items
           lenses.push(new vscode.CodeLens(range, {
-            title: 'Mysti: Explain',
+            title: vscode.l10n.t('Mysti: Explain'),
             command: 'mysti.codeLensAction',
             arguments: ['explain', functionCode, filePath, functionName]
           }));
 
           lenses.push(new vscode.CodeLens(range, {
-            title: 'Mysti: Refactor',
+            title: vscode.l10n.t('Mysti: Refactor'),
             command: 'mysti.codeLensAction',
             arguments: ['refactor', functionCode, filePath, functionName]
           }));
 
           lenses.push(new vscode.CodeLens(range, {
-            title: 'Mysti: Write Tests',
+            title: vscode.l10n.t('Mysti: Write Tests'),
             command: 'mysti.codeLensAction',
             arguments: ['test', functionCode, filePath, functionName]
           }));

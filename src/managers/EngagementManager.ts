@@ -670,6 +670,8 @@ export class EngagementManager {
 
       return {
         ...badge,
+        name: vscode.l10n.t(badge.name),
+        description: vscode.l10n.t(badge.description),
         unlocked,
         unlockedAt: unlocked ? unlockedAt : undefined,
         progress: progressInfo?.current,
@@ -684,39 +686,39 @@ export class EngagementManager {
     switch (c.type) {
       case 'counter': {
         const labels: Record<string, string> = {
-          totalMessages: 'Send ' + c.threshold + ' messages',
-          totalConversations: 'Start ' + c.threshold + ' conversations',
-          totalBrainstorms: 'Run ' + c.threshold + ' brainstorm sessions',
-          totalSlashCommands: 'Use slash commands ' + c.threshold + ' times',
-          totalAutonomousSessions: 'Complete ' + c.threshold + ' autonomous sessions',
-          totalExports: 'Export ' + c.threshold + ' conversations',
-          totalDaysUsed: 'Use Mysti for ' + c.threshold + ' days',
-          totalShareClicks: 'Share ' + c.threshold + ' times',
-          totalCommitsWithSignature: 'Make ' + c.threshold + ' commit' + (c.threshold > 1 ? 's' : '') + ' with Mysti signature',
-          totalSharedConversations: 'Share ' + c.threshold + ' conversations via deep link',
+          totalMessages: vscode.l10n.t('Send {0} messages', c.threshold),
+          totalConversations: vscode.l10n.t('Start {0} conversations', c.threshold),
+          totalBrainstorms: vscode.l10n.t('Run {0} brainstorm sessions', c.threshold),
+          totalSlashCommands: vscode.l10n.t('Use slash commands {0} times', c.threshold),
+          totalAutonomousSessions: vscode.l10n.t('Complete {0} autonomous sessions', c.threshold),
+          totalExports: vscode.l10n.t('Export {0} conversations', c.threshold),
+          totalDaysUsed: vscode.l10n.t('Use Mysti for {0} days', c.threshold),
+          totalShareClicks: vscode.l10n.t('Share {0} times', c.threshold),
+          totalCommitsWithSignature: vscode.l10n.t('Make {0} commits with Mysti signature', c.threshold),
+          totalSharedConversations: vscode.l10n.t('Share {0} conversations via deep link', c.threshold),
         };
-        return labels[c.key] || badge.description;
+        return labels[c.key] || vscode.l10n.t(badge.description);
       }
       case 'set': {
         const labels: Record<string, string> = {
-          providersUsed: 'Try ' + c.minSize + ' different AI providers',
-          strategiesUsed: 'Try all ' + c.minSize + ' collaboration strategies',
-          personasUsed: 'Try ' + c.minSize + ' different personas',
-          skillsUsed: 'Activate ' + c.minSize + ' different skills',
-          personaCategoriesUsed: 'Try all ' + c.minSize + ' persona categories',
+          providersUsed: vscode.l10n.t('Try {0} different AI providers', c.minSize),
+          strategiesUsed: vscode.l10n.t('Try all {0} collaboration strategies', c.minSize),
+          personasUsed: vscode.l10n.t('Try {0} different personas', c.minSize),
+          skillsUsed: vscode.l10n.t('Activate {0} different skills', c.minSize),
+          personaCategoriesUsed: vscode.l10n.t('Try all {0} persona categories', c.minSize),
         };
-        return labels[c.key] || badge.description;
+        return labels[c.key] || vscode.l10n.t(badge.description);
       }
       case 'streak':
-        return 'Maintain a ' + c.days + '-day usage streak';
+        return vscode.l10n.t('Maintain a {0}-day usage streak', c.days);
       case 'composite':
-        return 'Unlock all required badges: Star, Review, and Share';
+        return vscode.l10n.t('Unlock all required badges: Star, Review, and Share');
       case 'file-exists':
-        return 'Create a custom file in your .mysti/ directory';
+        return vscode.l10n.t('Create a custom file in your .mysti/ directory');
       case 'manual':
-        return badge.description;
+        return vscode.l10n.t(badge.description);
       default:
-        return badge.description;
+        return vscode.l10n.t(badge.description);
     }
   }
 
@@ -738,9 +740,12 @@ export class EngagementManager {
     if (!badge) {
       return '';
     }
-    return (
-      `I've been Mysting and just earned the ${badge.tier} ${badge.name} badge ` +
-      `\u2014 ${badge.description}! #Mysting ${MARKETPLACE_URL}`
+    return vscode.l10n.t(
+      "I've been Mysting and just earned the {0} {1} badge — {2}! #Mysting {3}",
+      vscode.l10n.t(badge.tier),
+      vscode.l10n.t(badge.name),
+      vscode.l10n.t(badge.description),
+      MARKETPLACE_URL
     );
   }
 
@@ -1035,17 +1040,19 @@ export class EngagementManager {
       `[Mysti] EngagementManager: Showing review prompt at ${milestone} responses`
     );
 
+    const rate = vscode.l10n.t('Rate on Marketplace');
+    const dontAskAgain = vscode.l10n.t("Don't Ask Again");
     const selection = await vscode.window.showInformationMessage(
-      `You've received ${milestone} AI responses with Mysti! If you're enjoying it, would you consider leaving a review?`,
-      'Rate on Marketplace',
-      'Remind Me Later',
-      "Don't Ask Again"
+      vscode.l10n.t("You've received {0} AI responses with Mysti! If you're enjoying it, would you consider leaving a review?", milestone),
+      rate,
+      vscode.l10n.t('Remind Me Later'),
+      dontAskAgain
     );
 
-    if (selection === 'Rate on Marketplace') {
+    if (selection === rate) {
       vscode.env.openExternal(vscode.Uri.parse(MARKETPLACE_URL));
       this.markReviewed();
-    } else if (selection === "Don't Ask Again") {
+    } else if (selection === dontAskAgain) {
       this.markReviewDismissed(true);
     } else {
       // "Remind Me Later" or dismissed

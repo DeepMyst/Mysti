@@ -75,7 +75,7 @@ export class MystiFileDecorationProvider implements vscode.FileDecorationProvide
     return {
       badge: 'M',
       color: new vscode.ThemeColor('mysti.fileDecorationForeground'),
-      tooltip: `Modified with Mysti (${record.provider}) \u2014 ${ago}`,
+      tooltip: vscode.l10n.t('Modified with Mysti ({0}) — {1}', record.provider, ago),
     };
   }
 
@@ -88,12 +88,12 @@ export class MystiFileDecorationProvider implements vscode.FileDecorationProvide
 
   private _formatTimeAgo(ms: number): string {
     const minutes = Math.floor(ms / 60_000);
-    if (minutes < 1) { return 'just now'; }
-    if (minutes < 60) { return `${minutes}m ago`; }
+    if (minutes < 1) { return vscode.l10n.t('just now'); }
+    if (minutes < 60) { return vscode.l10n.t('{0}m ago', minutes); }
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) { return `${hours}h ago`; }
+    if (hours < 24) { return vscode.l10n.t('{0}h ago', hours); }
     const days = Math.floor(hours / 24);
-    return `${days}d ago`;
+    return vscode.l10n.t('{0}d ago', days);
   }
 
   dispose(): void {

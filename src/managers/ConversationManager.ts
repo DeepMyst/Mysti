@@ -52,7 +52,7 @@ export class ConversationManager {
 
     const conversation: Conversation = {
       id: this._generateId(),
-      title: 'New Conversation',
+      title: vscode.l10n.t('New Conversation'),
       messages: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -462,7 +462,7 @@ export class ConversationManager {
 
     const conversation: Conversation = {
       id: this._generateId(),
-      title: 'Imported Conversation',
+      title: vscode.l10n.t('Imported Conversation'),
       messages,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -575,7 +575,7 @@ export class ConversationManager {
 
     const conversation: Conversation = {
       id: this._generateId(),
-      title: 'Imported Conversation',
+      title: vscode.l10n.t('Imported Conversation'),
       messages,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -618,7 +618,7 @@ export class ConversationManager {
       });
     } catch (error) {
       console.error('[Mysti] Failed to save conversations:', error);
-      vscode.window.showErrorMessage('Failed to save conversation history');
+      vscode.window.showErrorMessage(vscode.l10n.t('Failed to save conversation history'));
       throw error; // Re-throw to let callers know save failed
     }
   }

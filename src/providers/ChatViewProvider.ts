@@ -858,7 +858,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           });
           this._postToPanel(panelId, {
             type: 'sessionCleared',
-            payload: { message: 'Session cleared' }
+            payload: { message: vscode.l10n.t('Session cleared') }
           });
         }
         break;
@@ -876,7 +876,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (panelId) {
             this._postToPanel(panelId, {
               type: 'sessionCleared',
-              payload: { message: 'Session cleared' }
+              payload: { message: vscode.l10n.t('Session cleared') }
             });
           }
         }
@@ -903,7 +903,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this._providerManager.clearSession(panelId);
             this._postToPanel(panelId, {
               type: 'sessionCleared',
-              payload: { message: 'Agent session shut down' }
+              payload: { message: vscode.l10n.t('Agent session shut down') }
             });
           }
         }
@@ -931,7 +931,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 beforeTokens: 0,
                 contextWindow,
                 threshold: this._compactionManager.getThreshold(),
-                error: 'Not enough conversation history to compact',
+                error: vscode.l10n.t('Not enough conversation history to compact'),
               } as CompactionEvent,
             });
             break;
@@ -1140,7 +1140,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Handle both object payload (providerId + command) and string payload (auth command)
           const terminalPayload = msg.payload;
           if (typeof terminalPayload === 'string') {
-            const terminal = vscode.window.createTerminal('Authenticate Provider');
+            const terminal = vscode.window.createTerminal(vscode.l10n.t('Authenticate Provider'));
             terminal.show();
             terminal.sendText(terminalPayload);
           } else {
@@ -1549,7 +1549,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             } else {
               this._postToPanel(exportPanelId, {
                 type: 'exportResult',
-                payload: { success: false, error: 'Conversation not found' }
+                payload: { success: false, error: vscode.l10n.t('Conversation not found') }
               });
             }
           }
@@ -1577,7 +1577,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             } else {
               this._postToPanel(copyMsgPanelId, {
                 type: 'exportResult',
-                payload: { success: false, error: 'Message not found' }
+                payload: { success: false, error: vscode.l10n.t('Message not found') }
               });
             }
           }
@@ -1600,8 +1600,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (content) {
               const uri = await vscode.window.showSaveDialog({
                 filters: isMarkdown
-                  ? { 'Markdown': ['md'] }
-                  : { 'Mysti JSON': ['mysti.json'], 'JSON': ['json'] },
+                  ? { [vscode.l10n.t('Markdown')]: ['md'] }
+                  : { [vscode.l10n.t('Mysti JSON')]: ['mysti.json'], [vscode.l10n.t('JSON')]: ['json'] },
                 defaultUri: vscode.Uri.file(`conversation.${isMarkdown ? 'md' : 'mysti.json'}`)
               });
               if (uri) {
@@ -1625,7 +1625,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             canSelectFiles: true,
             canSelectMany: false,
             filters: {
-              'Conversation Files': ['mysti.json', 'json', 'jsonl', 'md']
+              [vscode.l10n.t('Conversation Files')]: ['mysti.json', 'json', 'jsonl', 'md']
             }
           });
           if (uris && uris.length > 0) {
@@ -1644,7 +1644,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               });
               console.log(`[Mysti] Conversation imported from: ${fileName}`);
             } else {
-              vscode.window.showErrorMessage('Failed to import conversation: unrecognized format');
+              vscode.window.showErrorMessage(vscode.l10n.t('Failed to import conversation: unrecognized format'));
             }
           }
         }
@@ -1663,10 +1663,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // Too long for a URI — fall back to clipboard with JSON
                 const json = this._conversationManager.exportToJson(shareConvId);
                 await vscode.env.clipboard.writeText(json);
-                vscode.window.showInformationMessage('Conversation too long for a deep link — full JSON copied to clipboard instead.');
+                vscode.window.showInformationMessage(vscode.l10n.t('Conversation too long for a deep link — full JSON copied to clipboard instead.'));
               } else {
                 await vscode.env.clipboard.writeText(uri);
-                vscode.window.showInformationMessage('Share link copied to clipboard!');
+                vscode.window.showInformationMessage(vscode.l10n.t('Share link copied to clipboard!'));
               }
               this._emitBadgeUnlocks(sharePanelId, this._engagementManager.trackConversationShared());
               console.log('[Mysti] Share link generated');
@@ -1702,7 +1702,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _initTeamWorkspace(_panelId: string): Promise<void> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
-      vscode.window.showWarningMessage('No workspace folder open. Open a project first.');
+      vscode.window.showWarningMessage(vscode.l10n.t('No workspace folder open. Open a project first.'));
       return;
     }
 
@@ -1796,7 +1796,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._emitBadgeUnlocks(_panelId, this._engagementManager.trackWorkspaceRecommendation());
     this._emitBadgeUnlocks(_panelId, this._engagementManager.trackTeamInitialized());
     vscode.window.showInformationMessage(
-      'Project configured for Mysti. Created .mysti/, mysti.md, and rules/ — commit these so collaborators can discover Mysti.'
+      vscode.l10n.t('Project configured for Mysti. Created .mysti/, mysti.md, and rules/ — commit these so collaborators can discover Mysti.')
     );
     console.log('[Mysti] Team workspace initialized with mysti.md + rules');
   }
@@ -1814,7 +1814,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       const retryPath = this._memoryManager.getProjectMemoryPath();
       if (!retryPath) {
-        vscode.window.showWarningMessage('No workspace folder open.');
+        vscode.window.showWarningMessage(vscode.l10n.t('No workspace folder open.'));
         return;
       }
       // Create default MEMORY.md
@@ -1843,7 +1843,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _openProjectRules(): Promise<void> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
-      vscode.window.showWarningMessage('No workspace folder open.');
+      vscode.window.showWarningMessage(vscode.l10n.t('No workspace folder open.'));
       return;
     }
 
@@ -1946,7 +1946,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (event.isNew) {
         this._postToPanel(panelId, {
           type: 'badgeUnlocked',
-          payload: event.badge
+          payload: {
+            ...event.badge,
+            name: vscode.l10n.t(event.badge.name),
+            description: vscode.l10n.t(event.badge.description)
+          }
         });
       }
     }
@@ -2044,7 +2048,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
 
-      vscode.window.showInformationMessage(`Reverted changes to ${payload.path}`);
+      vscode.window.showInformationMessage(vscode.l10n.t('Reverted changes to {0}', payload.path));
     } catch (error) {
       if (panelId) {
         this._postToPanel(panelId, {
@@ -2057,7 +2061,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
 
-      vscode.window.showErrorMessage(`Failed to revert ${payload.path}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      vscode.window.showErrorMessage(vscode.l10n.t('Failed to revert {0}: {1}', payload.path, error instanceof Error ? error.message : vscode.l10n.t('Unknown error')));
     }
   }
 
@@ -2340,7 +2344,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           });
           this._postToPanel(panelId, {
             type: 'mentionWarning',
-            payload: { message: `Too many @-mentions (${agentMentionCount}). Only the first ${MAX_MENTIONS_PER_MESSAGE} agent mentions will be processed.` }
+            payload: { message: vscode.l10n.t('Too many @-mentions ({0}). Only the first {1} agent mentions will be processed.', agentMentionCount, MAX_MENTIONS_PER_MESSAGE) }
           });
         }
         console.log(`[Mysti] ⏱️ Starting mention processing at ${Date.now() - _t0}ms`);
@@ -3624,8 +3628,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _handleRequestFileAttachment(panelId?: string) {
     const fileUris = await vscode.window.showOpenDialog({
       canSelectMany: true,
-      openLabel: 'Attach',
-      title: 'Select files to attach'
+      openLabel: vscode.l10n.t('Attach'),
+      title: vscode.l10n.t('Select files to attach')
     });
 
     if (!fileUris || fileUris.length === 0) {
@@ -3863,16 +3867,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     payload: { action: string; details: string },
     panelId?: string
   ) {
+    const allow = vscode.l10n.t('Allow');
     const result = await vscode.window.showInformationMessage(
-      `Mysti wants to ${payload.action}: ${payload.details}`,
+      vscode.l10n.t('Mysti wants to {0}: {1}', payload.action, payload.details),
       { modal: true },
-      'Allow',
-      'Deny'
+      allow,
+      vscode.l10n.t('Deny')
     );
     if (panelId) {
       this._postToPanel(panelId, {
         type: 'permissionResult',
-        payload: { action: payload.action, allowed: result === 'Allow' }
+        payload: { action: payload.action, allowed: result === allow }
       });
     }
   }
@@ -4635,37 +4640,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return [
       {
         id: 'explain',
-        label: 'Explain this code',
+        label: vscode.l10n.t('Explain this code'),
         prompt: 'Explain the selected code in detail',
         icon: 'info'
       },
       {
         id: 'refactor',
-        label: 'Refactor',
+        label: vscode.l10n.t('Refactor'),
         prompt: 'Suggest refactoring improvements for this code',
         icon: 'wrench'
       },
       {
         id: 'fix-bugs',
-        label: 'Find bugs',
+        label: vscode.l10n.t('Find bugs'),
         prompt: 'Find potential bugs in this code',
         icon: 'bug'
       },
       {
         id: 'add-tests',
-        label: 'Add tests',
+        label: vscode.l10n.t('Add tests'),
         prompt: 'Generate unit tests for this code',
         icon: 'beaker'
       },
       {
         id: 'optimize',
-        label: 'Optimize',
+        label: vscode.l10n.t('Optimize'),
         prompt: 'Suggest performance optimizations',
         icon: 'zap'
       },
       {
         id: 'document',
-        label: 'Add docs',
+        label: vscode.l10n.t('Add docs'),
         prompt: 'Add documentation and comments to this code',
         icon: 'book'
       }
@@ -4843,7 +4848,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: {
           providerId,
           displayName: provider?.displayName || providerId,
-          message: `To use ${provider?.displayName || providerId}, you need to sign in. This will open your browser.`
+          message: vscode.l10n.t('To use {0}, you need to sign in. This will open your browser.', provider?.displayName || providerId)
         }
       });
     } else {
@@ -4852,7 +4857,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'setupFailed',
         payload: {
           providerId,
-          error: result.error || 'Setup failed',
+          error: result.error ? vscode.l10n.t(result.error) : vscode.l10n.t('Setup failed'),
           canRetry: true,
           requiresManual: result.requiresManualStep === 'install'
         }
@@ -4878,7 +4883,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'setupFailed',
         payload: {
           providerId,
-          error: `Provider "${providerId}" not found`,
+          error: vscode.l10n.t('Provider "{0}" not found', providerId),
           canRetry: true,
           requiresManual: true
         }
@@ -4893,7 +4898,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'setupFailed',
         payload: {
           providerId,
-          error: 'CLI is not installed. Please install it first before authenticating.',
+          error: vscode.l10n.t('CLI is not installed. Please install it first before authenticating.'),
           canRetry: true,
           requiresManual: true
         }
@@ -4906,7 +4911,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       payload: {
         step: 'authenticating',
         providerId,
-        message: 'Opening authentication...',
+        message: vscode.l10n.t('Opening authentication...'),
         progress: 80
       }
     });
@@ -4948,7 +4953,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           type: 'setupFailed',
           payload: {
             providerId,
-            error: 'Authentication timed out. Please try again.',
+            error: vscode.l10n.t('Authentication timed out. Please try again.'),
             canRetry: true
           }
         });
@@ -4980,7 +4985,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'setupFailed',
         payload: {
           providerId,
-          error: 'Authentication skipped. You can configure providers manually in settings.',
+          error: vscode.l10n.t('Authentication skipped. You can configure providers manually in settings.'),
           canRetry: true,
           requiresManual: true
         }
@@ -5027,7 +5032,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         providerId,
         step: 'checking',
         progress: 5,
-        message: 'Checking current status...'
+        message: vscode.l10n.t('Checking current status...')
       }
     });
 
@@ -5039,7 +5044,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           providerId,
           step: 'failed',
           progress: 0,
-          message: `Provider "${providerId}" not found`
+          message: vscode.l10n.t('Provider "{0}" not found', providerId)
         }
       });
       return;
@@ -5057,7 +5062,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             providerId,
             step: 'downloading',
             progress: 15,
-            message: 'Checking system requirements and permissions...'
+            message: vscode.l10n.t('Checking system requirements and permissions...')
           }
         });
 
@@ -5067,7 +5072,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             providerId,
             step: 'installing',
             progress: 30,
-            message: `Installing ${provider.displayName} CLI...`
+            message: vscode.l10n.t('Installing {0} CLI...', provider.displayName)
           }
         });
 
@@ -5081,7 +5086,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             methods.forEach(m => alternativeCommands.push({ label: m.label, command: m.command }));
           }
           if (alternativeCommands.length === 0) {
-            alternativeCommands.push({ label: 'Manual install', command: provider.getInstallCommand() });
+            alternativeCommands.push({ label: vscode.l10n.t('Manual install'), command: provider.getInstallCommand() });
           }
 
           this._postToPanel(panelId, {
@@ -5090,8 +5095,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               providerId,
               step: 'failed',
               progress: 0,
-              message: installResult.error || 'Installation failed',
-              details: `Run: ${provider.getInstallCommand()}`,
+              message: installResult.error ? vscode.l10n.t(installResult.error) : vscode.l10n.t('Installation failed'),
+              details: vscode.l10n.t('Run: {0}', provider.getInstallCommand()),
               errorCategory: installResult.errorCategory,
               suggestedFix: installResult.suggestedFix,
               retryable: installResult.retryable !== false,
@@ -5107,7 +5112,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             providerId,
             step: 'verifying',
             progress: 60,
-            message: 'Verifying installation...'
+            message: vscode.l10n.t('Verifying installation...')
           }
         });
       } else {
@@ -5118,7 +5123,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             providerId,
             step: 'failed',
             progress: 0,
-            message: 'CLI not installed',
+            message: vscode.l10n.t('CLI not installed'),
             details: `Run: ${provider.getInstallCommand()}`
           }
         });
@@ -5133,7 +5138,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         providerId,
         step: 'verifying',
         progress: 70,
-        message: 'Checking authentication...'
+        message: vscode.l10n.t('Checking authentication...')
       }
     });
 
@@ -5160,7 +5165,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           payload: {
             providerId,
             displayName: provider.displayName,
-            message: `Sign in to ${provider.displayName} to continue`
+            message: vscode.l10n.t('Sign in to {0} to continue', provider.displayName)
           }
         });
       }
@@ -5174,7 +5179,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         providerId,
         step: 'complete',
         progress: 100,
-        message: 'Ready to use!',
+        message: vscode.l10n.t('Ready to use!'),
         details: authStatus.user
       }
     });
@@ -5202,7 +5207,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         providerId,
         step: 'authenticating',
         progress: 80,
-        message: 'Authenticating...'
+        message: vscode.l10n.t('Authenticating...')
       }
     });
 
@@ -5219,7 +5224,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           providerId,
           step: 'complete',
           progress: 100,
-          message: 'Authentication successful!',
+          message: vscode.l10n.t('Authentication successful!'),
           details: result.user
         }
       });
@@ -5354,11 +5359,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     const terminal = vscode.window.createTerminal({
-      name: `Install ${payload.providerId}`,
+      name: vscode.l10n.t('Install {0}', payload.providerId),
       shellPath: process.platform === 'win32' ? undefined : process.env.SHELL
     });
     terminal.show();
-    terminal.sendText(`# Run this command to install ${payload.providerId}:`);
+    terminal.sendText(`# ${vscode.l10n.t('Run this command to install {0}:', payload.providerId)}`);
     terminal.sendText(payload.command);
     console.log(`[Mysti] ChatViewProvider: Opened terminal for ${payload.providerId}`);
   }
@@ -5406,7 +5411,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       payload: {
         step: 'checking',
         providerId: 'claude-code',
-        message: 'DEBUG: Simulating setup flow...',
+        message: vscode.l10n.t('DEBUG: Simulating setup flow...'),
         progress: 10
       }
     });
@@ -5418,7 +5423,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: {
           step: 'installing',
           providerId: 'claude-code',
-          message: 'DEBUG: Simulating installation...',
+          message: vscode.l10n.t('DEBUG: Simulating installation...'),
           progress: 40
         }
       });
@@ -5430,7 +5435,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: {
           providerId: 'claude-code',
           displayName: 'Claude Code',
-          message: 'DEBUG: This is a test auth prompt. Click Sign In or Later to test the flow.'
+          message: vscode.l10n.t('DEBUG: This is a test auth prompt. Click Sign In or Later to test the flow.')
         }
       });
     }, 2500);
@@ -5444,7 +5449,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: 'setupFailed',
       payload: {
         providerId: 'claude-code',
-        error: 'DEBUG: Simulated failure - npm not available on your system.',
+        error: vscode.l10n.t('DEBUG: Simulated failure - npm not available on your system.'),
         canRetry: true,
         requiresManual: true
       }
