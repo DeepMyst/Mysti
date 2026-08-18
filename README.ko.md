@@ -582,8 +582,8 @@ Mysti가 도움이 되셨다면 Star를 눌러주세요 — 다른 분들이 프
 </p>
 
 <p align="center">
-  <a href="https://star-history.com/#DeepMyst/Mysti&Date">
-    <img src="https://api.star-history.com/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="Star 히스토리 차트" />
+  <a href="https://star-history.dera.page/#DeepMyst/Mysti&Date">
+    <img src="https://star-history.dera.page/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="Star 히스토리 차트" />
   </a>
 </p>
 

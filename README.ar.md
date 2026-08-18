@@ -584,8 +584,8 @@ qwen  # ثم اكتب /auth
 </p>
 
 <p align="center">
-  <a href="https://star-history.com/#DeepMyst/Mysti&Date">
-    <img src="https://api.star-history.com/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="مخطط سجل النجوم" />
+  <a href="https://star-history.dera.page/#DeepMyst/Mysti&Date">
+    <img src="https://star-history.dera.page/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="مخطط سجل النجوم" />
   </a>
 </p>
 
