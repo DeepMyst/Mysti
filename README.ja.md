@@ -582,8 +582,8 @@ Mystiがお役に立ちましたら、ぜひStarをお願いします — プロ
 </p>
 
 <p align="center">
-  <a href="https://star-history.com/#DeepMyst/Mysti&Date">
-    <img src="https://api.star-history.com/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="Star履歴チャート" />
+  <a href="https://star-history.dera.page/#DeepMyst/Mysti&Date">
+    <img src="https://star-history.dera.page/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="Star履歴チャート" />
   </a>
 </p>
 

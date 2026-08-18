@@ -591,8 +591,8 @@ If Mysti has been useful to you, consider giving it a star — it helps others d
 </p>
 
 <p align="center">
-  <a href="https://star-history.com/#DeepMyst/Mysti&Date">
-    <img src="https://api.star-history.com/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="Star History Chart" />
+  <a href="https://star-history.dera.page/#DeepMyst/Mysti&Date">
+    <img src="https://star-history.dera.page/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="Star History Chart" />
   </a>
 </p>
 
