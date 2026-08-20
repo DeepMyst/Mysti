@@ -40,7 +40,7 @@
  *     text rather than silently swallowing the coordinator's output.
  */
 
-export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool' | 'look' | 'act' | 'canvas' | 'canvaspage';
+export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool' | 'findtool' | 'look' | 'act' | 'canvas' | 'canvaspage';
 
 export type ModelTier = 'fast' | 'strong';
 
@@ -67,6 +67,9 @@ export type MystiDirective =
   // (Gmail/Slack/Trello/…). GATED like exec: an un-undoable network side effect,
   // always user-approved. `args` is untrusted model JSON (may be {} on parse fail).
   | { kind: 'mcptool'; tool: string; args: Record<string, unknown> }
+  // Plan 20 Phase 5 — look up the argument schema of a CONNECTED external
+  // tool. READ-ONLY: searches already-connected metadata, calls nothing.
+  | { kind: 'findtool'; query: string }
   // Agent-callable visual observation. `look` renders the running app in a real
   // browser and returns a deterministic digest (console, failed requests, layout
   // probes, a11y tree, DOM outline, screenshot). It is a READ: it never writes a
@@ -124,7 +127,15 @@ export const MYSTI_CONNECT_KINDS: MystiDirectiveKind[] = ['connect'];
  * succeeded. GATED (every call is user-approved); when off the tag degrades to
  * visible text, so the capability simply does not exist.
  */
-export const MYSTI_MCP_KINDS: MystiDirectiveKind[] = ['mcptool'];
+export const MYSTI_MCP_KINDS: MystiDirectiveKind[] = ['mcptool', 'findtool'];
+
+/**
+ * The READ-ONLY member of MYSTI_MCP_KINDS. `findtool` only searches metadata
+ * for tools the user already connected, so it is never gated — gating
+ * discovery would just teach the model to skip it and guess arguments, which
+ * is the failure it exists to remove.
+ */
+export const MYSTI_MCP_READONLY_KINDS: MystiDirectiveKind[] = ['findtool'];
 
 /**
  * Visual observation kinds. `look` is a read (it renders and reports); `act`
@@ -193,6 +204,8 @@ export class MystiTagScanner {
         return new RegExp(`^<grep:${esc}(?:\\s+path\\s*=\\s*"([^"]+)")?\\s*>([\\s\\S]*?)<\\/grep>$`);
       case 'diag':
         return new RegExp(`^<diag:${esc}\\s*>([\\s\\S]*?)<\\/diag>$`);
+      case 'findtool':
+        return new RegExp(`^<findtool:${esc}\\s*>([\\s\\S]*?)<\\/findtool>$`);
       case 'remember':
         return new RegExp(`^<remember:${esc}\\s*>([\\s\\S]*?)<\\/remember>$`);
       case 'write':
@@ -460,6 +473,10 @@ export class MystiTagScanner {
       case 'diag': {
         const target = m[1].trim();
         return { kind: 'diag', target: target || 'all' };
+      }
+      case 'findtool': {
+        const query = m[1].trim();
+        return query ? { kind: 'findtool', query } : null;
       }
       case 'remember': {
         const fact = m[1].trim();

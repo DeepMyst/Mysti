@@ -52,6 +52,21 @@ const EXEC_TOOLS: CoordinatorTool[] = [
   { type: 'function', function: { name: 'bash', description: 'Run ONE shell command in an OS sandbox (no network, writes limited to the workspace). No chaining.', parameters: { type: 'object', properties: { command: str('a single shell command') }, required: ['command'] } } },
 ];
 
+/**
+ * `findtool` — look up the exact argument schema of a connected external tool
+ * (Plan 20 Phase 5). READ-ONLY: it searches metadata the user already connected
+ * and calls nothing, so it needs no gate. Gating discovery would only teach the
+ * model to skip it and guess, which is the failure this exists to remove.
+ */
+const FINDTOOL_TOOL: CoordinatorTool = {
+  type: 'function',
+  function: {
+    name: 'findtool',
+    description: 'Look up the exact arguments of one of the user\'s connected external tools before calling it. Use this whenever you are unsure what arguments a tool takes — guessing wastes a call the user has to approve.',
+    parameters: { type: 'object', properties: { query: str('what you want the tool to do, e.g. "send an email"') }, required: ['query'] },
+  },
+};
+
 /** A `connect` tool — offered when DeepMyst is wired (Plan 19 Phase 6). SAFE. */
 const CONNECT_TOOL: CoordinatorTool = {
   type: 'function',
@@ -321,6 +336,179 @@ function missingRequiredArgs(schema: Record<string, unknown>, args: Record<strin
 export type CanvasToolDirective = Extract<MystiDirective, { kind: 'canvas' }>;
 
 /**
+ * A connected external MCP tool as the coordinator sees it.
+ *
+ * `inputSchema` is what `McpClient.listTools()` already returns and what the
+ * coordinator used to throw away — the reason the model had to GUESS argument
+ * names for every connected tool (Plan 20 Phase 5).
+ */
+export interface McpToolInfo {
+  name: string;
+  description?: string;
+  /** Sanitized JSON-Schema subset. Absent when the server supplied none. */
+  inputSchema?: Record<string, unknown>;
+}
+
+/** Keywords worth keeping from an untrusted third-party JSON Schema. */
+const SCHEMA_KEYWORDS = new Set(['type', 'properties', 'required', 'description', 'enum', 'items', 'additionalProperties', 'default', 'format']);
+const SCHEMA_MAX_DEPTH = 4;
+const SCHEMA_MAX_PROPS = 30;
+const SCHEMA_MAX_DESC = 200;
+
+/**
+ * Reduce an untrusted MCP `inputSchema` to a bounded, informational subset.
+ *
+ * Three things make this necessary. The schema comes from a third-party server,
+ * so it is untrusted input that lands in the model's tool definitions — a tier
+ * that cannot be fenced. It can be arbitrarily deep or wide, and tool
+ * definitions sit at the cached prefix where size is permanent. And keywords we
+ * do not need (`$ref`, `allOf`, `anyOf`, `$schema`) carry structure we would
+ * only be copying blindly.
+ *
+ * Deliberately LOSSY: the broker validates the real call, so this schema is
+ * purely advisory — it exists so the model uses the right argument NAMES.
+ * `additionalProperties` is preserved rather than forced to `false`, because
+ * dropping `anyOf`/`oneOf` can make a narrowed schema wrong, and some providers
+ * enforce `false` in strict mode — over-constraining here would break calls
+ * that work today.
+ *
+ * Returns null when there is nothing useful left, so callers can fall back.
+ */
+export function sanitizeMcpInputSchema(raw: unknown, depth = 0): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return null; }
+  if (depth > SCHEMA_MAX_DEPTH) { return null; }
+
+  const src = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(src)) {
+    if (!SCHEMA_KEYWORDS.has(key)) { continue; }
+
+    if (key === 'description') {
+      const text = typeof value === 'string'
+        ? value.replace(/[\r\n\t\f\v\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, SCHEMA_MAX_DESC)
+        : '';
+      if (text) { out.description = text; }
+      continue;
+    }
+
+    if (key === 'properties') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) { continue; }
+      const props: Record<string, unknown> = {};
+      let kept = 0;
+      for (const [propName, propSchema] of Object.entries(value as Record<string, unknown>)) {
+        if (kept >= SCHEMA_MAX_PROPS) { break; }
+        // Property names reach the model verbatim; keep them identifier-shaped.
+        if (!/^[A-Za-z0-9_.-]{1,64}$/.test(propName)) { continue; }
+        const child = sanitizeMcpInputSchema(propSchema, depth + 1);
+        props[propName] = child ?? { type: 'string' };
+        kept++;
+      }
+      if (kept > 0) { out.properties = props; }
+      continue;
+    }
+
+    if (key === 'items') {
+      const child = sanitizeMcpInputSchema(value, depth + 1);
+      if (child) { out.items = child; }
+      continue;
+    }
+
+    if (key === 'required') {
+      if (Array.isArray(value)) {
+        const req = value.filter((v): v is string => typeof v === 'string').slice(0, SCHEMA_MAX_PROPS);
+        if (req.length) { out.required = req; }
+      }
+      continue;
+    }
+
+    if (key === 'enum') {
+      if (Array.isArray(value)) {
+        const vals = value.filter(v => ['string', 'number', 'boolean'].includes(typeof v)).slice(0, 40);
+        if (vals.length) { out.enum = vals; }
+      }
+      continue;
+    }
+
+    if (key === 'type') {
+      if (typeof value === 'string') { out.type = value; }
+      continue;
+    }
+
+    if (key === 'additionalProperties') {
+      if (typeof value === 'boolean') { out.additionalProperties = value; }
+      continue;
+    }
+
+    // `default` / `format`: scalars only.
+    if (['string', 'number', 'boolean'].includes(typeof value)) { out[key] = value; }
+  }
+
+  // `required` may only name properties that survived the filter above.
+  if (Array.isArray(out.required)) {
+    const props = (out.properties && typeof out.properties === 'object')
+      ? Object.keys(out.properties as Record<string, unknown>) : [];
+    const req = (out.required as string[]).filter(r => props.includes(r));
+    if (req.length) { out.required = req; } else { delete out.required; }
+  }
+
+  if (Object.keys(out).length === 0) { return null; }
+  if (!out.type && out.properties) { out.type = 'object'; }
+  return out;
+}
+
+/** Common words that would otherwise match every tool description. */
+const SEARCH_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'that', 'this', 'into', 'onto', 'via',
+  'use', 'using', 'get', 'set', 'all', 'any', 'new', 'out', 'please', 'want',
+  'need', 'make', 'run', 'now', 'then', 'when', 'what', 'which', 'some',
+]);
+
+/**
+ * Rank connected tools against a natural-language query.
+ *
+ * Plain lexical scoring over name + description: exact-ish name hits outrank
+ * description hits, and every query term must be cheap to match because this
+ * runs inline on the coordinator's turn. Deliberately not embeddings — that is
+ * out of scope for v1 and would need a model call inside a tool call.
+ */
+export function searchMcpTools(tools: McpToolInfo[], query: string, limit = 3): McpToolInfo[] {
+  const terms = query.toLowerCase().split(/[^a-z0-9]+/)
+    // Short and common words match noise: "deploy TO kubernetes" otherwise
+    // scores "Post a message TO a channel" and returns Slack. A wrong tool is
+    // worse than no tool here — the model acts on it and the user pays with an
+    // approval card.
+    .filter(t => t.length > 2 && !SEARCH_STOPWORDS.has(t));
+  if (terms.length === 0) { return tools.slice(0, limit); }
+
+  const scored = tools.map(tool => {
+    const name = tool.name.toLowerCase();
+    const desc = (tool.description || '').toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      if (name.includes(term)) { score += name === term ? 6 : 3; }
+      if (desc.includes(term)) { score += 1; }
+    }
+    return { tool, score };
+  }).filter(s => s.score > 0);
+
+  scored.sort((a, b) => (b.score - a.score) || a.tool.name.localeCompare(b.tool.name));
+  return scored.slice(0, limit).map(s => s.tool);
+}
+
+/**
+ * How many connected tools carry a FULL schema in the always-present tool array.
+ *
+ * Attaching every real schema would be a regression, not a fix: with the 60-tool
+ * cap that is roughly 12k tokens of definitions on every request, and published
+ * data puts tool-selection accuracy in decline past 30–50 tools anyway. So the
+ * most-used few are resident and the rest are retrievable via `findtool` —
+ * Anthropic's own guidance for large catalogs is to keep the 3–5 most-used
+ * non-deferred and search for the rest.
+ */
+export const MCP_RESIDENT_SCHEMA_COUNT = 5;
+
+/**
  * The tool schemas offered to a capable coordinator model.
  * @param mcpTools the user's CONNECTED external MCP tools (name + description),
  *   exposed as `mcp__<name>` functions so the model can call them natively.
@@ -336,7 +524,7 @@ export type CanvasToolDirective = Extract<MystiDirective, { kind: 'canvas' }>;
  */
 export function coordinatorToolSchemas(
   execEnabled: boolean,
-  mcpTools: Array<{ name: string; description?: string }> = [],
+  mcpTools: McpToolInfo[] = [],
   connectEnabled = false,
   visual: { look?: boolean; act?: boolean } = {},
   canvasBound = false,
@@ -346,19 +534,30 @@ export function coordinatorToolSchemas(
   if (visual.look) { base.push(LOOK_TOOL); }
   if (visual.look && visual.act) { base.push(ACT_TOOL); }
   if (canvasBound) { base.push(...CANVAS_TOOL_SCHEMAS); }
+
   // External MCP tools are namespaced `mcp__<name>` so they can never collide
-  // with a built-in tool. No inputSchema is available from listTools(), so the
-  // parameters are open (the model infers args from the description).
-  for (const t of mcpTools) {
+  // with a built-in tool.
+  //
+  // EVERY connected tool stays in the array — dropping the cold ones would make
+  // them uncallable on the native path, and a model handed a tools array
+  // strongly prefers it over the text protocol. What is tiered is the SCHEMA:
+  // the caller puts the most-used tools first, and only those carry their real
+  // parameters. The rest keep the open shape and the model retrieves their
+  // schema with `findtool` when it actually needs one. That keeps the always-on
+  // cost near today's while removing the guess-the-argument-name failure for
+  // the tools that actually get used.
+  if (mcpTools.length > 0) { base.push(FINDTOOL_TOOL); }
+  mcpTools.forEach((t, i) => {
+    const schema = i < MCP_RESIDENT_SCHEMA_COUNT ? t.inputSchema : undefined;
     base.push({
       type: 'function',
       function: {
         name: `mcp__${t.name}`,
         description: (t.description || t.name).slice(0, 1024),
-        parameters: { type: 'object', additionalProperties: true, properties: {} },
+        parameters: schema ?? { type: 'object', additionalProperties: true, properties: {} },
       },
     });
-  }
+  });
   return base;
 }
 
@@ -401,6 +600,11 @@ export function toolCallToDirective(name: string, args: Record<string, unknown>)
     }
     case 'diag':
       return { kind: 'diag', target: asStr(a.target).trim() || 'all' };
+    case 'findtool': {
+      const query = asStr(a.query).trim();
+      if (!query) { return { error: 'findtool: "query" is required.' }; }
+      return { kind: 'findtool', query };
+    }
     case 'remember': {
       const fact = asStr(a.fact).trim();
       if (!fact) { return { error: 'remember: "fact" is required.' }; }

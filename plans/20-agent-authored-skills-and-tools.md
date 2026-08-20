@@ -264,9 +264,33 @@ Manifest schema, V0/V1 → card #1 → V2 captured-golden replay + V3 → card #
 
 ### Phase 5 — Pass the real MCP `inputSchema` through · ships standalone
 
-Independent of everything above (B5). `_sanitizeMcpTools` preserves `inputSchema` (sanitized: closed, depth- and property-capped) instead of discarding it; `coordinatorToolSchemas` stops emitting `{additionalProperties: true, properties: {}}`. Add `findtool`/`tool_search` deferral with 3–5 usage-promoted entries non-deferred, per Anthropic's guidance. Pin `{name, description, server}` at first approval; mismatch drops the tool and demands re-approval (the rug-pull defense the MCP ecosystem lacks).
+**Status: IMPLEMENTED 2026-08-20.** 227 test files / 9038 tests green, `tsc` clean, production build clean.
 
-**Accept:** with 60 connected tools, the model calls Gmail with correct argument names without guessing (asserted against a recorded schema); existing `mcptool` forced-card and auto-DENY-on-timeout behavior unchanged.
+Independent of everything above (B5). `_sanitizeMcpTools` preserves `inputSchema` instead of discarding it; `coordinatorToolSchemas` stops emitting `{additionalProperties: true, properties: {}}` for the tools that matter.
+
+**The coupling that shaped it.** Passing all 60 real schemas through would have been a *regression*, not a repair: with the 60-tool cap that is roughly 12k tokens of definitions on every request, against a published accuracy cliff at 30–50 tools. So pass-through and deferral had to ship together:
+
+| | before | after |
+|---|---|---|
+| Tools in the array | 60, all `{additionalProperties: true, properties: {}}` | 60 — **none dropped**, so nothing loses callability |
+| Real schemas resident | 0 | the **5 most-used** (`MCP_RESIDENT_SCHEMA_COUNT`), ranked by actual use |
+| The other 55 | guess the argument names | `findtool` returns the real schema on demand |
+| System-prompt list | name + description | name + description + argument names for the resident few |
+
+**What landed**
+
+| Piece | Where |
+|---|---|
+| `sanitizeMcpInputSchema` — bounded JSON-Schema subset (depth 4, 30 props, 200-char descriptions, identifier-shaped property names, `required` narrowed to survivors, `$ref`/`allOf`/`anyOf` dropped) | `coordinatorTools.ts` |
+| `searchMcpTools` — lexical ranking, name hits over description hits, stop-word filtered | `coordinatorTools.ts` |
+| `findtool` directive + native tool — **READ-ONLY, ungated**, result still nonce-fenced as untrusted | parser, `coordinatorTools`, `_runMystiAgentic` |
+| Usage ranking from `workspaceState`, bumped only on a **successful** call, capped at 100 entries | `ChatViewProvider._bumpMcpUsage` / `_rankMcpTools` |
+
+**Two deliberate calls.** `additionalProperties` is *preserved*, not forced to `false` — we drop `anyOf`/`oneOf`, and some providers enforce `false` in strict mode, so forcing it would break calls that work today; the broker validates the real call, our copy is advisory. And the hot set is ranked by **user-observed use**, never by anything the model asserts — a model that could promote its own pick into the always-present tier would be choosing what the next turn sees.
+
+**Accept:** ✅ with 60 connected tools the resident set carries correct argument names (asserted against a recorded Gmail-shaped schema); added definition size is < 20% of the all-resident cost; every tool remains present in the array; `findtool` appears only when tools are connected; existing `mcptool` forced-card and auto-DENY-on-timeout behavior unchanged.
+
+**Not done:** rug-pull pinning (`{name, description, server}` hashed at first approval, mismatch forcing re-approval). It needs durable per-tool approval state and a re-approval surface, which is the same machinery Phase 2's review queue builds — deferred there rather than half-built here.
 
 ### Phase 6 — Ledger, curator, dashboard, kill switch
 

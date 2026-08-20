@@ -25,7 +25,7 @@ import { CanvasHistory } from '../canvas/CanvasHistory';
 import { CanvasLiveness, type LivenessJobHandle } from '../canvas/CanvasLiveness';
 import { mintViewToken } from '../canvas/protocol';
 import type { CanvasHostMessage, CapChip } from '../canvas/protocol';
-import { coordinatorToolSchemas, modelSupportsToolCalls, toolCallToDirective, normalizeCanvasToolName, canvasToolRefusal } from '../services/coordinatorTools';
+import { coordinatorToolSchemas, modelSupportsToolCalls, toolCallToDirective, normalizeCanvasToolName, canvasToolRefusal, sanitizeMcpInputSchema, searchMcpTools, type McpToolInfo } from '../services/coordinatorTools';
 import { parseToolArgs, type AccumulatedToolCall } from '../utils/toolCallAccumulator';
 import { runBounded } from '../utils/boundedConcurrency';
 import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
@@ -306,7 +306,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // already-linked suppression; refreshed at most once per TTL.
   private _connectionsCache?: { at: number; names: string[] };
   /** Plan 19 Phase 6: cached, sanitized connected-MCP-tool list (per DeepMyst account). */
-  private _mcpToolsCache?: { at: number; tools: Array<{ name: string; description?: string }> };
+  private _mcpToolsCache?: { at: number; tools: McpToolInfo[] };
   // Per-panel cancel tracking for isolated cancellation
   private _cancelledPanels: Set<string> = new Set();
   // Perf (Plan 03 Phase 1): panels whose webview has not yet posted `uiReady`.
@@ -7333,19 +7333,57 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * are free text → newlines/controls stripped and length-bounded so a malicious
    * description can't inject instructions. Capped to _MYSTI_MCP_MAX_TOOLS.
    */
-  private _sanitizeMcpTools(tools: Array<{ name: string; description?: string }>): Array<{ name: string; description?: string }> {
-    const out: Array<{ name: string; description?: string }> = [];
+  private _sanitizeMcpTools(tools: Array<{ name: string; description?: string; inputSchema?: unknown }>): McpToolInfo[] {
+    const out: McpToolInfo[] = [];
     for (const t of tools) {
       const name = String(t.name || '');
       if (!/^[A-Za-z0-9_.-]{1,80}$/.test(name)) { continue; } // unsafe/malformed → drop
       const desc = t.description ? String(t.description).replace(/[\r\n\t\f\v\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200) : undefined;
-      out.push({ name, description: desc });
+      // Plan 20 Phase 5: keep the server's inputSchema (bounded + key-filtered)
+      // instead of discarding it — this is what stopped the model guessing
+      // argument names for every connected tool.
+      const inputSchema = sanitizeMcpInputSchema(t.inputSchema) ?? undefined;
+      out.push({ name, description: desc, inputSchema });
       if (out.length >= ChatViewProvider._MYSTI_MCP_MAX_TOOLS) { break; }
     }
     return out;
   }
 
-  private async _mystiMcpToolset(settings: Settings): Promise<{ client: McpClient; tools: Array<{ name: string; description?: string }> } | null> {
+  private static readonly _MCP_USAGE_KEY = 'mysti.mcpToolUsage.v1';
+
+  /**
+   * How often each connected tool has actually been used, per workspace.
+   *
+   * Drives which tools get a full schema resident in the always-present tool
+   * array. Ranking is by USE, not by anything the model asserts — a model that
+   * could promote its own pick into the always-present tier would be choosing
+   * what the next turn sees.
+   */
+  private _mcpUsage(): Record<string, number> {
+    const raw = this._extensionContext.workspaceState.get<Record<string, number>>(ChatViewProvider._MCP_USAGE_KEY);
+    return raw && typeof raw === 'object' ? raw : {};
+  }
+
+  private _bumpMcpUsage(toolName: string): void {
+    const usage = this._mcpUsage();
+    usage[toolName] = (usage[toolName] || 0) + 1;
+    // Bound the map so a long-lived workspace can't grow it without limit.
+    const entries = Object.entries(usage).sort((a, b) => b[1] - a[1]).slice(0, 100);
+    void this._extensionContext.workspaceState.update(
+      ChatViewProvider._MCP_USAGE_KEY, Object.fromEntries(entries)
+    );
+  }
+
+  /** Most-used first, ties keeping the broker's own order (stable). */
+  private _rankMcpTools(tools: McpToolInfo[]): McpToolInfo[] {
+    const usage = this._mcpUsage();
+    return tools
+      .map((tool, index) => ({ tool, index, uses: usage[tool.name] || 0 }))
+      .sort((a, b) => (b.uses - a.uses) || (a.index - b.index))
+      .map(entry => entry.tool);
+  }
+
+  private async _mystiMcpToolset(settings: Settings): Promise<{ client: McpClient; tools: McpToolInfo[] } | null> {
     if (!this._mystiMcpToolsEnabled(settings)) { return null; }
     const auth = this._deepMystAuth;
     const key = auth?.getApiKey();
@@ -7364,7 +7402,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const now = Date.now();
     if (this._mcpToolsCache && now - this._mcpToolsCache.at < ChatViewProvider._MCP_TOOLS_CACHE_TTL_MS) {
       if (!this._mcpToolsCache.tools.length) { return null; }
-      return { client: new McpClient({ url, bearer: key, timeoutMs: 30_000 }), tools: this._mcpToolsCache.tools };
+      return { client: new McpClient({ url, bearer: key, timeoutMs: 30_000 }), tools: this._rankMcpTools(this._mcpToolsCache.tools) };
     }
     const client = new McpClient({ url, bearer: key, timeoutMs: 8_000 });
     try {
@@ -7373,7 +7411,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (!tools.length) { await client.close(); return null; }
       // Reconnect with a generous per-CALL timeout for actual tool invocations.
       await client.close();
-      return { client: new McpClient({ url, bearer: key, timeoutMs: 30_000 }), tools };
+      return { client: new McpClient({ url, bearer: key, timeoutMs: 30_000 }), tools: this._rankMcpTools(tools) };
     } catch (e) {
       console.warn('[Mysti] MCP toolset handshake failed:', e instanceof Error ? e.message : e);
       this._mcpToolsCache = { at: now, tools: [] }; // negative-cache a failed handshake briefly
@@ -8151,6 +8189,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           continue;
         }
 
+        // ── Look up a connected tool's argument schema (Plan 20 Phase 5).
+        // READ-ONLY and UNGATED: it searches metadata for tools the user already
+        // connected and calls nothing. It exists because only the few most-used
+        // tools carry a full schema in the always-present tool array — without a
+        // way to fetch the rest, the model is back to guessing argument names,
+        // which costs the user an approval card per wrong guess.
+        if (directive && directive.kind === 'findtool') {
+          const toolId = `mysti-findtool-${runId}-${delegId++}`;
+          postToolUse({ id: toolId, name: 'findtool', input: { query: directive.query } });
+          const matches = mcpToolset ? searchMcpTools(mcpToolset.tools, directive.query) : [];
+          const output = !mcpToolset
+            ? 'External tools are not enabled.'
+            : matches.length === 0
+              ? `No connected tool matches "${directive.query}". Connected: ${mcpToolset.tools.map(t => t.name).slice(0, 40).join(', ')}`
+              : matches.map(t => [
+                `${t.name}${t.description ? ` — ${t.description}` : ''}`,
+                t.inputSchema
+                  ? `arguments: ${JSON.stringify(t.inputSchema)}`
+                  : 'arguments: (this server published no schema — infer from the description)',
+              ].join('\n')).join('\n\n');
+          postToolResult({ id: toolId, name: 'findtool', output, status: 'completed' });
+          recordLocalCard(toolId, 'findtool', { query: directive.query }, output, false);
+          messages.push({ role: 'assistant', content: turnText });
+          // Schemas come from third-party servers, so they re-enter fenced like
+          // any other untrusted result — a description is not an instruction.
+          messages.push({ role: 'user', content: this._fenceLocalToolResult('findtool', output, nonce, delegateNonce) });
+          continue;
+        }
+
         // ── External MCP tool call (Plan 19 Phase 6): call one of the user's
         // CONNECTED external tools. GATED like exec (an un-undoable network side
         // effect) via _runMystiMcpTool → a mandatory permission card; the result
@@ -8183,6 +8250,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           mcpCalls++;
           const res = await this._runMystiMcpTool(directive, mcpToolset.client, panelId, toolId, cancelKey);
+          if (res.ok) { this._bumpMcpUsage(directive.tool); }
           postToolResult({ id: toolId, name: 'mcptool', output: res.output, status: res.ok ? 'completed' : 'failed' });
           recordLocalCard(toolId, 'mcptool', { tool: directive.tool }, res.output, !res.ok);
           if (isCancelled()) { break; }
@@ -8906,7 +8974,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     readOnlyAccess = false,
     execEnabled = false,
     connectEnabled = false,
-    mcpTools: Array<{ name: string; description?: string }> = [],
+    mcpTools: McpToolInfo[] = [],
     visual: { look?: boolean; act?: boolean } = {},
     visualApp = '',
   ): string {
@@ -8951,8 +9019,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       '## Using the user\'s CONNECTED external tools',
       'The user has connected external services via DeepMyst. You can call their tools. Emit EXACTLY ONE tag on its own line, then STOP — the user approves EACH call (these are real external side effects: sending mail, creating tickets), and I reply with the result:',
       `<mcptool:${N} tool="TOOL_NAME">{ "arg": "value" }</mcptool> — the body is a JSON object of arguments (or {} if none).`,
+      `<findtool:${N}>what you want to do, e.g. send an email</findtool> — look up the EXACT arguments of a connected tool. Free, instant, no approval needed.`,
+      'Only the tools you use most often list their arguments below. For any other tool, run <findtool:' + N + '> FIRST rather than guessing argument names — a wrong guess burns one of your budgeted calls and an approval from the user.',
       `Budget: ${gov.maxMcpCalls ?? 6} external tool calls per run. Available tools:`,
-      ...mcpTools.slice(0, 60).map(t => `- ${t.name}${t.description ? ` — ${String(t.description).replace(/\s+/g, ' ').slice(0, 160)}` : ''}`),
+      ...mcpTools.slice(0, 60).map(t => {
+        const desc = t.description ? ` — ${String(t.description).replace(/\s+/g, ' ').slice(0, 160)}` : '';
+        // Argument names are shown for the resident few; the rest come from
+        // <findtool:>. Naming them here (rather than dumping full schemas)
+        // costs a handful of tokens and saves a round trip on the common case.
+        const props = t.inputSchema && typeof t.inputSchema.properties === 'object' && t.inputSchema.properties
+          ? Object.keys(t.inputSchema.properties as Record<string, unknown>).slice(0, 12)
+          : [];
+        return `- ${t.name}${desc}${props.length ? ` [args: ${props.join(', ')}]` : ''}`;
+      }),
     ] : [];
     // Plan 19 Phase 6: offer an in-chat "Connect" button for an unconnected service.
     const connectBlock = connectEnabled ? [
