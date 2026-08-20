@@ -31,14 +31,32 @@ export type RewindResult =
   | { ok: false; reason: string };
 
 /**
+ * Agent-artifact trees force-added on every snapshot (Plan 20 Phase 0).
+ *
+ * `info/exclude` and the user's own `.gitignore` are consulted independently,
+ * and most projects ignore `.mysti/` wholesale — so the negations in
+ * SHADOW_EXCLUDE are necessary but not sufficient. Kept in sync with them.
+ */
+export const CHECKPOINT_FORCED_PATHS = ['.mysti/agents', '.mysti/skills.staged'] as const;
+
+/**
  * Default ignore rules for the shadow repo, written to <gitDir>/info/exclude.
  * The user's own nested .gitignore files are honored natively by `git add -A`
  * against the work-tree; this is the safety net for repos that don't ignore
  * these (or have no .gitignore at all) so we never snapshot heavy/junk paths.
  */
-const SHADOW_EXCLUDE = `# Mysti shadow-repo excludes — never snapshot these
+export const SHADOW_EXCLUDE = `# Mysti shadow-repo excludes — never snapshot these
 .git/
-.mysti/
+# Plan 20 Phase 0: .mysti/ is excluded by CONTENTS (.mysti/*), not as a
+# directory, so the agent-artifact trees below can be re-included. Excluding
+# the directory itself would make the negations unreachable (git never
+# descends into an excluded directory), and agent-authored personas/skills
+# MUST be rewindable — they are the highest-consequence bytes the agent can
+# write. Everything else under .mysti/ (compaction caches, run scratch,
+# captured output) stays excluded.
+.mysti/*
+!.mysti/agents/
+!.mysti/skills.staged/
 node_modules/
 bower_components/
 .pnpm-store/
@@ -179,6 +197,14 @@ export class CheckpointManager {
       }
 
       await this._runGitOrThrow(['add', '-A']);
+      // Plan 20 Phase 0: `add -A` also honors the USER's .gitignore, and most
+      // projects gitignore `.mysti/` wholesale — which would silently undo the
+      // shadow-exclude carve-out above. Force-add the agent-artifact trees so a
+      // bad persona/skill is genuinely rewindable. Non-throwing and pathspec-
+      // tolerant: these directories usually do not exist.
+      for (const artifactPath of CHECKPOINT_FORCED_PATHS) {
+        await this._runGit(['add', '-A', '-f', '--', artifactPath]);
+      }
       await this._runGitOrThrow([
         '-c', `user.name=${CHECKPOINT_AUTHOR_NAME}`,
         '-c', `user.email=${CHECKPOINT_AUTHOR_EMAIL}`,

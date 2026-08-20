@@ -29,8 +29,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
+  findAuthorityFrontmatterKeys,
   isSafeAgentId,
   parseAgentMarkdown,
+  scanAgentContent,
   slugifyAgentId
 } from '../managers/agentMarkdown';
 
@@ -215,9 +217,36 @@ export class SkillDiscoveryService {
       throw new Error(`Skill install path escapes target directory: ${skill.id}`);
     }
 
+    const content = this._withProvenance(skill);
+
+    // Plan 20 Phase 0: refuse at the WRITE, not just at the read. An imported
+    // skill that survives to disk gets a second chance every session — and the
+    // published survey of 42,447 community skills found 26.1% carrying
+    // exploitable content, with script-bundling more than doubling the odds.
+    // Blocking here also means the user's modal confirmation is never the only
+    // thing standing between a hidden payload and the prompt, which matters
+    // because hidden codepoints are invisible in exactly the diff they would be
+    // reviewing.
+    const scan = scanAgentContent(content);
+    if (scan.rejected) {
+      const reasons = scan.findings.filter(f => f.severity === 'reject')
+        .map(f => `${f.code}${f.detail ? ` (${f.detail})` : ''}`).join(', ');
+      throw new Error(
+        `Refusing to install "${skill.id}" — its content failed the safety scan: ${reasons}. ` +
+        'This usually means the file hides text from human review or forges an agent command.'
+      );
+    }
+    const authorityKeys = findAuthorityFrontmatterKeys(parseAgentMarkdown(content).frontmatter);
+    if (authorityKeys.length > 0) {
+      throw new Error(
+        `Refusing to install "${skill.id}" — its frontmatter tries to grant itself tool access ` +
+        `(${authorityKeys.join(', ')}). Mysti never honors these keys.`
+      );
+    }
+
     await fs.promises.mkdir(skillDir, { recursive: true });
     const filePath = path.join(skillDir, 'SKILL.md');
-    await fs.promises.writeFile(filePath, this._withProvenance(skill), 'utf-8');
+    await fs.promises.writeFile(filePath, content, 'utf-8');
     return filePath;
   }
 

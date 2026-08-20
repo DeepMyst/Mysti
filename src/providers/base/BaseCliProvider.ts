@@ -1470,12 +1470,19 @@ export abstract class BaseCliProvider implements ICliProvider {
     if (this._agentContextManager) {
       try {
         const promptContext = await this._agentContextManager.buildPromptContext(agentConfig);
-        if (promptContext.systemPrompt) {
+        // Plan 20 Phase 0: instructions now arrive in two tiers. Verified
+        // bundled content first, then non-verified definitions as a delimited
+        // reference block — order matters, the untrusted block must never
+        // prefix the trusted one. Either tier alone is a valid result: a
+        // selection of only user/workspace agents yields an empty
+        // `systemPrompt`, and falling through to the legacy static tables there
+        // would silently drop the user's own persona.
+        if (promptContext.systemPrompt || promptContext.untrustedBlock) {
           for (const warning of promptContext.warnings) {
             console.warn(`[Mysti] ${this.displayName}: ${warning}`);
           }
           console.log(`[Mysti] ${this.displayName}: Agent context built with ~${promptContext.estimatedTokens} tokens`);
-          return promptContext.systemPrompt;
+          return promptContext.systemPrompt + promptContext.untrustedBlock;
         }
       } catch (error) {
         console.warn(`[Mysti] ${this.displayName}: AgentContextManager failed, using fallback:`, error);

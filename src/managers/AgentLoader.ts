@@ -15,15 +15,20 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import {
   AGENT_FILE_BASENAMES,
   extractAgentInstructions,
   extractAgentList,
   extractAgentSection,
+  findAuthorityFrontmatterKeys,
   isSafeAgentId,
   parseAgentMarkdown,
-  slugifyAgentId
+  scanAgentContent,
+  slugifyAgentId,
+  type AgentContentFinding
 } from './agentMarkdown';
+import { CORE_AGENT_HASHES } from '../generated/coreAgentManifest';
 
 // ============================================================================
 // Agent Types - Three-Tier Loading Structure
@@ -39,8 +44,22 @@ export interface AgentMetadata {
   icon?: string;
   category: string;
   source: 'core' | 'plugin' | 'user' | 'workspace';
+  /**
+   * Plan 20 Phase 0 (invariant I1): true ONLY when this file shipped inside the
+   * extension AND its content still matches the compiled-in SHA-256 manifest.
+   *
+   * `source` records where a file was FOUND; `trusted` records whether it is
+   * still the artifact we shipped. They are different questions: the core
+   * directory is writable by any local process — including a delegated CLI
+   * backend, which runs with no sandbox around it — so location alone can never
+   * justify system-tier authority. Only `trusted` content may be concatenated
+   * into a system prompt; everything else is fenced as untrusted data.
+   */
+  trusted: boolean;
   filePath: string;
   activationTriggers?: string[];
+  /** Non-blocking content-scan findings, surfaced for review (never instructions). */
+  contentWarnings?: AgentContentFinding[];
   /**
    * Plan 14 (roles only): the access profile a collaborator runs under.
    * Read from the role frontmatter `access:`; defaults to 'read-only' (safe)
@@ -494,12 +513,77 @@ export class AgentLoader {
   }
 
   /**
+   * Plan 20 Phase 0 (invariant I1) — is this core file byte-for-byte what we
+   * shipped?
+   *
+   * The hash map is compiled into `dist/extension.js` (see
+   * `scripts/generate-core-agent-manifest.js`), so forging it means editing the
+   * extension's own code rather than dropping a file into a directory. Content
+   * is LF-normalized before hashing because `.gitattributes` sets `* text=auto`
+   * and a Windows checkout can materialize CRLF.
+   *
+   * Returns false — never throws — for an unknown path, a mismatch, or a core
+   * directory we cannot resolve. Failing closed here means the file still
+   * loads and still works; it just gets fenced instead of trusted.
+   */
+  private _verifyCoreIntegrity(filePath: string, content: string): boolean {
+    const coreDir = this._sourceDirs.find(d => d.source === 'core')?.path;
+    if (!coreDir) { return false; }
+
+    const rel = path.relative(coreDir, filePath).split(path.sep).join('/');
+    // A path that climbs out of the core dir is not a core file, whatever the
+    // caller believed (symlink into core, mis-seeded sourceDirsOverride).
+    if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) { return false; }
+
+    const expected = CORE_AGENT_HASHES[rel];
+    if (!expected) {
+      console.warn(`[Mysti] Core agent file is not in the integrity manifest — loading as untrusted: ${rel}`);
+      return false;
+    }
+
+    const actual = crypto.createHash('sha256')
+      .update(content.replace(/\r\n/g, '\n'), 'utf8')
+      .digest('hex');
+
+    if (actual !== expected) {
+      console.error(`[Mysti] Core agent file has been modified since it was bundled — loading as untrusted: ${rel}`);
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Load only metadata from a markdown file (Tier 1)
    */
   private async _loadMetadata(filePath: string, source: AgentMetadata['source']): Promise<AgentMetadata | null> {
     try {
       const content = await fs.promises.readFile(filePath, 'utf-8');
+
+      // Plan 20 Phase 0 (invariant I3): refuse content that defeats human
+      // review (hidden codepoints) or forges a coordinator directive. A hard
+      // load failure, not a fence — there is no legitimate artifact that needs
+      // either, and fencing would leave the bytes reachable via Tier 3.
+      const scan = scanAgentContent(content);
+      if (scan.rejected) {
+        const reasons = scan.findings.filter(f => f.severity === 'reject')
+          .map(f => `${f.code}${f.detail ? ` (${f.detail})` : ''}`).join(', ');
+        console.error(`[Mysti] Refusing agent file — failed content scan: ${filePath} [${reasons}]`);
+        return null;
+      }
+
       const parsed = parseAgentMarkdown(content);
+
+      // Plan 20 Phase 0: frontmatter may describe content, never grant
+      // authority. Refused rather than ignored — silently dropping the key
+      // leaves both the author and a reviewer believing it took effect.
+      const authorityKeys = findAuthorityFrontmatterKeys(parsed.frontmatter);
+      if (authorityKeys.length > 0) {
+        console.error(`[Mysti] Refusing agent file — authority-granting frontmatter (${authorityKeys.join(', ')}): ${filePath}`);
+        return null;
+      }
+
+      const trusted = source === 'core' && this._verifyCoreIntegrity(filePath, content);
+      const contentWarnings = scan.findings.length > 0 ? scan.findings : undefined;
 
       // Derive an id when frontmatter lacks one (common in third-party
       // SKILL.md files): prefer the frontmatter name, then the directory
@@ -540,8 +624,10 @@ export class AgentLoader {
         icon: parsed.frontmatter.icon ? String(parsed.frontmatter.icon) : undefined,
         category: String(parsed.frontmatter.category || 'general'),
         source,
+        trusted,
         filePath,
         activationTriggers: triggers ? triggers.map(t => String(t)) : undefined,
+        contentWarnings,
         roleAccess,
         rolePattern
       };

@@ -191,6 +191,8 @@ Ordered so the security floor lands first and **each phase is independently ship
 
 ### Phase 0 — Integrity floor (no new capability) · ships standalone
 
+**Status: IMPLEMENTED 2026-08-20** on `feat/plan-20-phase-0-integrity-floor`. 226 test files / 9015 tests green (from 222 / 8975), `tsc` clean, production webpack build clean. Deferred within the phase: `ApprovedCapabilityStore` folder-Merkle pinning for user/workspace scope (I7) and the webview CSP/remote-image hardening — see the note at the end of this phase.
+
 Fixes bugs that exist today, whether or not this feature is built.
 
 - Build-time **SHA-256 manifest** of `resources/agents/core`, embedded in the bundle, verified in `AgentLoader._loadMetadata`; unknown hash ⇒ `source: 'untrusted'` (I1, B6).
@@ -200,7 +202,29 @@ Fixes bugs that exist today, whether or not this feature is built.
 - `CheckpointManager`: un-exclude `.mysti/agents/**` and `.mysti/skills.staged/**` (B1).
 - Block remote `img` src and remote Mermaid refs in the Marked renderer; pin CSP `img-src`/`connect-src` to local schemes.
 
-**Accept:** I1, I2, I3, I7 green, including a test that writes into the core dir at runtime and asserts the content never reaches `systemPrompt`. A snapshot → staged-write → rewind test passes. **Byte-identical rendered prompt for verified `core` artifacts** — the 16 bundled skills and 20 personas load unchanged and `agentContentConformance.test.ts` still passes. `tsc` clean, full suite green.
+**Accept:** I1, I2, I3 green, including a test that writes into the core dir at runtime and asserts the content never reaches `systemPrompt`. A snapshot → write → rewind test passes. **Byte-identical rendered prompt for verified `core` artifacts** — the bundled agents load unchanged and `agentContentConformance.test.ts` still passes. `tsc` clean, full suite green. ✅ All met.
+
+**What landed**
+
+| Piece | Where |
+|---|---|
+| Build-time SHA-256 manifest over the 42 bundled agent files, emitted as **TypeScript** so it compiles into `dist/extension.js` | `scripts/generate-core-agent-manifest.js` → `src/generated/coreAgentManifest.ts` |
+| `AgentMetadata.trusted` — integrity, not location — verified per file at load, LF-normalized for Windows checkouts | `AgentLoader._verifyCoreIntegrity` |
+| Two-tier prompt routing: only `trusted` reaches `systemPrompt`; everything else goes to a fenced `untrustedBlock` with an authority ceiling and a random per-call delimiter | `AgentContextManager.buildPromptContext` → `{systemPrompt, untrustedBlock, sources[]}` |
+| Content scanner: hard-rejects Unicode Tag Block / zero-width / bidi overrides / nonce-bearing forged directives; warns on bare directive shapes, remote resources, opaque blobs | `agentMarkdown.scanAgentContent` |
+| Authority-frontmatter denylist (`allowed-tools`, `hooks`, `shell`, …) — refused, never silently ignored | `agentMarkdown.findAuthorityFrontmatterKeys` |
+| Scanner + denylist enforced at the **import write**, not only at read | `SkillDiscoveryService.installSkill` |
+| Agent artifacts made rewindable: `.mysti/*` + `!.mysti/agents/` + `!.mysti/skills.staged/`, plus a force-add pass because `git add -A` honors the user's own `.gitignore` | `CheckpointManager` |
+
+**Two deliberate behavior changes, both tightenings**
+
+1. **Role `gated-write` now requires `trusted`, not `source === 'core' \|\| 'plugin'`.** The old predicate was an escalation primitive: overwrite a bundled role on disk, declare `access: gated-write`, get write-capable collaboration. This also demotes synced `plugin` roles (third-party repo, not in the manifest) to read-only.
+2. **A file whose frontmatter tries to grant tool authority no longer loads at all.** Silently ignoring the key leaves the author believing the grant took effect and a reviewer believing it is enforced.
+
+**Deferred out of Phase 0 (with reasons)**
+
+- **`ApprovedCapabilityStore` / folder-Merkle pinning (I7)** — pinning is about *re-approval on change*, and there is no approval UX to re-enter until Phase 2 builds the review queue. Shipping the store now would either prompt on every hand-edit of a user's own persona or be inert. It moves to Phase 2, where it has a surface.
+- **Webview CSP + remote-image blocking** — a different subsystem (`webviewContent.ts` / the Marked renderer) with its own regression surface. Storage-time rejection already blocks the injection path; this was always listed as defense in depth.
 
 ### Phase 1 — Index + `<skill:>` pull + **instrumentation** · the go/no-go gate
 
