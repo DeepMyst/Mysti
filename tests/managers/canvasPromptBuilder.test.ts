@@ -31,12 +31,17 @@ describe('CanvasPromptBuilder', () => {
     store.insertPage(artifact, store.makePage({ mode: 'html', htmlSource: '<h1>Hi</h1>', actionTitle: 'Cover' }));
   });
 
-  it('buildCanvasToolGuide lists READ-ONLY and WRITE tools', () => {
+  it('buildCanvasToolGuide lists READ-ONLY and WRITE tools, generated from the surface', () => {
     const guide = buildCanvasToolGuide();
     expect(guide).toContain('READ-ONLY tools:');
-    expect(guide).toContain('read_page');
+    expect(guide).toContain('get_page_jsx');
     expect(guide).toContain('WRITE tools');
-    expect(guide).toContain('write_page_jsx');
+    expect(guide).toContain('set_text');
+    expect(guide).toContain('write_page');
+    // Compat names are dispatchable but never taught — teaching two vocabularies
+    // is how the surface drifted from the dispatcher in the first place.
+    expect(guide).not.toContain('write_page_jsx');
+    expect(guide).not.toContain('edit_element');
   });
 
   it('includes the artifact index and the format layout guidance', () => {
@@ -50,7 +55,7 @@ describe('CanvasPromptBuilder', () => {
 
   it('states the read-before-write and no-past-tense rules', () => {
     const block = buildCanvasContextBlock({ artifact, approvalMode: 'staged' });
-    expect(block).toContain('read_page');
+    expect(block).toContain('get_page_jsx');
     expect(block).toContain('baseVersion');
     expect(block.toLowerCase()).toContain('past tense');
     expect(block).toContain('validate_page');

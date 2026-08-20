@@ -164,15 +164,13 @@ export const MODEL_CUSTOM_MAX_PER_PROVIDER = 50;               // hard cap on us
 /**
  * Visual testing constants
  */
-export const VISUAL_TEST_MAX_ITERATIONS = 5;
-export const VISUAL_TEST_ITERATION_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes per iteration
-export const VISUAL_TEST_TOTAL_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes total
+// (The former iteration/total/hot-reload timeouts belonged to the deleted
+// screenshot->analyze->fix loop; the warm session is bounded by
+// VISUAL_SESSION_IDLE_MS and the caller's own per-run budget instead.)
 export const VISUAL_TEST_SERVER_STARTUP_TIMEOUT_MS = 30 * 1000; // 30 seconds
 export const VISUAL_TEST_SERVER_HEALTH_POLL_MS = 500;
 export const VISUAL_TEST_SCREENSHOT_WAIT_MS = 1000; // Wait for page to settle before screenshot
 export const VISUAL_TEST_SERVER_KILL_GRACE_MS = 5000; // 5 seconds before SIGKILL
-export const VISUAL_TEST_HOT_RELOAD_WAIT_MS = 2000; // Wait for hot-reload after code changes
-export const VISUAL_TEST_DEFAULT_VIEWPORT = { width: 1280, height: 720 };
 
 /**
  * Canvas constants
@@ -223,3 +221,30 @@ export const STITCH_DEVICE_DIMENSIONS: Record<string, { width: number; height: n
   TABLET: { width: 768, height: 1024 },
   AGNOSTIC: { width: 1200, height: 800 },
 };
+
+// ── Agent-callable visual observation (the `look` / `act` primitive) ──
+/** Idle lifetime of a warm visual session (dev server + browser) before it is torn down. */
+export const VISUAL_SESSION_IDLE_MS = 10 * 60 * 1000; // 10 minutes
+/** Hard cap on actions in a single `act` call. */
+export const VISUAL_MAX_ACTIONS_PER_ACT = 8;
+/** Ring-buffer sizes for the per-look console/network capture. */
+export const VISUAL_CONSOLE_BUFFER = 50;
+export const VISUAL_NETWORK_BUFFER = 30;
+/** Total character cap on the observation digest fed back to the model. */
+export const VISUAL_DIGEST_MAX_CHARS = 8000;
+/** Cap on the DOM outline section inside the digest. */
+export const VISUAL_DOM_OUTLINE_MAX_CHARS = 3000;
+/** Bounded settle wait after `load` before a capture (networkidle never fires against HMR). */
+export const VISUAL_SETTLE_TIMEOUT_MS = 3000;
+/** Maximum characters a model may put in a `type` interaction. */
+export const VISUAL_MAX_TYPE_LENGTH = 4096;
+/** Input-length caps for model-supplied strings (the policy resolver enforces these). */
+export const VISUAL_MAX_PATH_LENGTH = 512;
+export const VISUAL_MAX_SELECTOR_LENGTH = 200;
+export const VISUAL_MAX_FOCUS_LENGTH = 500;
+/** Cap on a user-supplied dev-server ready pattern, so a repo cannot inject a catastrophic regex. */
+export const VISUAL_MAX_READY_PATTERN_LENGTH = 200;
+/** Ring-buffer cap on captured dev-server stdout/stderr. */
+export const VISUAL_DEVSERVER_LOG_MAX_CHARS = 64 * 1024;
+/** Loopback-only default allowlist. A browser that can reach arbitrary hosts is an exfiltration channel. */
+export const VISUAL_DEFAULT_ALLOWED_ORIGINS = ['http://localhost', 'http://127.0.0.1', 'http://[::1]'];

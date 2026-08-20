@@ -10,29 +10,76 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * CanvasSecrets tests (Plan 05 Phase 0, F-11): SecretStorage-backed key store
- * with one-time migration from the legacy mysti.canvas.*ApiKey settings.
+ * CanvasSecrets tests (Plan 05 Phase 0, F-11 + Plan 20 §3.6): SecretStorage-backed
+ * key store whose one-time migration adopts a **user (Global)** value only — a
+ * workspace-scoped key comes from the checked-out repository, not from the
+ * person using it, so it is reported and cleared, never adopted.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { CanvasSecrets } from '../../src/services/CanvasSecrets';
 import {
   createMockSecretStorage,
   createMockMemento,
-  setMockConfig,
-  clearMockConfig,
-  getMockConfigUpdates,
+  workspace,
+  window,
+  ConfigurationTarget,
 } from '../helpers/mockVscode';
 
+/** A per-scope settings fake with a real `inspect()`, like VS Code's. */
+function fakeConfig(scopes: Partial<Record<'global' | 'workspace' | 'folder', Record<string, string>>>) {
+  const global = { ...(scopes.global ?? {}) };
+  const ws = { ...(scopes.workspace ?? {}) };
+  const folder = { ...(scopes.folder ?? {}) };
+  const updates: Array<{ key: string; value: unknown; target: number | undefined }> = [];
+  return {
+    updates,
+    global, ws, folder,
+    config: {
+      // `get` collapses the scopes exactly like VS Code does — which is why
+      // migrate() must not use it.
+      get<T>(key: string, defaultValue?: T): T {
+        const v = folder[key] ?? ws[key] ?? global[key];
+        return (v === undefined ? defaultValue : v) as T;
+      },
+      has(key: string): boolean { return key in global || key in ws || key in folder; },
+      inspect<T>(key: string) {
+        return {
+          key: `mysti.${key}`,
+          globalValue: global[key] as T | undefined,
+          workspaceValue: ws[key] as T | undefined,
+          workspaceFolderValue: folder[key] as T | undefined,
+        };
+      },
+      async update(key: string, value: unknown, target?: number): Promise<void> {
+        updates.push({ key, value, target });
+        if (value === undefined) {
+          if (target === ConfigurationTarget.Workspace) { delete ws[key]; }
+          else if (target === ConfigurationTarget.WorkspaceFolder) { delete folder[key]; }
+          else { delete global[key]; }
+        }
+      },
+    },
+  };
+}
+
+let restoreConfig: (() => void) | null = null;
+
+/** Point `vscode.workspace.getConfiguration('mysti')` at the fake. */
+function useConfig(cfg: ReturnType<typeof fakeConfig>) {
+  const spy = vi.spyOn(workspace, 'getConfiguration').mockReturnValue(cfg.config as never);
+  restoreConfig = () => spy.mockRestore();
+  return cfg;
+}
+
 afterEach(() => {
-  clearMockConfig();
+  restoreConfig?.();
+  restoreConfig = null;
+  vi.restoreAllMocks();
 });
 
 describe('CanvasSecrets', () => {
   it('get() returns empty string when nothing is stored', async () => {
-    const secrets = createMockSecretStorage();
-    const memento = createMockMemento();
-    const cs = new CanvasSecrets(secrets as any, memento as any);
-
+    const cs = new CanvasSecrets(createMockSecretStorage() as never, createMockMemento() as never);
     expect(await cs.get('openai')).toBe('');
     expect(await cs.get('gemini')).toBe('');
     expect(await cs.get('stitch')).toBe('');
@@ -40,8 +87,7 @@ describe('CanvasSecrets', () => {
 
   it('set() stores a key under a namespaced SecretStorage key, get() reads it back', async () => {
     const secrets = createMockSecretStorage();
-    const memento = createMockMemento();
-    const cs = new CanvasSecrets(secrets as any, memento as any);
+    const cs = new CanvasSecrets(secrets as never, createMockMemento() as never);
 
     await cs.set('openai', 'sk-abc123');
     expect(await cs.get('openai')).toBe('sk-abc123');
@@ -50,7 +96,7 @@ describe('CanvasSecrets', () => {
 
   it('set() trims whitespace and deletes on empty value', async () => {
     const secrets = createMockSecretStorage();
-    const cs = new CanvasSecrets(secrets as any, createMockMemento() as any);
+    const cs = new CanvasSecrets(secrets as never, createMockMemento() as never);
 
     await cs.set('gemini', '  key-with-spaces  ');
     expect(await cs.get('gemini')).toBe('key-with-spaces');
@@ -62,7 +108,7 @@ describe('CanvasSecrets', () => {
 
   it('delete() removes a stored key', async () => {
     const secrets = createMockSecretStorage();
-    const cs = new CanvasSecrets(secrets as any, createMockMemento() as any);
+    const cs = new CanvasSecrets(secrets as never, createMockMemento() as never);
 
     await cs.set('stitch', 'AQ.xxx');
     expect(await cs.get('stitch')).toBe('AQ.xxx');
@@ -70,70 +116,149 @@ describe('CanvasSecrets', () => {
     await cs.delete('stitch');
     expect(await cs.get('stitch')).toBe('');
   });
+});
 
-  it('migrate() copies plaintext settings into SecretStorage and clears the settings', async () => {
-    setMockConfig('canvas.openaiApiKey', 'sk-from-settings');
-    setMockConfig('canvas.geminiApiKey', 'gem-from-settings');
-    setMockConfig('canvas.stitchApiKey', 'AQ.from-settings');
+describe('CanvasSecrets.migrate (user scope only)', () => {
+  let secrets: ReturnType<typeof createMockSecretStorage>;
+  let memento: ReturnType<typeof createMockMemento>;
 
-    const secrets = createMockSecretStorage();
-    const memento = createMockMemento();
-    const cs = new CanvasSecrets(secrets as any, memento as any);
+  beforeEach(() => {
+    secrets = createMockSecretStorage();
+    memento = createMockMemento();
+  });
 
-    const migrated = await cs.migrate();
+  it('copies a USER-scoped plaintext setting into SecretStorage and clears it', async () => {
+    const cfg = useConfig(fakeConfig({
+      global: {
+        'canvas.openaiApiKey': 'sk-from-settings',
+        'canvas.geminiApiKey': 'gem-from-settings',
+        'canvas.stitchApiKey': 'AQ.from-settings',
+      },
+    }));
+    const cs = new CanvasSecrets(secrets as never, memento as never);
 
-    expect(migrated.sort()).toEqual(['gemini', 'openai', 'stitch']);
+    expect((await cs.migrate()).sort()).toEqual(['gemini', 'openai', 'stitch']);
     expect(await cs.get('openai')).toBe('sk-from-settings');
     expect(await cs.get('gemini')).toBe('gem-from-settings');
     expect(await cs.get('stitch')).toBe('AQ.from-settings');
 
-    // Settings cleared (recorded as update(key, undefined)).
-    const updates = getMockConfigUpdates();
-    expect('canvas.openaiApiKey' in updates).toBe(true);
-    expect(updates['canvas.openaiApiKey']).toBeUndefined();
-    expect('canvas.geminiApiKey' in updates).toBe(true);
-    expect('canvas.stitchApiKey' in updates).toBe(true);
+    const cleared = cfg.updates.filter(u => u.value === undefined && u.target === ConfigurationTarget.Global);
+    expect(cleared.map(u => u.key).sort()).toEqual(['canvas.geminiApiKey', 'canvas.openaiApiKey', 'canvas.stitchApiKey']);
+  });
+
+  it('NEVER adopts a workspace-scoped key — it is cleared and reported', async () => {
+    const warn = vi.spyOn(window, 'showWarningMessage');
+    const cfg = useConfig(fakeConfig({
+      workspace: { 'canvas.openaiApiKey': 'sk-attacker-planted-in-the-repo' },
+    }));
+    const cs = new CanvasSecrets(secrets as never, memento as never);
+
+    expect(await cs.migrate()).toEqual([]);
+    expect(await cs.get('openai')).toBe('');            // not adopted
+    expect(secrets._store.size).toBe(0);
+    expect(cfg.ws['canvas.openaiApiKey']).toBeUndefined();  // cleared
+    expect(cfg.updates).toContainEqual({ key: 'canvas.openaiApiKey', value: undefined, target: ConfigurationTarget.Workspace });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('mysti.canvas.openaiApiKey');
+  });
+
+  it('clears a workspace-FOLDER value too', async () => {
+    const cfg = useConfig(fakeConfig({ folder: { 'canvas.stitchApiKey': 'AQ.repo' } }));
+    const cs = new CanvasSecrets(secrets as never, memento as never);
+
+    expect(await cs.migrate()).toEqual([]);
+    expect(await cs.get('stitch')).toBe('');
+    expect(cfg.updates).toContainEqual({ key: 'canvas.stitchApiKey', value: undefined, target: ConfigurationTarget.WorkspaceFolder });
+  });
+
+  it('adopts the user value even when a workspace value shadows it', async () => {
+    // `config.get()` would return the workspace value here — the whole reason
+    // migrate() reads `inspect().globalValue`.
+    const cfg = useConfig(fakeConfig({
+      global: { 'canvas.openaiApiKey': 'sk-mine' },
+      workspace: { 'canvas.openaiApiKey': 'sk-theirs' },
+    }));
+    expect(cfg.config.get('canvas.openaiApiKey')).toBe('sk-theirs');
+
+    const cs = new CanvasSecrets(secrets as never, memento as never);
+    expect(await cs.migrate()).toEqual(['openai']);
+    expect(await cs.get('openai')).toBe('sk-mine');
+  });
+
+  it('purges workspace keys on EVERY activation, not just the migration run', async () => {
+    // First activation: nothing anywhere → flag set.
+    const first = useConfig(fakeConfig({}));
+    const cs = new CanvasSecrets(secrets as never, memento as never);
+    expect(await cs.migrate()).toEqual([]);
+    expect(first.updates).toHaveLength(0);
+    restoreConfig?.();
+
+    // Later: the user clones a repo whose .vscode/settings.json plants a key.
+    const later = useConfig(fakeConfig({ workspace: { 'canvas.geminiApiKey': 'planted' } }));
+    expect(await cs.migrate()).toEqual([]);
+    expect(await cs.get('gemini')).toBe('');
+    expect(later.updates).toContainEqual({ key: 'canvas.geminiApiKey', value: undefined, target: ConfigurationTarget.Workspace });
   });
 
   it('migrate() is a no-op when no legacy settings exist', async () => {
-    const secrets = createMockSecretStorage();
-    const cs = new CanvasSecrets(secrets as any, createMockMemento() as any);
-
-    const migrated = await cs.migrate();
-    expect(migrated).toEqual([]);
+    useConfig(fakeConfig({}));
+    const cs = new CanvasSecrets(secrets as never, memento as never);
+    expect(await cs.migrate()).toEqual([]);
     expect(secrets._store.size).toBe(0);
   });
 
-  it('migrate() runs only once (guarded by globalState flag)', async () => {
-    setMockConfig('canvas.openaiApiKey', 'sk-first');
+  it('migrate() adopts only once (guarded by the globalState flag)', async () => {
+    const cfg = useConfig(fakeConfig({ global: { 'canvas.openaiApiKey': 'sk-first' } }));
+    const cs = new CanvasSecrets(secrets as never, memento as never);
+    expect(await cs.migrate()).toEqual(['openai']);
 
-    const secrets = createMockSecretStorage();
-    const memento = createMockMemento();
-    const cs = new CanvasSecrets(secrets as any, memento as any);
-
-    const first = await cs.migrate();
-    expect(first).toEqual(['openai']);
-
-    // Even if a new legacy setting appears, the second run is skipped.
-    setMockConfig('canvas.geminiApiKey', 'gem-late');
-    const second = await cs.migrate();
-    expect(second).toEqual([]);
+    // Even if a new legacy setting appears, the second run adopts nothing.
+    cfg.global['canvas.geminiApiKey'] = 'gem-late';
+    expect(await cs.migrate()).toEqual([]);
     expect(await cs.get('gemini')).toBe('');
   });
 
-  it('migrate() does not overwrite a key already in SecretStorage', async () => {
-    setMockConfig('canvas.openaiApiKey', 'sk-from-settings');
-
-    const secrets = createMockSecretStorage();
-    const cs = new CanvasSecrets(secrets as any, createMockMemento() as any);
-
-    // User already moved a key into SecretStorage via set().
+  it('does not overwrite a key already in SecretStorage', async () => {
+    const cfg = useConfig(fakeConfig({ global: { 'canvas.openaiApiKey': 'sk-from-settings' } }));
+    const cs = new CanvasSecrets(secrets as never, memento as never);
     await cs.set('openai', 'sk-already-secret');
 
-    const migrated = await cs.migrate();
-    // Nothing migrated (existing secret preserved), but the stale setting is still cleared.
-    expect(migrated).toEqual([]);
+    expect(await cs.migrate()).toEqual([]);
     expect(await cs.get('openai')).toBe('sk-already-secret');
-    expect('canvas.openaiApiKey' in getMockConfigUpdates()).toBe(true);
+    // …but the stale plaintext setting is still cleared.
+    expect(cfg.updates).toContainEqual({ key: 'canvas.openaiApiKey', value: undefined, target: ConfigurationTarget.Global });
+  });
+
+  it('adopts nothing (and leaves the flag unset) when the host has no inspect()', async () => {
+    const cfg = fakeConfig({ global: { 'canvas.openaiApiKey': 'sk-x' } });
+    delete (cfg.config as { inspect?: unknown }).inspect;
+    useConfig(cfg);
+
+    const cs = new CanvasSecrets(secrets as never, memento as never);
+    expect(await cs.migrate()).toEqual([]);
+    expect(await cs.get('openai')).toBe('');
+    expect(cfg.updates).toHaveLength(0);
+    expect(memento._store.has('mysti.canvas.secretsMigrated')).toBe(false);
+  });
+
+  it('ignores a non-string setting value', async () => {
+    const cfg = fakeConfig({});
+    (cfg.global as Record<string, unknown>)['canvas.openaiApiKey'] = { toString: () => 'sk-object' };
+    (cfg.ws as Record<string, unknown>)['canvas.geminiApiKey'] = 42;
+    useConfig(cfg);
+
+    const cs = new CanvasSecrets(secrets as never, memento as never);
+    expect(await cs.migrate()).toEqual([]);
+    expect(secrets._store.size).toBe(0);
+  });
+
+  it('survives a read-only workspace config (update throws) without adopting', async () => {
+    const cfg = fakeConfig({ workspace: { 'canvas.openaiApiKey': 'planted' } });
+    cfg.config.update = async () => { throw new Error('read-only'); };
+    useConfig(cfg);
+
+    const cs = new CanvasSecrets(secrets as never, memento as never);
+    await expect(cs.migrate()).resolves.toEqual([]);
+    expect(await cs.get('openai')).toBe('');
   });
 });

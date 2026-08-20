@@ -329,8 +329,13 @@ export class SlashCommandManager {
       }
 
       case 'cmd:visual-test': {
-        // Open the visual test dashboard in a separate editor tab
-        callbacks.postToPanel(panelId, { type: 'openVisualTestDashboard' });
+        // Open the visual test dashboard in a separate editor tab.
+        // NOTE: this posts INTO the webview, so it must be a type chat.js
+        // actually handles. It used to post 'openVisualTestDashboard' — the
+        // extension-side type — which no webview case matched, so /visual-test
+        // silently did nothing. chat.js's 'openVisualTestDialog' handler is the
+        // one that bounces the request back to the extension.
+        callbacks.postToPanel(panelId, { type: 'openVisualTestDialog' });
         return;
       }
 

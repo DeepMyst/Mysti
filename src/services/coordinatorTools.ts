@@ -22,6 +22,9 @@
  */
 
 import type { MystiDirective } from '../utils/mystiDelegateParser';
+import { CANVAS_TOOLS } from '../managers/CanvasToolDispatch';
+import { CANVAS_FORMATS } from '../managers/CanvasFormats';
+import type { CanvasArtifact } from '../types';
 
 /** OpenAI-style function tool schema. */
 export interface CoordinatorTool {
@@ -60,18 +63,289 @@ const CONNECT_TOOL: CoordinatorTool = {
 };
 
 /**
+ * Visual observation tools. `look` is a READ — it renders the app and reports —
+ * so it stays available in read-only and plan modes; `act` touches the page and
+ * is gated separately.
+ *
+ * Note what these schemas do NOT expose: `url` and `devServerCommand`. The
+ * address and the shell command come from the user's settings. A model that
+ * cannot name a command is a model no confirmation dialog can be talked into
+ * approving — which is strictly stronger than gating one it can name.
+ */
+const LOOK_TOOL: CoordinatorTool = {
+  type: 'function',
+  function: {
+    name: 'look',
+    description: 'Render the running app in a real browser and LOOK at it. Returns console errors, failed network requests, layout/overflow/contrast probes, the accessibility tree, a DOM outline, and a screenshot. Use it after any UI change, and before claiming a UI change works. The dev server and browser stay warm, so looking again is fast.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: str('page path relative to the app root, e.g. "/settings" (omit to stay on the current page)'),
+        selector: str('CSS selector to focus the capture and the layout probes on'),
+        mode: { type: 'string', enum: ['viewport', 'full-page', 'element'], description: 'capture mode (default viewport)' },
+        wait_for: str('CSS selector to wait for before capturing'),
+        reload: { type: 'boolean', description: 'reload before capturing (default true, so your edits are picked up)' },
+        focus: str('one line: what you are checking'),
+      },
+      required: [],
+    },
+  },
+};
+
+const ACT_TOOL: CoordinatorTool = {
+  type: 'function',
+  function: {
+    name: 'act',
+    description: 'Interact with the page (click, type, scroll, hover, select, navigate), then look at the result. The user approves the batch. Maximum 8 actions.',
+    parameters: {
+      type: 'object',
+      properties: {
+        actions: {
+          type: 'array',
+          maxItems: 8,
+          description: 'ordered list of actions to perform',
+          items: {
+            type: 'object',
+            properties: {
+              action: { type: 'string', enum: ['click', 'type', 'navigate', 'scroll', 'hover', 'select'] },
+              target: str('CSS selector (required for click/type/hover/select)'),
+              value: str('text to type, app-relative path to navigate to, up|down|top|bottom to scroll, or the option value to select'),
+            },
+            required: ['action'],
+          },
+        },
+        focus: str('one line: what you are checking'),
+      },
+      required: ['actions'],
+    },
+  },
+};
+
+/* ─────────────────────────── canvas (Plan 20 §3.3) ───────────────────────── */
+
+/** Every canvas function is namespaced so it can never collide with a built-in. */
+export const CANVAS_TOOL_PREFIX = 'canvas_';
+
+/**
+ * Canvas tools deliberately NOT offered as native function calls.
+ *
+ * `write_page` / `write_page_jsx` take a whole artboard as a JSON string
+ * argument, and a native tool call cannot carry one: the coordinator generates
+ * under a token cap, and BOTH length-continuation branches in
+ * `_runMystiAgentic` are skipped on a tool-call turn — so a cut lands mid-JSON,
+ * `parseToolArgsChecked` reports `truncated`, and the model burns its turn
+ * budget re-truncating the same page. Whole artboards therefore ride the
+ * `<canvaspage:NONCE>` TEXT directive, where the scanner is carried across a
+ * length cut and reassembles the payload. Everything else in the surface is a
+ * small structured op that fits comfortably.
+ *
+ * Derived from `CanvasToolSpec.nativeExcluded` rather than restated here, so
+ * the dispatcher's own catalog decides — but the membership is asserted in
+ * `tests/services/coordinatorTools.test.ts` so the exclusion cannot be lost by
+ * an edit to the surface.
+ *
+ * Only the transport differs — a `<canvaspage:>` page lands on the same
+ * `dispatchCanvasTool` write path with the same authority.
+ */
+export const CANVAS_NATIVE_EXCLUDED: ReadonlySet<string> =
+  new Set(CANVAS_TOOLS.filter(t => t.nativeExcluded).map(t => t.name));
+
+/** Artifact kinds, typed against the real union so a rename fails `tsc`. */
+const CANVAS_ARTIFACT_KINDS: ReadonlyArray<CanvasArtifact['kind']> = ['deck', 'document', 'screens', 'board'];
+
+/**
+ * Canvas tools that exist ONLY on the coordinator lane — they are not in
+ * `CANVAS_TOOLS`, so `dispatchCanvasTool` does not serve them and the
+ * `{kind:'canvas'}` dispatch branch must handle them itself: opening a canvas
+ * is session lifecycle, not an artifact-editing op. (`checkpoint` used to sit
+ * here; Plan 22 Phase 4 moved it into the catalog, where it belongs — it is a
+ * write the UI performs too.)
+ *
+ * `undo` used to sit here too, and nothing ever implemented it — see
+ * {@link CANVAS_REFUSED_TOOLS}.
+ */
+export const CANVAS_SESSION_TOOL_NAMES = ['open'] as const;
+
+/**
+ * Canvas tool names the coordinator will NOT run, mapped to the sentence the
+ * model is told instead.
+ *
+ * `undo` is here by design, not by omission (Plan 22 §3.5): undo/redo is ONE
+ * SHARED stack — "a design tool must make Cmd+Z mean 'undo the last thing that
+ * happened', whoever did it" — so an agent undo can silently revert the
+ * HUMAN's last transaction. The plan's rule is verbatim: *"The agent is
+ * deliberately given no undo tool — an agent that can revert the human's work
+ * is a hazard; it corrects by editing forward."* It was nevertheless ADVERTISED
+ * as a native schema whose description told the model to prefer it over a
+ * corrective edit, so every canvas-bound run burned turns on a call that
+ * answered "unknown canvas tool: undo".
+ *
+ * Refusing by name (rather than falling through to the generic "Unknown canvas
+ * tool" error) is what stops the model re-spelling it and retrying.
+ */
+const CANVAS_REFUSED_TOOLS: ReadonlyMap<string, string> = new Map([
+  ['undo', 'Canvas undo is the user\'s, not yours — Cmd+Z in the canvas, the history rail, and rejecting a staged suggestion all revert edits, and the stack is shared, so an agent undo could revert THEIR last change. Correct the design by editing forward instead (set_text / set_style / write_page_jsx), or call canvas_checkpoint first if you want a named restore point.'],
+]);
+
+/**
+ * The refusal sentence for a canvas tool the coordinator declines to run, or
+ * `undefined` when the tool is allowed. Accepts any spelling either lane may
+ * produce (`undo`, `undo_canvas`, `canvas_undo`) — it normalizes first, so the
+ * two lanes cannot disagree about what is refused.
+ */
+export function canvasToolRefusal(tool: string): string | undefined {
+  return CANVAS_REFUSED_TOOLS.get(normalizeCanvasToolName(tool));
+}
+
+const CANVAS_OPEN_TOOL: CoordinatorTool = {
+  type: 'function',
+  function: {
+    name: `${CANVAS_TOOL_PREFIX}open`,
+    description: 'WRITE (opens the canvas): create a design canvas for this chat, or focus the one already open. Call this FIRST whenever the user asks for a design, mockup, screen, deck, poster or slide — every other canvas_* tool fails while no canvas is open. Safe to call when one already exists (it just focuses it).',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: str('short canvas name, e.g. "Login flow"'),
+        kind: { type: 'string', enum: [...CANVAS_ARTIFACT_KINDS], description: 'what is being designed (default screens)' },
+        format: { type: 'string', enum: CANVAS_FORMATS.map(f => f.formatId), description: 'artboard format id (default follows the kind)' },
+      },
+      required: [],
+    },
+  },
+};
+
+/**
+ * The canvas function schemas, DERIVED from `CANVAS_TOOLS` — the same catalog
+ * `dispatchCanvasTool` switches on — plus the two coordinator-lane tools.
+ * Deriving is the point: a tool added to (or renamed in) the dispatcher shows
+ * up here automatically, so the model can never be taught a call the executor
+ * rejects (the `scaffold_page`-in-the-prompt failure Phase 0 closed).
+ *
+ * Only the `primary` and `extra` tiers are offered: a superseded name stays
+ * dispatchable (see `CANVAS_SCHEMA_BY_TOOL`) but teaching two vocabularies for
+ * one write is how the surface drifted from the dispatcher in the first place.
+ */
+const asCoordinatorTool = (t: { name: string; description: string; inputSchema: Record<string, unknown> }): CoordinatorTool => ({
+  type: 'function',
+  function: {
+    name: `${CANVAS_TOOL_PREFIX}${t.name}`,
+    description: t.description,
+    // Copied, not aliased — a caller mutating a schema must not be able to
+    // rewrite the dispatcher's own contract object.
+    parameters: { ...t.inputSchema },
+  },
+});
+
+export const CANVAS_TOOL_SCHEMAS: readonly CoordinatorTool[] = [
+  CANVAS_OPEN_TOOL,
+  ...CANVAS_TOOLS
+    .filter(t => t.tier !== 'compat' && !CANVAS_NATIVE_EXCLUDED.has(t.name))
+    .map(asCoordinatorTool),
+];
+
+/**
+ * Unprefixed canvas tool name → its parameter schema, for the NATIVE lane.
+ *
+ * Compat-tier names are included even though they are never offered: a model
+ * that reaches for the previous vocabulary (from an older transcript, or from
+ * its own priors) must land on the same dispatcher rather than get a refusal
+ * it cannot act on. Native-excluded tools are deliberately absent — a native
+ * call for a whole artboard is refused with a pointer to the text directive.
+ */
+const CANVAS_SCHEMA_BY_TOOL = new Map<string, Record<string, unknown>>([
+  ...CANVAS_TOOL_SCHEMAS.map(t => [t.function.name.slice(CANVAS_TOOL_PREFIX.length), t.function.parameters] as const),
+  ...CANVAS_TOOLS
+    .filter(t => t.tier === 'compat' && !CANVAS_NATIVE_EXCLUDED.has(t.name))
+    .map(t => [t.name, { ...t.inputSchema }] as const),
+]);
+
+/**
+ * Every canvas tool name either lane may legitimately produce — the catalog
+ * plus the two coordinator-lane session tools. Used for canonicalization, so
+ * `<canvas:NONCE tool="write_page">` normalizes correctly even though
+ * `canvas_write_page` is not a native function.
+ */
+const CANVAS_KNOWN_TOOLS: ReadonlySet<string> = new Set<string>([
+  ...CANVAS_TOOLS.map(t => t.name),
+  ...CANVAS_SESSION_TOOL_NAMES,
+  // Refused names are KNOWN (so `canvas_undo` normalizes to `undo` and is
+  // answered with its refusal) but are not offered and are not dispatchable.
+  'undo',
+]);
+
+/**
+ * Plan-prose spellings the model may reach for → the canonical dispatch name.
+ * The two lanes must land on the SAME `{kind:'canvas', tool}` value, so the
+ * text lane (`<canvas:NONCE tool="open_canvas">`) should run its parsed tool
+ * name through {@link normalizeCanvasToolName} too.
+ */
+const CANVAS_TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
+  ['open_canvas', 'open'],
+  ['undo_canvas', 'undo'],
+  ['checkpoint_canvas', 'checkpoint'],
+]);
+
+/**
+ * Canonicalize a canvas tool name from either lane: trim, tolerate a stray
+ * `canvas_` prefix (models copy the function name into the text directive),
+ * then resolve prose aliases.
+ */
+export function normalizeCanvasToolName(tool: string): string {
+  let t = (tool || '').trim();
+  while (t.startsWith(CANVAS_TOOL_PREFIX) && !CANVAS_KNOWN_TOOLS.has(t)) {
+    t = t.slice(CANVAS_TOOL_PREFIX.length);
+  }
+  return CANVAS_TOOL_ALIASES.get(t) ?? t;
+}
+
+/** Whether a (normalized) canvas tool name is one the coordinator can run on EITHER lane. */
+export function isKnownCanvasTool(tool: string): boolean {
+  return CANVAS_KNOWN_TOOLS.has(normalizeCanvasToolName(tool));
+}
+
+/** Required args the model omitted (empty/blank strings count as omitted). */
+function missingRequiredArgs(schema: Record<string, unknown>, args: Record<string, unknown>): string[] {
+  const required = (schema as { required?: unknown }).required;
+  if (!Array.isArray(required)) { return []; }
+  return required.filter((k): k is string => typeof k === 'string').filter(k => {
+    const v = args[k];
+    return v === undefined || v === null || (typeof v === 'string' && !v.trim());
+  });
+}
+
+/**
+ * The `canvas` directive the text lane (`<canvas:NONCE tool="…">`) produces —
+ * a native `canvas_*` call converts into exactly this, so neither encoding
+ * carries more authority than the other.
+ */
+export type CanvasToolDirective = Extract<MystiDirective, { kind: 'canvas' }>;
+
+/**
  * The tool schemas offered to a capable coordinator model.
  * @param mcpTools the user's CONNECTED external MCP tools (name + description),
  *   exposed as `mcp__<name>` functions so the model can call them natively.
  * @param connectEnabled whether to offer the `connect` tool (DeepMyst wired).
+ * @param visual whether to offer `look` (render + observe) and `act` (interact).
+ * @param canvasBound whether this run can reach a canvas — bound to an open
+ *   artifact, OR merely able to open one. Canvas schemas are offered only then,
+ *   so a coding-only run is not paying for ~20 irrelevant tools. Pass true from
+ *   a cold chat that could design (`canvas_open` is the first schema in the
+ *   list) — that is what turns "design me a login screen" into a canvas instead
+ *   of prose. The text lane's `<canvas:NONCE>` / `<canvaspage:NONCE>` scanning
+ *   is separate and stays on always, per Plan 20 §3.3 item 3.
  */
 export function coordinatorToolSchemas(
   execEnabled: boolean,
   mcpTools: Array<{ name: string; description?: string }> = [],
   connectEnabled = false,
+  visual: { look?: boolean; act?: boolean } = {},
+  canvasBound = false,
 ): CoordinatorTool[] {
   const base = execEnabled ? [...READ_TOOLS, ...EXEC_TOOLS] : [...READ_TOOLS];
   if (connectEnabled) { base.push(CONNECT_TOOL); }
+  if (visual.look) { base.push(LOOK_TOOL); }
+  if (visual.look && visual.act) { base.push(ACT_TOOL); }
+  if (canvasBound) { base.push(...CANVAS_TOOL_SCHEMAS); }
   // External MCP tools are namespaced `mcp__<name>` so they can never collide
   // with a built-in tool. No inputSchema is available from listTools(), so the
   // parameters are open (the model infers args from the description).
@@ -166,7 +440,55 @@ export function toolCallToDirective(name: string, args: Record<string, unknown>)
       if (!service || !/^[a-z0-9][a-z0-9._-]*$/.test(service)) { return { error: 'connect: a valid lowercase "service" slug is required.' }; }
       return { kind: 'connect', service };
     }
+    case 'look': {
+      const rawMode = asStr(a.mode).trim().toLowerCase();
+      const mode = rawMode === 'viewport' || rawMode === 'full-page' || rawMode === 'element'
+        ? rawMode as 'viewport' | 'full-page' | 'element'
+        : undefined;
+      return {
+        kind: 'look',
+        path: asStr(a.path).trim() || undefined,
+        selector: asStr(a.selector).trim() || undefined,
+        mode,
+        waitFor: asStr(a.wait_for).trim() || undefined,
+        reload: a.reload === undefined ? undefined : !!a.reload,
+        focus: asStr(a.focus).trim() || undefined,
+      };
+    }
+    case 'act': {
+      if (!Array.isArray(a.actions)) { return { error: 'act: "actions" must be an array of action objects.' }; }
+      const actions = a.actions.filter(x => x && typeof x === 'object' && !Array.isArray(x)) as Array<Record<string, unknown>>;
+      if (actions.length === 0) { return { error: 'act: "actions" contained no action objects.' }; }
+      return { kind: 'act', actions, focus: asStr(a.focus).trim() || undefined };
+    }
     default:
+      // Canvas tools arrive namespaced `canvas_<tool>` (Plan 20 §3.3). They map
+      // back to the SAME `{kind:'canvas'}` directive the `<canvas:NONCE>` text
+      // directive produces, so a native call is never more trusted than a text
+      // one — and, exactly like `write`/`bash` above, the authority check lives
+      // in the dispatch branch, not here.
+      if (name.startsWith(CANVAS_TOOL_PREFIX)) {
+        const tool = normalizeCanvasToolName(name);
+        if (!tool) { return { error: 'canvas tool: missing tool name.' }; }
+        // Refused BEFORE the schema lookup so the model gets the reason rather
+        // than "Unknown canvas tool", which it would answer by re-spelling.
+        const refused = CANVAS_REFUSED_TOOLS.get(tool);
+        if (refused) { return { error: refused }; }
+        const schema = CANVAS_SCHEMA_BY_TOOL.get(tool);
+        if (!schema) {
+          // A whole artboard has no native encoding — say so, rather than
+          // letting the model retry a call that can never fit.
+          return CANVAS_NATIVE_EXCLUDED.has(tool)
+            ? { error: `Unknown canvas tool "${tool}" on the native lane — a whole artboard rides the <canvaspage:…> text directive instead.` }
+            : { error: `Unknown canvas tool "${tool}".` };
+        }
+        const missing = missingRequiredArgs(schema, a);
+        if (missing.length) {
+          return { error: `${name}: missing required argument(s): ${missing.map(m => `"${m}"`).join(', ')}.` };
+        }
+        const directive: CanvasToolDirective = { kind: 'canvas', tool, args: a };
+        return directive;
+      }
       // External MCP tools arrive namespaced `mcp__<name>` (Plan 19 Phase 6) —
       // map back to the gated mcptool directive so the SAME dispatch runs them.
       if (name.startsWith('mcp__')) {

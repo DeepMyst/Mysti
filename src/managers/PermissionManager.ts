@@ -96,6 +96,14 @@ export class PermissionManager {
       return true;
     }
 
+    // Plan 20 §3.6: reading the canvas is never a privileged act, so a
+    // `canvas-read` never raises a card. Guarded by !forceInteractive so this
+    // can never become a way around the Plan 19 forced-card invariant.
+    if (actionType === 'canvas-read' && !forceInteractive) {
+      console.log('[Mysti] PermissionManager: Auto-approved (canvas read)');
+      return true;
+    }
+
     // Create permission request
     const now = Date.now();
     const isSemiAutonomous = this._config.timeoutBehavior === 'semi-autonomous';
@@ -316,7 +324,13 @@ export class PermissionManager {
    */
   static classifyRisk(actionType: PermissionActionType): PermissionRiskLevel {
     switch (actionType) {
+      // Plan 20 §3.6: canvas ops write `.mysti/canvas/<id>/` only, are fully
+      // invertible through the op log, and reach neither a shell nor the
+      // network — a design edit is not a source-tree edit, so it does not
+      // inherit the source-tree risk labels.
       case 'file-read':
+      case 'canvas-read':
+      case 'canvas-edit':
         return 'low';
       case 'file-create':
       case 'file-edit':
@@ -353,6 +367,10 @@ export class PermissionManager {
         return 'Edit multiple files';
       case 'delegate':
         return 'Delegate to a sub-agent';
+      case 'canvas-read':
+        return 'Read the canvas';
+      case 'canvas-edit':
+        return 'Edit the canvas';
       default:
         return 'Perform action';
     }

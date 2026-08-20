@@ -78,6 +78,7 @@ extension.ts (entry — activate() wires everything)
     │   ├── SlashCommandManager   - Unified slash command menu system
     │   ├── AgentLifecycleManager - Session idle timeout & child process tracking
     │   ├── ActiveModeManager     - OpenClaw daemon WebSocket connection
+    │   ├── VisualSessionManager  - Warm dev-server + browser session (`look`/`act`)
     │   └── ChannelBridge         - Routes messages between daemon channels and panels
     │
     └── ChatViewProvider (UI coordinator, src/providers/ChatViewProvider.ts)
@@ -133,6 +134,31 @@ extension.ts (entry — activate() wires everything)
 3. `AutonomousManager` decides based on safety mode (conservative/balanced/aggressive)
 4. `MemoryManager` learns from user overrides (confidence decays over time)
 5. Audit trail logged for every autonomous decision
+
+## Visual observation (`look` / `act`)
+
+Any agent — the `@mysti` coordinator or a CLI backend — can render the running app in a real
+browser and read back what is on screen. It is a **perception primitive, not a second agent**:
+`VisualSessionManager.look()` returns a `VisualObservation` (console errors, failed requests,
+layout/overflow/contrast probes, accessibility tree, DOM outline, screenshot) to the *calling*
+agent, which fixes what it saw with its own already-gated tools.
+
+- Trust boundary: `src/services/visualTestPolicy.ts` — the ONLY place a `VisualTestConfig` is
+  built. A model may say WHAT to look at (`path`, `selector`, `mode`) but never WHERE
+  (scheme/host/port) and never the dev-server command. There is no `url` or command attribute
+  on the tag or in the tool schema, so there is no model-to-shell path to gate.
+- Coordinator surface: `<look:NONCE …>` / `<act:NONCE>` directives (`MYSTI_VISUAL_KINDS`,
+  `MYSTI_VISUAL_ACT_KINDS`) plus native `look`/`act` tool schemas; both convert to the same
+  `MystiDirective` and ride the same gated dispatch. CLI backends get the same nonce'd `<look:>`
+  tag via `_visualPromptSnippet`, injected into that turn's system context.
+- Gates (all default-safe): `mysti.mysti.visualTools` (machine, **off**), a trusted workspace,
+  `mysti.visualTest.allowedOrigins` (loopback only), `mysti.visualTest.allowModelDevServerCommand`
+  (**false**), `mysti.visualTest.agentInteractions` (**off**), `mysti.mysti.maxVisualLooks` (6).
+  Observations re-enter the model nonce-redacted + UNTRUSTED-fenced.
+- Playwright is a webpack external and is un-ignored in `.vscodeignore`; browser BINARIES are not
+  shipped (`npx playwright install chromium`). `BrowserManager.probe()` checks both before
+  anything spawns.
+- `look` survives read-only/plan mode (it is a read); `act` does not.
 
 ## Key Types (src/types.ts)
 

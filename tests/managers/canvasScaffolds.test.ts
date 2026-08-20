@@ -12,6 +12,7 @@ import { CanvasOpExecutor } from '../../src/managers/CanvasOpExecutor';
 import { dispatchCanvasTool } from '../../src/managers/CanvasToolDispatch';
 import type { CanvasToolContext } from '../../src/managers/CanvasToolDispatch';
 import type { CanvasArtifact } from '../../src/types';
+import { pageJsx, pageMode } from '../../src/canvas/pageMigration';
 
 describe('CanvasScaffolds', () => {
   describe('the library', () => {
@@ -68,9 +69,13 @@ describe('CanvasScaffolds', () => {
       expect(r.ok).toBe(true);
       expect(r.op!.status).toBe('applied');
       expect(artifact.pages).toHaveLength(1);
-      expect(artifact.pages[0].mode).toBe('jsx');
+      expect(pageMode(artifact.pages[0])).toBe('jsx');
       expect(artifact.pages[0].actionTitle).toBe('Sign in');
-      expect(artifact.pages[0].jsxSource).toContain('function Page()');
+      // A shipped scaffold must COMPILE — a scaffold that only survived as a
+      // legacy blob would mean the JSX subset does not cover our own content.
+      expect(artifact.pages[0].legacy).toBeUndefined();
+      expect(artifact.pages[0].compileError).toBeUndefined();
+      expect(pageJsx(artifact.pages[0])).toContain('function Page()');
     });
 
     it('every scaffold passes the write-jsx validation via scaffold_page', () => {

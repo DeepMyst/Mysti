@@ -1,126 +1,1449 @@
 /*
  * Mysti - AI Coding Agent · Copyright (c) 2025 DeepMyst Inc.
  * SPDX-License-Identifier: Apache-2.0
- * Canvas three-pane shell — calm, near-monochrome, one accent (Plan 06 spirit).
+ *
+ * Plan 22 — the canvas shell's visual system.
+ *
+ * ── Why this file looks the way it does ──────────────────────────────────────
+ *
+ * The canvas is a VS Code webview panel, so it is judged against the editor it
+ * lives in, not against a design tool's brand. Three rules follow, and every
+ * declaration below obeys them:
+ *
+ * 1. NATIVE. Type ramp, spacing, focus rings and every single colour derive
+ *    from `--vscode-*` tokens. Where a token can be missing, the fallback is
+ *    theme-NEUTRAL (`transparent`, `inherit`, `currentColor`, a `color-mix` of
+ *    `currentColor`) — never a dark literal, which is exactly what made the
+ *    previous shell unreadable under a light theme. The one deliberate literal
+ *    is `--canvas-paper` (see §2): the artboard is CONTENT, not chrome.
+ * 2. THE BOARD IS THE PRODUCT. The chrome earns its space or collapses. The
+ *    board track has a hard floor (`--board-floor`) and can never be squeezed
+ *    to zero by the side panes — see the ladder in §5.
+ * 3. THE AGENT MUST BE LEGIBLE. Anything that reports what Mysti is doing —
+ *    the status pill, ghost artboards, the agent cursor, staged suggestions,
+ *    error cards — is styled as a first-class surface, not as an afterthought.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * CLASS CONTRACT — what other modules may rely on
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The webview DOM seam (`src/webview/canvas/dom.ts`) exposes `getElementById`
+ * and `className` only — there is no `querySelector` — so ids are the wiring
+ * surface and classes are the styling surface. Both halves are frozen here.
+ *
+ * A. IDS THE SHELL PROVIDES (looked up by `app.ts` / `board.ts` / `liveness.ts`)
+ *    #app #board #board-scroll #page-stage #board-overlay #board-zoom
+ *    #board-empty #board-loading #empty-templates #onboarding #onboarding-dismiss
+ *    #btn-zoom-in #btn-zoom-out #btn-zoom-fit #zoom-level
+ *    #pages-rail #rail-list #scaffold-menu #btn-add-page #staged-rail
+ *    #inspector #insp-tabs #insp-body #version-timeline #history-toolbar
+ *    #artifact-name #agent-status #agent-activity #agent-elapsed #btn-agent-cancel
+ *    #agent-comment #board-error #device-select #btn-apply-device #theme-select
+ *    #capability-chips #btn-present #btn-export
+ *    #rail-hidden #rail-shown #inspector-hidden #inspector-shown  (see §5)
+ *
+ *    `#agent-comment` is NOT optional: `liveness.ts` falls back to `#inspector`
+ *    and calls `replaceChildren()` on whichever host it gets, so a shell
+ *    without the dock loses the entire inspector pane the first time a
+ *    composer is built.
+ *
+ *    `#page-stage` MUST stay whitespace-free in the template: `:empty` on it is
+ *    what drives the loading state and the onboarding hint with zero JS.
+ *
+ * B. CLASSES THIS FILE STYLES THAT JS MODULES EMIT (do not rename without
+ *    updating the emitter AND this list):
+ *      board.ts        .artboard .artboard-label .artboard-surface
+ *                      .artboard-preview .artboard-frame
+ *      selection.ts    .sel-box (+.primary) .sel-marquee
+ *      rail.ts         .thumb (+.active) .thumb-preview .thumb-frame .thumb-meta
+ *                      .thumb-title .thumb-badge (+.device +.legacy)
+ *                      .thumb-actions .thumb-action
+ *      liveness.ts     .ghost-artboard .ghost-shimmer .ghost-meta .ghost-label
+ *                      .ghost-elapsed .ghost-cancel
+ *                      .agent-cursor .agent-cursor-label
+ *                      .frame-error-card .fec-title .fec-message .fec-actions
+ *                      .fec-fix .fec-dismiss
+ *                      .staged-rail .staged-head .staged-count
+ *                      .staged-accept-all .staged-reject-all
+ *                      .staged-row .sr-title .sr-previews .sr-before .sr-after
+ *                      .sr-caption .sr-preview .sr-error .sr-actions
+ *                      .sr-accept .sr-reject
+ *      inspector.ts    .insp-empty .insp-head .insp-title .insp-sub
+ *                      .insp-section .insp-section-title .insp-slots
+ *                      .insp-restyle .insp-unpin-node
+ *                      .ctl (+[data-state] +[data-pinned] +[data-invalid])
+ *                      .ctl-label .ctl-body .ctl-pin .ctl-clear .ctl-edit-canvas
+ *                      .ctl-note .ctl-toggle .ctl-range .ctl-readout .ctl-token
+ *                      .ctl-swatch .ctl-input (+.ctl-text .ctl-number .ctl-range
+ *                      .ctl-color .ctl-select .ctl-textarea .ctl-raw)
+ *      historyUi.ts    .history-btn (+.undo +.redo +.save)
+ *                      .version-empty .version-row .version-thumb (+.empty)
+ *                      .version-meta .version-label .version-sub .version-restore
+ *      app.ts          .chip (+.on) .sm-item .tpl-btn
+ *      liveness.ts     .agent-detail .agent-progress .agent-progress-fill
+ *      (status bar)    .agent-review — appended INTO `#agent-status`, after the
+ *                      parts this shell ships; §11.6 restates the visual order.
+ *                      `#agent-status[data-state]` = offline|working|review|idle
+ *                      and `[data-motion]` = full|reduced.
+ *      liveness.ts     .agent-comment .ac-head .ac-title .ac-row .ac-target
+ *      (composer)      .ac-input .ac-send .ac-outbox .ac-item .ac-item-text
+ *                      .ac-item-status; .staged-empty .staged-list
+ *                      .staged-toggle .sr-head .sr-where .sr-reveal
+ *                      .change-flash (+[data-motion]); inspector.ts .insp-ask
+ *
+ *    ICON HAND-OFF: `historyUi.ts` and `rail.ts` emit `data-icon="<name>"` plus
+ *    a readable word in `.btn-label`, and set `aria-label` unconditionally.
+ *    §11.9 draws `--icon-<name>` over them and hides the word — an unstyled
+ *    shell still shows an operable button, and a styled one never loses the
+ *    accessible name. `inspector.ts` emits `.btn-glyph` text marks, which §11.9
+ *    replaces with the same masks.
+ *
+ *    LAYOUT CLASSES: `app.ts` stamps `#app` with `layout-narrow|medium|wide`,
+ *    `rail-collapsed`, `inspector-collapsed` and `data-layout-mode`. §11.5
+ *    honours them and they OUTRANK the container-query ladder — the JS decision
+ *    carries hysteresis, and two correct answers fighting mid-drag is a flicker.
+ *
+ * C. UTILITIES ANY MODULE MAY USE
+ *      .i .i-<name>   masked SVG icon (see §3). Colour = `currentColor`, size =
+ *                     `--i-size`. Usable from `createElement('span')` + a class,
+ *                     which is the only icon mechanism the DOM seam allows —
+ *                     `createElement` cannot mint SVG-namespaced nodes.
+ *      .btn .btn-quiet .btn-primary .icon-btn .field .field-label .select
+ *      .sr-only       visually hidden, still focusable / announced.
+ *      .pane .pane-head .pane-title .pane-close .pane-scrim .pane-toggle
+ *
+ * D. TOKENS JS MAY WRITE (per element, via `style.setProperty`)
+ *      --canvas-paper   the artboard's paper colour (default white — the design
+ *                       is content, so it does NOT follow the editor theme).
+ *                       Set it per artboard from the design theme's background.
+ *      --i-size         icon size on an `.i` element or any ancestor.
+ *      --ghost-progress 0..1, paints the ghost artboard's determinate bar.
+ *
+ * E. STATE THE CSS OWNS (no JS required, and none may be assumed)
+ *      §5's four checkboxes are the pane state machine. They are real form
+ *      controls so the layout is keyboard-operable and survives a JS failure.
+ *      A host that wants to persist pane state in `CanvasViewState` mirrors
+ *      `input.checked` — the decision table is `src/webview/canvas/layout.ts`.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
+/* ══ §1 TOKENS ══════════════════════════════════════════════════════════════
+ * Everything downstream reads these. There are no colour literals below this
+ * block except `--canvas-paper`, and no font/size/space literals that are not
+ * derived from VS Code's own type ramp.
  */
 :root {
-  --c-bg: var(--vscode-editor-background, #1e1e1e);
-  --c-panel: var(--vscode-sideBar-background, #252526);
-  --c-fg: var(--vscode-foreground, #ccc);
-  --c-dim: var(--vscode-descriptionForeground, #888);
-  --c-border: var(--vscode-panel-border, rgba(255,255,255,0.08));
-  --c-accent: var(--vscode-focusBorder, #007acc);
-  --c-hover: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
-  --c-active: var(--vscode-list-activeSelectionBackground, rgba(0,122,204,0.25));
-  --topbar-h: 44px;
+  /* type — one ramp, derived from the editor's own base size */
+  --font: var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --font-mono: var(--vscode-editor-font-family, ui-monospace, "SF Mono", monospace);
+  --fz: var(--vscode-font-size, 13px);
+  --fz-100: calc(var(--fz) * 0.846);   /* 11px @13 — badges, captions, labels  */
+  --fz-200: calc(var(--fz) * 0.923);   /* 12px @13 — dense UI text             */
+  --fz-300: var(--fz);                 /* 13px     — body                      */
+  --fz-400: calc(var(--fz) * 1.231);   /* 16px @13 — section heads             */
+  --fz-500: calc(var(--fz) * 1.538);   /* 20px @13 — empty-state title         */
+  --lh-tight: 1.25;
+  --lh: 1.45;
+  --tracking-caps: 0.06em;
+
+  /* space — a 4px scale, so every gap is a multiple of one number */
+  --sp-0: 2px; --sp-1: 4px; --sp-2: 8px; --sp-3: 12px;
+  --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+
+  /* radius */
+  --r-1: 3px; --r-2: 5px; --r-3: 8px; --r-4: 12px; --r-pill: 999px;
+
+  /* surfaces */
+  --bg: var(--vscode-editor-background, transparent);
+  --bg-panel: var(--vscode-sideBar-background, var(--bg));
+  --bg-raised: var(--vscode-editorWidget-background, var(--bg-panel));
+  --bg-board: var(--vscode-editorWidget-background, var(--bg));
+  --bg-input: var(--vscode-input-background, transparent);
+  --bg-hover: var(--vscode-list-hoverBackground, color-mix(in srgb, currentColor 9%, transparent));
+  --bg-selected: var(--vscode-list-activeSelectionBackground, color-mix(in srgb, currentColor 16%, transparent));
+  --fg-selected: var(--vscode-list-activeSelectionForeground, inherit);
+  --bg-inactive: var(--vscode-list-inactiveSelectionBackground, var(--bg-hover));
+
+  /* text */
+  --fg: var(--vscode-foreground, inherit);
+  --fg-dim: var(--vscode-descriptionForeground, color-mix(in srgb, currentColor 68%, transparent));
+  /* DECORATION ONLY — never a `color` for text. This is the foreground at 45%
+   * alpha, so against the surfaces the shell actually paints it composites to
+   * ~2.3:1 in light themes: below the 3:1 floor for any text, let alone the
+   * 4.5:1 one for the 11px `--fz-100` the quiet labels use. Text that wants to
+   * recede takes `--fg-dim`, which VS Code guarantees against its own surfaces. */
+  --fg-faint: color-mix(in srgb, currentColor 45%, transparent);
+
+  /* lines — `currentColor` mixes are the theme-neutral fallback */
+  --line: var(--vscode-panel-border, color-mix(in srgb, currentColor 16%, transparent));
+  --line-soft: color-mix(in srgb, currentColor 11%, transparent);
+
+  /* one accent, semantic colour only */
+  --accent: var(--vscode-focusBorder, currentColor);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --btn-bg: var(--vscode-button-secondaryBackground, transparent);
+  --btn-fg: var(--vscode-button-secondaryForeground, inherit);
+  --btn-bg-hover: var(--vscode-button-secondaryHoverBackground, var(--bg-hover));
+  --btn-primary-bg: var(--vscode-button-background, transparent);
+  --btn-primary-fg: var(--vscode-button-foreground, inherit);
+  --btn-primary-bg-hover: var(--vscode-button-hoverBackground, var(--btn-primary-bg));
+  --danger: var(--vscode-errorForeground, currentColor);
+  --danger-line: var(--vscode-inputValidation-errorBorder, var(--danger));
+  --danger-bg: var(--vscode-inputValidation-errorBackground, color-mix(in srgb, var(--danger) 12%, transparent));
+  --warn: var(--vscode-editorWarning-foreground, currentColor);
+  --ok: var(--vscode-testing-iconPassed, currentColor);
+  --badge-bg: var(--vscode-badge-background, color-mix(in srgb, currentColor 14%, transparent));
+  --badge-fg: var(--vscode-badge-foreground, inherit);
+
+  /* elevation — VS Code owns the shadow colour; transparent when it does not */
+  --shadow-c: var(--vscode-widget-shadow, transparent);
+  --shadow-1: 0 1px 2px var(--shadow-c);
+  --shadow-2: 0 2px 6px var(--shadow-c), 0 8px 24px var(--shadow-c);
+  --shadow-art: 0 1px 2px var(--shadow-c), 0 10px 30px var(--shadow-c);
+
+  /* focus */
+  --focus: var(--vscode-focusBorder, currentColor);
+  --focus-w: 1px;
+  --focus-offset: 2px;
+
+  /* motion */
+  --dur-1: 90ms;
+  --dur-2: 160ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* §2 — the artboard's paper. CONTENT, not chrome: a design is authored
+   * against its own theme, so it must not flip with the editor's. JS may
+   * override it per artboard from the design theme's background token. */
+  --canvas-paper: #ffffff;
+
+  /* layout ladder defaults (wide). §5 overrides these. */
+  --board-floor: 320px;
+  --rail-track: clamp(172px, 17cqi, 260px);
+  --insp-track: clamp(240px, 22cqi, 340px);
+  --rail-dock-display: flex;
+  --insp-dock-display: flex;
+  --rail-hide-display: inline-flex;
+  --insp-hide-display: inline-flex;
+  --rail-show-display: none;
+  --insp-show-display: none;
+  --label-display: inline;
+  --chips-display: flex;
+  --i-size: 14px;
 }
 
-* { box-sizing: border-box; }
+/* Light themes need a slightly heavier hairline to read at 1px, and a shallower
+ * artboard shadow — the same alpha that reads as "lifted" on dark reads as
+ * "dirty" on white. Both still resolve through VS Code's own tokens. */
+body.vscode-light {
+  --line-soft: color-mix(in srgb, currentColor 14%, transparent);
+  --shadow-art: 0 1px 1px var(--shadow-c), 0 6px 18px var(--shadow-c);
+}
+
+/* High contrast: VS Code's contract is "borders, not fills". Kill every
+ * decorative surface, promote every hairline to the contrast border, and let
+ * the active border carry selection. */
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --line: var(--vscode-contrastBorder, currentColor);
+  --line-soft: var(--vscode-contrastBorder, currentColor);
+  --accent: var(--vscode-contrastActiveBorder, var(--vscode-focusBorder, currentColor));
+  --accent-soft: transparent;
+  --bg-hover: transparent;
+  --bg-selected: transparent;
+  --shadow-c: transparent;
+  --focus-w: 2px;
+}
+body.vscode-high-contrast .btn,
+body.vscode-high-contrast .pane-toggle,
+body.vscode-high-contrast-light .pane-toggle,
+body.vscode-high-contrast .icon-btn,
+body.vscode-high-contrast .thumb,
+body.vscode-high-contrast .chip,
+body.vscode-high-contrast-light .btn,
+body.vscode-high-contrast-light .icon-btn,
+body.vscode-high-contrast-light .thumb,
+body.vscode-high-contrast-light .chip {
+  border: 1px solid var(--vscode-contrastBorder, currentColor);
+}
+body.vscode-high-contrast .thumb.active,
+body.vscode-high-contrast .insp-tab.active,
+body.vscode-high-contrast-light .thumb.active,
+body.vscode-high-contrast-light .insp-tab.active {
+  outline: 1px solid var(--vscode-contrastActiveBorder, currentColor);
+}
+/* Killing `--bg-hover` / `--bg-selected` above is the right instinct and half a
+ * fix: ~20 rules express hover or press ONLY as a background change, so in high
+ * contrast those controls answer a pointer with nothing at all — a bare glyph
+ * with no boundary and no highlight, and no way to confirm what is about to be
+ * clicked. Put the feedback back the way VS Code does it, as a border rather
+ * than a fill. `:not(:focus-visible):not(:has(:focus-visible))` keeps the focus
+ * ring the winner on a control that is both focused and hovered (the pane
+ * switches wear their ring on the label, via the wrapped input). */
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light)
+  :is(.btn, .icon-btn, .pane-toggle, .history-btn, .zoom-btn, .sm-item, .thumb,
+      .thumb-action, .version-row, .version-restore, .staged-toggle, .staged-head button,
+      .sr-actions button, .fec-fix, .fec-dismiss, .ctl-pin, .ctl-clear, .ctl-toggle,
+      .ctl-edit-canvas, .insp-tab, .insp-ask, .insp-restyle, .insp-unpin-node, .tpl-btn,
+      .chip, .agent-cancel, .agent-review, .ghost-cancel, .ac-send):hover:not(:focus-visible):not(:has(:focus-visible)) {
+  outline: 1px dashed var(--vscode-contrastActiveBorder, currentColor);
+  outline-offset: -1px;
+}
+/* …but a hover treatment must not eat a SELECTION treatment either. The rule
+ * above is (0,5,1); the high-contrast selection ring at the top of this block
+ * (`.thumb.active`, `.insp-tab.active`) is (0,2,1) and loses, so hovering the
+ * page currently open on the board swapped its SOLID ring for a DASHED one in
+ * the identical colour and width — while the pointer was over it there was no
+ * way to tell the open page from any other hovered page, and likewise for the
+ * active inspector tab. The two guards on that rule protect focus, not
+ * selection.
+ *
+ * So answer the pointer on a selected row WITHOUT giving up the state: stay
+ * solid (that is what distinguishes "open" from "hovered"), and widen. Same
+ * focus guards, so a control that is both focused and hovered still wears its
+ * focus ring. */
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light)
+  :is(.thumb, .insp-tab).active:hover:not(:focus-visible):not(:has(:focus-visible)) {
+  outline: 2px solid var(--vscode-contrastActiveBorder, currentColor);
+  outline-offset: -1px;
+}
+/* `.btn:active` is a fill too, so a press is silent for the same reason. */
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .btn:active {
+  outline: 2px solid var(--vscode-contrastActiveBorder, currentColor);
+  outline-offset: -1px;
+}
+/* The determinate progress TRACK is a SURFACE built out of an interaction
+ * token, so the same `--bg-hover: transparent` deletes the scale behind the
+ * fill: a 20%-full bar and a 90%-full bar become two unrelated stubs. Give the
+ * track a real edge instead, and the room to keep a 4px fill inside it. */
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .agent-progress {
+  height: 6px; border: 1px solid var(--line);
+}
+
+/* ══ §2 BASE ════════════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
-  font-family: var(--vscode-font-family, system-ui, sans-serif);
-  font-size: 13px; color: var(--c-fg); background: var(--c-bg);
+  font-family: var(--font);
+  font-size: var(--fz-300);
+  line-height: var(--lh);
+  color: var(--fg);
+  background: var(--bg);
   overflow: hidden;
+  /* The panel's width — not the viewport's — is what the layout answers to.
+   * A webview panel is dragged narrow independently of the window, which is
+   * precisely the case container queries exist for. */
+  container-type: inline-size;
+  container-name: canvas-shell;
 }
-.app { display: flex; flex-direction: column; height: 100vh; }
+[hidden] { display: none !important; }
+:where(h1, h2, h3, p) { margin: 0; font-weight: inherit; }
 
-/* ── top bar ── */
-.topbar {
-  height: var(--topbar-h); flex: 0 0 auto; display: flex; align-items: center;
-  justify-content: space-between; padding: 0 12px; gap: 12px;
-  background: var(--c-panel); border-bottom: 1px solid var(--c-border);
+/* One focus treatment for the whole shell. `:focus-visible` (not `:focus`) so a
+ * pointer click never leaves a ring behind, and keyboard users always get one. */
+:where(button, [href], input, select, textarea, label, [tabindex]):focus-visible,
+.pane-toggle:has(> input:focus-visible) {
+  outline: var(--focus-w) solid var(--focus);
+  outline-offset: var(--focus-offset);
 }
-.topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.brand { font-weight: 600; white-space: nowrap; }
-.artifact-name { color: var(--c-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-activity { color: var(--c-accent); font-size: 12px; }
-.agent-activity::before { content: '● '; }
-.topbar-right { display: flex; align-items: center; gap: 8px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+::selection { background: var(--vscode-editor-selectionBackground, var(--accent-soft)); }
 
-.select-wrap { display: inline-flex; align-items: center; gap: 6px; }
-.select-label { color: var(--c-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-select {
-  background: var(--vscode-dropdown-background, #3c3c3c); color: var(--c-fg);
-  border: 1px solid var(--c-border); border-radius: 4px; padding: 3px 6px; font-size: 12px;
+/* Scrollbars, on VS Code's own slider tokens. */
+:where(.rail-list, .insp-body, .version-timeline, .staged-rail, .scaffold-menu)::-webkit-scrollbar {
+  width: 10px; height: 10px;
 }
-.chips { display: flex; gap: 4px; }
-.chip {
-  font-size: 11px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--c-border);
-  color: var(--c-dim);
+:where(.rail-list, .insp-body, .version-timeline, .staged-rail, .scaffold-menu)::-webkit-scrollbar-track {
+  background: transparent;
 }
-.chip.on { color: var(--c-fg); border-color: var(--c-accent); }
+:where(.rail-list, .insp-body, .version-timeline, .staged-rail, .scaffold-menu)::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background, color-mix(in srgb, currentColor 18%, transparent));
+  border: 3px solid transparent; background-clip: padding-box; border-radius: var(--r-pill);
+}
+:where(.rail-list, .insp-body, .version-timeline, .staged-rail, .scaffold-menu)::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground, color-mix(in srgb, currentColor 28%, transparent));
+  border: 3px solid transparent; background-clip: padding-box;
+}
 
+/* ══ §3 ICONS ═══════════════════════════════════════════════════════════════
+ * Masked inline SVG: the shape is an alpha mask and the paint is
+ * `currentColor`, so every icon inherits the surrounding token colour, in every
+ * theme, including high contrast — and a module can mint one with
+ * `createElement('span') + className`, which is the only icon mechanism the DOM
+ * seam allows (`createElement` cannot produce SVG-namespaced nodes, and
+ * `innerHTML` does not exist on the seam by design).
+ *
+ * Every glyph is a `--icon-*` custom property so three consumers can share one
+ * definition: an `.i-<name>` element, a `[data-icon="<name>"]` button that a
+ * webview module stamped (`historyUi.ts`, `rail.ts` — they ship a readable word
+ * in `.btn-label` and let the stylesheet decide whether to draw an icon over
+ * it), and a `.btn-glyph` span whose text glyph this file replaces.
+ */
+:root {
+  --icon-brand: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2.2l5.6 3.1L8 8.4 2.4 5.3z'/%3E%3Cpath d='M2.4 9.1L8 12.2l5.6-3.1'/%3E%3C/svg%3E");
+  --icon-add: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 3.4v9.2M3.4 8h9.2'/%3E%3C/svg%3E");
+  --icon-minus: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.4 8h9.2'/%3E%3C/svg%3E");
+  --icon-close: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6'/%3E%3C/svg%3E");
+  --icon-fit: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 2.9H2.9V6M10 2.9h3.1V6M6 13.1H2.9V10M10 13.1h3.1V10'/%3E%3C/svg%3E");
+  --icon-export: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2.6v7.5M4.9 7l3.1 3.1L11.1 7M2.9 13.3h10.2'/%3E%3C/svg%3E");
+  --icon-panel-left: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.4' y='3.4' width='11.2' height='9.2' rx='1.6'/%3E%3Cpath d='M6.2 3.5v9'/%3E%3C/svg%3E");
+  --icon-panel-right: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.4' y='3.4' width='11.2' height='9.2' rx='1.6'/%3E%3Cpath d='M9.8 3.5v9'/%3E%3C/svg%3E");
+  --icon-spark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2.4l1.35 3.45L12.8 7.2 9.35 8.55 8 12l-1.35-3.45L3.2 7.2l3.45-1.35z'/%3E%3C/svg%3E");
+  --icon-alert: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2.9l5.5 9.9H2.5z'/%3E%3Cpath d='M8 6.6v2.6M8 11.4h.01'/%3E%3C/svg%3E");
+  --icon-artboard: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.4' y='2.4' width='11.2' height='11.2' rx='1.6'/%3E%3Cpath d='M2.5 6.2h11M6.2 6.3v7.2'/%3E%3C/svg%3E");
+  --icon-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.4 8.4l3.1 3.1 6.1-6.6'/%3E%3C/svg%3E");
+  --icon-undo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6.3 4.4L3.2 7.5l3.1 3.1'/%3E%3Cpath d='M3.4 7.5h6.4a3 3 0 110 6H7.4'/%3E%3C/svg%3E");
+  --icon-redo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.7 4.4l3.1 3.1-3.1 3.1'/%3E%3Cpath d='M12.6 7.5H6.2a3 3 0 100 6h2.4'/%3E%3C/svg%3E");
+  --icon-save: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.6 2.9h6.8v10.2L8 10.7l-3.4 2.4z'/%3E%3C/svg%3E");
+  --icon-duplicate: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5.7' y='5.7' width='7.7' height='7.7' rx='1.4'/%3E%3Cpath d='M10.3 3.4H4a1.4 1.4 0 00-1.4 1.4v6.3'/%3E%3C/svg%3E");
+  --icon-delete: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.2 4.6h9.6M6.4 4.5V3.2h3.2v1.3M4.7 4.8l.5 8h5.6l.5-8'/%3E%3C/svg%3E");
+  --icon-dot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='3.2' fill='%23000'/%3E%3C/svg%3E");
+  --icon-play: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5.3 3.5l7 4.5-7 4.5z' fill='%23000'/%3E%3C/svg%3E");
+  --icon-stop: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4.6' y='4.6' width='6.8' height='6.8' rx='1.2' fill='%23000'/%3E%3C/svg%3E");
+}
+
+.i, [data-icon]::before {
+  display: inline-block; flex: none;
+  width: var(--i-size, 14px); height: var(--i-size, 14px);
+  background-color: currentColor;
+  -webkit-mask-image: var(--i); mask-image: var(--i);
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+  -webkit-mask-position: center; mask-position: center;
+  -webkit-mask-size: contain; mask-size: contain;
+}
+[data-icon]::before { content: ""; }
+.i-brand { --i: var(--icon-brand); }
+.i-add { --i: var(--icon-add); }
+.i-minus { --i: var(--icon-minus); }
+.i-close { --i: var(--icon-close); }
+.i-fit { --i: var(--icon-fit); }
+.i-export { --i: var(--icon-export); }
+.i-panel-left { --i: var(--icon-panel-left); }
+.i-panel-right { --i: var(--icon-panel-right); }
+.i-spark { --i: var(--icon-spark); }
+.i-alert { --i: var(--icon-alert); }
+.i-artboard { --i: var(--icon-artboard); }
+.i-check { --i: var(--icon-check); }
+.i-undo { --i: var(--icon-undo); }
+.i-redo { --i: var(--icon-redo); }
+.i-save { --i: var(--icon-save); }
+.i-duplicate { --i: var(--icon-duplicate); }
+.i-delete { --i: var(--icon-delete); }
+.i-dot { --i: var(--icon-dot); }
+.i-play { --i: var(--icon-play); }
+.i-stop { --i: var(--icon-stop); }
+[data-icon="undo"]::before { --i: var(--icon-undo); }
+[data-icon="redo"]::before { --i: var(--icon-redo); }
+[data-icon="save"]::before { --i: var(--icon-save); }
+[data-icon="add"]::before { --i: var(--icon-add); }
+[data-icon="duplicate"]::before { --i: var(--icon-duplicate); }
+[data-icon="delete"]::before { --i: var(--icon-delete); }
+
+/* ══ §4 PRIMITIVES ══════════════════════════════════════════════════════════ */
 .btn {
-  font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 4px; cursor: pointer;
-  border: 1px solid var(--c-border); background: transparent; color: var(--c-fg);
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  font: inherit; font-size: var(--fz-200); line-height: var(--lh-tight);
+  padding: var(--sp-1) var(--sp-2); min-height: 24px;
+  border: 1px solid var(--line); border-radius: var(--r-2);
+  background: var(--btn-bg); color: var(--btn-fg); cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
 }
-.btn.ghost:hover { background: var(--c-hover); }
+.btn:hover { background: var(--btn-bg-hover); }
+.btn:active { background: var(--bg-selected); }
+.btn[disabled], .btn[aria-disabled="true"] { opacity: .45; cursor: default; }
+.btn-quiet { border-color: transparent; background: transparent; color: var(--fg-dim); }
+.btn-quiet:hover { background: var(--bg-hover); color: var(--fg); }
+.btn-primary { background: var(--btn-primary-bg); color: var(--btn-primary-fg); border-color: transparent; }
+.btn-primary:hover { background: var(--btn-primary-bg-hover); }
+
 .icon-btn {
-  width: 22px; height: 22px; border: none; background: transparent; color: var(--c-dim);
-  cursor: pointer; border-radius: 4px; font-size: 15px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--r-2);
+  background: transparent; color: var(--fg-dim); cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
 }
-.icon-btn:hover { background: var(--c-hover); color: var(--c-fg); }
+.icon-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.icon-btn[disabled] { opacity: .4; cursor: default; }
 
-/* ── body: three panes ── */
-.body { flex: 1 1 auto; display: grid; grid-template-columns: 220px 1fr 280px; min-height: 0; }
-
-/* left rail */
-.rail { background: var(--c-panel); border-right: 1px solid var(--c-border); display: flex; flex-direction: column; min-height: 0; }
-.rail-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--c-dim);
-  border-bottom: 1px solid var(--c-border);
+.field { display: inline-flex; align-items: center; gap: var(--sp-1); min-width: 0; }
+.field-label {
+  display: var(--label-display, inline);
+  font-size: var(--fz-100); color: var(--fg-dim);
+  text-transform: uppercase; letter-spacing: var(--tracking-caps);
 }
-.rail-list { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.select, select {
+  font: inherit; font-size: var(--fz-200); line-height: var(--lh-tight);
+  max-width: 22ch; padding: var(--sp-1) var(--sp-2); min-height: 24px;
+  border: 1px solid var(--vscode-dropdown-border, var(--line));
+  border-radius: var(--r-2);
+  background: var(--vscode-dropdown-background, var(--bg-input));
+  color: var(--vscode-dropdown-foreground, var(--fg));
+  cursor: pointer;
+}
+.select option, select option {
+  background: var(--vscode-dropdown-listBackground, var(--vscode-dropdown-background, var(--bg-raised)));
+  color: var(--vscode-dropdown-foreground, var(--fg));
+}
+input, textarea {
+  font: inherit; font-size: var(--fz-200);
+  border: 1px solid var(--vscode-input-border, var(--line));
+  border-radius: var(--r-2);
+  background: var(--bg-input);
+  color: var(--vscode-input-foreground, var(--fg));
+  padding: var(--sp-1) var(--sp-2);
+}
+input::placeholder, textarea::placeholder {
+  color: var(--vscode-input-placeholderForeground, var(--fg-faint));
+}
+
+.chips { display: var(--chips-display, flex); gap: var(--sp-1); }
+.chips:empty { display: none; }
+.chip {
+  font-size: var(--fz-100); line-height: 1.6;
+  padding: 0 var(--sp-2); border-radius: var(--r-pill);
+  border: 1px solid var(--line-soft); color: var(--fg-dim);
+  white-space: nowrap;
+}
+.chip.on { color: var(--fg); border-color: var(--accent); background: var(--accent-soft); }
+
+/* ══ §5 SHELL LAYOUT + THE BREAKPOINT LADDER ════════════════════════════════
+ *
+ * The ladder is expressed as CUSTOM PROPERTIES on `.app` and nothing else, so
+ * the whole responsive contract is auditable in one place and the `@media`
+ * fallback is a twelve-line copy of the same values rather than a second
+ * layout. Rules elsewhere read the properties; they never re-test the width.
+ *
+ *   mode    panel width   rail        inspector   board gets (worst case)
+ *   ─────── ───────────── ─────────── ─────────── ───────────────────────
+ *   wide    >= 960px      docked      docked      960 - 172 - 240 = 548px
+ *   medium  640-959px     docked      overlay     640 - 172       = 468px
+ *   narrow  < 640px       overlay     overlay     the whole panel  = 320px+
+ *   compact < 480px       (as narrow, plus: labels and capability chips hide)
+ *
+ * Why those numbers: the rail needs ~172px before page titles start truncating
+ * mid-word; the inspector needs ~240px before a label + control pair wraps into
+ * unreadability; and a 320px board is the narrowest split-editor column VS Code
+ * realistically produces. 172 + 240 + 548 is the first width at which all three
+ * are simultaneously comfortable, so that is where "wide" starts — below it the
+ * inspector yields first (it is modal to a selection), then the rail (it is
+ * navigation), and the board never yields at all.
+ *
+ * The board track is `minmax(min(--board-floor, 100%), 1fr)`: the `min()` is
+ * what makes the floor unable to overflow the panel at any width, so the grid
+ * can never produce a negative or zero board track.
+ */
+.app {
+  display: flex; flex-direction: column;
+  height: 100vh; min-height: 0;
+  background: var(--bg);
+}
+.body {
+  position: relative;              /* containing block for overlays + scrims */
+  flex: 1 1 auto; min-height: 0;
+  display: grid;
+  grid-template-columns:
+    var(--rail-track, 0px)
+    minmax(min(var(--board-floor), 100%), 1fr)
+    var(--insp-track, 0px);
+}
+
+/* — panes — */
+/*
+ * EXPLICIT column placement is load-bearing, not tidiness.
+ *
+ * The three tracks above only line up with the three panes while all three are
+ * in-flow grid items. Every mode that takes the rail out of flow —
+ * `--rail-dock-display: none` (narrow, or `#rail-hidden:checked` at any width)
+ * and the overlay modes where the rail is `position: absolute` — removes it
+ * from auto-placement, and `main.board` (which carries `min-width: 0`) slides
+ * into column 1: the rail's track, which those same modes have just set to
+ * `0px`. The board and everything it contains then render at ZERO width.
+ *
+ * Measured in headless Chromium before this fix: board width 468px at 640px,
+ * then 0px at 639px and below; and 0px at ANY width with the rail hidden,
+ * while the inspector ballooned from 264px to 936px. Pinning each pane to its
+ * own column makes auto-flow irrelevant, so a pane leaving flow can never
+ * re-seat its neighbours.
+ *
+ * The column must NOT stay pinned once a pane becomes an OVERLAY, though. An
+ * abs-pos grid child takes its containing block from its grid AREA, and
+ * `grid-column: 3` means `3 / auto` — which resolves to the right padding edge.
+ * In every overlay mode `--insp-track` is `0px`, so that area is ZERO wide and
+ * `width: min(340px, 86%)` resolved 86% of nothing: the inspector rendered as a
+ * 1px sliver of border at every panel width below 960px, while its scrim still
+ * covered the board and swallowed every click. So the column is a variable that
+ * travels with `--*-over-position`: the docked line while docked, `1 / -1`
+ * while absolute. Measured: inspector 340px at 500-959px, and the DOCKED rail
+ * stays 172px rather than spanning all three columns.
+ */
+.pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg-panel); }
+.rail { grid-column: var(--rail-over-col, 1); display: var(--rail-dock-display, flex); border-right: 1px solid var(--line); }
+.board { grid-column: 2; }
+.inspector { grid-column: var(--insp-over-col, 3); display: var(--insp-dock-display, flex); border-left: 1px solid var(--line); }
+
+/* User override at dock widths: collapse the pane and its track entirely. */
+.app:has(#rail-hidden:checked)      { --rail-track: 0px; --rail-dock-display: none; }
+.app:has(#inspector-hidden:checked) { --insp-track: 0px; --insp-dock-display: none; }
+
+/* User override at overlay widths. The `var(…, var(…))` chains are what make
+ * one rule correct at every width: when the overlay properties are undefined
+ * (wide mode) each declaration falls back to the docked value, so a checkbox
+ * left checked from a narrower layout cannot corrupt the wide one. */
+.app:has(#rail-shown:checked) .rail {
+  display: var(--rail-over-display, var(--rail-dock-display, flex));
+  position: var(--rail-over-position, relative);
+  inset: 0 auto 0 0;
+  width: var(--rail-over-w, auto);
+  z-index: var(--rail-over-z, auto);
+  box-shadow: var(--rail-over-shadow, none);
+  border-right: 1px solid var(--line);
+}
+.app:has(#inspector-shown:checked) .inspector {
+  display: var(--insp-over-display, var(--insp-dock-display, flex));
+  position: var(--insp-over-position, relative);
+  inset: 0 0 0 auto;
+  width: var(--insp-over-w, auto);
+  z-index: var(--insp-over-z, auto);
+  box-shadow: var(--insp-over-shadow, none);
+  border-left: 1px solid var(--line);
+}
+
+/* Scrim: dismisses an overlay pane with a pointer, and only ever exists in the
+ * mode where an overlay exists (one variable per pane, because the rail and the
+ * inspector do not undock at the same width). */
+.pane-scrim {
+  display: none; position: absolute; inset: 0; z-index: 15;
+  background: color-mix(in srgb, var(--vscode-editor-background, transparent) 55%, transparent);
+  cursor: pointer;
+}
+/* Mixing the EDITOR BACKGROUND only dims while that background is dark. On a
+ * light theme the scrim is white-on-white, and in high-contrast light the board
+ * AND the artboards are both pure white, so this layer — which is `inset: 0` at
+ * `z-index: 15` and eats every pointer event on the board — becomes completely
+ * invisible: the board looks normal and simply stops responding. Derive the
+ * wash from the FOREGROUND there instead; it is dark exactly when the ground is
+ * light. (A wash is against high contrast's "borders, not fills" instinct, but
+ * an invisible modal layer is worse than a visible one.) */
+body.vscode-light .pane-scrim,
+body.vscode-high-contrast-light .pane-scrim {
+  background: color-mix(in srgb, var(--vscode-editor-foreground, currentColor) 26%, transparent);
+}
+.app:has(#rail-shown:checked) .pane-scrim-rail { display: var(--rail-scrim-display, none); }
+.app:has(#inspector-shown:checked) .pane-scrim-insp { display: var(--insp-scrim-display, none); }
+
+/* Toggles. Two switches per pane — one named for the action available while the
+ * pane is docked ("Hide…"), one for while it is an overlay ("Show…") — because a
+ * single checkbox cannot express a default that depends on the width, and a
+ * control whose checked state means "open" at one width and "closed" at another
+ * lies to a screen reader. Exactly one of each pair is rendered at a time. */
+.pane-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: var(--r-2);
+  color: var(--fg-dim); cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.pane-toggle:hover { background: var(--bg-hover); color: var(--fg); }
+.pane-toggle-hide-rail  { display: var(--rail-hide-display, inline-flex); }
+.pane-toggle-show-rail  { display: var(--rail-show-display, none); }
+.pane-toggle-hide-insp  { display: var(--insp-hide-display, inline-flex); }
+.pane-toggle-show-insp  { display: var(--insp-show-display, none); }
+/* "on" = the pane is currently visible, whichever switch is driving it. One
+ * accent, and only as much of it as the state needs: a filled button would read
+ * as permanently pressed at every wide width, which is most of them. */
+.pane-toggle-hide-rail:not(:has(:checked)),
+.pane-toggle-hide-insp:not(:has(:checked)),
+.pane-toggle-show-rail:has(:checked),
+.pane-toggle-show-insp:has(:checked) { color: var(--fg); }
+/* The in-pane close button exists only while that pane is an overlay. */
+.pane-close-rail { display: var(--rail-show-display, none); }
+.pane-close-insp { display: var(--insp-show-display, none); }
+
+@container canvas-shell (max-width: 959.98px) {
+  .app {
+    --insp-track: 0px;
+    --insp-dock-display: none;
+    --insp-over-display: flex;
+    --insp-over-position: absolute; --insp-over-col: 1 / -1;
+    --insp-over-w: min(340px, 86%);
+    --insp-over-z: 16;
+    --insp-over-shadow: var(--shadow-2);
+    --insp-hide-display: none;
+    --insp-show-display: inline-flex;
+    --insp-scrim-display: block;
+  }
+}
+@container canvas-shell (max-width: 639.98px) {
+  .app {
+    --rail-track: 0px;
+    --rail-dock-display: none;
+    --rail-over-display: flex;
+    --rail-over-position: absolute; --rail-over-col: 1 / -1;
+    --rail-over-w: min(280px, 82%);
+    --rail-over-z: 16;
+    --rail-over-shadow: var(--shadow-2);
+    --rail-hide-display: none;
+    --rail-show-display: inline-flex;
+    --rail-scrim-display: block;
+  }
+}
+@container canvas-shell (max-width: 479.98px) {
+  .app { --label-display: none; --chips-display: none; }
+}
+
+/* Fallback for engines without container queries. VS Code ^1.85 ships
+ * Chromium 114, which has them; this exists so a downlevel host degrades to the
+ * same ladder rather than to a broken grid (`cqi` would invalidate the track
+ * declaration, which is why the widths are restated in px here). */
+@supports not (container-type: inline-size) {
+  .app { --rail-track: 220px; --insp-track: 280px; }
+  @media (max-width: 959.98px) {
+    .app {
+      --insp-track: 0px; --insp-dock-display: none; --insp-over-display: flex;
+      --insp-over-position: absolute; --insp-over-col: 1 / -1; --insp-over-w: min(340px, 86%); --insp-over-z: 16;
+      --insp-over-shadow: var(--shadow-2); --insp-hide-display: none;
+      --insp-show-display: inline-flex; --insp-scrim-display: block;
+    }
+  }
+  @media (max-width: 639.98px) {
+    .app {
+      --rail-track: 0px; --rail-dock-display: none; --rail-over-display: flex;
+      --rail-over-position: absolute; --rail-over-col: 1 / -1; --rail-over-w: min(280px, 82%); --rail-over-z: 16;
+      --rail-over-shadow: var(--shadow-2); --rail-hide-display: none;
+      --rail-show-display: inline-flex; --rail-scrim-display: block;
+    }
+  }
+  @media (max-width: 479.98px) { .app { --label-display: none; --chips-display: none; } }
+}
+
+/* ══ §6 TOP BAR ═════════════════════════════════════════════════════════════ */
+.topbar {
+  flex: 0 0 auto;
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
+  /* `--bg-panel` (sideBar.background), NOT titleBar.activeBackground: this bar's
+   * text is `--fg` (= `foreground`), and VS Code guarantees `foreground` against
+   * sideBar/editor backgrounds — never against the title bar's, which a theme is
+   * free to give its own identity (accent-coloured or inverted). Pairing one
+   * component's background with another's foreground is how the whole top strip
+   * — name, selects, undo/redo, Present/Export and the agent status pill —
+   * drops to ~1.5:1 in any theme that decouples them. It is also the surface the
+   * rail and the inspector already use, so the chrome reads as one system. */
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line);
+}
+.topbar-row { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.topbar-title { flex: 1 1 260px; }
+.topbar-tools { flex: 0 1 auto; margin-left: auto; justify-content: flex-end; flex-wrap: wrap; row-gap: var(--sp-1); }
+.topbar-sep { width: 1px; align-self: stretch; margin: var(--sp-1) var(--sp-0); background: var(--line-soft); }
+
+.brand { display: inline-flex; align-items: center; gap: var(--sp-1); color: var(--fg); font-weight: 600; white-space: nowrap; }
+.brand-text, .btn-text { display: var(--label-display, inline); }
+.artifact-name {
+  color: var(--fg-dim); min-width: 3ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* The agent's status. It is a live region that always exists (so an update is
+ * announced) but carries no chrome until it has something to say. */
+.agent-status { display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.agent-status:has(> .agent-activity:not([hidden])) {
+  padding: var(--sp-0) var(--sp-2);
+  border: 1px solid var(--line-soft); border-radius: var(--r-pill);
+  background: var(--bg-raised);
+}
+.agent-dot { display: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+/* `display` ONLY. The animation belongs to the WORKING state (§11.6): the
+ * specificity of `:has()` is that of its most specific argument, so putting
+ * `animation` here — (0,4,0) — outranks every `[data-state]` rule that tries to
+ * stop it — (0,3,0) — and the dot then pulses while idle, while suggestions
+ * wait, and while the status reads "No canvas-capable agent". */
+.agent-status:has(> .agent-activity:not([hidden])) .agent-dot { display: block; }
+.agent-activity {
+  font-size: var(--fz-200); color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42ch;
+}
+.agent-elapsed { font-size: var(--fz-100); color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.agent-cancel {
+  font: inherit; font-size: var(--fz-100); line-height: 1.4;
+  padding: 0 var(--sp-2); border-radius: var(--r-pill);
+  border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer;
+}
+.agent-cancel:hover { background: var(--bg-hover); border-color: var(--danger-line); color: var(--danger); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+.history-toolbar { display: flex; align-items: center; gap: var(--sp-0); }
+.history-toolbar:empty { display: none; }
+.history-btn {
+  font: inherit; font-size: var(--fz-200); line-height: var(--lh-tight);
+  min-height: 24px; padding: var(--sp-1) var(--sp-2);
+  border: 1px solid transparent; border-radius: var(--r-2);
+  background: transparent; color: var(--fg); cursor: pointer;
+}
+.history-btn:hover { background: var(--bg-hover); }
+.history-btn[disabled], .history-btn[aria-disabled="true"] { opacity: .4; cursor: default; }
+.history-btn.save { border-color: var(--line); color: var(--fg-dim); }
+.history-btn.save:hover { color: var(--fg); }
+
+/* ══ §7 RAIL ════════════════════════════════════════════════════════════════ */
+.pane-head, .rail-head {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  min-height: 32px;
+  border-bottom: 1px solid var(--line);
+}
+.pane-title {
+  font-size: var(--fz-100); color: var(--fg-dim);
+  text-transform: uppercase; letter-spacing: var(--tracking-caps);
+}
+.pane-head-actions { display: inline-flex; align-items: center; gap: var(--sp-0); }
+
+.rail-list { flex: 1 1 auto; overflow-y: auto; padding: var(--sp-2); display: flex; flex-direction: column; gap: var(--sp-2); }
+.rail-list:empty { display: none; }
+
 .thumb {
-  border: 1px solid var(--c-border); border-radius: 6px; overflow: hidden; cursor: pointer; background: var(--c-bg);
+  border: 1px solid var(--line-soft); border-radius: var(--r-3); overflow: hidden;
+  background: var(--bg-raised); cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
 }
-.thumb.active { border-color: var(--c-accent); box-shadow: 0 0 0 1px var(--c-accent); }
-.thumb-preview { aspect-ratio: 16/10; background: #fff; position: relative; overflow: hidden; }
-.thumb-preview iframe { border: 0; position: absolute; top: 0; left: 0; transform-origin: top left; pointer-events: none; }
-.thumb-meta { padding: 6px 8px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.thumb-title { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.thumb-badge { font-size: 10px; color: var(--c-dim); }
+.thumb:hover { border-color: var(--line); background: var(--bg-hover); }
+.thumb.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.thumb-preview, .thumb-frame { aspect-ratio: 16 / 10; background: var(--canvas-paper); position: relative; overflow: hidden; }
+.thumb-preview iframe, .thumb-frame iframe {
+  border: 0; position: absolute; top: 0; left: 0; transform-origin: top left; pointer-events: none;
+}
+.thumb-meta { display: flex; align-items: center; gap: var(--sp-1); padding: var(--sp-1) var(--sp-2); }
+.thumb-title { flex: 1 1 auto; font-size: var(--fz-200); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thumb-badge {
+  flex: none; font-size: var(--fz-100); line-height: 1.5; padding: 0 var(--sp-1);
+  border-radius: var(--r-1); color: var(--fg-dim);
+}
+.thumb-badge.device { background: var(--bg-hover); }
+.thumb-badge.legacy { background: var(--badge-bg); color: var(--badge-fg); }
+.thumb-actions { display: flex; gap: var(--sp-1); padding: 0 var(--sp-2) var(--sp-2); }
+.thumb-action {
+  font: inherit; font-size: var(--fz-100); line-height: 1.6; padding: 0 var(--sp-2);
+  border: 1px solid var(--line-soft); border-radius: var(--r-2);
+  background: transparent; color: var(--fg-dim); cursor: pointer;
+}
+.thumb-action:hover { color: var(--fg); border-color: var(--accent); }
 
-/* center board */
-.board { position: relative; background: var(--vscode-editorWidget-background, #1b1b1b); min-height: 0; }
-.board-scroll { position: absolute; inset: 0; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 32px; }
-.page-stage { box-shadow: 0 16px 50px rgba(0,0,0,.5); border-radius: 8px; overflow: hidden; background: #fff; }
-.page-stage iframe { display: block; border: 0; background: #fff; }
-.board-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--c-dim); padding: 24px; text-align: center; }
-.empty-title { font-size: 18px; color: var(--c-fg); font-weight: 600; }
-.empty-sub { font-size: 13px; max-width: 420px; }
-.empty-templates { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 8px; max-width: 460px; }
-.tpl-btn { font: inherit; font-size: 12px; padding: 7px 12px; border-radius: 6px; border: 1px solid var(--c-border); background: var(--c-panel); color: var(--c-fg); cursor: pointer; }
-.tpl-btn:hover { border-color: var(--c-accent); color: var(--c-accent); }
+.scaffold-menu {
+  flex: 0 0 auto; max-height: 40%; overflow-y: auto;
+  padding: var(--sp-1); display: flex; flex-direction: column; gap: 1px;
+  background: var(--bg-raised); border-bottom: 1px solid var(--line);
+}
+.sm-item {
+  text-align: left; font: inherit; font-size: var(--fz-200);
+  padding: var(--sp-1) var(--sp-2); border: none; border-radius: var(--r-2);
+  background: transparent; color: var(--fg); cursor: pointer;
+}
+.sm-item:hover { background: var(--bg-hover); }
+.sm-item small { display: block; font-size: var(--fz-100); color: var(--fg-dim); }
 
-/* onboarding hint */
+/* ══ §8 BOARD ═══════════════════════════════════════════════════════════════
+ * `.board-scroll` is a fixed clipping viewport, NOT a scroller: panning and
+ * zooming are one CSS transform on `.page-stage`, so 20 artboards cost one
+ * composited layer instead of 20 scroll-synchronised ones. `touch-action: none`
+ * is required for trackpad pinch to arrive as ctrl+wheel instead of being eaten
+ * as browser page zoom.
+ */
+.board { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-board); }
+.board-scroll {
+  position: absolute; inset: 0; overflow: hidden; touch-action: none;
+  /* Default is the arrow: a click on empty board starts a marquee, and a
+     crosshair here would promise a drawing tool the board does not have. */
+  cursor: default;
+}
+/*
+ * The pan affordance.
+ *
+ * Holding space (or hovering with the middle button available) is how the board
+ * is panned, and the cursor is the ONLY signal that says so. Without it the
+ * gesture is undiscoverable, and a user who does find it gets no confirmation
+ * the drag was registered — which reads as lag even when frames are landing at
+ * 60fps. This is the difference between "smooth" and "feels smooth".
+ */
+.board-scroll.can-pan { cursor: grab; }
+.board-scroll.panning { cursor: grabbing; }
+/* While marqueeing, keep the arrow — the selection rectangle is the feedback. */
+.board-scroll.marqueeing { cursor: default; }
+.page-stage { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; will-change: transform; }
+
+.artboard { position: absolute; }
+.artboard-label {
+  position: absolute; top: -20px; left: 0; right: 0;
+  font-size: var(--fz-200); color: var(--fg-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+  /* Deliberately not counter-scaled: the label belongs to the world, so it
+     shrinks with it. A constant-size label would collide at low zoom. */
+}
+.artboard-surface {
+  position: relative; overflow: hidden;
+  background: var(--canvas-paper); border-radius: var(--r-3); box-shadow: var(--shadow-art);
+  /* The edge cannot be the shadow alone. Both high-contrast themes force
+   * `--shadow-c: transparent`, and in high-contrast LIGHT the paper and the
+   * board are both white — so the one object the panel exists to show would
+   * have no boundary at all: no way to see where an artboard ends, where to
+   * click to select one, or that the gap between two is not part of a page.
+   * An OUTLINE rather than a border, because `.artboard-frame` /
+   * `.artboard-preview` are `inset: 0` inside this `overflow: hidden` box and a
+   * border would cost them a pixel of the artboard's real geometry. */
+  outline: 1px solid var(--line); outline-offset: 0;
+}
+.artboard-preview { position: absolute; inset: 0; overflow: hidden; }
+.artboard-frame { display: block; border: 0; position: absolute; inset: 0; background: var(--canvas-paper); }
+
+/* Selection chrome is drawn by the PARENT in screen space, outside the
+ * transformed world: a 1px outline is one real pixel at any zoom, it survives
+ * every frame repaint, and it lives in a document a sandboxed page cannot
+ * reach. `pointer-events: none` keeps the chrome from eating the clicks it is
+ * decorating — a card that wants a button opts back in. */
+.board-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+.sel-box {
+  position: absolute; pointer-events: none;
+  outline: 1px solid var(--accent); outline-offset: 0;
+  background: var(--accent-soft);
+}
+.sel-box.primary { outline-width: 2px; }
+.sel-marquee { position: absolute; pointer-events: none; border: 1px dashed var(--accent); background: var(--accent-soft); }
+
+.board-zoom {
+  position: absolute; right: var(--sp-3); bottom: var(--sp-3); z-index: 6;
+  display: flex; align-items: center; gap: var(--sp-0); padding: var(--sp-0);
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: var(--r-3); box-shadow: var(--shadow-1);
+}
+.zoom-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  font: inherit; font-size: var(--fz-200); min-width: 24px; height: 22px; padding: 0 var(--sp-1);
+  border: none; border-radius: var(--r-2); background: transparent; color: var(--fg); cursor: pointer;
+}
+.zoom-btn:hover { background: var(--bg-hover); }
+.zoom-btn.wide { min-width: 34px; }
+.zoom-level {
+  font-size: var(--fz-100); color: var(--fg-dim);
+  min-width: 42px; text-align: center; font-variant-numeric: tabular-nums;
+}
+
+/* — the three states that are not the happy path — */
+.board-empty {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--sp-2); padding: var(--sp-5); text-align: center; color: var(--fg-dim);
+}
+.empty-icon { --i-size: 28px; color: var(--fg-faint); margin-bottom: var(--sp-1); }
+.empty-title { font-size: var(--fz-500); font-weight: 600; color: var(--fg); line-height: var(--lh-tight); }
+.empty-sub { font-size: var(--fz-300); max-width: 44ch; }
+.empty-templates { display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: center; margin-top: var(--sp-2); max-width: 46ch; }
+.tpl-btn {
+  font: inherit; font-size: var(--fz-200); padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line); border-radius: var(--r-3);
+  background: var(--bg-raised); color: var(--fg); cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.tpl-btn:hover { border-color: var(--accent); color: var(--fg); }
+
+/* Loading is inferred, not pushed: before `canvas/hello` the world is empty AND
+ * the empty state is still hidden — a combination that cannot occur once the
+ * host has answered, so this needs (and gets) no JS at all. */
+.board-loading { display: none; }
+.board:has(#page-stage:empty):has(#board-empty[hidden]) .board-loading {
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-3);
+}
+.skeleton-row { display: flex; gap: var(--sp-3); }
+.skeleton {
+  width: 92px; height: 64px; border-radius: var(--r-3);
+  border: 1px solid var(--line-soft); background: var(--bg-hover);
+  animation: breathe 1.8s ease-in-out infinite;
+}
+.skeleton:nth-child(2) { animation-delay: .2s; }
+.skeleton:nth-child(3) { animation-delay: .4s; }
+.loading-text { font-size: var(--fz-200); color: var(--fg-dim); }
+@keyframes breathe { 0%, 100% { opacity: .45; } 50% { opacity: .9; } }
+
+/* A shell-level error banner. Hidden until a host/module unhides it. */
+.board-error {
+  position: absolute; left: 50%; top: var(--sp-3); transform: translateX(-50%); z-index: 7;
+  display: flex; align-items: center; gap: var(--sp-2); max-width: min(560px, 92%);
+  padding: var(--sp-2) var(--sp-3); font-size: var(--fz-200);
+  color: var(--fg); background: var(--danger-bg);
+  border: 1px solid var(--danger-line); border-radius: var(--r-3); box-shadow: var(--shadow-1);
+}
+.board-error .i { color: var(--danger); }
+
+/* The onboarding hint only makes sense once there is something to point at —
+ * an empty board has the empty state, which says it better. */
 .onboarding {
-  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 5;
-  display: flex; align-items: center; gap: 10px; max-width: 640px;
-  padding: 8px 12px; border-radius: 8px; font-size: 12px;
-  background: var(--c-panel); border: 1px solid var(--c-border); box-shadow: 0 6px 20px rgba(0,0,0,.25);
+  position: absolute; left: 50%; top: var(--sp-3); transform: translateX(-50%); z-index: 5;
+  display: flex; align-items: center; gap: var(--sp-2); max-width: min(620px, 92%);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  font-size: var(--fz-200); color: var(--fg-dim);
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: var(--r-pill); box-shadow: var(--shadow-1);
 }
-.onboarding-text em { font-style: italic; color: var(--c-dim); }
-.onboarding-x { border: none; background: transparent; color: var(--c-dim); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
-.onboarding-x:hover { color: var(--c-fg); }
+.board:has(#page-stage:empty) .onboarding { display: none; }
+.onboarding .i-spark { color: var(--accent); }
+.onboarding-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.onboarding-text b { color: var(--fg); font-weight: 600; }
+.onboarding-text em { font-style: italic; }
 
-/* add-page template menu */
-.scaffold-menu { border-bottom: 1px solid var(--c-border); padding: 6px; display: flex; flex-direction: column; gap: 2px; background: var(--c-bg); }
-.scaffold-menu .sm-item { text-align: left; font: inherit; font-size: 12px; padding: 6px 8px; border: none; background: transparent; color: var(--c-fg); border-radius: 5px; cursor: pointer; }
-.scaffold-menu .sm-item:hover { background: var(--c-hover); }
-.scaffold-menu .sm-item small { color: var(--c-dim); display: block; font-size: 11px; }
+/* ══ §9 LIVENESS — what the agent is doing, on the board ════════════════════ */
+.ghost-artboard {
+  position: absolute; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  border: 2px dashed var(--accent); border-radius: var(--r-3);
+  background: var(--accent-soft);
+}
+.ghost-shimmer {
+  position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 35%, color-mix(in srgb, currentColor 12%, transparent) 50%, transparent 65%);
+  animation: ghost-sweep 1.6s linear infinite;
+}
+@keyframes ghost-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.ghost-meta {
+  position: relative; display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3); font-size: var(--fz-200);
+  background: var(--bg-raised); border-top: 1px solid var(--line);
+}
+.ghost-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ghost-elapsed { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.ghost-cancel {
+  font: inherit; font-size: var(--fz-100); line-height: 1.6; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-2);
+  background: transparent; color: var(--fg); cursor: pointer;
+}
+.ghost-cancel:hover { border-color: var(--danger-line); color: var(--danger); background: var(--bg-hover); }
+/* Determinate progress when a producer sets `--ghost-progress` (0..1). */
+.ghost-meta::after {
+  content: ""; position: absolute; left: 0; bottom: 0; height: 2px;
+  width: calc(100% * var(--ghost-progress, 0)); background: var(--accent);
+  transition: width var(--dur-2) var(--ease);
+}
 
-/* right inspector */
-.inspector { background: var(--c-panel); border-left: 1px solid var(--c-border); display: flex; flex-direction: column; min-height: 0; }
-.insp-tabs { display: flex; border-bottom: 1px solid var(--c-border); }
-.insp-tab { flex: 1; background: transparent; border: none; color: var(--c-dim); padding: 9px 0; cursor: pointer; font: inherit; font-size: 12px; border-bottom: 2px solid transparent; }
-.insp-tab.active { color: var(--c-fg); border-bottom-color: var(--c-accent); }
-.insp-body { overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
-.insp-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
-.insp-row .k { color: var(--c-dim); }
-.insp-row .v { color: var(--c-fg); text-align: right; overflow: hidden; text-overflow: ellipsis; }
-.insp-group-title { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--c-dim); margin-bottom: 2px; }
-.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
-.swatch { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 10px; color: var(--c-dim); }
-.swatch .chip-color { width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--c-border); }
+.agent-cursor {
+  position: absolute; border-radius: var(--r-1);
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+.agent-cursor-label {
+  position: absolute; top: -18px; left: 0; white-space: nowrap;
+  font-size: var(--fz-100); line-height: 1.5; padding: 0 var(--sp-1);
+  border-radius: var(--r-1);
+  /* The badge pair, not `button.foreground` over `--accent`: button.foreground
+   * is guaranteed against button.background only, and `--accent` is
+   * `contrastActiveBorder` under high contrast — a bright orange in HC dark,
+   * which put the one label naming the element Mysti is rewriting at 2.6:1.
+   * The accent stays as the border, so the pill still reads as agent chrome. */
+  background: var(--badge-bg); color: var(--badge-fg);
+  border: 1px solid var(--accent);
+}
+.frame-error-card {
+  position: absolute; pointer-events: auto; max-width: 420px;
+  display: flex; flex-direction: column; gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3); font-size: var(--fz-200);
+  background: var(--bg-raised); color: var(--fg);
+  border: 1px solid var(--line); border-left: 3px solid var(--danger-line);
+  border-radius: var(--r-2); box-shadow: var(--shadow-1);
+}
+.fec-title { font-weight: 600; }
+.fec-message { color: var(--fg-dim); font-family: var(--font-mono); font-size: var(--fz-100); overflow: hidden; }
+.fec-actions { display: flex; gap: var(--sp-1); }
+.fec-fix, .fec-dismiss {
+  font: inherit; font-size: var(--fz-100); line-height: 1.6; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-2);
+  background: transparent; color: var(--fg); cursor: pointer;
+}
+.fec-fix:hover, .fec-dismiss:hover { background: var(--bg-hover); }
+
+.staged-rail {
+  flex: 0 0 auto; max-height: 45%; overflow-y: auto;
+  padding: var(--sp-2); display: flex; flex-direction: column; gap: var(--sp-2);
+  border-top: 1px solid var(--line); background: var(--bg-raised);
+}
+.staged-head { display: flex; align-items: center; gap: var(--sp-1); font-size: var(--fz-100); color: var(--fg-dim); }
+.staged-count { flex: 1 1 auto; text-transform: uppercase; letter-spacing: var(--tracking-caps); }
+.staged-head button, .sr-actions button {
+  font: inherit; font-size: var(--fz-100); line-height: 1.6; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-2);
+  background: transparent; color: var(--fg); cursor: pointer;
+}
+.staged-head button:hover, .sr-actions button:hover { background: var(--bg-hover); }
+.sr-accept:hover, .staged-accept-all:hover { border-color: var(--accent); }
+.sr-reject:hover, .staged-reject-all:hover { border-color: var(--danger-line); color: var(--danger); }
+.staged-row {
+  display: flex; flex-direction: column; gap: var(--sp-1);
+  padding: var(--sp-2); border: 1px solid var(--line-soft); border-radius: var(--r-2);
+}
+.sr-title { font-size: var(--fz-200); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-previews { display: flex; gap: var(--sp-1); }
+.sr-before, .sr-after { flex: 1 1 0; min-width: 0; font-size: var(--fz-100); color: var(--fg-dim); }
+.sr-caption { text-transform: uppercase; letter-spacing: var(--tracking-caps); }
+.sr-preview {
+  height: 72px; overflow: hidden; background: var(--canvas-paper);
+  border: 1px solid var(--line-soft); border-radius: var(--r-1);
+}
+.sr-after .sr-preview { border-color: var(--accent); }
+.sr-error { font-size: var(--fz-100); color: var(--danger); }
+.sr-actions { display: flex; gap: var(--sp-1); }
+
+/* ══ §10 INSPECTOR ══════════════════════════════════════════════════════════ */
+.insp-tabs { display: flex; border-bottom: 1px solid var(--line); }
+.insp-tab {
+  flex: 1; font: inherit; font-size: var(--fz-200); padding: var(--sp-2) 0;
+  border: none; border-bottom: 2px solid transparent;
+  background: transparent; color: var(--fg-dim); cursor: pointer;
+}
+.insp-tab:hover { color: var(--fg); }
+.insp-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+
+.insp-body { flex: 1 1 auto; overflow-y: auto; padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-4); }
+.insp-empty { font-size: var(--fz-200); color: var(--fg-dim); text-wrap: pretty; }
+.insp-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); }
+.insp-title { font-size: var(--fz-400); font-weight: 600; color: var(--fg); line-height: var(--lh-tight); }
+.insp-sub { font-size: var(--fz-100); color: var(--fg-dim); }
+.insp-unpin-node, .insp-restyle {
+  flex: 0 0 auto; font: inherit; font-size: var(--fz-100); line-height: 1.7; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+  background: transparent; color: var(--fg-dim); cursor: pointer; text-align: left;
+}
+.insp-unpin-node { border-color: var(--accent); color: var(--accent); }
+.insp-unpin-node:hover, .insp-restyle:hover { background: var(--bg-hover); color: var(--fg); }
+.insp-restyle { width: 100%; }
+.insp-section { display: flex; flex-direction: column; gap: var(--sp-2); }
+.insp-section-title {
+  font-size: var(--fz-100); color: var(--fg-dim);
+  text-transform: uppercase; letter-spacing: var(--tracking-caps);
+  padding-bottom: var(--sp-1); border-bottom: 1px solid var(--line-soft);
+}
+.insp-slots { font-size: var(--fz-100); color: var(--fg-dim); text-wrap: pretty; }
+/* Legacy static rows, kept so an older renderer degrades legibly. */
+.insp-row { display: flex; justify-content: space-between; gap: var(--sp-2); font-size: var(--fz-200); }
+.insp-row .k { color: var(--fg-dim); }
+.insp-row .v { color: var(--fg); text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.swatches { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.swatch { display: flex; flex-direction: column; align-items: center; gap: var(--sp-1); font-size: var(--fz-100); color: var(--fg-dim); }
+.swatch .chip-color { width: 30px; height: 30px; border-radius: var(--r-2); border: 1px solid var(--line); }
+
+/* One control row = label + affordances above, widget below. Explicit grid
+ * areas so the emitter's DOM order (label, pin, body, edit-on-canvas, clear)
+ * does not decide the layout — the panel is 240px wide at its floor and a
+ * side-by-side label/control pair does not survive that. */
+.ctl { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--sp-1) var(--sp-1); }
+.ctl-label { grid-area: 1 / 1; font-size: var(--fz-200); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctl-pin { grid-area: 1 / 2; }
+.ctl-clear { grid-area: 1 / 3; }
+.ctl-body { grid-area: 2 / 1 / auto / 4; min-width: 0; }
+.ctl-edit-canvas { grid-area: 3 / 1 / auto / 4; justify-self: start; }
+.ctl[data-state="mixed"] .ctl-label::after { content: " (mixed)"; color: var(--fg-dim); }
+.ctl[data-pinned="true"] .ctl-label { color: var(--fg); }
+.ctl[data-invalid="true"] .ctl-input { border-color: var(--danger-line); }
+
+.ctl-input {
+  width: 100%; min-width: 0;
+  font-size: var(--fz-200); border-radius: var(--r-2);
+  border: 1px solid var(--vscode-input-border, var(--line));
+  background: var(--bg-input); color: var(--vscode-input-foreground, var(--fg));
+}
+.ctl-input:focus { border-color: var(--focus); }
+textarea.ctl-input { min-height: 56px; resize: vertical; font-family: var(--font-mono); }
+.ctl-raw { font-family: var(--font-mono); }
+select.ctl-input { cursor: pointer; max-width: none; }
+.ctl-range { display: flex; align-items: center; gap: var(--sp-2); }
+.ctl-range .ctl-input { flex: 1 1 auto; padding: 0; border: none; background: transparent; accent-color: var(--accent); }
+.ctl-readout { flex: none; min-width: 5ch; text-align: right; font-size: var(--fz-100); color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.ctl-token { display: flex; align-items: center; gap: var(--sp-2); }
+.ctl-token .ctl-input { flex: 1 1 auto; }
+.ctl-swatch {
+  flex: none; width: 20px; height: 20px; border-radius: var(--r-2);
+  border: 1px solid var(--line); background-image:
+    linear-gradient(45deg, var(--line-soft) 25%, transparent 25%, transparent 75%, var(--line-soft) 75%),
+    linear-gradient(45deg, var(--line-soft) 25%, transparent 25%, transparent 75%, var(--line-soft) 75%);
+  background-size: 8px 8px; background-position: 0 0, 4px 4px;
+}
+.ctl-toggle {
+  font: inherit; font-size: var(--fz-200); line-height: 1.6; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-2);
+  background: transparent; color: var(--fg); cursor: pointer; min-width: 6ch;
+}
+.ctl-toggle[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--fg); }
+.ctl-note { font-size: var(--fz-100); color: var(--fg-dim); }
+.ctl-pin {
+  width: 18px; height: 18px; padding: 0; line-height: 1;
+  border: none; border-radius: 50%; cursor: pointer;
+  background: transparent; color: var(--accent); font-size: var(--fz-400);
+}
+.ctl-pin:hover { background: var(--bg-hover); }
+.ctl-clear {
+  width: 18px; height: 18px; padding: 0; line-height: 1;
+  border: none; border-radius: var(--r-1); cursor: pointer;
+  background: transparent; color: var(--fg-dim); font-size: var(--fz-300);
+}
+.ctl-clear:hover { background: var(--bg-hover); color: var(--fg); }
+.ctl-edit-canvas {
+  font: inherit; font-size: var(--fz-100); line-height: 1.6; padding: 0 var(--sp-2);
+  border: 1px solid var(--line-soft); border-radius: var(--r-2);
+  background: transparent; color: var(--fg-dim); cursor: pointer;
+}
+.ctl-edit-canvas:hover { color: var(--fg); border-color: var(--accent); }
+
+/* ══ §11 VERSION TIMELINE ═══════════════════════════════════════════════════ */
+.version-timeline {
+  flex: 0 0 auto; max-height: 40%; overflow-y: auto;
+  padding: var(--sp-2); display: flex; flex-direction: column; gap: var(--sp-1);
+  border-top: 1px solid var(--line);
+}
+.version-timeline:empty { display: none; }
+.version-empty { font-size: var(--fz-100); color: var(--fg-dim); }
+.version-row {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-1); border-radius: var(--r-2); font-size: var(--fz-200);
+}
+.version-row:hover { background: var(--bg-hover); }
+.version-thumb {
+  flex: none; overflow: hidden; background: var(--canvas-paper);
+  border: 1px solid var(--line-soft); border-radius: var(--r-1);
+}
+.version-thumb.empty { background: var(--bg-hover); }
+.version-meta { flex: 1 1 auto; min-width: 0; }
+.version-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.version-sub { display: block; font-size: var(--fz-100); color: var(--fg-dim); }
+.version-restore {
+  flex: none; font: inherit; font-size: var(--fz-100); line-height: 1.6; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-2);
+  background: transparent; color: var(--fg); cursor: pointer;
+}
+.version-restore:hover { background: var(--bg-hover); border-color: var(--accent); }
+
+/* ══ §11.5 THE LAYOUT CLASSES `app.ts` WRITES ═══════════════════════════════
+ * `CanvasApp._applyLayout` stamps `#app` with exactly one of `layout-narrow` /
+ * `layout-medium` / `layout-wide`, plus `rail-collapsed` / `inspector-collapsed`
+ * for whichever pane is off screen, plus `data-layout-mode`.
+ *
+ * That decision has 48px of HYSTERESIS (`boardMath.ts`), so mid-drag it can
+ * legitimately disagree with the raw container query by up to 24px. Where it
+ * does, the CLASS WINS — otherwise the panel flickers between two answers that
+ * are each correct. The container-query ladder in §5 remains the truth before
+ * the bundle boots, and the only truth if it never does.
+ *
+ * Setting a custom property to `initial` makes it guaranteed-invalid, so every
+ * `var(--x, fallback)` downstream falls back — that is how a mode class un-does
+ * the ladder's overlay properties rather than fighting them value by value.
+ */
+.app.layout-wide {
+  --rail-track: clamp(172px, 17cqi, 260px);
+  --insp-track: clamp(240px, 22cqi, 340px);
+  --rail-dock-display: flex; --insp-dock-display: flex;
+  --rail-hide-display: inline-flex; --insp-hide-display: inline-flex;
+  --rail-show-display: none; --insp-show-display: none;
+  --rail-over-display: initial; --rail-over-position: initial; --rail-over-col: initial; --rail-over-w: initial;
+  --rail-over-z: initial; --rail-over-shadow: initial; --rail-scrim-display: initial;
+  --insp-over-display: initial; --insp-over-position: initial; --insp-over-col: initial; --insp-over-w: initial;
+  --insp-over-z: initial; --insp-over-shadow: initial; --insp-scrim-display: initial;
+}
+.app.layout-medium {
+  --rail-track: clamp(172px, 17cqi, 260px);
+  --rail-dock-display: flex;
+  --rail-hide-display: inline-flex; --rail-show-display: none;
+  --rail-over-display: initial; --rail-over-position: initial; --rail-over-col: initial; --rail-over-w: initial;
+  --rail-over-z: initial; --rail-over-shadow: initial; --rail-scrim-display: initial;
+  --insp-track: 0px; --insp-dock-display: none;
+  --insp-over-display: flex; --insp-over-position: absolute; --insp-over-col: 1 / -1; --insp-over-w: min(340px, 86%);
+  --insp-over-z: 16; --insp-over-shadow: var(--shadow-2); --insp-scrim-display: block;
+  --insp-hide-display: none; --insp-show-display: inline-flex;
+}
+.app.layout-narrow {
+  --rail-track: 0px; --rail-dock-display: none;
+  --rail-over-display: flex; --rail-over-position: absolute; --rail-over-col: 1 / -1; --rail-over-w: min(280px, 82%);
+  --rail-over-z: 16; --rail-over-shadow: var(--shadow-2); --rail-scrim-display: block;
+  --rail-hide-display: none; --rail-show-display: inline-flex;
+  --insp-track: 0px; --insp-dock-display: none;
+  --insp-over-display: flex; --insp-over-position: absolute; --insp-over-col: 1 / -1; --insp-over-w: min(340px, 86%);
+  --insp-over-z: 16; --insp-over-shadow: var(--shadow-2); --insp-scrim-display: block;
+  --insp-hide-display: none; --insp-show-display: inline-flex;
+}
+/* After the mode classes on purpose: a collapsed pane is collapsed in any mode. */
+.app.rail-collapsed { --rail-track: 0px; --rail-dock-display: none; }
+.app.inspector-collapsed { --insp-track: 0px; --insp-dock-display: none; }
+@supports not (container-type: inline-size) {
+  .app.layout-wide, .app.layout-medium { --rail-track: 220px; }
+  .app.layout-wide { --insp-track: 280px; }
+}
+
+/* ══ §11.6 THE AGENT STATUS BAR ═════════════════════════════════════════════
+ * `liveness.ts` ADOPTS the parts this shell ships (`.agent-dot`,
+ * `#agent-activity`, `#agent-elapsed`, `#btn-agent-cancel`) and APPENDS the
+ * ones it does not (`.agent-detail`, `.agent-progress` + `.agent-progress-fill`,
+ * `.agent-review`). Appending puts them after Cancel, which is the wrong
+ * reading order for a status line — so the order is re-stated here rather than
+ * asking another module to rearrange its DOM for a visual reason.
+ */
+.agent-dot { order: 0; }
+.agent-activity { order: 1; }
+.agent-detail { order: 2; }
+.agent-elapsed { order: 3; }
+.agent-progress { order: 4; }
+.agent-review { order: 5; }
+.agent-cancel { order: 6; }
+.agent-detail {
+  font-size: var(--fz-100); color: var(--fg-dim); max-width: 34ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agent-progress {
+  position: relative; flex: none; width: 56px; height: 4px; overflow: hidden;
+  border-radius: var(--r-pill); background: var(--bg-hover);
+}
+.agent-progress-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 0;
+  background: var(--accent); transition: width var(--dur-2) var(--ease);
+}
+.agent-review {
+  font: inherit; font-size: var(--fz-100); line-height: 1.5; padding: 0 var(--sp-2);
+  border: 1px solid transparent; border-radius: var(--r-pill);
+  background: var(--badge-bg); color: var(--badge-fg); cursor: pointer;
+}
+.agent-review:hover { border-color: var(--accent); }
+/* Semantic colour, and only where it means something. */
+.agent-status[data-state="working"] .agent-dot { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.agent-status[data-state="review"] .agent-dot { background: var(--warn); animation: none; }
+.agent-status[data-state="idle"] .agent-dot { background: var(--fg-faint); animation: none; }
+.agent-status[data-state="offline"] .agent-dot {
+  background: transparent; border: 1px solid var(--line); animation: none;
+}
+.agent-status[data-state="offline"] { color: var(--fg-dim); }
+.agent-status[data-motion="reduced"] .agent-dot { animation: none; }
+
+/* ══ §11.7 THE REVIEW QUEUE ═════════════════════════════════════════════════ */
+.staged-empty { font-size: var(--fz-100); color: var(--fg-dim); text-wrap: pretty; }
+.staged-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+.staged-toggle {
+  flex: 1 1 auto; text-align: left; font-weight: 600; color: var(--fg);
+  border-color: transparent; background: transparent;
+}
+.staged-toggle:hover { background: var(--bg-hover); }
+.staged-rail[data-open="true"] .staged-toggle { color: var(--fg); }
+.staged-count {
+  flex: none; padding: 0 var(--sp-1); border-radius: var(--r-pill);
+  background: var(--badge-bg); color: var(--badge-fg); font-variant-numeric: tabular-nums;
+}
+.sr-head { display: flex; align-items: baseline; gap: var(--sp-1); min-width: 0; }
+.sr-head .sr-title { flex: 1 1 auto; }
+.sr-where { flex: none; font-size: var(--fz-100); color: var(--fg-dim); }
+.sr-reveal:hover { border-color: var(--accent); }
+
+/* ══ §11.8 THE STEERING COMPOSER ════════════════════════════════════════════
+ * "Tell Mysti what to change" — the other half of a legible agent. The shell
+ * ships `#agent-comment` deliberately: `liveness.ts` falls back to `#inspector`
+ * and CLEARS its host, so an absent dock costs the inspector its whole pane.
+ */
+.agent-comment {
+  flex: 0 0 auto; display: flex; flex-direction: column; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--line); background: var(--bg-raised);
+}
+.agent-comment:empty { display: none; }
+.ac-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.ac-title {
+  font-size: var(--fz-100); color: var(--fg-dim);
+  text-transform: uppercase; letter-spacing: var(--tracking-caps);
+}
+.ac-row { display: flex; align-items: center; gap: var(--sp-1); min-width: 0; }
+.ac-target { flex: 0 1 12ch; min-width: 0; }
+.ac-input { flex: 1 1 auto; min-width: 0; }
+.ac-send {
+  flex: none; font: inherit; font-size: var(--fz-100); line-height: 1.7; padding: 0 var(--sp-2);
+  border: 1px solid transparent; border-radius: var(--r-2);
+  background: var(--btn-primary-bg); color: var(--btn-primary-fg); cursor: pointer;
+}
+.ac-send:hover { background: var(--btn-primary-bg-hover); }
+.ac-outbox { display: flex; flex-direction: column; gap: var(--sp-1); }
+.ac-outbox:empty { display: none; }
+.ac-item { display: flex; align-items: baseline; gap: var(--sp-2); font-size: var(--fz-100); }
+.ac-item-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ac-item-status { flex: none; color: var(--fg-dim); }
+.insp-ask {
+  flex: 0 0 auto; font: inherit; font-size: var(--fz-100); line-height: 1.7; padding: 0 var(--sp-2);
+  border: 1px solid var(--accent); border-radius: var(--r-pill);
+  background: transparent; color: var(--accent); cursor: pointer;
+}
+.insp-ask:hover { background: var(--accent-soft); }
+
+/* ══ §11.9 ICONS OVER THE MODULES' OWN BUTTONS ══════════════════════════════
+ * `historyUi.ts` and `rail.ts` ship `data-icon` + a readable `.btn-label`, so an
+ * unstyled shell shows an operable word rather than an empty square. Here the
+ * stylesheet takes them up on it: draw the icon, and hide the word ONLY where
+ * the button also carries an `aria-label` (both emitters set one
+ * unconditionally, which is what makes hiding it safe).
+ */
+.history-btn, .thumb-action { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.history-btn[data-icon="undo"] .btn-label,
+.history-btn[data-icon="redo"] .btn-label,
+.thumb-action[data-icon] .btn-label {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+.thumb-action[data-icon] { padding: 0; width: 22px; height: 22px; justify-content: center; }
+.history-last {
+  font-size: var(--fz-100); color: var(--fg-dim); max-width: 26ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The inspector builds icon controls as a `.btn-glyph` text mark; replace the
+ * two that are punctuation with the real thing, and keep the name intact. */
+.ctl-pin .btn-glyph, .ctl-clear .btn-glyph {
+  display: inline-block; font-size: 0; width: 11px; height: 11px;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+  -webkit-mask-position: center; mask-position: center;
+  -webkit-mask-size: contain; mask-size: contain;
+  -webkit-mask-image: var(--i); mask-image: var(--i);
+}
+.ctl-pin .btn-glyph { --i: var(--icon-dot); }
+.ctl-clear .btn-glyph { --i: var(--icon-close); }
+
+/* ══ §11.10 CHANGE FLASH ════════════════════════════════════════════════════
+ * "Show me what just changed": a screen-space rectangle in `#board-overlay`,
+ * drawn on every applied op. `data-motion` is decided by `liveness.ts` from
+ * `matchMedia`, and the reduced variant is a STATIC outline rather than nothing
+ * — the information is what changed, not that something moved.
+ */
+.change-flash {
+  position: absolute; pointer-events: none; border-radius: var(--r-1);
+  outline: 2px solid var(--accent); background: var(--accent-soft);
+}
+.change-flash[data-motion="full"] { animation: change-fade 900ms var(--ease) forwards; }
+@keyframes change-fade {
+  from { opacity: 1; }
+  60% { opacity: .55; }
+  to { opacity: 0; }
+}
+
+/* ══ §12 MOTION ═════════════════════════════════════════════════════════════
+ * Every animation here is ambient (it reports that something is happening) and
+ * none of it carries information a static frame does not — so all of it goes.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+  .ghost-shimmer { display: none; }
+  .agent-dot { animation: none; }
+  .skeleton { animation: none; opacity: .6; }
+}
+
+/*
+ * The board is a focusable widget (`role="application"`, tabindex 0) so the
+ * element-walk on Tab is reachable by keyboard at all. It therefore needs a
+ * visible focus ring like every other control — an inset one, because the
+ * board is clipped and an outset ring would be cropped away.
+ */
+.board-scroll:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, currentColor);
+  outline-offset: -2px;
+}

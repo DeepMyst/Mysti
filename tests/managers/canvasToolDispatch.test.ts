@@ -15,6 +15,8 @@ import {
   getCanvasTool,
 } from '../../src/managers/CanvasToolDispatch';
 import type { CanvasToolContext } from '../../src/managers/CanvasToolDispatch';
+import { pageHtml, pageJsx, pageMode } from '../../src/canvas/pageMigration';
+import { findNode, walk } from '../../src/canvas/doc/DocNode';
 import type { CanvasArtifact } from '../../src/types';
 
 describe('CanvasToolDispatch', () => {
@@ -33,6 +35,17 @@ describe('CanvasToolDispatch', () => {
 
   function addPage(html = 'hello', title = 'Cover') {
     return store.insertPage(artifact, store.makePage({ mode: 'html', htmlSource: html, actionTitle: title }));
+  }
+
+  function addJsxPage(jsx: string, title = 'Screen') {
+    return store.insertPage(artifact, store.makePage({ mode: 'jsx', jsxSource: jsx, actionTitle: title }));
+  }
+
+  /** The mid of the first text leaf of a page's document. */
+  function firstLeafMid(pageId: string): string {
+    const doc = store.getPage(artifact, pageId)!.doc;
+    for (const n of walk(doc)) { if (n.text !== undefined) { return n.mid; } }
+    throw new Error('no text leaf in the page document');
   }
 
   describe('tool catalog', () => {
@@ -98,7 +111,7 @@ describe('CanvasToolDispatch', () => {
       const p = addPage('old');
       const r = dispatchCanvasTool('edit_page', { pageId: p.id, patch: { htmlSource: 'new' }, baseVersion: 1 }, ctx);
       expect(r.ok).toBe(true);
-      expect(store.getPage(artifact, p.id)!.htmlSource).toBe('new');
+      expect(pageHtml(store.getPage(artifact, p.id)!)).toBe('new');
     });
 
     it('edit_page with a stale baseVersion does not clobber', () => {
@@ -106,7 +119,7 @@ describe('CanvasToolDispatch', () => {
       store.updatePage(artifact, p.id, { htmlSource: 'v2' }); // version → 2
       const r = dispatchCanvasTool('edit_page', { pageId: p.id, patch: { htmlSource: 'agent' }, baseVersion: 1 }, ctx);
       expect(r.op!.status).toBe('stale');
-      expect(store.getPage(artifact, p.id)!.htmlSource).toBe('v2');
+      expect(pageHtml(store.getPage(artifact, p.id)!)).toBe('v2');
     });
 
     it('delete_page removes a page (and is undoable via the executor)', () => {
@@ -141,11 +154,27 @@ describe('CanvasToolDispatch', () => {
       expect(artifact.theme.colors.primary).toBe('#123456');
     });
 
-    it('edit_element stores a durable override', () => {
-      const p = addPage();
-      const r = dispatchCanvasTool('edit_element', { pageId: p.id, path: '0/1', override: { innerHtml: 'hi' } }, ctx);
+    it('edit_element edits the addressed element in the document', () => {
+      const p = addJsxPage('function Page(){ return <div><span>old</span></div>; }');
+      const mid = firstLeafMid(p.id);
+      const r = dispatchCanvasTool('edit_element', { pageId: p.id, mid, text: 'hi' }, ctx);
       expect(r.ok).toBe(true);
-      expect(store.getPage(artifact, p.id)!.elementOverrides!['0/1'].innerHtml).toBe('hi');
+      expect(findNode(store.getPage(artifact, p.id)!.doc, mid)!.text).toBe('hi');
+    });
+
+    it('edit_element refuses a DOM-index-path payload (the deleted shadow layer)', () => {
+      const p = addJsxPage('function Page(){ return <div><span>old</span></div>; }');
+      const r = dispatchCanvasTool('edit_element', { pageId: p.id, path: '0/1', override: { innerHtml: 'hi' } }, ctx);
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('mid');
+    });
+
+    it('edit_element rejects a payload naming more than one cell', () => {
+      const p = addJsxPage('function Page(){ return <div><span>old</span></div>; }');
+      const mid = firstLeafMid(p.id);
+      const r = dispatchCanvasTool('edit_element', { pageId: p.id, mid, text: 'hi', style: { color: 'red' } }, ctx);
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('exactly one');
     });
   });
 
@@ -154,9 +183,13 @@ describe('CanvasToolDispatch', () => {
       const jsx = '```jsx\nfunction Page() { return <div>Hi</div>; }\n```';
       const r = dispatchCanvasTool('write_page_jsx', { jsx, actionTitle: 'Slide' }, ctx);
       expect(r.ok).toBe(true);
-      expect(artifact.pages[0].mode).toBe('jsx');
-      expect(artifact.pages[0].jsxSource).toContain('function Page()');
-      expect(artifact.pages[0].jsxSource).not.toContain('```');
+      // The page is stored as a document; the JSX view is derived and carries
+      // the mids `read_page` hands the model.
+      expect(pageMode(artifact.pages[0])).toBe('jsx');
+      expect(artifact.pages[0].legacy).toBeUndefined();
+      expect(pageJsx(artifact.pages[0])).toContain('function Page()');
+      expect(pageJsx(artifact.pages[0])).not.toContain('```');
+      expect(pageJsx(artifact.pages[0])).toContain('mid=');
     });
 
     it('rejects imports (sandbox preloads React/UI.*)', () => {
@@ -176,7 +209,8 @@ describe('CanvasToolDispatch', () => {
       const p = addPage();
       const r = dispatchCanvasTool('write_page_jsx', { pageId: p.id, jsx: 'function Page(){return <b/>;}', baseVersion: 1 }, ctx);
       expect(r.ok).toBe(true);
-      expect(store.getPage(artifact, p.id)!.mode).toBe('jsx');
+      expect(pageMode(store.getPage(artifact, p.id)!)).toBe('jsx');
+      expect(store.getPage(artifact, p.id)!.doc.tag).toBe('b');
     });
   });
 

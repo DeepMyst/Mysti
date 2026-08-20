@@ -11,6 +11,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { pageSource } from '../canvas/pageMigration';
+import { walk } from '../canvas/doc/DocNode';
 import type { CanvasArtifact, ArtifactPage } from '../types';
 
 /**
@@ -49,13 +51,22 @@ export function validatePage(
   const add = (severity: PageValidationIssue['severity'], rule: string, message: string) =>
     issues.push({ pageId: page.id, severity, rule, message });
 
-  const source = page.htmlSource ?? page.jsxSource ?? '';
-  const hasStructured = Array.isArray(page.nodes) && page.nodes.length > 0;
+  // Plan 22 §3.1: the document is the truth, so "empty" is a doc question, not
+  // a string-length question. The source view is still what the text rules
+  // (hex colors, asset refs) read — a legacy page has one and a compiled page
+  // gets its emitted JSX.
+  const source = pageSource(page);
+  const docNodes = countDocNodes(page.doc);
 
   // 1. Empty page.
-  if (!source.trim() && !hasStructured) {
-    add('error', 'empty-page', 'page has no html/jsx source or structured nodes');
+  if (!source.trim() && docNodes <= 1) {
+    add('error', 'empty-page', 'page has no document content and no legacy source');
     return issues; // nothing else to check
+  }
+
+  // 1b. A page whose source could not be compiled is not editable element-wise.
+  if (page.compileError) {
+    add('warning', 'legacy-page', `page source is outside the JSX subset (${page.compileError}) — it renders, but elements cannot be addressed`);
   }
 
   // 2. Missing action title on a deck page.
@@ -89,6 +100,17 @@ export function validatePage(
   }
 
   return issues;
+}
+
+/** Node count for a page document, capped so a hostile tree cannot spin here. */
+function countDocNodes(doc: ArtifactPage['doc']): number {
+  if (!doc) { return 0; }
+  let n = 0;
+  for (const _node of walk(doc)) {
+    void _node;
+    if (++n > 4096) { break; }
+  }
+  return n;
 }
 
 /** Validate every page; returns a flat issue list across the artifact. */

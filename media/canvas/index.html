@@ -2,10 +2,22 @@
 <!--
  Mysti - AI Coding Agent · Copyright (c) 2025 DeepMyst Inc.
  SPDX-License-Identifier: Apache-2.0
- Plan 05 — the agent-driven canvas: a three-pane design studio (pages rail /
- live sandboxed page / inspector). No in-canvas chat — driven from Mysti chat.
- Thin template: {{placeholders}} are filled by getCanvasContent (or the preview
- generator); all dynamic state arrives via window.__MYSTI_CANVAS_BOOT__.
+
+ Plan 22 — the agent-driven canvas shell: pages rail / board of artboards /
+ inspector, with the agent's own activity as a first-class surface rather than
+ a toast. There is no in-canvas chat: the canvas is driven from Mysti chat.
+
+ Thin template: {{placeholders}} are filled by `getCanvasContent`; all dynamic
+ state arrives over `canvas/hello` into `window.__MYSTI_CANVAS_BOOT__`.
+
+ TWO INVARIANTS THIS FILE CARRIES (both are load-bearing for `canvas.css`):
+  1. `#page-stage` contains NO whitespace. `:empty` on it is what distinguishes
+     "the host has not answered yet" (loading) from "there are no artboards"
+     (empty state) from "there are artboards" (onboarding hint) — three states
+     with zero JavaScript, and a stray newline would collapse all three.
+  2. The four `.pane-switch` checkboxes ARE the responsive pane state machine.
+     They are real form controls so the layout is keyboard-operable and keeps
+     working if the bundle fails to load. See `canvas.css` §5.
 -->
 <html lang="en">
 <head>
@@ -16,65 +28,220 @@
 </head>
 <body>
   <div id="app" class="app">
-    <!-- Top bar -->
     <header class="topbar">
-      <div class="topbar-left">
-        <span class="brand">◆ Mysti Canvas</span>
+      <div class="topbar-row topbar-title">
+        <!-- Pane switches. Exactly one of each pair is rendered at a time; the
+             ladder in canvas.css §5 decides which, and each is named for the
+             action it actually performs at that width. -->
+        <label class="pane-toggle pane-toggle-hide-rail" title="Hide the pages panel">
+          <input type="checkbox" id="rail-hidden" class="pane-switch sr-only" aria-label="Hide the pages panel">
+          <span class="i i-panel-left" aria-hidden="true"></span>
+        </label>
+        <label class="pane-toggle pane-toggle-show-rail" title="Show the pages panel">
+          <input type="checkbox" id="rail-shown" class="pane-switch sr-only" aria-label="Show the pages panel">
+          <span class="i i-panel-left" aria-hidden="true"></span>
+        </label>
+
+        <span class="brand">
+          <span class="i i-brand" aria-hidden="true"></span>
+          <span class="brand-text">Canvas</span>
+        </span>
         <span id="artifact-name" class="artifact-name">Untitled</span>
-        <span id="agent-activity" class="agent-activity" hidden></span>
+
+        <!-- The agent, legibly: what it is doing, for how long, and how to stop
+             it. The region is permanent (so updates are announced); its chrome
+             appears only while `#agent-activity` is unhidden. -->
+        <div class="agent-status" id="agent-status" role="status" aria-live="polite">
+          <span class="agent-dot" aria-hidden="true"></span>
+          <span id="agent-activity" class="agent-activity" hidden></span>
+          <span id="agent-elapsed" class="agent-elapsed" hidden></span>
+          <button type="button" class="agent-cancel" id="btn-agent-cancel" hidden>Stop</button>
+        </div>
       </div>
-      <div class="topbar-right">
-        <label class="select-wrap" title="Device / format">
-          <span class="select-label">Device</span>
-          <select id="device-select"></select>
-        </label>
-        <label class="select-wrap" title="Design system">
-          <span class="select-label">Theme</span>
-          <select id="theme-select"></select>
-        </label>
+
+      <div class="topbar-row topbar-tools">
+        <span class="field">
+          <label class="field-label" for="device-select">Device</label>
+          <select id="device-select" class="select" aria-label="Preview device"></select>
+          <button type="button" class="btn btn-quiet" id="btn-apply-device"
+                  title="Make this the selected artboard's real device">Apply</button>
+        </span>
+        <span class="field">
+          <label class="field-label" for="theme-select">Theme</label>
+          <select id="theme-select" class="select" aria-label="Design system"></select>
+        </span>
+
         <div id="capability-chips" class="chips" title="Connected capabilities"></div>
-        <button class="btn ghost" id="btn-present" title="Present">▶ Present</button>
-        <button class="btn ghost" id="btn-export" title="Export">⤓ Export</button>
+
+        <span class="topbar-sep" aria-hidden="true"></span>
+
+        <!--
+          Undo / redo / save-version. The buttons are BUILT by `historyUi.ts`
+          from the host-pushed `canvas/history` snapshot: the webview keeps no
+          mirror of the undo stack, because it never sees the ops that arrive
+          over MCP, over a `<canvas:NONCE>` directive, or from a background job.
+        -->
+        <div id="history-toolbar" class="history-toolbar"></div>
+
+        <button type="button" class="btn" id="btn-present" title="Present the design full-screen">
+          <span class="i i-play" aria-hidden="true"></span><span class="btn-text">Present</span>
+        </button>
+        <button type="button" class="btn" id="btn-export" title="Export the design">
+          <span class="i i-export" aria-hidden="true"></span><span class="btn-text">Export</span>
+        </button>
+
+        <label class="pane-toggle pane-toggle-hide-insp" title="Hide the inspector">
+          <input type="checkbox" id="inspector-hidden" class="pane-switch sr-only" aria-label="Hide the inspector">
+          <span class="i i-panel-right" aria-hidden="true"></span>
+        </label>
+        <label class="pane-toggle pane-toggle-show-insp" title="Show the inspector">
+          <input type="checkbox" id="inspector-shown" class="pane-switch sr-only" aria-label="Show the inspector">
+          <span class="i i-panel-right" aria-hidden="true"></span>
+        </label>
       </div>
     </header>
 
     <div class="body">
       <!-- Left: pages rail -->
-      <aside class="rail" id="pages-rail">
+      <aside class="pane rail" id="pages-rail" aria-label="Pages">
         <div class="rail-head">
-          <span>Pages</span>
-          <button class="icon-btn" id="btn-add-page" title="Add a page from a template">＋</button>
+          <span class="pane-title">Pages</span>
+          <span class="pane-head-actions">
+            <button type="button" class="icon-btn" id="btn-add-page"
+                    aria-label="Add a page from a template" title="Add a page from a template">
+              <span class="i i-add" aria-hidden="true"></span>
+            </button>
+            <!--
+              A POINTER shortcut for the top-bar switch, not a second control:
+              a `<label for=…>` is clickable but can never take focus, and
+              Enter/Space on a focused label does not activate the control it
+              labels (verified in Chromium), so making it `tabindex="0"
+              role="button"` would only promise a button that no key can press.
+              It is therefore hidden from assistive tech — the same treatment
+              `.pane-scrim` gets for the same reason — rather than offered as
+              an unnamed, unreachable node. The keyboard path at this width is
+              the `.pane-toggle-show-rail` switch in the top bar, which is
+              rendered in exactly the mode this button is, plus Escape.
+              A focusable in-pane close needs a real <button> and one listener
+              in `app.ts`; that lives outside this template.
+            -->
+            <label class="icon-btn pane-close-rail" for="rail-shown" aria-hidden="true"
+                   title="Close the pages panel">
+              <span class="i i-close" aria-hidden="true"></span>
+            </label>
+          </span>
         </div>
         <div class="scaffold-menu" id="scaffold-menu" hidden></div>
         <div class="rail-list" id="rail-list"></div>
+        <!-- Staged agent suggestions (accept / reject), drawn by `liveness.ts`. -->
+        <div class="staged-rail" id="staged-rail" hidden></div>
       </aside>
 
       <!-- Center: the live board -->
       <main class="board" id="board">
-        <div class="onboarding" id="onboarding" hidden>
-          <span class="onboarding-text">👋 Ask <b>Mysti</b> in chat to design screens — e.g. <em>“add a settings screen.”</em> Switch device &amp; theme above, or export your design.</span>
-          <button class="onboarding-x" id="onboarding-dismiss" title="Dismiss">×</button>
+        <div class="onboarding" id="onboarding">
+          <span class="i i-spark" aria-hidden="true"></span>
+          <span class="onboarding-text">Ask <b>Mysti</b> in chat to change any screen — e.g. <em>“make the header sticky.”</em></span>
+          <button type="button" class="icon-btn" id="onboarding-dismiss" aria-label="Dismiss this hint" title="Dismiss">
+            <span class="i i-close" aria-hidden="true"></span>
+          </button>
         </div>
-        <div class="board-scroll" id="board-scroll">
-          <div class="page-stage" id="page-stage">
-            <!-- iframe injected here -->
+
+        <!--
+          The BOARD (Plan 22 §4 row 1). `#board-scroll` is the fixed clipping
+          viewport; `#page-stage` is the transformed world every artboard is
+          absolutely positioned inside, at its own `boardPos` and `format`.
+          `#board-overlay` is deliberately OUTSIDE the world and untransformed:
+          selection chrome is drawn there in screen space, so a 1px outline is
+          one real pixel at any zoom, it survives every frame repaint, and it
+          lives in a document a sandboxed page cannot reach (§4 row 2).
+          Artboards are injected into `#page-stage` — which must stay literally
+          empty here; see the header note.
+        -->
+        <!--
+          Focusable, and deliberately `role="application"`: Tab inside the board
+          walks between ELEMENTS of the focused artboard rather than between
+          browser controls, so assistive tech must pass keys through. Focus has
+          to be enterable for that walk to be reachable at all — without
+          `tabindex` the board can never be the active element and the walk is
+          dead code. Escape returns focus to the shell — and the accessible name
+          has to SAY so: Tab wraps within the artboard's elements, which WCAG
+          2.1.2 permits only when the user is advised of the exit.
+        -->
+        <div class="board-scroll" id="board-scroll" tabindex="0" role="application"
+             aria-label="Design board. Tab moves between elements of the selected artboard; press Escape to leave the board.">
+          <div class="page-stage" id="page-stage"></div>
+          <div class="board-overlay" id="board-overlay"></div>
+        </div>
+
+        <!-- Loading: inferred from "no artboards yet AND no empty state yet". -->
+        <div class="board-loading" id="board-loading">
+          <div class="skeleton-row" aria-hidden="true">
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
           </div>
+          <div class="loading-text">Loading your designs…</div>
         </div>
+
+        <!-- Error: unhidden by whichever module owns the failure it reports. -->
+        <div class="board-error" id="board-error" role="alert" hidden>
+          <span class="i i-alert" aria-hidden="true"></span>
+          <span class="board-error-text" id="board-error-text"></span>
+        </div>
+
         <div class="board-empty" id="board-empty" hidden>
-          <div class="empty-title">Design your app or website</div>
-          <div class="empty-sub">Ask Mysti in chat (e.g. “design a login screen”), or start from a template:</div>
+          <span class="i i-artboard empty-icon" aria-hidden="true"></span>
+          <h1 class="empty-title">Design your app or website</h1>
+          <p class="empty-sub">Ask Mysti in chat — “design a login screen” — or start from a template.</p>
           <div class="empty-templates" id="empty-templates"></div>
+        </div>
+
+        <div class="board-zoom" id="board-zoom">
+          <button type="button" class="zoom-btn" id="btn-zoom-out" aria-label="Zoom out" title="Zoom out (Cmd -)">
+            <span class="i i-minus" aria-hidden="true"></span>
+          </button>
+          <span class="zoom-level" id="zoom-level" title="Current zoom">100%</span>
+          <button type="button" class="zoom-btn" id="btn-zoom-in" aria-label="Zoom in" title="Zoom in (Cmd +)">
+            <span class="i i-add" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="zoom-btn wide" id="btn-zoom-fit" aria-label="Zoom to fit" title="Zoom to fit (Cmd 0)">
+            <span class="i i-fit" aria-hidden="true"></span>
+          </button>
         </div>
       </main>
 
       <!-- Right: inspector -->
-      <aside class="inspector" id="inspector">
-        <div class="insp-tabs">
-          <button class="insp-tab active" data-tab="page">Page</button>
-          <button class="insp-tab" data-tab="theme">Theme</button>
+      <aside class="pane inspector" id="inspector" aria-label="Inspector">
+        <div class="pane-head">
+          <span class="pane-title">Inspector</span>
+          <!-- Pointer shortcut for `.pane-toggle-show-insp`; see the note on
+               `.pane-close-rail` above. -->
+          <label class="icon-btn pane-close-insp" for="inspector-shown" aria-hidden="true"
+                 title="Close the inspector">
+            <span class="i i-close" aria-hidden="true"></span>
+          </label>
         </div>
+        <!-- Host for a future tab strip (page / theme). Empty and hidden until
+             something wires it — the shell ships no control that does nothing. -->
+        <div class="insp-tabs" id="insp-tabs" hidden></div>
         <div class="insp-body" id="insp-body"></div>
+        <!--
+          The steering dock: "tell Mysti what to change". `liveness.ts` fills
+          this host — and when the shell does not ship one it falls back to
+          `#inspector` AND clears it, which would cost the pane its head, its
+          body and its timeline. So it is shipped deliberately, empty: an
+          `:empty` dock renders as nothing at all until there is a composer.
+        -->
+        <div class="agent-comment" id="agent-comment"></div>
+        <!-- Named checkpoints, with parent-rendered (script-free) thumbnails. -->
+        <div class="version-timeline" id="version-timeline"></div>
       </aside>
+
+      <!-- Scrims: dismiss an overlay pane with a pointer. Rendered only in the
+           mode where that pane IS an overlay (canvas.css §5). -->
+      <label class="pane-scrim pane-scrim-rail" for="rail-shown" aria-hidden="true"></label>
+      <label class="pane-scrim pane-scrim-insp" for="inspector-shown" aria-hidden="true"></label>
     </div>
   </div>
 

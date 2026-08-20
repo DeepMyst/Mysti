@@ -92,11 +92,21 @@
         if (issueCount === 0) { issuesEl.innerHTML = ''; }
         issueCount++;
         issueCountEl.textContent = issueCount.toString();
+        // issue.severity is model-supplied and used to used to be interpolated
+        // UNESCAPED into a class attribute. The page CSP (nonce-only script-src)
+        // blocks inline handlers, so it was not script execution — but it could
+        // still inject arbitrary markup. Build nodes instead of HTML.
         var item = document.createElement('div');
         item.className = 'vt-issue-item';
-        item.innerHTML = '<span class="vt-severity vt-severity-' + issue.severity + '">'
-          + escapeHtml(issue.severity) + '</span>'
-          + '<span>' + escapeHtml(issue.description) + '</span>';
+        var sev = String(issue.severity == null ? 'minor' : issue.severity);
+        var safeSev = /^[a-z-]{1,20}$/.test(sev) ? sev : 'minor';
+        var sevEl = document.createElement('span');
+        sevEl.className = 'vt-severity vt-severity-' + safeSev;
+        sevEl.textContent = sev;
+        var descEl = document.createElement('span');
+        descEl.textContent = String(issue.description == null ? '' : issue.description);
+        item.appendChild(sevEl);
+        item.appendChild(descEl);
         issuesEl.appendChild(item);
       }
 
@@ -114,8 +124,8 @@
       }
 
       function escapeHtml(str) {
-        if (!str) return '';
-        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        if (str === null || str === undefined || str === '') return '';
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       }
 
       // ── Message handler ──
@@ -194,6 +204,23 @@
               addAction('done', 'Iteration ' + n + ': ' + ic + ' issue(s) found', dur + 's');
             }
             break;
+
+          case 'visual_observation': {
+            // The new primitive: one look, rendered as its digest. Text, because
+            // the digest (console errors, failed requests, layout probes) is the
+            // actionable part — the screenshot is already shown above.
+            setStatus('Look complete', 'done');
+            var o = chunk.observation || {};
+            var errs = (o.console || []).filter(function (c) { return c.level === 'error'; });
+            addAction('done', 'Looked at ' + (o.url || 'the app'), (o.durationMs ? Math.round(o.durationMs / 1000) + 's' : ''));
+            if (errs.length) { addAction('done', errs.length + ' console error(s)'); }
+            if ((o.network || []).length) { addAction('done', o.network.length + ' failed request(s)'); }
+            (o.layout || []).slice(0, 10).forEach(function (p) {
+              addIssue({ severity: 'major', description: p.selector + ' — ' + (p.flags || []).join('; ') });
+            });
+            (o.denials || []).forEach(function (d) { addIssue({ severity: 'minor', description: d }); });
+            break;
+          }
 
           case 'visual_test_issue':
             if (chunk.issue) {

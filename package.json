@@ -212,6 +212,16 @@
         "command": "mysti.deepmyst.signOut",
         "title": "Sign out of DeepMyst",
         "category": "Mysti"
+      },
+      {
+        "command": "mysti.canvasDiagnostics",
+        "title": "Mysti: Canvas Diagnostics",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.canvasAddScaffold",
+        "title": "Mysti: Add Canvas Page",
+        "category": "Mysti"
       }
     ],
     "menus": {
@@ -463,13 +473,13 @@
             "max"
           ],
           "enumDescriptions": [
-            "Low — fastest, least reasoning",
-            "Medium — balanced",
-            "High — thorough reasoning (default)",
-            "Extra high — deeper reasoning (newest models)",
-            "Max — maximum reasoning effort"
+            "Low \u2014 fastest, least reasoning",
+            "Medium \u2014 balanced",
+            "High \u2014 thorough reasoning (default)",
+            "Extra high \u2014 deeper reasoning (newest models)",
+            "Max \u2014 maximum reasoning effort"
           ],
-          "description": "Reasoning effort tier (Claude Code parity). Each backend maps this to its native reasoning control (Claude Code → --effort, Codex → model_reasoning_effort, OpenRouter → reasoning.effort, …). Backends with no reasoning control ignore it. Distinct from thinking level."
+          "description": "Reasoning effort tier (Claude Code parity). Each backend maps this to its native reasoning control (Claude Code \u2192 --effort, Codex \u2192 model_reasoning_effort, OpenRouter \u2192 reasoning.effort, \u2026). Backends with no reasoning control ignore it. Distinct from thinking level."
         },
         "mysti.defaultModel": {
           "type": "string",
@@ -487,7 +497,7 @@
           "type": "number",
           "default": 600000,
           "minimum": 0,
-          "markdownDescription": "How long (ms) the headless Claude Code process waits for **background subagents/workflows** to finish before exiting, so their results are reported back through the turn (sets `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`; requires `claude` ≥ v2.1.182). Default `600000` (10 min). `0` = wait indefinitely. Raise it if you run long background workflows. If a workflow launched via Claude Code never reports its result, first check `claude --version` is ≥ 2.1.182."
+          "markdownDescription": "How long (ms) the headless Claude Code process waits for **background subagents/workflows** to finish before exiting, so their results are reported back through the turn (sets `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`; requires `claude` \u2265 v2.1.182). Default `600000` (10 min). `0` = wait indefinitely. Raise it if you run long background workflows. If a workflow launched via Claude Code never reports its result, first check `claude --version` is \u2265 2.1.182."
         },
         "mysti.codexModel": {
           "type": "string",
@@ -624,7 +634,7 @@
         "mysti.checkpoints.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Snapshot the workspace before each chat turn so you can rewind code to any prior turn. Uses a private git repository stored outside your project — it never touches your own .git."
+          "description": "Snapshot the workspace before each chat turn so you can rewind code to any prior turn. Uses a private git repository stored outside your project \u2014 it never touches your own .git."
         },
         "mysti.checkpoints.maxFiles": {
           "type": "number",
@@ -653,7 +663,7 @@
         "mysti.compaction.smart.enabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Enable **smart compaction** (requires a connected DeepMyst account). Adds cache-aware timing, a cheap incremental compactor agent, an economic compact-vs-cache decision with a quality floor, cherry-pick retrieval over full history, and an always-on savings display. When off — or when no DeepMyst account is connected — Mysti uses the standard threshold compaction configured above."
+          "markdownDescription": "Enable **smart compaction** (requires a connected DeepMyst account). Adds cache-aware timing, a cheap incremental compactor agent, an economic compact-vs-cache decision with a quality floor, cherry-pick retrieval over full history, and an always-on savings display. When off \u2014 or when no DeepMyst account is connected \u2014 Mysti uses the standard threshold compaction configured above."
         },
         "mysti.compaction.smart.cheapModel": {
           "type": "string",
@@ -664,7 +674,7 @@
           "type": "number",
           "default": 5000,
           "minimum": 2048,
-          "markdownDescription": "Quality floor for smart compaction — the compacted prefix is never targeted below this size. Keeps it above the model's minimum cacheable prefix (≈4096 on Opus/Haiku) so the summary still caches, and preserves enough context for quality."
+          "markdownDescription": "Quality floor for smart compaction \u2014 the compacted prefix is never targeted below this size. Keeps it above the model's minimum cacheable prefix (\u22484096 on Opus/Haiku) so the summary still caches, and preserves enough context for quality."
         },
         "mysti.compaction.smart.retrieval.enabled": {
           "type": "boolean",
@@ -686,18 +696,20 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "markdownDescription": "**Pin** the **Mysti agent**'s coordinator to a single model, routed through the **DeepMyst gateway** using your signed-in DeepMyst account (no local key needed; a free account works). Leave **empty** (default) to rotate the curated free-model list in `mysti.mysti.freeModels` — on a rate-limit Mysti rolls over to the next free model, then to the paid `mysti.mysti.fallbackModel`. Set an id (e.g. `openrouter/openai/gpt-oss-120b:free` — the `openrouter/` prefix picks the OpenRouter provider via the gateway, or a bare gateway model like `claude-haiku-4-5`) to disable rotation. (Only used when no `mysti.openrouter.apiKey` is set — an OpenRouter key opts into OpenRouter directly instead.)"
+          "markdownDescription": "**Pin** the **Mysti agent**'s coordinator to a single model, routed through the **DeepMyst gateway** using your signed-in DeepMyst account (no local key needed; a free account works). Leave **empty** (default) to rotate the curated free-model list in `mysti.mysti.freeModels` \u2014 on a rate-limit Mysti rolls over to the next free model, then to the paid `mysti.mysti.fallbackModel`. Set an id (e.g. `openrouter/openai/gpt-oss-120b:free` \u2014 the `openrouter/` prefix picks the OpenRouter provider via the gateway, or a bare gateway model like `claude-haiku-4-5`) to disable rotation. (Only used when no `mysti.openrouter.apiKey` is set \u2014 an OpenRouter key opts into OpenRouter directly instead.)"
         },
         "mysti.mysti.freeModels": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [
             "openrouter/openai/gpt-oss-120b:free",
             "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
             "openrouter/google/gemma-4-31b-it:free"
           ],
           "scope": "machine",
-          "markdownDescription": "Ordered list of **free** models (routed through the DeepMyst gateway) the Mysti coordinator tries when `mysti.mysti.coordinatorModel` is empty. Defaults to STRONG concrete free models (strongest first, from https://openrouter.ai/collections/free-models) rather than OpenRouter's random `openrouter/free` auto-router — the coordinator has to follow the delegation protocol reliably, and the random router can pick weak models that can't. On any transient failure — rate-limit, provider drop, 5xx, mid-stream fallback — Mysti advances to the next entry (graceful degradation), and only after all are exhausted falls back to the paid `mysti.mysti.fallbackModel`. To use the random free auto-router instead, set this to `[\"openrouter/openrouter/free\"]` (note the doubled prefix: `openrouter/` selects the OpenRouter provider via litellm, `openrouter/free` is the router slug; a bare `openrouter/free` mis-parses to a 502). Reorder or trim to taste. Ignored when a single model is pinned in `mysti.mysti.coordinatorModel`."
+          "markdownDescription": "Ordered list of **free** models (routed through the DeepMyst gateway) the Mysti coordinator tries when `mysti.mysti.coordinatorModel` is empty. Defaults to STRONG concrete free models (strongest first, from https://openrouter.ai/collections/free-models) rather than OpenRouter's random `openrouter/free` auto-router \u2014 the coordinator has to follow the delegation protocol reliably, and the random router can pick weak models that can't. On any transient failure \u2014 rate-limit, provider drop, 5xx, mid-stream fallback \u2014 Mysti advances to the next entry (graceful degradation), and only after all are exhausted falls back to the paid `mysti.mysti.fallbackModel`. To use the random free auto-router instead, set this to `[\"openrouter/openrouter/free\"]` (note the doubled prefix: `openrouter/` selects the OpenRouter provider via litellm, `openrouter/free` is the router slug; a bare `openrouter/free` mis-parses to a 502). Reorder or trim to taste. Ignored when a single model is pinned in `mysti.mysti.coordinatorModel`."
         },
         "mysti.mysti.maxDelegations": {
           "type": "number",
@@ -713,65 +725,80 @@
           "minimum": 2,
           "maximum": 64,
           "scope": "machine",
-          "markdownDescription": "Hard cap on coordinator **model streams** per Mysti-agent run (doubled at high effort) — the run's spend ceiling. One stream = one turn; a delegation result, a local read-tool result, and a length-continue each start a new turn. Machine-scoped so a workspace cannot raise your per-run spend ceiling. Lower it to cap spend more tightly."
+          "markdownDescription": "Hard cap on coordinator **model streams** per Mysti-agent run (doubled at high effort) \u2014 the run's spend ceiling. One stream = one turn; a delegation result, a local read-tool result, and a length-continue each start a new turn. Machine-scoped so a workspace cannot raise your per-run spend ceiling. Lower it to cap spend more tightly."
         },
         "mysti.mysti.memory": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "**Unified cross-backend memory** for the Mysti agent: durable project facts (learned by the coordinator via a `remember` tool) are stored per-workspace and injected into every future Mysti run — so the 14 backends behave like one agent that knows your project. Injected as untrusted, nonce-fenced data. Disable to stop persisting/injecting learnings. Review or delete individual facts with the `Mysti: View & Prune Mysti Memory` command."
+          "markdownDescription": "**Unified cross-backend memory** for the Mysti agent: durable project facts (learned by the coordinator via a `remember` tool) are stored per-workspace and injected into every future Mysti run \u2014 so the 14 backends behave like one agent that knows your project. Injected as untrusted, nonce-fenced data. Disable to stop persisting/injecting learnings. Review or delete individual facts with the `Mysti: View & Prune Mysti Memory` command."
         },
         "mysti.mysti.crossReview": {
           "type": "string",
-          "enum": ["off", "advisory"],
+          "enum": [
+            "off",
+            "advisory"
+          ],
           "enumDescriptions": [
             "No cross-vendor review.",
-            "After a delegation edits files, a DIFFERENT-vendor agent reviews the change read-only and its findings are fed back to the coordinator (advisory — never blocks)."
+            "After a delegation edits files, a DIFFERENT-vendor agent reviews the change read-only and its findings are fed back to the coordinator (advisory \u2014 never blocks)."
           ],
           "default": "off",
-          "markdownDescription": "**Cross-vendor review** (the coordinator-only superpower): after a delegation modifies files, Mysti dispatches a *different-vendor* backend (e.g. Anthropic wrote it → OpenAI or Google reviews it) in READ-ONLY mode to catch bugs the writer's own model would miss — decorrelated blind spots no single-vendor agent gets. `advisory` runs one review per run and feeds findings back to the coordinator; `off` (default) disables it. Costs one extra read-only delegation; requires ≥2 different-vendor backends installed."
+          "markdownDescription": "**Cross-vendor review** (the coordinator-only superpower): after a delegation modifies files, Mysti dispatches a *different-vendor* backend (e.g. Anthropic wrote it \u2192 OpenAI or Google reviews it) in READ-ONLY mode to catch bugs the writer's own model would miss \u2014 decorrelated blind spots no single-vendor agent gets. `advisory` runs one review per run and feeds findings back to the coordinator; `off` (default) disables it. Costs one extra read-only delegation; requires \u22652 different-vendor backends installed."
         },
         "mysti.mysti.verify": {
           "type": "string",
-          "enum": ["off", "suggest"],
+          "enum": [
+            "off",
+            "suggest"
+          ],
           "enumDescriptions": [
             "Never add a verification step.",
             "After a delegation edits files, run a free diagnostics check and nudge the coordinator to verify (run tests/build) before finishing."
           ],
           "default": "suggest",
-          "markdownDescription": "Verification loop for the **Mysti agent**: after a delegation modifies files, Mysti automatically runs a read-only editor-diagnostics check and prompts its coordinator to verify the change (e.g. run the project's tests/build) before answering — the single biggest 'did it actually work' quality lever. `off` disables it."
+          "markdownDescription": "Verification loop for the **Mysti agent**: after a delegation modifies files, Mysti automatically runs a read-only editor-diagnostics check and prompts its coordinator to verify the change (e.g. run the project's tests/build) before answering \u2014 the single biggest 'did it actually work' quality lever. `off` disables it."
         },
         "mysti.mysti.localExecution": {
           "type": "string",
-          "enum": ["off", "on"],
+          "enum": [
+            "off",
+            "on"
+          ],
           "enumDescriptions": [
-            "The Mysti agent coordinates and delegates only — it cannot write files or run commands itself (default).",
+            "The Mysti agent coordinates and delegates only \u2014 it cannot write files or run commands itself (default).",
             "The Mysti agent can create/edit files ITSELF (gated write/edit tools), so it works even with no backend installed."
           ],
           "default": "off",
           "scope": "machine",
-          "markdownDescription": "**Standalone execution for the Mysti agent (Plan 19).** When `on`, the `@mysti` coordinator gets its OWN gated `write` / `edit` tools AND a **sandboxed `bash`** tool (run tests/builds/linters) — so it works even with no CLI backend installed. Every op goes through the **same permission gate** as CLI backends (default-deny in ask modes), is **workspace-scoped** (secret files blocked), and is **checkpointed** (undoable); `bash` additionally runs in an **OS sandbox** (macOS Seatbelt / Linux bwrap — no network, writes limited to the workspace; on platforms without a sandbox only genuinely read-only commands run). Destructive commands (`rm`, `sudo`, `git push --force`, `curl|sh`, container/daemon control, …) are hard-blocked; chained/compound commands and anything not on the read-only allowlist ALWAYS require explicit approval (a command auto-runs only when it is read-only-safe, non-compound, sandboxed, and a capable coordinator model is pinned). Machine-scoped on purpose: a workspace cannot enable it. Disabled in untrusted workspaces and in plan / read-only tiers. A pinned capable coordinator model (`mysti.mysti.coordinatorModel`) is recommended."
+          "markdownDescription": "**Standalone execution for the Mysti agent (Plan 19).** When `on`, the `@mysti` coordinator gets its OWN gated `write` / `edit` tools AND a **sandboxed `bash`** tool (run tests/builds/linters) \u2014 so it works even with no CLI backend installed. Every op goes through the **same permission gate** as CLI backends (default-deny in ask modes), is **workspace-scoped** (secret files blocked), and is **checkpointed** (undoable); `bash` additionally runs in an **OS sandbox** (macOS Seatbelt / Linux bwrap \u2014 no network, writes limited to the workspace; on platforms without a sandbox only genuinely read-only commands run). Destructive commands (`rm`, `sudo`, `git push --force`, `curl|sh`, container/daemon control, \u2026) are hard-blocked; chained/compound commands and anything not on the read-only allowlist ALWAYS require explicit approval (a command auto-runs only when it is read-only-safe, non-compound, sandboxed, and a capable coordinator model is pinned). Machine-scoped on purpose: a workspace cannot enable it. Disabled in untrusted workspaces and in plan / read-only tiers. A pinned capable coordinator model (`mysti.mysti.coordinatorModel`) is recommended."
         },
         "mysti.mysti.bashNetwork": {
           "type": "string",
-          "enum": ["off", "on"],
+          "enum": [
+            "off",
+            "on"
+          ],
           "enumDescriptions": [
             "The Mysti agent's sandboxed bash has NO network access (default).",
-            "Allow network access inside the Mysti agent's bash sandbox (needed for installs/downloads — increases the prompt-injection surface)."
+            "Allow network access inside the Mysti agent's bash sandbox (needed for installs/downloads \u2014 increases the prompt-injection surface)."
           ],
           "default": "off",
           "scope": "machine",
-          "markdownDescription": "Whether the `@mysti` agent's sandboxed `bash` tool may access the **network**. Default `off` (the sandbox blocks all egress) — the safest posture, since the coordinator model is prompt-injectable. Turn `on` only if you need the agent to run installs/downloads itself; it widens the attack surface. Requires `mysti.mysti.localExecution` = `on`. Machine-scoped."
+          "markdownDescription": "Whether the `@mysti` agent's sandboxed `bash` tool may access the **network**. Default `off` (the sandbox blocks all egress) \u2014 the safest posture, since the coordinator model is prompt-injectable. Turn `on` only if you need the agent to run installs/downloads itself; it widens the attack surface. Requires `mysti.mysti.localExecution` = `on`. Machine-scoped."
         },
         "mysti.mysti.mcpTools": {
           "type": "string",
-          "enum": ["off", "on"],
+          "enum": [
+            "off",
+            "on"
+          ],
           "enumDescriptions": [
             "The Mysti agent cannot call your connected external tools (default).",
-            "The Mysti agent can call your CONNECTED external MCP tools (Gmail, Slack, Notion, databases, …) — every call requires explicit approval."
+            "The Mysti agent can call your CONNECTED external MCP tools (Gmail, Slack, Notion, databases, \u2026) \u2014 every call requires explicit approval."
           ],
           "default": "off",
           "scope": "machine",
-          "markdownDescription": "**External MCP tools for the Mysti agent (Plan 19).** When `on`, the `@mysti` coordinator can call the external tools you've **connected via DeepMyst** (Gmail, Slack, Trello, Notion, databases, …), discovered live through the DeepMyst broker. Every call is an un-undoable network side effect (sending mail, creating a ticket), so it **always** requires an explicit approval card — it is never auto-approved, even in full-access or autonomous-aggressive. Only your already-connected tools are callable (a model-invented tool name is refused); results re-enter the model as untrusted, nonce-fenced data. Requires a signed-in DeepMyst account and a trusted workspace. Off by default; machine-scoped so a workspace cannot enable it. Budget: `mysti.mysti.maxMcpCalls` per run."
+          "markdownDescription": "**External MCP tools for the Mysti agent (Plan 19).** When `on`, the `@mysti` coordinator can call the external tools you've **connected via DeepMyst** (Gmail, Slack, Trello, Notion, databases, \u2026), discovered live through the DeepMyst broker. Every call is an un-undoable network side effect (sending mail, creating a ticket), so it **always** requires an explicit approval card \u2014 it is never auto-approved, even in full-access or autonomous-aggressive. Only your already-connected tools are callable (a model-invented tool name is refused); results re-enter the model as untrusted, nonce-fenced data. Requires a signed-in DeepMyst account and a trusted workspace. Off by default; machine-scoped so a workspace cannot enable it. Budget: `mysti.mysti.maxMcpCalls` per run."
         },
         "mysti.mysti.maxMcpCalls": {
           "type": "number",
@@ -785,7 +812,7 @@
           "type": "string",
           "default": "claude-haiku-4-5",
           "scope": "machine",
-          "markdownDescription": "Cheap **paid** gateway model the Mysti agent falls back to when **every** free model (`mysti.mysti.freeModels`, or the pinned `mysti.mysti.coordinatorModel`) is rate-limited (free-tier OpenRouter models have a hard requests/min cap). Default `claude-haiku-4-5` — covered by a free DeepMyst account's monthly credit allowance. Set to empty (`\"\"`) for free-only (accept rate-limit errors, never spend credits)."
+          "markdownDescription": "Cheap **paid** gateway model the Mysti agent falls back to when **every** free model (`mysti.mysti.freeModels`, or the pinned `mysti.mysti.coordinatorModel`) is rate-limited (free-tier OpenRouter models have a hard requests/min cap). Default `claude-haiku-4-5` \u2014 covered by a free DeepMyst account's monthly credit allowance. Set to empty (`\"\"`) for free-only (accept rate-limit errors, never spend credits)."
         },
         "mysti.openrouter.apiKey": {
           "type": "string",
@@ -813,7 +840,7 @@
         "mysti.deepmyst.useInLocalClis": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Expose your DeepMyst MCP connections (Smithery/Composio) to your local AI CLIs (Claude Code, Gemini, Qwen, OpenCode, Codex, Cline) by writing the per-user MCP broker endpoint (`/api/v1/me/mcp`) into each CLI's MCP config, with your `dm_` key as the Bearer. **Off by default** — when on, your `dm_` key is written into those config files (including the workspace `.mcp.json`, which may be committed to git). Toggle it from the DeepMyst Connections panel."
+          "markdownDescription": "Expose your DeepMyst MCP connections (Smithery/Composio) to your local AI CLIs (Claude Code, Gemini, Qwen, OpenCode, Codex, Cline) by writing the per-user MCP broker endpoint (`/api/v1/me/mcp`) into each CLI's MCP config, with your `dm_` key as the Bearer. **Off by default** \u2014 when on, your `dm_` key is written into those config files (including the workspace `.mcp.json`, which may be committed to git). Toggle it from the DeepMyst Connections panel."
         },
         "mysti.activeMode.enabled": {
           "type": "boolean",
@@ -1386,7 +1413,7 @@
             "garrytan/gstack",
             "anthropics/skills"
           ],
-          "description": "GitHub repositories to discover skills from (SKILL.md convention). Format: owner/repo, optionally with /path and @branch — e.g. 'garrytan/gstack' or 'anthropics/skills@main'. Used by the 'Mysti: Import Skills from GitHub' command. Application-scoped so workspaces cannot inject sources."
+          "description": "GitHub repositories to discover skills from (SKILL.md convention). Format: owner/repo, optionally with /path and @branch \u2014 e.g. 'garrytan/gstack' or 'anthropics/skills@main'. Used by the 'Mysti: Import Skills from GitHub' command. Application-scoped so workspaces cannot inject sources."
         },
         "mysti.collab.maxConcurrent": {
           "type": "number",
@@ -1418,7 +1445,7 @@
             "No timeout - require explicit user action",
             "AI makes an intelligent decision using safety classification and learned preferences when timeout expires"
           ],
-          "description": "Behavior when a permission request times out. Machine-scoped (security): a repository's workspace settings cannot flip this to auto-accept to silently approve delegation/edit writes — the workspace-raises-authority escalation review[0] closed."
+          "description": "Behavior when a permission request times out. Machine-scoped (security): a repository's workspace settings cannot flip this to auto-accept to silently approve delegation/edit writes \u2014 the workspace-raises-authority escalation review[0] closed."
         },
         "mysti.semiAutonomous.timeout": {
           "type": "number",
@@ -1535,12 +1562,12 @@
         "mysti.visualTest.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable visual testing feature (requires Playwright)"
+          "description": "Enable visual testing. When off, neither you nor the AI can open a browser from Mysti."
         },
         "mysti.visualTest.devServerCommand": {
           "type": "string",
           "default": "",
-          "description": "Dev server command (e.g. 'npm run dev'). Auto-detected from package.json if empty."
+          "description": "Dev server command (e.g. 'npm run dev'). Auto-detected from your package.json scripts (dev/start/serve) if empty. Starting it always asks for your approval first."
         },
         "mysti.visualTest.url": {
           "type": "string",
@@ -1552,7 +1579,7 @@
           "default": 5,
           "minimum": 1,
           "maximum": 20,
-          "description": "Maximum screenshot→analyze→fix iterations before stopping"
+          "description": "Maximum screenshot\u2192analyze\u2192fix iterations before stopping"
         },
         "mysti.visualTest.browser": {
           "type": "string",
@@ -1563,9 +1590,9 @@
             "webkit"
           ],
           "enumDescriptions": [
-            "Chromium (Chrome/Edge) — fastest and most compatible",
-            "Firefox — Gecko engine",
-            "WebKit (Safari) — for macOS/iOS testing"
+            "Chromium (Chrome/Edge) \u2014 fastest and most compatible",
+            "Firefox \u2014 Gecko engine",
+            "WebKit (Safari) \u2014 for macOS/iOS testing"
           ],
           "description": "Browser engine for screenshots and interactions"
         },
@@ -1595,8 +1622,75 @@
         },
         "mysti.visualTest.serverReadyPattern": {
           "type": "string",
+          "scope": "machine",
+          "maxLength": 200,
           "default": "localhost:\\d+|ready in|compiled successfully|VITE|started server on",
-          "description": "Regex pattern to detect when dev server is ready (matched against stdout)"
+          "description": "Regex pattern to detect when the dev server is ready (matched against stdout). Machine-scoped and length-capped so a cloned repo cannot inject a catastrophically-backtracking pattern."
+        },
+        "mysti.visualTest.allowedOrigins": {
+          "type": "array",
+          "scope": "machine",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "http://localhost",
+            "http://127.0.0.1",
+            "http://[::1]"
+          ],
+          "description": "Origins the visual-testing browser may reach. Loopback-only by default: a browser that can fetch arbitrary URLs and screenshot them back to a model is an exfiltration channel. An entry without a port allows any port on that host. Cloud metadata addresses are blocked even if listed."
+        },
+        "mysti.visualTest.allowModelDevServerCommand": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": false,
+          "description": "Allow the AI to supply the dev-server shell command. Off by default \u2014 the command comes from mysti.visualTest.devServerCommand or your package.json, so a prompt-injected model has no command to name. Turning this on re-introduces a model-to-shell path, gated by a modal confirmation."
+        },
+        "mysti.visualTest.agentInteractions": {
+          "type": "string",
+          "scope": "machine",
+          "enum": [
+            "off",
+            "safe"
+          ],
+          "enumDescriptions": [
+            "The AI can look at the page but not touch it",
+            "The AI may click, type, hover, select, scroll and navigate within your app \u2014 each batch needs your approval"
+          ],
+          "default": "off",
+          "description": "How much the AI may interact with your running app during a visual look."
+        },
+        "mysti.visualTest.interactions": {
+          "type": "string",
+          "enum": [
+            "off",
+            "safe",
+            "full"
+          ],
+          "default": "safe",
+          "description": "How much the Visual Test dashboard (your own clicks) may interact with the page."
+        },
+        "mysti.mysti.visualTools": {
+          "type": "string",
+          "scope": "machine",
+          "enum": [
+            "off",
+            "on"
+          ],
+          "enumDescriptions": [
+            "The Mysti agent cannot open a browser",
+            "The Mysti agent can render your app and look at it (look/act)"
+          ],
+          "default": "off",
+          "description": "Let the Mysti agent SEE your running app: render it in a real browser and read back console errors, failed requests, layout/contrast problems, the accessibility tree and a screenshot. Requires a trusted workspace and Playwright browsers (npx playwright install chromium). Off by default \u2014 it starts a dev server and a browser."
+        },
+        "mysti.mysti.maxVisualLooks": {
+          "type": "number",
+          "scope": "machine",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 24,
+          "description": "Maximum times the Mysti agent may look at the running app in a single run (doubled on high effort)."
         },
         "mysti.canvas.imageGenerationProvider": {
           "type": "string",
@@ -1609,11 +1703,11 @@
             "none"
           ],
           "enumDescriptions": [
-            "OpenAI GPT Image 1.5 — best quality, fastest",
-            "OpenAI GPT Image 1 — great quality",
-            "OpenAI GPT Image 1 Mini — budget-friendly",
-            "Google Gemini 3.1 Flash — fast, free tier",
-            "Google Gemini 3 Pro — highest quality",
+            "OpenAI GPT Image 1.5 \u2014 best quality, fastest",
+            "OpenAI GPT Image 1 \u2014 great quality",
+            "OpenAI GPT Image 1 Mini \u2014 budget-friendly",
+            "Google Gemini 3.1 Flash \u2014 fast, free tier",
+            "Google Gemini 3 Pro \u2014 highest quality",
             "Disabled"
           ],
           "default": "none",
@@ -1627,20 +1721,22 @@
             "none"
           ],
           "enumDescriptions": [
-            "OpenAI Sora 2 — high quality video generation",
-            "Google Veo 3.1 — Google's video generation model",
+            "OpenAI Sora 2 \u2014 high quality video generation",
+            "Google Veo 3.1 \u2014 Google's video generation model",
             "Disabled"
           ],
           "default": "none",
           "description": "Video generation provider for Canvas /video command"
         },
         "mysti.canvas.openaiApiKey": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "description": "OpenAI API key for GPT Image and Sora video generation",
           "markdownDeprecationMessage": "**Deprecated.** Canvas API keys are now stored securely in VSCode SecretStorage instead of settings. Any value here is migrated automatically on first activation and then cleared. Enter or change the key from the Canvas config panel."
         },
         "mysti.canvas.geminiApiKey": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "description": "Google Gemini API key for image and Veo video generation",
@@ -1659,21 +1755,30 @@
           "description": "Number of variants to generate for reimagination"
         },
         "mysti.canvas.stitchApiKey": {
+          "scope": "machine",
           "type": "string",
           "default": "",
-          "description": "Google Stitch API key for UI screen generation (get from stitch.withgoogle.com → Settings → API Keys)",
+          "description": "Google Stitch API key for UI screen generation (get from stitch.withgoogle.com \u2192 Settings \u2192 API Keys)",
           "markdownDeprecationMessage": "**Deprecated.** The Stitch API key is now stored securely in VSCode SecretStorage instead of settings. Any value here is migrated automatically on first activation and then cleared. You will be prompted to enter the key when a Stitch command runs."
         },
         "mysti.canvas.stitchDeviceType": {
           "type": "string",
           "default": "DESKTOP",
-          "enum": ["DESKTOP", "MOBILE", "TABLET", "AGNOSTIC"],
+          "enum": [
+            "DESKTOP",
+            "MOBILE",
+            "TABLET",
+            "AGNOSTIC"
+          ],
           "description": "Default device type for Stitch screen generation"
         },
         "mysti.canvas.stitchModel": {
           "type": "string",
           "default": "GEMINI_3_PRO",
-          "enum": ["GEMINI_3_PRO", "GEMINI_3_FLASH"],
+          "enum": [
+            "GEMINI_3_PRO",
+            "GEMINI_3_FLASH"
+          ],
           "description": "Stitch model: GEMINI_3_PRO (higher quality) or GEMINI_3_FLASH (faster)"
         },
         "mysti.canvas.stitchVariantCount": {
@@ -1686,7 +1791,11 @@
         "mysti.canvas.stitchCreativeRange": {
           "type": "string",
           "default": "EXPLORE",
-          "enum": ["REFINE", "EXPLORE", "REIMAGINE"],
+          "enum": [
+            "REFINE",
+            "EXPLORE",
+            "REIMAGINE"
+          ],
           "description": "Creative range for Stitch variants: REFINE (conservative), EXPLORE (balanced), REIMAGINE (radical)"
         }
       }
@@ -1862,17 +1971,23 @@
     "sync-agents": "node scripts/sync-agents.js",
     "sync-agents:force": "node scripts/sync-agents.js --force",
     "fetch-stargazers": "node scripts/fetch-stargazers.js",
-    "perf:sizes": "node scripts/perf-sizes.js"
+    "perf:sizes": "node scripts/perf-sizes.js",
+    "test:vscode": "tsc -p tsconfig.vscode-test.json && node ./scripts/prepare-vscode-fixture.js && vscode-test",
+    "pretest:vscode": "npm run compile"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.10.0",
     "@types/uuid": "^10.0.0",
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
     "eslint": "^8.54.0",
     "exceljs": "^4.4.0",
+    "mocha": "^11.8.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.2",
     "vitest": "^4.0.18",
@@ -1880,6 +1995,8 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "@babel/parser": "^8.0.4",
+    "@babel/types": "^8.0.4",
     "@google/stitch-sdk": "^0.0.3",
     "@vscode/extension-telemetry": "^0.9.0",
     "marked": "^15.0.0",

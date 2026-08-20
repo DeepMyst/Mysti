@@ -11,7 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { CANVAS_TOOLS, dispatchCanvasTool } from './CanvasToolDispatch';
+import { CANVAS_TOOLS, canvasToolPayload, dispatchCanvasTool } from './CanvasToolDispatch';
 import type { CanvasToolContext } from './CanvasToolDispatch';
 
 /**
@@ -64,15 +64,15 @@ export function callMcpTool(name: string, args: Record<string, unknown>, ctx: Ca
     };
   }
 
-  let payload: Record<string, unknown>;
-  if (result.op !== undefined) {
-    const op = result.op;
-    payload = op
-      ? { ok: true, op: { opId: op.opId, kind: op.kind, status: op.status, targetPageId: op.targetPageId, baseVersion: op.baseVersion } }
-      : { ok: false, error: 'op rejected' };
-  } else {
-    payload = { ok: true, data: result.data };
-  }
+  // E2E-3: this lane used to build its own payload, and its `result.op !==
+  // undefined` branch discarded `data`, `dropped` and `error` — so a rewrite
+  // whose pinned cells the differ refused reached Claude Code (over MCP) as a
+  // plain `ok:true, applied`, and the agent's model of the artboard silently
+  // diverged from the document. `canvasToolPayload` is the tool contract's own
+  // receipt shape — `ok` means the document changed, and `dropped` is how a
+  // pinned-cell refusal reaches the model — and it is what the coordinator lane
+  // sends too, so the two transports cannot drift.
+  const payload = canvasToolPayload(result, ctx.approvalMode);
 
   return {
     content: [{ type: 'text', text: JSON.stringify(payload) }],

@@ -5,7 +5,7 @@
  * here we pin the toolKind() vocabulary the renderer codes against.
  */
 import { describe, it, expect } from 'vitest';
-import { normalizeToolName, toolKind } from '../../src/utils/toolNames';
+import { normalizeToolName, parseToolName, toolKind } from '../../src/utils/toolNames';
 import { normalizeToolName as reExported } from '../../src/utils/permissionClassifier';
 
 describe('toolNames module', () => {
@@ -70,6 +70,49 @@ describe('toolNames module', () => {
       expect(toolKind('BASH')).toBe('execute');
       expect(toolKind('webfetch')).toBe('fetch');
       expect(toolKind('Replace')).toBe('edit');
+    });
+
+    // Plan 20 §3.6 — the renderer must bucket canvas tools by what they do to
+    // the design, and must see through the `mcp__<server>__` namespace (before
+    // the strip, every MCP canvas call rendered as the generic 'other' card).
+    it.each([
+      ['list_pages', 'search'],
+      ['read_page', 'read'],
+      ['get_artifact_index', 'read'],
+      ['validate_page', 'read'],
+      ['edit_page', 'edit'],
+      ['write_page_jsx', 'edit'],
+      ['scaffold_page', 'edit'],
+      ['set_theme', 'edit'],
+      ['edit_element', 'edit'],
+      ['delete_page', 'delete'],
+      ['mcp__mysti-canvas__list_pages', 'search'],
+      ['mcp__mysti-canvas__read_page', 'read'],
+      ['mcp__mysti-canvas__edit_page', 'edit'],
+    ])('toolKind(%s) === %s', (name, expected) => {
+      expect(toolKind(name)).toBe(expected);
+    });
+  });
+
+  // Plan 20 §3.6 — normalizeToolName strips the MCP namespace; parseToolName
+  // is the variant that keeps the provenance the classifier needs.
+  describe('parseToolName / normalizeToolName MCP namespace', () => {
+    it('strips one mcp__<server>__ segment and reports the server', () => {
+      expect(normalizeToolName('mcp__mysti-canvas__list_pages')).toBe('list_pages');
+      expect(parseToolName('mcp__mysti-canvas__list_pages').mcpServer).toBe('mysti-canvas');
+    });
+
+    it('still aliases the stripped name to the canonical vocabulary', () => {
+      expect(normalizeToolName('mcp__anything__write_file')).toBe('Write');
+      expect(normalizeToolName('mcp__anything__run_shell_command')).toBe('Bash');
+    });
+
+    it('leaves bare and malformed names exactly as they were', () => {
+      expect(normalizeToolName('Read')).toBe('Read');
+      expect(normalizeToolName('save_memory')).toBe('save_memory');
+      expect(normalizeToolName('mcp__srv__')).toBe('mcp__srv__');
+      expect(normalizeToolName('mcp____tool')).toBe('mcp____tool');
+      expect(normalizeToolName('')).toBe('');
     });
   });
 });

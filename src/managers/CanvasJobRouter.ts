@@ -112,6 +112,31 @@ export class CanvasJobRouter {
   }
 
   /**
+   * Terminal event for a job that is NOT driven by {@link CanvasJobRouter.pipe}.
+   *
+   * Plan 22 Phase 5 opens a job when a canvas directive *opens* and closes it
+   * when the directive returns — there is no generator to pump, so the exactly-
+   * one-terminal-event guarantee `pipe()` provides has to be available on its
+   * own. Emitting `done` through {@link CanvasJobRouter.emit} alone would leave
+   * the job registered forever, and a later {@link CanvasJobRouter.cancel} on
+   * that id would emit a SECOND terminal event for a job the webview has
+   * already retired (the F-4 leaked-spinner class, inverted).
+   *
+   * Idempotent and fail-closed: an unknown or already-finished id emits
+   * nothing and returns false.
+   */
+  finish(
+    jobId: string,
+    body: CanvasJobEventBody = { type: 'done' },
+  ): boolean {
+    const job = this._jobs.get(jobId);
+    if (!job) { return false; }
+    this._jobs.delete(jobId);
+    this._sink({ ...body, jobId });
+    return true;
+  }
+
+  /**
    * Drive a pipeline to completion under one job. The source generator yields
    * `CanvasJobEvent` bodies (no `jobId`); each is stamped and forwarded. The
    * job's `AbortSignal` is checked before every forward — once aborted, the

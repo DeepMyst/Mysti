@@ -13,12 +13,15 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import * as http from 'http';
+import * as https from 'https';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
   VISUAL_TEST_SERVER_STARTUP_TIMEOUT_MS,
   VISUAL_TEST_SERVER_HEALTH_POLL_MS,
-  VISUAL_TEST_SERVER_KILL_GRACE_MS
+  VISUAL_TEST_SERVER_KILL_GRACE_MS,
+  VISUAL_DEVSERVER_LOG_MAX_CHARS,
+  VISUAL_MAX_READY_PATTERN_LENGTH
 } from '../constants';
 import { killProcessTree, isProcessLive } from '../utils/processKill';
 
@@ -28,6 +31,39 @@ interface DevServerProcess {
   pid: number;
   stdout: string;
   stderr: string;
+}
+
+const DEFAULT_READY_PATTERN = 'localhost:\\d+|127\\.0\\.0\\.1:\\d+|ready in|compiled successfully|VITE|started server on';
+
+/**
+ * Compile a user-supplied ready pattern safely.
+ *
+ * The pattern is matched repeatedly against a growing output buffer, so a
+ * catastrophically-backtracking regex would wedge the extension host. The
+ * setting is machine-scoped (a cloned repo's `.vscode/settings.json` cannot
+ * reach it) and length-capped here; anything that fails to compile falls back
+ * to the default rather than throwing on the startup path.
+ */
+export function compileReadyPattern(readyPattern?: string): RegExp {
+  const raw = (readyPattern || '').trim();
+  if (raw && raw.length <= VISUAL_MAX_READY_PATTERN_LENGTH) {
+    try {
+      return new RegExp(raw, 'i');
+    } catch {
+      console.warn('[Mysti] Invalid visualTest.serverReadyPattern — falling back to the default.');
+    }
+  } else if (raw) {
+    console.warn(`[Mysti] visualTest.serverReadyPattern exceeds ${VISUAL_MAX_READY_PATTERN_LENGTH} chars — falling back to the default.`);
+  }
+  return new RegExp(DEFAULT_READY_PATTERN, 'i');
+}
+
+/** Append to a log buffer, keeping only the most recent VISUAL_DEVSERVER_LOG_MAX_CHARS. */
+function appendCapped(buf: string, chunk: string): string {
+  const next = buf + chunk;
+  return next.length > VISUAL_DEVSERVER_LOG_MAX_CHARS
+    ? next.slice(next.length - VISUAL_DEVSERVER_LOG_MAX_CHARS)
+    : next;
 }
 
 /**
@@ -40,12 +76,19 @@ export class DevServerManager {
   /**
    * Start a dev server for the given panel.
    * Watches stdout for the ready pattern, falls back to HTTP polling.
+   *
+   * `expectedUrl` is the address the caller intends to test. It is what we poll
+   * and what we return when the server prints no URL of its own — the old code
+   * hardcoded `http://localhost:3000` in both places, so a Vite app on :5173
+   * either timed out or (worse) reported success because something unrelated
+   * answered on :3000.
    */
   async start(
     panelId: string,
     command: string,
     cwd: string,
-    readyPattern?: string
+    readyPattern?: string,
+    expectedUrl?: string
   ): Promise<{ url: string; pid: number }> {
     // Stop any existing process for this panel
     await this.stop(panelId);
@@ -79,12 +122,14 @@ export class DevServerManager {
 
     this._processes.set(panelId, entry);
 
+    // Ring-buffered: a chatty dev server left warm for the whole session would
+    // otherwise grow these strings without bound.
     proc.stdout?.on('data', (data: Buffer) => {
-      entry.stdout += data.toString();
+      entry.stdout = appendCapped(entry.stdout, data.toString());
     });
 
     proc.stderr?.on('data', (data: Buffer) => {
-      entry.stderr += data.toString();
+      entry.stderr = appendCapped(entry.stderr, data.toString());
     });
 
     proc.on('error', (err) => {
@@ -95,16 +140,18 @@ export class DevServerManager {
       console.log(`[Mysti] DevServer exited for ${panelId} with code ${code}`);
     });
 
-    // Wait for server to be ready
-    const pattern = new RegExp(
-      readyPattern || 'localhost:\\d+|127\\.0\\.0\\.1:\\d+|ready in|compiled successfully|VITE|started server on',
-      'i'
-    );
+    const pattern = compileReadyPattern(readyPattern);
 
-    const url = await this._waitForReady(panelId, pattern, VISUAL_TEST_SERVER_STARTUP_TIMEOUT_MS);
-    entry.url = url;
-
-    return { url, pid: entry.pid };
+    try {
+      const url = await this._waitForReady(panelId, pattern, VISUAL_TEST_SERVER_STARTUP_TIMEOUT_MS, expectedUrl);
+      entry.url = url;
+      return { url, pid: entry.pid };
+    } catch (err) {
+      // A server that never became ready is still a live process — reap it here
+      // rather than relying on every caller's error path to do it.
+      await this.stop(panelId).catch(() => { /* best effort */ });
+      throw err;
+    }
   }
 
   /**
@@ -113,69 +160,80 @@ export class DevServerManager {
   private async _waitForReady(
     panelId: string,
     pattern: RegExp,
-    timeoutMs: number
+    timeoutMs: number,
+    expectedUrl?: string
   ): Promise<string> {
     const entry = this._processes.get(panelId);
     if (!entry) { throw new Error('Dev server not started'); }
 
     const startTime = Date.now();
+    const fallbackUrl = expectedUrl || 'http://localhost:3000';
 
     return new Promise<string>((resolve, reject) => {
       let resolved = false;
+      // Held in an object because `cleanup` closes over it before the interval
+      // is created (checkOutput can settle on already-buffered output).
+      const timers: { poll?: NodeJS.Timeout } = {};
 
-      // Watch stdout for ready pattern
+      // Every listener this promise installs is removed on settle — otherwise a
+      // warm session that restarts its server accumulates handlers (and Node's
+      // MaxListeners warning) for the life of the extension host.
+      const cleanup = () => {
+        if (timers.poll) { clearInterval(timers.poll); }
+        entry.process.stdout?.removeListener('data', onData);
+        entry.process.stderr?.removeListener('data', onData);
+        entry.process.removeListener('exit', onExit);
+        entry.process.removeListener('error', onError);
+      };
+      const settle = (fn: () => void) => {
+        if (resolved) { return; }
+        resolved = true;
+        cleanup();
+        fn();
+      };
+
       const checkOutput = () => {
         if (resolved) { return; }
         const combined = entry.stdout + entry.stderr;
-        const match = combined.match(pattern);
-        if (match) {
-          resolved = true;
-          // Try to extract URL from output
-          const urlMatch = combined.match(/https?:\/\/(?:localhost|127\.0\.0\.1):\d+/);
-          resolve(urlMatch ? urlMatch[0] : 'http://localhost:3000');
-        }
+        if (!pattern.test(combined)) { return; }
+        // Prefer a URL the server actually printed; otherwise the caller's.
+        const urlMatch = combined.match(/https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):\d+/);
+        settle(() => resolve(urlMatch ? urlMatch[0] : fallbackUrl));
       };
 
-      entry.process.stdout?.on('data', () => checkOutput());
-      entry.process.stderr?.on('data', () => checkOutput());
+      const onData = () => checkOutput();
+      const onExit = (code: number | null) => settle(() => reject(
+        new Error(`Dev server exited with code ${code} before becoming ready.\nstderr: ${entry.stderr.slice(-500)}`)
+      ));
+      // A spawn failure (ENOENT — the command does not exist) fires 'error'
+      // WITHOUT 'exit'. Without this the startup burned the full 30s timeout,
+      // and the port poll could meanwhile "succeed" against an unrelated server.
+      const onError = (err: Error) => settle(() => reject(
+        new Error(`Dev server failed to start: ${err.message}`)
+      ));
 
-      // Fallback: HTTP poll
-      const pollInterval = setInterval(async () => {
-        if (resolved) {
-          clearInterval(pollInterval);
-          return;
-        }
+      entry.process.stdout?.on('data', onData);
+      entry.process.stderr?.on('data', onData);
+      entry.process.on('exit', onExit);
+      entry.process.on('error', onError);
 
+      // Output that arrived before this promise attached its listeners.
+      checkOutput();
+      if (resolved) { return; }
+
+      timers.poll = setInterval(async () => {
+        if (resolved) { return; }
         if (Date.now() - startTime > timeoutMs) {
-          clearInterval(pollInterval);
-          if (!resolved) {
-            resolved = true;
-            reject(new Error(`Dev server did not become ready within ${timeoutMs / 1000}s`));
-          }
+          settle(() => reject(new Error(`Dev server did not become ready within ${timeoutMs / 1000}s`)));
           return;
         }
-
-        // Try HTTP GET
         try {
-          const isUp = await this._httpCheck('http://localhost:3000');
-          if (isUp && !resolved) {
-            resolved = true;
-            clearInterval(pollInterval);
-            resolve('http://localhost:3000');
-          }
+          const isUp = await this._httpCheck(fallbackUrl);
+          if (isUp) { settle(() => resolve(fallbackUrl)); }
         } catch {
           // Not ready yet
         }
       }, VISUAL_TEST_SERVER_HEALTH_POLL_MS);
-
-      // Handle process exit before ready
-      entry.process.on('exit', (code) => {
-        if (!resolved) {
-          resolved = true;
-          clearInterval(pollInterval);
-          reject(new Error(`Dev server exited with code ${code} before becoming ready.\nstderr: ${entry.stderr.slice(-500)}`));
-        }
-      });
     });
   }
 
@@ -184,7 +242,14 @@ export class DevServerManager {
    */
   private _httpCheck(url: string): Promise<boolean> {
     return new Promise((resolve) => {
-      const req = http.get(url, (res) => {
+      let get: typeof http.get;
+      try {
+        get = new URL(url).protocol === 'https:' ? https.get : http.get;
+      } catch {
+        resolve(false);
+        return;
+      }
+      const req = get(url, (res) => {
         res.resume();
         resolve(res.statusCode !== undefined && res.statusCode < 500);
       });

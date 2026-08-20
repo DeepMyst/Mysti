@@ -40,7 +40,7 @@
  *     text rather than silently swallowing the coordinator's output.
  */
 
-export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool';
+export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool' | 'look' | 'act' | 'canvas' | 'canvaspage';
 
 export type ModelTier = 'fast' | 'strong';
 
@@ -66,7 +66,30 @@ export type MystiDirective =
   // Plan 19 Phase 6 — call one of the user's CONNECTED external MCP tools
   // (Gmail/Slack/Trello/…). GATED like exec: an un-undoable network side effect,
   // always user-approved. `args` is untrusted model JSON (may be {} on parse fail).
-  | { kind: 'mcptool'; tool: string; args: Record<string, unknown> };
+  | { kind: 'mcptool'; tool: string; args: Record<string, unknown> }
+  // Agent-callable visual observation. `look` renders the running app in a real
+  // browser and returns a deterministic digest (console, failed requests, layout
+  // probes, a11y tree, DOM outline, screenshot). It is a READ: it never writes a
+  // file or runs a model. The caller fixes what it saw with its own gated tools.
+  // Note what is ABSENT: no url, no devServerCommand. The address and the shell
+  // command come from the user's settings — the model may say WHAT to look at,
+  // never WHERE or HOW the server starts.
+  | { kind: 'look'; path?: string; selector?: string; mode?: 'viewport' | 'full-page' | 'element'; waitFor?: string; reload?: boolean; focus?: string }
+  // `act` performs a bounded batch of page interactions, then looks. Gated: the
+  // user approves the batch (a click can POST to the app's real database).
+  | { kind: 'act'; actions: Array<Record<string, unknown>>; focus?: string; parseError?: string }
+  // Plan 20 §3.3 Transport A — the canvas lane. `canvas` is one structured call
+  // against the canvas op algebra (`set_text`, `insert_element`, `open_canvas`,
+  // …); `args` is UNTRUSTED model JSON, so a parse failure degrades to `{}` AND
+  // sets `argsError` — the dispatch reports "your JSON was malformed" instead of
+  // running the tool with silently empty arguments.
+  | { kind: 'canvas'; tool: string; args: Record<string, unknown>; argsError?: string }
+  // Plan 20 §3.3 Transport A — a WHOLE ARTBOARD, carried as verbatim source
+  // rather than JSON. It exists precisely because a native tool call cannot hold
+  // an artboard (maxTokens 4096) and JSON-escaping a page of JSX doubles it; the
+  // text lane also reassembles a payload split by a length cut. `pageId` absent
+  // ⇒ a new page.
+  | { kind: 'canvaspage'; pageId?: string; title?: string; source: string };
 
 export interface TagScanResult {
   /** Prose that is safe to show/stream to the user right now. */
@@ -102,6 +125,27 @@ export const MYSTI_CONNECT_KINDS: MystiDirectiveKind[] = ['connect'];
  * visible text, so the capability simply does not exist.
  */
 export const MYSTI_MCP_KINDS: MystiDirectiveKind[] = ['mcptool'];
+
+/**
+ * Visual observation kinds. `look` is a read (it renders and reports); `act`
+ * touches the page and is therefore gated separately, so the two are split —
+ * a read-only or plan-mode turn keeps `look` and loses `act`.
+ * Both are added to the scanner only when the capability is enabled; when off
+ * the tag is not recognized and degrades to visible text.
+ */
+export const MYSTI_VISUAL_KINDS: MystiDirectiveKind[] = ['look'];
+export const MYSTI_VISUAL_ACT_KINDS: MystiDirectiveKind[] = ['act'];
+
+/**
+ * Canvas directive kinds (Plan 20 §3.3 Transport A) — added to the scanner only
+ * when a canvas is bound to the run, so the tag is recognized exactly when the
+ * capability exists; when unbound a `<canvas:…>` / `<canvaspage:…>` tag is never
+ * matched and degrades to visible text. (The coordinator may also enable the
+ * pair from zero purely so `open_canvas` is reachable before any canvas exists —
+ * see plans/20 §3.3 item 3; binding is still what makes every other tool
+ * resolvable, and dispatch fails closed on an unbound run.)
+ */
+export const MYSTI_CANVAS_KINDS: MystiDirectiveKind[] = ['canvas', 'canvaspage'];
 
 export class MystiTagScanner {
   private _buf = '';
@@ -169,7 +213,47 @@ export class MystiTagScanner {
       case 'mcptool':
         // <mcptool:NONCE tool="TOOL_NAME">{ "json": "args" }</mcptool>
         return new RegExp(`^<mcptool:${esc}\\s+tool\\s*=\\s*"([^"]+)"\\s*>([\\s\\S]*?)<\\/mcptool>$`);
+      case 'look':
+        // <look:NONCE path="/x" selector="#y" mode="viewport" wait="#z" reload="true">focus</look>
+        // The attribute blob is captured as ONE linear group and parsed
+        // separately by _parseAttrs. Spelling five optional ordered attributes as
+        // an alternation inside the regex is exactly the shape that produced the
+        // Plan 19 round-4 cubic ReDoS; each repetition here is anchored by a
+        // mandatory `=` and a quoted value, so there is no ambiguous backtrack.
+        return new RegExp(`^<look:${esc}((?:\\s+[a-z]+\\s*=\\s*"[^"]*")*)\\s*>([\\s\\S]*?)<\\/look>$`);
+      case 'act':
+        // <act:NONCE focus="…">[{"action":"click","target":"#save"}]</act>
+        return new RegExp(`^<act:${esc}((?:\\s+[a-z]+\\s*=\\s*"[^"]*")*)\\s*>([\\s\\S]*?)<\\/act>$`);
+      case 'canvas':
+        // <canvas:NONCE tool="set_text">{"pageId":"p1","mid":"k7f2xq9b1m","text":"Go"}</canvas>
+        // Attributes are captured as ONE linear blob and split by _parseAttrs, so
+        // they are order-independent, whitespace-tolerant and optional-tolerant
+        // without the alternation shape that produced the Plan 19 round-4 cubic
+        // ReDoS: every repetition is anchored by a mandatory `=` and a quoted value.
+        return new RegExp(`^<canvas:${esc}((?:\\s+[a-zA-Z]+\\s*=\\s*"[^"]*")*)\\s*>([\\s\\S]*?)<\\/canvas>$`);
+      case 'canvaspage':
+        // <canvaspage:NONCE page="p1" title="Login">function Page(){ … }</canvaspage>
+        // The body is VERBATIM source, NOT JSON — see the union comment. It may
+        // contain backticks, nested ``` fences and `</canvas>`-looking text; only
+        // the literal close tag `</canvaspage>` terminates it.
+        return new RegExp(`^<canvaspage:${esc}((?:\\s+[a-zA-Z]+\\s*=\\s*"[^"]*")*)\\s*>([\\s\\S]*?)<\\/canvaspage>$`);
     }
+  }
+
+  /**
+   * Parse an attribute blob into a map with a LINEAR scan.
+   * Keys are case-insensitive (folded to lower case); unknown keys are dropped;
+   * on a duplicate the last wins.
+   */
+  private static _parseAttrs(blob: string | undefined): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (!blob) { return out; }
+    const re = /([a-zA-Z]+)\s*=\s*"([^"]*)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(blob)) !== null) {
+      out[m[1].toLowerCase()] = m[2];
+    }
+    return out;
   }
 
   /** Feed a streamed chunk; get back safe text (and a directive if one closed). */
@@ -434,6 +518,99 @@ export class MystiTagScanner {
           } catch { /* leave {} — dispatch reports the parse error to the model */ }
         }
         return { kind: 'mcptool', tool, args };
+      }
+      case 'look': {
+        const a = MystiTagScanner._parseAttrs(m[1]);
+        const rawMode = (a.mode || '').toLowerCase();
+        // An unrecognised enum value falls back to the policy default rather
+        // than voiding the tag — same forgiving contract as `tier` on delegate.
+        const mode = rawMode === 'viewport' || rawMode === 'full-page' || rawMode === 'element'
+          ? rawMode as 'viewport' | 'full-page' | 'element'
+          : undefined;
+        const focus = (m[2] || '').trim();
+        return {
+          kind: 'look',
+          path: a.path?.trim() || undefined,
+          selector: a.selector?.trim() || undefined,
+          mode,
+          waitFor: (a.wait || a.waitfor)?.trim() || undefined,
+          reload: a.reload === undefined ? undefined : a.reload.trim().toLowerCase() !== 'false',
+          focus: focus || undefined,
+        };
+      }
+      case 'act': {
+        const a = MystiTagScanner._parseAttrs(m[1]);
+        const raw = (m[2] || '').trim();
+        // The body is UNTRUSTED model JSON. A parse failure yields an empty
+        // action list plus an error the dispatch feeds back, so the model can
+        // correct itself instead of the tag silently vanishing.
+        let actions: Array<Record<string, unknown>> = [];
+        let parseError: string | undefined;
+        if (!raw) {
+          parseError = 'the actions list was empty';
+        } else {
+          try {
+            const p = JSON.parse(raw);
+            if (Array.isArray(p)) {
+              actions = p.filter(x => x && typeof x === 'object' && !Array.isArray(x)) as Array<Record<string, unknown>>;
+              if (actions.length === 0) { parseError = 'the actions array contained no action objects'; }
+            } else {
+              parseError = 'the body must be a JSON ARRAY of action objects';
+            }
+          } catch (err) {
+            parseError = `the body was not valid JSON (${err instanceof Error ? err.message : 'parse error'})`;
+          }
+        }
+        return { kind: 'act', actions, focus: a.focus?.trim() || undefined, ...(parseError ? { parseError } : {}) };
+      }
+      case 'canvas': {
+        const a = MystiTagScanner._parseAttrs(m[1]);
+        const tool = (a.tool || '').trim();
+        // No tool name ⇒ structurally void: there is nothing to route, so fail
+        // open as visible text. A tool that merely does not EXIST still parses —
+        // dispatch reports the unknown name back to the model, which is a far
+        // better correction signal than the tag vanishing into prose.
+        if (!tool) { return null; }
+        // Args are UNTRUSTED model JSON. Unlike the `mcptool` lane (which
+        // silently degrades to {}), a failure is SIGNALLED: `args` stays {} and
+        // `argsError` says why, so the loop never runs a canvas write with
+        // accidentally-empty arguments while telling the model it succeeded.
+        let args: Record<string, unknown> = {};
+        let argsError: string | undefined;
+        // An EMPTY body is legitimate — several canvas tools take no arguments.
+        const body = (m[2] || '').trim();
+        if (body) {
+          try {
+            const p: unknown = JSON.parse(body);
+            if (p && typeof p === 'object' && !Array.isArray(p)) {
+              args = p as Record<string, unknown>;
+            } else {
+              argsError = 'the arguments must be a JSON OBJECT';
+            }
+          } catch (err) {
+            argsError = `the arguments were not valid JSON (${err instanceof Error ? err.message : 'parse error'})`;
+          }
+        }
+        return { kind: 'canvas', tool, args, ...(argsError ? { argsError } : {}) };
+      }
+      case 'canvaspage': {
+        const a = MystiTagScanner._parseAttrs(m[1]);
+        // Body preserved verbatim: page source is whitespace-significant. Only
+        // the single newline the model naturally emits right after `>` is
+        // stripped (same contract as `write`/`patch`).
+        let source = m[2] ?? '';
+        if (source.startsWith('\r\n')) { source = source.slice(2); }
+        else if (source.startsWith('\n')) { source = source.slice(1); }
+        // Nothing to write ⇒ fail open as text rather than staging an empty page.
+        if (!source.trim()) { return null; }
+        const pageId = (a.page ?? a.pageid ?? '').trim();
+        const title = (a.title ?? '').trim();
+        return {
+          kind: 'canvaspage',
+          ...(pageId ? { pageId } : {}),
+          ...(title ? { title } : {}),
+          source,
+        };
       }
     }
   }

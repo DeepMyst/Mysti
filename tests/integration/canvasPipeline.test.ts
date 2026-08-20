@@ -20,6 +20,7 @@ import { buildCanvasContextBlock } from '../../src/managers/CanvasPromptBuilder'
 import { validateArtifact } from '../../src/managers/CanvasValidator';
 import type { CanvasToolContext } from '../../src/managers/CanvasToolDispatch';
 import type { CanvasArtifact, CanvasJobEvent } from '../../src/types';
+import { pageMode } from '../../src/canvas/pageMigration';
 
 describe('canvas pipeline (end-to-end agent build)', () => {
   let root: string;
@@ -101,7 +102,7 @@ describe('canvas pipeline (end-to-end agent build)', () => {
       expect(reloaded).not.toBeNull();
       expect(reloaded!.pages.map(p => p.id)).toEqual(order);
       expect(reloaded!.theme.colors.primary).toBe('#0B5FFF');
-      expect(reloaded!.pages.find(p => p.actionTitle === 'Market size')!.mode).toBe('jsx');
+      expect(pageMode(reloaded!.pages.find(p => p.actionTitle === 'Market size')!)).toBe('jsx');
       // The whole deck is defect-free per the static rules.
       expect(validateArtifact(reloaded!).filter(i => i.severity === 'error')).toHaveLength(0);
     });

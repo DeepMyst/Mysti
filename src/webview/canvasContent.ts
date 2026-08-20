@@ -10,14 +10,24 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 05 — the canvas webview is now the three-pane design studio (pages rail /
- * live sandboxed page / inspector), driven from Mysti chat (no in-canvas chat).
- * This module is a thin loader: it reads the static shell from media/canvas/,
- * fills the {{placeholders}}, and injects all dynamic state through a single
- * inline boot object (window.__MYSTI_CANVAS_BOOT__) that media/canvas/canvas.js
- * reads. The agent/MCP wiring (pages arriving live from chat) is layered on
- * later via postMessage; for now the boot seeds sample scaffold pages so the new
- * UI renders immediately.
+ * Plan 22 §3.4 — the canvas shell loader, and nothing else.
+ *
+ * Two things left this file in Phase 2, and both were load-bearing bugs:
+ *
+ * 1. **The artifact.** It used to be serialized into the HTML at render time
+ *    and never refreshed, so a webview reload (a tab drag, a window restore, a
+ *    theme change) painted whatever the design looked like when the panel first
+ *    opened. State now arrives over `canvas/hello` in response to
+ *    `canvas/ready` — one authoritative transfer, always current (§3.4).
+ * 2. **`babel.min.js`.** 2,983,904 bytes — 95% of the 3,144,476-byte runtime —
+ *    inlined into this document and then re-inlined into a fresh iframe
+ *    `srcdoc` on every single edit. A document-model page needs no JSX
+ *    compiler at all, so only *URIs* ship here; the webview fetches React and
+ *    the primitives lazily (static previews are already on screen by then) and
+ *    fetches Babel only if some artboard is still a `legacy` source page.
+ *
+ * The shell therefore carries: a view token, four URIs, the static catalogs the
+ * chrome needs before any state arrives, and the inner CSP. Nothing else.
  */
 
 import * as vscode from 'vscode';
@@ -27,6 +37,9 @@ import { ArtifactStore } from '../managers/ArtifactStore';
 import { listScaffolds } from '../managers/CanvasScaffolds';
 import { THEME_PRESETS, getThemePreset } from '../managers/CanvasThemePresets';
 import { getFormat } from '../managers/CanvasFormats';
+import { SANDBOX_INNER_CSP } from '../managers/CanvasSandbox';
+import { mintViewToken } from '../canvas/protocol';
+import { CANVAS_BOOT_GLOBAL, type CanvasBoot } from './canvas/boot';
 import type { CanvasArtifact } from '../types';
 
 /**
@@ -40,21 +53,10 @@ export function buildEmptyCanvasArtifact(name?: string): CanvasArtifact {
   return store.createArtifact({ name: name || 'Untitled design', kind: 'screens', theme });
 }
 
-/** Inner CSP for the per-page sandboxed iframes — runtime is inlined as text. */
-const SANDBOX_INNER_CSP =
-  "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; " +
-  "style-src 'unsafe-inline'; img-src data: blob: https:; font-src data: https:; connect-src 'none';";
+/** Devices offered in the top-bar preview switcher. */
+const DEVICE_IDS = ['desktop', 'web', 'tablet', 'mobile'];
 
-// Module-level caches (read once per extension-host process).
 let _templateCache: string | null = null;
-const _runtimeCache: Record<string, string> = {};
-
-function readFileCached(p: string): string {
-  if (_runtimeCache[p] === undefined || process.env.MYSTI_DEV === '1') {
-    _runtimeCache[p] = fs.readFileSync(p, 'utf8');
-  }
-  return _runtimeCache[p];
-}
 
 function loadTemplate(extensionUri: vscode.Uri): string {
   if (_templateCache === null || process.env.MYSTI_DEV === '1') {
@@ -63,52 +65,77 @@ function loadTemplate(extensionUri: vscode.Uri): string {
   return _templateCache;
 }
 
-function sandboxPath(extensionUri: vscode.Uri, file: string): string {
-  return path.join(extensionUri.fsPath, 'resources', 'canvas-sandbox', file);
+function sandboxUri(webview: vscode.Webview, extensionUri: vscode.Uri, file: string): string {
+  return webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'canvas-sandbox', file)).toString();
+}
+
+export interface CanvasShellOptions {
+  /**
+   * The per-view token minted by the host ({@link mintViewToken}) and checked
+   * on every arriving client message with `acceptCanvasClientMessage`.
+   *
+   * Optional only so this signature stays source-compatible while
+   * `ChatViewProvider` is wired; when absent a token is minted here and the
+   * host will reject every message the view sends, which is loud and safe
+   * rather than silently unauthenticated.
+   */
+  viewToken?: string;
+  /** Webview URI prefix for the artifact's `assets/` directory. */
+  assetBaseUri?: string;
 }
 
 export function getCanvasContent(
   webview: vscode.Webview,
   extensionUri: vscode.Uri,
   _version: string = '0.0.0',
-  artifact?: CanvasArtifact,
+  /** Accepted for source compatibility and deliberately NOT baked — see the module docs. */
+  _artifact?: CanvasArtifact,
   /** Real connection status chips (from CanvasCapabilityRegistry); fallback = all off. */
-  capabilities?: Array<{ label: string; on: boolean }>
+  capabilities?: Array<{ label: string; on: boolean }>,
+  opts?: CanvasShellOptions,
 ): string {
   const nonce = getNonce();
   const cspSource = webview.cspSource;
 
   const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'canvas', 'canvas.css')).toString();
-  const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'canvas', 'canvas.js')).toString();
+  // The compiled webview bundle (webpack `target:'web'` entry), NOT the deleted
+  // media/canvas/canvas.js — which hand-mirrored CanvasSandbox and had drifted
+  // three ways by the time it was removed (§2.9).
+  const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'canvasWebview.js')).toString();
 
-  // Inline the sandbox runtime (matches the proven inner-CSP pattern: scripts
-  // run inline in the no-same-origin iframe, no network dependency).
-  const runtimeContent = [
-    readFileCached(sandboxPath(extensionUri, 'react.production.min.js')),
-    readFileCached(sandboxPath(extensionUri, 'react-dom.production.min.js')),
-    readFileCached(sandboxPath(extensionUri, 'babel.min.js')),
-    readFileCached(sandboxPath(extensionUri, 'ui-primitives.js')),
-  ];
-  const harnessContent = readFileCached(sandboxPath(extensionUri, 'harness.js'));
+  if (!opts?.viewToken) {
+    console.warn('[Mysti] canvas shell rendered without a host view token; client messages will be rejected');
+  }
 
-  // Boot from the project's real artifact; an empty one when none exists yet.
-  const art = artifact ?? buildEmptyCanvasArtifact();
-  const deviceFormats = ['desktop', 'web', 'tablet', 'mobile'].map(fid => {
+  const devices = DEVICE_IDS.map(fid => {
     const f = getFormat(fid)!;
-    return { formatId: f.formatId, width: f.width, height: f.height, kind: f.kind, label: `${f.formatId} (${f.width}×${f.height})` };
+    return {
+      formatId: f.formatId, width: f.width, height: f.height, kind: f.kind,
+      label: `${f.formatId} (${f.width}×${f.height})`,
+    };
   });
-  const presets = THEME_PRESETS.map(p => ({ id: p.id, name: p.name, dark: p.dark, theme: p.theme }));
 
-  const boot = {
-    artifact: {
-      id: art.id, name: art.name, kind: art.kind, format: art.format, theme: art.theme,
-      pages: art.pages.map(p => ({ id: p.id, version: p.version, mode: p.mode, jsxSource: p.jsxSource, htmlSource: p.htmlSource, actionTitle: p.actionTitle })),
-    },
-    presets, deviceFormats, activeThemeId: 'clean-saas',
-    runtimeContent, harnessContent, innerCsp: SANDBOX_INNER_CSP,
-    capabilities: capabilities ?? [{ label: 'fal', on: false }, { label: 'Stitch', on: false }, { label: 'Figma', on: false }],
-    // Quick-start templates for the empty state / add-page menu.
-    scaffolds: listScaffolds(),
+  const boot: CanvasBoot = {
+    viewToken: opts?.viewToken ?? mintViewToken(),
+    // The shell's own CSP nonce. A `srcdoc` artboard inherits this policy, so
+    // its React/primitives/harness tags must carry the nonce or Chromium
+    // refuses them and every live frame renders blank.
+    frameNonce: nonce,
+    // React + ReactDOM + the 22 UI primitives. Babel is NOT in this list.
+    runtimeUris: [
+      sandboxUri(webview, extensionUri, 'react.production.min.js'),
+      sandboxUri(webview, extensionUri, 'react-dom.production.min.js'),
+      sandboxUri(webview, extensionUri, 'ui-primitives.js'),
+    ],
+    harnessUri: sandboxUri(webview, extensionUri, 'harness.js'),
+    // Fetched by the webview ONLY when an artboard is still a legacy source page.
+    babelUri: sandboxUri(webview, extensionUri, 'babel.min.js'),
+    assetBaseUri: opts?.assetBaseUri,
+    innerCsp: SANDBOX_INNER_CSP,
+    devices,
+    themes: THEME_PRESETS.map(p => ({ id: p.id, name: p.name, dark: p.dark, theme: p.theme })),
+    scaffolds: listScaffolds().map(s => ({ id: s.id, name: s.name, description: s.description })),
+    activeThemeId: 'clean-saas',
   };
 
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="`
@@ -119,8 +146,8 @@ export function getCanvasContent(
     + `script-src 'nonce-${nonce}' ${cspSource}; `
     + `font-src ${cspSource} https: data:; connect-src ${cspSource} https: data:;">`;
 
-  // Escape `<` so JSX/runtime content in the boot JSON can't break out of the
-  // <script> tag (e.g. a literal `</script>`); `<` is valid JSON.
+  // Escape `<` so nothing in the boot JSON can break out of the <script> tag
+  // (e.g. a literal `</script>`); `<` is valid JSON.
   const bootJson = JSON.stringify(boot).replace(/</g, '\\u003c');
 
   return loadTemplate(extensionUri)
@@ -128,7 +155,7 @@ export function getCanvasContent(
     .replace('{{cssUri}}', cssUri)
     .replace('{{jsUri}}', jsUri)
     .replace(/\{\{nonce\}\}/g, nonce)
-    .replace('{{boot}}', `window.__MYSTI_CANVAS_BOOT__ = ${bootJson};`);
+    .replace('{{boot}}', `window.${CANVAS_BOOT_GLOBAL} = ${bootJson};`);
 }
 
 function getNonce(): string {

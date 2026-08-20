@@ -973,7 +973,28 @@ export type PermissionActionType =
   // (task/agent/dispatch_agent). Gated like a write — a delegated agent can run
   // arbitrary tools, so model-initiated delegation must be user-approved unless
   // an explicit full-access/autonomous tier auto-approves it.
-  | 'delegate';
+  | 'delegate'
+  // Plan 20 §3.6 (canvas permission class). Canvas ops are NOT workspace
+  // writes: they touch `.mysti/canvas/<id>/` only, are fully invertible via the
+  // op log, and reach neither a shell nor the network. They therefore get their
+  // own authority class rather than borrowing `file-edit`/`bash-command`, whose
+  // gating and SafetyClassifier verdicts are calibrated for the user's source
+  // tree.
+  //
+  // - `canvas-read`  — NEVER gated. Reading a design is not a privileged act.
+  // - `canvas-edit`  — never a blocking modal. When settings resolve the canvas
+  //   to `staged` approval (`resolveCanvasApproval`), the op is staged and the
+  //   approval surface is an in-canvas accept/reject card; in `auto` it applies
+  //   immediately and is undoable. Deliberately NOT routed through
+  //   `SafetyClassifier` — its file/bash verdicts do not describe this act.
+  //
+  // The canvas tools that DO cross a boundary — `generate_visual`,
+  // `generate_video`, `import_design`, `export_artifact`, `render_page_preview`
+  // — are excluded from these classes (see `CANVAS_BOUNDARY_TOOLS` in
+  // `utils/toolNames.ts`) and keep their fail-closed, `forceInteractive`
+  // treatment.
+  | 'canvas-read'
+  | 'canvas-edit';
 
 export type PermissionStatus = 'pending' | 'approved' | 'denied' | 'expired';
 
@@ -1861,15 +1882,15 @@ export interface VisualTestReport {
 export interface VisualTestStreamChunk {
   type: 'visual_test_started' | 'visual_test_screenshot' | 'visual_test_iteration'
     | 'visual_test_interaction' | 'visual_test_issue' | 'visual_test_fix'
-    | 'visual_test_complete' | 'visual_test_error';
+    | 'visual_test_complete' | 'visual_test_error' | 'visual_observation';
   screenshot?: VisualTestScreenshot;
   iteration?: VisualTestIteration;
   interaction?: VisualTestInteraction;
   issue?: VisualTestIssue;
+  observation?: VisualObservation;
   report?: VisualTestReport;
   status?: VisualTestStatus;
   message?: string;
-  feedbackForAgent?: string;
   toolDetail?: {
     toolName: string;
     filePath?: string;
@@ -1881,14 +1902,59 @@ export interface VisualTestStreamChunk {
   };
 }
 
-export interface VisualTestTrigger {
-  url?: string;
-  devServerCommand?: string;
-  requirements: string;
-  maxIterations?: number;
-  screenshotMode?: 'full-page' | 'viewport' | 'element';
-  elementSelector?: string;
-  showDashboard?: boolean;
+// ── Agent-callable observation (the `look` / `act` primitive) ──
+
+export interface VisualConsoleEntry {
+  level: 'error' | 'warning';
+  text: string;
+  /** `file.ts:line` when the page reported one. */
+  source?: string;
+}
+
+export interface VisualNetworkFailure {
+  method: string;
+  url: string;
+  /** HTTP status, or 0 when the request never completed. */
+  status: number;
+  error?: string;
+}
+
+/** One element that tripped a layout/contrast probe. */
+export interface VisualLayoutProbe {
+  selector: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  /** Human-readable problems, e.g. `OVERFLOW-X (…)`, `LOW-CONTRAST 2.4:1 (…)`. */
+  flags: string[];
+}
+
+/**
+ * What one `look` produced. This — not the screenshot — is the primary channel
+ * back to the calling agent.
+ */
+export interface VisualObservation {
+  sequence: number;
+  url: string;
+  browser: string;
+  viewport: { width: number; height: number };
+  focus?: string;
+  selector?: string;
+  console: VisualConsoleEntry[];
+  network: VisualNetworkFailure[];
+  layout: VisualLayoutProbe[];
+  accessibility?: string;
+  domOutline?: string;
+  screenshotPath?: string;
+  screenshotBase64?: string;
+  screenshotAttached?: boolean;
+  /** Interactions actually executed before the capture (the `act` path). */
+  actionsPerformed?: string[];
+  /** Requested-but-refused items, so the caller stops retrying them. */
+  denials?: string[];
+  durationMs?: number;
+  serverReused?: boolean;
 }
 
 // ============================================================================
@@ -2263,49 +2329,57 @@ export interface CanvasFormatSpec {
   safeMargin?: number;
 }
 
-/** Per-element durable override keyed by DOM index path (`0/2/1`). */
-export interface ElementOverride {
-  /** New inner HTML (inline-edit fallback when source splice is ambiguous). */
-  innerHtml?: string;
-  /** Per-element transform applied over generated JSX/HTML. */
-  transform?: { x?: number; y?: number; scale?: number; rotation?: number };
-  /** Arbitrary style attribute overrides. */
-  styles?: Record<string, string>;
+/**
+ * Page content that is NOT part of the compilable JSX subset — the escape
+ * hatch (Plan 22 §3.1). A `legacy` page still renders (Babel is injected into
+ * that one frame) and is badged "code page — not directly editable", because
+ * honest visible degradation beats a page that silently disappears.
+ */
+export interface LegacyPageSource {
+  mode: 'jsx' | 'html';
+  source: string;
 }
 
-/** An image/media asset dropped or pasted onto a page (overlay layer). */
-export interface DroppedAsset {
-  id: string;
-  assetId: string;           // → CanvasAssetRecord.id
-  x: number; y: number;
-  width: number; height: number;
-  rotation?: number;
-}
-
-/** Provenance for a Stitch-backed page. */
-// (StitchScreenRef is declared above; ArtifactPage reuses it.)
-
+/**
+ * One artboard (Plan 22 §3.1) — **document-first**.
+ *
+ * `doc` is the source of truth. Everything else on this type is derived from
+ * it (`jsxCache`), an escape hatch for content the compiler could not accept
+ * (`legacy` / `compileError`), or board metadata.
+ *
+ * Deliberately absent, and deliberately gone as *concepts*: `elementOverrides`,
+ * `droppedAssets`, `previewAsset`, `nodes`, `stitchRef`, `mode`, `htmlSource`,
+ * `jsxSource`. When the document is the truth a human's element edit is a
+ * first-class `el.*` op against a `mid`, not a shadow layer keyed by a DOM
+ * index path that silently retargets the moment an agent inserts a wrapper.
+ *
+ * Legacy shapes on disk are upgraded by `src/canvas/pageMigration.ts` on load;
+ * the legacy jsx/html views a transport still needs are read through
+ * `pageMode()` / `pageJsx()` / `pageWire()` in that module — never re-added
+ * here as stored fields.
+ */
 export interface ArtifactPage {
   id: string;
   /** Bumped on every applied mutation; used for agent base-version checks. */
   version: number;
-  mode: 'html' | 'jsx' | 'structured';
-  /** Stitch screens / plain HTML pages. */
-  htmlSource?: string;
-  /** `function Page()` React component source (Phase 3). */
-  jsxSource?: string;
-  /** Structured-mode node tree (reuses the existing DesignNode shape). */
-  nodes?: DesignNode[];
+  /** SOURCE OF TRUTH — the element tree every op addresses by `mid`. */
+  doc: import('./canvas/doc/DocNode').DocNode;
+  /** Derived by `DocEmitter`; what `read_page` / `get_page_jsx` return. */
+  jsxCache?: string;
+  /** Set when {@link doc} is a placeholder because the source did not compile. */
+  legacy?: LegacyPageSource;
+  /** Why compilation failed, when it did. Rendered as the rail badge's tooltip. */
+  compileError?: string;
   actionTitle?: string;
   notes?: string;
+  /** Provenance of the page's content (`'figma'`, `'stitch'`, …). */
   source?: string;
-  /** DOM-index-path keyed durable overrides for human/agent element edits. */
-  elementOverrides?: Record<string, ElementOverride>;
-  droppedAssets?: DroppedAsset[];
-  /** Provenance for Stitch-generated pages. */
-  stitchRef?: StitchScreenRef;
-  /** Cached self-QA preview/thumbnail (asset:// ref), Phase 4. */
-  previewAsset?: string;
+  /** Per-artboard device override (falls back to `artifact.format`). */
+  format?: CanvasFormatSpec;
+  /** Position on the infinite board. */
+  boardPos: { x: number; y: number };
+  /** Artboards that are variants of one another share this id. */
+  variantGroupId?: string;
 }
 
 /** Provenance-tracked media asset belonging to an artifact. */
@@ -2353,6 +2427,12 @@ export interface CanvasOp {
   proposedValue: unknown;
   /** Snapshot of the prior value for undo/revert (recorded on apply). */
   previousValue?: unknown;
+  /**
+   * Plan 22 §3.2: the op that exactly undoes this one, computed at apply time
+   * by `DocPatch.applyOp`. Present for document-scoped mutations, where it
+   * replaces `previousValue`'s deep clone of the whole page source.
+   */
+  inverse?: import('./canvas/CanvasOps').CanvasOp;
   status: CanvasOpStatus;
   author: 'agent' | 'user';
   ts: number;

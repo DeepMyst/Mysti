@@ -95,12 +95,11 @@ export interface ProviderCapabilities {
   supportsPersistentProcess?: boolean;
   supportsImages?: boolean;
   supportsFileAttachments?: boolean;
-  /**
-   * Kept for now: Open Question 4 in plans/02-unified-chat-experience.md
-   * (wire it to gate visual-testing UI per provider, or delete it) is
-   * unresolved. Still never set by providers nor read by render logic.
-   */
-  supportsVisualTesting?: boolean;
+  // (`supportsVisualTesting` is gone — Open Question 4 in
+  // plans/02-unified-chat-experience.md is resolved by deletion. Visual
+  // observation no longer runs through a provider at all: it renders the page
+  // and hands the result to whichever agent asked, so there is nothing
+  // per-provider left to gate.)
   supportsAutoInstall: boolean;
 
   // --- Plan 02 Phase 1: capability-driven rendering fields ---

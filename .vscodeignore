@@ -25,3 +25,12 @@ clipboard/**
 .stargazers-cache-*
 stargazers-*
 CONTRIBUTING.md
+
+# Playwright is a webpack EXTERNAL (webpack.config.js), so it is required from
+# node_modules at RUNTIME rather than bundled — playwright-core locates browser
+# drivers by filesystem path and does not survive bundling. Without these
+# un-ignores every packaged build fails `require('playwright')` and visual
+# testing is dead on arrival in the VSIX. The browser BINARIES are not shipped
+# (hundreds of MB); the user installs them via `npx playwright install chromium`.
+!node_modules/playwright/**
+!node_modules/playwright-core/**

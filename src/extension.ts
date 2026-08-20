@@ -691,6 +691,30 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Open Canvas command
   context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.canvasAddScaffold', (scaffold?: string) => {
+      // Also the command-palette route to a first artboard, so creating one
+      // never depends solely on the empty state's buttons rendering.
+      chatViewProvider.addCanvasScaffold(typeof scaffold === 'string' ? scaffold : undefined);
+    }),
+    vscode.commands.registerCommand('mysti.canvasDiagnostics', () => {
+      // Returns the object (for integration tests) AND shows it, so a user can
+      // answer "is the canvas working?" without opening devtools.
+      const diag = chatViewProvider.canvasDiagnostics();
+      console.log('[Mysti] canvas diagnostics:', JSON.stringify(diag, null, 2));
+      const rendered = (diag as { rendered?: unknown }).rendered;
+      void vscode.window.showInformationMessage(
+        rendered
+          ? `Mysti Canvas: rendering ${(diag as { pages: number }).pages} artboard(s).`
+            + (typeof (rendered as { gestureP95?: number }).gestureP95 === 'number'
+              ? ` Last gesture: p50 ${(rendered as { gestureP50?: number }).gestureP50}ms / p95 `
+                + `${(rendered as { gestureP95?: number }).gestureP95}ms, `
+                + `${(rendered as { gestureDropped?: number }).gestureDropped} dropped frame(s). `
+                + '(16.7ms = 60fps; pan the board first if this is missing.)'
+              : ' Pan the board once to measure smoothness.')
+          : 'Mysti Canvas: the panel has NOT confirmed a render. See the Debug Console for details.',
+      );
+      return diag;
+    }),
     vscode.commands.registerCommand('mysti.openCanvas', () => {
       chatViewProvider.openCanvas();
     })

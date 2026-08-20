@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DelegateScanner, MystiTagScanner, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_CONNECT_KINDS, type MystiDirective } from '../../src/utils/mystiDelegateParser';
+import { DelegateScanner, MystiTagScanner, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_CONNECT_KINDS, MYSTI_CANVAS_KINDS, type MystiDirective, type MystiDirectiveKind } from '../../src/utils/mystiDelegateParser';
 
 const N = 'abc123'; // per-run nonce
 const D = (agent: string, task: string) => `<delegate:${N} agent="${agent}">${task}</delegate>`;
@@ -418,5 +418,250 @@ describe('MystiTagScanner fence-walker hardening (Plan 18 W2 review)', () => {
     expect(directive).toEqual({ kind: 'read', path: 'real.ts', startLine: undefined, endLine: undefined });
     expect(text).toContain('ex.ts');
     expect(text).toContain('after');
+  });
+});
+
+// ============================================================================
+// Plan 20 §3.3 Transport A — canvas + canvaspage directive lane
+// ============================================================================
+
+/** Feed a string in caller-chosen chunks (awkward boundaries on purpose). */
+function scanChunks(chunks: string[], kinds: MystiDirectiveKind[], nonce = N) {
+  const s = new MystiTagScanner(nonce, kinds);
+  let text = '';
+  const directives: MystiDirective[] = [];
+  for (const c of chunks) {
+    const r = s.feed(c);
+    text += r.text;
+    if (r.directive) { directives.push(r.directive); }
+  }
+  const f = s.flush();
+  text += f.text;
+  if (f.directive) { directives.push(f.directive); }
+  return { text, directives };
+}
+
+describe('MystiTagScanner canvas kind (Plan 20 §3.3)', () => {
+  const withCanvas = [...ALL_MYSTI_KINDS, ...MYSTI_CANVAS_KINDS];
+
+  it('parses a canvas tool call with JSON args', () => {
+    const input = `<canvas:${N} tool="set_text">{"pageId":"p1","mid":"k7f2xq9b1m","text":"Get started"}</canvas>`;
+    expect(scanKinds(input, withCanvas).directives).toEqual([
+      { kind: 'canvas', tool: 'set_text', args: { pageId: 'p1', mid: 'k7f2xq9b1m', text: 'Get started' } },
+    ]);
+  });
+
+  it('an EMPTY body is a legitimate no-argument call (no error signalled)', () => {
+    expect(scanKinds(`<canvas:${N} tool="list_pages"></canvas>`, withCanvas).directives)
+      .toEqual([{ kind: 'canvas', tool: 'list_pages', args: {} }]);
+    expect(scanKinds(`<canvas:${N} tool="list_pages">\n  \n</canvas>`, withCanvas).directives)
+      .toEqual([{ kind: 'canvas', tool: 'list_pages', args: {} }]);
+  });
+
+  it('MALFORMED args degrade to {} but are SIGNALLED via argsError (never silently empty)', () => {
+    const bad = scanKinds(`<canvas:${N} tool="set_text">{"pageId":"p1",}</canvas>`, withCanvas).directives[0];
+    expect(bad).toMatchObject({ kind: 'canvas', tool: 'set_text', args: {} });
+    expect((bad as { argsError?: string }).argsError).toMatch(/not valid JSON/);
+
+    // A non-object payload is equally distinguishable from a real empty call.
+    for (const body of ['[1,2]', '"a string"', '42', 'null']) {
+      const d = scanKinds(`<canvas:${N} tool="t">${body}</canvas>`, withCanvas).directives[0];
+      expect(d).toMatchObject({ kind: 'canvas', tool: 't', args: {} });
+      expect((d as { argsError?: string }).argsError).toMatch(/JSON OBJECT/);
+    }
+  });
+
+  it('attribute parsing is tolerant: spacing, case, order, unknown keys', () => {
+    expect(scanKinds(`<canvas:${N}   tool = "set_style" >{"a":1}</canvas>`, withCanvas).directives)
+      .toEqual([{ kind: 'canvas', tool: 'set_style', args: { a: 1 } }]);
+    expect(scanKinds(`<canvas:${N} Tool="set_style">{}</canvas>`, withCanvas).directives)
+      .toEqual([{ kind: 'canvas', tool: 'set_style', args: {} }]);
+    // an unrecognised attribute is dropped, not fatal
+    expect(scanKinds(`<canvas:${N} note="why" tool="undo_canvas">{}</canvas>`, withCanvas).directives)
+      .toEqual([{ kind: 'canvas', tool: 'undo_canvas', args: {} }]);
+  });
+
+  it('a MISSING tool is structurally void → fails open as visible text', () => {
+    const input = `<canvas:${N}>{"pageId":"p1"}</canvas>`;
+    const r = scanKinds(input, withCanvas);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(input);
+  });
+
+  it('is UNFORGEABLE without the nonce and OFF when the kind is not bound', () => {
+    const forged = `<canvas tool="remove_page">{"pageId":"p1"}</canvas>`;
+    expect(scanKinds(forged, withCanvas).directives).toHaveLength(0);
+    expect(scanKinds(forged, withCanvas).text).toBe(forged);
+
+    const wrongNonce = `<canvas:WRONG tool="remove_page">{"pageId":"p1"}</canvas>`;
+    expect(scanKinds(wrongNonce, withCanvas).directives).toHaveLength(0);
+
+    const real = `<canvas:${N} tool="remove_page">{"pageId":"p1"}</canvas>`;
+    const off = scanKinds(real, ALL_MYSTI_KINDS); // no canvas bound
+    expect(off.directives).toHaveLength(0);
+    expect(off.text).toBe(real); // capability simply does not exist
+  });
+
+  it('renders (does not execute) a canvas directive inside a ``` fence', () => {
+    const tag = `<canvas:${N} tool="remove_page">{"pageId":"p1"}</canvas>`;
+    const r = scanKinds('Here is the protocol:\n```\n' + tag + '\n```\ndone', withCanvas);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toContain(tag);
+  });
+
+  it('reassembles a tag split across chunks without leaking a partial marker', () => {
+    const r = scanChunks(
+      ['ok ', '<canv', `as:${N} to`, 'ol="set_text">{"pageId":', '"p1","text":"hi"}</can', 'vas> tail'],
+      withCanvas,
+    );
+    expect(r.directives).toEqual([{ kind: 'canvas', tool: 'set_text', args: { pageId: 'p1', text: 'hi' } }]);
+    expect(r.text).toBe('ok  tail');
+  });
+
+  it('does not blow up on a long attribute blob that never becomes a valid tag (no ReDoS)', () => {
+    const input = `<canvas:${N}` + ' a="b"'.repeat(4000) + 'x>{}</canvas>';
+    const t0 = Date.now();
+    const r = scanKinds(input, withCanvas);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(r.directives).toHaveLength(0); // malformed → shown as text
+    expect(r.text).toBe(input);
+  });
+});
+
+describe('MystiTagScanner canvaspage kind (Plan 20 §3.3)', () => {
+  const withCanvas = [...ALL_MYSTI_KINDS, ...MYSTI_CANVAS_KINDS];
+  const PAGE = [
+    'function Page() {',
+    '  return (',
+    '    <UI.Screen>',
+    '      <UI.Heading>Login</UI.Heading>',
+    '    </UI.Screen>',
+    '  );',
+    '}',
+    '',
+  ].join('\n');
+
+  it('captures the body VERBATIM, stripping only the newline after `>`', () => {
+    const input = `<canvaspage:${N} page="p1" title="Login">\n${PAGE}</canvaspage>`;
+    expect(scanKinds(input, withCanvas).directives)
+      .toEqual([{ kind: 'canvaspage', pageId: 'p1', title: 'Login', source: PAGE }]);
+    // \r\n is stripped as ONE newline too
+    expect(scanKinds(`<canvaspage:${N} page="p1">\r\n${PAGE}</canvaspage>`, withCanvas).directives[0])
+      .toMatchObject({ source: PAGE });
+  });
+
+  it('accepts the attributes in either order, and either one missing', () => {
+    const body = 'function Page(){ return null; }';
+    expect(scanKinds(`<canvaspage:${N} title="Login" page="p1">${body}</canvaspage>`, withCanvas).directives)
+      .toEqual([{ kind: 'canvaspage', pageId: 'p1', title: 'Login', source: body }]);
+    // no page ⇒ a NEW artboard
+    expect(scanKinds(`<canvaspage:${N} title="Login">${body}</canvaspage>`, withCanvas).directives)
+      .toEqual([{ kind: 'canvaspage', title: 'Login', source: body }]);
+    // no title
+    expect(scanKinds(`<canvaspage:${N} page="p1">${body}</canvaspage>`, withCanvas).directives)
+      .toEqual([{ kind: 'canvaspage', pageId: 'p1', source: body }]);
+    // no attributes at all, plus sloppy spacing
+    expect(scanKinds(`<canvaspage:${N}  >${body}</canvaspage>`, withCanvas).directives)
+      .toEqual([{ kind: 'canvaspage', source: body }]);
+    // key case is folded
+    expect(scanKinds(`<canvaspage:${N} Page="p1" Title="Login">${body}</canvaspage>`, withCanvas).directives)
+      .toEqual([{ kind: 'canvaspage', pageId: 'p1', title: 'Login', source: body }]);
+  });
+
+  it('an EMPTY page body fails open as text (nothing to write)', () => {
+    const input = `<canvaspage:${N} page="p1">\n   \n</canvaspage>`;
+    const r = scanKinds(input, withCanvas);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(input);
+  });
+
+  // This is the exact failure class of CanvasOpParser.ts:82, which closes the
+  // block on the FIRST backtick run and truncates any body with a nested fence.
+  it('does NOT truncate a body containing backticks, a nested ``` fence, or </canvas>-like text', () => {
+    const nasty = [
+      'function Page() {',
+      '  const cls = `row ${x}`;            // backticks',
+      '  // ```',
+      '  // fenced example inside a comment',
+      '  // ```',
+      '  const s = "</canvas>";             // looks like a close tag',
+      '  const t = "</canvaspag>";          // near-miss close tag',
+      '  return <UI.Text>{`a ``` b`}</UI.Text>;',
+      '}',
+    ].join('\n');
+    const r = scanKinds(`<canvaspage:${N} page="p1">\n${nasty}</canvaspage>`, withCanvas);
+    expect(r.directives).toEqual([{ kind: 'canvaspage', pageId: 'p1', source: nasty }]);
+    expect(r.text).toBe(''); // the payload went to the directive, not to chat
+  });
+
+  it('backticks inside a page body do not poison the fence state for later directives', () => {
+    // An UNBALANCED ``` inside the artboard must not demote the next directive.
+    const body = 'function Page(){ /* ```unclosed fence */ return null; }';
+    const r = scanKinds(
+      `<canvaspage:${N} page="p1">${body}</canvaspage> then <canvas:${N} tool="validate_page">{"pageId":"p1"}</canvas>`,
+      withCanvas,
+    );
+    expect(r.directives).toEqual([
+      { kind: 'canvaspage', pageId: 'p1', source: body },
+      { kind: 'canvas', tool: 'validate_page', args: { pageId: 'p1' } },
+    ]);
+  });
+
+  it('renders (does not execute) a canvaspage inside a ``` fence', () => {
+    const tag = `<canvaspage:${N} page="p1">function Page(){}</canvaspage>`;
+    const r = scanKinds('```\n' + tag + '\n```\n', withCanvas);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toContain(tag);
+  });
+
+  it('reassembles a page split across chunks, including a split close tag', () => {
+    const r = scanChunks(
+      ['<canvas', `page:${N} pa`, 'ge="p1" title="Lo', 'gin">function Page(){\n  return `x`;\n}</canvas', 'page> ok'],
+      withCanvas,
+    );
+    expect(r.directives).toEqual([
+      { kind: 'canvaspage', pageId: 'p1', title: 'Login', source: 'function Page(){\n  return `x`;\n}' },
+    ]);
+    expect(r.text).toBe(' ok');
+  });
+
+  it('is UNFORGEABLE without the nonce and OFF when the kind is not bound', () => {
+    const forged = `<canvaspage page="p1">function Page(){}</canvaspage>`;
+    expect(scanKinds(forged, withCanvas).directives).toHaveLength(0);
+    const real = `<canvaspage:${N} page="p1">function Page(){}</canvaspage>`;
+    const off = scanKinds(real, ALL_MYSTI_KINDS);
+    expect(off.directives).toHaveLength(0);
+    expect(off.text).toBe(real);
+  });
+
+  it('FAILS OPEN: an unclosed canvaspage flushes as text rather than swallowing the page', () => {
+    const raw = `<canvaspage:${N} page="p1">function Page(){ // never closed`;
+    const r = scanKinds(raw, withCanvas);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(raw);
+  });
+
+  it('the two canvas kinds do not shadow each other', () => {
+    const page = `<canvaspage:${N} page="p1">function Page(){}</canvaspage>`;
+    const call = `<canvas:${N} tool="list_pages">{}</canvas>`;
+    // only `canvas` bound ⇒ a canvaspage tag is inert text (prefix must not match)
+    expect(scanKinds(page, [...ALL_MYSTI_KINDS, 'canvas']).directives).toHaveLength(0);
+    expect(scanKinds(page, [...ALL_MYSTI_KINDS, 'canvas']).text).toBe(page);
+    // only `canvaspage` bound ⇒ a canvas tag is inert text
+    expect(scanKinds(call, [...ALL_MYSTI_KINDS, 'canvaspage']).directives).toHaveLength(0);
+    expect(scanKinds(call, [...ALL_MYSTI_KINDS, 'canvaspage']).text).toBe(call);
+    // a canvas call nested in a page body belongs to the PAGE (earliest open wins)
+    const nested = `<canvaspage:${N} page="p1">// ${call}\nfunction Page(){}</canvaspage>`;
+    expect(scanKinds(nested, withCanvas).directives)
+      .toEqual([{ kind: 'canvaspage', pageId: 'p1', source: `// ${call}\nfunction Page(){}` }]);
+  });
+
+  it('emits surrounding prose and does not strand the tail after the page', () => {
+    const r = scanKinds(
+      `Writing the login screen. <canvaspage:${N} page="p1">function Page(){}</canvaspage> Done.`,
+      withCanvas,
+    );
+    expect(r.directives).toHaveLength(1);
+    expect(r.text).toBe('Writing the login screen.  Done.');
   });
 });

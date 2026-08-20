@@ -15,10 +15,11 @@ describe('CanvasMcpBridge', () => {
   let store: ArtifactStore;
   let artifact: CanvasArtifact;
   let ctx: CanvasToolContext;
+  let executor: CanvasOpExecutor;
 
   beforeEach(() => {
     store = new ArtifactStore({ getRoot: () => null });
-    const executor = new CanvasOpExecutor(store, new CanvasJobRouter(() => {}));
+    executor = new CanvasOpExecutor(store, new CanvasJobRouter(() => {}));
     artifact = store.createArtifact({ name: 'Deck', kind: 'deck' });
     ctx = { artifact, store, executor, jobId: 'j', runId: 'r', approvalMode: 'auto' };
   });
@@ -60,5 +61,51 @@ describe('CanvasMcpBridge', () => {
     const r = callMcpTool('frobnicate', {}, ctx);
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain('unknown canvas tool');
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // E2E-3 — journey (c): the agent writes, a pin refuses part of it, and
+  // the model has to be TOLD. This lane built its own payload whose write
+  // branch discarded `data`, `dropped` and `error`, so a refusal reached
+  // Claude Code as `ok:true, status:'applied'` and its model of the
+  // artboard silently diverged from the document.
+  // ────────────────────────────────────────────────────────────────────
+  it('reports the cells a human pin refused, instead of a bare applied', () => {
+    const page = store.insertPage(artifact, store.makePage({
+      doc: {
+        mid: 'rootaaaaaa',
+        tag: 'UI.Screen',
+        children: [{ mid: 'headaaaaaa', tag: 'UI.Heading', text: 'Sign in' }],
+      },
+      actionTitle: 'Login',
+    }));
+    // The human retitles the heading — `author: 'user'` is what claims the cell.
+    const receipt = executor.submitOp(
+      artifact,
+      { op: { op: 'el.setText', pageId: page.id, mid: 'headaaaaaa', text: 'Human copy' }, runId: 'human', author: 'user', actorId: 'canvas-view' },
+      'j',
+      'auto',
+    );
+    expect(receipt.status).toBe('applied');
+
+    // The agent rewrites the artboard: the pinned heading AND a new paragraph,
+    // so at least one op lands (which is what took the discarding branch).
+    const r = callMcpTool(
+      'write_page',
+      { pageId: page.id, jsx: 'function Page(){ return <UI.Screen><UI.Heading>Agent copy</UI.Heading><UI.Text>Added</UI.Text></UI.Screen>; }' },
+      ctx,
+    );
+    const structured = r.structured as any;
+    expect(structured.dropped, r.content[0].text).toBeDefined();
+    expect(JSON.stringify(structured.dropped)).toContain('pinned-by-human');
+    // The protection itself works; only the report was lost.
+    expect(store.getPage(artifact, page.id)!.doc.children![0].text).toBe('Human copy');
+  });
+
+  it('still summarizes a clean write with no dropped intents', () => {
+    const r = callMcpTool('insert_page', { page: { mode: 'html', htmlSource: 'x' } }, ctx);
+    const structured = r.structured as any;
+    expect(structured.ok).toBe(true);
+    expect(structured.dropped).toBeUndefined();
   });
 });

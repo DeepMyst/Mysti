@@ -31,6 +31,16 @@ export type CanvasSecretKind = 'openai' | 'gemini' | 'stitch' | 'fal';
  * The generation services no longer read settings or mutate `process.env`
  * for keys — callers resolve the key through this store and pass it in
  * explicitly (see per-service `apiKey` parameters).
+ *
+ * **Plan 20 §3.6 — only a *user*-scoped value is ever adopted.** The legacy
+ * settings were workspace-writable, so a cloned repository could ship a
+ * `.vscode/settings.json` that either (a) plants an attacker's API key which
+ * Mysti would then bill the user's generations against, or (b) sits there as a
+ * plaintext sink. The settings are now declared `"scope": "machine"` in
+ * package.json, and {@link CanvasSecrets.migrate} reads **only**
+ * `inspect(key).globalValue`: a workspace / workspace-folder value is never
+ * adopted into SecretStorage — it is reported to the user and cleared, on every
+ * activation, not just the first one.
  */
 export class CanvasSecrets {
   /** SecretStorage keys (namespaced so they never collide with other extensions). */
@@ -95,30 +105,48 @@ export class CanvasSecrets {
 
   /**
    * One-time migration: for each kind, if a plaintext value still lives in the
-   * legacy `mysti.canvas.*ApiKey` setting and nothing is in SecretStorage yet,
-   * copy it into SecretStorage and clear the setting (Global scope). Safe to
-   * call on every activation — guarded by a globalState flag and per-key
+   * legacy `mysti.canvas.*ApiKey` setting **at user (Global) scope** and nothing
+   * is in SecretStorage yet, copy it into SecretStorage and clear the setting.
+   * Safe to call on every activation — guarded by a globalState flag and per-key
    * presence checks, so it never clobbers a key the user set via `set()`.
+   *
+   * Workspace-scoped values are purged first ({@link purgeWorkspaceSecrets}) and
+   * are *never* adopted, so a repository cannot inject a key by shipping a
+   * `.vscode/settings.json`. That purge runs on every activation, not only the
+   * migration run.
    *
    * @returns the list of kinds whose value was migrated this run (for logging).
    */
   async migrate(): Promise<CanvasSecretKind[]> {
+    // Not guarded by the migration flag: a workspace value can appear at any
+    // time (a repo is cloned, a branch is checked out) long after migration ran.
+    await this.purgeWorkspaceSecrets();
+
     if (this._memento.get<boolean>(CanvasSecrets._migrationFlag)) {
       return [];
     }
 
     const config = vscode.workspace.getConfiguration('mysti');
+    if (typeof config.inspect !== 'function') {
+      // Without `inspect` we cannot tell a user value from a workspace value,
+      // and `get()` collapses the two — so adopt nothing rather than risk
+      // importing a repository-supplied key. Leave the flag unset so a host
+      // that does support inspect() can still migrate later.
+      console.warn('[Mysti] CanvasSecrets: configuration.inspect unavailable — skipping settings migration.');
+      return [];
+    }
+
     const migrated: CanvasSecretKind[] = [];
 
     for (const kind of Object.keys(CanvasSecrets._settingKeys) as CanvasSecretKind[]) {
       const settingKey = CanvasSecrets._settingKeys[kind];
-      const settingValue = (config.get<string>(settingKey, '') || '').trim();
-      if (!settingValue) { continue; }
+      const globalValue = readString(config.inspect<string>(settingKey)?.globalValue);
+      if (!globalValue) { continue; }
 
       // Don't overwrite a key the user already moved into SecretStorage.
       const existing = await this.get(kind);
       if (!existing) {
-        await this.set(kind, settingValue);
+        await this.set(kind, globalValue);
         migrated.push(kind);
       }
 
@@ -136,4 +164,52 @@ export class CanvasSecrets {
     }
     return migrated;
   }
+
+  /**
+   * Clear any canvas API key that a workspace (or workspace folder) has set,
+   * and tell the user. Such a value is untrusted by construction — it comes from
+   * the checked-out repository, not from the person using it — so it is dropped,
+   * never adopted into SecretStorage.
+   *
+   * @returns the kinds whose workspace value was found (and cleared).
+   */
+  async purgeWorkspaceSecrets(): Promise<CanvasSecretKind[]> {
+    const config = vscode.workspace.getConfiguration('mysti');
+    if (typeof config.inspect !== 'function') { return []; }
+
+    const found: CanvasSecretKind[] = [];
+    for (const kind of Object.keys(CanvasSecrets._settingKeys) as CanvasSecretKind[]) {
+      const settingKey = CanvasSecrets._settingKeys[kind];
+      const info = config.inspect<string>(settingKey);
+      const targets: vscode.ConfigurationTarget[] = [];
+      if (readString(info?.workspaceValue)) { targets.push(vscode.ConfigurationTarget.Workspace); }
+      if (readString(info?.workspaceFolderValue)) { targets.push(vscode.ConfigurationTarget.WorkspaceFolder); }
+      if (targets.length === 0) { continue; }
+
+      found.push(kind);
+      for (const target of targets) {
+        try {
+          await config.update(settingKey, undefined, target);
+        } catch {
+          // Read-only workspace config (e.g. an untrusted window); the value is
+          // still never adopted — the warning below is the user-visible result.
+        }
+      }
+    }
+
+    if (found.length > 0) {
+      const keys = found.map(k => `mysti.${CanvasSecrets._settingKeys[k]}`).join(', ');
+      console.warn(`[Mysti] CanvasSecrets: ignored and cleared workspace-scoped canvas API key(s): ${keys}`);
+      void vscode.window.showWarningMessage(
+        `Mysti ignored a canvas API key set by this workspace (${keys}). ` +
+        'Workspace files must not supply API keys — enter yours from the Canvas config panel.',
+      );
+    }
+    return found;
+  }
+}
+
+/** A non-empty trimmed string, or '' for anything else (numbers, objects, null). */
+function readString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
