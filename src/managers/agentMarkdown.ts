@@ -288,7 +288,7 @@ export interface AgentContentFinding {
 export const SCANNED_DIRECTIVE_KINDS = [
   'delegate', 'read', 'ls', 'grep', 'diag', 'remember',
   'write', 'edit', 'bash', 'patch', 'connect', 'mcptool',
-  'look', 'act', 'findtool',
+  'look', 'act', 'findtool', 'skill', 'canvas', 'canvaspage',
 ] as const;
 
 const KIND_ALT = SCANNED_DIRECTIVE_KINDS.join('|');

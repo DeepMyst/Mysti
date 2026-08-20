@@ -786,6 +786,18 @@
           "scope": "machine",
           "markdownDescription": "Whether the `@mysti` agent's sandboxed `bash` tool may access the **network**. Default `off` (the sandbox blocks all egress) \u2014 the safest posture, since the coordinator model is prompt-injectable. Turn `on` only if you need the agent to run installs/downloads itself; it widens the attack surface. Requires `mysti.mysti.localExecution` = `on`. Machine-scoped."
         },
+        "mysti.mysti.skills": {
+          "type": "string",
+          "enum": ["off", "prose", "full"],
+          "enumDescriptions": [
+            "Off (default) - the coordinator cannot see the agent catalog",
+            "Prose - search and read personas/skills/roles",
+            "Full - also author and run capabilities (not yet implemented)"
+          ],
+          "default": "off",
+          "scope": "machine",
+          "markdownDescription": "**Agent catalog for the Mysti agent (Plan 20).** When set to `prose`, the `@mysti` coordinator can **search and read** the project's reusable working practices - the bundled personas/skills/roles plus any you have written in `.mysti/agents/` - instead of re-deriving the same procedures every session. Retrieval only: it reads files you already have and calls nothing, so there is no permission card. What it reads is injected as **reference material, not instructions**, and only integrity-verified bundled content is ever trusted further (workspace- and user-authored files are fenced). Costs nothing when off, and nothing when fewer than 8 artifacts exist. `full` will additionally allow authoring and running capabilities - **not implemented yet**, and it currently behaves as `prose`. Machine-scoped so a workspace cannot enable it."
+        },
         "mysti.mysti.mcpTools": {
           "type": "string",
           "enum": [

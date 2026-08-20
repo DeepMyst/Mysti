@@ -40,7 +40,7 @@
  *     text rather than silently swallowing the coordinator's output.
  */
 
-export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool' | 'findtool' | 'look' | 'act' | 'canvas' | 'canvaspage';
+export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool' | 'findtool' | 'skill' | 'look' | 'act' | 'canvas' | 'canvaspage';
 
 export type ModelTier = 'fast' | 'strong';
 
@@ -70,6 +70,10 @@ export type MystiDirective =
   // Plan 20 Phase 5 — look up the argument schema of a CONNECTED external
   // tool. READ-ONLY: searches already-connected metadata, calls nothing.
   | { kind: 'findtool'; query: string }
+  // Plan 20 Phase 1 — find or read an agent skill/persona/role. READ-ONLY.
+  // `id` present => view that artifact (optionally one bundled `part`);
+  // otherwise `query` is a natural-language search over the catalog.
+  | { kind: 'skill'; query?: string; id?: string; part?: string }
   // Agent-callable visual observation. `look` renders the running app in a real
   // browser and returns a deterministic digest (console, failed requests, layout
   // probes, a11y tree, DOM outline, screenshot). It is a READ: it never writes a
@@ -136,6 +140,14 @@ export const MYSTI_MCP_KINDS: MystiDirectiveKind[] = ['mcptool', 'findtool'];
  * is the failure it exists to remove.
  */
 export const MYSTI_MCP_READONLY_KINDS: MystiDirectiveKind[] = ['findtool'];
+
+/**
+ * Agent-catalog kinds (Plan 20 Phase 1). READ-ONLY: `skill` searches metadata
+ * the user already has on disk and reads a file they already approved. Added to
+ * the scanner only when `mysti.mysti.skills` is on, so when off the tag degrades
+ * to visible text and the capability simply does not exist.
+ */
+export const MYSTI_SKILL_KINDS: MystiDirectiveKind[] = ['skill'];
 
 /**
  * Visual observation kinds. `look` is a read (it renders and reports); `act`
@@ -206,6 +218,9 @@ export class MystiTagScanner {
         return new RegExp(`^<diag:${esc}\\s*>([\\s\\S]*?)<\\/diag>$`);
       case 'findtool':
         return new RegExp(`^<findtool:${esc}\\s*>([\\s\\S]*?)<\\/findtool>$`);
+      case 'skill':
+        // <skill:N>query</skill> | <skill:N id="x" part="references/y.md">…</skill>
+        return new RegExp(`^<skill:${esc}(?:\\s+id="([^"]*)")?(?:\\s+part="([^"]*)")?\\s*>([\\s\\S]*?)<\\/skill>$`);
       case 'remember':
         return new RegExp(`^<remember:${esc}\\s*>([\\s\\S]*?)<\\/remember>$`);
       case 'write':
@@ -477,6 +492,13 @@ export class MystiTagScanner {
       case 'findtool': {
         const query = m[1].trim();
         return query ? { kind: 'findtool', query } : null;
+      }
+      case 'skill': {
+        const id = (m[1] || '').trim();
+        const part = (m[2] || '').trim();
+        const query = (m[3] || '').trim();
+        if (id) { return { kind: 'skill', id, ...(part ? { part } : {}) }; }
+        return query ? { kind: 'skill', query } : null;
       }
       case 'remember': {
         const fact = m[1].trim();

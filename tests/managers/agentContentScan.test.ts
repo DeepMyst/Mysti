@@ -22,6 +22,8 @@ import {
   MYSTI_MCP_KINDS,
   MYSTI_VISUAL_KINDS,
   MYSTI_VISUAL_ACT_KINDS,
+  MYSTI_SKILL_KINDS,
+  MYSTI_CANVAS_KINDS,
 } from '../../src/utils/mystiDelegateParser';
 
 const codes = (content: string) => scanAgentContent(content).findings.map(f => f.code);
@@ -140,6 +142,8 @@ describe('scanner stays in sync with the directive protocol', () => {
       ...MYSTI_MCP_KINDS,
       ...MYSTI_VISUAL_KINDS,
       ...MYSTI_VISUAL_ACT_KINDS,
+      ...MYSTI_SKILL_KINDS,
+      ...MYSTI_CANVAS_KINDS,
     ];
     expect([...SCANNED_DIRECTIVE_KINDS].sort()).toEqual([...new Set(everyKind)].sort());
   });

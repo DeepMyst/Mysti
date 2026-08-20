@@ -132,7 +132,7 @@ No `type:` discriminator. **`mysti.tools.json` present ⇒ the skill is callable
 
 | layer | content | cost |
 |---|---|---|
-| **0 — nothing** | Below **8 non-core artifacts**, inject **nothing at all**. | **0 tokens** (the default user) |
+| **0 — nothing** | Feature `off` (the default) injects **nothing at all**. When on, an index over fewer than **8 total artifacts** is also skipped — retrieval cannot pay for itself over a library you could just list. | **0 tokens** (the default user) |
 | **1 — category header + hot set** | One line per category, plus the **5 most-recently-successful** entries with full schemas. Hot-set membership is **host-authoritative**, ranked by **user-initiated** invocations — never by model-issued call success, or the model promotes its own artifact into the always-present tier. | ~**585 tokens flat**, at any library size |
 | **2 — `skill_find`** | BM25 over name + description + `use_case` (Alita-G found `description + use_case` optimal). Top-3 full, next 7 names only. | one round trip, on demand |
 
@@ -228,15 +228,38 @@ Fixes bugs that exist today, whether or not this feature is built.
 
 ### Phase 1 — Index + `<skill:>` pull + **instrumentation** · the go/no-go gate
 
+**Status: IMPLEMENTED 2026-08-20** (retrieval half). 229 test files / 9062 tests green, `tsc` clean, production build clean. Telemetry (the measurement half) is **not** built yet — see the note at the end of this phase.
+
 - `src/services/SkillIndex.ts` (pure, no `vscode`): BM25 + `categoryHeader()` + host-selected hot set.
 - `skill` kind through the full checklist: parser union, `_kindRegex`, `MYSTI_SKILL_KINDS`, `READ_TOOLS`, `toolCallToDirective`, dispatch beside read/ls/grep/diag, `_isReadOnlyLocalKind` (joins the `runBounded` cap-3 batch), charged against `maxLocalTools`, every result fenced.
 - Per-artifact containment root for `skill_view` (B3 — `MystiLocalTools._safeResolve` is workspace-rooted and cannot do this).
 - **Telemetry, shipped in this phase:** log `{artifactId, viewed, turnOutcome}` where `turnOutcome` is an existing observable (run reached a natural end with no verification-step diagnostic regression).
 - Rewrite the `mysti.createSkill` template to the SkillsBench rubric: *When to use / Gotchas / Procedure / Output template / Validation loop*, with the authoring test *"would the agent get this wrong without this line?"* Focused 2–3-module skills consistently beat comprehensive documentation.
 
-**Accept:** **coordinator prompt grows 0 tokens at 0 authored artifacts**, and ≤600 tokens at 200 artifacts (asserted numerically). `skill_find` returns the intended id in the top 3 across 8 paraphrases and **not** for 8 near-miss negatives sharing keywords. `part="../../etc/passwd"` refused by containment.
+**Accept:** **coordinator prompt grows 0 tokens with the feature off (the default) and 0 tokens with fewer than 8 artifacts**, and ≤600 tokens at 200 artifacts (asserted numerically).
 
-> **GO/NO-GO.** Ship Phase 1 for 4 weeks against the 16 bundled skills and publish view-rate and outcome-delta. **Healthy router engagement is 70–80%; ~19% is drift.** If views are rare or outcome-neutral, retrieval is not the bottleneck and **Phases 2–4 are unfunded** — stop here.
+> **Spec correction (2026-08-20).** An earlier draft set Layer 0 at "8 *non-core* artifacts" and asked for "0 tokens at 0 *authored* artifacts". Those contradict the go/no-go, which measures retrieval **against the 16 bundled skills**: a default user has 16 bundled and 0 authored, so nothing would ever be indexed and nothing could be measured. The zero-regression guarantee belongs to the **setting** (`mysti.mysti.skills`, default `off`), not to a count that excludes the very artifacts being measured. The ≥8 threshold now counts all indexable artifacts and exists only to stop an index paying for itself over a library small enough to just list. `skill_find` returns the intended id in the top 3 across 8 paraphrases and **not** for 8 near-miss negatives sharing keywords. `part="../../etc/passwd"` refused by containment.
+
+**What landed**
+
+| Piece | Where |
+|---|---|
+| `SkillIndex` — BM25 (k1 1.2, b 0.75) with field boosts (name/triggers ×3), suffix stemmer, stop-word filter, relevance floor, O(1) `categoryHeader()` | `src/services/SkillIndex.ts` (pure, no `vscode`) |
+| `skill` directive — `<skill:N>query</skill>` and `<skill:N id="…" part="…">`, plus native `skill_find`/`skill_view` | parser, `coordinatorTools`, `_runMystiAgentic` |
+| Per-artifact containment for `part=` (`realpath` + prefix check) — `MystiLocalTools` is workspace-rooted and could not do this | `_runMystiSkillLookup` |
+| `mysti.mysti.skills: off \| prose \| full`, machine-scoped, **default `off`** | `package.json` |
+
+**Retrieval quality, measured against the real 42-artifact bundled catalog** (not fixtures): all 8 natural paraphrases return the intended artifact in the top 3; 4 genuinely-uncovered queries return **exactly zero** hits.
+
+**Two relevance bugs found by those tests, both worth recording:**
+1. **Stop-words dominated.** `"book me a flight to Lisbon"` scored the *mentor* persona at 7.88 — because `me` and `to` are query terms and mentor's triggers are phrases like *"walk **me** through"*, *"best way **to** learn"*. Two-letter function words are now stop-words (`ui`, `ci`, `db`, `js` deliberately kept).
+2. **A relevance floor tuned on multi-word queries silently killed short ones.** An initial `MIN_SCORE = 5` removed `secure-coding` (4.51) and made the one-word query `"security"` return nothing. Measurement showed the stop-word list is the real filter — off-topic queries score **0**, not "low" — so the floor is now a low guard at 2. The one borderline case (`"recommend a good restaurant"` → advisor, 5.72) sits *inside* the positive band and no threshold can separate it; `"recommend"` genuinely is an advisor trigger.
+
+A third bug came from the Phase 0 drift test: the scanner list was missing `look`/`act` earlier, and this phase revealed `canvas`/`canvaspage` were missing too — a forged `<canvas:NONCE>` on disk is exactly as dangerous as a forged `<bash:>`. Now covered.
+
+**NOT done — the measurement half.** Phase 1 was specified as retrieval *plus* the `{artifactId, viewed, turnOutcome}` telemetry that decides whether Phases 2–4 get funded. Only retrieval is built. Without the telemetry there is no go/no-go evidence, so **Phases 2–4 remain unfunded and must not start on vibes.**
+
+> **GO/NO-GO (still pending).** Build the telemetry, then run 4 weeks against the 16 bundled skills and publish view-rate and outcome-delta. **Healthy router engagement is 70–80%; ~19% is drift.** If views are rare or outcome-neutral, retrieval is not the bottleneck and **Phases 2–4 are unfunded** — stop there.
 
 ### Phase 2 — Staging + atomic proposal + Save-as-skill
 
@@ -306,7 +329,7 @@ Move Mysti extensions under the spec `metadata:` map with deprecated top-level f
 
 ### Platform reality
 
-`MystiSandbox.available()` is false on **Windows** (no primitive) and on Linux without `bwrap` — roughly half the addressable users. They get Phases 0–2 and 5–7: prose skills and the index. **By this plan's own evidence that half is +0.0pp** unless the artifacts are curated or captured. This is why Layer 0 exists (0 tokens below 8 artifacts) and why the platform split is an acceptance criterion, not a footnote: **never ship a per-turn index to users who structurally cannot reach the payoff.**
+`MystiSandbox.available()` is false on **Windows** (no primitive) and on Linux without `bwrap` — roughly half the addressable users. They get Phases 0–2 and 5–7: prose skills and the index. **By this plan's own evidence that half is +0.0pp** unless the artifacts are curated or captured. This is why the feature is off by default and Layer 0 exists (no index below 8 artifacts) and why the platform split is an acceptance criterion, not a footnote: **never ship a per-turn index to users who structurally cannot reach the payoff.**
 
 ---
 
