@@ -295,11 +295,15 @@ A third bug came from the Phase 0 drift test: the scanner list was missing `look
 
 ### Phase 3 — `mysti.tools.json` + `publish` + the inverted ladder
 
+**Status: FOUNDATIONS IMPLEMENTED 2026-08-20; not yet reachable by the model.** `CapabilityManifest` (V1 validation: fixed interpreter keys, closed schemas, host-stamped descriptions, no authority-granting field) and `ObservedRuns` (host-captured goldens, per-run independence, digests not output) are built and tested. **Still to wire:** the `publish` directive, the two-card ladder ordering, the registry, and the trial record in `globalStorage`.
+
 Manifest schema, V0/V1 → card #1 → V2 captured-golden replay + V3 → card #2 → registration. Trial record in `globalStorage`. Publish-time execution requires `skillRun` on, not merely `skillAuthoring`.
 
 **Accept:** a captured-golden replay publishes; model-authored expectations are **refused by construction** (no code path reads them); non-deterministic or single-case suites refuse **before any card renders**; missing `additionalProperties: false` ⇒ V1 reject; I8 green under `timeoutBehavior: auto-accept`; a stubbed `SandboxRunner` asserts **zero spawns** before card #1.
 
 ### Phase 4 — `skillrun` execution + sandbox hardening
+
+**Status: PARTIALLY IMPLEMENTED 2026-08-20.** `MystiLocalExec.execTool()` (args validated against the closed schema then passed by FILE — zero quoting surface; fixed interpreter map resolved to an absolute path; never auto-runnable) and the sandbox hardening are done: `.mysti` is read-only inside the sandbox and credential stores are read-denied, closing the gap where `bash` bypasses `resolveWriteTarget` entirely. **Still to wire:** the `skillrun` directive and the registry that feeds it a spec.
 
 - `MystiLocalExec.execTool(spec, args, ctx)` — a narrowing wrapper over `bash()`. Validate args against the stored closed schema; write them to a **host-owned args file**; resolve the interpreter to an absolute discovered path from the fixed map; materialize **one** non-compound `<interp> <abs script> <abs argsfile>`; hand it to the existing `bash()` path.
 - **Sandbox artifact deny-rules (I4, B2):** SBPL `(deny file-write* (subpath "<cwd>/.mysti"))` + narrow rw carve-out for the args dir; bwrap `--ro-bind-try`; targeted read-denies for `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.mysti`, `~/.config`.
@@ -340,11 +344,15 @@ Independent of everything above (B5). `_sanitizeMcpTools` preserves `inputSchema
 
 ### Phase 6 — Ledger, curator, dashboard, kill switch
 
+**Status: PARTIALLY IMPLEMENTED 2026-08-20.** `CapabilityLedger` (helped/hurt never averaged; quarantine at 2 consecutive failures, lifted by a success; deregister at 4; reversible aging; nothing auto-deleted) and the **kill switch** `mysti.revokeCapabilities` are done — it MOVES user/workspace/staged artifacts to a timestamped quarantine folder rather than deleting, leaving verified bundled content untouched. **Still to wire:** the health dashboard and hooking the ledger into the live call path.
+
 Per-artifact telemetry with **`helped` and `hurt` tracked separately, never averaged** (a 6-help/6-harm artifact is unstable, not neutral). Lazy quarantine → deregister. TroVE aging. `mysti.agentHealth` panel showing always-on vs on-invoke tokens per artifact (mirroring `claude plugin details`), engagement rate with the 70–80% healthy band, and the verification badge. `mysti.revokeCapabilities` clears every pin, inerts everything non-core, and offers delete-files — backed by an append-only audit log. **A persistence feature needs an undo faster than the attacker's re-injection loop.**
 
 > **Honest sizing:** Phase 6 is a full plan on its own, landing in a 10,946-line `ChatViewProvider`. Scope it separately; do not pretend it is one phase.
 
 ### Phase 7 — Spec-clean interop (optional, off)
+
+**Status: NOT STARTED — and reassessed as larger than its billing.** Moving Mysti's extensions under the spec's `metadata:` map requires the flat frontmatter parser to gain nested-object support, plus migrating all 42 bundled files and the loader that reads them, with the whole agent system downstream. The benefit (bundled artifacts uploading cleanly to claude.ai) is real but speculative for this repo. The genuinely valuable half is `SkillDiscoveryService` commit-pinning instead of branch-pinning — a supply-chain fix, independent of the frontmatter migration, and the piece worth doing first.
 
 Move Mysti extensions under the spec `metadata:` map with deprecated top-level fallbacks; enforce the six spec keys (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`), the `name` regex and the ≤1024-char description in `agentContentConformance.test.ts` — without this every bundled Mysti skill fails claude.ai upload with the documented *"Unexpected key(s) in SKILL.md frontmatter"* hard error. Fix `SkillDiscoveryService` to fetch whole directories (`scripts/`, `references/`, `assets/`) with per-file hashes and **commit-pin, not branch-pin**; imported artifacts install **staged with `scripts/` quarantined** until the user publishes them locally, re-running the full ladder on their machine.
 
