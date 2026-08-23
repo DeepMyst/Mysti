@@ -36,6 +36,8 @@ import type { MystiLocalTools } from './MystiLocalTools';
 import { MystiSandbox, type SandboxRunner } from './MystiSandbox';
 import { screenBashCommand, isRemoteEffectCommand } from '../managers/SafetyClassifier';
 import { parsePatchEnvelope } from './mystiPatch';
+import { validateCapabilityArgs } from './CapabilityManifest';
+import { randomUUID } from 'crypto';
 
 export type LocalExecKind = 'write' | 'edit' | 'bash' | 'patch';
 
@@ -90,6 +92,35 @@ export interface LocalExecContext {
   bashNetwork?: boolean;
   /** bash: per-command timeout in ms. */
   bashTimeoutMs?: number;
+}
+
+/**
+ * Single-quote a path for /bin/sh.
+ *
+ * Only ever applied to HOST-derived strings — an absolute interpreter path, a
+ * realpath'd script inside the artifact, and a host-generated args-file name.
+ * Model-supplied values never reach a command line at all; they travel in the
+ * args file. This exists so a workspace path containing a space or an
+ * apostrophe still runs, not as a defence against model input.
+ */
+function shellQuote(value: string): string {
+  return `'${value.split("'").join(`'\\''`)}'`;
+}
+
+/**
+ * Redact secret-shaped strings from command output before it re-enters the
+ * model or a card.
+ *
+ * A sandboxed script can read anything the workspace contains, including a
+ * committed `.env`, exactly as any approved `bash` command can. This does not
+ * make that safe — the sandbox is the boundary — but it stops the most common
+ * accident, where a key is echoed into a transcript that then gets pasted
+ * somewhere. Applied to capability output and cheap enough to be worth it.
+ */
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/\b(sk-[A-Za-z0-9_-]{16,}|dm_[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})/g, '[redacted-secret]')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[redacted-private-key]');
 }
 
 /** Refuse to write more than this in one op (a runaway/paste guard). */
@@ -332,6 +363,115 @@ export class MystiLocalExec {
     // (6) Run inside the sandbox.
     const res = await this._sandbox.run(cmd, { cwd: root, network: !!ctx.bashNetwork, timeoutMs: ctx.bashTimeoutMs });
     return { ok: res.code === 0 && !res.timedOut, output: this._formatBashOutput(cmd, res) };
+  }
+
+  /**
+   * Run ONE registered capability (Plan 20 Phase 4).
+   *
+   * This is deliberately a NARROWING of `bash`, not a synonym for it:
+   *
+   *   - the command SHAPE is host-owned — the artifact names an interpreter
+   *     KEY (never a path) and a script inside its own folder, so there is no
+   *     model-authored command string anywhere in this path;
+   *   - every argument is validated against the CLOSED schema a human approved
+   *     at publish time, and then written to a JSON FILE rather than onto the
+   *     command line, so the quoting surface is zero. This repo's Plan 19
+   *     round-5 finding was a shell tokenizer bypass; the fix there was a better
+   *     tokenizer, and the fix here is having nothing to tokenize;
+   *   - the resulting command is a single non-compound invocation, so it can
+   *     never satisfy the auto-run predicate (which additionally requires the
+   *     read-only allowlist) — a capability always faces the gate.
+   *
+   * Everything after that rides the existing sandbox + checkpoint + gate path.
+   */
+  async execTool(
+    spec: {
+      id: string;
+      name: string;
+      artifactDir: string;
+      interpreter: 'bash' | 'python3' | 'node';
+      script: string;
+      inputSchema: Record<string, unknown>;
+      network?: boolean;
+      timeoutMs?: number;
+    },
+    args: Record<string, unknown>,
+    ctx: LocalExecContext,
+  ): Promise<LocalExecResult> {
+    const blocked = this._guard(ctx);
+    if (blocked) { return blocked; }
+
+    const root = this._tools.workspaceRoot();
+    if (!root) { return { ok: false, output: 'skillrun: no workspace folder is open.' }; }
+
+    // A capability executes code, so it needs the same platform floor as bash.
+    // Where there is no sandbox it is simply unavailable — surfacing it and
+    // failing later would burn turns on something that can never run.
+    if (!this._sandbox.available()) {
+      return { ok: false, output: `skillrun: no OS sandbox is available on this platform, so capabilities cannot run here. Delegate the work to a backend coding agent instead.` };
+    }
+    if (spec.network && !ctx.bashNetwork) {
+      return { ok: false, output: `skillrun: "${spec.name}" needs network access, which is disabled. Enable mysti.mysti.bashNetwork or use a capability that works offline.` };
+    }
+
+    const validated = validateCapabilityArgs(spec.inputSchema, args || {});
+    if (!validated.ok) {
+      return { ok: false, output: `skillrun: ${validated.error}` };
+    }
+
+    // Resolve the script strictly inside the artifact's own folder.
+    const artifactRoot = await fs.promises.realpath(spec.artifactDir).catch(() => spec.artifactDir);
+    const scriptAbs = path.resolve(artifactRoot, spec.script);
+    const scriptReal = await fs.promises.realpath(scriptAbs).catch(() => scriptAbs);
+    if (!scriptReal.startsWith(artifactRoot + path.sep)) {
+      return { ok: false, output: `skillrun: "${spec.script}" resolves outside the capability folder.` };
+    }
+    const scriptStat = await fs.promises.stat(scriptReal).catch(() => null);
+    if (!scriptStat?.isFile()) {
+      return { ok: false, output: `skillrun: "${spec.script}" is missing.` };
+    }
+
+    // Arguments travel in a host-written file. The directory is host-owned and
+    // outside the artifact, so a script cannot pre-place or rewrite one.
+    const runDir = path.join(root, '.mysti', 'run');
+    await fs.promises.mkdir(runDir, { recursive: true });
+    const argsFile = path.join(runDir, `${randomUUID()}.json`);
+    await fs.promises.writeFile(argsFile, JSON.stringify(validated.value), 'utf8');
+
+    try {
+      const interpreterPath = await this._sandbox.resolveInterpreter(spec.interpreter);
+      if (!interpreterPath) {
+        return { ok: false, output: `skillrun: "${spec.interpreter}" is not installed on this machine.` };
+      }
+      const command = `${shellQuote(interpreterPath)} ${shellQuote(scriptReal)} ${shellQuote(argsFile)}`;
+
+      // The gate always runs. `safe:false` + `compound:false` means this can
+      // never take the auto-run branch, which additionally demands the
+      // read-only allowlist — a script is never on it.
+      const approved = await ctx.gate({
+        kind: 'bash',
+        command: `${spec.name} (${spec.id}) — ${spec.interpreter} ${spec.script}`,
+        sandboxed: true,
+        safe: false,
+        compound: false,
+        remoteEffect: false,
+        network: !!spec.network,
+      });
+      if (!approved) { return { ok: false, output: `skillrun: "${spec.name}" was denied.`, denied: true }; }
+
+      await ctx.checkpoint(`mysti skillrun: ${spec.name}`);
+      const res = await this._sandbox.run(command, {
+        cwd: root,
+        network: !!spec.network,
+        timeoutMs: spec.timeoutMs ?? ctx.bashTimeoutMs,
+      });
+      return {
+        ok: res.code === 0 && !res.timedOut,
+        output: redactSecrets(this._formatBashOutput(`${spec.name} ${JSON.stringify(validated.value)}`, res)),
+      };
+    } finally {
+      await fs.promises.rm(argsFile, { force: true }).catch(() => { /* best effort */ });
+    }
   }
 
   private _formatBashOutput(command: string, res: { code: number | null; stdout: string; stderr: string; sandboxed: boolean; timedOut: boolean }): string {

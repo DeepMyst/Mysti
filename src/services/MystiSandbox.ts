@@ -56,7 +56,35 @@ export interface SandboxRunOpts {
 export interface SandboxRunner {
   available(): boolean;
   run(command: string, opts: SandboxRunOpts): Promise<SandboxResult>;
+  /**
+   * Resolve one of the FIXED interpreter keys to an absolute path, or null when
+   * it is not installed (Plan 20 Phase 4).
+   *
+   * Deliberately a closed map rather than a lookup of whatever string an
+   * artifact supplies: if a capability could name its own interpreter, it could
+   * name any binary on the machine and the permission card would be describing
+   * something other than what runs.
+   */
+  resolveInterpreter(key: 'bash' | 'python3' | 'node'): Promise<string | null>;
 }
+
+/**
+ * Credential directories a sandboxed command may not read (Plan 20 Phase 4).
+ *
+ * The profile is allow-by-default for reads because builds legitimately need
+ * system libraries, so the interesting secrets have to be carved back out by
+ * name. This is not exhaustive and is not claimed to be — it covers the stores
+ * an exfiltration attempt reaches for first.
+ */
+const SANDBOX_DENIED_READ_DIRS = [
+  path.join(os.homedir(), '.ssh'),
+  path.join(os.homedir(), '.aws'),
+  path.join(os.homedir(), '.gnupg'),
+  path.join(os.homedir(), '.config', 'gh'),
+  path.join(os.homedir(), '.kube'),
+  path.join(os.homedir(), '.docker'),
+  path.join(os.homedir(), '.mysti'),
+];
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_CHARS = 30_000;
@@ -120,10 +148,18 @@ export class MystiSandbox implements SandboxRunner {
         // (review round-3 class fix). .git/index etc. stay writable.
         '--ro-bind-try', path.join(cwd, '.git', 'config'), path.join(cwd, '.git', 'config'),
         '--ro-bind-try', path.join(cwd, '.git', 'hooks'), path.join(cwd, '.git', 'hooks'),
+        // Plan 20 Phase 4 (I4): agent artifacts read-only, same reasoning as the
+        // Seatbelt rule above. The args file a capability reads is written by the
+        // HOST before the sandbox starts, so read-only is sufficient.
+        '--ro-bind-try', path.join(cwd, '.mysti'), path.join(cwd, '.mysti'),
         '--tmpfs', '/tmp',
         '--tmpfs', '/run',        // hides /run/docker.sock etc. (review H)
         '--tmpfs', '/var/run',    // and /var/run when it is a real dir, not a /run symlink (review MED-6)
       );
+      // Credential stores hidden behind empty tmpfs mounts.
+      for (const secretDir of SANDBOX_DENIED_READ_DIRS) {
+        if (fs.existsSync(secretDir)) { args.push('--tmpfs', secretDir); }
+      }
       const xdg = process.env.XDG_RUNTIME_DIR;
       if (xdg && /^\/[^\n\r]*$/.test(xdg)) { args.push('--tmpfs', xdg); }
       args.push(
@@ -169,6 +205,18 @@ export class MystiSandbox implements SandboxRunner {
     // (review round-3 class fix). .git/index stays writable so `git status` works.
     lines.push(`(deny file-write* (subpath "${esc(path.join(cwd, '.git', 'hooks'))}"))`);
     lines.push(`(deny file-write* (literal "${esc(path.join(cwd, '.git', 'config'))}"))`);
+    // Plan 20 Phase 4 (invariant I4): the agent-artifact tree is READ-ONLY to a
+    // sandboxed command. `resolveWriteTarget` protects the write/edit/patch
+    // directives, but a `bash` command bypasses it entirely — the sandbox is the
+    // only real enforcement point for anything a script can touch. Without this
+    // a capability could copy itself from staging into the live tree, or forge
+    // its own verification record, with one `cp`.
+    lines.push(`(deny file-write* (subpath "${esc(path.join(cwd, '.mysti'))}"))`);
+    // Credential stores stay unreadable. Reads are allow-by-default here (builds
+    // need system libs), so these are carved back out explicitly.
+    for (const secretDir of SANDBOX_DENIED_READ_DIRS) {
+      lines.push(`(deny file-read* (subpath "${esc(secretDir)}"))`);
+    }
     lines.push('(allow file-write-data (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/dtracehelper") (literal "/dev/tty"))');
     return lines.join('\n');
   }
@@ -209,6 +257,30 @@ export class MystiSandbox implements SandboxRunner {
   private _cap(s: string): string {
     if (s.length <= MAX_OUTPUT_CHARS) { return s; }
     return s.slice(0, MAX_OUTPUT_CHARS) + `\n… [output truncated at ${MAX_OUTPUT_CHARS} chars]`;
+  }
+
+  /**
+   * Absolute path for a fixed interpreter key. Only these three keys exist; the
+   * artifact never supplies a path, so there is no way to point execution at an
+   * arbitrary binary.
+   */
+  async resolveInterpreter(key: 'bash' | 'python3' | 'node'): Promise<string | null> {
+    const candidates: Record<string, string[]> = {
+      bash: ['/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash'],
+      python3: ['/usr/bin/python3', '/usr/local/bin/python3', '/opt/homebrew/bin/python3'],
+      node: ['/usr/bin/node', '/usr/local/bin/node', '/opt/homebrew/bin/node'],
+    };
+    for (const abs of candidates[key] || []) {
+      if (fs.existsSync(abs)) { return abs; }
+    }
+    // Fall back to PATH, but still return an ABSOLUTE path so the command that
+    // is approved is the command that runs.
+    for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+      if (!dir) { continue; }
+      const abs = path.join(dir, key);
+      if (fs.existsSync(abs)) { return abs; }
+    }
+    return null;
   }
 
   private _onPath(bin: string): boolean {
