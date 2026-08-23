@@ -191,7 +191,7 @@ Ordered so the security floor lands first and **each phase is independently ship
 
 ### Phase 0 — Integrity floor (no new capability) · ships standalone
 
-**Status: IMPLEMENTED 2026-08-20** on `feat/plan-20-phase-0-integrity-floor`. 226 test files / 9015 tests green (from 222 / 8975), `tsc` clean, production webpack build clean. Deferred within the phase: `ApprovedCapabilityStore` folder-Merkle pinning for user/workspace scope (I7) and the webview CSP/remote-image hardening — see the note at the end of this phase.
+**Status: IMPLEMENTED 2026-08-20** on `feat/plan-20-agent-catalog`. 226 test files / 9015 tests green (from 222 / 8975), `tsc` clean, production webpack build clean. Deferred within the phase: `ApprovedCapabilityStore` folder-Merkle pinning for user/workspace scope (I7) and the webview CSP/remote-image hardening — see the note at the end of this phase.
 
 Fixes bugs that exist today, whether or not this feature is built.
 
