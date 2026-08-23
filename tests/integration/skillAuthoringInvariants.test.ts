@@ -17,44 +17,47 @@ const SRC = path.resolve(__dirname, '..', '..', 'src');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
 describe('promotion is unreachable from the model', () => {
-  it('no directive kind can promote', () => {
-    const every = [...ALL_MYSTI_KINDS, ...MYSTI_SKILL_KINDS, ...MYSTI_EXEC_KINDS, ...MYSTI_MCP_KINDS];
-    for (const kind of every) {
+  it('the RETRIEVAL tier exposes no way to promote', () => {
+    // Phase 1/2 kinds are read-only plus staging writes; nothing installs.
+    const retrieval = [...ALL_MYSTI_KINDS, ...MYSTI_SKILL_KINDS, ...MYSTI_EXEC_KINDS, ...MYSTI_MCP_KINDS];
+    for (const kind of retrieval) {
       expect(kind).not.toMatch(/promot|install|publish/i);
     }
   });
 
-  it('no native tool schema can promote, in any capability combination', () => {
-    const names = new Set<string>();
-    for (const exec of [false, true]) {
-      for (const skills of [false, true]) {
-        for (const connect of [false, true]) {
-          for (const t of coordinatorToolSchemas(exec, [], connect, { look: true, act: true }, true, skills)) {
-            names.add(t.function.name);
-          }
-        }
-      }
-    }
-    for (const name of names) {
-      expect(name, `tool "${name}" looks like a promotion path`).not.toMatch(/promot|install|publish/i);
-    }
-    // Sanity: the sweep really did enumerate the catalog tools.
-    expect(names.has('skill_find')).toBe(true);
+  it('promotion happens in exactly two places, and both are accounted for', () => {
+    // Phase 3 CHANGED this invariant, so it is restated rather than relaxed.
+    // Previously nothing model-reachable could promote. Now `publish` can — but
+    // only through the ladder, behind two forced cards. The two call sites are
+    // the user's review command and that ladder; a third would be a regression.
+    const chat = read('providers/ChatViewProvider.ts');
+    const callSites = chat.split('\n').filter(l => /\.promote\(/.test(l));
+    expect(callSites.length).toBe(2);
+
+    // Both call sites live in named methods, not inline in the loop.
+    expect(chat).toContain('public async reviewSkillProposals');
+    expect(chat).toContain('private async _runMystiPublish');
   });
 
-  it('SkillStaging.promote is called only from the user command, never from the agentic loop', () => {
+  it('every model path to promotion passes TWO forced interactive cards', () => {
     const chat = read('providers/ChatViewProvider.ts');
-    const callSites = chat.split('\n')
-      .map((line, i) => ({ line, n: i + 1 }))
-      .filter(l => /\.promote\(/.test(l.line));
-    expect(callSites.length).toBe(1);
+    const start = chat.indexOf('private async _runMystiPublish');
+    const body = chat.slice(start, chat.indexOf('\n  /**', start + 100));
+    // Both cards force interaction, so a permissive mode cannot wave a
+    // capability through, and a timeout denies rather than accepts.
+    const forced = body.match(/forceInteractive \*\/ true/g) || [];
+    expect(forced.length).toBeGreaterThanOrEqual(2);
+    // The code-review card must come before anything executes.
+    expect(body.indexOf('Review capability code')).toBeLessThan(body.indexOf('Register this capability'));
+  });
 
-    // …and that one call site sits inside the review command, not the loop.
-    const idx = chat.indexOf('.promote(');
-    const before = chat.slice(0, idx);
-    const enclosing = before.lastIndexOf('public async reviewSkillProposals');
-    const loopStart = before.lastIndexOf('_runMystiAgentic');
-    expect(enclosing).toBeGreaterThan(loopStart);
+  it('only the ladder may promote an executable; the review queue never can', () => {
+    const chat = read('providers/ChatViewProvider.ts');
+    const staging = read('services/SkillStaging.ts');
+    // `allowScripts` is the switch, and it is set in exactly one place.
+    expect((chat.match(/allowScripts/g) || []).length).toBe(1);
+    expect(chat.slice(chat.indexOf('private async _runMystiPublish'))).toContain('allowScripts: true');
+    expect(staging).toContain('scripts are not promotable');
   });
 });
 

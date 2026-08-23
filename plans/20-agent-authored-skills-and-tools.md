@@ -295,7 +295,13 @@ A third bug came from the Phase 0 drift test: the scanner list was missing `look
 
 ### Phase 3 — `mysti.tools.json` + `publish` + the inverted ladder
 
-**Status: FOUNDATIONS IMPLEMENTED 2026-08-20; not yet reachable by the model.** `CapabilityManifest` (V1 validation: fixed interpreter keys, closed schemas, host-stamped descriptions, no authority-granting field) and `ObservedRuns` (host-captured goldens, per-run independence, digests not output) are built and tested. **Still to wire:** the `publish` directive, the two-card ladder ordering, the registry, and the trial record in `globalStorage`.
+**Status: IMPLEMENTED 2026-08-20.** `CapabilityManifest` + `ObservedRuns` + `CapabilityRegistry` + the `publish` directive and its two-card ladder.
+
+**The ladder, in the order that matters:** V0 scan and V1 manifest are pure and run first; then **card 1 shows the full script bytes**, the schema and the scanner report; only then does V2 check evidence; then **card 2** registers. Both cards are forced and auto-DENY on timeout. The naive ordering — verify by running, then ask — would execute model-authored bytes on the strength of a write card that showed only a path and a line count.
+
+**Evidence the model cannot manufacture.** A manifest entry may list `observedCommands`, but those are looked up in `ObservedRuns` — the host's own record of commands it actually ran, written from the `bash` path. The model can POINT AT evidence; it cannot create it. When nothing matches, the card says "CLAIMED COMMANDS WERE NEVER OBSERVED SUCCEEDING — unverified" rather than quietly passing.
+
+**Approval binds bytes.** `CapabilityRegistry` stores a folder hash at approval and re-checks before every call; a changed folder is refused and is deliberately **not** re-pinned, since re-hashing whatever is on disk would make the attacker's write the new approved state.
 
 Manifest schema, V0/V1 → card #1 → V2 captured-golden replay + V3 → card #2 → registration. Trial record in `globalStorage`. Publish-time execution requires `skillRun` on, not merely `skillAuthoring`.
 
@@ -303,7 +309,7 @@ Manifest schema, V0/V1 → card #1 → V2 captured-golden replay + V3 → card #
 
 ### Phase 4 — `skillrun` execution + sandbox hardening
 
-**Status: PARTIALLY IMPLEMENTED 2026-08-20.** `MystiLocalExec.execTool()` (args validated against the closed schema then passed by FILE — zero quoting surface; fixed interpreter map resolved to an absolute path; never auto-runnable) and the sandbox hardening are done: `.mysti` is read-only inside the sandbox and credential stores are read-denied, closing the gap where `bash` bypasses `resolveWriteTarget` entirely. **Still to wire:** the `skillrun` directive and the registry that feeds it a spec.
+**Status: IMPLEMENTED 2026-08-20.** `MystiLocalExec.execTool()` (args validated against the closed schema then passed by FILE — zero quoting surface; fixed interpreter map resolved to an absolute path; never auto-runnable), the `skillrun` directive, and the sandbox hardening: `.mysti` is read-only inside the sandbox and credential stores are read-denied, closing the gap where `bash` bypasses `resolveWriteTarget` entirely. A quarantined capability forces an interactive card on every call.
 
 - `MystiLocalExec.execTool(spec, args, ctx)` — a narrowing wrapper over `bash()`. Validate args against the stored closed schema; write them to a **host-owned args file**; resolve the interpreter to an absolute discovered path from the fixed map; materialize **one** non-compound `<interp> <abs script> <abs argsfile>`; hand it to the existing `bash()` path.
 - **Sandbox artifact deny-rules (I4, B2):** SBPL `(deny file-write* (subpath "<cwd>/.mysti"))` + narrow rw carve-out for the args dir; bwrap `--ro-bind-try`; targeted read-denies for `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.mysti`, `~/.config`.
@@ -344,7 +350,7 @@ Independent of everything above (B5). `_sanitizeMcpTools` preserves `inputSchema
 
 ### Phase 6 — Ledger, curator, dashboard, kill switch
 
-**Status: PARTIALLY IMPLEMENTED 2026-08-20.** `CapabilityLedger` (helped/hurt never averaged; quarantine at 2 consecutive failures, lifted by a success; deregister at 4; reversible aging; nothing auto-deleted) and the **kill switch** `mysti.revokeCapabilities` are done — it MOVES user/workspace/staged artifacts to a timestamped quarantine folder rather than deleting, leaving verified bundled content untouched. **Still to wire:** the health dashboard and hooking the ledger into the live call path.
+**Status: PARTIALLY IMPLEMENTED 2026-08-20.** `CapabilityLedger` (helped/hurt never averaged; quarantine at 2 consecutive failures, lifted by a success; deregister at 4; reversible aging; nothing auto-deleted) and the **kill switch** `mysti.revokeCapabilities` are done — it MOVES user/workspace/staged artifacts to a timestamped quarantine folder rather than deleting, leaving verified bundled content untouched. The ledger is now hooked into the live call path: every `skillrun` records the HOST's observation of the outcome. **Still to wire:** the health dashboard (the ledger's `health()` is built and tested, nothing renders it yet).
 
 Per-artifact telemetry with **`helped` and `hurt` tracked separately, never averaged** (a 6-help/6-harm artifact is unstable, not neutral). Lazy quarantine → deregister. TroVE aging. `mysti.agentHealth` panel showing always-on vs on-invoke tokens per artifact (mirroring `claude plugin details`), engagement rate with the 70–80% healthy band, and the verification badge. `mysti.revokeCapabilities` clears every pin, inerts everything non-core, and offers delete-files — backed by an append-only audit log. **A persistence feature needs an undo faster than the attacker's re-injection loop.**
 

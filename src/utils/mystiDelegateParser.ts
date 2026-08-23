@@ -40,7 +40,7 @@
  *     text rather than silently swallowing the coordinator's output.
  */
 
-export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool' | 'findtool' | 'skill' | 'look' | 'act' | 'canvas' | 'canvaspage';
+export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool' | 'findtool' | 'skill' | 'publish' | 'skillrun' | 'look' | 'act' | 'canvas' | 'canvaspage';
 
 export type ModelTier = 'fast' | 'strong';
 
@@ -74,6 +74,12 @@ export type MystiDirective =
   // `id` present => view that artifact (optionally one bundled `part`);
   // otherwise `query` is a natural-language search over the catalog.
   | { kind: 'skill'; query?: string; id?: string; part?: string }
+  // Plan 20 Phase 3 — run the verification ladder on a STAGED artifact and, if
+  // the user approves twice, promote + register it. The single irreversible act.
+  | { kind: 'publish'; id: string }
+  // Plan 20 Phase 4 — invoke one registered capability. GATED; args are
+  // validated against the closed schema approved at publish time.
+  | { kind: 'skillrun'; tool: string; args: Record<string, unknown>; argsError?: string }
   // Agent-callable visual observation. `look` renders the running app in a real
   // browser and returns a deterministic digest (console, failed requests, layout
   // probes, a11y tree, DOM outline, screenshot). It is a READ: it never writes a
@@ -150,6 +156,15 @@ export const MYSTI_MCP_READONLY_KINDS: MystiDirectiveKind[] = ['findtool'];
 export const MYSTI_SKILL_KINDS: MystiDirectiveKind[] = ['skill'];
 
 /**
+ * Authoring + execution kinds (Plan 20 Phases 3-4). Added to the scanner ONLY
+ * when `mysti.mysti.skills` is `full`, local execution is on, the workspace is
+ * trusted and a sandbox exists. When any of that is false the tags are not
+ * recognized at all, so the capability does not exist rather than existing and
+ * erroring.
+ */
+export const MYSTI_CAPABILITY_KINDS: MystiDirectiveKind[] = ['publish', 'skillrun'];
+
+/**
  * Visual observation kinds. `look` is a read (it renders and reports); `act`
  * touches the page and is therefore gated separately, so the two are split —
  * a read-only or plan-mode turn keeps `look` and loses `act`.
@@ -221,6 +236,10 @@ export class MystiTagScanner {
       case 'skill':
         // <skill:N>query</skill> | <skill:N id="x" part="references/y.md">…</skill>
         return new RegExp(`^<skill:${esc}(?:\\s+id="([^"]*)")?(?:\\s+part="([^"]*)")?\\s*>([\\s\\S]*?)<\\/skill>$`);
+      case 'publish':
+        return new RegExp(`^<publish:${esc}\\s*>([\\s\\S]*?)<\\/publish>$`);
+      case 'skillrun':
+        return new RegExp(`^<skillrun:${esc}\\s+tool="([^"]+)"\\s*>([\\s\\S]*?)<\\/skillrun>$`);
       case 'remember':
         return new RegExp(`^<remember:${esc}\\s*>([\\s\\S]*?)<\\/remember>$`);
       case 'write':
@@ -492,6 +511,28 @@ export class MystiTagScanner {
       case 'findtool': {
         const query = m[1].trim();
         return query ? { kind: 'findtool', query } : null;
+      }
+      case 'publish': {
+        const id = (m[1] || '').trim();
+        return id ? { kind: 'publish', id } : null;
+      }
+      case 'skillrun': {
+        const tool = (m[1] || '').trim();
+        if (!tool) { return null; }
+        const body = (m[2] || '').trim();
+        // Same shape as `mcptool`: a parse failure yields an EMPTY args object
+        // plus an error the caller feeds back, rather than silently running
+        // with whatever partially-parsed values survived.
+        if (!body) { return { kind: 'skillrun', tool, args: {} }; }
+        try {
+          const parsed = JSON.parse(body);
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return { kind: 'skillrun', tool, args: {}, argsError: 'arguments must be a JSON object' };
+          }
+          return { kind: 'skillrun', tool, args: parsed as Record<string, unknown> };
+        } catch (e) {
+          return { kind: 'skillrun', tool, args: {}, argsError: e instanceof Error ? e.message : 'invalid JSON' };
+        }
       }
       case 'skill': {
         const id = (m[1] || '').trim();

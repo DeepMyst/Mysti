@@ -168,10 +168,21 @@ export class SkillStaging {
    * the review UI and the promotion are separate moments, and the bytes can
    * change in between (time-of-check/time-of-use).
    */
-  async promote(id: string, type: 'skill' | 'persona' | 'role' = 'skill'): Promise<PromoteResult> {
+  async promote(
+    id: string,
+    type: 'skill' | 'persona' | 'role' = 'skill',
+    opts: { allowScripts?: boolean } = {},
+  ): Promise<PromoteResult> {
     const artifact = await this._read(id).catch(() => null);
     if (!artifact) { return { ok: false, reason: `Nothing staged under "${id}".` }; }
-    if (artifact.blocked) { return { ok: false, reason: `Refused — ${artifact.blockedReason}.` }; }
+    // `allowScripts` is set ONLY by the publish ladder, which has already run
+    // the manifest checks and shown the script bytes on a forced card. The
+    // review-queue path never sets it, so a human clicking "install" in the
+    // queue can never land an executable that skipped the ladder.
+    const scriptsBlocked = String(artifact.blockedReason || '').includes('scripts are not promotable');
+    if (artifact.blocked && !(opts.allowScripts && scriptsBlocked)) {
+      return { ok: false, reason: `Refused — ${artifact.blockedReason}.` };
+    }
 
     const targetDir = path.join(this._liveRoot, `${type}s`, id);
     // Containment: a crafted id must not escape the live tree.

@@ -78,7 +78,14 @@ const MAX_ENTRIES = 20;
 const MAX_DESC = 200;
 const MAX_TIMEOUT_MS = 120_000;
 
-/** Control characters stripped from any description before it is shown. */
+/**
+ * Control characters stripped from any description before it is shown.
+ *
+ * Matching control characters is the entire point here — a description reaches
+ * both a reviewer's screen and the model's tool-definition tier, and embedded
+ * newlines or escapes are how it stops being one line of label.
+ */
+// eslint-disable-next-line no-control-regex
 const CONTROL_RE = /[\u0000-\u001f\u007f]+/g;
 
 /**
