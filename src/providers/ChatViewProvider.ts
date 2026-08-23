@@ -14,6 +14,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as crypto from 'crypto';
 import { clampEffort } from '../utils/effort';
 import { MystiTagScanner, type MystiDirective, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_SKILL_KINDS, MYSTI_CONNECT_KINDS, MYSTI_VISUAL_KINDS, MYSTI_VISUAL_ACT_KINDS, MYSTI_CANVAS_KINDS } from '../utils/mystiDelegateParser';
@@ -29,6 +30,7 @@ import { coordinatorToolSchemas, modelSupportsToolCalls, toolCallToDirective, no
 import { SkillIndex, type IndexedArtifact } from '../services/SkillIndex';
 import { SkillTelemetry, type RunOutcome } from '../services/SkillTelemetry';
 import { SkillStaging } from '../services/SkillStaging';
+import { CapabilityLedger } from '../services/CapabilityLedger';
 import { SKILL_STAGING_DIR } from '../services/MystiLocalTools';
 import { parseToolArgs, type AccumulatedToolCall } from '../utils/toolCallAccumulator';
 import { runBounded } from '../utils/boundedConcurrency';
@@ -7351,6 +7353,86 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (out.length >= ChatViewProvider._MYSTI_MCP_MAX_TOOLS) { break; }
     }
     return out;
+  }
+
+  /**
+   * Revoke every non-bundled agent artifact (command: `mysti.revokeCapabilities`).
+   *
+   * The undo for a persistence feature. If something poisoned the catalog — an
+   * imported skill, a promoted proposal, a file another process wrote — the user
+   * needs one action that stops all of it being read, and it has to be faster
+   * than whatever put it there.
+   *
+   * QUARANTINES rather than deletes: artifacts move to a timestamped folder
+   * beside the live tree. Deleting would also destroy the evidence of what
+   * happened, and the published result on harsh retirement is that it measures
+   * BELOW baseline. Integrity-verified bundled content is untouched — it ships
+   * inside the extension and revoking it would just break the product.
+   */
+  public async revokeCapabilities(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const roots: Array<{ label: string; dir: string }> = [
+      { label: 'home directory', dir: path.join(os.homedir(), '.mysti', 'agents') },
+    ];
+    if (folder) {
+      roots.push({ label: 'workspace', dir: path.join(folder.uri.fsPath, '.mysti', 'agents') });
+      roots.push({ label: 'staged proposals', dir: path.join(folder.uri.fsPath, ...SKILL_STAGING_DIR.split('/')) });
+    }
+
+    const present = roots.filter(r => fs.existsSync(r.dir));
+    if (present.length === 0) {
+      void vscode.window.showInformationMessage('Mysti: there are no user or workspace agent artifacts to revoke.');
+      return;
+    }
+
+    const CONFIRM = 'Quarantine them';
+    const choice = await vscode.window.showWarningMessage(
+      'Quarantine every user-authored and imported agent artifact?',
+      {
+        modal: true,
+        detail:
+          `Affected: ${present.map(r => r.label).join(', ')}.\n\n` +
+          'Files are MOVED to a timestamped quarantine folder, not deleted, so you can inspect them or put them back. ' +
+          'Bundled artifacts that still match their shipped hashes are not touched.',
+      },
+      CONFIRM
+    );
+    if (choice !== CONFIRM) { return; }
+
+    // A fixed, sortable stamp — no dependence on locale formatting.
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    let moved = 0;
+    const destinations: string[] = [];
+    for (const root of present) {
+      const dest = `${root.dir}.quarantine-${stamp}`;
+      try {
+        await fs.promises.rename(root.dir, dest);
+        destinations.push(dest);
+        moved++;
+      } catch (error) {
+        console.error('[Mysti] revokeCapabilities: could not quarantine', root.dir, error);
+      }
+    }
+
+    if (moved === 0) {
+      void vscode.window.showErrorMessage('Mysti: could not quarantine the agent artifacts (check file permissions).');
+      return;
+    }
+
+    this._capabilityLedger().clear();
+    await this.reloadAgents();
+    void vscode.window.showInformationMessage(
+      `Mysti: quarantined ${moved} agent director${moved === 1 ? 'y' : 'ies'}. Moved to: ${destinations.join(', ')}`
+    );
+  }
+
+  private _capabilityLedgerStore?: CapabilityLedger;
+
+  private _capabilityLedger(): CapabilityLedger {
+    if (!this._capabilityLedgerStore) {
+      this._capabilityLedgerStore = new CapabilityLedger(this._extensionContext.workspaceState, () => Date.now());
+    }
+    return this._capabilityLedgerStore;
   }
 
   /** Build the staging service for the open workspace, or null if none. */

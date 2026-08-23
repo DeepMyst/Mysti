@@ -168,6 +168,11 @@
         }
       },
       {
+        "command": "mysti.revokeCapabilities",
+        "title": "Mysti: Quarantine All User Agent Artifacts (kill switch)",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.reviewSkillProposals",
         "title": "Mysti: Review Agent Proposals",
         "category": "Mysti"

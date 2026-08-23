@@ -729,6 +729,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Debug commands for testing setup flow (not in package.json - use Command Palette)
   context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.revokeCapabilities', () => {
+      void chatViewProvider.revokeCapabilities();
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('mysti.reviewSkillProposals', () => {
       void chatViewProvider.reviewSkillProposals();
     })
