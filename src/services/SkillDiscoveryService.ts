@@ -58,6 +58,15 @@ export interface DiscoveredSkill {
   /** `owner/repo` of the source. */
   repo: string;
   branch: string;
+  /**
+   * The exact commit the content came from (Plan 20 Phase 7).
+   *
+   * A branch is a MOVING target: what you reviewed and what installs can differ
+   * if the branch advances — or is force-pushed — between the two. Empty only
+   * when the commit could not be resolved, which the provenance line then says
+   * out loud rather than hiding.
+   */
+  commit: string;
   content: string;
 }
 
@@ -147,9 +156,14 @@ export class SkillDiscoveryService {
   public async discoverSkills(spec: SkillSourceSpec, options?: DiscoverOptions): Promise<DiscoveryResult> {
     const limit = options?.limit ?? DEFAULT_FETCH_LIMIT;
     const branch = spec.branch || (await this._resolveDefaultBranch(spec));
+    // Pin to a commit BEFORE listing, so the tree we enumerate and every blob we
+    // then fetch come from the same immutable ref. Listing against a branch and
+    // fetching against it separately is a race with whoever can push.
+    const commit = await this._resolveCommit(spec, branch);
+    const ref = commit || branch;
 
     const tree = await this._fetchJson<{ tree?: GitTreeEntry[]; truncated?: boolean }>(
-      `https://api.github.com/repos/${spec.owner}/${spec.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`
+      `https://api.github.com/repos/${spec.owner}/${spec.repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`
     );
 
     const entries = (tree.tree || []).filter(entry => {
@@ -176,7 +190,7 @@ export class SkillDiscoveryService {
     for (let i = 0; i < toFetch.length; i += FETCH_CONCURRENCY) {
       const batch = toFetch.slice(i, i + FETCH_CONCURRENCY);
       const results = await Promise.all(
-        batch.map(entry => this._fetchSkill(spec, branch, entry).catch(error => {
+        batch.map(entry => this._fetchSkill(spec, branch, commit, entry).catch(error => {
           console.warn(`[Mysti] Failed to fetch skill ${entry.path} from ${spec.owner}/${spec.repo}:`, error);
           return null;
         }))
@@ -254,6 +268,25 @@ export class SkillDiscoveryService {
   // Private helpers
   // ==========================================================================
 
+  /**
+   * Resolve a branch to the commit it currently points at.
+   *
+   * Returns '' when it cannot be resolved (rate limit, network). The import
+   * still proceeds — failing it outright over a transient API error would be
+   * worse — but the provenance line records that it is UNPINNED, so the
+   * weakening is visible rather than silent.
+   */
+  private async _resolveCommit(spec: SkillSourceSpec, branch: string): Promise<string> {
+    try {
+      const res = await this._fetchJson<{ sha?: string }>(
+        `https://api.github.com/repos/${spec.owner}/${spec.repo}/commits/${encodeURIComponent(branch)}`
+      );
+      return typeof res.sha === 'string' && /^[0-9a-f]{40}$/.test(res.sha) ? res.sha : '';
+    } catch {
+      return '';
+    }
+  }
+
   private async _resolveDefaultBranch(spec: SkillSourceSpec): Promise<string> {
     try {
       const repo = await this._fetchJson<{ default_branch?: string }>(
@@ -265,11 +298,13 @@ export class SkillDiscoveryService {
     }
   }
 
-  private async _fetchSkill(spec: SkillSourceSpec, branch: string, entry: GitTreeEntry): Promise<DiscoveredSkill | null> {
+  private async _fetchSkill(spec: SkillSourceSpec, branch: string, commit: string, entry: GitTreeEntry): Promise<DiscoveredSkill | null> {
     // Encode per segment — paths containing '#' or '?' would otherwise
     // truncate the URL and 404
     const encodedPath = entry.path.split('/').map(encodeURIComponent).join('/');
-    const rawUrl = `https://raw.githubusercontent.com/${spec.owner}/${spec.repo}/${encodeURIComponent(branch)}/${encodedPath}`;
+    // Fetch by COMMIT when we have one, so the bytes cannot change under us
+    // between listing and download.
+    const rawUrl = `https://raw.githubusercontent.com/${spec.owner}/${spec.repo}/${encodeURIComponent(commit || branch)}/${encodedPath}`;
     const response = await this._fetch(rawUrl, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: { 'User-Agent': 'Mysti-Skill-Discovery' }
@@ -307,6 +342,7 @@ export class SkillDiscoveryService {
       path: entry.path,
       repo: `${spec.owner}/${spec.repo}`,
       branch,
+      commit,
       content
     };
   }
@@ -316,7 +352,11 @@ export class SkillDiscoveryService {
    * record where the skill came from.
    */
   private _withProvenance(skill: DiscoveredSkill): string {
-    const provenance = `<!-- Imported by Mysti from https://github.com/${skill.repo}/blob/${skill.branch}/${skill.path} -->\n`;
+    // Pin the permalink to the COMMIT so the provenance line points at the exact
+    // bytes that were installed, not at whatever the branch holds later.
+    const ref = skill.commit || skill.branch;
+    const pinned = skill.commit ? '' : ' (UNPINNED — commit could not be resolved at import time)';
+    const provenance = `<!-- Imported by Mysti from https://github.com/${skill.repo}/blob/${ref}/${skill.path}${pinned} -->\n`;
 
     const frontmatterMatch = skill.content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
     if (frontmatterMatch) {

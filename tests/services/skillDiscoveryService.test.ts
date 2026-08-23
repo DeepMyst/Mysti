@@ -226,3 +226,59 @@ describe('SkillDiscoveryService.installSkill', () => {
     expect(fs.existsSync(path.join(tmp, '..', 'evil'))).toBe(false);
   });
 });
+
+describe('commit pinning (Plan 20 Phase 7)', () => {
+  /**
+   * A branch is a moving target: what you reviewed and what installs can differ
+   * if the branch advances — or is force-pushed — between the two. Pinning to a
+   * commit closes that window, and when it cannot be resolved the provenance
+   * line says so instead of hiding it.
+   */
+  const SHA = 'a'.repeat(40);
+
+  function svc(opts: { resolveCommit?: boolean } = {}) {
+    const calls: string[] = [];
+    const fetchImpl = async (url: string): Promise<Response> => {
+      calls.push(url);
+      const json = (body: unknown): Response =>
+        ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }) as Response;
+
+      if (url.includes('/commits/')) {
+        if (opts.resolveCommit === false) { return { ok: false, status: 403, text: async () => 'rate limited' } as Response; }
+        return json({ sha: SHA });
+      }
+      if (url.endsWith('/repos/o/r')) { return json({ default_branch: 'main' }); }
+      if (url.includes('/git/trees/')) { return json({ tree: [{ path: 'skills/a/SKILL.md', type: 'blob' }] }); }
+      return { ok: true, status: 200, text: async () => '---\nname: a\ndescription: test skill here\n---\n\nbody\n' } as Response;
+    };
+    return { service: new SkillDiscoveryService(fetchImpl as never), calls };
+  }
+
+  it('resolves the branch to a commit and fetches everything by that commit', async () => {
+    const { service, calls } = svc();
+    const res = await service.discoverSkills({ owner: 'o', repo: 'r' } as never);
+    expect(res.skills[0].commit).toBe(SHA);
+    // Both the tree listing and the blob download use the pinned ref, so the
+    // bytes cannot change between enumerating and downloading.
+    expect(calls.some(u => u.includes(`/git/trees/${SHA}`))).toBe(true);
+    expect(calls.some(u => u.includes(`raw.githubusercontent.com/o/r/${SHA}/`))).toBe(true);
+  });
+
+  it('records the pinned commit in the installed provenance line', async () => {
+    const { service } = svc();
+    const res = await service.discoverSkills({ owner: 'o', repo: 'r' } as never);
+    const installed = (service as unknown as { _withProvenance(s: unknown): string })._withProvenance(res.skills[0]);
+    expect(installed).toContain(`/blob/${SHA}/`);
+    expect(installed).not.toContain('UNPINNED');
+  });
+
+  it('still imports when the commit cannot be resolved, but says so out loud', async () => {
+    // Failing the whole import over a transient API error would be worse; a
+    // silent downgrade would be worse still.
+    const { service } = svc({ resolveCommit: false });
+    const res = await service.discoverSkills({ owner: 'o', repo: 'r' } as never);
+    expect(res.skills[0].commit).toBe('');
+    const installed = (service as unknown as { _withProvenance(s: unknown): string })._withProvenance(res.skills[0]);
+    expect(installed).toContain('UNPINNED');
+  });
+});
