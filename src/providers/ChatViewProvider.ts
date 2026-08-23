@@ -27,6 +27,7 @@ import { mintViewToken } from '../canvas/protocol';
 import type { CanvasHostMessage, CapChip } from '../canvas/protocol';
 import { coordinatorToolSchemas, modelSupportsToolCalls, toolCallToDirective, normalizeCanvasToolName, canvasToolRefusal, sanitizeMcpInputSchema, searchMcpTools, type McpToolInfo } from '../services/coordinatorTools';
 import { SkillIndex, type IndexedArtifact } from '../services/SkillIndex';
+import { SkillTelemetry, type RunOutcome } from '../services/SkillTelemetry';
 import { parseToolArgs, type AccumulatedToolCall } from '../utils/toolCallAccumulator';
 import { runBounded } from '../utils/boundedConcurrency';
 import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
@@ -7350,6 +7351,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return out;
   }
 
+  /**
+   * Open the Phase 1 go/no-go report (command: `mysti.skillReport`).
+   *
+   * Deliberately a document rather than a notification: this exists to be read
+   * once, carefully, when deciding whether to fund more work on the catalog.
+   */
+  public async showSkillReport(): Promise<void> {
+    const doc = await vscode.workspace.openTextDocument({
+      content: this._skillTelemetry().report(),
+      language: 'markdown',
+    });
+    await vscode.window.showTextDocument(doc, { preview: false });
+  }
+
+  private _skillTelemetryStore?: SkillTelemetry;
+
+  /** Lazy so a chat that never uses the catalog never touches the store. */
+  private _skillTelemetry(): SkillTelemetry {
+    if (!this._skillTelemetryStore) {
+      this._skillTelemetryStore = new SkillTelemetry(this._extensionContext.workspaceState, () => Date.now());
+    }
+    return this._skillTelemetryStore;
+  }
+
   /** Is the agent-catalog capability on? Machine-scoped; off by default. */
   private _mystiSkillsEnabled(): boolean {
     const mode = vscode.workspace.getConfiguration('mysti').get<string>('mysti.skills', 'off');
@@ -7948,6 +7973,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     let naturalEnd = false;
     let exhausted = false;
+    // Plan 20 Phase 1 telemetry: did the model consult the catalog, and did that
+    // correlate with the run finishing? Artifact ids only — never queries or
+    // content — and recorded only when the catalog was actually available.
+    // Declared out here so the `finally` can still see them.
+    let skillSearches = 0;
+    const skillViewed: string[] = [];
     try {
       // Loop shape (Plan 17 P0.1/P0.5): every iteration is one coordinator
       // stream. Local read-only tools and delegations have SEPARATE sub-budgets
@@ -8291,6 +8322,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             continue;
           }
           localTools++;
+          if (directive.id) { skillViewed.push(directive.id); } else { skillSearches++; }
           const res = await this._runMystiSkillLookup(directive);
           postToolResult({ id: toolId, name: 'skill', output: res.output, status: res.ok ? 'completed' : 'failed' });
           recordLocalCard(toolId, 'skill', directive.id ? { id: directive.id } : { query: directive.query }, res.output, !res.ok);
@@ -8687,6 +8719,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       try { this._collaboratorPool.disposeRun(runId); } catch { /* best-effort */ }
       // Plan 19 Phase 6: drop the run's MCP broker session (persistent HTTP).
       if (mcpToolset) { void mcpToolset.client.close(); }
+      // Only runs that COULD search count toward engagement — otherwise the
+      // headline number measures the setting rather than the retrieval.
+      if (skillsEnabled && skillHeader) {
+        const outcome: RunOutcome = isCancelled() ? 'cancelled'
+          : errorMsg ? 'error'
+          : exhausted ? 'turn-limit'
+          : 'completed';
+        try { this._skillTelemetry().record(skillSearches, skillViewed, outcome); } catch { /* never break a run for telemetry */ }
+      }
       if (bg) {
         this._jobAbortControllers.delete(jobId!);
       } else if ((this._mystiRunGen.get(panelId) ?? 0) === myGen) {

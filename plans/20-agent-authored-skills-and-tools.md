@@ -228,7 +228,7 @@ Fixes bugs that exist today, whether or not this feature is built.
 
 ### Phase 1 — Index + `<skill:>` pull + **instrumentation** · the go/no-go gate
 
-**Status: IMPLEMENTED 2026-08-20** (retrieval half). 229 test files / 9062 tests green, `tsc` clean, production build clean. Telemetry (the measurement half) is **not** built yet — see the note at the end of this phase.
+**Status: IMPLEMENTED 2026-08-20** (retrieval **and** measurement). 230 test files / 9074 tests green, `tsc` clean, production build clean.
 
 - `src/services/SkillIndex.ts` (pure, no `vscode`): BM25 + `categoryHeader()` + host-selected hot set.
 - `skill` kind through the full checklist: parser union, `_kindRegex`, `MYSTI_SKILL_KINDS`, `READ_TOOLS`, `toolCallToDirective`, dispatch beside read/ls/grep/diag, `_isReadOnlyLocalKind` (joins the `runBounded` cap-3 batch), charged against `maxLocalTools`, every result fenced.
@@ -257,9 +257,11 @@ Fixes bugs that exist today, whether or not this feature is built.
 
 A third bug came from the Phase 0 drift test: the scanner list was missing `look`/`act` earlier, and this phase revealed `canvas`/`canvaspage` were missing too — a forged `<canvas:NONCE>` on disk is exactly as dangerous as a forged `<bash:>`. Now covered.
 
-**NOT done — the measurement half.** Phase 1 was specified as retrieval *plus* the `{artifactId, viewed, turnOutcome}` telemetry that decides whether Phases 2–4 get funded. Only retrieval is built. Without the telemetry there is no go/no-go evidence, so **Phases 2–4 remain unfunded and must not start on vibes.**
+**The measurement half** — `SkillTelemetry` (`src/services/SkillTelemetry.ts`, Memento-injectable) records one row per coordinator run: how many searches, which artifact ids were read, and how the run ended (`completed` / `cancelled` / `turn-limit` / `error`). **Artifact ids only** — never queries, never content, never paths — bounded to a 500-run ring buffer, and nothing leaves the machine. Runs where the catalog was *unavailable* are excluded, or the headline number would measure the setting rather than the retrieval.
 
-> **GO/NO-GO (still pending).** Build the telemetry, then run 4 weeks against the 16 bundled skills and publish view-rate and outcome-delta. **Healthy router engagement is 70–80%; ~19% is drift.** If views are rare or outcome-neutral, retrieval is not the bottleneck and **Phases 2–4 are unfunded** — stop there.
+`mysti.skillReport` ("Mysti: Agent Catalog Report") opens the report as a document. It is written to be **able to say no**: below 30 runs it refuses to render a verdict at all, below 30% engagement it prints NO-GO, and above that it prints engagement *and* the completion delta with the explicit line that engagement alone is not value. Those three behaviours are asserted by tests — an instrument that can only produce encouraging numbers is not evidence.
+
+> **GO/NO-GO (now runnable).** Set `mysti.mysti.skills` to `prose`, use Mysti normally for ~4 weeks, then run `mysti.skillReport`. **Healthy router engagement is 70–80%; ~19% is drift.** If engagement is low or the completion delta is ~0, retrieval is not the bottleneck and **Phases 2–4 are unfunded** — stop there.
 
 ### Phase 2 — Staging + atomic proposal + Save-as-skill
 

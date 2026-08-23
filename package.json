@@ -168,6 +168,11 @@
         }
       },
       {
+        "command": "mysti.skillReport",
+        "title": "Mysti: Agent Catalog Report (retrieval go/no-go)",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.debugSetup",
         "title": "Debug: Test Setup Flow",
         "category": "Mysti"
