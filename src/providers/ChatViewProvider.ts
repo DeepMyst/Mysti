@@ -28,6 +28,8 @@ import type { CanvasHostMessage, CapChip } from '../canvas/protocol';
 import { coordinatorToolSchemas, modelSupportsToolCalls, toolCallToDirective, normalizeCanvasToolName, canvasToolRefusal, sanitizeMcpInputSchema, searchMcpTools, type McpToolInfo } from '../services/coordinatorTools';
 import { SkillIndex, type IndexedArtifact } from '../services/SkillIndex';
 import { SkillTelemetry, type RunOutcome } from '../services/SkillTelemetry';
+import { SkillStaging } from '../services/SkillStaging';
+import { SKILL_STAGING_DIR } from '../services/MystiLocalTools';
 import { parseToolArgs, type AccumulatedToolCall } from '../utils/toolCallAccumulator';
 import { runBounded } from '../utils/boundedConcurrency';
 import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
@@ -7349,6 +7351,80 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (out.length >= ChatViewProvider._MYSTI_MCP_MAX_TOOLS) { break; }
     }
     return out;
+  }
+
+  /** Build the staging service for the open workspace, or null if none. */
+  private _skillStaging(): SkillStaging | null {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) { return null; }
+    const root = folder.uri.fsPath;
+    return new SkillStaging(
+      path.join(root, ...SKILL_STAGING_DIR.split('/')),
+      path.join(root, '.mysti', 'agents'),
+    );
+  }
+
+  /**
+   * Review agent-authored proposals (command: `mysti.reviewSkillProposals`).
+   *
+   * The ONLY path from staged bytes to a live agent definition. Deliberately a
+   * command rather than a permission card: a card on the highest-consequence
+   * transition in the system would be approved reflexively, and this is the one
+   * act that is not undone by a checkpoint — it changes what every future
+   * session is told.
+   */
+  public async reviewSkillProposals(): Promise<void> {
+    const staging = this._skillStaging();
+    if (!staging) {
+      void vscode.window.showWarningMessage('Mysti: open a folder to review agent proposals.');
+      return;
+    }
+    const staged = await staging.list();
+    if (staged.length === 0) {
+      void vscode.window.showInformationMessage('Mysti: no agent proposals are waiting for review.');
+      return;
+    }
+
+    const picked = await vscode.window.showQuickPick(
+      staged.map(a => ({
+        label: `${a.blocked ? '$(error) ' : '$(file-text) '}${a.name}`,
+        description: a.id,
+        detail: a.blocked ? `BLOCKED — ${a.blockedReason}` : `${a.description} · ${a.files.length} file(s)`,
+        artifact: a,
+      })),
+      { title: 'Mysti — agent proposals awaiting review', placeHolder: 'Pick one to review' }
+    );
+    if (!picked) { return; }
+    const artifact = picked.artifact;
+
+    // Always show the bytes before offering to install them. The content scan
+    // already refused hidden-codepoint payloads, so what is rendered here is
+    // what the model will actually read.
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(artifact.entryFile));
+    await vscode.window.showTextDocument(doc, { preview: false });
+
+    const PROMOTE = 'Install for this workspace';
+    const DISCARD = 'Discard';
+    const choice = await vscode.window.showWarningMessage(
+      artifact.blocked
+        ? `"${artifact.name}" cannot be installed — ${artifact.blockedReason}.`
+        : `Install "${artifact.name}" as a workspace agent definition? It will be injected as reference material in future runs.`,
+      { modal: true, detail: artifact.blocked ? 'You can still discard it.' : `Files: ${artifact.files.join(', ')}` },
+      ...(artifact.blocked ? [DISCARD] : [PROMOTE, DISCARD])
+    );
+
+    if (choice === PROMOTE) {
+      const res = await staging.promote(artifact.id, 'skill');
+      if (res.ok) {
+        await this.reloadAgents();
+        void vscode.window.showInformationMessage(`Mysti: installed "${artifact.name}".`);
+      } else {
+        void vscode.window.showErrorMessage(`Mysti: ${res.reason}`);
+      }
+    } else if (choice === DISCARD) {
+      await staging.discard(artifact.id);
+      void vscode.window.showInformationMessage(`Mysti: discarded "${artifact.name}".`);
+    }
   }
 
   /**

@@ -168,6 +168,11 @@
         }
       },
       {
+        "command": "mysti.reviewSkillProposals",
+        "title": "Mysti: Review Agent Proposals",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.skillReport",
         "title": "Mysti: Agent Catalog Report (retrieval go/no-go)",
         "category": "Mysti"

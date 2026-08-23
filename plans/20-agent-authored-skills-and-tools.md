@@ -265,6 +265,27 @@ A third bug came from the Phase 0 drift test: the scanner list was missing `look
 
 ### Phase 2 — Staging + atomic proposal + Save-as-skill
 
+**Status: IMPLEMENTED 2026-08-20** (write-protection, staging, human promotion). 233 test files / 9101 tests green, `tsc` clean, production build clean, zero new lint problems.
+
+**What landed**
+
+| Piece | Where |
+|---|---|
+| `protectedWriteReason()` — instruction surfaces are refused at the single write chokepoint, checked on both lexical and symlink-resolved paths | `MystiLocalTools` |
+| `SkillStaging` — list / promote / discard over an inert staging tree, re-scanning at promotion time (TOCTOU) | `src/services/SkillStaging.ts` |
+| `mysti.reviewSkillProposals` — opens the bytes, then a modal; the ONLY path from staged to live | `ChatViewProvider.reviewSkillProposals` |
+| Structural invariants asserted by *absence* — no directive kind, no tool schema in any capability combination, and exactly one `.promote(` call site, inside the command | `tests/integration/skillAuthoringInvariants.test.ts` |
+
+**The protected set** is instruction surfaces, not config generally: Mysti's own `.mysti/agents/**`, other assistants' files (`.claude/`, `.cursor/`, `.cursorrules`, `.github/copilot-instructions.md`, `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, `.aider.conf.yml`), `.mcp.json` (it redirects where tool calls go), and `.vscode/{settings,tasks,launch}.json` (they execute on open). Ordinary config — `package.json`, `tsconfig.json`, CI workflows — stays writable, because a blanket config ban would break normal work.
+
+**Two deliberate narrowings.**
+1. **Scripts are not promotable.** A staged artifact containing anything outside `.md/.json/.txt/.yml` is blocked. Promoting an executable here would land a capability with no golden-case replay behind it — that is Phase 3/4's ladder, and shipping it early is exactly the "self-authored tests are not evidence" failure.
+2. **Promotion re-reads and re-scans** rather than trusting the review listing, because review and promotion are separate moments.
+
+**Deferred, again, with a reason:** `ApprovedCapabilityStore` hash-pinning. Now that non-core content is *fenced* (Phase 0), a tampered user artifact is already untrusted data, so blocking its load buys less than it costs in re-approval friction on every hand-edit of one's own persona. The remaining value is making silent mutation *visible*, which is a change-detection feature, not a gate — it belongs with the review queue's history view rather than in the load path.
+
+**T3 (background auto-proposal) deliberately NOT built.** Auto-extraction is precisely what SkillsBench measured at +0.0pp, and the go/no-go has not reported. Only the explicit user-triggered path exists.
+
 - `.mysti/skills.staged/**`: gitignored, not an `AgentLoader` source, structurally inert (I6).
 - `resolveWriteTarget` refuses writes to live artifact paths, `.claude/**`, `.cursor/**`, `.cursorrules`, `.github/copilot-instructions.md`, `{CLAUDE,AGENTS,GEMINI}.md`, `.vscode/{settings,tasks,launch}.json`, `.mcp.json` — naming the staging target in the refusal. (Enforcement against `bash` is Phase 4's sandbox work, per B2.)
 - One atomic staged proposal → **one** review-queue entry. Scanner runs **before** the card; normalized diff with invisible codepoints badged.

@@ -68,6 +68,61 @@ function looksLikeSecret(relPosix: string): boolean {
   return SECRET_DIR_RE.test(relPosix) || SECRET_FILE_RE.test(relPosix);
 }
 
+/** Where agent-authored artifacts are staged before a human promotes them. */
+export const SKILL_STAGING_DIR = '.mysti/skills.staged';
+
+/**
+ * Paths an AGENT may never write, even when local execution is on.
+ *
+ * These are the files that tell an agent — this one or a different one, now or
+ * next session — how to behave. A write here is not an edit, it is a durable
+ * change to the instructions the next run is given, and it converts a one-shot
+ * prompt injection into persistence. It also escapes review: nobody reads a
+ * `.cursorrules` diff the way they read a source diff, and the published
+ * "rules file backdoor" work exists precisely because that assumption fails.
+ *
+ * Mysti's own live artifact tree is included: authoring goes to the STAGING
+ * directory and is promoted by a human, so there is no legitimate direct write.
+ * Other assistants' instruction files are included too — Mysti has no business
+ * silently rewriting how Claude Code, Cursor, or Copilot behave in this repo.
+ *
+ * Deliberately NOT a general "config" ban: ordinary project config
+ * (package.json, tsconfig, CI) is normal work and stays writable.
+ */
+const PROTECTED_WRITE_RE = new RegExp([
+  // Mysti's own live agent artifacts — staging is the writable path.
+  '^\\.mysti/agents(/|$)',
+  // Other agents' instruction/config surfaces.
+  '^\\.claude(/|$)',
+  '^\\.cursor(/|$)',
+  '^\\.cursorrules$',
+  '^\\.github/copilot-instructions\\.md$',
+  '^\\.aider\\.conf\\.yml$',
+  '^(CLAUDE|AGENTS|GEMINI|MYSTI)\\.md$',
+  '^\\.mysti/mysti\\.md$',
+  '^\\.mysti/rules(/|$)',
+  // MCP server wiring: editing it redirects where tool calls actually go.
+  '^\\.mcp\\.json$',
+  // VSCode task/launch/settings files execute commands on open or on save.
+  '^\\.vscode/(settings|tasks|launch)\\.json$',
+].join('|'), 'i');
+
+/**
+ * Is this an instruction-surface path an agent must not write directly?
+ * Returns the reason (for the refusal message) or null when the write is fine.
+ */
+export function protectedWriteReason(relPosix: string): string | null {
+  const clean = relPosix.replace(/^\.\//, '');
+  // The staging tree lives UNDER .mysti/ but is explicitly writable — that is
+  // the whole point of having it.
+  if (clean === SKILL_STAGING_DIR || clean.startsWith(`${SKILL_STAGING_DIR}/`)) { return null; }
+  if (!PROTECTED_WRITE_RE.test(clean)) { return null; }
+  if (/^\.mysti\/agents(\/|$)/i.test(clean)) {
+    return `"${relPosix}" is a live agent definition. Write to ${SKILL_STAGING_DIR}/<id>/ instead — the user reviews and promotes it from there.`;
+  }
+  return `"${relPosix}" configures how an AI assistant behaves. Agents may not edit instruction files directly; ask the user to change it.`;
+}
+
 /**
  * Reject a regex likely to catastrophically backtrack; the caller falls back to
  * a LITERAL search so the tool still works (review [1], re-review HIGH).
@@ -163,6 +218,14 @@ export class MystiLocalTools {
     // `notes.txt -> .env` target can't smuggle a secret write past the filter.
     if (looksLikeSecret(relAbs) || looksLikeSecret(this._relPosix(r.root, r.real))) {
       return { ok: false, output: `"${relPath}" looks like a credentials/secret file — writing secret files is blocked.` };
+    }
+    // Plan 20 Phase 2 (invariant I4): instruction surfaces are not ordinary
+    // files. Checked on BOTH the lexical and symlink-resolved paths, same as
+    // the secret filter — a `notes.md -> .mysti/agents/personas/x.md` alias
+    // would otherwise smuggle the write past this.
+    const protectedReason = protectedWriteReason(relAbs) || protectedWriteReason(this._relPosix(r.root, r.real));
+    if (protectedReason) {
+      return { ok: false, output: protectedReason };
     }
     return { ok: true, abs: r.abs, relPosix: relAbs };
   }
