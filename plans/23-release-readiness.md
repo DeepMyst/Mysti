@@ -22,7 +22,7 @@ Everything else is scheduling.
 
 ## Part A — Blockers
 
-### B1 — `shouldGateToolUse` falls through to ungated · **CRITICAL**
+### B1 — `shouldGateToolUse` falls through to ungated · **CRITICAL** · ✅ FIXED `5b01b01`
 
 `shouldGateToolUse` (`src/utils/permissionClassifier.ts`) decides by matching literals, and its final statement is `return false`. Any `mode`/`accessLevel` combination it does not explicitly handle is **not gated**.
 
@@ -43,7 +43,7 @@ Two ways to reach that today:
 
 **Accept:** a table-driven test over the full cross-product of `mode` × `accessLevel` — including junk values — asserts every unrecognized combination gates. A test asserts `package.json` enums match the type unions.
 
-### B2 — Model output is rendered as unsanitized HTML · **HIGH**
+### B2 — Model output is rendered as unsanitized HTML · **HIGH** · ✅ FIXED `94efeeb`
 
 Three `marked.parse` call sites; **no DOMPurify anywhere in the repo**. The only defense is the webview CSP. Model and tool output is attacker-influenceable (a poisoned repo file, an MCP result, a fetched page), so this is a UI-spoofing and content-injection surface in the one place the user makes trust decisions — the permission cards.
 
@@ -118,13 +118,17 @@ The honest framing for the changelog: *"the coordinator can now find and read th
 ## Part D — Sequence
 
 ```
-Gate 1  B1 + B2                      security fixes, with tests        ← nothing ships before this
-Gate 2  B4                           CI green on a trivial PR
-Gate 3  B3                           smoke matrix; fix what it finds
-Gate 4  B5                           push, merge main in, PR, merge
+Gate 1  B1 + B2                      ✅ DONE (5b01b01, 94efeeb) — 9198 tests green
+Gate 2  B4                           DEFERRED by the user — local-only for now
+Gate 3  B3                           smoke matrix; needs an interactive F5 session
+Gate 4  B5                           DEFERRED by the user — no pushing for now
 Gate 5  dashboard + rug-pull pin     the worthwhile unbuilt pieces
 Gate 6  CHANGELOG, version, package  vsce, marketplace
 ```
+
+**Corrections found while fixing Gate 1**, recorded because they change the threat picture:
+- The CSP was *better* than the audit assumed: `default-src 'none'` already covers connect/frame/media/font, and `img-src` already omitted http(s). B2 is therefore about **UI spoofing**, not RCE — the accurate framing, and the one that explains why `form-action`/`base-uri` mattered (neither inherits from `default-src`).
+- B1's blast radius was narrower than first written but still real: `_mystiLocalExecEnabled` already refuses coordinator execution in read-only/plan tiers, so the dangerous case was specifically an **unrecognized** value, which passed that check *and* fell through the gate.
 
 Gates 1–4 are the release. Gate 5 is polish that can slip to v0.5.1 without anyone noticing.
 
