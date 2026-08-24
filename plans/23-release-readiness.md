@@ -108,10 +108,10 @@ The honest framing for the changelog: *"the coordinator can now find and read th
 
 | Piece | Call |
 |---|---|
-| **Phase 6 health dashboard** | Build it — small, and it is what makes the ledger legible. `CapabilityLedger.health()` is already tested; this is a rendering surface plus a command. Fold it into `mysti.skillReport` rather than adding a second report. |
+| **Phase 6 health dashboard** | ✅ **Done.** `CapabilityLedger.reportSection()` folded into `mysti.skillReport`, alongside a registered-capabilities list. One report, not three commands — retrieval evidence, capability health and tool drift all answer "is any of this working, and is anything rotting", and splitting them is how a health view stops being opened. Leads with what is wrong; a dashboard that opens on green is one nobody reads past. |
 | **Phase 7 `metadata:` migration** | **Defer.** Needs nested-object support in the flat frontmatter parser, plus migrating all 42 bundled files and the loader, for a claude.ai-upload benefit that is speculative here. Revisit only if someone actually wants to export skills. |
 | **`ApprovedCapabilityStore` for prose artifacts** | **Drop as a gate; keep as detection.** Non-core content is already fenced, so blocking its load buys less than it costs in re-approval friction. Surface "changed since first seen" in the review queue instead. |
-| **MCP rug-pull pinning** | Build with the dashboard — it needs the same durable-approval surface. |
+| **MCP rug-pull pinning** | ✅ **Done.** `McpToolPins` pins the description a user approved and surfaces drift ON the approval card. Deliberately does **not** block: every external call is already forced, so a gate would be redundant, and blocking a server that legitimately improved its wording turns into an unfixable error that gets the integration switched off. Pins after approval, never at discovery — a discovery-time pin would record what the server claimed, not what a human agreed to. |
 
 ---
 
@@ -122,7 +122,7 @@ Gate 1  B1 + B2                      ✅ DONE (5b01b01, 94efeeb) — 9198 tests 
 Gate 2  B4                           DEFERRED by the user — local-only for now
 Gate 3  B3                           smoke matrix; needs an interactive F5 session
 Gate 4  B5                           DEFERRED by the user — no pushing for now
-Gate 5  dashboard + rug-pull pin     the worthwhile unbuilt pieces
+Gate 5  dashboard + rug-pull pin     ✅ DONE (this commit) — 9215 tests green
 Gate 6  CHANGELOG, version, package  vsce, marketplace
 ```
 

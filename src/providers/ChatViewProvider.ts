@@ -31,6 +31,7 @@ import { SkillIndex, type IndexedArtifact } from '../services/SkillIndex';
 import { SkillTelemetry, type RunOutcome } from '../services/SkillTelemetry';
 import { SkillStaging } from '../services/SkillStaging';
 import { CapabilityLedger } from '../services/CapabilityLedger';
+import { McpToolPins } from '../services/McpToolPins';
 import { CapabilityRegistry, folderMerkle } from '../services/CapabilityRegistry';
 import { ObservedRuns } from '../services/ObservedRuns';
 import { MystiSandbox } from '../services/MystiSandbox';
@@ -7449,6 +7450,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
   }
 
+  private _mcpToolPinsStore?: McpToolPins;
+
+  private _mcpToolPins(): McpToolPins {
+    if (!this._mcpToolPinsStore) {
+      this._mcpToolPinsStore = new McpToolPins(this._extensionContext.workspaceState, () => Date.now());
+    }
+    return this._mcpToolPinsStore;
+  }
+
   private _capabilityLedgerStore?: CapabilityLedger;
 
   private _capabilityLedger(): CapabilityLedger {
@@ -7758,10 +7768,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * once, carefully, when deciding whether to fund more work on the catalog.
    */
   public async showSkillReport(): Promise<void> {
-    const doc = await vscode.workspace.openTextDocument({
-      content: this._skillTelemetry().report(),
-      language: 'markdown',
-    });
+    // ONE report, not three commands. Retrieval evidence, capability health and
+    // external-tool drift all answer the same question — "is any of this
+    // actually working, and is anything rotting" — and splitting them across
+    // separate surfaces is how a health view stops being opened.
+    const registry = this._capabilityRegistry();
+    const registered = registry.list();
+    const capabilitySection = registered.length === 0
+      ? ''
+      : [
+        '## Registered capabilities',
+        '',
+        ...registered.map(c => `- **${c.id}** — ${c.entries.map(e => e.name).join(', ')} · verified: ${c.verifiedBy}`),
+        '',
+        'Revoke everything with **Mysti: Quarantine All User Agent Artifacts**.',
+        '',
+      ].join('\n');
+
+    const content = [
+      this._skillTelemetry().report(),
+      '',
+      capabilitySection,
+      this._capabilityLedger().reportSection(),
+    ].filter(Boolean).join('\n');
+
+    const doc = await vscode.workspace.openTextDocument({ content, language: 'markdown' });
     await vscode.window.showTextDocument(doc, { preview: false });
   }
 
@@ -8101,6 +8132,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _runMystiMcpTool(
     d: Extract<MystiDirective, { kind: 'mcptool' }>,
     client: McpClient, panelId: string, toolId: string, ownerKey?: string,
+    toolDescription?: string,
   ): Promise<{ ok: boolean; output: string }> {
     let argPreview: string;
     try { argPreview = JSON.stringify(d.args, null, 1); } catch { argPreview = '{…}'; }
@@ -8109,14 +8141,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // behind a silent 600-char prefix (review round-7 #9).
     const MAX_PREVIEW = 8000;
     const shown = argPreview.length > MAX_PREVIEW ? `${argPreview.slice(0, MAX_PREVIEW)}\n… (${argPreview.length - MAX_PREVIEW} more chars truncated)` : argPreview;
+    // Plan 23 Gate 5 — rug-pull check. A connected server owns its own tool
+    // metadata and can change it whenever it likes, and the DESCRIPTION is the
+    // dangerous field: it lands in the model's tool-definition tier, which
+    // cannot be fenced. This does not add a gate (every external call is
+    // already forced) — it makes the card able to say "this is not the tool you
+    // approved last time", which it previously had no way to express.
+    const pins = this._mcpToolPins();
+    const drift = pins.drift(d.tool, toolDescription);
+    const driftNote = drift
+      ? `\n\n⚠︎ THIS TOOL CHANGED since you last approved it.\nPreviously: ${drift.previous}\nNow:        ${drift.current}\nA server can rewrite what a tool claims to do at any time. Read the change before approving.`
+      : '';
+
     const approved = await this.requestPermissionInline(
       'web-request',
-      'Mysti wants to use an external tool',
+      drift ? 'External tool CHANGED since you approved it' : 'Mysti wants to use an external tool',
       `Mysti (coordinator) will call your connected tool "${d.tool}" with:`,
-      { command: `${d.tool} ${shown}`, riskLevel: 'high' },
+      { command: `${d.tool} ${shown}${driftNote}`, riskLevel: 'high' },
       panelId, toolId, ownerKey, /* forceInteractive */ true,
     );
     if (!approved) { return { ok: false, output: '(denied by user)' }; }
+    // Pin AFTER approval, never on discovery: a pin recorded at discovery would
+    // be a record of what the server claimed, not of what a human agreed to.
+    pins.pin(d.tool, toolDescription);
     try {
       const res = await client.callTool(d.tool, d.args);
       return { ok: !res.isError, output: res.text || (res.isError ? '(tool error, no message)' : '(no output)') };
@@ -8839,7 +8886,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             continue;
           }
           mcpCalls++;
-          const res = await this._runMystiMcpTool(directive, mcpToolset.client, panelId, toolId, cancelKey);
+          const res = await this._runMystiMcpTool(
+            directive, mcpToolset.client, panelId, toolId, cancelKey,
+            mcpToolset.tools.find(t => t.name === directive.tool)?.description,
+          );
           if (res.ok) { this._bumpMcpUsage(directive.tool); }
           postToolResult({ id: toolId, name: 'mcptool', output: res.output, status: res.ok ? 'completed' : 'failed' });
           recordLocalCard(toolId, 'mcptool', { tool: directive.tool }, res.output, !res.ok);

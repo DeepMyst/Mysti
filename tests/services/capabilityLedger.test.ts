@@ -124,3 +124,47 @@ describe('CapabilityLedger', () => {
     expect(ledger.get('a')).toBeUndefined();
   });
 });
+
+describe('reportSection — the health surface', () => {
+  /**
+   * Folded into the single agent-catalog report rather than a second command:
+   * two places to look is how a health surface stops being looked at.
+   */
+  const build = (): CapabilityLedger => new CapabilityLedger(memento(), () => 1);
+
+  it('says so plainly when nothing has run', () => {
+    expect(build().reportSection()).toContain('No capability has been called yet');
+  });
+
+  it('leads with what is wrong, not with a table', () => {
+    const l = build();
+    for (let i = 0; i < DEREGISTER_AFTER; i++) { l.record('broken', 'hurt'); }
+    const out = l.reportSection();
+    expect(out.indexOf('no longer offered')).toBeLessThan(out.indexOf('| capability |'));
+  });
+
+  it('names unstable capabilities explicitly rather than letting an average hide them', () => {
+    const l = build();
+    for (let i = 0; i < 3; i++) { l.record('flaky', 'helped'); l.record('flaky', 'hurt'); }
+    const out = l.reportSection();
+    expect(out).toContain('unstable');
+    expect(out).toContain('helped 3, hurt 3');
+    // The reason, stated in the report itself so the number is interpretable.
+    expect(out).toContain('never combined');
+  });
+
+  it('flags quarantined capabilities as still-callable-but-forced', () => {
+    const l = build();
+    for (let i = 0; i < QUARANTINE_AFTER; i++) { l.record('q', 'hurt'); }
+    expect(l.reportSection()).toContain('quarantined');
+  });
+
+  it('renders a row per capability with helped and hurt in separate columns', () => {
+    const l = build();
+    l.record('a', 'helped');
+    l.record('b', 'hurt');
+    const out = l.reportSection();
+    expect(out).toContain('| a | 1 | 1 | 0 |');
+    expect(out).toContain('| b | 1 | 0 | 1 |');
+  });
+});

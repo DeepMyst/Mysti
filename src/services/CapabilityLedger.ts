@@ -159,6 +159,53 @@ export class CapabilityLedger {
       .sort((a, b) => (b.hurt - a.hurt) || (b.uses - a.uses) || a.id.localeCompare(b.id));
   }
 
+  /**
+   * A readable health section for the agent-catalog report (Plan 20 Phase 6).
+   *
+   * Rendered as part of the ONE report rather than a second command: two places
+   * to look is how a health surface stops being looked at. Leads with what is
+   * wrong, because a dashboard that opens on green is a dashboard nobody reads
+   * past.
+   */
+  reportSection(): string {
+    const rows = this.health();
+    if (rows.length === 0) {
+      return ['## Capability health', '', 'No capability has been called yet.', ''].join('\n');
+    }
+
+    const unstable = rows.filter(r => r.unstable);
+    const quarantined = rows.filter(r => r.status === 'quarantined');
+    const dropped = rows.filter(r => !this.isOffered(r.id));
+
+    const lines = ['## Capability health', ''];
+
+    if (dropped.length > 0) {
+      lines.push(`**${dropped.length} no longer offered** (repeated failures; files are still on disk and a fix + republish restores them): ${dropped.map(r => r.id).join(', ')}`, '');
+    }
+    if (quarantined.length > 0) {
+      lines.push(`**${quarantined.length} quarantined** — still callable, but every call needs explicit approval: ${quarantined.map(r => r.id).join(', ')}`, '');
+    }
+    if (unstable.length > 0) {
+      lines.push(
+        `**${unstable.length} unstable** — these both help and harm often, which a single averaged score would have hidden as "about 50%":`,
+        ...unstable.map(r => `- ${r.id}: helped ${r.helped}, hurt ${r.hurt}, over ${r.uses} call(s)`),
+        ''
+      );
+    }
+
+    lines.push(
+      '| capability | uses | helped | hurt | status |',
+      '|---|---|---|---|---|',
+      ...rows.map(r => `| ${r.id} | ${r.uses} | ${r.helped} | ${r.hurt} | ${r.status}${r.unstable ? ' ⚠︎' : ''} |`),
+      '',
+      'Helped and hurt are deliberately never combined. A 6-help/6-harm capability is',
+      'unstable — it fires often and misleads half the time — not "neutral", which is',
+      'what an average would call it.',
+      ''
+    );
+    return lines.join('\n');
+  }
+
   /** Forget one artifact's history (used when it is revoked). */
   forget(id: string): void {
     const all = this._load();
