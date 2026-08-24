@@ -7540,11 +7540,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     if (!approvedBytes) { return { ok: false, output: `publish: "${id}" was denied at code review.` }; }
 
-    // ---- V2a: is there host-observed evidence behind the claim? ------------
-    const claimed = Array.isArray((manifestRaw as Array<{ observedCommands?: unknown }>)[0]?.observedCommands)
-      ? ((manifestRaw as Array<{ observedCommands?: string[] }>)
-          .flatMap(e => Array.isArray(e.observedCommands) ? e.observedCommands : []))
-      : [];
+    // ---- V2: is there host-observed evidence behind the claim? -------------
+    // Collect from EVERY entry. An earlier version guarded on entry[0] having
+    // the field, which silently discarded evidence whenever the first entry
+    // lacked it — the failure mode being "unverified" on a capability that
+    // actually had corroboration.
+    const claimed = (Array.isArray(manifestRaw) ? manifestRaw : [])
+      .flatMap((e: { observedCommands?: unknown }) =>
+        Array.isArray(e?.observedCommands) ? (e.observedCommands as unknown[]).filter((c): c is string => typeof c === 'string') : []);
     // The model may POINT AT evidence but cannot manufacture it: these are
     // looked up in the host's own record of commands it actually ran.
     const goldens = this._observedRuns().goldensFor(claimed);
@@ -7554,7 +7557,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ? 'CLAIMED COMMANDS WERE NEVER OBSERVED SUCCEEDING — unverified'
         : `${goldens.length}/${claimed.length} claimed commands were observed succeeding`;
 
-    // ---- V2b: determinism smoke test, gated + checkpointed -----------------
+    // NOTE, deliberately: there is NO trial execution here. An earlier comment
+    // claimed a "determinism smoke test" that was never implemented, which is
+    // worse than having none — a stated control that does not exist is exactly
+    // what a reviewer stops checking for. What this ladder actually proves is
+    // (a) the manifest conforms, (b) a human read the script bytes, and (c) the
+    // claimed commands were really observed succeeding. It does NOT prove the
+    // code is correct, and card 2 says so in those words.
     const registry = this._capabilityRegistry();
     const merkle = await folderMerkle(staged.dir);
     const trial = `Evidence: ${evidence}.\nEntries: ${validation.entries.length}. Folder hash: ${merkle.slice(0, 12)}…`;
