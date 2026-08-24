@@ -3,9 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}' {{cspSource}}; img-src {{cspSource}} data: blob:;">
+  <!--
+    Plan 23 B2. `default-src 'none'` already covers connect/frame/media/font, and
+    img-src deliberately omits http(s) so injected markdown cannot beacon out.
+    `form-action` and `base-uri` are added explicitly because NEITHER falls back
+    to default-src: without them, injected markup could POST a form to a remote
+    origin or rewrite every relative URL on the page with a <base> tag.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}' {{cspSource}}; img-src {{cspSource}} data: blob:; form-action 'none'; base-uri 'none';">
   <title>Mysti</title>
   <link rel="stylesheet" href="{{chatCssUri}}">
+  <script nonce="{{nonce}}" src="{{resourceBase}}/dompurify.min.js"></script>
   <script nonce="{{nonce}}" src="{{resourceBase}}/marked.min.js"></script>
   <script nonce="{{nonce}}" src="{{resourceBase}}/prism-bundle.js"></script>
 </head>

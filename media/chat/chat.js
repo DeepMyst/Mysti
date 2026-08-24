@@ -1,6 +1,49 @@
     
     (function() {
       const vscode = acquireVsCodeApi();
+
+      /**
+       * Render untrusted markdown to HTML (Plan 23 B2).
+       *
+       * Everything rendered here is attacker-influenceable: model output, tool
+       * results, a poisoned repo file quoted back, an MCP response. The webview
+       * CSP already stops the *code-execution* half — `script-src` with a nonce
+       * blocks inline handlers like `onerror`, and `img-src` omits http(s), so
+       * injected markup cannot beacon out either.
+       *
+       * What CSP does NOT stop is UI SPOOFING, and this is the surface where the
+       * user makes trust decisions: a permission card, an approve button, a
+       * "capability registered" line. Injected markup that merely LOOKS like
+       * Mysti's own chrome is the realistic attack, and sanitizing is what
+       * removes it.
+       *
+       * Fails CLOSED: if DOMPurify did not load for any reason, the text is
+       * escaped and shown as plain text rather than rendered as raw HTML.
+       */
+      function renderMarkdownSafe(markdownText) {
+        var raw;
+        try {
+          raw = marked.parse(markdownText);
+        } catch (e) {
+          raw = String(markdownText == null ? '' : markdownText);
+        }
+        if (typeof DOMPurify === 'undefined' || !DOMPurify.sanitize) {
+          console.warn('[Mysti] DOMPurify unavailable — showing text unrendered rather than as raw HTML');
+          var escaped = document.createElement('div');
+          escaped.textContent = String(markdownText == null ? '' : markdownText);
+          return escaped.innerHTML;
+        }
+        return DOMPurify.sanitize(raw, {
+          // `target` is needed because marked emits links; `class`/`data-*` carry
+          // Prism and Mermaid hooks that the renderer sets up afterwards.
+          ADD_ATTR: ['target', 'class', 'data-lang'],
+          // Belt to the CSP's braces: these are the tags that spoof chrome or
+          // reach the network, and none of them has a legitimate use in rendered
+          // model prose.
+          FORBID_TAGS: ['form', 'input', 'button', 'select', 'textarea', 'iframe', 'object', 'embed', 'base', 'link', 'meta', 'style'],
+          FORBID_ATTR: ['formaction', 'action', 'srcdoc', 'ping'],
+        });
+      }
       const MERMAID_URI = window.__MYSTI_BOOT__.mermaidUri;
       const LOGO_URI = window.__MYSTI_BOOT__.logoUri;
       const MYSTI_VERSION = window.__MYSTI_BOOT__.version;
@@ -1105,7 +1148,7 @@
               var el = contentEl.querySelector('.subagent-text-output');
               if (el && subagentRawText[shortId] && typeof marked !== 'undefined') {
                 try {
-                  el.innerHTML = marked.parse(subagentRawText[shortId]);
+                  el.innerHTML = renderMarkdownSafe(subagentRawText[shortId]);
                   el.className = 'subagent-text-output rendered';
                   setTimeout(function() {
                     if (typeof Prism !== 'undefined') {
@@ -1168,7 +1211,7 @@
           var rawText = subagentRawText[shortId] || (textEl ? textEl.textContent : '') || '';
           if (textEl && rawText) {
             try {
-              textEl.innerHTML = marked.parse(rawText);
+              textEl.innerHTML = renderMarkdownSafe(rawText);
               textEl.className = 'subagent-text-output rendered';
               setTimeout(function() {
                 if (typeof Prism !== 'undefined') {
@@ -11765,7 +11808,7 @@
         // Use marked for full markdown parsing if available
         if (typeof marked !== 'undefined') {
           try {
-            var html = marked.parse(content);
+            var html = renderMarkdownSafe(content);
 
             // Schedule syntax highlighting and mermaid rendering
             setTimeout(function() {
