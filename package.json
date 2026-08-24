@@ -460,11 +460,20 @@
           "type": "string",
           "default": "ask-before-edit",
           "enum": [
+            "default",
             "ask-before-edit",
             "edit-automatically",
-            "plan"
+            "quick-plan",
+            "detailed-plan"
           ],
-          "description": "Default operation mode"
+          "enumDescriptions": [
+            "Default \u2014 gate changes when access level is Ask permission",
+            "Ask before edit \u2014 confirm every change",
+            "Edit automatically \u2014 apply file edits; still ask for commands and deletes",
+            "Quick plan \u2014 investigate read-only and propose a short plan",
+            "Detailed plan \u2014 investigate read-only and propose a full plan"
+          ],
+          "description": "Default operation mode. Must match the OperationMode union in src/types.ts \u2014 a value offered here that the code does not handle would fall through the permission gate (Plan 23 B1)."
         },
         "mysti.defaultThinkingLevel": {
           "type": "string",

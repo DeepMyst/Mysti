@@ -42,7 +42,7 @@ import { runBounded } from '../utils/boundedConcurrency';
 import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
 import { MystiLocalTools } from '../services/MystiLocalTools';
 import { MystiMemoryStore } from '../services/MystiMemoryStore';
-import { clampSettingsToUserPolicy } from '../utils/settingsClamp';
+import { clampSettingsToUserPolicy, normalizeAuthoritySettings } from '../utils/settingsClamp';
 import { pickCrossVendorReviewer } from '../utils/vendorFamily';
 import type { GatewayChatMessage } from '../services/DeepMystGatewayClient';
 import { ContextManager } from '../managers/ContextManager';
@@ -6832,9 +6832,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         settings,
         (s) => vscode.workspace.getConfiguration('mysti').inspect(s) ?? undefined,
       );
-      return clamp.settings;
+      // Plan 23 B1: coerce authority values to known enum members BEFORE they
+      // reach any literal comparison. VSCode does not validate a declared enum
+      // at read time, and `config.get(...) as any` above casts whatever string
+      // the settings file holds.
+      const normalized = normalizeAuthoritySettings(clamp.settings);
+      if (normalized.coerced.length > 0) {
+        console.warn(`[Mysti] Unrecognized permission setting(s) coerced to a safe default: ${normalized.coerced.join(', ')}`);
+      }
+      return normalized.settings;
     } catch {
-      return settings;
+      // Even the failure path must not hand back unvalidated authority values.
+      return normalizeAuthoritySettings(settings).settings;
     }
   }
 

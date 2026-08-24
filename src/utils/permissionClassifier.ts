@@ -14,6 +14,7 @@
 import type { PermissionActionType, Settings } from '../types';
 import { ACTION_TOOLS, READ_ONLY_TOOLS, classifyCanvasTool, parseToolName } from './toolNames';
 import { resolveCanvasApproval } from '../canvas/resolveCanvasApproval';
+import { ACCESS_LEVELS, OPERATION_MODES } from './settingsClamp';
 
 // The tool-name vocabulary (alias maps, action map, read-only allowlist,
 // semantic kinds) lives in utils/toolNames.ts — the single tool-name/kind
@@ -133,8 +134,30 @@ export function shouldGateToolUse(settings: Settings, toolName: string): boolean
     return true;
   }
 
+  // Plan 23 B1 — FAIL CLOSED on anything unrecognized.
+  //
+  // Every branch above compares against a string LITERAL, and this function
+  // used to end in a bare `return false`. So a `mode` or `accessLevel` outside
+  // the known set matched nothing and landed on "no gate" — the permissive
+  // outcome — even though every CLI provider runs with its native permissions
+  // bypassed. The `@mysti` coordinator is the sharpest case: MystiLocalExec's
+  // gate closure calls straight into here with no CLI beneath it, so for
+  // coordinator write/edit/bash this is a single-layer control.
+  //
+  // `normalizeAuthoritySettings` coerces these at the boundary; this is the
+  // belt to that pair of braces, and it is what keeps the property true for any
+  // caller that builds a Settings object by hand.
+  // Compared as plain strings on purpose: TypeScript has narrowed both unions
+  // by this point and would reject (or silently elide) a re-test, but the whole
+  // hazard is a runtime value that never belonged to the union.
+  const knownAccess = ACCESS_LEVELS.includes(settings.accessLevel as string);
+  const knownMode = OPERATION_MODES.includes(settings.mode as string);
+  if (!knownAccess || !knownMode) { return true; }
+
   // "Full access" + edit-automatically, plan modes, read-only → not gated here
-  // (read-only/plan are enforced by the provider's CLI permission mode).
+  // (read-only/plan are enforced by the provider's CLI permission mode, and the
+  // coordinator refuses local execution outright in those tiers — see
+  // ChatViewProvider._mystiLocalExecEnabled).
   return false;
 }
 

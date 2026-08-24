@@ -67,7 +67,15 @@ function clampOne<T extends string>(
 ): { value: T; clamped: boolean } {
   if (!inspection) { return { value: current, clamped: false }; }
   const ws = (inspection.workspaceFolderValue ?? inspection.workspaceValue) as T | undefined;
-  if (ws === undefined || !(ws in rank)) { return { value: current, clamped: false }; }
+  if (ws === undefined) { return { value: current, clamped: false }; }
+  if (!(ws in rank)) {
+    // Plan 23 B1: a workspace supplying a value outside the enum used to pass
+    // through unclamped. It is not a legitimate setting, and the runtime
+    // compares by literal, so leaving it in place is how a cloned repo turns
+    // "ask" into "never ask". Clamp to the user's own floor.
+    const floor = ((inspection.globalValue as T | undefined) ?? (inspection.defaultValue as T | undefined) ?? fallback);
+    return { value: floor, clamped: current !== floor };
+  }
   const userFloor = ((inspection.globalValue as T | undefined) ?? (inspection.defaultValue as T | undefined) ?? fallback);
   const floorRank = rank[userFloor] ?? rank[fallback];
   // Workspace tried to be LESS restrictive than the user's own policy…
@@ -85,6 +93,58 @@ function clampOne<T extends string>(
  */
 export function clampSafetyMode(current: string, inspect: InspectFn): { value: string; clamped: boolean } {
   return clampOne<string>(current, inspect('autonomous.safetyMode'), SAFETY_RANK, 'balanced');
+}
+
+/**
+ * The canonical runtime membership lists for the two authority settings.
+ *
+ * These exist as VALUES, not just types, because the danger is precisely that a
+ * runtime value lies about its declared type: `config.get(...) as any` will hand
+ * back any string the settings file holds. TypeScript narrows a union away after
+ * an equality check and would call a re-test "unreachable" — true of the type,
+ * false of the data.
+ *
+ * `settingsEnumParity.test.ts` asserts these equal both the TS unions and the
+ * enums declared in package.json, so the three cannot drift apart silently.
+ */
+export const ACCESS_LEVELS: readonly string[] = ['read-only', 'ask-permission', 'full-access'];
+export const OPERATION_MODES: readonly string[] = ['default', 'ask-before-edit', 'edit-automatically', 'quick-plan', 'detailed-plan'];
+
+/**
+ * Coerce authority settings to known enum members (Plan 23 B1).
+ *
+ * `_getSettingsForPanel` reads these with `config.get(...) as any`, and VSCode
+ * does NOT validate a declared `enum` at read time — whatever string is in the
+ * JSON comes straight through. That matters because every downstream decision
+ * compares against string LITERALS, so an unrecognized value matches no branch
+ * and lands on the permissive default: `"Ask-Permission"` (capitalized), or any
+ * value a hand-edited or cloned-repo settings file supplies, silently became
+ * "no gate" rather than "ask".
+ *
+ * `clampSettingsToUserPolicy` cannot cover this — `clampOne` deliberately
+ * early-returns on `!(ws in rank)`, so a non-enum workspace value passes through
+ * unclamped rather than being rejected.
+ *
+ * Coerces to `ask-permission` / `default` rather than the MOST restrictive
+ * values: the safe failure here is "the user gets asked", not "nothing works".
+ * Falling all the way to read-only would turn a typo into a broken install and
+ * teach people to turn the feature off.
+ */
+export function normalizeAuthoritySettings(settings: Settings): { settings: Settings; coerced: string[] } {
+  const coerced: string[] = [];
+  let accessLevel = settings.accessLevel;
+  let mode = settings.mode;
+
+  if (!(accessLevel in ACCESS_RANK)) {
+    coerced.push(`accessLevel="${String(accessLevel)}"`);
+    accessLevel = 'ask-permission';
+  }
+  if (!(mode in MODE_RANK)) {
+    coerced.push(`mode="${String(mode)}"`);
+    mode = 'default';
+  }
+  if (coerced.length === 0) { return { settings, coerced }; }
+  return { settings: { ...settings, accessLevel, mode }, coerced };
 }
 
 /**
