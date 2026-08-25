@@ -82,6 +82,7 @@ import { VISUAL_DEFAULT_ALLOWED_ORIGINS, VISUAL_MAX_ACTIONS_PER_ACT } from '../c
 import { ChannelBridge } from '../managers/ChannelBridge';
 import { DeepMystAuthManager } from '../managers/DeepMystAuthManager';
 import type { SavingsLedger } from '../managers/SavingsLedger';
+import type { BoostManager } from '../managers/BoostManager';
 import type { AnnouncementManager } from '../managers/AnnouncementManager';
 import type { InAppMessage } from '../services/DeepMystClient';
 import { isDeepMystHost } from '../services/DeepMystClient';
@@ -310,6 +311,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // (b) resolve the web URL for the "Link <service>" connect action.
   private _deepMystAuth?: DeepMystAuthManager;
   private _savingsLedger?: SavingsLedger;
+  // Plan 24: Boost mode (set post-construction in extension.ts). Sensor-only
+  // turn ledger + un-tiered delegation routing; overlay wiring lives in
+  // CompactionManager, not here.
+  private _boostManager?: BoostManager;
   private _announcementManager?: AnnouncementManager;
   // Services for which we've already emitted a connect card this response, so the
   // per-chunk scan over the accumulated text doesn't re-post the same card.
@@ -3852,7 +3857,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // liveness job. Opened here and closed at BOTH exits of the stream loop,
       // so a job can never outlive the turn that owns it.
       this._canvasTurnPanels.add(panelId);
-      let lastUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined;
+      let lastUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; estimated?: boolean } | undefined;
 
       // Plan 02 Phase 3: accumulate render-relevant structure extension-side
       // so the persisted assistant message (done handler) can be replayed by
@@ -4337,6 +4342,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               } else {
                 this._compactionManager.recordUsage(panelId, lastUsage, contextWindow);
               }
+
+              // Plan 24 Phase 1: sensor-only Boost ledger record. Uses
+              // effectiveSettings so attribution is right in autonomous mode.
+              // contextTokens = input + cache-read (the CompactionManager fill
+              // convention). Never gates; tolerates whatever is missing.
+              this._boostManager?.recordTurn({
+                kind: 'cli',
+                provider: effectiveSettings.provider,
+                model: effectiveSettings.model,
+                contextTokens: lastUsage.input_tokens + (lastUsage.cache_read_input_tokens || 0),
+                outputTokens: lastUsage.output_tokens,
+                cacheReadTokens: lastUsage.cache_read_input_tokens,
+                cacheCreationTokens: lastUsage.cache_creation_input_tokens,
+                contextWindow,
+                roundTrips: 1,
+                // Honor a provider that flagged its own figures as synthesized.
+                estimated: lastUsage.estimated === true,
+              });
             }
 
             // Plan 02 Phase 3.5: native plan moment (exit_plan_mode) routes
@@ -7093,6 +7116,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Inject the BoostManager (Plan 24). Wired post-construction to avoid growing
+   * the constructor. Provides the sensor ledger (recordTurn on both the CLI and
+   * coordinator completion paths) and tier/effort suggestions for UN-tiered
+   * delegations. Never gates anything.
+   */
+  public setBoostManager(manager: BoostManager): void {
+    this._boostManager = manager;
+  }
+
+  /**
    * Inject the AnnouncementManager (constructed in extension.ts) so each session
    * open can fetch DeepMyst's dynamic in-app messages and push them to the
    * panel. Wired post-construction to avoid growing the constructor.
@@ -8435,6 +8468,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Declared out here so the `finally` can still see them.
     let skillSearches = 0;
     const skillViewed: string[] = [];
+    // Plan 24 Phase 1: the coordinator's real model round-trip count. Declared
+    // out here (like naturalEnd/exhausted above) so the post-run Boost ledger
+    // record can see it — otherwise every multi-turn run books as 1 round-trip,
+    // undercounting the exact metric the sensor exists to measure.
+    let streams = 0;
     try {
       // Loop shape (Plan 17 P0.1/P0.5): every iteration is one coordinator
       // stream. Local read-only tools and delegations have SEPARATE sub-budgets
@@ -8450,7 +8488,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // a six-artboard design would otherwise starve the coding loop. The cap
       // exists only to bound a runaway edit loop.
       let canvasCalls = 0;
-      let streams = 0;
       let lengthContinues = 0;
       // Plan 19: EXECUTION kinds (write/edit/bash/patch) are added to the scanner
       // only when local execution is enabled; the MCP tool kind only when a live
@@ -9001,6 +9038,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           // P2.3: a model tier the coordinator requested on the tag (fast/strong).
           const reqTier = directive.kind === 'delegate' ? directive.tier : undefined;
+          // Plan 24 Phase 2: when the coordinator did NOT pick a tier, Boost may
+          // suggest one — strong for security/review-shaped tasks (in every
+          // profile), fast only for prose-shaped ones. The suggestion feeds the
+          // SAME tierApplied machinery below, so backend capability checks and
+          // custom-model precedence hold unchanged; undefined leaves routing
+          // exactly as it is today.
+          const boostTier = (!reqTier && directive.kind === 'delegate')
+            ? this._boostManager?.suggestTier(directive.task)
+            : undefined;
+          const effectiveTier = reqTier ?? boostTier;
           // `writer` = the backend that actually ran the delegation; the P2.2
           // reroute may swap it (and the card id) to an alternate on failure.
           let writer = agentId;
@@ -9009,15 +9056,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // the live card and never advertises a tier a backend silently ignored.
           let lastTierApplied = false;
           const dispatchTo = async (agent: AgentType, cardId: string) => {
-            const tierModel = reqTier ? this._resolveTierModel(agent, reqTier) : undefined;
+            const tierModel = effectiveTier ? this._resolveTierModel(agent, effectiveTier) : undefined;
             // Only advertise/route the tier when it genuinely applies: a model
             // resolved AND the backend can select a model per request. cline/
             // openclaw/hermes (modelSelection 'none') and any backend with no
             // model list ignore the routed model, so claiming "tier applied"
             // there would be a lie (review [9]).
-            const tierApplied = !!(reqTier && tierModel && this._providerManager.getProviderInstance(agent)?.capabilities.modelSelection !== 'none');
+            const tierApplied = !!(effectiveTier && tierModel && this._providerManager.getProviderInstance(agent)?.capabilities.modelSelection !== 'none');
             lastTierApplied = tierApplied;
-            postToolUse({ id: cardId, name: 'delegate', input: { agent, task: directive!.task, ...(tierApplied ? { tier: reqTier } : {}) } });
+            postToolUse({ id: cardId, name: 'delegate', input: { agent, task: directive!.task, ...(tierApplied ? { tier: effectiveTier } : {}) } });
             const trace = bg ? undefined : (chunk: { type: string; toolCall?: unknown; content?: string }) => {
               this._postToPanel(panelId, { type: 'mystiDelegateTrace', payload: { parentId: cardId, chunk } });
             };
@@ -9025,7 +9072,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             foldedFor.add(agent);
             // Stable dispatch runId so delegation N+1 to the same agent resumes
             // its session (P0.2e) instead of cold-starting.
-            const r = await this._runMystiDelegation(agent, directive!.task, settings, conversation, panelId, runId, cancelKey, isCancelled, trace, context, fold, false, tierApplied ? tierModel : undefined);
+            const r = await this._runMystiDelegation(agent, directive!.task, settings, conversation, panelId, runId, cancelKey, isCancelled, trace, context, fold, false, tierApplied ? tierModel : undefined, tierApplied ? this._boostManager?.delegationEffort(effectiveTier, settings.effortLevel) : undefined);
             // Environment failures (nothing ran) don't consume the delegation
             // budget — only real dispatches do (P0.5). A failed env agent is
             // dropped so the model can't burn the run re-delegating to it ([7]).
@@ -9059,7 +9106,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               // self-review: persist the SAME tier the live first card showed so
               // reload doesn't drop the badge (lastTierApplied is still the first
               // writer's here — the reroute dispatchTo hasn't run yet).
-              recordDelegationCard(toolId, writer, directive.task, note, true, lastTierApplied ? reqTier : undefined);
+              recordDelegationCard(toolId, writer, directive.task, note, true, lastTierApplied ? effectiveTier : undefined);
               // review[3]: no operational-memory write here — the outage note had
               // no consumer, crowded the 40-entry memory cap, and polluted the
               // injected project brain. Rerouting itself is the resilience action.
@@ -9073,7 +9120,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // it doesn't spin forever (review [5]), then end the run.
           if (isCancelled()) {
             postToolResult({ id: toolId, name: 'delegate', output: 'Stopped by user', status: 'failed' });
-            recordDelegationCard(toolId, writer, directive.task, 'Stopped by user', true, lastTierApplied ? reqTier : undefined);
+            recordDelegationCard(toolId, writer, directive.task, 'Stopped by user', true, lastTierApplied ? effectiveTier : undefined);
             break;
           }
 
@@ -9081,7 +9128,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const output = result.text.trim()
             || (result.hasError ? failLabel : '(no output)');
           postToolResult({ id: toolId, name: 'delegate', output, status: result.hasError ? 'failed' : 'completed' });
-          recordDelegationCard(toolId, writer, directive.task, output, result.hasError, lastTierApplied ? reqTier : undefined);
+          recordDelegationCard(toolId, writer, directive.task, output, result.hasError, lastTierApplied ? effectiveTier : undefined);
 
           // P1.2 verification loop: after a delegation that MODIFIED the
           // workspace, run a free read-only diagnostics check (VSCode ground
@@ -9320,6 +9367,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         segments: mystiSegments.length > 0 ? mystiSegments : undefined,
       },
     );
+    // Plan 24 Phase 1: Boost ledger record for the coordinator path — hoisted
+    // above the bg split so background job runs are recorded too. The totals
+    // here can be estimates (chars/4 for aborted directive turns), so the
+    // record is flagged estimated whenever tokensPartial applies — the
+    // ledger's honesty rule mirrors SavingsLedger's.
+    this._boostManager?.recordTurn({
+      kind: 'coordinator',
+      provider: settings.provider,
+      model: coordinatorModel,
+      // Unknown usage stays UNKNOWN: a gateway stream that never sent a usage
+      // frame must not book a measured zero (the UI footer suppresses usage in
+      // exactly that case), so the fields go undefined and the record is flagged.
+      contextTokens: sawUsage ? usageTotal.input_tokens : undefined,
+      outputTokens: sawUsage ? usageTotal.output_tokens : undefined,
+      roundTrips: streams,
+      delegations,
+      estimated: usagePartial === true || !sawUsage,
+    });
     if (bg) {
       const job = this._backgroundJobManager.markDone(jobId!, answer, Date.now());
       this._postToPanel(panelId, { type: 'jobComplete', payload: { jobId, message: assistantMessage, delegations: job?.delegations ?? delegations } });
@@ -9510,6 +9575,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     foldFiles = true,
     reviewOnly = false,
     modelOverride?: string,
+    effortOverride?: Settings['effortLevel'],
   ): Promise<{ text: string; hasError: boolean; failure?: CollaboratorFailure; errorDetail?: string; wrote?: boolean }> {
     const onQuestion = this._createSubAgentQuestionCallback(panelId);
     const onGate: CollaboratorGateCallback = async (spec, toolCall) => {
@@ -9554,6 +9620,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // P2.3 tier routing wins; else P0.2b: when the user's active provider IS
       // the delegated backend, honor their selected model over the default.
       model: modelOverride ?? (settings.provider === agentId ? settings.model : undefined),
+      // Plan 24: per-lane effort (economy profile lowers fast-lane effort).
+      ...(effortOverride ? { effortLevel: effortOverride } : {}),
     };
 
     let text = '';

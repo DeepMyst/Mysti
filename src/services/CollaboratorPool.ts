@@ -358,6 +358,11 @@ export class CollaboratorPool {
         // Only set it when a model was explicitly routed — undefined keeps the
         // child on its own normal precedence (config custom-model wins).
         ...(spec.model ? { routedModel: spec.model } : {}),
+        // Plan 24: per-lane effort override (economy profile lowers fast-lane
+        // effort). Undefined ⇒ inherit the parent's effort; providers without
+        // effortLevels ignore it via clampEffort, and a stable per-(run,agent)
+        // value avoids persistent-process respawn churn.
+        ...(spec.effortLevel ? { effortLevel: spec.effortLevel } : {}),
         // Advisory collaborators run read-only; the pool hard-denies writes below
         // regardless, but this keeps the child's own gate/flags aligned.
         accessLevel: spec.access === 'read-only' ? 'read-only' : options.settings.accessLevel,

@@ -431,6 +431,13 @@ export interface UsageStats {
   output_tokens: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+  /**
+   * True when the provider SYNTHESIZED these figures rather than reporting
+   * them (e.g. LocalAI counting SSE deltas when the server omits a usage
+   * frame). Consumers that persist or display totals must not present an
+   * estimate as measured — see BoostTurnRecord.estimated.
+   */
+  estimated?: boolean;
 }
 
 // ============================================================================
@@ -533,6 +540,64 @@ export interface SavingsSnapshot {
   /** Remaining free-tier smart compactions this month, when the entitlement endpoint reports it. */
   freeRemaining?: number;
   freeLimit?: number;
+}
+
+// ============================================================================
+// Boost Mode Types (Plan 24)
+// ============================================================================
+
+/**
+ * Boost preset profile. `economy` favours aggressive compaction and cheap
+ * delegation tiers; `quality` pins effort high and never routes work down;
+ * `balanced` applies the measured defaults from the Plan 24 evidence base.
+ */
+export type BoostProfile = 'economy' | 'balanced' | 'quality';
+
+/** Where a Boost turn record came from. */
+export type BoostTurnKind = 'cli' | 'coordinator';
+
+/**
+ * One completed turn as observed by the Boost ledger (Plan 24 Phase 1).
+ * All token fields are optional: providers legitimately omit usage on done
+ * chunks, and coordinator totals can be estimates (`estimated: true`).
+ */
+export interface BoostTurnRecord {
+  kind: BoostTurnKind;
+  provider: string;
+  model?: string;
+  /** input + cache-read tokens for the turn (the "context" convention used by CompactionManager). */
+  contextTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  /** Context window of the model, when resolvable — lets the UI show fill %. */
+  contextWindow?: number;
+  /** Model round-trips inside the turn (coordinator ReAct turns; 1 for a CLI turn). */
+  roundTrips?: number;
+  /** Delegations spawned during the turn (coordinator only). */
+  delegations?: number;
+  /** True when any token figure is an estimate rather than provider-reported. */
+  estimated: boolean;
+}
+
+export interface BoostTotals {
+  turns: number;
+  roundTrips: number;
+  contextTokens: number;
+  outputTokens: number;
+  delegations: number;
+}
+
+/** Snapshot of the Boost ledger for the status bar / summary command. */
+export interface BoostSnapshot {
+  enabled: boolean;
+  profile: BoostProfile;
+  session: BoostTotals;
+  lifetime: BoostTotals;
+  /** Mean context tokens per recorded turn this session (0 when no data). */
+  sessionMeanContextTokens: number;
+  /** Whether any recorded figure was an estimate. */
+  estimated: boolean;
 }
 
 /** Structured incremental-memory sections the compactor agent maintains. */
@@ -836,6 +901,12 @@ export interface CollaboratorSpec {
   timeoutMs?: number;
   /** Optional model override; defaults to the provider's default model. */
   model?: string;
+  /**
+   * Optional reasoning-effort override for this collaborator (Plan 24 routing).
+   * Applied to the child settings like `model`; undefined ⇒ inherit the parent's
+   * effort. Providers that don't declare effortLevels ignore it (clampEffort).
+   */
+  effortLevel?: EffortLevel;
 }
 
 /**

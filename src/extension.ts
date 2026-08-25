@@ -27,6 +27,7 @@ import { AutonomousManager } from './managers/AutonomousManager';
 import { CompactionManager } from './managers/CompactionManager';
 import { SmartCompactor } from './managers/SmartCompactor';
 import { SavingsLedger } from './managers/SavingsLedger';
+import { BoostManager } from './managers/BoostManager';
 import { DeepMystGatewayClient } from './services/DeepMystGatewayClient';
 import { OpenRouterClient } from './services/OpenRouterClient';
 import { CoordinatorModelClient, MYSTI_DEFAULT_FREE_MODELS } from './services/CoordinatorModelClient';
@@ -215,6 +216,13 @@ export async function activate(context: vscode.ExtensionContext) {
     new SmartCompactor(deepMystAuthManager, deepMystGatewayClient, savingsLedger),
   );
 
+  // Plan 24: Boost mode — settings overlay (aggressive compaction defaults),
+  // per-turn sensor ledger, and un-tiered delegation routing. Overlay only:
+  // nothing is written to user settings, and explicit user values win.
+  const boostManager = new BoostManager(context);
+  context.subscriptions.push(boostManager);
+  compactionManager.setBoostOverlay(boostManager);
+
   // OpenRouter client — used by the Mysti coordinator ONLY as a power-user opt-in
   // when the EXPLICIT `mysti.openrouter.apiKey` setting is present. An ambient
   // OPENROUTER_API_KEY env var must NOT silently override the DeepMyst-gateway
@@ -354,6 +362,7 @@ export async function activate(context: vscode.ExtensionContext) {
   // and resolve the connect URL when a `<<<MYSTI_CONNECT:slug>>>` marker fires.
   chatViewProvider.setDeepMystAuth(deepMystAuthManager);
   chatViewProvider.setSavingsLedger(savingsLedger);
+  chatViewProvider.setBoostManager(boostManager);
   chatViewProvider.setAnnouncementManager(announcementManager);
   chatViewProvider.setMystiCoordinator(coordinatorModelClient);
 
@@ -421,6 +430,38 @@ export async function activate(context: vscode.ExtensionContext) {
         mystiStatusBar.text = `$(sparkle) Mysti: ${label}`;
         mystiStatusBar.tooltip = `You're Mysting with ${label} — click to open chat`;
       }
+    })
+  );
+
+  // Plan 24: Boost status chip — visible only while Boost is enabled. Shows the
+  // session ledger at a glance; clicking opens the summary command below.
+  const boostStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 48);
+  boostStatusBar.command = 'mysti.boostSummary';
+  const renderBoostBar = () => {
+    const snap = boostManager.snapshot();
+    if (!snap.enabled) { boostStatusBar.hide(); return; }
+    const meanK = snap.sessionMeanContextTokens > 0
+      ? `${Math.round(snap.sessionMeanContextTokens / 1000)}k` : '—';
+    boostStatusBar.text = `$(zap) Boost ${snap.profile} · ctx ${meanK}`;
+    boostStatusBar.tooltip = `Boost ${snap.profile} — session: ${snap.session.turns} turns, `
+      + `${snap.session.roundTrips} round-trips, ${snap.session.delegations} delegations. `
+      + `Mean context/turn: ${meanK} tokens${snap.estimated ? ' (some figures estimated)' : ''}. Click for details.`;
+    boostStatusBar.show();
+  };
+  renderBoostBar();
+  context.subscriptions.push(boostStatusBar);
+  context.subscriptions.push(boostManager.onDidChange(() => renderBoostBar()));
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.boostSummary', () => {
+      const s = boostManager.snapshot();
+      const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+      const est = s.estimated ? ' (~ some figures estimated)' : '';
+      vscode.window.showInformationMessage(
+        `Boost ${s.enabled ? `ON · ${s.profile}` : 'off'} — session: ${s.session.turns} turns, `
+        + `${s.session.roundTrips} round-trips, ${fmt(s.session.contextTokens)} context tokens, `
+        + `${fmt(s.session.outputTokens)} output, ${s.session.delegations} delegations. `
+        + `Lifetime: ${s.lifetime.turns} turns, ${fmt(s.lifetime.contextTokens)} context tokens${est}.`,
+      );
     })
   );
 

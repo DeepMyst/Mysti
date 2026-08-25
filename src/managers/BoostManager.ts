@@ -1,0 +1,261 @@
+/**
+ * Mysti - AI Coding Agent
+ * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
+ *
+ * Author: Baha Abunojaim <baha@deepmyst.com>
+ * Website: https://deepmyst.com
+ *
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
+ * See the LICENSE file in the project root for license terms.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * BoostManager (Plan 24 Phases 0–2) — one switch that applies the measured
+ * defaults instead of the stock ones, and records what each turn actually
+ * cost so the effect is visible.
+ *
+ * Three responsibilities, deliberately small:
+ *  1. OVERLAY — effective values for compaction settings, consumed by
+ *     CompactionManager's loaders. Overlay, not persistence: nothing is ever
+ *     written to the user's settings, and a value the user set EXPLICITLY
+ *     (any scope) always wins over the overlay. Toggling Boost off restores
+ *     stock behaviour instantly.
+ *  2. LEDGER — per-turn usage records (Phase 1 sensor). Session totals in
+ *     memory, lifetime persisted to globalState. Records only; never gates.
+ *  3. ROUTER — owns the ModelRouter (Phase 2) so ChatViewProvider needs a
+ *     single seam.
+ *
+ * Authority invariant (Plan 24): Boost NEVER touches mode, accessLevel,
+ * autonomy, or permission settings — it only tunes spend-shaped knobs, and its
+ * own keys are machine-scoped so a workspace cannot flip them.
+ */
+
+import * as vscode from 'vscode';
+import {
+  BoostProfile,
+  BoostSnapshot,
+  BoostTotals,
+  BoostTurnRecord,
+} from '../types';
+import { ModelRouter, SuggestedTier } from '../services/ModelRouter';
+import { EffortLevel } from '../types';
+
+const LEDGER_KEY = 'mysti.boost.ledger.v1';
+
+const PROFILES: readonly BoostProfile[] = ['economy', 'balanced', 'quality'];
+
+/**
+ * Effective compaction threshold per profile (percent of context window at
+ * which compaction triggers). Grounded in the Plan 24 evidence base: context
+ * per round-trip is the dominant cost and post-compaction context measured
+ * ~26k against ~990k before, repaying the summary write within one round-trip.
+ * All three sit below the stock default (75) — Boost on means compact sooner.
+ */
+const PROFILE_THRESHOLDS: Record<BoostProfile, number> = {
+  economy: 35,
+  balanced: 45,
+  quality: 60,
+};
+
+/**
+ * Config access seam. The default reads live from
+ * `vscode.workspace.getConfiguration('mysti')` on every call (the
+ * CoordinatorModelClient thunk pattern — no cache to invalidate); tests inject
+ * a plain object.
+ */
+export interface BoostConfigReader {
+  get<T>(key: string, fallback: T): T;
+  /** True when the user explicitly set the key at ANY scope (global/workspace/folder). */
+  isExplicitlySet(key: string): boolean;
+}
+
+function defaultConfigReader(): BoostConfigReader {
+  return {
+    get<T>(key: string, fallback: T): T {
+      return vscode.workspace.getConfiguration('mysti').get<T>(key, fallback);
+    },
+    isExplicitlySet(key: string): boolean {
+      const info = vscode.workspace.getConfiguration('mysti').inspect(key);
+      if (!info) { return false; }
+      return info.globalValue !== undefined
+        || info.workspaceValue !== undefined
+        || info.workspaceFolderValue !== undefined;
+    },
+  };
+}
+
+interface PersistedLedger {
+  lifetime: BoostTotals;
+  anyEstimated: boolean;
+}
+
+function emptyTotals(): BoostTotals {
+  return { turns: 0, roundTrips: 0, contextTokens: 0, outputTokens: 0, delegations: 0 };
+}
+
+export class BoostManager {
+  private readonly _cfg: () => BoostConfigReader;
+  private readonly _router: ModelRouter;
+
+  private _session: BoostTotals = emptyTotals();
+  private _lifetime: BoostTotals = emptyTotals();
+  private _anyEstimated = false;
+  /** Sum of context tokens across session turns that actually reported context. */
+  private _sessionContextSum = 0;
+  private _sessionContextTurns = 0;
+
+  private readonly _onDidChange = new vscode.EventEmitter<BoostSnapshot>();
+  /** Fires after every recorded turn and on mysti.boost.* config changes. */
+  public readonly onDidChange = this._onDidChange.event;
+
+  private _configDisposable: vscode.Disposable | undefined;
+
+  constructor(
+    private readonly _context: vscode.ExtensionContext,
+    configReader?: () => BoostConfigReader,
+  ) {
+    this._cfg = configReader ?? defaultConfigReader;
+    this._router = new ModelRouter(() => ({ enabled: this.isEnabled(), profile: this.profile() }));
+
+    const persisted = this._context.globalState.get<PersistedLedger>(LEDGER_KEY);
+    if (persisted && persisted.lifetime) {
+      this._lifetime = { ...emptyTotals(), ...persisted.lifetime };
+      this._anyEstimated = !!persisted.anyEstimated;
+    }
+
+    // Only wired when running against the real vscode API surface; the test
+    // mock may not provide onDidChangeConfiguration.
+    const onCfg = vscode.workspace?.onDidChangeConfiguration;
+    if (typeof onCfg === 'function') {
+      this._configDisposable = onCfg((e: vscode.ConfigurationChangeEvent) => {
+        if (e.affectsConfiguration('mysti.boost')) {
+          console.log(`[Mysti] BoostManager: Config updated - enabled=${this.isEnabled()}, profile=${this.profile()}`);
+          this._onDidChange.fire(this.snapshot());
+        }
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------- settings
+
+  public isEnabled(): boolean {
+    return this._cfg().get<boolean>('boost.enabled', false);
+  }
+
+  public profile(): BoostProfile {
+    const raw = this._cfg().get<string>('boost.profile', 'balanced');
+    return (PROFILES as readonly string[]).includes(raw) ? (raw as BoostProfile) : 'balanced';
+  }
+
+  // ----------------------------------------------------------------- overlay
+
+  /**
+   * Effective compaction threshold override, or undefined to leave the stock
+   * read in place. Undefined when Boost is off OR the user explicitly set
+   * `mysti.compaction.threshold` themselves — an explicit user value always
+   * beats the overlay.
+   */
+  public compactionThreshold(): number | undefined {
+    if (!this.isEnabled()) { return undefined; }
+    if (this._cfg().isExplicitlySet('compaction.threshold')) { return undefined; }
+    return PROFILE_THRESHOLDS[this.profile()];
+  }
+
+  /**
+   * Effective smart-compaction override (true = on), or undefined to leave the
+   * stock read in place. Same explicit-user-wins rule as the threshold. Smart
+   * compaction itself still fail-opens to the native path when the DeepMyst
+   * entitlement is absent (SmartCompactor.isActive), so forcing it on is safe.
+   */
+  public smartCompactionEnabled(): boolean | undefined {
+    if (!this.isEnabled()) { return undefined; }
+    if (this._cfg().isExplicitlySet('compaction.smart.enabled')) { return undefined; }
+    return true;
+  }
+
+  // ------------------------------------------------------------------ router
+
+  /** Tier suggestion for an UN-tiered delegation (undefined = don't route). */
+  public suggestTier(task: string): SuggestedTier | undefined {
+    return this._router.suggestTier(task);
+  }
+
+  /** Effort override for a delegation lane (undefined = inherit parent). */
+  public delegationEffort(
+    tier: SuggestedTier | undefined,
+    parentEffort?: EffortLevel,
+  ): EffortLevel | undefined {
+    return this._router.delegationEffort(tier, parentEffort);
+  }
+
+  // ------------------------------------------------------------------ ledger
+
+  /**
+   * Record one completed turn. Sensor only: tolerates missing usage, never
+   * throws, never gates. Records regardless of whether Boost is enabled so
+   * that turning Boost on later has a before/after baseline.
+   */
+  public recordTurn(rec: BoostTurnRecord): void {
+    const ctx = Math.max(0, rec.contextTokens ?? 0);
+    const out = Math.max(0, rec.outputTokens ?? 0);
+    // A completed turn implies at least one model round-trip on either path.
+    const rt = Math.max(0, rec.roundTrips ?? 1);
+    const del = Math.max(0, rec.delegations ?? 0);
+
+    for (const t of [this._session, this._lifetime]) {
+      t.turns += 1;
+      t.roundTrips += rt;
+      t.contextTokens += ctx;
+      t.outputTokens += out;
+      t.delegations += del;
+    }
+    if (rec.contextTokens !== undefined && rec.contextTokens > 0) {
+      this._sessionContextSum += ctx;
+      this._sessionContextTurns += 1;
+    }
+    if (rec.estimated) { this._anyEstimated = true; }
+
+    this._persist();
+    this._onDidChange.fire(this.snapshot());
+  }
+
+  public snapshot(): BoostSnapshot {
+    return {
+      enabled: this.isEnabled(),
+      profile: this.profile(),
+      session: { ...this._session },
+      lifetime: { ...this._lifetime },
+      sessionMeanContextTokens: this._sessionContextTurns > 0
+        ? Math.round(this._sessionContextSum / this._sessionContextTurns)
+        : 0,
+      estimated: this._anyEstimated,
+    };
+  }
+
+  /** Reset session totals (lifetime persists). Boost "session" = since reset/activation. */
+  public resetSession(): void {
+    this._session = emptyTotals();
+    this._sessionContextSum = 0;
+    this._sessionContextTurns = 0;
+    this._onDidChange.fire(this.snapshot());
+  }
+
+  private _persist(): void {
+    const payload: PersistedLedger = { lifetime: this._lifetime, anyEstimated: this._anyEstimated };
+    try {
+      const result = this._context.globalState.update(LEDGER_KEY, payload);
+      if (result && typeof (result as Thenable<void>).then === 'function') {
+        (result as Thenable<void>).then(undefined, (err: unknown) => {
+          console.warn('[Mysti] BoostManager: failed to persist ledger', err);
+        });
+      }
+    } catch (err) {
+      console.warn('[Mysti] BoostManager: failed to persist ledger', err);
+    }
+  }
+
+  public dispose(): void {
+    this._configDisposable?.dispose();
+    this._onDidChange.dispose();
+  }
+}

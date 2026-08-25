@@ -39,6 +39,16 @@ import type { ConversationManager } from './ConversationManager';
 import type { SmartCompactor, HistoryAppend } from './SmartCompactor';
 
 /**
+ * Boost overlay seam (Plan 24). Structural on purpose — BoostManager satisfies
+ * it without CompactionManager importing it. Each accessor returns undefined
+ * to mean "no overlay; use the stock settings read".
+ */
+export interface BoostCompactionOverlay {
+  compactionThreshold(): number | undefined;
+  smartCompactionEnabled(): boolean | undefined;
+}
+
+/**
  * CompactionManager - Unified context compaction across all providers
  *
  * Monitors per-panel token usage and triggers compaction when the context
@@ -77,6 +87,9 @@ export class CompactionManager {
   // The smart engine, injected post-construction (null until wired in extension.ts).
   private _smart: SmartCompactor | null = null;
 
+  /** Boost overlay (Plan 24); undefined until wired via setBoostOverlay. */
+  private _boostOverlay: BoostCompactionOverlay | undefined;
+
   private _configDisposable: vscode.Disposable;
 
   constructor(context: vscode.ExtensionContext) {
@@ -88,9 +101,11 @@ export class CompactionManager {
     this._minSummaryTokens = this._loadMinSummaryTokens();
     this._retrievalEnabled = this._loadRetrievalEnabled();
 
-    // Listen for configuration changes
+    // Listen for configuration changes. `mysti.boost` is included because the
+    // Boost overlay (Plan 24) feeds _loadThreshold/_loadSmartEnabled — toggling
+    // Boost must re-run the loaders exactly like a compaction settings change.
     this._configDisposable = vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration('mysti.compaction')) {
+      if (e.affectsConfiguration('mysti.compaction') || e.affectsConfiguration('mysti.boost')) {
         this._thresholdPercent = this._loadThreshold();
         this._enabled = this._loadEnabled();
         this._smartEnabled = this._loadSmartEnabled();
@@ -359,6 +374,17 @@ export class CompactionManager {
     this._smart = smart;
   }
 
+  /**
+   * Inject the Boost overlay (Plan 24). Wired in extension.ts. Re-runs the two
+   * overlay-aware loaders immediately so an already-constructed manager picks
+   * the boosted values up without waiting for a settings change.
+   */
+  public setBoostOverlay(overlay: BoostCompactionOverlay): void {
+    this._boostOverlay = overlay;
+    this._thresholdPercent = this._loadThreshold();
+    this._smartEnabled = this._loadSmartEnabled();
+  }
+
   /** Whether smart compaction is currently active (toggle + signed in + entitled). */
   public isSmartActive(): boolean {
     return !!this._smart && this._smart.isActive(this._smartEnabled);
@@ -471,6 +497,12 @@ export class CompactionManager {
   }
 
   private _loadThreshold(): number {
+    // Boost overlay (Plan 24): an effective threshold computed by BoostManager.
+    // The overlay returns undefined when Boost is off OR the user explicitly
+    // set mysti.compaction.threshold — explicit user values always win there,
+    // so this read stays a plain pass-through in the stock configuration.
+    const boosted = this._boostOverlay?.compactionThreshold();
+    if (boosted !== undefined) { return boosted; }
     const config = vscode.workspace.getConfiguration('mysti');
     return config.get<number>('compaction.threshold', COMPACTION_DEFAULT_THRESHOLD_PERCENT);
   }
@@ -481,6 +513,11 @@ export class CompactionManager {
   }
 
   private _loadSmartEnabled(): boolean {
+    // Boost overlay (Plan 24): forces smart compaction ON under Boost unless
+    // the user explicitly set the key. Safe to force: SmartCompactor.isActive
+    // still requires sign-in + entitlement and fail-opens to the native path.
+    const boosted = this._boostOverlay?.smartCompactionEnabled();
+    if (boosted !== undefined) { return boosted; }
     const config = vscode.workspace.getConfiguration('mysti');
     return config.get<boolean>('compaction.smart.enabled', false);
   }

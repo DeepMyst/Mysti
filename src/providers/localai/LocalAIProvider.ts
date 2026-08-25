@@ -487,7 +487,10 @@ export class LocalAIProvider extends BaseCliProvider {
       }
 
       // Use captured usage or estimate from token count
-      const usage = session.lastUsageStats || { input_tokens: 0, output_tokens: totalOutputTokens };
+      // The fallback COUNTS streamed deltas — it is an estimate, not a report.
+      // Flag it so ledgers/telemetry never absorb it as a measured figure.
+      const usage = session.lastUsageStats
+        || { input_tokens: 0, output_tokens: totalOutputTokens, estimated: true };
       session.lastUsageStats = null;
       yield { type: 'done', usage };
 
