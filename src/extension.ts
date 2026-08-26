@@ -455,12 +455,16 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('mysti.boostSummary', () => {
       const s = boostManager.snapshot();
       const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
-      const est = s.estimated ? ' (~ some figures estimated)' : '';
+      // The two estimate flags are scoped separately on purpose — a session of
+      // clean provider-reported numbers must not inherit a "~" from a run
+      // recorded weeks ago.
+      const sessionEst = s.estimated ? ' (~ some estimated)' : '';
+      const lifetimeEst = s.lifetimeEstimated ? ' (~ some estimated)' : '';
       vscode.window.showInformationMessage(
         `Boost ${s.enabled ? `ON · ${s.profile}` : 'off'} — session: ${s.session.turns} turns, `
         + `${s.session.roundTrips} round-trips, ${fmt(s.session.contextTokens)} context tokens, `
-        + `${fmt(s.session.outputTokens)} output, ${s.session.delegations} delegations. `
-        + `Lifetime: ${s.lifetime.turns} turns, ${fmt(s.lifetime.contextTokens)} context tokens${est}.`,
+        + `${fmt(s.session.outputTokens)} output, ${s.session.delegations} delegations${sessionEst}. `
+        + `Lifetime: ${s.lifetime.turns} turns, ${fmt(s.lifetime.contextTokens)} context tokens${lifetimeEst}.`,
       );
     })
   );

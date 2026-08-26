@@ -105,6 +105,53 @@ describe('ModelRouter.suggestTier', () => {
     expect(r.suggestTier('Describe the data flow of the brainstorm mode')).toBe('fast');
   });
 
+  it('sees an edit ask that opens a sentence, line, bullet, or clause', () => {
+    // The guard first matched edit verbs only after and/then/also/to/by, so
+    // coverage was phrasing-accidental: the same ask starting a new sentence
+    // or a bullet slipped straight through to the cheap, write-capable lane.
+    const r = router(true, 'economy');
+    for (const task of [
+      'Explain what the retry helper does. Fix the off-by-one in the loop.',
+      'Explain the retry logic:\n- fix the exponential backoff\n- remove the dead branch',
+      'Explain the parser; refactor it so the lexer is reused',
+      'Explain what this does\n\nfix the bug',
+      'Explain + fix the null deref in the reducer',
+    ]) {
+      expect(r.suggestTier(task), task).not.toBe('fast');
+    }
+  });
+
+  it('covers the common edit verbs, not just a sample of them', () => {
+    const r = router(true, 'economy');
+    for (const verb of [
+      'write', 'generate', 'apply', 'commit', 'scaffold', 'revert', 'make',
+      'move', 'drop', 'extract', 'split', 'convert', 'port', 'harden',
+      'replace', 'rewrite', 'upgrade', 'annotate', 'consolidate',
+    ]) {
+      const task = `Explain the module and ${verb} the missing handler`;
+      expect(r.suggestTier(task), task).not.toBe('fast');
+    }
+  });
+
+  it('never lets task LENGTH decide the tier', () => {
+    // The safety gates once shared a 2000-char window with the `^`-anchored
+    // lead test, so truncation could only ever discard an escalation or a
+    // veto — the same brief routed differently purely because it was long.
+    const r = router(true, 'economy');
+    const filler = ' lorem ipsum dolor sit amet consectetur adipiscing elit'.repeat(45);
+    expect(filler.length).toBeGreaterThan(2000);
+
+    // Security content past char 2000 must still escalate.
+    expect(r.suggestTier(`Summarize the following context:\n${filler}\nthen check the permission gate for injection`))
+      .toBe('strong');
+    // An edit ask past char 2000 must still veto the downgrade.
+    expect(r.suggestTier(`Summarize the following brief:\n${filler}\nFinally, add the missing null check.`))
+      .not.toBe('fast');
+    // And a genuinely long prose task is still fast.
+    expect(r.suggestTier(`Summarize the following meeting notes for the newsletter.${filler}`))
+      .toBe('fast');
+  });
+
   it('runs in linear time on adversarial input (no ReDoS)', () => {
     const r = router(true, 'economy');
     const hostile = `summarize ${'and '.repeat(20_000)}`;
@@ -148,5 +195,15 @@ describe('ModelRouter.delegationEffort', () => {
     expect(r.delegationEffort('fast', 'max')).toBe('medium');
     // Absent parent effort ⇒ assume the shipped 'high' default.
     expect(r.delegationEffort('fast', undefined)).toBe('medium');
+  });
+
+  it('does not override when the parent effort is not a known tier', () => {
+    // Settings are read with an unchecked cast, so junk is reachable. The
+    // parent's own clampEffort drops an unknown value to the backend's LOWEST
+    // tier — assuming 'high' here would hand the child a higher effort than
+    // the parent is actually running at.
+    const r = router(true, 'economy');
+    expect(r.delegationEffort('fast', 'none' as never)).toBeUndefined();
+    expect(r.delegationEffort('fast', '' as never)).toBeUndefined();
   });
 });

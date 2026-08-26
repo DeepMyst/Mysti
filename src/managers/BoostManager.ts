@@ -99,7 +99,11 @@ export class BoostManager {
 
   private _session: BoostTotals = emptyTotals();
   private _lifetime: BoostTotals = emptyTotals();
-  private _anyEstimated = false;
+  /** Turns recorded but not yet merged into the persisted lifetime totals. */
+  private _pendingDelta: BoostTotals = emptyTotals();
+  private _sessionEstimated = false;
+  private _lifetimeEstimated = false;
+  private _pendingEstimated = false;
   /** Sum of context tokens across session turns that actually reported context. */
   private _sessionContextSum = 0;
   private _sessionContextTurns = 0;
@@ -120,7 +124,7 @@ export class BoostManager {
     const persisted = this._context.globalState.get<PersistedLedger>(LEDGER_KEY);
     if (persisted && persisted.lifetime) {
       this._lifetime = { ...emptyTotals(), ...persisted.lifetime };
-      this._anyEstimated = !!persisted.anyEstimated;
+      this._lifetimeEstimated = !!persisted.anyEstimated;
     }
 
     // Only wired when running against the real vscode API surface; the test
@@ -202,7 +206,7 @@ export class BoostManager {
     const rt = Math.max(0, rec.roundTrips ?? 1);
     const del = Math.max(0, rec.delegations ?? 0);
 
-    for (const t of [this._session, this._lifetime]) {
+    for (const t of [this._session, this._lifetime, this._pendingDelta]) {
       t.turns += 1;
       t.roundTrips += rt;
       t.contextTokens += ctx;
@@ -213,7 +217,11 @@ export class BoostManager {
       this._sessionContextSum += ctx;
       this._sessionContextTurns += 1;
     }
-    if (rec.estimated) { this._anyEstimated = true; }
+    if (rec.estimated) {
+      this._sessionEstimated = true;
+      this._lifetimeEstimated = true;
+      this._pendingEstimated = true;
+    }
 
     this._persist();
     this._onDidChange.fire(this.snapshot());
@@ -228,7 +236,8 @@ export class BoostManager {
       sessionMeanContextTokens: this._sessionContextTurns > 0
         ? Math.round(this._sessionContextSum / this._sessionContextTurns)
         : 0,
-      estimated: this._anyEstimated,
+      estimated: this._sessionEstimated,
+      lifetimeEstimated: this._lifetimeEstimated,
     };
   }
 
@@ -237,11 +246,56 @@ export class BoostManager {
     this._session = emptyTotals();
     this._sessionContextSum = 0;
     this._sessionContextTurns = 0;
+    this._sessionEstimated = false;
     this._onDidChange.fire(this.snapshot());
   }
 
+  /**
+   * Merge this instance's un-persisted turns into whatever is CURRENTLY stored,
+   * rather than overwriting with our own running total. VS Code globalState is
+   * shared across windows, and each window snapshots it once at construction —
+   * a blind write makes concurrent windows clobber each other's lifetime totals
+   * (last writer wins, the other window's turns vanish). Read-modify-write with
+   * a delta converges instead.
+   *
+   * Assumes `globalState.get()` reflects this instance's own pending
+   * `update()` — true for VS Code's Memento, which updates its in-memory cache
+   * synchronously and flushes to disk in the background. If it did not, our
+   * previous contribution would be missing from `stored` and the delta would
+   * under-count (never double-count).
+   */
   private _persist(): void {
-    const payload: PersistedLedger = { lifetime: this._lifetime, anyEstimated: this._anyEstimated };
+    let stored: BoostTotals = emptyTotals();
+    let storedEstimated = false;
+    try {
+      const cur = this._context.globalState.get<PersistedLedger>(LEDGER_KEY);
+      if (cur && cur.lifetime) {
+        stored = { ...emptyTotals(), ...cur.lifetime };
+        storedEstimated = !!cur.anyEstimated;
+      }
+    } catch {
+      // Unreadable store: fall back to our own accumulation below.
+      stored = { ...this._lifetime };
+      storedEstimated = this._lifetimeEstimated;
+    }
+    const merged: BoostTotals = {
+      turns: stored.turns + this._pendingDelta.turns,
+      roundTrips: stored.roundTrips + this._pendingDelta.roundTrips,
+      contextTokens: stored.contextTokens + this._pendingDelta.contextTokens,
+      outputTokens: stored.outputTokens + this._pendingDelta.outputTokens,
+      delegations: stored.delegations + this._pendingDelta.delegations,
+    };
+    const mergedEstimated = storedEstimated || this._pendingEstimated;
+    // Defensive COPY: an in-memory Memento (VS Code's cache, and the test
+    // fake) stores the reference we hand it. Sharing `merged` with _lifetime
+    // means the next turn's increments mutate the persisted value in place,
+    // and the read-modify-write above then double-counts its own delta.
+    const payload: PersistedLedger = { lifetime: { ...merged }, anyEstimated: mergedEstimated };
+    // Adopt the merged view so our own snapshot reflects other windows too.
+    this._lifetime = merged;
+    this._lifetimeEstimated = mergedEstimated;
+    this._pendingDelta = emptyTotals();
+    this._pendingEstimated = false;
     try {
       const result = this._context.globalState.update(LEDGER_KEY, payload);
       if (result && typeof (result as Thenable<void>).then === 'function') {

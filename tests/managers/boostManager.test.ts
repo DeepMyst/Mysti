@@ -15,8 +15,9 @@
  * explicitly, and returns undefined entirely when Boost is off — so the stock
  * configuration path is byte-identical with Boost disabled.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import * as vscode from 'vscode';
+import { clearMockConfig, setMockConfig, setMockConfigInspect } from '../helpers/mockVscode';
 import { BoostManager, BoostConfigReader } from '../../src/managers/BoostManager';
 
 function makeContext(): vscode.ExtensionContext {
@@ -126,6 +127,56 @@ describe('BoostManager ledger', () => {
     expect(s.session.turns).toBe(0);
   });
 
+  it('merges concurrent windows instead of clobbering (read-modify-write)', () => {
+    // globalState is shared across VS Code windows and each BoostManager reads
+    // it once at construction. A blind write makes the last writer win and the
+    // other window's turns vanish.
+    const ctx = makeContext();
+    const w1 = make({ enabled: true }, ctx);
+    const w2 = make({ enabled: true }, ctx);
+    w1.recordTurn({ kind: 'cli', provider: 'a', contextTokens: 1_000, estimated: false });
+    w2.recordTurn({ kind: 'cli', provider: 'b', contextTokens: 2_000, estimated: false });
+    w1.recordTurn({ kind: 'cli', provider: 'a', contextTokens: 4_000, estimated: false });
+
+    const fresh = make({ enabled: true }, ctx);
+    expect(fresh.snapshot().lifetime.turns).toBe(3);
+    expect(fresh.snapshot().lifetime.contextTokens).toBe(7_000);
+    // Each window still reports only its OWN session.
+    expect(w2.snapshot().session.turns).toBe(1);
+  });
+
+  it('does not let a persisted total keep mutating after it is stored', () => {
+    // Regression: the payload once shared its object with the in-memory
+    // lifetime, so later turns mutated the stored value in place and the
+    // read-modify-write double-counted its own delta.
+    const ctx = makeContext();
+    const m = make({ enabled: true }, ctx);
+    m.recordTurn({ kind: 'cli', provider: 't', contextTokens: 10_000, estimated: false });
+    m.recordTurn({ kind: 'cli', provider: 't', contextTokens: 30_000, estimated: false });
+    expect(m.snapshot().lifetime.turns).toBe(2);
+    expect(m.snapshot().lifetime.contextTokens).toBe(40_000);
+  });
+
+  it('scopes the estimate flag to the session, not forever', () => {
+    // A lifetime-sticky flag marks every later clean session as estimated —
+    // a warning that is always on is a warning nobody reads.
+    const ctx = makeContext();
+    const a = make({ enabled: true }, ctx);
+    a.recordTurn({ kind: 'coordinator', provider: 'mysti', estimated: true });
+    expect(a.snapshot().estimated).toBe(true);
+    expect(a.snapshot().lifetimeEstimated).toBe(true);
+
+    a.resetSession();
+    expect(a.snapshot().estimated).toBe(false);
+    expect(a.snapshot().lifetimeEstimated).toBe(true);
+
+    // A brand-new session over the same store starts clean too.
+    const b = make({ enabled: true }, ctx);
+    b.recordTurn({ kind: 'cli', provider: 't', contextTokens: 5, estimated: false });
+    expect(b.snapshot().estimated).toBe(false);
+    expect(b.snapshot().lifetimeEstimated).toBe(true);
+  });
+
   it('resetSession clears session but keeps lifetime', () => {
     const m = make({ enabled: true });
     m.recordTurn({ kind: 'cli', provider: 'test', contextTokens: 5_000, estimated: false });
@@ -165,5 +216,56 @@ describe('BoostManager ledger', () => {
     m.recordTurn({ kind: 'cli', provider: 'test', contextTokens: 1_000, estimated: false });
     expect(m.snapshot().session.turns).toBe(1);
     expect(m.snapshot().enabled).toBe(false);
+  });
+});
+
+describe('BoostManager against the REAL config reader', () => {
+  // The overlay-precedence tests above inject a fake BoostConfigReader, so they
+  // cannot catch a wrong settings key or a dropped scope in the shipped
+  // defaultConfigReader — which is the thing that actually decides whether a
+  // user's explicit value survives. These construct BoostManager with NO
+  // injected reader, so it goes through vscode.workspace.getConfiguration.
+  beforeEach(() => { clearMockConfig(); });
+
+  it('reads the boost keys under the mysti section', () => {
+    setMockConfig('boost.enabled', true);
+    setMockConfig('boost.profile', 'economy');
+    const m = new BoostManager(makeContext());
+    expect(m.isEnabled()).toBe(true);
+    expect(m.profile()).toBe('economy');
+    expect(m.compactionThreshold()).toBe(35);
+    m.dispose();
+  });
+
+  it('is inert by default — no overlay when nothing is configured', () => {
+    const m = new BoostManager(makeContext());
+    expect(m.isEnabled()).toBe(false);
+    expect(m.compactionThreshold()).toBeUndefined();
+    expect(m.smartCompactionEnabled()).toBeUndefined();
+    m.dispose();
+  });
+
+  it('detects an explicit user value at EVERY scope, per key', () => {
+    for (const scope of ['globalValue', 'workspaceValue', 'workspaceFolderValue'] as const) {
+      clearMockConfig();
+      setMockConfig('boost.enabled', true);
+      setMockConfigInspect('compaction.threshold', { [scope]: 80 });
+      const m = new BoostManager(makeContext());
+      expect(m.compactionThreshold(), scope).toBeUndefined();
+      // The untouched key is still overlaid.
+      expect(m.smartCompactionEnabled(), scope).toBe(true);
+      m.dispose();
+    }
+  });
+
+  it('a package.json default alone is NOT an explicit user value', () => {
+    setMockConfig('boost.enabled', true);
+    // inspect() reports only defaultValue — the user never set anything.
+    setMockConfigInspect('compaction.threshold', { defaultValue: 75 });
+    setMockConfigInspect('compaction.smart.enabled', { defaultValue: false });
+    const m = new BoostManager(makeContext());
+    expect(m.compactionThreshold()).toBe(45);
+    expect(m.smartCompactionEnabled()).toBe(true);
+    m.dispose();
   });
 });

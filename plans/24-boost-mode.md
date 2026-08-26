@@ -6,7 +6,19 @@
 
 **Shipped surface:** `src/managers/BoostManager.ts` (overlay + sensor ledger), `src/services/ModelRouter.ts` (tier/effort suggestions), the `CompactionManager` overlay seam (`setBoostOverlay`, consulted from `_loadThreshold`/`_loadSmartEnabled`), `spec.effortLevel` on `CollaboratorSpec` → `CollaboratorPool` child settings, two machine-scoped settings (`mysti.boost.enabled` default **false**, `mysti.boost.profile`), a status-bar chip + `mysti.boostSummary` command, and four test files (33 tests).
 
-**Post-implementation adversarial review** (3 lenses × verify): 7 confirmed findings, all fixed — fast-lane verb allowlist could downgrade code-writing tasks (dropped `document`/`list`, added a verb-position edit-intent guard); `delegationEffort` could raise a child above its parent; stale `reqTier` dropped a Boost-chosen tier from the persisted delegate card; coordinator round-trips booked as 1 per run (`streams` hoisted out of the try block); unknown/synthesized usage booked as measured zeros (`UsageStats.estimated`, honored on both paths).
+**Two adversarial review rounds** (round 1: 3 lenses × verify, 7 confirmed; round 2: 8 recovered claims + a fresh review of round 1's own fixes, 27 agents, 10 confirmed). Round 1's 7, all fixed — fast-lane verb allowlist could downgrade code-writing tasks (dropped `document`/`list`, added a verb-position edit-intent guard); `delegationEffort` could raise a child above its parent; stale `reqTier` dropped a Boost-chosen tier from the persisted delegate card; coordinator round-trips booked as 1 per run (`streams` hoisted out of the try block); unknown/synthesized usage booked as measured zeros (`UsageStats.estimated`, honored on both paths).
+
+Round 2 found 10 more, all fixed — the notable ones being defects in round 1's *own* fixes: the widened
+fast-lane guard only recognised edit verbs after a connector word (so `Explain X. Fix Y.` still routed
+cheap) and enumerated ~19 verbs (bare `write` slipped through); the 2000-char scan window was shared by
+the `^`-anchored lead test and the two scan-anywhere safety gates, so task LENGTH alone could invert a
+`strong` into a `fast`; an out-of-union `parentEffort` was read as `'high'` and raised a child above a
+parent that `clampEffort` had dropped to its lowest tier; several backends default a missing usage field
+to `0`, which booked as a measured-zero context; and the cross-window ledger merge (added in round 2)
+initially shared its object with the persisted payload, so later turns mutated the stored value in place.
+Round 2 also **refuted** 6 claims — notably that the lifetime estimate flag should be cleared on session
+reset (it must not: that would present a tainted lifetime total as measured; the shipped fix instead
+scopes the two flags separately).
 
 **Evidence base:** all performance figures come from 34,871 measured Claude Code round-trips (grouped by API `requestId`), not estimates. External write-ups: "The 436k Round-Trip" (diagnosis), "Faster Claude Code" (ordering), "Which Model, Where" (model behaviour). Key numbers used below:
 
@@ -29,7 +41,7 @@ Boost increases delegated execution, so it was gated on the fail-open permission
 | # | Ships | Status |
 |---|-------|--------|
 | 0 | `mysti.boost.*` settings + `BoostManager` overlay (compaction threshold ↓, smart compaction on, profile presets). Overlay, not settings-writes: explicit user values always win. + `READ_ONLY_TOOLS` membership test. | **SHIPPED** |
-| 1 | Sensor: per-turn ledger (context, output, round-trips, model) captured from provider `done` usage; status-bar surfacing. | **SHIPPED** — hooked on all three paths (CLI done, coordinator incl. background jobs); estimates flagged, never presented as measured |
+| 1 | Sensor: per-turn ledger (context, output, round-trips, model) captured from provider `done` usage; status-bar surfacing. | **SHIPPED** — hooked on the CLI `done` path, the coordinator (incl. background jobs), and `orchestrate`. **NOT hooked:** brainstorm per-agent runs, `@agent:role` mention-collaboration, and child delegation tokens (CollaboratorPool has no ledger hook) — so session totals under-count those paths. Estimates are flagged and never presented as measured |
 | 2 | `ModelRouter` service: task-class → tier/effort table for **delegated** work only; never overrides an explicit user model choice (custom-model precedence hazard — route by tier/backend, not by mutating `settings.model`). | **SHIPPED** — suggestions feed the existing `tierApplied` machinery, so backend `modelSelection:'none'` checks and `routedModel` precedence hold unchanged; only fires when the coordinator supplied NO tier |
 | 3 | Round-trip reducer: widen `runBounded` beyond read-only; merge detector (record-only). | not started — gated on Phase 1 data |
 | 4 | Fan-out scheduler on `CollaboratorPool`+`OrchestratorDag`: decompose → file-disjoint lanes → verify gate → merge. **Refuses single-lane dispatch** (serial delegation measured slower than inline). Cap 3–4 lanes. | not started |

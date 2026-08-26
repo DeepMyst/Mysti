@@ -565,7 +565,14 @@ export interface BoostTurnRecord {
   kind: BoostTurnKind;
   provider: string;
   model?: string;
-  /** input + cache-read tokens for the turn (the "context" convention used by CompactionManager). */
+  /**
+   * Prompt-side tokens for the turn, or undefined when the provider reported
+   * none. On the CLI path this is a context FILL (input + cache-read, the
+   * CompactionManager convention); on the coordinator path it is the SUM of
+   * prompt tokens across the run's ReAct round-trips. Both answer "prompt
+   * tokens this turn cost", but only the CLI figure is comparable to
+   * `contextWindow` — don't derive a fill percentage from a coordinator record.
+   */
   contextTokens?: number;
   outputTokens?: number;
   cacheReadTokens?: number;
@@ -596,8 +603,15 @@ export interface BoostSnapshot {
   lifetime: BoostTotals;
   /** Mean context tokens per recorded turn this session (0 when no data). */
   sessionMeanContextTokens: number;
-  /** Whether any recorded figure was an estimate. */
+  /**
+   * Whether any figure in THIS SESSION is an estimate. Session-scoped on
+   * purpose: a lifetime-sticky flag would mark every later session's clean
+   * numbers as estimated forever, and a warning that is always on is a warning
+   * users stop reading.
+   */
   estimated: boolean;
+  /** Whether any figure in the persisted LIFETIME totals is an estimate. */
+  lifetimeEstimated: boolean;
 }
 
 /** Structured incremental-memory sections the compactor agent maintains. */

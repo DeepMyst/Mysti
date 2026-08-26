@@ -4347,18 +4347,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               // effectiveSettings so attribution is right in autonomous mode.
               // contextTokens = input + cache-read (the CompactionManager fill
               // convention). Never gates; tolerates whatever is missing.
+              // Several backends DEFAULT a missing field to 0 rather than
+              // omitting usage (cursor/hermes/kimi/ollama), so a zero context
+              // means "the provider told us nothing", not "this turn used no
+              // context" — no real turn has zero input AND zero cache-read.
+              // Book it as unknown rather than as a measured zero.
+              const cacheRead = lastUsage.cache_read_input_tokens || 0;
+              const contextKnown = lastUsage.input_tokens > 0 || cacheRead > 0;
               this._boostManager?.recordTurn({
                 kind: 'cli',
                 provider: effectiveSettings.provider,
                 model: effectiveSettings.model,
-                contextTokens: lastUsage.input_tokens + (lastUsage.cache_read_input_tokens || 0),
+                contextTokens: contextKnown ? lastUsage.input_tokens + cacheRead : undefined,
                 outputTokens: lastUsage.output_tokens,
                 cacheReadTokens: lastUsage.cache_read_input_tokens,
                 cacheCreationTokens: lastUsage.cache_creation_input_tokens,
                 contextWindow,
                 roundTrips: 1,
                 // Honor a provider that flagged its own figures as synthesized.
-                estimated: lastUsage.estimated === true,
+                estimated: lastUsage.estimated === true || !contextKnown,
               });
             }
 
@@ -9237,6 +9244,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // (review round-5 #7). The finalize loop ignores rf.directive, so
           // recognizing the tag only redacts it — nothing is dispatched.
           const fScanner = new MystiTagScanner(delegateNonce, scanKinds);
+          // Plan 24 Phase 1: the finalize pass is a real model round-trip and
+          // books its own usage below, so it must be counted — otherwise a run
+          // that ends here under-reports round-trips by exactly one.
+          streams++;
           for await (const ev of this._mystiCoordinator.stream(finalizeMessages, { maxTokens: 4096, reasoningEffort: effort, signal: finalizeController.signal })) {
             if (isCancelled()) { break; }
             if (ev.error) { break; } // keep whatever we have; don't flip to errored
@@ -10168,6 +10179,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this._postToPanel(panelId, { type: 'mystiStarted', payload: { brief } });
     let synthesis = '';
+    // Plan 24 Phase 1: DAG nodes actually executed — the closest honest
+    // delegation count this path can report.
+    let outcomes = 0;
     try {
       const gen = this._mystiOrchestrator.run({
         brief, context, settings, panelId,
@@ -10184,6 +10198,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       if (next.done && next.value) {
         synthesis = next.value.synthesis || '';
+        outcomes = next.value.outcomes?.length ?? 0;
       }
     } catch (error) {
       console.error('[Mysti] @mysti orchestration failed:', error);
@@ -10194,6 +10209,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // shown as cancelled, not falsely "complete".
     const cancelled = this._cancelledPanels.has(panelId);
     this._postToPanel(panelId, { type: 'mystiComplete', payload: { cancelled } });
+    // Plan 24 Phase 1: `orchestrate` is a FOURTH coordinator completion path —
+    // it returns to the caller without ever reaching _runMystiAgentic, so
+    // without this the most expensive kind of run (a whole DAG of delegations)
+    // would be invisible to the sensor. The orchestrator surfaces no token
+    // usage, so the token fields stay undefined and the record is flagged
+    // estimated rather than booking a measured zero.
+    this._boostManager?.recordTurn({
+      kind: 'coordinator',
+      provider: settings.provider,
+      delegations: outcomes,
+      estimated: true,
+    });
     return synthesis;
   }
 

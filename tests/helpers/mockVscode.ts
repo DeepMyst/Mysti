@@ -8,6 +8,25 @@ const configValues: Record<string, unknown> = {};
 /** Records every `config.update(key, value)` call made by code under test. */
 const configUpdates: Record<string, unknown> = {};
 
+/**
+ * Per-scope values returned by `config.inspect(key)`. OPT-IN: a key that was
+ * never registered here still makes `inspect()` return undefined, exactly as
+ * before, so existing suites are unaffected. Use this when the code under test
+ * distinguishes "the user set this explicitly" from "this is the default"
+ * (settingsClamp, BoostManager's overlay precedence).
+ */
+interface MockInspectResult {
+  globalValue?: unknown;
+  workspaceValue?: unknown;
+  workspaceFolderValue?: unknown;
+  defaultValue?: unknown;
+}
+const configInspect: Record<string, MockInspectResult> = {};
+
+export function setMockConfigInspect(key: string, scopes: MockInspectResult): void {
+  configInspect[key] = scopes;
+}
+
 export function setMockConfig(key: string, value: unknown): void {
   configValues[key] = value;
 }
@@ -18,6 +37,9 @@ export function clearMockConfig(): void {
   }
   for (const key of Object.keys(configUpdates)) {
     delete configUpdates[key];
+  }
+  for (const key of Object.keys(configInspect)) {
+    delete configInspect[key];
   }
 }
 
@@ -36,7 +58,10 @@ const mockWorkspaceConfiguration = {
   has(key: string): boolean {
     return key in configValues;
   },
-  inspect() {
+  inspect(key?: string) {
+    if (typeof key === 'string' && key in configInspect) {
+      return { key, ...configInspect[key] };
+    }
     return undefined;
   },
   update(key?: string, value?: unknown) {
