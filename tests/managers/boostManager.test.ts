@@ -219,6 +219,124 @@ describe('BoostManager ledger', () => {
   });
 });
 
+describe('BoostManager phase 3/4/5 policy', () => {
+  it('every policy is inert while Boost is off', () => {
+    const m = make({ enabled: false });
+    expect(m.batchReadOnlyPrefix()).toBe(false);
+    expect(m.refuseSingleLane()).toBe(false);
+    expect(m.isColdResume('p1')).toBe(false);
+  });
+
+  it('verify lane is on except in economy, and never with Boost off', () => {
+    // It costs a read-only delegation, so the cheapest profile declines it.
+    expect(make({ enabled: true, profile: 'economy' }).verifyParallelLanes()).toBe(false);
+    expect(make({ enabled: true, profile: 'balanced' }).verifyParallelLanes()).toBe(true);
+    expect(make({ enabled: true, profile: 'quality' }).verifyParallelLanes()).toBe(true);
+    expect(make({ enabled: false, profile: 'quality' }).verifyParallelLanes()).toBe(false);
+  });
+
+  it('lane cap follows the profile and stays in the measured 3-4 band', () => {
+    expect(make({ enabled: true, profile: 'economy' }).maxLanes()).toBe(3);
+    expect(make({ enabled: true, profile: 'balanced' }).maxLanes()).toBe(3);
+    expect(make({ enabled: true, profile: 'quality' }).maxLanes()).toBe(4);
+  });
+
+  it('detects a cold resume only when BOTH idle and size qualify', () => {
+    const m = make({ enabled: true });
+    const HOUR = 60 * 60 * 1000;
+    m.recordTurn({ kind: 'cli', panelId: 'p1', provider: 't', contextTokens: 200_000, estimated: false });
+    const at = m.panelActivity('p1')!.at;
+
+    // Big but warm — resuming re-reads the cache at 0.1x, nothing to fix.
+    expect(m.isColdResume('p1', at + 5 * 60_000)).toBe(false);
+    // Idle and big — the case that measured 52% of all cache-write tokens.
+    expect(m.isColdResume('p1', at + HOUR + 1)).toBe(true);
+  });
+
+  it('does not intercept a small session, however long it idled', () => {
+    const m = make({ enabled: true });
+    m.recordTurn({ kind: 'cli', panelId: 'p2', provider: 't', contextTokens: 5_000, estimated: false });
+    const at = m.panelActivity('p2')!.at;
+    expect(m.isColdResume('p2', at + 24 * 60 * 60 * 1000)).toBe(false);
+  });
+
+  it('an unknown-usage turn does not reset the idle clock', () => {
+    // A backend that reports nothing must not make a session look warm
+    // forever — that would disable interception exactly where it is needed.
+    const m = make({ enabled: true });
+    m.recordTurn({ kind: 'cli', panelId: 'p3', provider: 't', contextTokens: 200_000, estimated: false });
+    const first = m.panelActivity('p3')!.at;
+    m.recordTurn({ kind: 'cli', panelId: 'p3', provider: 't', estimated: true });
+    expect(m.panelActivity('p3')!.at).toBe(first);
+  });
+
+  it('clearing activity stops one reading from firing twice', () => {
+    const m = make({ enabled: true });
+    m.recordTurn({ kind: 'cli', panelId: 'p4', provider: 't', contextTokens: 200_000, estimated: false });
+    const at = m.panelActivity('p4')!.at;
+    expect(m.isColdResume('p4', at + 2 * 60 * 60 * 1000)).toBe(true);
+    m.clearPanelActivity('p4');
+    expect(m.isColdResume('p4', at + 2 * 60 * 60 * 1000)).toBe(false);
+  });
+
+  it('never confuses one panel with another', () => {
+    const m = make({ enabled: true });
+    m.recordTurn({ kind: 'cli', panelId: 'a', provider: 't', contextTokens: 200_000, estimated: false });
+    const at = m.panelActivity('a')!.at;
+    expect(m.isColdResume('b', at + 2 * 60 * 60 * 1000)).toBe(false);
+  });
+
+  it('accumulates the record-only phase 3/5 counters', () => {
+    const m = make({ enabled: true });
+    m.recordTurn({
+      kind: 'coordinator', provider: 'mysti', contextTokens: 1_000,
+      redundantToolCalls: 2, mergeableRoundTrips: 3, estimated: false,
+    });
+    m.recordTurn({
+      kind: 'cli', panelId: 'p', provider: 't', contextTokens: 1_000,
+      coldResumeIntercepted: true, estimated: false,
+    });
+    const s = m.snapshot().session;
+    expect(s.redundantToolCalls).toBe(2);
+    expect(s.mergeableRoundTrips).toBe(3);
+    expect(s.coldResumesIntercepted).toBe(1);
+  });
+
+  it('persists the new counters across instances', () => {
+    const ctx = makeContext();
+    const a = make({ enabled: true }, ctx);
+    a.recordTurn({
+      kind: 'coordinator', provider: 'mysti', contextTokens: 10,
+      redundantToolCalls: 4, mergeableRoundTrips: 1, estimated: false,
+    });
+    const b = make({ enabled: true }, ctx);
+    expect(b.snapshot().lifetime.redundantToolCalls).toBe(4);
+    expect(b.snapshot().lifetime.mergeableRoundTrips).toBe(1);
+  });
+
+  it('tolerates a ledger persisted before these counters existed', () => {
+    // A user upgrading mid-stream has a stored payload with no such fields;
+    // undefined + number must not produce NaN totals.
+    const store = new Map<string, unknown>();
+    store.set('mysti.boost.ledger.v1', {
+      lifetime: { turns: 2, roundTrips: 2, contextTokens: 50, outputTokens: 5, delegations: 0 },
+      anyEstimated: false,
+    });
+    const ctx = {
+      globalState: {
+        get: (k: string) => store.get(k),
+        update: (k: string, v: unknown) => { store.set(k, v); return Promise.resolve(); },
+      },
+    } as unknown as vscode.ExtensionContext;
+    const m = make({ enabled: true }, ctx);
+    m.recordTurn({ kind: 'cli', provider: 't', contextTokens: 10, redundantToolCalls: 1, estimated: false });
+    const life = m.snapshot().lifetime;
+    expect(Number.isFinite(life.redundantToolCalls)).toBe(true);
+    expect(life.redundantToolCalls).toBe(1);
+    expect(life.turns).toBe(3);
+  });
+});
+
 describe('BoostManager against the REAL config reader', () => {
   // The overlay-precedence tests above inject a fake BoostConfigReader, so they
   // cannot catch a wrong settings key or a dropped scope in the shipped

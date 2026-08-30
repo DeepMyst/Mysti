@@ -40,6 +40,7 @@ import { isSafeAgentId } from '../managers/agentMarkdown';
 import { SKILL_STAGING_DIR } from '../services/MystiLocalTools';
 import { parseToolArgs, type AccumulatedToolCall } from '../utils/toolCallAccumulator';
 import { runBounded } from '../utils/boundedConcurrency';
+import { selectToolBatch } from '../utils/toolBatching';
 import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
 import { MystiLocalTools } from '../services/MystiLocalTools';
 import { MystiMemoryStore } from '../services/MystiMemoryStore';
@@ -3398,19 +3399,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           return;
         }
 
+        // What the inline path runs if orchestration declines below. Starts as
+        // the brief and becomes the PREFIX-STRIPPED task on a refusal — sending
+        // the raw brief would leak the literal word "orchestrate" into the
+        // coordinator's prompt as if it were part of the request.
+        let inlineBrief = brief;
         const orchestrateMatch = brief.match(/^\s*orchestrate\b[:\s]*/i);
         if (orchestrateMatch && this._mystiOrchestrator) {
           // Explicit multi-agent orchestration.
           const task = brief.slice(orchestrateMatch[0].length).trim() || brief;
-          const synthesis = await this._runMystiOrchestration(task, context, settings, conversation, panelId);
+          const orch = await this._runMystiOrchestration(task, context, settings, conversation, panelId);
           if (this._cancelledPanels.has(panelId)) {
             this._postToPanel(panelId, { type: 'requestCancelled' });
             return;
           }
-          const finalText = synthesis || 'The Mysti agent did not produce a result.';
-          const assistantMessage = this._conversationManager.addMessageToConversation(conversationId, 'assistant', finalText);
-          this._postToPanel(panelId, { type: 'responseComplete', payload: { message: assistantMessage } });
-          return;
+          // Phase 4: a refused single-lane plan means "answer inline" — fall
+          // through to the normal agentic path rather than posting an empty
+          // result. The brief (minus the `orchestrate` prefix) is what runs.
+          if (!orch.refused) {
+            const finalText = orch.synthesis || 'The Mysti agent did not produce a result.';
+            const assistantMessage = this._conversationManager.addMessageToConversation(conversationId, 'assistant', finalText);
+            this._postToPanel(panelId, { type: 'responseComplete', payload: { message: assistantMessage } });
+            return;
+          }
+          inlineBrief = task;
         }
         // Default: Mysti answers like a normal streaming agent, and may delegate
         // sub-tasks to specialist backends mid-stream (rendered inline as tool
@@ -3419,8 +3431,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // coordinator's delegation choices (so they aren't silently ignored).
         const mentionedAgents = (mentions || []).filter(m => m.type === 'agent').map(m => m.value);
         const mystiBrief = mentionedAgents.length > 0
-          ? `${brief}\n\n(The user suggested involving these agents where useful: ${mentionedAgents.join(', ')}.)`
-          : brief;
+          ? `${inlineBrief}\n\n(The user suggested involving these agents where useful: ${mentionedAgents.join(', ')}.)`
+          : inlineBrief;
         await this._runMystiAgentic(mystiBrief, context, settings, conversation, panelId, conversationId);
         return;
       }
@@ -3827,6 +3839,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           console.log(`[Mysti] Smart retrieval: injected ${retrieved.length} chars of cherry-picked context`);
         }
       } catch { /* retrieval is never allowed to block a send */ }
+
+      // ── Plan 24 Phase 5: cold-resume interception.
+      // Resuming a big session after it has gone idle past the cache TTL
+      // re-writes the WHOLE prefix at the 2x cache-write rate — measured at 52%
+      // of all cache-write tokens ever paid. Compacting FIRST means the
+      // expensive re-write is of the compacted prefix, not the full history.
+      // Boost-gated: `isColdResume` returns false whenever Boost is off, so the
+      // stock send path is untouched.
+      let coldResumeIntercepted = false;
+      if (this._boostManager?.isColdResume(panelId)) {
+        const activity = this._boostManager.panelActivity(panelId);
+        const idleMin = activity ? Math.round((Date.now() - activity.at) / 60000) : 0;
+        console.log(`[Mysti] Boost: cold resume on ${panelId} (idle ${idleMin}m, ~${activity?.fill ?? 0} tokens) — compacting before send`);
+        // Clear FIRST: the compaction below records fresh usage, and an early
+        // failure must not leave the panel eligible to re-fire every send.
+        this._boostManager.clearPanelActivity(panelId);
+        try {
+          const contextWindow = this._providerManager.getModelContextWindow(effectiveSettings.provider, effectiveSettings.model);
+          await this._executeCompaction(
+            panelId,
+            effectiveSettings,
+            conversation,
+            { input_tokens: activity?.fill ?? 0, output_tokens: 0 },
+            contextWindow,
+          );
+          coldResumeIntercepted = true;
+          // Turn-only note (never persisted), matching the retrieval convention
+          // above: the model is told why its history just got shorter.
+          enrichedContent += '\n\n[This session was idle and has been compacted before resuming. Earlier turns are summarized rather than verbatim — ask if you need detail that is missing.]';
+        } catch (err) {
+          // Never block a send on an optimization.
+          console.warn('[Mysti] Boost: cold-resume compaction failed, sending as-is', err);
+        }
+      }
 
       PerfTracker.measure('send.contextBuilt', _sendStartMark);
       const stream = this._providerManager.sendMessage(
@@ -4356,8 +4402,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               const contextKnown = lastUsage.input_tokens > 0 || cacheRead > 0;
               this._boostManager?.recordTurn({
                 kind: 'cli',
+                panelId,
                 provider: effectiveSettings.provider,
                 model: effectiveSettings.model,
+                ...(coldResumeIntercepted ? { coldResumeIntercepted: true } : {}),
                 contextTokens: contextKnown ? lastUsage.input_tokens + cacheRead : undefined,
                 outputTokens: lastUsage.output_tokens,
                 cacheReadTokens: lastUsage.cache_read_input_tokens,
@@ -7153,6 +7201,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       client,
       this._providerManager,
       () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('mysti').get<number>('collab.maxConcurrent', 3))),
+      // Plan 24 Phase 4 fan-out policy. Read lazily so a Boost toggle takes
+      // effect on the next run without rebuilding the orchestrator; with Boost
+      // off these are the pre-Boost defaults, so behaviour is unchanged.
+      () => ({
+        maxLanes: this._boostManager?.maxLanes() ?? 3,
+        refuseSingleLane: this._boostManager?.refuseSingleLane() ?? false,
+        verifyParallelLanes: this._boostManager?.verifyParallelLanes() ?? false,
+      }),
     );
   }
 
@@ -8402,6 +8458,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Per-run cache of the workspace scan (build/test commands) — computed at
     // most once, reused by the verification step (review nit #4).
     let scanCache: { testCommands?: string[]; buildCommands?: string[] } | null | undefined;
+    // ── Plan 24 Phase 3 merge detector (RECORD-ONLY; never blocks a call).
+    // `seenToolSigs` catches the model re-reading what it already read this
+    // run; the lone-read tracking catches two consecutive turns that each
+    // carried exactly one read-only call — those two round-trips could have
+    // been one had the model emitted both together. Both feed the Boost ledger
+    // so the reducer can be tuned against real traffic instead of guesses.
+    const seenToolSigs = new Set<string>();
+    let redundantToolCalls = 0;
+    let mergeableRoundTrips = 0;
+    let prevTurnWasLoneRead = false;
+    const noteToolSig = (kind: string, input: unknown): void => {
+      let sig: string;
+      try { sig = `${kind}:${JSON.stringify(input)}`; } catch { return; }
+      if (seenToolSigs.has(sig)) { redundantToolCalls++; } else { seenToolSigs.add(sig); }
+    };
     const usageTotal = { input_tokens: 0, output_tokens: 0 };
     let sawUsage = false;
     // P0.8: real billed coordinator cost (X-DeepMyst-Cost-USD), summed across turns.
@@ -8531,6 +8602,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._canvasSteeringRuns.add(runId);
       while (streams < gov.maxTurns) {
         streams++;
+        // Phase 3 detector: default this turn to "not a lone read" so every
+        // path (delegate, exec, batch, plain answer) resets it implicitly and
+        // only the single read-only tool path below re-arms it.
+        const prevWasLoneRead = prevTurnWasLoneRead;
+        prevTurnWasLoneRead = false;
         if (isCancelled()) { break; }
         if (!carryScanner) { scanner = new MystiTagScanner(delegateNonce, scanKinds); }
         carryScanner = false;
@@ -8653,16 +8729,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // feed ALL results back in ONE turn instead of dropping the extras. Any
           // mutating/gated call (or a lone call) falls through to the serial
           // one-at-a-time path below — every write/exec/delegate stays gated.
-          const batchable = convs.length > 1 && convs.every(c => !('error' in c.conv) && this._isReadOnlyLocalKind((c.conv as MystiDirective).kind));
-          if (batchable) {
+          // ── Plan 24 Phase 3: decide how much of this batch runs together.
+          // The stock rule is all-or-nothing, so ONE mutating call sends every
+          // read in the batch back for another round-trip. With Boost on the
+          // leading read-only RUN goes now and the model re-issues from the
+          // first mutating call onward.
+          //
+          // Deliberately the PREFIX and not the whole batch: a mutating call
+          // needs its own permission card, and cards are interactive and
+          // ordered, so batching them would mean racing gates. The prefix is
+          // read-only by construction, so this widens throughput without
+          // widening authority — Boost never raises what may run.
+          const batchDecision = selectToolBatch(
+            convs.map(c => ('error' in c.conv ? null : (c.conv as MystiDirective).kind)),
+            (k) => this._isReadOnlyLocalKind(k as MystiDirective['kind']),
+            this._boostManager?.batchReadOnlyPrefix() ?? false,
+          );
+          if (batchDecision.batchSize > 0) {
+            const batchConvs = convs.slice(0, batchDecision.batchSize);
             if (localTools >= gov.maxLocalTools) {
               messages.push({ role: 'assistant', content: turnText });
               messages.push({ role: 'user', content: `Local tool budget exhausted (${gov.maxLocalTools} calls). Answer with what you have, or delegate the remaining investigation to an agent.` });
               continue;
             }
             const remaining = gov.maxLocalTools - localTools;
-            const runList = convs.slice(0, remaining).map(c => c.conv as Extract<MystiDirective, { kind: 'read' | 'ls' | 'grep' | 'diag' }>);
-            const trimmed = convs.length - runList.length;
+            const runList = batchConvs.slice(0, remaining).map(c => c.conv as Extract<MystiDirective, { kind: 'read' | 'ls' | 'grep' | 'diag' }>);
             localTools += runList.length;
             // Post every card first (all show as running), then run bounded-
             // parallel, then resolve + fence IN ORDER for deterministic replay.
@@ -8683,10 +8774,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             for (const { j, res } of outcomes) {
               postToolResult({ id: j.toolId, name: j.d.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
               recordLocalCard(j.toolId, j.d.kind, j.input, res.output, !res.ok);
+              noteToolSig(j.d.kind, j.input);
               fenced.push(this._fenceLocalToolResult(j.d.kind, res.output, nonce, delegateNonce));
             }
             if (isCancelled()) { break; }
-            const trimNote = trimmed > 0 ? `\n\n(${trimmed} further tool call(s) were not run — the local tool budget was reached. Ask again if still needed.)` : '';
+            // Two different reasons for an un-run call, and conflating them
+            // tells the model the wrong thing to do next: a budget stop means
+            // "stop asking", a deferred mutating remainder means "reissue it".
+            const budgetTrimmed = batchConvs.length - runList.length;
+            const deferred = convs.length - batchConvs.length;
+            const notes: string[] = [];
+            if (budgetTrimmed > 0) {
+              notes.push(`${budgetTrimmed} further tool call(s) were not run — the local tool budget was reached. Ask again if still needed.`);
+            }
+            if (deferred > 0) {
+              notes.push(`${deferred} further tool call(s) were not run because they are not read-only; reissue them now and they will be run one at a time.`);
+            }
+            const trimNote = notes.length ? `\n\n(${notes.join(' ')})` : '';
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: fenced.join('\n\n') + trimNote });
             continue;
@@ -8753,6 +8857,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // better than a stuck 'running' card that vanishes on reload.
           postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
           recordLocalCard(toolId, directive.kind, input, res.output, !res.ok);
+          noteToolSig(directive.kind, input);
+          // Exactly one read-only call this turn: if the PREVIOUS turn was the
+          // same shape, those two round-trips could have been one.
+          if (prevWasLoneRead) { mergeableRoundTrips++; }
+          prevTurnWasLoneRead = true;
           if (isCancelled()) { break; }
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: this._fenceLocalToolResult(directive.kind, res.output, nonce, delegateNonce) });
@@ -9394,6 +9503,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       outputTokens: sawUsage ? usageTotal.output_tokens : undefined,
       roundTrips: streams,
       delegations,
+      // Plan 24 Phase 3, record-only: what the round-trip reducer could have saved.
+      redundantToolCalls,
+      mergeableRoundTrips,
       estimated: usagePartial === true || !sawUsage,
     });
     if (bg) {
@@ -10156,10 +10268,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     settings: Settings,
     conversation: Conversation | null,
     panelId: string,
-  ): Promise<string> {
+  ): Promise<{ synthesis: string; refused: boolean }> {
     if (!this._mystiOrchestrator) {
       this._postToPanel(panelId, { type: 'mystiUnavailable', payload: { message: 'The Mysti agent is not initialized.' } });
-      return '';
+      return { synthesis: '', refused: false };
     }
 
     const onQuestion = this._createSubAgentQuestionCallback(panelId);
@@ -10182,6 +10294,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Plan 24 Phase 1: DAG nodes actually executed — the closest honest
     // delegation count this path can report.
     let outcomes = 0;
+    // Plan 24 Phase 4: the orchestrator declined a single-lane dispatch, so the
+    // caller answers inline instead. Nothing ran; no ledger turn is booked.
+    let refused = false;
     try {
       const gen = this._mystiOrchestrator.run({
         brief, context, settings, panelId,
@@ -10199,6 +10314,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (next.done && next.value) {
         synthesis = next.value.synthesis || '';
         outcomes = next.value.outcomes?.length ?? 0;
+        refused = next.value.refused === 'single-lane';
       }
     } catch (error) {
       console.error('[Mysti] @mysti orchestration failed:', error);
@@ -10215,13 +10331,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // would be invisible to the sensor. The orchestrator surfaces no token
     // usage, so the token fields stay undefined and the record is flagged
     // estimated rather than booking a measured zero.
-    this._boostManager?.recordTurn({
-      kind: 'coordinator',
-      provider: settings.provider,
-      delegations: outcomes,
-      estimated: true,
-    });
-    return synthesis;
+    if (!refused) {
+      this._boostManager?.recordTurn({
+        kind: 'coordinator',
+        panelId,
+        provider: settings.provider,
+        delegations: outcomes,
+        estimated: true,
+      });
+    }
+    return { synthesis, refused };
   }
 
   /**

@@ -58,6 +58,29 @@ const PROFILE_THRESHOLDS: Record<BoostProfile, number> = {
 };
 
 /**
+ * Plan 24 Phase 5 — cold-resume interception thresholds.
+ *
+ * A session left idle past the provider cache TTL and then resumed re-writes
+ * its whole prefix at the 2x cache-WRITE rate instead of reading it back at
+ * 0.1x. Measured: ~9% of total spend and 52% of ALL cache-write tokens came
+ * from these. One hour matches the 1h cache TTL the measurement was taken
+ * against, so anything past it has certainly expired.
+ *
+ * Both conditions must hold: a small session re-writes a small prefix, and the
+ * interception (a compaction) is only worth its own summary cost above a real
+ * context size.
+ */
+const COLD_RESUME_IDLE_MS = 60 * 60 * 1000;
+const COLD_RESUME_MIN_CONTEXT_TOKENS = 60_000;
+
+/** Max lanes dispatched in parallel by the Phase 4 fan-out scheduler. */
+const FANOUT_MAX_LANES: Record<BoostProfile, number> = {
+  economy: 3,
+  balanced: 3,
+  quality: 4,
+};
+
+/**
  * Config access seam. The default reads live from
  * `vscode.workspace.getConfiguration('mysti')` on every call (the
  * CoordinatorModelClient thunk pattern — no cache to invalidate); tests inject
@@ -90,7 +113,10 @@ interface PersistedLedger {
 }
 
 function emptyTotals(): BoostTotals {
-  return { turns: 0, roundTrips: 0, contextTokens: 0, outputTokens: 0, delegations: 0 };
+  return {
+    turns: 0, roundTrips: 0, contextTokens: 0, outputTokens: 0, delegations: 0,
+    redundantToolCalls: 0, mergeableRoundTrips: 0, coldResumesIntercepted: 0,
+  };
 }
 
 export class BoostManager {
@@ -104,6 +130,13 @@ export class BoostManager {
   private _sessionEstimated = false;
   private _lifetimeEstimated = false;
   private _pendingEstimated = false;
+  /**
+   * Last observed context fill per panel, for Phase 5 cold-resume detection.
+   * The FILL (input + cache-read of the most recent turn), not a running total
+   * — CompactionManager's CumulativeUsage accumulates across turns and is the
+   * wrong quantity to compare against a context window.
+   */
+  private _panelActivity = new Map<string, { fill: number; at: number }>();
   /** Sum of context tokens across session turns that actually reported context. */
   private _sessionContextSum = 0;
   private _sessionContextTurns = 0;
@@ -192,6 +225,79 @@ export class BoostManager {
     return this._router.delegationEffort(tier, parentEffort);
   }
 
+  // ------------------------------------------------- phase 3: round-trip work
+
+  /**
+   * Whether to batch the leading READ-ONLY run of a mixed native tool-call
+   * batch (Plan 24 Phase 3). Off ⇒ the stock behaviour: a batch is only run in
+   * parallel when EVERY call is read-only, otherwise just the first call runs
+   * and the rest are re-issued a round-trip later.
+   *
+   * This never widens what may run — the prefix is read-only by construction,
+   * so no gated or mutating call is affected. It only stops throwing away
+   * reads the model already asked for.
+   */
+  public batchReadOnlyPrefix(): boolean {
+    return this.isEnabled();
+  }
+
+  // ------------------------------------------------ phase 4: fan-out policy
+
+  /** Lane cap for one parallel frontier. Concurrency measured saturating ~3-4. */
+  public maxLanes(): number {
+    return FANOUT_MAX_LANES[this.profile()];
+  }
+
+  /**
+   * Whether to refuse dispatching a plan that is a single lane. Serial
+   * delegation measured 0.98x — SLOWER than answering inline — so a one-node
+   * "DAG" costs a full extra agent spawn to lose time. Only meaningful with
+   * Boost on; without it the orchestrator keeps its existing behaviour.
+   */
+  public refuseSingleLane(): boolean {
+    return this.isEnabled();
+  }
+
+  /**
+   * Whether to run one read-only verification pass before merging results from
+   * lanes that ACTUALLY ran in parallel. Parallel lanes never saw each other's
+   * edits, so contradictions only surface after the merge — and the `quality`
+   * profile is exactly the posture that should pay a delegation to catch them.
+   * Costs one read-only delegation per run, so it is off in `economy`.
+   */
+  public verifyParallelLanes(): boolean {
+    return this.isEnabled() && this.profile() !== 'economy';
+  }
+
+  // ------------------------------------------------- phase 5: cold resumes
+
+  /**
+   * Whether this turn is resuming a session that has gone cold on a large
+   * context — the case that measured 52% of all cache-write tokens. Pure
+   * predicate: the caller decides what to do about it.
+   */
+  public isColdResume(panelId: string, nowMs: number = Date.now()): boolean {
+    if (!this.isEnabled()) { return false; }
+    const last = this._panelActivity.get(panelId);
+    if (!last) { return false; }
+    return (nowMs - last.at) >= COLD_RESUME_IDLE_MS
+      && last.fill >= COLD_RESUME_MIN_CONTEXT_TOKENS;
+  }
+
+  /** Last observed fill/idle for a panel — for logging and tests. */
+  public panelActivity(panelId: string): { fill: number; at: number } | undefined {
+    const a = this._panelActivity.get(panelId);
+    return a ? { ...a } : undefined;
+  }
+
+  /**
+   * Forget a panel's activity — call after intercepting, and on panel dispose,
+   * so one cold resume cannot fire twice off the same stale reading.
+   */
+  public clearPanelActivity(panelId: string): void {
+    this._panelActivity.delete(panelId);
+  }
+
   // ------------------------------------------------------------------ ledger
 
   /**
@@ -205,6 +311,9 @@ export class BoostManager {
     // A completed turn implies at least one model round-trip on either path.
     const rt = Math.max(0, rec.roundTrips ?? 1);
     const del = Math.max(0, rec.delegations ?? 0);
+    const redundant = Math.max(0, rec.redundantToolCalls ?? 0);
+    const mergeable = Math.max(0, rec.mergeableRoundTrips ?? 0);
+    const coldResume = rec.coldResumeIntercepted ? 1 : 0;
 
     for (const t of [this._session, this._lifetime, this._pendingDelta]) {
       t.turns += 1;
@@ -212,10 +321,19 @@ export class BoostManager {
       t.contextTokens += ctx;
       t.outputTokens += out;
       t.delegations += del;
+      t.redundantToolCalls += redundant;
+      t.mergeableRoundTrips += mergeable;
+      t.coldResumesIntercepted += coldResume;
     }
     if (rec.contextTokens !== undefined && rec.contextTokens > 0) {
       this._sessionContextSum += ctx;
       this._sessionContextTurns += 1;
+      // Only a KNOWN fill updates panel activity; an unknown-usage turn must
+      // not reset the clock, or a backend that reports nothing would make
+      // every session look permanently warm.
+      if (rec.panelId) {
+        this._panelActivity.set(rec.panelId, { fill: ctx, at: Date.now() });
+      }
     }
     if (rec.estimated) {
       this._sessionEstimated = true;
@@ -284,6 +402,9 @@ export class BoostManager {
       contextTokens: stored.contextTokens + this._pendingDelta.contextTokens,
       outputTokens: stored.outputTokens + this._pendingDelta.outputTokens,
       delegations: stored.delegations + this._pendingDelta.delegations,
+      redundantToolCalls: stored.redundantToolCalls + this._pendingDelta.redundantToolCalls,
+      mergeableRoundTrips: stored.mergeableRoundTrips + this._pendingDelta.mergeableRoundTrips,
+      coldResumesIntercepted: stored.coldResumesIntercepted + this._pendingDelta.coldResumesIntercepted,
     };
     const mergedEstimated = storedEstimated || this._pendingEstimated;
     // Defensive COPY: an in-memory Memento (VS Code's cache, and the test

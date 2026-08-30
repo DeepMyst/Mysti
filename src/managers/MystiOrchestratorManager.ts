@@ -27,6 +27,7 @@ import * as crypto from 'crypto';
 import { CollaboratorPool } from '../services/CollaboratorPool';
 import { CoordinatorModelClient } from '../services/CoordinatorModelClient';
 import {
+  partitionLanes,
   parseOrchestratorPlan,
   validateDag,
   topologicalFrontiers,
@@ -80,6 +81,16 @@ export class MystiOrchestratorManager {
     private readonly _coordinator: CoordinatorModelClient,
     private readonly _providers: OrchestratorProviderManager,
     private readonly _maxConcurrent: () => number = () => 3,
+    /**
+     * Plan 24 Phase 4 fan-out policy. A thunk so a settings flip takes effect
+     * live (the CoordinatorModelClient pattern). Defaults reproduce the
+     * pre-Boost behaviour exactly: no refusal, lane cap = pool concurrency.
+     */
+    private readonly _fanout: () => {
+      maxLanes: number;
+      refuseSingleLane: boolean;
+      verifyParallelLanes: boolean;
+    } = () => ({ maxLanes: 3, refuseSingleLane: false, verifyParallelLanes: false }),
   ) {}
 
   /**
@@ -112,6 +123,20 @@ export class MystiOrchestratorManager {
     }
     yield { type: 'orch_plan', plan: { nodes: plan.nodes.map(n => ({ ...n })) } };
 
+    // Plan 24 Phase 4: refuse a single-lane "DAG". Serial delegation measured
+    // 0.98x — slower than the coordinator answering inline — so spawning one
+    // agent to do one thing costs a process and buys nothing. Refuse and let
+    // the caller answer inline. (The decompose call is already spent; that is
+    // still far cheaper than the agent spawn this avoids.)
+    if (plan.nodes.length === 1 && this._fanout().refuseSingleLane) {
+      yield {
+        type: 'orch_status',
+        phase: 'execute',
+        content: 'One step only — answering directly instead of delegating.',
+      };
+      return { runId, outcomes: [], synthesis: '', refused: 'single-lane' };
+    }
+
     // --- 2. Execute frontier-by-frontier via the pool ---
     yield { type: 'orch_status', phase: 'execute', content: `Running ${plan.nodes.length} step(s)…` };
     const outcomes = new Map<string, OrchestratorNodeOutcome>();
@@ -123,9 +148,23 @@ export class MystiOrchestratorManager {
     // node's persistent process/session until window reload (disposeRun's
     // only caller was the agentic loop).
     const dispatchedFrontierRunIds: string[] = [];
+    // Phase 4: how many lanes actually ran together, for the verify gate below.
+    let widestGroup = 0;
     try {
+      // A frontier is topologically parallel, but two of its nodes may still
+      // intend to edit the SAME file — the DAG cannot see that. partitionLanes
+      // splits on the declared file hints and caps lane width; with Boost off
+      // the cap equals the pool concurrency, so grouping is a no-op.
+      const groups: string[][] = [];
       for (const frontier of frontiers) {
-        const frontierRunId = `${runId}-f${frontiers.indexOf(frontier)}`;
+        for (const g of partitionLanes(plan, frontier, this._fanout().maxLanes)) {
+          groups.push(g);
+        }
+      }
+      let groupIndex = 0;
+      for (const frontier of groups) {
+        const frontierRunId = `${runId}-f${groupIndex++}`;
+        widestGroup = Math.max(widestGroup, frontier.length);
         const specs = frontier.map(nodeId => this._buildSpec(plan!, nodeId, input, outcomes, runId));
         // Seed outcomes so a mid-run failure still surfaces the node.
         for (const spec of specs) {
@@ -139,7 +178,7 @@ export class MystiOrchestratorManager {
           settings: input.settings,
           panelId: input.panelId,
           runId: frontierRunId,
-          maxConcurrent: this._maxConcurrent(),
+          maxConcurrent: Math.min(this._maxConcurrent(), this._fanout().maxLanes),
           conversation: input.conversation ?? null,
           onQuestion: input.onQuestion,
           onGate: input.onGate,
@@ -171,9 +210,39 @@ export class MystiOrchestratorManager {
       }
     }
 
+    // --- 2b. Verify gate (Plan 24 Phase 4) ---
+    // Only when lanes ACTUALLY ran in parallel and more than one produced work.
+    // Parallel lanes are the case the DAG cannot reason about: they never saw
+    // each other's edits, so contradictions surface only after the merge. One
+    // read-only pass, once per run, before anything is folded together.
+    let list = Array.from(outcomes.values());
+    const succeeded = list.filter(o => !o.hasError && o.text.trim());
+    if (widestGroup > 1 && succeeded.length > 1 && this._fanout().verifyParallelLanes) {
+      yield { type: 'orch_status', phase: 'execute', content: 'Checking the parallel results for conflicts…' };
+      const verifyRunId = `${runId}-verify`;
+      try {
+        const note = await this._runVerify(verifyRunId, succeeded, input);
+        if (note) {
+          // Recorded as an outcome so it reaches synthesis as evidence rather
+          // than as an instruction — it is model output about model output.
+          list = [...list, {
+            nodeId: 'verify',
+            task: 'Cross-check the parallel results for conflicts',
+            backend: 'verify',
+            text: note,
+            hasError: false,
+          }];
+          yield { type: 'orch_node_done', nodeId: 'verify', hasError: false };
+        }
+      } catch (err) {
+        console.warn('[Mysti] @mysti: verify gate failed (continuing to synthesis)', err);
+      } finally {
+        try { this._pool.disposeRun(verifyRunId); } catch { /* best-effort */ }
+      }
+    }
+
     // --- 3. Synthesize the final answer (on the coordinator model) ---
     yield { type: 'orch_status', phase: 'synthesize', content: 'Synthesizing the result…' };
-    const list = Array.from(outcomes.values());
     const synthesis = await this._synthesize(input.brief, list);
     yield { type: 'orch_synthesis', content: synthesis };
     yield { type: 'orch_done' };
@@ -227,6 +296,72 @@ export class MystiOrchestratorManager {
       return null;
     }
     return plan;
+  }
+
+  /**
+   * One READ-ONLY collaborator that reads the parallel lanes' outputs and
+   * reports conflicts. Read-only by construction (`access: 'read-only'`, which
+   * the pool hard-denies writes for) — the gate is a check, never an editor,
+   * so it can never "fix" what it finds. Returns '' when there is nothing to
+   * report or the lane failed.
+   */
+  private async _runVerify(
+    verifyRunId: string,
+    succeeded: OrchestratorNodeOutcome[],
+    input: OrchestratorRunInput,
+  ): Promise<string> {
+    const backend = this._pickVerifyBackend(input.settings);
+    if (!backend) { return ''; }
+    const summary = succeeded
+      .map(o => `### ${o.nodeId} — ${o.task}\n${o.text.trim().slice(0, 4000)}`)
+      .join('\n\n');
+    const prompt = [
+      'These sub-tasks ran IN PARALLEL, so none of them saw the others\' work.',
+      'Read the workspace and report ONLY concrete conflicts between them:',
+      'the same file changed in incompatible ways, duplicated definitions, a',
+      'caller left pointing at a signature another lane changed, or two lanes',
+      'that solved the same problem differently.',
+      '',
+      'If there is no conflict, reply with exactly: NO CONFLICTS',
+      'Do not restate what the lanes did, and do not make any edits.',
+      '',
+      summary,
+    ].join('\n');
+
+    let text = '';
+    const stream = this._pool.dispatch([{
+      collaboratorId: 'verify',
+      agentId: backend,
+      label: 'Verify',
+      prompt,
+      access: 'read-only',
+    }], {
+      settings: input.settings,
+      panelId: input.panelId,
+      runId: verifyRunId,
+      maxConcurrent: 1,
+      conversation: null,
+      onQuestion: input.onQuestion,
+      onGate: input.onGate,
+    });
+    for await (const chunk of stream) {
+      if (chunk.type === 'collab_text' && chunk.content) { text += chunk.content; }
+      else if (chunk.type === 'collab_complete' && chunk.responseText) { text = chunk.responseText; }
+      else if (chunk.type === 'collab_error' || chunk.type === 'collab_skipped') { return ''; }
+    }
+    const trimmed = text.trim();
+    if (!trimmed || /^NO CONFLICTS\b/i.test(trimmed)) { return ''; }
+    return trimmed;
+  }
+
+  /** A file-capable backend for the verify lane; undefined when none is available. */
+  private _pickVerifyBackend(settings: Settings): AgentType | undefined {
+    const available = this._availableBackends();
+    if (available.length === 0) { return undefined; }
+    // Prefer the user's active backend when it is genuinely available — it is
+    // the one already warm for this workspace.
+    const active = settings.provider as AgentType;
+    return available.includes(active) ? active : available[0];
   }
 
   private async _synthesize(brief: string, outcomes: OrchestratorNodeOutcome[]): Promise<string> {
@@ -331,7 +466,7 @@ export class MystiOrchestratorManager {
     return [
       'You are the Mysti coordinator. Decompose the user\'s request into a small task DAG.',
       'Return ONLY a JSON object (no prose) of the form:',
-      '{"nodes":[{"id":"n1","task":"...","backend":"<provider-id>","dependsOn":[]},{"id":"n2","task":"...","backend":"...","dependsOn":["n1"]}]}',
+      '{"nodes":[{"id":"n1","task":"...","backend":"<provider-id>","dependsOn":[],"files":["src/a.ts"]},{"id":"n2","task":"...","backend":"...","dependsOn":["n1"]}]}',
       '',
       'Rules:',
       '- Keep it minimal: 1–6 nodes. Use ONE node for simple requests.',
@@ -339,6 +474,9 @@ export class MystiOrchestratorManager {
       '- Pick a backend per node from the available list. Prefer "openrouter" (free) for text/analysis/drafting;',
       '  use a file-capable coding agent for editing files or running commands.',
       '- Never use "mysti" as a backend. No cycles.',
+      '- OPTIONAL "files": the workspace-relative paths that node will edit. Nodes with no shared',
+      '  file run together; two nodes naming the same file are run one after the other so they',
+      '  cannot overwrite each other. List files only when the node will actually edit them.',
       '',
       `Available backends:\n${backendList}`,
       manifest,

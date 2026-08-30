@@ -564,6 +564,11 @@ export type BoostTurnKind = 'cli' | 'coordinator';
 export interface BoostTurnRecord {
   kind: BoostTurnKind;
   provider: string;
+  /**
+   * Panel this turn belongs to. Lets the ledger keep per-panel activity for
+   * cold-resume detection (Phase 5); omitted on paths with no single panel.
+   */
+  panelId?: string;
   model?: string;
   /**
    * Prompt-side tokens for the turn, or undefined when the provider reported
@@ -585,6 +590,19 @@ export interface BoostTurnRecord {
   delegations?: number;
   /** True when any token figure is an estimate rather than provider-reported. */
   estimated: boolean;
+  /**
+   * Plan 24 Phase 3, record-only. Tool calls whose (kind, args) had already run
+   * in this same coordinator run — a repeat the model could have avoided.
+   */
+  redundantToolCalls?: number;
+  /**
+   * Plan 24 Phase 3, record-only. Round-trips that carried exactly one
+   * read-only tool call AND followed another such turn: each one is a
+   * round-trip the model could have saved by emitting both calls together.
+   */
+  mergeableRoundTrips?: number;
+  /** Plan 24 Phase 5: this turn intercepted a cold resume before dispatch. */
+  coldResumeIntercepted?: boolean;
 }
 
 export interface BoostTotals {
@@ -593,6 +611,12 @@ export interface BoostTotals {
   contextTokens: number;
   outputTokens: number;
   delegations: number;
+  /** Tool calls re-run with arguments already seen in the same run (Plan 24 Phase 3). */
+  redundantToolCalls: number;
+  /** Round-trips that carried one read-only tool and followed another such turn. */
+  mergeableRoundTrips: number;
+  /** Cold resumes intercepted before the expensive prefix re-write (Phase 5). */
+  coldResumesIntercepted: number;
 }
 
 /** Snapshot of the Boost ledger for the status bar / summary command. */
@@ -1040,6 +1064,13 @@ export interface OrchestratorResult {
   outcomes: OrchestratorNodeOutcome[];
   /** Final synthesized answer folded from the node outputs. */
   synthesis: string;
+  /**
+   * Set when the run declined to dispatch (Plan 24 Phase 4). `single-lane`
+   * means the plan decomposed to one node, and one serial delegation measured
+   * SLOWER than answering inline — the caller should answer inline instead.
+   * `synthesis` is empty in that case and nothing was dispatched.
+   */
+  refused?: 'single-lane';
 }
 
 // ============================================================================

@@ -31,6 +31,13 @@ export interface OrchestratorNode {
   backend?: string;
   /** Ids of nodes whose output this node depends on (empty = a root). */
   dependsOn: string[];
+  /**
+   * Workspace-relative paths this node intends to touch (Plan 24 Phase 4).
+   * Advisory ONLY — it is a model-authored hint used to keep two parallel lanes
+   * off the same file, never an access control. Nothing here grants or denies
+   * a write; the pool's gate remains the sole authority.
+   */
+  files?: string[];
 }
 
 export interface OrchestratorPlan {
@@ -86,7 +93,13 @@ export function parseOrchestratorPlan(raw: string): OrchestratorPlan | null {
     const dependsOn = Array.isArray(obj.dependsOn)
       ? obj.dependsOn.filter((d): d is string => typeof d === 'string' && d.trim().length > 0).map(d => d.trim())
       : [];
-    nodes.push({ id, task, backend, dependsOn });
+    const files = Array.isArray(obj.files)
+      ? obj.files
+        .filter((f): f is string => typeof f === 'string' && f.trim().length > 0)
+        .map(f => f.trim())
+        .slice(0, 32)
+      : undefined;
+    nodes.push({ id, task, backend, dependsOn, ...(files && files.length ? { files } : {}) });
   }
 
   if (nodes.length === 0) {
@@ -170,6 +183,51 @@ export function topologicalFrontiers(plan: OrchestratorPlan): string[][] {
   }
 
   return frontiers;
+}
+
+/**
+ * Split one frontier into sequential LANE GROUPS that are safe to run in
+ * parallel (Plan 24 Phase 4).
+ *
+ * Two constraints, in order:
+ *  - **File-disjoint.** Two nodes that declare an overlapping `files` hint are
+ *    never placed in the same group. They are topologically independent, so
+ *    the DAG happily runs them together — and they would then race on the same
+ *    file, where the loser's edit is silently overwritten. A node with NO hint
+ *    is treated as unconstrained (it can share a group) because an absent hint
+ *    is not evidence of disjointness — this is a best-effort optimisation, not
+ *    a safety mechanism, and the pool's write gate is unchanged either way.
+ *  - **Width cap.** Concurrency measured saturating at 3-4 lanes, so a wider
+ *    frontier is chunked rather than dispatched all at once.
+ *
+ * Order within and across groups is preserved for deterministic replay.
+ */
+export function partitionLanes(
+  plan: OrchestratorPlan,
+  frontier: string[],
+  maxLanes: number,
+): string[][] {
+  const byId = new Map(plan.nodes.map(n => [n.id, n]));
+  const cap = Math.max(1, Math.floor(maxLanes) || 1);
+  const groups: string[][] = [];
+  let current: string[] = [];
+  let claimed = new Set<string>();
+
+  const flush = () => {
+    if (current.length) { groups.push(current); }
+    current = [];
+    claimed = new Set<string>();
+  };
+
+  for (const id of frontier) {
+    const files = (byId.get(id)?.files ?? []).map(f => f.replace(/^\.\//, ''));
+    const collides = files.some(f => claimed.has(f));
+    if (current.length >= cap || collides) { flush(); }
+    current.push(id);
+    for (const f of files) { claimed.add(f); }
+  }
+  flush();
+  return groups;
 }
 
 /** Longest dependency chain length (number of frontiers) — informational. */

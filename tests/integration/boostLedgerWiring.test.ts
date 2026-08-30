@@ -37,7 +37,7 @@ vi.mock('../../src/managers/PlanOptionManager', () => ({
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { PermissionManager } from '../../src/managers/PermissionManager';
 import { BoostManager } from '../../src/managers/BoostManager';
-import { clearMockConfig, Uri } from '../helpers/mockVscode';
+import { clearMockConfig, setMockConfig, Uri } from '../helpers/mockVscode';
 import type { Settings, StreamChunk, WebviewMessage, BoostTurnRecord } from '../../src/types';
 
 const SETTINGS: Settings = {
@@ -53,6 +53,8 @@ interface Harness {
   provider: ChatViewProvider;
   records: BoostTurnRecord[];
   boost: BoostManager;
+  /** How many times the real compaction path ran (Phase 5 proof). */
+  nativeCompactions(): number;
   setStream(chunks: StreamChunk[]): void;
   /** Force the compaction evaluator to say "compact now". */
   setCompactionActs(act: boolean): void;
@@ -80,6 +82,7 @@ function createHarness(): Harness {
   const permissionManager = new PermissionManager('ask-permission');
   let streamChunks: StreamChunk[] = [];
   let compactionActs = false;
+  let nativeCompactions = 0;
 
   const conversationManager = {
     getCurrentConversation: () => null,
@@ -118,6 +121,15 @@ function createHarness(): Harness {
     executeSmartSummarization: async () => null,
     markCompacted: () => undefined,
     updateUsageAfterCompaction: () => undefined,
+    // Phase 5 drives the real _executeCompaction before the send; the native
+    // path consumes this stream. Counting invocations is how we prove the
+    // interception actually compacted rather than just flipping a flag.
+    executeNativeCompaction: (..._a: unknown[]) => {
+      nativeCompactions++;
+      return (async function* () {
+        yield { type: 'done', usage: { input_tokens: 1_000, output_tokens: 0 } };
+      })();
+    },
   } as any;
 
   const noop = {} as any;
@@ -184,6 +196,7 @@ function createHarness(): Harness {
 
   return {
     provider, records, boost,
+    nativeCompactions: () => nativeCompactions,
     setStream(chunks) { streamChunks = chunks; },
     setCompactionActs(act) { compactionActs = act; },
     dispose() {
@@ -299,5 +312,87 @@ describe('Boost ledger wiring on the CLI path (Plan 24 Phase 1)', () => {
     await expect(send(bare)).resolves.toBeUndefined();
     expect(bare.records).toHaveLength(0);
     bare.dispose();
+  });
+});
+
+describe('Boost cold-resume interception (Plan 24 Phase 5)', () => {
+  const HOUR = 60 * 60 * 1000;
+  let h: Harness;
+  let clock: number;
+  let nowSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    clearMockConfig();
+    clock = 1_000_000_000_000;
+    nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    h = createHarness();
+  });
+  afterEach(() => { nowSpy.mockRestore(); h.dispose(); });
+
+  /** One turn that leaves the panel holding a large context. */
+  async function bigTurn(): Promise<void> {
+    h.setStream([{ type: 'done', usage: { input_tokens: 150_000, output_tokens: 100 } }]);
+    await send(h);
+  }
+
+  it('does nothing while Boost is off, however long the gap', async () => {
+    await bigTurn();
+    clock += 6 * HOUR;
+    await bigTurn();
+    expect(h.nativeCompactions()).toBe(0);
+    expect(h.records.every(r => !r.coldResumeIntercepted)).toBe(true);
+  });
+
+  it('compacts before the send when a big session resumes cold', async () => {
+    setMockConfig('boost.enabled', true);
+    await bigTurn();
+    expect(h.nativeCompactions()).toBe(0);
+
+    clock += 2 * HOUR;
+    await bigTurn();
+
+    expect(h.nativeCompactions()).toBe(1);
+    const last = h.records[h.records.length - 1];
+    expect(last.coldResumeIntercepted).toBe(true);
+    expect(h.boost.snapshot().session.coldResumesIntercepted).toBe(1);
+  });
+
+  it('does not fire twice off the same stale reading', async () => {
+    setMockConfig('boost.enabled', true);
+    await bigTurn();
+    clock += 2 * HOUR;
+    await bigTurn();            // intercepts, and re-arms from THIS turn
+    await bigTurn();            // immediately after — still warm
+    expect(h.nativeCompactions()).toBe(1);
+  });
+
+  it('leaves a warm session alone', async () => {
+    setMockConfig('boost.enabled', true);
+    await bigTurn();
+    clock += 5 * 60_000;
+    await bigTurn();
+    expect(h.nativeCompactions()).toBe(0);
+  });
+
+  it('leaves a small idle session alone', async () => {
+    setMockConfig('boost.enabled', true);
+    h.setStream([{ type: 'done', usage: { input_tokens: 2_000, output_tokens: 10 } }]);
+    await send(h);
+    clock += 6 * HOUR;
+    await send(h);
+    expect(h.nativeCompactions()).toBe(0);
+  });
+
+  it('still sends when the pre-send compaction throws', async () => {
+    // An optimisation must never cost the user their turn.
+    setMockConfig('boost.enabled', true);
+    await bigTurn();
+    clock += 2 * HOUR;
+    const spy = vi.spyOn(h.provider as never as { _executeCompaction: () => Promise<void> }, '_executeCompaction')
+      .mockRejectedValue(new Error('compaction exploded'));
+    await expect(bigTurn()).resolves.toBeUndefined();
+    spy.mockRestore();
+    const last = h.records[h.records.length - 1];
+    expect(last.coldResumeIntercepted).toBeUndefined();
   });
 });
