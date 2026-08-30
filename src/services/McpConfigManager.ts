@@ -218,11 +218,38 @@ export class McpConfigManager {
         return { ...base, ok: true, action: 'skipped' };
       }
 
+      // Plan 21 Phase 0 (I6): this entry carries `Authorization: Bearer dm_…`,
+      // a live account credential. Claude Code's config is the one adapter
+      // whose path is INSIDE the user's repository, so writing it there risks
+      // committing the key. Refuse unless the file is provably ignored by git.
+      //
+      // Fail-closed on purpose: a credential written into a tracked file cannot
+      // be un-leaked, whereas a refused write is a visible, recoverable error.
+      if (specs.length > 0 && this._isInsideWorkspace(configPath, ctx.workspace)) {
+        const ignored = ensureGitIgnored(ctx.workspace!, path.basename(configPath));
+        if (!ignored.ok) {
+          return {
+            ...base,
+            ok: false,
+            action: 'error',
+            error: `Refused to write ${path.basename(configPath)}: it carries a live credential and ${ignored.reason}. `
+              + `Add "${path.basename(configPath)}" to .gitignore (and untrack it if already committed), then retry.`,
+          };
+        }
+      }
+
       this._writeJson(configPath, existing);
       return { ...base, ok: true, action: specs.length > 0 ? 'wrote' : 'removed' };
     } catch (err) {
       return { ...base, ok: false, action: 'error', error: err instanceof Error ? err.message : String(err) };
     }
+  }
+
+  /** True when `file` resolves inside the open workspace. */
+  private _isInsideWorkspace(file: string, workspace: string | undefined): boolean {
+    if (!workspace) { return false; }
+    const rel = path.relative(path.resolve(workspace), path.resolve(file));
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
   }
 
   private _readJson(file: string): Record<string, unknown> {
@@ -340,4 +367,63 @@ function stripCodexDeepmystTables(toml: string): string {
     }
   }
   return out.join('\n');
+}
+
+/**
+ * Ensure `fileName` is ignored by git in `workspace`, appending a rule when it
+ * is safe to do so.
+ *
+ * Plan 21 Phase 0 (I6). Returns `{ok:false}` — refusing the write — when the
+ * file is ALREADY TRACKED by git, because adding a `.gitignore` rule does not
+ * untrack an existing file: git keeps versioning it and the credential still
+ * gets committed. That case needs a human (`git rm --cached`), so it is
+ * surfaced rather than silently "fixed".
+ *
+ * Tracking is detected by reading `.git/index` and searching for the path as a
+ * NUL-delimited byte sequence. The index is a binary format whose entries store
+ * paths as plain UTF-8 runs, so a substring probe is a sound over-approximation:
+ * it can only ever report "tracked" too eagerly, which fails closed.
+ */
+export function ensureGitIgnored(
+  workspace: string,
+  fileName: string,
+): { ok: true } | { ok: false; reason: string } {
+  const gitDir = path.join(workspace, '.git');
+  const isRepo = fs.existsSync(gitDir);
+
+  // Not a git repository — nothing can be committed, so nothing to guard.
+  if (!isRepo) { return { ok: true }; }
+
+  // Already tracked? A .gitignore rule will not save it.
+  const indexPath = path.join(gitDir, 'index');
+  try {
+    if (fs.existsSync(indexPath)) {
+      const idx = fs.readFileSync(indexPath);
+      if (idx.includes(Buffer.from(fileName, 'utf8'))) {
+        return { ok: false, reason: `it is already tracked by git (a .gitignore rule will not untrack it)` };
+      }
+    }
+  } catch {
+    return { ok: false, reason: 'its git tracking status could not be determined' };
+  }
+
+  const ignorePath = path.join(workspace, '.gitignore');
+  try {
+    const current = fs.existsSync(ignorePath) ? fs.readFileSync(ignorePath, 'utf8') : '';
+    const alreadyListed = current
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .some(l => l === fileName || l === `/${fileName}`);
+    if (alreadyListed) { return { ok: true }; }
+
+    const prefix = current.length === 0 || current.endsWith('\n') ? '' : '\n';
+    fs.appendFileSync(
+      ignorePath,
+      `${prefix}\n# Added by Mysti: carries a live DeepMyst credential — never commit.\n${fileName}\n`,
+      'utf8',
+    );
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: 'it could not be added to .gitignore' };
+  }
 }

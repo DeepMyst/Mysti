@@ -29,17 +29,76 @@ import { SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
  * Manages permission requests for tool operations
  * Handles configurable timeouts and session-level access upgrades
  */
+/**
+ * Plan 21 Phase 0 — how long an "always allow" upgrade survives.
+ *
+ * It used to survive forever: a single click set one process-wide field and
+ * every later request in every panel was auto-approved for the life of the
+ * window. An upgrade granted for one task must not silently authorise an
+ * unrelated one an hour later, so it now expires.
+ */
+const SESSION_UPGRADE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+interface SessionUpgrade {
+  level: AccessLevel;
+  expiresAt: number;
+}
+
 export class PermissionManager {
   private _pendingRequests: Map<string, PermissionRequest> = new Map();
   private _resolvers: Map<string, (approved: boolean) => void> = new Map();
   private _timeoutHandles: Map<string, NodeJS.Timeout> = new Map();
-  private _sessionAccessLevel: AccessLevel;
+  /** The user's configured floor. Upgrades layer on top, per scope. */
+  private _baseAccessLevel: AccessLevel;
+  /**
+   * Per-scope "always allow" upgrades, keyed by the request's `ownerKey`
+   * (a panelId for a foreground turn, a jobId for a background one). Scoping
+   * this was the fix for an upgrade in one panel authorising writes in every
+   * other panel — and for a remote-origin task inheriting an approval the user
+   * gave an hour earlier for unrelated local work.
+   */
+  private _sessionUpgrades: Map<string, SessionUpgrade> = new Map();
   private _config: PermissionConfig;
   private _onSemiAutonomousTimeout: ((requestId: string, postToWebview: (msg: unknown) => void) => void) | null = null;
 
+  /** Scope used when a caller supplies no ownerKey. */
+  private static readonly GLOBAL_SCOPE = '__global__';
+
   constructor(initialAccessLevel: AccessLevel) {
-    this._sessionAccessLevel = initialAccessLevel;
+    this._baseAccessLevel = initialAccessLevel;
     this._config = this._loadConfig();
+  }
+
+  private _scopeKey(ownerKey?: string): string {
+    return ownerKey ?? PermissionManager.GLOBAL_SCOPE;
+  }
+
+  /**
+   * The access level in force for one scope, expiring a stale upgrade lazily so
+   * there is no reaper timer to leak.
+   */
+  private _effectiveAccessLevel(scope: string): AccessLevel {
+    const upgrade = this._sessionUpgrades.get(scope);
+    if (!upgrade) { return this._baseAccessLevel; }
+    if (Date.now() >= upgrade.expiresAt) {
+      this._sessionUpgrades.delete(scope);
+      console.log('[Mysti] PermissionManager: session upgrade expired for scope', scope);
+      return this._baseAccessLevel;
+    }
+    return upgrade.level;
+  }
+
+  /**
+   * Drop any upgrade for a scope (all scopes when omitted). Called when a new
+   * conversation starts: consent given in a previous conversation is not
+   * consent for this one.
+   */
+  clearSessionUpgrade(ownerKey?: string): void {
+    if (ownerKey === undefined) {
+      this._sessionUpgrades.clear();
+      return;
+    }
+    this._sessionUpgrades.delete(this._scopeKey(ownerKey));
   }
 
   /**
@@ -65,7 +124,7 @@ export class PermissionManager {
    * Get current session access level
    */
   get sessionAccessLevel(): AccessLevel {
-    return this._sessionAccessLevel;
+    return this._effectiveAccessLevel(PermissionManager.GLOBAL_SCOPE);
   }
 
   /**
@@ -80,13 +139,21 @@ export class PermissionManager {
     postToWebview: (message: unknown) => void,
     toolCallId?: string,
     ownerKey?: string,
-    forceInteractive = false
+    forceInteractive = false,
+    remoteOrigin = false
   ): Promise<boolean> {
-    // Check if session has been upgraded to full-access. Plan 19: a caller may
-    // FORCE an interactive card (a non-safe coordinator `bash`) that must be
-    // confirmed even under session full-access — the session upgrade grants
+    // Plan 21 Phase 0 (I14): a run whose root input contains bytes authored off
+    // this machine can never be auto-approved. Folded into forceInteractive so
+    // it defeats the session upgrade, the autonomous branch, the
+    // semi-autonomous auto-path AND timeout auto-accept in one place — there is
+    // no second switch to forget.
+    if (remoteOrigin) { forceInteractive = true; }
+
+    // Check if this SCOPE has been upgraded to full-access. Plan 19: a caller
+    // may FORCE an interactive card (a non-safe coordinator `bash`) that must
+    // be confirmed even under session full-access — the session upgrade grants
     // authority for CLI-backend tools, not for the coordinator's own shell.
-    if (this._sessionAccessLevel === 'full-access' && !forceInteractive) {
+    if (this._effectiveAccessLevel(this._scopeKey(ownerKey)) === 'full-access' && !forceInteractive) {
       console.log('[Mysti] PermissionManager: Auto-approved (session full-access)');
       return true;
     }
@@ -127,6 +194,7 @@ export class PermissionManager {
       semiAutonomous: isSemiAutonomous,
       ownerKey,
       forceInteractive,
+      remoteOrigin,
     };
 
     this._pendingRequests.set(request.id, request);
@@ -182,10 +250,17 @@ export class PermissionManager {
     request.status = response.decision === 'deny' ? 'denied' : 'approved';
     this._pendingRequests.delete(response.requestId);
 
-    // Handle "always-allow" - upgrade session access level
-    if (response.decision === 'always-allow') {
-      this._sessionAccessLevel = 'full-access';
-      console.log('[Mysti] PermissionManager: Session upgraded to full-access');
+    // Handle "always-allow" — upgrade THIS SCOPE only, and only for a while.
+    // A remote-origin request can never reach here as an always-allow that
+    // matters (it was forced interactive), but the guard is explicit so the
+    // property does not depend on that reasoning holding elsewhere.
+    if (response.decision === 'always-allow' && !request.remoteOrigin) {
+      const scope = this._scopeKey(request.ownerKey);
+      this._sessionUpgrades.set(scope, {
+        level: 'full-access',
+        expiresAt: Date.now() + SESSION_UPGRADE_TTL_MS,
+      });
+      console.log('[Mysti] PermissionManager: Session upgraded to full-access for scope', scope);
     }
 
     // Resolve the promise
@@ -233,8 +308,13 @@ export class PermissionManager {
     if (resolver) {
       resolver(approved);
       this._resolvers.delete(requestId);
+      // Log the decision ACTUALLY taken. This previously reported from
+      // `timeoutBehavior` alone and so printed "auto-approved" for a forced
+      // card that was in fact auto-denied — an audit line that stated the
+      // opposite of what happened.
       console.log('[Mysti] PermissionManager: Timeout:', requestId,
-        this._config.timeoutBehavior === 'auto-accept' ? 'auto-approved' : 'auto-rejected');
+        approved ? 'auto-approved' : 'auto-rejected',
+        request.forceInteractive ? '(forced card — denied regardless of timeoutBehavior)' : '');
     }
   }
 
@@ -315,7 +395,10 @@ export class PermissionManager {
    * Reset session access level to initial value
    */
   resetSessionAccessLevel(level: AccessLevel): void {
-    this._sessionAccessLevel = level;
+    this._baseAccessLevel = level;
+    // An explicit reset drops every outstanding upgrade — otherwise lowering
+    // the floor would leave a prior "always allow" still auto-approving above it.
+    this._sessionUpgrades.clear();
     console.log('[Mysti] PermissionManager: Session access level reset to:', level);
   }
 

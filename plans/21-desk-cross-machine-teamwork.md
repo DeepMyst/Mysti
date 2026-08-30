@@ -857,3 +857,713 @@ Three claims, in descending order of confidence.
 **3. The features that look like they need a room need the least.** Cross-machine multi-party brainstorm is N parallel typed calls through an existing bounded-concurrency helper plus one local synthesis turn: no shared state, no ordering, no turn-taking, no convergence protocol crossing a network. Presence is a poll. Cancel is a local `AbortController` plus a deadline. Idempotency is a `callId` and a ten-minute cache. Each is a paragraph. In a session-based design each is a subsystem with its own failure modes — and the OpenClaw audit enumerates exactly those subsystems as fatal gaps, because they are properties of streams, not of teamwork.
 
 The trade, stated honestly: **Desk buys bounded, auditable, verifiable teamwork at the cost of expressiveness and liveness.** Given that the alternative is granting another human's agent a channel into a model that can write to my disk, and given that this repo has already eaten one RCE from an ungated model-to-shell path, bounded-and-boring is the correct first bet.
+
+---
+
+## 10. Addendum — trust tiers and swarm mode
+
+**Question this answers:** can swarm mode be enabled for trusted teammates, while the receiving
+agent still guards certain operations?
+
+**Answer:** yes, and the receiving-agent guard is the right instinct — it is what makes the rest
+safe. But §6's blunt "no transitive federation, not negotiable" conflated five separate axes.
+Split them and most of the ask is grantable.
+
+### 10.1 Why "trusted teammate" cannot be one dial
+
+The adversarial review's central finding was not that a teammate might be malicious. It is that
+a teammate's **agent** reads untrusted input all day — its own repo's README, a dependency's
+postinstall notes, an issue comment, a web page — and the bytes arriving at your desk were
+authored by that model, not by the human you trust. Authenticating the person does not
+authenticate the text.
+
+So trust is graded across five axes that Plan 21 previously moved together:
+
+| Axis | Does trust help? |
+|---|---|
+| 1. Who is speaking (identity) | **Yes** — a pinned key settles it completely |
+| 2. What is disclosed outward (egress) | **Yes** — same company means one secrets domain (already `trustDomain`, I15) |
+| 3. How often a human must click (consent) | **Yes** — this is where nearly all the real friction lives |
+| 4. Topology (may B forward to C) | **Partly** — via referral, never via forwarding |
+| 5. Authority (what can happen at all) | **Almost never** — this is the axis injection laundering attacks |
+
+Tiers move axes 1–4. Axis 5 gains exactly one capability, described in §10.3.
+
+### 10.2 The tiers
+
+| Tier | Requirement | Adds | What stops needing a card |
+|---|---|---|---|
+| **T0 Acquainted** | one-way pin | `status`, `locate` | reads inside the published scope |
+| **T1 Colleague** | mutual pin | `consult`, `review` | nothing — both gates always fire |
+| **T2 Teammate** | mutual pin + same `trustDomain` + 30-day expiry | `handoff`, `assign` | the *start* of a run; writes batch into staging |
+| **T3 Swarm** | all of T2 + clique (all pairwise pinned) + in-person fingerprint ceremony | leases, referral-accept | staging reviewed as **one artifact per task**, not per file |
+
+### 10.3 The one authority a tier grants
+
+**T2+ may cause a bounded local run to start.** That is the entire authority delta, and it is
+worth stating why it is safe and what it buys.
+
+It is safe because a started run is not an approved run. The run inherits the *receiver's* own
+permission policy — never the sender's — its reads stay scope-bounded, its writes land in a
+`CheckpointManager` staging snapshot rather than the working tree, and every guarded operation
+in §10.4 still raises a card.
+
+It buys the thing card-by-card approval cannot: work that happens while you are at lunch. You
+return to a finished branch awaiting review instead of a request awaiting your click.
+
+**Auto-start yes, auto-apply never.** And note this is *better* consent, not weaker: one
+reviewable diff is a far more honest surface than forty individual cards a human clicks through
+without reading. Consent fatigue is the adversary here, exactly as it is for `locate` in §4.1.
+
+### 10.4 The guarded set — tier-invariant
+
+These raise a card at **every** tier, including T3, and are enforced at `MystiLocalExec`, not at
+the Desk layer, so no Desk-side bug can bypass them:
+
+1. **Anything that leaves the machine** — push, publish, deploy, outbound POST. A rewind cannot recall it. `isRemoteEffectCommand` (`SafetyClassifier.ts:233`) already classifies this and already reaches the gate as a `remoteEffect` flag.
+2. **Credential reads** — `.env`, keychain, SecretStorage, `.git-credentials`.
+3. **Authority-changing writes** — `.vscode/`, `.mysti/`, git hooks, CI config, `package.json` scripts, git config. These change what *future* runs may do; auto-approving them is how one accepted task becomes standing access.
+4. **Anything the receiver's own policy already denies.** A grant is subtractive over local policy, never additive.
+5. **Provenance-tainted actions (I16)** — any dependency name, URL, or command that first appeared in a remote payload. This is the supply-chain-by-advice vector and it is the single most important entry in this list for swarm.
+6. **Writes outside the task's declared scope.** The scope is declared when the task is accepted; leaving it terminates the lease.
+
+### 10.5 The swarm is parallel, never recursive
+
+**I24 — a run whose root input is remote-authored has no outbound Desk capability, at every tier.**
+
+This is I2's cycle breaker generalized from serving turns to started runs, and it is what makes
+swarm mode boring instead of terrifying. A remote-rooted run cannot issue `assign`, `consult`, or
+`convene`. Therefore:
+
+- Delegation depth is always exactly 1. There is still no hop counter, because there is still no hop.
+- Fan-out is always charged to the human who started it.
+- One injected agent poisons its own machine's staging area and nothing else.
+- The topology is a star from a human-initiated root — parallel work, not an agent mesh.
+
+Nearly all genuine swarm value is parallelism across repos, not agents phoning each other. The
+star delivers it.
+
+### 10.6 Discovery: referral, not forwarding
+
+**I28 — discovery crosses machines as a referral (data), never as a forwarded call.**
+
+`locate` may return `referral: {peerId, reason}` — *"I do not own this; `bob` does."* A referral is
+inert data rendered inside the untrusted fence. Acting on it is a **fresh call from you**, against
+**your** grant with `bob`, on **your** budget, with **your** card.
+
+This gets the routing benefit of federation with none of its authority laundering: `bob` never has
+to authorize a request from someone he did not pair with, because he never receives one.
+
+### 10.7 New invariants
+
+- **I23** — A tier moves the consent dial; it never raises the authority ceiling. The ceiling is the receiver's own policy, always.
+- **I24** — A remote-rooted run has no outbound Desk capability, at every tier. (§10.5)
+- **I25** — Remote work lands in staging and is reviewed as one artifact. A remote request never mutates the working tree.
+- **I26** — The guarded set (§10.4) is tier-invariant and enforced at `MystiLocalExec`.
+- **I27** — Tier is granted only by a local human ceremony. There is no protocol message that requests, suggests, or raises a tier; T2/T3 expire on a calendar and renew only by a human click. (Kills the A5-class "revocation doesn't revoke" and traffic-renewed-TTL attacks.)
+- **I28** — Discovery crosses as a referral, never a forwarded call. (§10.6)
+
+### 10.8 Residual risk, stated plainly
+
+A T3 teammate whose agent is injected can spend your daily per-peer budget and can put a
+**plausible but malicious diff** in your staging area. The budget cap bounds the first
+(I17: hard stop mid-stream). Nothing structurally prevents the second — you must actually read
+the diff.
+
+That is the same risk as a malicious pull request from a colleague, which every team already
+lives with, and I16's provenance tagging makes it strictly better than the status quo by marking
+which spans originated remotely. It is worth saying out loud rather than claiming the tier system
+eliminates it.
+
+### 10.9 What this does *not* relax
+
+Items 1, 2, 5, 6 and 12 of §8 stand unchanged at every tier: no agent-to-agent chat, no shared
+room, no transitive federation, no peers in the `@mention` namespace, and no `desk.exec` /
+`desk.eval` / `desk.run`. Swarm mode adds no verb that executes anything remotely — it only
+lets a *locally* started run proceed without a per-run card.
+
+---
+
+## 11. Revision — flexibility without giving up the guarantees
+
+**What prompted this:** §10's tier ladder is safe but coarse and slow. T2 hands a peer `handoff`
+and `assign` over the whole repository for thirty days; every `consult` costs a model turn and two
+human decisions. That is a rigid, expensive system, and rigidity was doing work that a better
+primitive can do more precisely.
+
+The literature review (§12) settles the shape: **mesh in the transport, star in the authority.**
+Within that, far more can flex than §8's "not building" list implied.
+
+### 11.1 The reframe: seal the capability set, open the vocabulary
+
+§8.12 closed the *verb table*. That was sealing the wrong thing.
+
+The security property is not "there are exactly seven verbs." It is **"no verb, present or
+future, can hold a capability outside the sealed serving set"** — `read`, `ls`, `locate`, bounded
+by `DeskScope`, asserted by `importGraph.test.ts` (I11).
+
+That restatement is strictly stronger *and* strictly more flexible. A team may define new verbs
+freely, provided each one:
+
+1. declares its required capabilities in a machine-checkable schema, and
+2. requests nothing outside the sealed set, and
+3. is registered by a **local human**, never received over the wire, and
+4. compiles to a `DeskDispatch` handler still covered by the import-graph test.
+
+Read-shaped verbs become a user-extensible vocabulary. Write-shaped verbs remain
+unrepresentable — not by policy, but because no capability exists to build one from.
+
+**I29 — The sealed set is closed; the vocabulary built on it is open. A verb definition is local
+configuration, never a protocol message.**
+
+Most "new verbs" are not even code. A **query template** — a named prompt shape plus a scope plus
+an output schema (`architecture-review`, `ownership-audit`, `breaking-change-check`) — is a macro
+over `consult`. Zero new authority, zero protocol surface, arbitrary team-specific vocabulary.
+
+### 11.2 Attenuating grants replace tiers as the unit of authority
+
+Tiers stay, but demoted: **a tier is now a ceiling on what may be minted, not the authority
+itself.** Actual authority is a signed, attenuating capability token — the macaroon/biscuit model,
+which the governance-gap literature identifies as the missing delegation syntax (§12.3).
+
+```jsonc
+// minted by the RECEIVER's human, signed by their device key
+{
+  "sub": "p_7f3a…",                  // the caller, by key fingerprint
+  "caveats": [
+    { "verb":   ["consult", "review"] },
+    { "scope":  "src/billing/**" },
+    { "expires": 1755686400000 },
+    { "budgetUsd": 0.50 },
+    { "maxCalls": 5 },
+    { "retentionClass": "zero-retention" },
+    { "card": "first-per-task" }
+  ]
+}
+```
+
+Two properties do all the work:
+
+- **Attenuation only.** Anyone holding a grant may add caveats; nobody may remove one. The caller
+  may narrow her own grant before use — handing a subtask exactly one file — which is *useful* and
+  cannot be an escalation. Widening requires a fresh human-signed root.
+- **Offline verifiable.** Signature check plus caveat evaluation, microseconds, no round trip, no
+  directory, no server.
+
+**I30 — Authority is a signed grant that only ever narrows. No party — including the receiver's
+own agent — can widen a grant; widening is a new human-signed root or it does not happen.**
+
+**I31 — A grant may never carry a caveat set weaker than the peer's trust tier permits.** The tier
+ladder becomes the mint-time ceiling, so §10's ceremony requirements survive intact while the
+granted authority drops from "the repo for thirty days" to "these files, five calls, until Friday."
+
+This is more flexible *and* tighter: today's grants are standing and coarse; these are minimal and
+expiring. Short expiry also becomes the primary revocation mechanism, with the I13 revocation list
+demoted to the emergency path.
+
+### 11.3 Composition is local, so it can be arbitrary
+
+Flexibility in *workflow* needs no protocol surface at all. `MystiOrchestratorManager` and
+`OrchestratorDag` already build and execute DAGs; a Desk call becomes one node kind. The DAG lives
+on the initiator's machine, under the initiator's human, paid for by the initiator's budget.
+
+So a team can express any topology it likes — fan-out, staged pipelines, conditional escalation,
+retry-with-a-different-peer — while the wire still only ever carries single request/response pairs.
+**Arbitrary orchestration, zero new attack surface**, because I24 still denies a remote-rooted run
+any outbound capability. This is precisely the production pattern §12.5 found surviving: free
+composition as a subroutine *inside* a supervisor, never as the outer architecture.
+
+### 11.4 Performance — make the free path the default path
+
+The current design's median interaction is a model turn plus two humans. That is the wrong median.
+
+| Path | Model turn | Card | Target latency |
+|---|---|---|---|
+| `locate` (exact-token index hit) | no | no | **< 100 ms** warm |
+| `consult` — cache hit | no | no | **< 200 ms** |
+| `consult` — cold | yes | two | 10–60 s + human |
+
+Four changes, none of which touch a guarantee:
+
+1. **Locate-first, consult-selectively.** Fan `locate` across all peers via `runBounded` — free,
+   no model, no card — and pay for `consult` only where it hit. Half the time the coordinate *is*
+   the answer.
+2. **Approved-disclosure cache.** Key: `(peerId, questionHash, grantId, scopeVersion, blobSha)`.
+   A hit returns a disclosure that this peer's human already approved, over content that has not
+   changed, under a grant still in force. It discloses nothing new, so it needs no model turn and
+   no second card. Any component changing invalidates. **This is the single largest lever.**
+3. **Warm context packs.** `DeskIndex` maintained incrementally (reuse `SkillIndex`'s structure
+   from Plan 20) so a serving turn never cold-starts a scan.
+4. **Local DAG concurrency** via `runBounded`, cap 3, already built.
+
+**Deliberately rejected for speed:** streaming a remote answer as it generates (defeats I7 —
+the human must see the complete draft before it leaves), skipping the disclosure card on a cache
+*miss*, and persistent cross-call sessions. Say the cost out loud rather than eroding the gate.
+
+### 11.5 Reliability — verify mechanically, never by vote
+
+§12.2's finding is decisive: LLM agent consensus **degrades** with group size (46.6% at N=4 →
+33.3% at N=16) because a shared base model correlates the failures that Byzantine quorums assume
+are independent. So:
+
+**I32 — A semantic disagreement between peers is surfaced to a human, never resolved by counting
+agents.** `convene` renders dissent as dissent. No majority vote, no self-consistency sampling, no
+"2 of 3 agreed" anywhere in the design.
+
+**I33 — Every machine-checkable claim is machine-checked.** A `consult` answer's citations are
+`{path, lines, blobSha}`; the *caller* verifies each resolves in the artifact it received. An
+answer with unresolvable citations is `{ok:false, error:'unverifiable'}` — an error, not a
+warning, consistent with I21. This is real integrity that does not depend on model agreement.
+
+Determinism carries the rest: grant evaluation, the board fold, and `renderStandup` are pure
+functions with no model in the loop. Degradation drops *peers*, never guarantees — one reachable
+peer is a working system; zero is a working local agent.
+
+### 11.6 What this changes in §8
+
+Superseded: **§8.12** ("the verb table is closed") → the *capability set* is closed; the
+vocabulary is open (I29). **§10.2** (tiers as authority) → tiers are the mint-time ceiling; grants
+are the authority (I30/I31).
+
+Unchanged: no agent-to-agent chat, no shared room, no transitive federation, no remote write or
+shell, no peers in the `@mention` namespace, no workspace-scoped desk settings, no ref across a
+trust domain. Every one of those is load-bearing against §12's three walls.
+
+---
+
+## 12. Evidence base — why the authority layer stays a star
+
+Literature and production record behind §11's split. Every claim below is sourced.
+
+### 12.1 Injection is contagious in a mesh, not merely present
+
+*Prompt Infection* (arXiv 2410.07283, ESORICS 2025) demonstrates **self-replicating** prompts that
+propagate agent-to-agent, accumulating stolen data as they go — **>80% success against GPT-4-based
+systems**. A mesh is not N× one agent's risk; it is an epidemic substrate.
+
+Willison's **lethal trifecta** (private data + untrusted content + external communication) is what
+every mesh node possesses *by definition of being a mesh node*. No leg is droppable without
+ceasing to be a mesh.
+
+*Open Challenges in Multi-Agent Security* (arXiv 2505.02077) names the trap: **"Free-form protocols
+are essential for AI's task generalization but enable new threats like secret collusion and
+coordinated swarm attacks."** The expressiveness that motivates a mesh is what makes it
+unsecurable. Desk's answer is §11.1 — expressiveness in the *vocabulary*, never in the authority.
+
+### 12.2 Byzantine quorum does not apply
+
+*Rethinking the Reliability of Multi-agent Systems* (arXiv 2511.10400): BFT assumes independent
+faults; a shared base model correlates them, and **"if a single fault can simultaneously flip more
+than f modules, the guarantees are void."** Measured: valid consensus **46.6% at N=4 → 33.3% at
+N=16** — worse with more agents. Source of I32.
+
+*MAST* (arXiv 2503.13657, NeurIPS 2025), 1,642 traces across 7 frameworks: **benign failure rates
+41%–86.7%**, before any adversary.
+
+### 12.3 The protocols cannot express safe delegation
+
+*Governance Gaps in Agent Interoperability Protocols* (arXiv 2606.31498): MCP, A2A and ACP have
+**no delegation syntax, no consent artifacts, no provenance tracking, no accountability chains** —
+they cannot express *"who authorized this agent to act on behalf of whom."* Transitive delegation
+is called out as specifically unsafe today.
+
+Not theoretical: A2A's known attacks include **recursive DoS from repeated task delegation causing
+deadlocks or unbounded loops** — the cycle problem, unsolved, in the flagship mesh protocol.
+Desk's I24 kills it by construction; §11.2's attenuating grants are the missing delegation syntax.
+
+### 12.4 The best "secure by design" defense works by removing the mesh property
+
+*CaMeL* (arXiv 2503.18813) achieves provable guarantees precisely because **untrusted data can
+never influence control flow** — the same move as I2/I3. Cost: **77% task completion vs 84%
+undefended**, and ten months on, real-world implementations remain limited. Desk pays a comparable
+tax knowingly and buys it back in §11.4 rather than by weakening the gate.
+
+### 12.5 The production record agrees
+
+From 2026 deployment retrospectives: **"Every surviving collaboration system has phase gates,
+shared artifacts, or a final supervisor. Free mesh survived mostly as a controlled subroutine
+inside a supervisor, not as the outer architecture."**
+
+That is §11.3 exactly: arbitrary composition, locally supervised, never as the outer topology.
+
+### 12.6 What would have to change
+
+Falsifiable, ordered by tractability:
+
+1. **Attenuating capability tokens with verifiable chains** — deployed technology; closes §12.3. **Adopted in §11.2.**
+2. **Failure decorrelation** (different base models per node) — restores BFT's assumption, forfeits shared context. Partial fix for §12.2.
+3. **Architectural instruction/data separation at the token level** — not prompting, architecture. Nothing on the horizon; §12.1 stands until it exists.
+
+(3) is the binding constraint. Until it lands, any "secure agent mesh" is either a transport mesh
+wearing a mesh label over a star authority model, or it has not been attacked yet.
+
+**Sources:** arXiv [2410.07283](https://arxiv.org/abs/2410.07283) · [2505.02077](https://arxiv.org/abs/2505.02077) · [2511.10400](https://arxiv.org/abs/2511.10400) · [2503.13657](https://arxiv.org/abs/2503.13657) · [2606.31498](https://arxiv.org/pdf/2606.31498) · [2503.18813](https://arxiv.org/pdf/2503.18813) · [2510.17276](https://arxiv.org/pdf/2510.17276) · [simonwillison.net/2025/Jun/16/the-lethal-trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)
+
+---
+
+## 13. Round-2 research — seamlessness (2026-08-25)
+
+Seven-thread web research (competitive, identity standards, transport, consent UX, fresh
+security, demand, incidents; 113 sourced findings). Hand-verified this session:
+`@number0/iroh` 1.1.0 on the npm registry (July 2026, MIT/Apache-2.0, Node ≥20.3, prebuilt
+napi binaries, n0.computer maintainers) and OpenClaw issue #43605 (cross-gateway agent
+messaging requested — three machines over Tailscale — closed **not-planned, `impact:security`**).
+Full source list at the end of this section's synthesis file; key URLs inline.
+
+### 13.1 The verdict: seamlessness and security point the same way
+
+The consent literature is unambiguous — **the approval card was never the security control**:
+
+- Developers approve 93–97% of agent permission prompts; habituation begins at the *second*
+  exposure (CHI 2015 fMRI; MISQ 2018 longitudinal).
+- In a 1,053-tester study, humans caught **13.6%** of planted dangerous commands; Anthropic's
+  classifier caught 89%. Anthropic made auto mode the Claude Code default on 2026-08-14.
+- Approval fatigue is now a *catalogued attack pattern* (ATR-2026-00118; OWASP ASI09).
+
+Security therefore rests on the seal + narrow grants (I1–I11, I29–I31) alone; cards carry
+consent and spend awareness. **Cutting card count is security-aligned, not a trade-off.**
+Constrained surfaces got the strongest quantitative endorsement to date: Anthropic measured
+**0% injection ASR across 200 attempts in a constrained coding environment vs 57.1% *with*
+safeguards on an open GUI surface**.
+
+### 13.2 Competitive position (absence-verified)
+
+**Nobody ships cross-user agent-to-agent collaboration under scoped authority.** The field
+splits into single-user multi-agent (Claude Code Agent Teams — mailbox messaging, deliberately
+single-machine; Conductor; OpenClaw same-gateway) and cloud-centralized multi-user (GitHub Agent
+HQ, OpenAI workspace agents, Devin fleets, Factory, Jules). Nearest poles, both launched this
+month: **Zed Delta** (2026-08-12, CRDT cross-user sync — shares *whole worktrees*, the opposite
+disclosure pole) and **Slack Code** (2026-08-20, "agentic coding is now multiplayer" —
+cloud-centralized). OpenClaw's own `sessions_send` produced a cross-session prompt-injection
+vector (issue #73702), validating no-free-form-chat in-product.
+
+**Positioning:** first shipping answer to the "guest agent problem" — consult a teammate's
+agent, with their machine's context, under narrow signed attenuate-only grants, peer-to-peer
+and local-first. Lead with provenance/containment/review-hours; "multiplayer" is Salesforce's
+word now. The seamlessness bar is "share a link / mention an agent" — pairing must match it.
+
+### 13.3 Design deltas (adopted)
+
+- **D1 — Transport: loopback + ONE iroh tier (relay-first, background direct-upgrade), replacing
+  the loopback→tailnet→relay ladder.** iroh 1.0 (June 2026) dials Ed25519 keys directly — **the
+  pinned pairing key becomes the dialing address**, collapsing I12 identity and transport into
+  one object. Relay-first connects instantly (E2E-encrypted through a dumb relay) while
+  hole-punching upgrades in the background (~90% eventual direct, vendor-measured; DCUtR's
+  measured ~70% end-to-end direct rate is why relay is the availability floor). Tailnet demotes
+  to an opportunistic fast path (cross-tailnet sharing requires recipient tailnet-admin — real
+  friction). Do not ship on n0's free rate-limited relays; self-host or pay.
+- **D2 — ONE merged risk-tiered card, gated on contextual surprise** (new peer / new data class /
+  new scope), replacing stacked spend+disclosure cards; warm repeats ride the approved-disclosure
+  cache; non-blocking verbs land in an inbox. The card renders the RAW draft bytes (never the
+  serving model's summary — OWASP ASI09), is per-peer rate-limited, never batched
+  (ATR-2026-00118). **Telemetry alarms when any card class crosses ~90% approval or sub-2s
+  median decisions — the design's internal falsifier.** Modifies I7's *packaging*, not its
+  completeness rule.
+- **D3 — Grant + cache lifecycle:** grants close with their task and expire on disuse
+  (PORTICO: non-revoking capability baselines permitted 10/10 post-closure reuses; Android's
+  3-month disuse reset); the disclosure cache gets TTLs + scopeVersion invalidation, and cached
+  results re-enter models UNTRUSTED-fenced **forever** (cache = memory-poisoning surface,
+  OWASP ASI06).
+- **D4 — Pairing:** keep expiring invite links; add wormhole-style PAKE short code + QR; pairing
+  record carries an upgrade seam to A2A Signed Agent Cards / KYA-OS Level 1 (both accept plain
+  JWT-ish identifiers — no DIDs required).
+- **D5 — Wire alignment, not adoption:** sign requests RFC 9421/Ed25519 (Web Bot Auth substrate —
+  verified in production by Cloudflare, AWS WAF, Akamai, HUMAN, Vercel); shape grant claims to
+  AIP (draft-prakash-aip-00) / RFC 8693 vocabulary; prefer Biscuit-style public-key chaining over
+  HMAC macaroons so peers verify attenuation without shared secrets. AIP independently converged
+  on Ed25519-only narrow-only attenuation — our design is where standards are heading.
+- **D6 — Agent inbox + PR-shaped handoff:** review cards bounded ≤~400 changed lines (SmartBear:
+  defect detection collapses past 400–500 LOC); structural no-self-approval.
+- **D7 — Serving-turn freebies:** one-paragraph anti-propagation warning in serving prompts
+  (cut lab "mind-virus" spread to near zero — Anthropic/EPFL; nearly free, never load-bearing);
+  optionally serve on an injection-hardened open model (Meta-SecAlign-70B ships, commercial);
+  **requester webview never auto-fetches remote resources from peer content** (EchoLeak and
+  CamoLeak both exfiltrated via auto-rendered images; CamoLeak rode GitHub's own *allowlisted*
+  Camo proxy — endpoint allowlists demonstrably leak; the blobSha bytes-approval is the
+  load-bearing control).
+- **D8 — Zero accounts/servers ≠ zero exposure:** first run works (status/locate ready) but
+  nothing listens beyond loopback until a peer is explicitly paired; no auto-discovery, no open
+  registration. Moltbook's actual breach was a central credential store (disabled-RLS Supabase,
+  1.5M agent tokens) and OpenClaw's was 30k+ internet-exposed 0.0.0.0 gateways — **seamlessness
+  via central credential stores or default-open binds is precisely how mass agent deployments get
+  breached. The relay stays dumb and credential-free.**
+
+### 13.4 Rejected by the evidence
+
+MCP-compat as core protocol (CIMD assumes HTTPS-fetchable client metadata — anti-fit for a
+loopback/tailnet star); UCAN adoption (still 1.0.0-rc.1 — borrow vocabulary only); GNAP (dead);
+tailnet as a named tier (demoted to opportunistic dial); Syncthing-style introducer/auto-roster
+(transitive-trust escalation — lab worms needed multi-hop chains, so the star IS the anti-worm
+control); "AI reviews the consult" semantic gate (the broken defense class — adaptive attacks
+>90% vs in-band defenses); softening no-chat (zero demand found for free-form agent chat;
+Moltbook drew injection attempts at ~1 in 40 posts; OpenClaw #73702 confirms in-product).
+
+### 13.5 Threat-model updates → invariants
+
+- **I34** — Approval cards are consent mechanisms, not security controls; no security argument
+  may cite a card. Card telemetry with auto-demotion alarm is mandatory (D2).
+- **I35** — The disclosure cache is a poisoning surface: TTL + scopeVersion invalidation +
+  permanent UNTRUSTED fencing on replay.
+- **I36** — Grants close with their task and expire on disuse; revocation-by-expiry is the
+  default path (extends I30).
+- **I37** — No requester surface auto-fetches remote resources referenced by peer content.
+- **I38** — Trust pins the key, never the behavior: scope/behavior drift is surfaced first-class
+  (rug-pull precedent: postmark-mcp turned malicious at v1.0.16 after 15 clean versions;
+  ClawHavoc published 335 malicious skills in one wave). Extends I13 with McpToolPins-style
+  drift cards.
+- Walls status: **all three stand** (absence-verified for breaks of signed typed verbs, sealed
+  serving turns, attenuating grants). Wall 3 (instruction/data separation) *moved* — ASIDE at
+  ICLR 2026, Meta-SecAlign shipping — but white-box attacks still break the class:
+  defense-in-depth only. Residual risk unchanged: semantic content riding legitimate answers,
+  now including **compositional attacks split across multiple innocuous consults** — add a
+  multi-consult composition test case; rate-limit repeated failed consults (safeguard efficacy
+  degrades under persistence: 17.8%→78.6% ASR by attempt 200).
+
+### 13.6 Incident ledger (what each invariant would have prevented)
+
+| Incident | Desk answer |
+|---|---|
+| s1ngularity (2025-08): malware drove victims' own AI CLIs (permission-bypass flags) to harvest 1,000+ tokens | I1/I11 — sealed serving turn has no exec/network and **no bypass flag exists** |
+| EchoLeak CVE-2025-32711: zero-click M365 Copilot exfil via auto-fetched images | I1 no-network + I37 no-auto-fetch |
+| CamoLeak CVE-2025-59145: exfil through GitHub's *allowlisted* Camo proxy | I7 bytes-level approval (allowlists alone would NOT have caught it) |
+| GitHub MCP confused deputy: one session spanning public+private repos | per-peer sealed turn under a narrow grant — never the owner's session |
+| Supabase MCP lethal trifecta | I10 — no write verb serves inbound, ever |
+| postmark-mcp: turned malicious at v1.0.16 | I38 drift surfacing (TOFU alone would NOT have caught it) |
+| Amazon Q wiper (2025-07): poisoned system prompt in the official extension | for peer traffic I1 contains it; for Desk's own supply chain — honestly **NONE** (Plan 20 core-manifest is the local mitigation) |
+| Moltbook (2026-01): 1.5M agent tokens leaked via central store; agent-to-agent injection attempts ~2.6% of posts, zero confirmed compromises | D8 stance — no central credential store, dumb relay; no-chat removes the medium. **No agent-to-agent worm has gone multi-hop in the wild as of 2026-08** — the window to standardize structural denial is open *now* |
+
+### 13.7 Watch list (falsifiable, 6–12 months)
+
+1. Anthropic extends Agent Teams' mailbox across machines/users → revisit positioning within a quarter.
+2. Zed Delta GA adds *scoped* (not whole-worktree) sharing → differentiation narrows.
+3. AIP gets IETF WG adoption (draft expires 2026-09) → align grant serialization; if it dies, freeze at vocabulary.
+4. Published adaptive-attack break of deterministic out-of-band enforcement (Progent/CaMeL class) → re-review I1 assumptions.
+5. First confirmed in-the-wild multi-hop agent worm → if it spreads via a read-only channel, rework the seal-blocks-persistence argument.
+6. `@number0/iroh` maintenance stalls >6 months or n0 relay economics turn hostile → self-hosted relays / vendored FFI.
+7. A2A ships a delegation/attenuation spec → evaluate exposing Desk verbs as an attenuated A2A profile.
+8. Desk's own card telemetry crosses ~90% approval on any card class → demote that class (internal falsifier, D2).
+
+---
+
+## 14. Phase 0 — build log
+
+**2026-08-26 — first two items landed** (uncommitted on `feat/plan-20-agent-catalog`).
+Baseline before the work: `tsc` clean, 9246 passing, 2 canvas property tests failing as
+**timeout-under-parallel-load flakes** (both pass in isolation: pageCompiler 14.9 s alone vs
+63.5 s in-suite; roundTrip 4.5 s alone vs 15.9 s in-suite) — pre-existing, unrelated, not masked.
+
+### ✅ Settings scope hardening — `package.json`, `tests/utils/settingsScopeHardening.test.ts`
+
+The defect class was **much broader than §6 Phase 0 documented**. It listed two settings; a sweep
+found **20**, including **12 executable-path settings** (`mysti.claudeCodePath`, `codexPath`,
+`geminiPath`, `clinePath`, `copilotPath`, `cursorPath`, `openclawPath`, `opencodePath`,
+`qwenCodePath`, `hermesPath`, `continuePath`, `kimiCodePath`) that were workspace-writable.
+A cloned repo could point any of them at a binary inside itself and Mysti would spawn it —
+**code execution on open, no prompt**. That is strictly worse than the gateway-retarget issue
+originally flagged, and it is the same class VSCode addressed by making `python.defaultInterpreterPath`
+machine-scoped after the `eslint.nodePath` RCE.
+
+All 20 now carry `"scope": "machine"`: the 12 paths, 2 API keys, `openclawGatewayUrl`,
+`deepmyst.webUrl`, `deepmyst.useInLocalClis`, plus `mysti.mysti.memory` / `crossReview` / `verify`
+— the last three found *by the new test*, not by inspection (12 of 15 in that namespace were
+already machine-scoped, so they were oversights). `mysti.visualTest.url` was deliberately left
+alone: `visualTest.allowedOrigins` is machine-scoped, so the destination is already
+machine-controlled.
+
+The test derives from key **shape** (`*Path`, `*ApiKey`, all of `mysti.mysti.*`) rather than a
+hand-list, so a provider added later fails here instead of shipping unscoped.
+
+### ✅ `sealed` collaborator access — `src/types.ts`, `src/services/CollaboratorPool.ts`, tests
+
+Closes the CRITICAL finding (P1-1/P2-4). `read-only` keeps its web-request carve-out — correct,
+because a local advisor doing research is the point and the steering prompt is the local user's.
+`sealed` is the class for a turn whose prompt is authored **off-machine**, where the request body
+is attacker-chosen and the same fetch is a zero-prompt exfiltration channel.
+
+Implemented as a **self-contained branch immediately after the read fast-path** rather than a
+fourth `&& spec.access !== 'sealed'` bolted onto the three separate web-request carve-outs: it is
+verifiable in isolation and no future carve-out can reach past it. Child also runs at
+`accessLevel: 'read-only'`.
+
+**Mutation-tested** (disable the branch → 4 tests fail, restore → 41 pass), because a security
+test that passes trivially is worse than none. One test was initially vacuous — it called a
+`getLastSettingsFor` helper that does not exist, so its assertion never ran; rewritten to assert
+against `mockPM.sendCalls`. The delegation test was also strengthened to supply an *approving*
+gate and assert it is never consulted, so it discriminates instead of passing via the generic
+fail-closed deny.
+
+After: `tsc` clean, **247 files / 9272 tests, 0 failures** (both canvas flakes passed that run).
+
+### ✅ `EgressScanner` — `src/services/EgressScanner.ts`, `tests/services/egressScanner.test.ts`
+
+Invariant I5, and the component all four competing architectures assumed already existed. Verified
+again before writing: every secret check in the tree is a *path* filter (`looksLikeSecret`, five
+call sites). A path filter answers "may this file be opened"; it cannot answer "does this outbound
+answer quote a live key" — a model that read a permitted file and paraphrased a credential into
+prose defeats all of them.
+
+Detects vendor-prefixed tokens (15 issuers), PEM private-key blocks, JWTs, and secret-shaped
+assignments. Findings never carry the matched value — label, length, and an 8-hex SHA-256
+fingerprint only, so an audit log cannot itself become the leak.
+
+**Deviation from the spec, made deliberately.** §2.2 called for Shannon entropy to hard-block.
+Implemented instead as *advisory*: entropy hits are recorded and surfaced but never block. Source
+is full of legitimately high-entropy 20+ char tokens (minified bundles, base64 assets, integrity
+hashes), and a control that blocks real work gets switched off — a disabled scanner protects
+nothing. Corroborated entropy (a high-entropy value under a secret-shaped name) is still caught as
+a DEFINITE assignment finding, so the spec's actual intent survives. Note hex maxes at 4.0
+bits/char and the threshold is 4.5, so git SHAs, digests and UUIDs are excluded for free.
+
+**Field-measured, not assumed.** Scanned this repository — 1,219 files / 38.4 MB — to get a real
+false-positive rate rather than trusting the unit tests. First pass blocked 20 files; inspection
+showed every first-party false positive was a *fixture* (`TOKEN = 'aaaaaaaabbbbbbbbcccccccc…'`).
+Added one principled downgrade — a secret-shaped value with ≤5 distinct characters or entropy
+< 3.2 is fixture-shaped and goes advisory — taking it to **9 files**: 2 are VSCode's own bundled
+minified JS (never scanned in practice), 6 are test fixtures that genuinely look like keys, and 1
+is a true positive (below). Effective first-party FP rate ≈ **0.5%**, all deliberate fixtures.
+Deliberately did **not** tighten further: chasing the remaining fixtures would encode this repo's
+test habits into a security control and trade real detections for cosmetic ones.
+
+42 unit tests, including a false-positive suite (git SHAs, UUIDs, npm integrity hashes, prose,
+placeholders), value-non-disclosure assertions, global-regex `lastIndex` stability across repeated
+scans, and ReDoS/scale checks (1.5 MB payload and pathological input, both well under budget).
+
+**True positive found while measuring:** `.claude/settings.local.json` contains 4 live-shaped
+`ghp_` GitHub tokens, baked into Claude Code permission-allowlist entries because `GITHUB_TOKEN=…`
+was typed inline on a `Bash(...)` command. The file is **gitignored and untracked**, so nothing was
+committed or pushed — but the tokens sit in plaintext, persist indefinitely in an allowlist, and are
+readable by any agent or process with filesystem access. Rotate, and pass the token via the
+environment rather than inline in a command so it is never captured into a permission rule.
+
+After: `tsc` clean, **249 files / 9343 tests, 0 failures.**
+
+### ✅ A — `ChannelBridge` gates, `<<<OPENCLAW>>>` removal, lifecycle
+
+`executeSend`/`executeAsk` had **zero** permission calls (re-counted: 0 occurrences of
+`requestPermissionInline`/`forceInteractive` in the file), so a model could message a real person
+on WhatsApp/Telegram/Slack with no confirmation — and the marker grammar is an un-nonced global
+literal, so injected text could induce the model to emit one. Both are now gated at the dispatch
+site in `ChatViewProvider` with `forceInteractive: true`: sending to a third party leaves the
+machine and cannot be rewound, so it must survive session full-access, autonomous auto-approve and
+timeout auto-accept (which auto-DENIES a forced card). The card shows the full outbound text
+verbatim, since that is the decision-bearing content.
+
+`<<<OPENCLAW>>>` was **removed rather than gated**. It handed free model text to `sendAgentTask` —
+an agent with shell and filesystem access — with no card anywhere on the path, one hop from the
+ungated model→shell RCE fixed in `87960fd`. A gate was considered and rejected: the capability it
+grants is "run an arbitrary task on an exec-capable agent", which no card can meaningfully describe.
+Scoped delegation already exists via the coordinator's gated `<delegate:NONCE>`. Removed the regex,
+the `detectMarkers` branch, `executeDelegate`, the `'delegate'` member of the `ChannelAction` union,
+the prompt section teaching it, and 26 lines of now-dead skills-list code. The **strip** regex still
+recognises the marker so stale transcripts render clean.
+
+`dispose()` is now called from `ChatViewProvider.dispose()` — it had no call site anywhere, so the
+10s inbound poll and the gateway subscription outlived deactivation.
+
+`tests/managers/channelBridge.test.ts` created (the file had **zero** coverage): 22 tests. The
+suite is self-discriminating — `OPENCLAW` yields 0 actions while a `SEND` in the same text yields 1.
+
+### ✅ B+C — permission scoping and remote origin
+
+`always-allow` set **one process-wide field to full-access, permanently**: every later request, in
+every panel, in every conversation, for the life of the window, was auto-approved. Now a per-scope
+`Map` keyed by the request's `ownerKey` (panelId for a foreground turn, jobId for a background one),
+with a **1-hour TTL** expired lazily on read so there is no reaper timer to leak.
+`clearSessionUpgrade(panelId)` is called when a new conversation starts — consent does not survive
+the conversation it was given in. `resetSessionAccessLevel` drops all upgrades, so lowering the floor
+cannot leave a prior upgrade auto-approving above it.
+
+**I14 implemented**: `remoteOrigin` on `PermissionRequest`, folded into `forceInteractive` at the
+single entry point of both `PermissionManager.requestPermission` and
+`ChatViewProvider.requestPermissionInline`. Folding rather than adding a parallel switch means every
+downstream auto-approval path is covered by the flag they already honour — session upgrade,
+autonomous branch, semi-autonomous auto-path, and timeout auto-accept — with no second switch to
+forget. An `always-allow` click on a remote-origin card grants no lasting upgrade.
+
+**Cross-panel question-routing bug fixed.** `getPendingQuestionToolCallId` gated on `panelId` but
+then returned the first entry of a *global* map, so with two panels each awaiting a question an
+inbound channel reply could be applied to the wrong panel's tool call. `_pendingAskUserQuestions`
+changed from `Set<panelId>` to `Map<panelId, toolCallId>` so the association is explicit.
+
+**Defect found while testing:** the timeout path logged `auto-approved` for a forced card that was
+in fact auto-*denied* — it reported from `timeoutBehavior` alone and ignored `forceInteractive`. The
+behaviour was correct; the audit line stated the opposite of what happened. Fixed to log the actual
+decision. Caught because a passing test's log contradicted its assertion.
+
+`tests/managers/permissionScoping.test.ts`: 10 tests, mutation-verified twice — disabling the
+remote-origin fold fails 4, reverting the scope key to global fails 2.
+
+After: `tsc` clean, **252 files / 9392 tests, 0 failures.**
+
+### ✅ D — credential path filter (`MystiLocalTools`)
+
+All five documented gaps were real, and the filter also had a false positive. Added: `.mcp.json`,
+`.git-credentials`, `*.tfstate(.backup)`, `*.tfvars`, `kubeconfig`, `.pypirc`, `.dockercfg`,
+`.docker/config.json`, `*-adminsdk-*.json`; directories `.kube`, `.docker`, `secrets/`, `vault/`.
+Removed the `.env.example` false positive via an explicit exemption (`.env.example|sample|template|dist`)
+— that file is documentation with placeholder values, and blocking it taught users the filter was
+noise. 22 new tests; mutation-verified (restoring the old regexes fails 12).
+
+### ✅ E — `.mcp.json` credential guard (`McpConfigManager`)
+
+Claude Code's adapter is the only one whose config path is **inside the user's repository**, and the
+entry Mysti writes carries `Authorization: Bearer dm_…`. Added `ensureGitIgnored()`, called before
+that write only (other adapters target `~`, which is not at risk):
+
+- Not a git repo → pass (nothing can be committed).
+- Already **tracked** → **REFUSE the write.** A `.gitignore` rule does not untrack an existing file;
+  git keeps versioning it and the key still gets committed. That needs `git rm --cached`, so it is
+  surfaced to the user rather than silently "fixed". Tracking is detected by probing `.git/index`
+  for the path as a UTF-8 byte run — an over-approximation that can only err toward "tracked",
+  i.e. fails closed.
+- Otherwise → append a commented rule to `.gitignore`, idempotently, preserving existing content and
+  a missing trailing newline.
+
+Fail-closed throughout: a credential written into a tracked file cannot be un-leaked, whereas a
+refused write is a visible, recoverable error. 10 tests.
+
+*Residual:* full SecretStorage + spawn-time injection was NOT done — Claude Code reads the
+project-scoped file itself, so there is no spawn to inject into. Moving to the user-scoped
+`~/.claude.json` would remove the credential from the repo entirely but changes server visibility
+semantics; left as a deliberate follow-up.
+
+### ✅ F — orchestrator cancel registry (`MystiOrchestratorManager`)
+
+`cancelRun` reconstructed frontier ids by string (`${runId}-f0` … `-f31`, unconditionally). Two
+bugs in one: it fired 32 pool cancels for a run that dispatched two frontiers, and it silently
+**missed every frontier past the 32nd** — leaving real children running after Stop. Now a
+`Map<runId, Set<frontierRunId>>` populated at dispatch and cleared when the run settles; `cancelRun`
+iterates exactly what ran. The `frontierCount` parameter is retained for call-site compatibility and
+ignored. 3 tests; mutation-verified.
+
+### Phase 0 status
+
+**Complete**, except two items judged low-value relative to the rest and explicitly deferred:
+extracting `GitRunner` from `CheckpointManager` (a refactor with no behaviour change — `ensureGitIgnored`
+needed no git subprocess in the end) and `escapeHtml` on display-name/colour interpolation in
+`chat.js` (UI-spoofing only; the CSP already blocks script and remote images, per Plan 23 B2).
+
+Two items were found **already fixed** by other work and were not re-done: `CanvasMcpHttpServer`'s
+bearer compare (now a `safeEqual` helper using `crypto.timingSafeEqual`) and the fence-header
+injection (now `_sanitizeFenceLabel`, with a `CANVAS-LANE-03` comment describing the same attack
+this plan's I8 predicted).
+
+Final: `tsc` clean, **253 files / 9426 tests, 0 failures.** One intermediate run showed a single
+failure that did not reproduce across two subsequent full runs and could not be captured before it
+passed again; the baseline had exactly this pattern (canvas property tests timing out under parallel
+contention), so it is most likely the same flake — but it was not positively identified.
+
+### ⚠️ Concurrency notice
+
+During this work another session was editing the same tree (`BoostManager.ts`,
+`ChatViewProvider.ts`, `tests/helpers/mockVscode.ts`, a new `boostLedgerWiring.test.ts`, and a
+transient `tests/managers/__aliascheck.test.ts` that appeared and vanished mid-run). That
+full-suite green therefore covers *both* workstreams, not this one alone.
+
+**This is why the remaining Phase 0 items were not started:** they modify
+`src/providers/ChatViewProvider.ts` (thread `remoteOrigin`, fix the drain-all-queued-concurrently
+bug, fix `getPendingQuestionToolCallId` ignoring its `panelId`), `PermissionManager.ts`,
+`ChannelBridge.ts` (gates + delete `executeDelegate` + first test file), `McpConfigManager.ts`,
+`MystiLocalTools.ts`, `CanvasMcpHttpServer.ts` (`timingSafeEqual`), `chat.js`, and add
+`EgressScanner.ts` + `GitRunner.ts` — and `ChatViewProvider.ts` is one of the files the other
+session is actively changing. Coordinate before continuing.

@@ -60,11 +60,20 @@ const GREP_DEFAULT_EXCLUDE = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/*
  * contents would flow to the free third-party coordinator model. Matched on the
  * workspace-relative POSIX path (review [2]).
  */
-const SECRET_FILE_RE = /(^|\/)(\.env(\.[^/]*)?|\.npmrc|\.netrc|\.pgpass|\.htpasswd|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|[^/]*\.(pem|key|pfx|p12|keystore|jks)|[^/]*(credential|secret|token)[^/]*\.(json|ya?ml|yml|txt|ini|cfg|conf|env|properties)|service[-_]?account.*\.json)$/i;
+const SECRET_FILE_RE = /(^|\/)(\.env(\.[^/]*)?|\.npmrc|\.netrc|\.pgpass|\.htpasswd|\.git-credentials|\.pypirc|\.dockercfg|\.docker\/config\.json|\.mcp\.json|kubeconfig|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|[^/]*\.(pem|key|pfx|p12|keystore|jks|tfvars)|[^/]*\.tfstate(\.backup)?|[^/]*(credential|secret|token)[^/]*\.(json|ya?ml|yml|txt|ini|cfg|conf|env|properties)|service[-_]?account.*\.json|[^/]*-adminsdk-[^/]*\.json)$/i;
 /** Directory names whose entire subtree is credential material. */
-const SECRET_DIR_RE = /(^|\/)(\.ssh|\.aws|\.gnupg)(\/|$)/i;
+const SECRET_DIR_RE = /(^|\/)(\.ssh|\.aws|\.gnupg|\.kube|\.docker|secrets|vault)(\/|$)/i;
+
+/**
+ * `.env.example` (and friends) are documentation, not credentials — they ship
+ * placeholder values on purpose and are the file a developer most often wants
+ * the agent to read when wiring up config. Blocking them was a false positive
+ * that taught users the filter was noise.
+ */
+const SECRET_EXEMPT_RE = /(^|\/)\.env\.(example|sample|template|dist)$/i;
 
 function looksLikeSecret(relPosix: string): boolean {
+  if (SECRET_EXEMPT_RE.test(relPosix)) { return false; }
   return SECRET_DIR_RE.test(relPosix) || SECRET_FILE_RE.test(relPosix);
 }
 

@@ -888,11 +888,17 @@ export type SubAgentQuestionCallback = (
 /**
  * The access profile a collaborator runs under.
  * - `read-only`: the pool hard-denies any non-file-read tool locally (advisory
- *   roles never write, regardless of provider CLI flags).
+ *   roles never write, regardless of provider CLI flags). Web reads still defer
+ *   to the user's own gate policy — an advisor doing research is the point.
  * - `gated-write`: write/exec tools are routed through the caller's permission
  *   gate before execution (coworker/collaborator roles).
+ * - `sealed` (Plan 21 Phase 0): reads and nothing else. No policy consultation,
+ *   no `accessLevel` check, and no web-request carve-out, so the reachable
+ *   surface is exactly the read fast-path. This is the class for a turn whose
+ *   PROMPT is authored off-machine: there the request body is attacker-chosen,
+ *   which makes the same fetch an exfiltration primitive rather than research.
  */
-export type CollaboratorAccess = 'read-only' | 'gated-write';
+export type CollaboratorAccess = 'read-only' | 'gated-write' | 'sealed';
 
 /**
  * How a collaborator interacts with the run.
@@ -1167,6 +1173,17 @@ export interface PermissionRequest {
    * every concurrent job's pending permission card.
    */
   ownerKey?: string;
+  /**
+   * Plan 21 Phase 0 (I14). True when this run's root input contains bytes
+   * authored off this machine (a teammate's Desk request, an inbound channel
+   * message). Such a run may never be auto-approved by ANY channel: the session
+   * upgrade, autonomous mode, the semi-autonomous auto-path, and timeout
+   * auto-accept are all bypassed, and a forced card auto-DENIES on timeout.
+   *
+   * Implemented by folding into `forceInteractive` at the single entry point,
+   * so there is no second switch that a later branch could forget to check.
+   */
+  remoteOrigin?: boolean;
   /**
    * Plan 19: a caller FORCED an interactive card for an un-undoable side effect
    * (a coordinator external MCP call / non-safe bash). Such a card must NEVER be

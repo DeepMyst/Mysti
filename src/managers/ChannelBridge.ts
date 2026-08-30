@@ -21,7 +21,24 @@ import type { ChannelEvent, ChannelInfo } from '../providers/openclaw/OpenClawGa
 
 const SEND_REGEX = /<<<CHANNEL_SEND\s+channel="([^"]+)"(?:\s+to="([^"]+)")?\s*>>>([\s\S]*?)<<<END_CHANNEL_SEND>>>/g;
 const ASK_REGEX = /<<<CHANNEL_ASK\s+channel="([^"]+)"(?:\s+to="([^"]+)")?\s+id="([^"]+)"\s*>>>([\s\S]*?)<<<END_CHANNEL_ASK>>>/g;
-const DELEGATE_REGEX = /<<<OPENCLAW>>>([\s\S]*?)<<<END_OPENCLAW>>>/g;
+/**
+ * Plan 21 Phase 0 — the `<<<OPENCLAW>>>` delegate marker is REMOVED, not gated.
+ *
+ * It took free model text and handed it straight to `sendAgentTask` — an agent
+ * with shell and filesystem access — with no permission card anywhere on the
+ * path. That is one hop from the ungated model→shell RCE fixed in 87960fd, and
+ * the marker grammar is an un-nonced global literal, so any text the model was
+ * induced to echo (a README, a web page, an inbound channel message) could
+ * emit one.
+ *
+ * A gate was considered and rejected: the capability it grants is "run an
+ * arbitrary task on an exec-capable agent", which is not something a card can
+ * meaningfully describe to a user. Delegation with real scoping already exists
+ * through the coordinator's own gated `<delegate:NONCE>` directive.
+ *
+ * The strip regex still recognises the marker so that stale text in an existing
+ * conversation renders clean instead of leaking raw markup into the transcript.
+ */
 
 /** Strip all channel/delegate markers from text for clean display */
 const MARKER_STRIP_REGEX = /<<<(?:CHANNEL_(?:SEND|ASK)\s+[^>]*|OPENCLAW)>>>([\s\S]*?)<<<END_(?:CHANNEL_(?:SEND|ASK)|OPENCLAW)>>>/g;
@@ -37,7 +54,8 @@ function isCancelCommand(text: string): boolean {
 // --- Types ---
 
 export interface ChannelAction {
-  type: 'send' | 'ask' | 'delegate';
+  /** `delegate` is deliberately absent — see the note beside MARKER_STRIP_REGEX. */
+  type: 'send' | 'ask';
   channel: string;
   content: string;
   to?: string;
@@ -218,25 +236,15 @@ Ask someone a question and wait for their reply:
 Your question here
 <<<END_CHANNEL_ASK>>>
 
-GENERAL TASK DELEGATION:
-
-Delegate any task to the OpenClaw agent. Available skills:
-${this._buildSkillsList()}
-
-<<<OPENCLAW>>>
-Your task description here — be specific about what you need done
-<<<END_OPENCLAW>>>
-
 RULES:
 - The channel value must be one of: ${channelTypes}
 - Use CHANNEL_SEND for messages that don't need a reply
 - Use CHANNEL_ASK when you need someone to respond before continuing
 - The "to" attribute is optional — omit it to send to the user's own device
 - When the user says "tell X", "ask X", "message X", or "send to X", use to="X" — OpenClaw automatically resolves contact names, no exact match required
-- Use OPENCLAW for any delegatable task: weather, notes, reminders, image generation, web research, GitHub, PDF editing, transcription, and anything else listed in the skills above
 - You can include multiple markers in a single response
-- All markers are processed automatically — content is delivered or delegated instantly
-- Do NOT say you cannot send messages, contact specific people, or perform tasks — these are built-in capabilities via OpenClaw`;
+- Every marker is shown to the user for approval before anything is sent — write the message you actually mean to send
+- Do NOT say you cannot send messages or contact specific people — these are built-in capabilities via OpenClaw`;
 
     this._cachedSnippet = snippet;
     return snippet;
@@ -314,19 +322,8 @@ RULES:
       }
     }
 
-    // Detect OPENCLAW delegate markers — groups: [1]=content
-    DELEGATE_REGEX.lastIndex = 0;
-    while ((match = DELEGATE_REGEX.exec(accumulatedText)) !== null) {
-      if (!processed.has(match.index)) {
-        processed.add(match.index);
-        actions.push({
-          type: 'delegate',
-          channel: 'openclaw',
-          content: match[1].trim(),
-          startIndex: match.index,
-        });
-      }
-    }
+    // No delegate detection: `<<<OPENCLAW>>>` is removed (see the note beside
+    // MARKER_STRIP_REGEX). Emitting one is now inert text.
 
     return actions;
   }
@@ -371,12 +368,6 @@ RULES:
   /**
    * Execute a delegate action — send a general task to the OpenClaw agent.
    */
-  async executeDelegate(action: ChannelAction): Promise<boolean> {
-    const ok = await this._activeModeManager.sendAgentTask(action.content);
-    console.log(`[Mysti] ChannelBridge: Delegated task to OpenClaw (${action.content.length} chars): ${ok ? 'accepted' : 'failed'}`);
-    return ok;
-  }
-
   /**
    * Execute an ask action — send question and register pending reply listener.
    * Routes through agent pipeline for fuzzy contact names.
@@ -828,32 +819,6 @@ RULES:
 
   private _formatChannelType(type: string): string {
     return type.charAt(0).toUpperCase() + type.slice(1);
-  }
-
-  // --- Skills ---
-
-  /**
-   * Build a formatted list of available OpenClaw skills for prompt injection.
-   * Falls back to a static summary if skills haven't been fetched yet.
-   */
-  private _buildSkillsList(): string {
-    const skills = this._activeModeManager.getSkills();
-    if (skills.length === 0) {
-      return [
-        '- Messaging (WhatsApp, Telegram, Slack, Discord, Signal, iMessage)',
-        '- Web browsing, research, and summarization',
-        '- GitHub (issues, PRs, CI runs)',
-        '- Apple Notes & Reminders',
-        '- Image generation',
-        '- Weather forecasts',
-        '- PDF editing',
-        '- Audio transcription',
-        '- macOS automation',
-        '- And more — describe any task and OpenClaw will try to handle it',
-      ].join('\n');
-    }
-
-    return skills.map(s => `- ${s.emoji} ${s.name}: ${s.description}`).join('\n');
   }
 
   // --- Contact tracking ---

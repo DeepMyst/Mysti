@@ -205,3 +205,91 @@ describe('MystiLocalTools', () => {
     expect((await tools.resolveWriteTarget('alias.ts')).ok).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 21 Phase 0 — the credential path filter was too narrow.
+//
+// It covered .env / .npmrc / .ssh / .aws and key extensions, but missed whole
+// classes of file that hold live credentials: `.mcp.json` (which Mysti itself
+// writes a `dm_` bearer into), `.git-credentials`, Terraform state and tfvars,
+// kubeconfig, `.pypirc`, Docker config, and the `secrets/` and `vault/`
+// conventions. It also blocked `.env.example`, which is documentation — a false
+// positive that teaches users the filter is noise.
+// ---------------------------------------------------------------------------
+describe('MystiLocalTools — credential path filter (Plan 21 Phase 0)', () => {
+  let root: string;
+  let tools: MystiLocalTools;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-secret-ws-'));
+    tools = new MystiLocalTools({
+      getWorkspaceRoot: () => root,
+      findFiles: async () => [],
+      getDiagnostics: () => [],
+    });
+  });
+
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+
+  /** Create a file (with parent dirs) and return its workspace-relative path. */
+  function put(rel: string, body = 'CREDENTIAL=live'): string {
+    const abs = path.join(root, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, body);
+    return rel;
+  }
+
+  const mustBlock = [
+    '.mcp.json',
+    '.git-credentials',
+    'terraform.tfstate',
+    'terraform.tfstate.backup',
+    'prod.tfvars',
+    'kubeconfig',
+    '.pypirc',
+    '.dockercfg',
+    'secrets/database.yml',
+    'vault/unseal.txt',
+    '.kube/config',
+    '.docker/config.json',
+    'my-project-firebase-adminsdk-abc12.json',
+  ];
+
+  for (const rel of mustBlock) {
+    it(`blocks reading ${rel}`, async () => {
+      put(rel);
+      const res = await tools.read(rel);
+      expect(res.ok, `${rel} must be blocked`).toBe(false);
+      expect(res.output).toContain('credentials');
+    });
+  }
+
+  const mustAllow = [
+    '.env.example',
+    '.env.sample',
+    '.env.template',
+    'src/index.ts',
+    'README.md',
+    'docs/secrets-policy.md',
+  ];
+
+  for (const rel of mustAllow) {
+    it(`still allows reading ${rel}`, async () => {
+      put(rel, 'ordinary content');
+      const res = await tools.read(rel);
+      expect(res.ok, `${rel} must be readable`).toBe(true);
+    });
+  }
+
+  it('still blocks a real .env even though .env.example is exempt', async () => {
+    put('.env');
+    put('.env.example');
+    expect((await tools.read('.env')).ok).toBe(false);
+    expect((await tools.read('.env.example')).ok).toBe(true);
+  });
+
+  it('blocks a credential file nested deep in the tree', async () => {
+    put('services/api/config/.git-credentials');
+    expect((await tools.read('services/api/config/.git-credentials')).ok).toBe(false);
+  });
+});

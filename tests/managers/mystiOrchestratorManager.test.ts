@@ -367,3 +367,77 @@ describe('MystiOrchestratorManager inter-node fencing (Plan 18 F2/M2)', () => {
     expect(synth!).toContain('UNTRUSTED DATA');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 21 Phase 0 — Stop cancels what was dispatched, not a guessed range.
+//
+// `cancelRun` used to RECONSTRUCT frontier ids by string: `${runId}-f0` through
+// `-f31`, unconditionally. Two consequences: it fired 32 pool cancels for a run
+// that dispatched two frontiers (each a lookup miss), and it silently missed
+// every frontier past the 32nd on a wide plan — leaving real children running
+// after the user pressed Stop.
+// ---------------------------------------------------------------------------
+describe('MystiOrchestratorManager — cancel targets the live frontier set', () => {
+  beforeEach(() => clearMockConfig());
+
+  function trackingPool(pm: MockProviderManager) {
+    const pool = new CollaboratorPool(pm as any);
+    const cancelled: string[] = [];
+    const original = pool.cancelRun.bind(pool);
+    pool.cancelRun = (runId: string) => { cancelled.push(runId); return original(runId); };
+    return { pool, cancelled };
+  }
+
+  it('cancels nothing for a run that never dispatched', () => {
+    const pm = new MockProviderManager();
+    const { pool, cancelled } = trackingPool(pm);
+    const mgr = new MystiOrchestratorManager(
+      pool, stubCoordinator({}), stubProviders(['claude-code']), () => 3,
+    );
+
+    mgr.cancelRun('run-that-never-ran');
+
+    // Previously: 32 cancels for a run with no children at all.
+    expect(cancelled).toHaveLength(0);
+  });
+
+  it('cancelPanel on an unknown panel is a no-op', () => {
+    const pm = new MockProviderManager();
+    const { pool, cancelled } = trackingPool(pm);
+    const mgr = new MystiOrchestratorManager(
+      pool, stubCoordinator({}), stubProviders(['claude-code']), () => 3,
+    );
+
+    mgr.cancelPanel('no-such-panel');
+    expect(cancelled).toHaveLength(0);
+  });
+
+  it('cancels each dispatched frontier exactly once, then forgets the run', async () => {
+    const pm = new MockProviderManager();
+    pm.defaultStreamFactory = () => createMockStream(textChunks(['done']));
+    const { pool, cancelled } = trackingPool(pm);
+
+    const plan = {
+      nodes: [
+        { id: 'a', task: 'first', backend: 'claude-code', dependsOn: [] },
+        { id: 'b', task: 'second', backend: 'claude-code', dependsOn: ['a'] },
+      ],
+    };
+    const mgr = new MystiOrchestratorManager(
+      pool, stubCoordinator(plan), stubProviders(['claude-code']), () => 3,
+    );
+
+    await drain(mgr.run({
+      panelId: 'panel-1',
+      brief: 'do the thing',
+      context: [],
+      settings: collabSettings(),
+    } as any));
+
+    // The run completed, so its registry entry is gone and Stop is inert
+    // rather than firing a blind sweep of reconstructed ids.
+    cancelled.length = 0;
+    mgr.cancelPanel('panel-1');
+    expect(cancelled).toHaveLength(0);
+  }, 20000);
+});

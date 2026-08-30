@@ -76,6 +76,13 @@ export interface OrchestratorRunInput {
 export class MystiOrchestratorManager {
   /** panelId -> active orchestration runIds (Plan 18 1.3 Stop reachability). */
   private _activeRunsByPanel: Map<string, Set<string>> = new Map();
+  /**
+   * Live pool-run ids per orchestration run. Plan 21 Phase 0: `cancelRun` used
+   * to RECONSTRUCT these by string (`${runId}-f0` … `-f31`), which both fired 32
+   * cancels for runs that dispatched two frontiers and silently missed every
+   * frontier past the 32nd. Stop now cancels exactly what was dispatched.
+   */
+  private _dispatchedByRun: Map<string, Set<string>> = new Map();
   constructor(
     private readonly _pool: CollaboratorPool,
     private readonly _coordinator: CoordinatorModelClient,
@@ -174,6 +181,9 @@ export class MystiOrchestratorManager {
         }
 
         dispatchedFrontierRunIds.push(frontierRunId);
+        let live = this._dispatchedByRun.get(runId);
+        if (!live) { live = new Set(); this._dispatchedByRun.set(runId, live); }
+        live.add(frontierRunId);
         const stream = this._pool.dispatch(specs, {
           settings: input.settings,
           panelId: input.panelId,
@@ -249,17 +259,26 @@ export class MystiOrchestratorManager {
 
     return { runId, outcomes: list, synthesis };
     } finally {
+      this._dispatchedByRun.delete(runId);
       const runs = this._activeRunsByPanel.get(input.panelId);
       runs?.delete(runId);
       if (runs && runs.size === 0) { this._activeRunsByPanel.delete(input.panelId); }
     }
   }
 
-  /** Cancel every frontier of a run (Stop). */
-  public cancelRun(runId: string, frontierCount = 32): void {
-    for (let i = 0; i < frontierCount; i++) {
-      this._pool.cancelRun(`${runId}-f${i}`);
+  /**
+   * Cancel every frontier of a run (Stop).
+   *
+   * `frontierCount` is retained for call-site compatibility and ignored: the
+   * set of live frontiers is now known exactly, so there is nothing to guess.
+   */
+  public cancelRun(runId: string, _frontierCount = 32): void {
+    const live = this._dispatchedByRun.get(runId);
+    if (!live) { return; }
+    for (const frontierRunId of live) {
+      this._pool.cancelRun(frontierRunId);
     }
+    this._dispatchedByRun.delete(runId);
   }
 
   /** Plan 18 (1.3): cancel every active orchestration for a panel (Stop). */

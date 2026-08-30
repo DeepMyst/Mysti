@@ -365,7 +365,9 @@ export class CollaboratorPool {
         ...(spec.effortLevel ? { effortLevel: spec.effortLevel } : {}),
         // Advisory collaborators run read-only; the pool hard-denies writes below
         // regardless, but this keeps the child's own gate/flags aligned.
-        accessLevel: spec.access === 'read-only' ? 'read-only' : options.settings.accessLevel,
+        accessLevel: (spec.access === 'read-only' || spec.access === 'sealed')
+          ? 'read-only'
+          : options.settings.accessLevel,
         // P0.2d (Plan 17): a plan-mode PARENT must not silently produce
         // plan-only children — a delegated "implement X" would return a plan
         // instead of edits (claude: --permission-mode plan; gemini: --sandbox,
@@ -587,6 +589,30 @@ export class CollaboratorPool {
     // File reads pass without a prompt.
     if (!isDelegation && action === 'file-read') {
       return true;
+    }
+
+    // Plan 21 Phase 0 — `sealed`: reads and nothing else, decided HERE so that
+    // no later branch can widen it. Deliberately self-contained (its own
+    // suspend + deny) rather than another `&& spec.access !== 'sealed'` bolted
+    // onto the three separate web-request carve-outs below: this branch is
+    // verifiable in isolation, and a future carve-out cannot reach past it.
+    //
+    // Why web reads are denied here when a read-only advisor may make them:
+    // that carve-out exists because an advisor doing research is the point, and
+    // the prompt steering it came from the local user. A sealed collaborator's
+    // prompt is authored OFF-MACHINE, which turns the same fetch into a
+    // zero-prompt exfiltration channel — the request body is attacker-chosen.
+    if (spec.access === 'sealed') {
+      this._providerManager.suspendRequest(childPanelId);
+      yield {
+        ...base,
+        type: 'collab_tool_denied',
+        toolCall,
+        content: `Sealed role '${spec.role || 'sealed'}' may only read — ${toolCall.name} denied.`,
+      };
+      this._forgetChild(options.runId, childPanelId);
+      this._providerManager.cancelRequest(childPanelId);
+      return false;
     }
     // Plan 18 (F5): web reads defer to the user's OWN gate policy instead of a
     // hardcoded pass — under modes where direct chat would prompt for a

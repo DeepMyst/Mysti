@@ -319,46 +319,55 @@
           "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context."
         },
         "mysti.claudeCodePath": {
+          "scope": "machine",
           "type": "string",
           "default": "claude",
           "description": "Path to Claude Code CLI executable"
         },
         "mysti.codexPath": {
+          "scope": "machine",
           "type": "string",
           "default": "codex",
           "description": "Path to OpenAI Codex CLI executable"
         },
         "mysti.geminiPath": {
+          "scope": "machine",
           "type": "string",
           "default": "gemini",
           "description": "Path to Google Gemini CLI executable"
         },
         "mysti.clinePath": {
+          "scope": "machine",
           "type": "string",
           "default": "cline",
           "description": "Path to Cline CLI executable"
         },
         "mysti.copilotPath": {
+          "scope": "machine",
           "type": "string",
           "default": "copilot",
           "description": "Path to GitHub Copilot CLI executable"
         },
         "mysti.cursorPath": {
+          "scope": "machine",
           "type": "string",
           "default": "agent",
           "description": "Path to Cursor CLI (agent) executable"
         },
         "mysti.cursorApiKey": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "description": "Cursor API key. Set this instead of the CURSOR_API_KEY environment variable. Get your key from Cursor settings."
         },
         "mysti.openclawPath": {
+          "scope": "machine",
           "type": "string",
           "default": "openclaw",
           "description": "Path to OpenClaw CLI executable"
         },
         "mysti.openclawGatewayUrl": {
+          "scope": "machine",
           "type": "string",
           "default": "ws://127.0.0.1:18789",
           "description": "URL of the OpenClaw Gateway WebSocket server"
@@ -369,26 +378,31 @@
           "description": "Use OpenClaw Gateway WebSocket for streaming (falls back to CLI if unavailable)"
         },
         "mysti.opencodePath": {
+          "scope": "machine",
           "type": "string",
           "default": "opencode",
           "description": "Path to OpenCode CLI executable"
         },
         "mysti.qwenCodePath": {
+          "scope": "machine",
           "type": "string",
           "default": "qwen",
           "description": "Path to Qwen Code CLI executable"
         },
         "mysti.hermesPath": {
+          "scope": "machine",
           "type": "string",
           "default": "hermes",
           "description": "Path to Hermes Agent CLI executable"
         },
         "mysti.continuePath": {
+          "scope": "machine",
           "type": "string",
           "default": "cn",
           "description": "Path to Continue CLI (cn) executable"
         },
         "mysti.kimiCodePath": {
+          "scope": "machine",
           "type": "string",
           "default": "kimi",
           "description": "Path to Kimi Code CLI (kimi) executable"
@@ -451,6 +465,7 @@
           "description": "Maximum tokens to generate with LocalAI (0 = no limit). Useful for controlling response length."
         },
         "mysti.localaiApiKey": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "description": "API key for LocalAI (if authentication is configured on your server). Leave empty if not required."
@@ -775,11 +790,13 @@
           "markdownDescription": "Hard cap on coordinator **model streams** per Mysti-agent run (doubled at high effort) — the run's spend ceiling. One stream = one turn; a delegation result, a local read-tool result, and a length-continue each start a new turn. Machine-scoped so a workspace cannot raise your per-run spend ceiling. Lower it to cap spend more tightly."
         },
         "mysti.mysti.memory": {
+          "scope": "machine",
           "type": "boolean",
           "default": true,
           "markdownDescription": "**Unified cross-backend memory** for the Mysti agent: durable project facts (learned by the coordinator via a `remember` tool) are stored per-workspace and injected into every future Mysti run — so the 14 backends behave like one agent that knows your project. Injected as untrusted, nonce-fenced data. Disable to stop persisting/injecting learnings. Review or delete individual facts with the `Mysti: View & Prune Mysti Memory` command."
         },
         "mysti.mysti.crossReview": {
+          "scope": "machine",
           "type": "string",
           "enum": [
             "off",
@@ -793,6 +810,7 @@
           "markdownDescription": "**Cross-vendor review** (the coordinator-only superpower): after a delegation modifies files, Mysti dispatches a *different-vendor* backend (e.g. Anthropic wrote it → OpenAI or Google reviews it) in READ-ONLY mode to catch bugs the writer's own model would miss — decorrelated blind spots no single-vendor agent gets. `advisory` runs one review per run and feeds findings back to the coordinator; `off` (default) disables it. Costs one extra read-only delegation; requires ≥2 different-vendor backends installed."
         },
         "mysti.mysti.verify": {
+          "scope": "machine",
           "type": "string",
           "enum": [
             "off",
@@ -896,11 +914,13 @@
           "markdownDescription": "Base URL of the DeepMyst API used for brokered MCP connections (Plan 04). The user's `dm_` API key is sent as `Authorization: Bearer`; DeepMyst exposes MCP tools at `/api/v1/mcp/{agent}`. Machine-scoped so a workspace can't redirect your key; the client also only ever sends it to a `*.deepmyst.com` host."
         },
         "mysti.deepmyst.webUrl": {
+          "scope": "machine",
           "type": "string",
           "default": "https://v2.deepmyst.com",
           "markdownDescription": "Base URL of the DeepMyst web app, opened in the browser for Clerk sign-in/sign-up and for managing connections."
         },
         "mysti.deepmyst.useInLocalClis": {
+          "scope": "machine",
           "type": "boolean",
           "default": false,
           "markdownDescription": "Expose your DeepMyst MCP connections (Smithery/Composio) to your local AI CLIs (Claude Code, Gemini, Qwen, OpenCode, Codex, Cline) by writing the per-user MCP broker endpoint (`/api/v1/me/mcp`) into each CLI's MCP config, with your `dm_` key as the Bearer. **Off by default** — when on, your `dm_` key is written into those config files (including the workspace `.mcp.json`, which may be committed to git). Toggle it from the DeepMyst Connections panel."

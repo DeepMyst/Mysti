@@ -829,3 +829,164 @@ describe('CollaboratorPool Wave 4 (follow-up deadline, write-terminal retry)', (
     expect(complete?.hasError).toBe(true);
   }, 10000);
 });
+
+// ---------------------------------------------------------------------------
+// Plan 21 Phase 0 — the `sealed` access class.
+//
+// The hole this closes: a `read-only` collaborator keeps its web-request
+// carve-out, so under `edit-automatically` + `full-access` a WebFetch fast-
+// passes with NO prompt (see "still fast-passes a WebFetch where policy would
+// not gate it" above — that behaviour is correct and stays). That carve-out
+// exists because a local advisor doing research is the point.
+//
+// It stops being correct the moment the PROMPT is authored off-machine: the
+// fetch body is then attacker-chosen and the pass is a zero-prompt exfiltration
+// channel. `sealed` is the class for that case — reads, nothing else, with no
+// policy consultation and no carve-out reachable.
+// ---------------------------------------------------------------------------
+describe('CollaboratorPool sealed access (Plan 21 Phase 0)', () => {
+  beforeEach(() => {
+    clearMockConfig();
+  });
+
+  function toolStream(name: string, input: Record<string, unknown>): StreamChunk[] {
+    return [
+      { type: 'tool_use', toolCall: { id: 's1', name, input } } as StreamChunk,
+      { type: 'text', content: 'after' } as StreamChunk,
+      { type: 'done' } as StreamChunk,
+    ];
+  }
+
+  /** The most permissive configuration that exists — the one that fast-passes. */
+  const PERMISSIVE = { mode: 'edit-automatically' as const, accessLevel: 'full-access' as const };
+
+  it('denies a WebFetch under the MOST permissive settings, and never consults the gate', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
+    mockPM.setProviderChunks('google-gemini', toolStream('WebFetch', { url: 'https://evil.example' }));
+
+    let gateAsked = false;
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'sealed' })],
+      collabOptions({
+        runId: 'run-sealed-web',
+        settings: collabSettings(PERMISSIVE),
+        onGate: async () => { gateAsked = true; return true; },
+      })
+    ));
+
+    // No policy consultation at all: the deny is structural, not a decision.
+    expect(gateAsked).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
+    // And the tool never reaches the caller to be re-emitted.
+    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(false);
+  });
+
+  it('a gated-write collaborator DOES fast-pass the same fetch — proving the difference is the class, not the settings', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    mockPM.setProviderChunks('google-gemini', toolStream('WebFetch', { url: 'https://evil.example' }));
+
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'gated-write' })],
+      collabOptions({
+        runId: 'run-unsealed-web',
+        settings: collabSettings(PERMISSIVE),
+        onGate: async () => true,
+      })
+    ));
+
+    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(true);
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(false);
+  });
+
+  it('still allows a plain file read — the sealed surface is exactly the read fast-path', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    mockPM.setProviderChunks('google-gemini', toolStream('Read', { file_path: 'src/index.ts' }));
+
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'sealed' })],
+      collabOptions({ runId: 'run-sealed-read', settings: collabSettings(PERMISSIVE) })
+    ));
+
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(true);
+  });
+
+  it('denies a write even under full-access', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
+    mockPM.setProviderChunks('google-gemini', toolStream('Write', { file_path: 'x.ts', content: 'hi' }));
+
+    let gateAsked = false;
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'sealed' })],
+      collabOptions({
+        runId: 'run-sealed-write',
+        settings: collabSettings(PERMISSIVE),
+        onGate: async () => { gateAsked = true; return true; },
+      })
+    ));
+
+    expect(gateAsked).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
+  });
+
+  it('denies a delegation tool, which classifies as a READ but hides writes inside the child', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
+    mockPM.setProviderChunks('google-gemini', toolStream('task', { prompt: 'write a file for me' }));
+
+    // An APPROVING gate is supplied deliberately: without the sealed branch the
+    // spec would fall through to the gated-write path and this hook would let
+    // the delegation run. Asserting it is never asked is what makes this test
+    // discriminate, rather than passing via the generic fail-closed deny.
+    let gateAsked = false;
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'sealed' })],
+      collabOptions({
+        runId: 'run-sealed-task',
+        settings: collabSettings(PERMISSIVE),
+        onGate: async () => { gateAsked = true; return true; },
+      })
+    ));
+
+    expect(gateAsked).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
+    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(false);
+  });
+
+  it('denies even when the freeze fails — no best-effort-prompt downgrade for a sealed web read', async () => {
+    // read-only downgrades a web read to a prompt when SIGSTOP is unavailable
+    // (Windows). sealed must not: an off-machine prompt gets no best effort.
+    const { pool, mockPM } = createTestCollaboratorPool();
+    vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(false);
+    mockPM.setProviderChunks('google-gemini', toolStream('WebFetch', { url: 'https://evil.example' }));
+
+    let gateAsked = false;
+    const chunks = await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'sealed' })],
+      collabOptions({
+        runId: 'run-sealed-nofreeze',
+        settings: collabSettings(PERMISSIVE),
+        onGate: async () => { gateAsked = true; return true; },
+      })
+    ));
+
+    expect(gateAsked).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
+  });
+
+  it('runs the child at read-only accessLevel regardless of the parent settings', async () => {
+    const { pool, mockPM } = createTestCollaboratorPool();
+    mockPM.setProviderChunks('google-gemini', textChunks(['ok']));
+
+    await collectCollabChunks(pool.dispatch(
+      [collabSpec('c1', 'google-gemini' as any, { access: 'sealed' })],
+      collabOptions({ runId: 'run-sealed-level', settings: collabSettings(PERMISSIVE) })
+    ));
+
+    const call = mockPM.sendCalls.find(c => c.providerId === 'google-gemini');
+    expect(call, 'the collaborator must actually have been dispatched').toBeDefined();
+    expect(call!.settings.accessLevel).toBe('read-only');
+  });
+});

@@ -342,7 +342,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _agentsLoaded: boolean = false;
   private _agentInitPromise: Promise<void>;
   // Track panels with pending AskUserQuestion (to suppress plan options/suggestions)
-  private _pendingAskUserQuestions: Set<string> = new Set();
+  /**
+   * Panels with a question awaiting an answer, mapped to the toolCallId that
+   * question belongs to. Plan 21 Phase 0: this was a Set of panelIds, so the
+   * channel-reply path had to guess which toolCallId a panel meant and picked
+   * the first entry of a global map — with two panels awaiting questions, a
+   * reply could be applied to the wrong panel's tool call.
+   */
+  private _pendingAskUserQuestions: Map<string, string> = new Map();
   // Store pending question data for memory learning when user answers
   private _pendingQuestionData: Map<string, AskUserQuestionData> = new Map();
   // Semi-autonomous question timeout handles (toolCallId -> timeout)
@@ -541,11 +548,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._channelBridge.setDelegate({
       hasPendingQuestion: (panelId: string) => this._pendingAskUserQuestions.has(panelId),
       getPendingQuestionToolCallId: (panelId: string) => {
-        if (!this._pendingAskUserQuestions.has(panelId)) { return null; }
-        for (const [toolCallId] of this._pendingQuestionData) {
-          return toolCallId;
-        }
-        return null;
+        // Plan 21 Phase 0: this gated on `panelId` but then returned the FIRST
+        // entry of a GLOBAL map, so with two panels each awaiting a question a
+        // channel reply meant for one could be applied to the other's tool
+        // call. Resolve the id that this panel actually registered.
+        const toolCallId = this._pendingAskUserQuestions.get(panelId);
+        if (!toolCallId) { return null; }
+        return this._pendingQuestionData.has(toolCallId) ? toolCallId : null;
       },
       answerPendingQuestion: (panelId: string, toolCallId: string, answer: string) => {
         // Clear semi-autonomous timer if running
@@ -1532,6 +1541,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // C2: derive ids from the registry, never a hard-coded list
           this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
           this._cancelPendingSubAgentQuestions(panelId);
+          // Plan 21 Phase 0: consent does not survive the conversation it was
+          // given in. An "always allow" click was previously permanent and
+          // process-wide, so a fresh conversation silently inherited it.
+          this._permissionManager.clearSessionUpgrade(panelId);
 
           this._providerManager.clearSession(panelId);  // Clear provider session for this panel
           this._compactionManager.resetUsage(panelId);  // Reset compaction tracking (sweeps -brainstorm- child keys)
@@ -3974,32 +3987,50 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             {
               const actions = this._channelBridge.detectMarkers(panelId, assistantContent);
               for (const action of actions) {
+                // Plan 21 Phase 0: every outbound channel message is gated.
+                // Before this, `executeSend`/`executeAsk` had NO permission
+                // call anywhere on the path — a model could message a real
+                // person on WhatsApp/Telegram/Slack with no confirmation, and
+                // the marker grammar is an un-nonced global literal that
+                // injected text can induce the model to echo.
+                //
+                // forceInteractive: sending to a third party leaves the
+                // machine and cannot be rewound, so it must survive session
+                // full-access, autonomous auto-approve, and timeout
+                // auto-accept (which auto-DENIES a forced card).
+                const recipient = action.to ? `“${action.to}” on ${action.channel}` : `your own ${action.channel} device`;
+                const approved = await this.requestPermissionInline(
+                  'web-request',
+                  action.type === 'ask' ? 'Send a question' : 'Send a message',
+                  `Mysti wants to message ${recipient}. This leaves your machine and cannot be undone.`,
+                  // The full outbound text is the decision-bearing content, so
+                  // it is shown verbatim rather than summarized.
+                  { command: action.content, riskLevel: 'medium' },
+                  panelId,
+                  undefined,
+                  undefined,
+                  true,
+                );
+                if (!approved) {
+                  this._postToPanel(panelId, {
+                    type: 'channelAction',
+                    payload: { action: action.type, channel: action.channel, to: action.to, success: false, denied: true }
+                  });
+                  continue;
+                }
+
                 if (action.type === 'send') {
                   const ok = await this._channelBridge.executeSend(action);
                   this._postToPanel(panelId, {
                     type: 'channelAction',
                     payload: { action: 'send', channel: action.channel, to: action.to, success: ok }
                   });
-                } else if (action.type === 'ask') {
+                } else {
                   const ok = await this._channelBridge.executeAsk(action, panelId);
                   this._postToPanel(panelId, {
                     type: 'channelAction',
                     payload: { action: 'ask', channel: action.channel, to: action.to, askId: action.askId, success: ok }
                   });
-                } else if (action.type === 'delegate') {
-                  // C4: channel delegation is a capability, not a provider
-                  // name — route to whichever registered provider declares
-                  // supportsChannels (today: OpenClaw's gateway daemon).
-                  const channelProviderId = this._getChannelProviderId();
-                  if (channelProviderId) {
-                    const ok = await this._channelBridge.executeDelegate(action);
-                    this._postToPanel(panelId, {
-                      type: 'channelAction',
-                      payload: { action: 'delegate', channel: channelProviderId, success: ok }
-                    });
-                  } else {
-                    console.warn('[Mysti] Channel delegate marker detected, but no registered provider supports channels — skipping');
-                  }
                 }
               }
             }
@@ -4221,9 +4252,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
 
             // Track that this panel has a pending question (suppresses plan options/suggestions)
-            this._pendingAskUserQuestions.add(panelId);
-            // Store question data for memory learning when user answers
             if (chunk.askUserQuestion) {
+              this._pendingAskUserQuestions.set(panelId, chunk.askUserQuestion.toolCallId);
+              // Store question data for memory learning when user answers
               this._pendingQuestionData.set(chunk.askUserQuestion.toolCallId, chunk.askUserQuestion);
             }
             // Show tool_use with pending status so user sees it's waiting for their input
@@ -5763,8 +5794,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     panelId: string,
     toolCallId?: string,
     ownerKey?: string,
-    forceInteractive = false
+    forceInteractive = false,
+    remoteOrigin = false
   ): Promise<boolean> {
+    // Plan 21 Phase 0 (I14): fold remote origin into forceInteractive at the
+    // FIRST gate, before the autonomous branch below can auto-decide. Folding
+    // here rather than passing it down separately means every downstream
+    // auto-approval path is covered by the flag they already honour.
+    if (remoteOrigin) { forceInteractive = true; }
     // review[4]/[21]: if the owning webview is gone (e.g. a background Mysti job
     // whose origin tab was closed), there is nothing that can render or audit
     // this card — auto-DENY. Checked BEFORE the autonomous branch on purpose: a
@@ -5813,8 +5850,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       toolCallId,
       // Default owner is the panel (foreground turn); Mysti delegations pass a
       // cancelKey (jobId for background) so a Stop scopes to just that run.
+      // This is ALSO the session-upgrade scope key (Plan 21 Phase 0), so an
+      // "always allow" in one panel no longer authorises another.
       ownerKey ?? panelId,
-      forceInteractive
+      forceInteractive,
+      remoteOrigin
     );
   }
 
@@ -5928,7 +5968,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     // Track pending question (blocks autonomous continuation)
-    this._pendingAskUserQuestions.add(panelId);
+    this._pendingAskUserQuestions.set(panelId, auqData.toolCallId);
     this._pendingQuestionData.set(auqData.toolCallId, auqData);
 
     // Send the tabbed question UI to webview (no toolUse message — no actual tool was called)
@@ -12433,5 +12473,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._providerManager.dispose();
     // Stop the background-job heartbeat timer (review [5]).
     this._backgroundJobManager.dispose();
+    // Plan 21 Phase 0: ChannelBridge.dispose() existed but had NO call site
+    // anywhere, so its 10s inbound poll (and the gateway event subscription)
+    // outlived deactivation — a timer still reaching for the daemon after the
+    // extension was told to shut down.
+    this._channelBridge.dispose();
   }
 }
