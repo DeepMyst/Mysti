@@ -1567,3 +1567,86 @@ bug, fix `getPendingQuestionToolCallId` ignoring its `panelId`), `PermissionMana
 `MystiLocalTools.ts`, `CanvasMcpHttpServer.ts` (`timingSafeEqual`), `chat.js`, and add
 `EgressScanner.ts` + `GitRunner.ts` — and `ChatViewProvider.ts` is one of the files the other
 session is actively changing. Coordinate before continuing.
+
+---
+
+## 15. Phase 1 — build log
+
+**2026-08-26 — the security core, provable in-process.** No network, no UI, no model.
+`tsc` clean, **258 files / 9570 tests, 0 failures** (+144 Desk tests).
+
+### `DeskContract.ts` — the closed table and the validators (61 tests)
+
+Every inbound request crosses this before any code sees it. Two properties carry the weight:
+
+- **Drop, never repair.** A validator that cleans hostile input becomes an oracle: if
+  `../../etc/passwd` silently becomes `etc/passwd`, the caller learns the filter's shape and writes
+  the next probe around it. A rejection teaches nothing. A test asserts the failure does not even
+  leak a "cleaned" candidate.
+- **`locate` takes a literal, never a pattern.** Pattern metacharacters are refused at the
+  boundary, so a future implementation cannot quietly start interpreting them. Ten pattern probes
+  are pinned as rejected.
+
+Control, bidi and zero-width characters are refused outright at the boundary rather than escaped
+per-destination — remote text reaches a model prompt (where a newline escapes a fence header), the
+webview (where a bidi override reorders a rendered path) and a log line, and per-destination
+escaping has to be right three times. The guard regexes are written as explicit `\uXXXX` escapes:
+the first draft embedded literal control characters in source, which works but is fragile.
+
+### `DeskScope.ts` — intersection, fail-closed (25 tests)
+
+Effective scope is the workspace share **∩** the machine ceiling, with the NARROWER side surviving
+each comparison — so widening is unrepresentable rather than checked for. Every ambiguous state
+(no ceiling, no share file, malformed either, empty intersection) resolves to `EMPTY_SCOPE`:
+"not configured" must never mean "everything shared". `scopeVersion` is derived from the resolved
+list rather than only the declared version, so editing the share file cannot forget to bump it, and
+it is order-stable so a reordered file does not needlessly bust the disclosure cache.
+
+Pinned: `src/billing` must not admit `src/billing-secrets` — the classic prefix bug.
+
+### `DeskIndex.ts` — exact-token lookup (24 tests)
+
+The caller's string is used **only as a Map key**: never compiled, never concatenated into a
+pattern, never compared by substring. The regexes in the file run at index time over *our own*
+files — patterns over local bytes are fine; patterns *chosen by a remote party* are not, and that
+distinction is the whole of I4. Out-of-scope paths are dropped before any read, so the index cannot
+hold a coordinate the scope would not permit disclosing.
+
+Responses are constant-shape and count-free: a miss, an empty scope and an enormous repository are
+indistinguishable. `__proto__` / `constructor` / `toString` are pinned as returning nothing.
+
+### `DeskDispatch.ts` — the pure inbound entry point (21 tests)
+
+`status` + `locate` only. `consult`/`review` need the sealed serving turn (Phase 4) and are
+**absent rather than stubbed**, so there is no half-built path to a model.
+
+Discovery is authorization-scoped: an ungranted verb, an expired grant, a granted-but-unimplemented
+verb, and a genuinely unknown verb all return byte-identical `unknown verb`. Tests assert the
+equality directly, because a caller that can tell them apart can enumerate what it was denied —
+and that map is what an attacker needs to pick a target.
+
+### `importGraph.test.ts` — THE security claim (13 tests)
+
+Walks the transitive import graph from every Desk module and fails on any reachable
+`MystiLocalExec`, `MystiSandbox`, `CollaboratorPool`, `McpClient`, `McpConfigManager`,
+`DevServerManager`, `BrowserManager`, `CheckpointManager`, `child_process`, `worker_threads`,
+`http`/`https`/`net`, `ws`, or `vscode` — plus any write-capable `fs` call. Source-scanning rather
+than mocking on purpose: a mock proves what a module does when called; the claim is about what it
+can reach at all.
+
+**A false positive in the first draft, worth recording.** It counted `import type` edges, and so
+fired on `DeskScope → types.ts → IProvider.ts → vscode` — a chain that does not exist in the
+emitted JavaScript, because TypeScript erases type-only imports. A security test that cries wolf is
+one people learn to skip, so the scanner now excludes type-only edges (while still treating the
+inline `import { type A, B }` form as a runtime edge, since `B` is a value).
+
+Three self-checks prove the scanner can actually fail: a direct forbidden import, an **indirect**
+one two hops away (proving the walk traverses rather than only reading the entry file), and a
+type-only import that must NOT fire.
+
+### Deferred from Phase 1
+
+`DeskEnvelope` (canonical JSON, sign/verify, challenge/dedupe), `DeskBoard` (the pure fold +
+`renderStandup`), `DeskRedactor` (screening over `EgressScanner`) and `DeskMcpBridge` (MCP shapes).
+None is on the critical path for the security core, and the four modules above plus the import-graph
+test are what make the central claim checkable.

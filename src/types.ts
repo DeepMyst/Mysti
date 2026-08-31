@@ -2627,3 +2627,107 @@ export interface CanvasJobEvent {
   /** Free-form payload for `done` (e.g. export path). */
   result?: unknown;
 }
+
+// ============================================================================
+// Desk (Plan 21) — cross-machine, cross-user agent teamwork.
+//
+// A teammate is not a peer you chat with; it is a desk you knock on. Every
+// cross-machine interaction is ONE signed, typed, deadline-bounded request
+// against a closed capability set. There is no session, no stream, and no
+// free-form agent-to-agent channel — see plans/21 §8 for what is deliberately
+// absent and §12 for the evidence behind it.
+// ============================================================================
+
+/**
+ * The verbs a Desk can serve. The VOCABULARY is open (a team may add
+ * read-shaped verbs; see plans/21 §11.1), but the CAPABILITY SET behind it is
+ * sealed: no verb, present or future, may reach a tool outside
+ * {read, ls, locate} bounded by DeskScope. That property is asserted by
+ * tests/services/desk/importGraph.test.ts, not by policy.
+ */
+export type DeskVerb =
+  | 'status'    // owner-typed availability strings. No path ever.
+  | 'locate'    // exact-token coordinate lookup. No content ever.
+  | 'consult'   // a question answered from the peer's own codebase.
+  | 'review'    // structured findings against a diff.
+  | 'handoff'   // work crosses as an artifact, never a string.
+  | 'assign'    // a proposal record + a card. Never remote execution.
+  | 'followup'; // the status of proposals the caller itself sent.
+
+/** Protocol verbs — always available, never grantable as capabilities. */
+export type DeskProtocolVerb = 'hello' | 'cancel';
+
+/**
+ * A paired peer. `peerId` IS the key fingerprint: identity is never read from
+ * a payload, and `alias` is typed by the LOCAL human — it is the only name
+ * rendered anywhere and the only routing key (plans/21 I12).
+ */
+export interface DeskPeer {
+  /** `p_` + base32(sha256(ed25519Pub)).slice(0,16). Derived, never asserted. */
+  peerId: string;
+  /** Locally-typed handle. `^[a-z0-9][a-z0-9_-]{0,31}$`. */
+  alias: string;
+  /** The pinned Ed25519 public key, base64. */
+  publicKey: string;
+  /** Same company / same secrets domain? Gates whether git refs may cross. */
+  trustDomain: string;
+  /** When this peer was first pinned (visibility begins here — I13). */
+  pairedAt: number;
+  /** Absolute expiry; renewed only by locally-originated outbound activity. */
+  expiresAt: number;
+}
+
+/**
+ * What one peer may ask of this Desk. A grant only ever NARROWS: any holder
+ * may add a caveat, nobody may remove one, and widening requires a fresh
+ * human-signed root (plans/21 I30).
+ */
+export interface PeerGrant {
+  peerId: string;
+  /** Verbs this peer may see at all. An ungranted verb is invisible, not refused. */
+  verbs: DeskVerb[];
+  /** Workspace-relative glob prefixes this grant may reach. */
+  scope: string[];
+  /** Absolute epoch after which the grant is dead. */
+  expiresAt: number;
+  /** Hard spend ceiling for serving this peer, in USD. */
+  budgetUsd: number;
+  /** Hard call ceiling over the grant's life. */
+  maxCalls: number;
+  /** Minimum acceptable model retention class for a serving turn (I9). */
+  minRetentionClass: 'zero-retention' | 'logged' | 'training-permitted';
+}
+
+/** Resolved read boundary for one request: workspace share ∩ machine ceiling. */
+export interface DeskScopeSpec {
+  /** Workspace-relative POSIX prefixes. Empty means nothing is shared. */
+  allow: string[];
+  /** Monotonic marker; bumping it invalidates every cached disclosure (I35). */
+  scopeVersion: string;
+}
+
+/** A single typed request result. Never carries a partial artifact (I21). */
+export interface DeskCallResult {
+  ok: boolean;
+  /** Populated only when ok. */
+  payload?: Record<string, unknown>;
+  /** Machine-readable failure: 'denied' | 'not-found' | 'incomplete' | … */
+  error?: string;
+  /** Paths withheld by egress screening, when error === 'incomplete'. */
+  withheld?: string[];
+}
+
+/** An `assign` proposal. A record and a card — never a remote run (I10). */
+export interface DeskProposal {
+  proposalId: string;
+  fromPeerId: string;
+  title: string;
+  detail: string;
+  /** Lamport clock for convergent claim arbitration (I19). */
+  lamport: number;
+  /** Monotonic supersession counter; only the highest is authoritative (I20). */
+  generation: number;
+  /** Duration, never an absolute epoch — expired against the observer's clock. */
+  leaseMs: number;
+  createdAt: number;
+}
