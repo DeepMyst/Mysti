@@ -1650,3 +1650,57 @@ type-only import that must NOT fire.
 `renderStandup`), `DeskRedactor` (screening over `EgressScanner`) and `DeskMcpBridge` (MCP shapes).
 None is on the critical path for the security core, and the four modules above plus the import-graph
 test are what make the central claim checkable.
+
+### Phase 1 completion — the four deferred modules
+
+`tsc` clean, **261 files / 9658 tests, 0 failures** (232 Desk tests across 8 files).
+The import-graph test picked all four up automatically — 13 → 21 cases — so none of them
+introduced a reachable capability.
+
+**`DeskEnvelope`** (28 tests) — canonical JSON, Ed25519 sign/verify, replay defence.
+Canonicalization sorts keys recursively and *refuses* values JSON cannot round-trip
+(`undefined`, NaN, functions): signing a document whose shape depends on `stringify`'s quirks
+means the signature covers less than it appears to. A signature proves authorship, never
+freshness, so three separate bindings close three different gaps — a server-chosen challenge (no
+offline minting), a bounded `issuedAt` window (capture ages out), and a `callId` cache (replay
+inside the window still refused). Future-dated requests are refused rather than tolerated.
+Verification order is deliberate: cheap structural rejection before the expensive signature check,
+and **replay admission last**, after authenticity — otherwise an attacker could poison the dedupe
+cache with forged callIds and deny a legitimate request that later uses one. Both are pinned by
+tests.
+
+**`DeskBoard`** (24 tests) — the pure fold and the model-free standup. Zero imports.
+Permutation invariance is verified over all 24 orderings of a four-event set, plus duplicates and
+dropped events. Lamport values are clamped to `maxSeen + 64`, so a member sending `2^40` cannot
+win every future race with a valid signature. Leases carry a **duration**, expired against each
+observer's own clock from locally-observed arrival — a peer with a skewed clock cannot hold a
+claim indefinitely, and there is no reaper.
+
+*A test found dead code in the implementation.* The first draft carried both a deterministic
+pre-sort AND a `beats()` comparison. With the sort in place the comparison was unreachable, as was
+the `superseded` rejection branch — the "superseded generation" test failed because the case
+cannot occur. Ordering the input is the stronger guarantee (invariance holds structurally rather
+than depending on a comparison being a correct total order), so `beats()` was removed and the
+rejection set reduced to what can actually happen. Rival claims are still reported as
+`lost-arbitration`, because "two people claimed this" is real standup information.
+
+**`DeskRedactor`** (integrated into a 30-test file with the bridge) — the second line, never the
+first. `DeskScope` is what keeps private bytes out; this catches what gets past it — a credential
+committed inside a *shared* file, or a citation pointing outside the scope from a stale index.
+It **refuses rather than strips**: a partially-redacted answer is the truncation-as-a-flag failure
+I21 forbids, and silently removing a secret teaches the sender nothing, so the credential stays in
+the shared file and leaks again through a path the scanner does not know. Every string in a payload
+is screened including object *keys*, and the strings are joined before scanning so a secret split
+across adjacent fields cannot slip between them. Failures collapse to one wire error (`withheld`)
+and never echo the offending path or detector — an attacker who learns which detector fired can
+iterate until a payload passes.
+
+**`DeskMcpBridge`** — verb table onto MCP `tools/list`/`tools/call`, SDK-agnostic like
+`CanvasMcpBridge` so it is testable with no transport. Discovery is authorization-scoped on both
+paths, and an unknown tool name is asserted byte-identical to an ungranted verb. Descriptions state
+what LEAVES the machine rather than what the verb is "for", since that is the decision the reader
+is actually making. Responses serialize deterministically so the caller's approved-disclosure cache
+can key on them.
+
+**Still deferred to later phases:** everything with a socket (Phase 2 loopback, Phase 3 pairing),
+the sealed serving turn for `consult`/`review` (Phase 4), and artifacts (Phase 5).
