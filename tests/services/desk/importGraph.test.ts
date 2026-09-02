@@ -174,6 +174,50 @@ describe('Desk import graph (invariant I11)', () => {
     expect(visited.length).toBeGreaterThan(1);
   });
 
+  // -------------------------------------------------------------------------
+  // The Desk-adjacent modules that live OUTSIDE src/services/desk/.
+  //
+  // DeskHttpServer and DeskClient are there because they genuinely need node
+  // `http`, which the sealed set forbids — but moving a file to dodge a check
+  // must not exempt it from every check. They still may never reach local
+  // execution, a sandbox, the collaborator pool, or a git subprocess: a
+  // transport that can spawn is a transport that can be talked into spawning.
+  // -------------------------------------------------------------------------
+  const ADJACENT = [
+    path.join(SRC, 'services', 'DeskHttpServer.ts'),
+    path.join(SRC, 'services', 'DeskClient.ts'),
+    path.join(SRC, 'managers', 'DeskPeerBook.ts'),
+    path.join(SRC, 'managers', 'DeskAudit.ts'),
+  ].filter(f => fs.existsSync(f));
+
+  const EXEC_ONLY = FORBIDDEN.filter(f =>
+    !/http|https|net|ws|vscode/.test(f.pattern.source));
+
+  for (const entry of ADJACENT) {
+    it(`${path.basename(entry)} reaches no execution capability, transitively`, () => {
+      const visited = new Set();
+      const found = [];
+      const queue = [{ file: entry, chain: [entry] }];
+      while (queue.length > 0) {
+        const { file, chain } = queue.shift();
+        if (visited.has(file)) { continue; }
+        visited.add(file);
+        const source = fs.readFileSync(file, 'utf8');
+        for (const spec of importSpecifiers(source)) {
+          const bad = EXEC_ONLY.find(f => f.pattern.test(spec));
+          if (bad) {
+            found.push(`${spec} (${bad.why}) via ${chain.map(c => path.relative(ROOT, c)).join(' → ')}`);
+            continue;
+          }
+          const resolved = resolveLocal(file, spec);
+          if (resolved && !visited.has(resolved)) { queue.push({ file: resolved, chain: [...chain, resolved] }); }
+        }
+      }
+      expect(found, `Execution capability reachable from ${path.basename(entry)}:\n${found.join('\n')}`)
+        .toHaveLength(0);
+    });
+  }
+
   it('detects a forbidden import when one is present (the test can actually fail)', () => {
     // Self-check against a fixture rather than trusting the negative result
     // above: a scanner that never fires is indistinguishable from a clean tree.
