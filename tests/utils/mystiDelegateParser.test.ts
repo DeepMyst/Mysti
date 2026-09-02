@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DelegateScanner, MystiTagScanner, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_CONNECT_KINDS, MYSTI_CANVAS_KINDS, type MystiDirective, type MystiDirectiveKind } from '../../src/utils/mystiDelegateParser';
+import { DelegateScanner, MystiTagScanner, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_CONNECT_KINDS, MYSTI_CANVAS_KINDS, MYSTI_DESK_KINDS, type MystiDirective, type MystiDirectiveKind } from '../../src/utils/mystiDelegateParser';
 
 const N = 'abc123'; // per-run nonce
 const D = (agent: string, task: string) => `<delegate:${N} agent="${agent}">${task}</delegate>`;
@@ -663,5 +663,98 @@ describe('MystiTagScanner canvaspage kind (Plan 20 §3.3)', () => {
     );
     expect(r.directives).toHaveLength(1);
     expect(r.text).toBe('Writing the login screen.  Done.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan 21 — the `desk` kind. A directive that sends bytes to ANOTHER PERSON'S
+// machine, so the tests that matter are about when it is NOT recognized.
+// ---------------------------------------------------------------------------
+describe('MystiTagScanner desk kind (Plan 21)', () => {
+  const withDesk = [...ALL_MYSTI_KINDS, ...MYSTI_DESK_KINDS];
+
+  it('is NOT in ALL_MYSTI_KINDS — never a default-on capability', () => {
+    expect(ALL_MYSTI_KINDS).not.toContain('desk');
+  });
+
+  it('degrades to visible text when the capability is off', () => {
+    const tag = `<desk:${N} peer="alice" verb="locate">{"token":"x"}</desk>`;
+    const r = scanKinds(tag, ALL_MYSTI_KINDS);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(tag);
+  });
+
+  it('parses peer, verb and JSON args when enabled', () => {
+    const r = scanKinds(`<desk:${N} peer="alice" verb="locate">{"token":"backoffSchedule"}</desk>`, withDesk);
+    expect(r.directives).toEqual([
+      { kind: 'desk', peer: 'alice', verb: 'locate', args: { token: 'backoffSchedule' } },
+    ]);
+  });
+
+  it('accepts attributes in either order', () => {
+    const r = scanKinds(`<desk:${N} verb="status" peer="bob">{}</desk>`, withDesk);
+    expect(r.directives[0]).toEqual({ kind: 'desk', peer: 'bob', verb: 'status', args: {} });
+  });
+
+  it('treats an empty body as no arguments', () => {
+    const r = scanKinds(`<desk:${N} peer="bob" verb="status"></desk>`, withDesk);
+    expect(r.directives[0]).toEqual({ kind: 'desk', peer: 'bob', verb: 'status', args: {} });
+  });
+
+  it('SIGNALS malformed JSON instead of silently sending empty arguments', () => {
+    const r = scanKinds(`<desk:${N} peer="alice" verb="locate">{not json}</desk>`, withDesk);
+    const d = r.directives[0] as Extract<MystiDirective, { kind: 'desk' }>;
+    expect(d.args).toEqual({});
+    expect(d.argsError).toBeTruthy();
+  });
+
+  it('refuses a JSON array body — arguments must be an object', () => {
+    const r = scanKinds(`<desk:${N} peer="a" verb="locate">[1,2]</desk>`, withDesk);
+    const d = r.directives[0] as Extract<MystiDirective, { kind: 'desk' }>;
+    expect(d.argsError).toContain('OBJECT');
+  });
+
+  it('fails open as text when peer or verb is missing', () => {
+    for (const tag of [
+      `<desk:${N} verb="locate">{}</desk>`,
+      `<desk:${N} peer="alice">{}</desk>`,
+      `<desk:${N}>{}</desk>`,
+    ]) {
+      const r = scanKinds(tag, withDesk);
+      expect(r.directives, tag).toHaveLength(0);
+      expect(r.text, tag).toBe(tag);
+    }
+  });
+
+  it('is unforgeable — a wrong nonce is inert text', () => {
+    const tag = `<desk:WRONG peer="alice" verb="locate">{}</desk>`;
+    const r = scanKinds(tag, withDesk);
+    expect(r.directives).toHaveLength(0);
+    expect(r.text).toBe(tag);
+  });
+
+  it('carries no url or address attribute — the model says WHO, never WHERE', () => {
+    const r = scanKinds(
+      `<desk:${N} peer="alice" verb="locate" url="http://evil.example">{"token":"x"}</desk>`,
+      withDesk,
+    );
+    const d = r.directives[0] as Record<string, unknown>;
+    expect(d).toEqual({ kind: 'desk', peer: 'alice', verb: 'locate', args: { token: 'x' } });
+    expect(JSON.stringify(d)).not.toContain('evil.example');
+  });
+
+  it('emits surrounding prose without stranding the tail', () => {
+    const r = scanKinds(
+      `Asking alice. <desk:${N} peer="alice" verb="status">{}</desk> Done.`,
+      withDesk,
+    );
+    expect(r.directives).toHaveLength(1);
+    expect(r.text).toContain('Asking alice.');
+    expect(r.text).toContain('Done.');
+  });
+
+  it('does not run away on an unterminated tag', () => {
+    const r = scanKinds(`<desk:${N} peer="alice" verb="locate">{"token":"x"`, withDesk);
+    expect(r.directives).toHaveLength(0);
   });
 });

@@ -40,7 +40,7 @@
  *     text rather than silently swallowing the coordinator's output.
  */
 
-export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool' | 'findtool' | 'skill' | 'publish' | 'skillrun' | 'look' | 'act' | 'canvas' | 'canvaspage';
+export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool' | 'findtool' | 'skill' | 'publish' | 'skillrun' | 'look' | 'act' | 'canvas' | 'canvaspage' | 'desk';
 
 export type ModelTier = 'fast' | 'strong';
 
@@ -102,7 +102,17 @@ export type MystiDirective =
   // an artboard (maxTokens 4096) and JSON-escaping a page of JSX doubles it; the
   // text lane also reassembles a payload split by a length cut. `pageId` absent
   // ⇒ a new page.
-  | { kind: 'canvaspage'; pageId?: string; title?: string; source: string };
+  | { kind: 'canvaspage'; pageId?: string; title?: string; source: string }
+  // Plan 21 — knock on a teammate's Desk. GATED: every call raises an effect
+  // card enumerating exactly what leaves the machine, and the answer re-enters
+  // nonce-redacted + UNTRUSTED-fenced.
+  //
+  // `peer` is a LOCAL alias the user typed at pairing — never a hostname, a key
+  // or anything the remote side supplied. The model may say WHO to ask and WHAT
+  // to ask, never WHERE the peer lives; the address is resolved extension-side
+  // from the peer book. There is deliberately no `url` attribute, so there is no
+  // model-to-network path to gate.
+  | { kind: 'desk'; peer: string; verb: string; args: Record<string, unknown>; argsError?: string };
 
 export interface TagScanResult {
   /** Prose that is safe to show/stream to the user right now. */
@@ -171,6 +181,17 @@ export const MYSTI_CAPABILITY_KINDS: MystiDirectiveKind[] = ['publish', 'skillru
  * Both are added to the scanner only when the capability is enabled; when off
  * the tag is not recognized and degrades to visible text.
  */
+/**
+ * Plan 21 Desk. Added to the scanner only when Desk is enabled, the workspace
+ * is trusted, and at least one peer is paired — so with the feature off a
+ * `<desk:…>` tag is not recognized at all and degrades to visible text. The
+ * capability does not exist rather than existing and erroring.
+ *
+ * Deliberately NOT in ALL_MYSTI_KINDS: this directive sends bytes to another
+ * person's machine, which is never a default-on capability.
+ */
+export const MYSTI_DESK_KINDS: MystiDirectiveKind[] = ['desk'];
+
 export const MYSTI_VISUAL_KINDS: MystiDirectiveKind[] = ['look'];
 export const MYSTI_VISUAL_ACT_KINDS: MystiDirectiveKind[] = ['act'];
 
@@ -284,6 +305,14 @@ export class MystiTagScanner {
         // contain backticks, nested ``` fences and `</canvas>`-looking text; only
         // the literal close tag `</canvaspage>` terminates it.
         return new RegExp(`^<canvaspage:${esc}((?:\\s+[a-zA-Z]+\\s*=\\s*"[^"]*")*)\\s*>([\\s\\S]*?)<\\/canvaspage>$`);
+      case 'desk':
+        // <desk:NONCE peer="alice" verb="locate">{"token":"backoffSchedule"}</desk>
+        // Attributes as ONE linear blob split by _parseAttrs — same shape as the
+        // canvas/look lanes, chosen for the same reason: an alternation of
+        // optional ordered attributes is what produced the Plan 19 round-4 cubic
+        // ReDoS. Every repetition here is anchored by a mandatory `=` and a
+        // quoted value, so there is no ambiguous backtrack.
+        return new RegExp(`^<desk:${esc}((?:\\s+[a-zA-Z]+\\s*=\\s*"[^"]*")*)\\s*>([\\s\\S]*?)<\\/desk>$`);
     }
   }
 
@@ -642,6 +671,37 @@ export class MystiTagScanner {
           }
         }
         return { kind: 'act', actions, focus: a.focus?.trim() || undefined, ...(parseError ? { parseError } : {}) };
+      }
+      case 'desk': {
+        const a = MystiTagScanner._parseAttrs(m[1]);
+        const peer = (a.peer || '').trim();
+        const verb = (a.verb || '').trim();
+        // Both attributes are structurally required: with either missing there
+        // is nothing to route, so the tag fails open as visible text rather
+        // than becoming a call to an ambiguous target. A peer or verb that
+        // merely does not EXIST still parses — dispatch reports that back to
+        // the model, which corrects far better than a tag vanishing into prose.
+        if (!peer || !verb) { return null; }
+        // Args are UNTRUSTED model JSON. A failure is SIGNALLED rather than
+        // silently degraded to {} (the mcptool lane's older behaviour): sending
+        // a teammate a request with accidentally-empty arguments while telling
+        // the model it worked is worse than reporting the malformed JSON.
+        let args: Record<string, unknown> = {};
+        let argsError: string | undefined;
+        const body = (m[2] || '').trim();
+        if (body) {
+          try {
+            const p: unknown = JSON.parse(body);
+            if (p && typeof p === 'object' && !Array.isArray(p)) {
+              args = p as Record<string, unknown>;
+            } else {
+              argsError = 'the arguments must be a JSON OBJECT';
+            }
+          } catch (err) {
+            argsError = `the arguments were not valid JSON (${err instanceof Error ? err.message : 'parse error'})`;
+          }
+        }
+        return { kind: 'desk', peer, verb, args, ...(argsError ? { argsError } : {}) };
       }
       case 'canvas': {
         const a = MystiTagScanner._parseAttrs(m[1]);

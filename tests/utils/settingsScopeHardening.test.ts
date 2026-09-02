@@ -100,6 +100,36 @@ describe('settings scope hardening (Plan 21 Phase 0)', () => {
     }
   });
 
+  it('no setting under mysti.desk.* is workspace-writable', () => {
+    // Plan 21 §8.8: a cloned repo must not be able to enable Desk, name a peer,
+    // widen the share ceiling, point at a relay, or raise a budget. Derived from
+    // the namespace so a setting added in a later phase fails here rather than
+    // shipping open.
+    const desk = Object.keys(props).filter(k => k.startsWith('mysti.desk.'));
+    expect(desk.length).toBeGreaterThan(0);
+    for (const key of desk) {
+      assertDeniesWorkspace(
+        key, props[key],
+        'Desk settings decide what leaves this machine and who may ask.',
+      );
+    }
+  });
+
+  it('every mysti.desk.* setting defaults to off, empty, or the strictest option', () => {
+    // A capability that ships on is a capability nobody chose.
+    const defaults: Record<string, unknown> = {
+      'mysti.desk.enabled': false,
+      'mysti.desk.serve': false,
+      'mysti.desk.bind': 'off',
+      'mysti.desk.shareCeiling': [],
+      'mysti.desk.minRetentionClass': 'zero-retention',
+    };
+    for (const [key, expected] of Object.entries(defaults)) {
+      expect(props[key], `${key} must exist`).toBeDefined();
+      expect((props[key] as { default?: unknown }).default, `${key} default`).toEqual(expected);
+    }
+  });
+
   it('no setting under mysti.mysti.* is workspace-writable', () => {
     // The coordinator's own spend/permission surface is machine-scoped by
     // policy (CLAUDE.md: "workspace settings may only LOWER authority").

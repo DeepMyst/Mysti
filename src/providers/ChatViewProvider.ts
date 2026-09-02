@@ -9176,7 +9176,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           continue;
         }
 
-        if (directive) {
+        // The delegation branch. Narrowed explicitly on `kind` rather than on
+        // "a directive survived every branch above": that assumption held only
+        // while `delegate` was the last kind in the union, and silently
+        // mis-typed the moment another kind was added.
+        if (directive && directive.kind === 'delegate') {
           let toolId = `mysti-deleg-${runId}-${delegId++}`;
           const agentId = this._resolveMystiBackend(directive.agent, liveBackends);
 
