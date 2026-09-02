@@ -31,6 +31,7 @@
 import { describe, it, expect } from 'vitest';
 import { computeStandup, renderTeamStandup } from '../../src/managers/DeskStandup';
 import type { StandupInput, StandupSection } from '../../src/managers/DeskStandup';
+import { LEASE_MAX_MS } from '../../src/services/desk/DeskBoard';
 import type { BoardEvent } from '../../src/services/desk/DeskBoard';
 import { LIMITS, hasUnsafeChars } from '../../src/services/desk/DeskContract';
 
@@ -430,64 +431,61 @@ describe('DeskStandup - numeric boundaries fail closed', () => {
     expect(() => computeStandup([], undefined as unknown as number)).toThrow(/finite/);
   });
 
-  it('surfaces a claim whose lease can never expire (NaN leaseMs)', () => {
-    const [section] = computeStandup([{
-      peerAlias: 'alice',
-      events: [
-        ev({ eventId: 'e1', taskId: 't1', kind: 'propose', title: 'pinned' }),
-        ev({ eventId: 'e2', taskId: 't1', kind: 'claim', generation: 1, lamport: 2, leaseMs: Number.NaN }),
-      ],
-    }], NOW + 10 * 365 * 24 * 3_600_000);
-    // The fold cannot expire it, so the digest must not let it look healthy.
-    expect(section.inProgress[0]).toContain('(lease invalid)');
-    expect(section.needsAttention.some(s => s.startsWith('[lease] '))).toBe(true);
-    expect(section.inProgress[0]).not.toContain('NaN');
+  // ---------------------------------------------------------------------
+  // These used to assert a DISPLAY-layer mitigation: the digest detected a
+  // non-finite or implausible lease and rendered "(lease invalid)".
+  //
+  // The durable fix landed at the DATA layer instead — `DeskBoard.fold` clamps
+  // `leaseMs` at the source, because a display warning still leaves the task
+  // genuinely un-expirable in the fold that every other consumer reads. So the
+  // assertion moves: a hostile lease no longer needs surfacing, because it no
+  // longer exists by the time the digest sees it.
+  //
+  // The detection in `_leaseSuffix` is kept as documented belt-and-braces for a
+  // hand-assembled TaskView; it is unreachable on this path and is not claimed
+  // as tested here.
+  // ---------------------------------------------------------------------
+  const hostileClaim = (leaseMs: number) => ([
+    ev({ eventId: 'e1', taskId: 't1', kind: 'propose', title: 'pinned' }),
+    ev({ eventId: 'e2', taskId: 't1', kind: 'claim', generation: 1, lamport: 2, leaseMs }),
+  ]);
+
+  it('a NaN lease is clamped at the source, so the task expires normally', () => {
+    const far = NOW + 10 * 365 * 24 * 3_600_000;
+    const [section] = computeStandup([{ peerAlias: 'alice', events: hostileClaim(Number.NaN) }], far);
+    // The whole point: it EXPIRED rather than being flagged-but-immortal.
+    expect(section.inProgress).toHaveLength(0);
+    expect(section.needsAttention.length).toBeGreaterThan(0);
   });
 
-  it('surfaces a claim with an infinite lease the same way', () => {
-    const [section] = computeStandup([{
-      peerAlias: 'alice',
-      events: [
-        ev({ eventId: 'e1', taskId: 't1', kind: 'propose', title: 'pinned' }),
-        ev({
-          eventId: 'e2', taskId: 't1', kind: 'claim', generation: 1, lamport: 2,
-          leaseMs: Number.POSITIVE_INFINITY,
-        }),
-      ],
-    }], NOW);
-    expect(section.inProgress[0]).toContain('(lease invalid)');
-    expect(section.needsAttention.some(s => s.startsWith('[lease] '))).toBe(true);
-    expect(section.inProgress[0]).not.toContain('Infinity');
+  it('an infinite lease is clamped at the source too', () => {
+    const far = NOW + 10 * 365 * 24 * 3_600_000;
+    const [section] = computeStandup([{ peerAlias: 'alice', events: hostileClaim(Number.POSITIVE_INFINITY) }], far);
+    expect(section.inProgress).toHaveLength(0);
   });
 
-  it('surfaces a claim whose lease is finite but implausible (1e300 ms)', () => {
-    // `Number.isFinite` guarded the wrong property. 1e300 ms is finite, so the
-    // task rendered as healthy in-progress with an exponent-notation remainder
-    // and NOTHING in needs-attention: an indefinitely pinned task, hidden from
-    // the only human who can unpin it.
-    const [section] = computeStandup([{
-      peerAlias: 'alice',
-      events: [
-        ev({ eventId: 'e1', taskId: 't1', kind: 'propose', title: 'pinned' }),
-        ev({ eventId: 'e2', taskId: 't1', kind: 'claim', generation: 1, lamport: 2, leaseMs: 1e300 }),
-      ],
-    }], NOW);
-    expect(section.inProgress[0]).toBe('"pinned" - "p_alice" (lease implausible)');
-    expect(section.needsAttention.some(s => s.startsWith('[lease] '))).toBe(true);
-    // The rendered remainder is bounded: no exponent form, no unbounded float.
+  it('never renders a raw NaN or Infinity to the human', () => {
+    const [section] = computeStandup([{ peerAlias: 'alice', events: hostileClaim(Number.NaN) }], NOW);
+    const rendered = [...section.inProgress, ...section.needsAttention].join(' ');
+    expect(rendered).not.toContain('NaN');
+    expect(rendered).not.toContain('Infinity');
+    expect(rendered).not.toMatch(/e\+/);
+  });
+
+  it('a 1e300 lease is bounded to the ceiling, not honoured', () => {
+    const [section] = computeStandup([{ peerAlias: 'alice', events: hostileClaim(1e300) }], NOW);
+    // Bounded and finite — the attack shape produces an ordinary remainder.
+    expect(section.inProgress[0]).toMatch(/lease \d+m left/);
     expect(section.inProgress[0]).not.toMatch(/e\+/);
   });
 
-  it('surfaces a 31,000-year lease, which is the shape an attacker sends', () => {
-    const [section] = computeStandup([{
-      peerAlias: 'alice',
-      events: [
-        ev({ eventId: 'e1', taskId: 't1', kind: 'propose', title: 'pinned' }),
-        ev({ eventId: 'e2', taskId: 't1', kind: 'claim', generation: 1, lamport: 2, leaseMs: 1e15 }),
-      ],
-    }], NOW);
-    expect(section.inProgress[0]).toContain('(lease implausible)');
-    expect(section.needsAttention.some(s => s.startsWith('[lease] '))).toBe(true);
+  it('a 31,000-year lease is bounded the same way', () => {
+    const [section] = computeStandup([{ peerAlias: 'alice', events: hostileClaim(1e15) }], NOW);
+    expect(section.inProgress[0]).toMatch(/lease \d+m left/);
+    // And it must expire within the ceiling rather than pinning the frontier.
+    const [later] = computeStandup(
+      [{ peerAlias: 'alice', events: hostileClaim(1e15) }], NOW + LEASE_MAX_MS + 1_000);
+    expect(later.inProgress, 'the ceiling must actually free the task').toHaveLength(0);
   });
 
   it('does not flag a long but plausible lease, so the bound cannot cry wolf', () => {
@@ -692,7 +690,12 @@ describe('DeskStandup - renderTeamStandup is a second gate', () => {
     expect(out).toContain('[title refused: not a string]');
     expect(out).toContain(`[title refused: ${LIMITS.title + 1} chars exceeds ${LIMITS.title}]`);
     expect(out).toContain('[malformed] 1 event(s) discarded before folding');
-    expect(out).toContain('(lease implausible)');
+    // The 1e300 lease no longer needs a display marker: fold clamps it at the
+    // source, so it renders as an ordinary bounded remainder. The gate's job
+    // here is that it ACCEPTS that output without throwing, which the
+    // not.toThrow above already asserts.
+    expect(out).toMatch(/lease \d+m left/);
+    expect(out).not.toMatch(/e\+/);
   });
 
   it('refuses a section that is not an object', () => {

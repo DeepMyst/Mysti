@@ -68,8 +68,19 @@ export const LAMPORT_MAX_JUMP = 64;
  * An over-long lease is CLAMPED to this ceiling rather than honoured. Clamped,
  * not dropped: dropping the claim would hand a peer a way to delete a rival's
  * legitimate claim by following it with a malformed one.
+ *
+ * A WEEK, not a day. The first version used 24h and that was wrong in the
+ * dangerous direction: it would have freed a task for reassignment while
+ * someone was still working on it, turning a security clamp into a correctness
+ * bug. Honest desk leases are minutes; a week is far past any of them and far
+ * short of the attack (`leaseMs: 1e300` pins a task for 1e295 minutes), so the
+ * bound catches the pin without ever cutting real work short.
+ *
+ * This is the SINGLE definition of the bound. DeskStandup imports it rather
+ * than keeping its own copy, so the two layers cannot drift into disagreeing
+ * about what "implausible" means.
  */
-export const LEASE_MAX_MS = 24 * 60 * 60 * 1000;
+export const LEASE_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * What a MALFORMED lease gets — NaN, zero, negative.

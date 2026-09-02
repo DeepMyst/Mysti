@@ -104,7 +104,7 @@
  */
 
 import { hasUnsafeChars, validateAlias, LIMITS } from '../services/desk/DeskContract';
-import { fold } from '../services/desk/DeskBoard';
+import { LEASE_MAX_MS, fold } from '../services/desk/DeskBoard';
 import type { BoardEvent, BoardState, TaskView } from '../services/desk/DeskBoard';
 
 /** One peer's contribution to the digest. `events` is that peer's board log. */
@@ -154,7 +154,18 @@ const ALIAS_RENDER_TOTAL_MAX = 1 + ALIAS_RENDER_MAX + 1 + 8;
  * lease (they are minutes) and far short of the attack, so it flags the pin
  * without ever flagging real work.
  */
-const MAX_PLAUSIBLE_LEASE_MS = 7 * 24 * 3_600_000;
+const MAX_PLAUSIBLE_LEASE_MS = LEASE_MAX_MS;
+
+/*
+ * NOTE ON REACHABILITY. `DeskBoard.fold` now clamps `leaseMs` at the source
+ * (LEASE_MAX_MS) and substitutes a short default for a malformed one, so a
+ * TaskView arriving from `computeStandup` can no longer carry a non-finite or
+ * implausible remainder. The checks below are therefore UNREACHABLE on that
+ * path and are kept deliberately, for two reasons: `_leaseSuffix` takes a
+ * TaskView and nothing stops a future caller assembling one by hand, and the
+ * digest is the last thing a human reads before deciding a task is healthy.
+ * They are documented as belt-and-braces rather than claimed as tested.
+ */
 
 /**
  * Code points escaped by this renderer beyond the contract's own class.

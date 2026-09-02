@@ -1704,3 +1704,121 @@ can key on them.
 
 **Still deferred to later phases:** everything with a socket (Phase 2 loopback, Phase 3 pairing),
 the sealed serving turn for `consult`/`review` (Phase 4), and artifacts (Phase 5).
+
+---
+
+## 16. Overnight build — Phases 2–6 modules (2026-09-02/03)
+
+Built under an explicit instruction to implement every pending phase. **Every module
+is complete and hardened; NOTHING is wired.** The distinction matters and is not hedging:
+the modules are done, the integration is not, and the reason is recorded in §16.5.
+
+### 16.1 What landed
+
+| Commit | Contents |
+|---|---|
+| `e5656a2` | Phase 2 groundwork — the `desk` directive kind, seven machine-scoped settings, delegate-branch narrowing |
+| `4f2763d` | Phase 2 modules — DeskPeerBook, DeskAudit, DeskHttpServer, DeskClient, deskTools (9,323 lines) |
+| `443f0f3` | Phases 3–6 modules — DeskIdentity, DeskPairing, DeskServing, DeskServingGate, DeskArtifacts, DeskLedger, DeskProposalStore, DeskStandup (15,852 lines) |
+| `db3291b` | Lease clamp — a wire-supplied `leaseMs` can no longer buy an immortal claim |
+
+Thirteen Desk modules, ~2,000 tests, roughly 370 mutations verified across the set.
+
+### 16.2 The systemic defect the reviews found
+
+Present **independently in two separately-written modules**, and it would have shipped:
+
+`{...DEFAULTS, ...opts}` lets an explicit `undefined` overwrite a default — and `undefined`
+is exactly what `cfg.get<number>('unset.key')` returns. NaN then propagates, and because
+`NaN < 1`, `now >= NaN` and `bytes > NaN` are all **false**, every limit silently stops
+limiting. Measured: 10,000 of 10,000 calls allowed against a configured rate cap of 3, and
+the HTTP body cap disabled entirely. A green test suite shows nothing.
+
+Every numeric option is now validated and clamped at its constructor boundary. This is the
+single most valuable thing the adversarial passes produced and it should be a review
+checklist item for any future config-taking module.
+
+### 16.3 Two fixes that were worse than the bug
+
+Recorded because the pattern matters more than either instance.
+
+**The roster destroyer.** A hardening pass put the future-`pairedAt` refusal in the parse
+path. `_parse` feeds both `_load` and the pre-write merge, so after a benign backwards clock
+step — suspend/resume, VM snapshot restore, NTP correction — the next unrelated write
+persisted a roster with no peers. Every pairing gone permanently, and a cheap DoS for anyone
+who could nudge the host clock. Denying **authority** under a suspect clock is the security
+property; deleting the **data** never was. The refusal now lives only in `getGrant`.
+
+**The lease ceiling.** Clamping a wire-supplied `leaseMs` was correct, but the first version
+used a 24-hour ceiling and fell back to that ceiling for malformed values. Both were wrong in
+the dangerous direction: 24h would have freed a task while someone was still working on it,
+and falling back to the maximum meant `leaseMs: 0` bought a **longer** hold than a well-formed
+request. Now: 7 days (aligned with `DeskStandup`'s plausibility bound and imported from one
+definition so the layers cannot drift), with malformed values getting a short 15-minute
+default.
+
+The question every fix now has to answer: **what does this delete or refuse that a legitimate
+user needs?**
+
+### 16.4 Where the modules live, and why
+
+`src/services/desk/` — DeskContract, DeskScope, DeskIndex, DeskDispatch, DeskEnvelope,
+DeskBoard, DeskRedactor, DeskMcpBridge, deskTools, DeskIdentity, DeskServing, DeskArtifacts,
+DeskLedger. Import-clean: no vscode, no http, no exec. Enforced automatically by
+`importGraph.test.ts`, which enumerates the directory, so a module added later is subject to
+the check without anyone remembering to add it.
+
+`src/services/` — DeskHttpServer, DeskClient. They genuinely need node `http`. Moving a file
+to dodge a check must not exempt it, so the import-graph test was extended (21 → 27 cases) to
+assert these still reach no execution capability: a transport that can spawn is a transport
+that can be talked into spawning.
+
+`src/managers/` — DeskPeerBook, DeskAudit, DeskPairing, DeskServingGate, DeskProposalStore,
+DeskStandup. These persist or hold editor-shaped dependencies.
+
+### 16.5 NOT DONE, and why — read this before assuming Desk works
+
+**Nothing is wired.** No module is imported by `extension.ts` or `ChatViewProvider.ts`. The
+`desk` directive kind is registered in the parser but never added to `scanKinds`, so a
+`<desk:…>` tag renders as visible text — which is the correct off state, but it means the
+feature is inert end to end.
+
+The reason is not caution about the code: **another session was editing
+`ChatViewProvider.ts`, `extension.ts`, `types.ts`, `package.json`, `media/chat/*` and
+`CLAUDE.md` throughout this run** (model auto-refresh work, ~52 dirty files, still
+uncommitted). Editing those files underneath it would have either clobbered that work or
+folded it into these commits. Integration is the last mile and wants a quiet tree.
+
+Still owed, all of it integration rather than new modules:
+
+- `_deskEnabled()` gate, `scanKinds` registration, the dispatch branch between `mcptool` and
+  `delegate`, `_runMystiDeskTool`, `_fenceDeskResult`, the governor field — all in `ChatViewProvider.ts`.
+- Construction and an **options bag** in `extension.ts` (the constructor is at 22 positional
+  arguments; the plan says stop growing it, and adding #23 positionally is how it got here).
+- `DeskDispatch.IMPLEMENTED` is still `{status, locate}` — adding `consult`/`review` is a
+  deliberate edit, and `deskTools`' drift test will require dispatch to actually serve what it advertises.
+- `DeskDiffService` (Phase 5) — needs vscode's diff and a `TextDocumentContentProvider`, so it
+  is integration-shaped and was not built.
+- Webview: `media/chat/desk.js`, `desk.css`, markup in `index.html`.
+- `retention_refused` is not in the §3.4 wire error enum; add it rather than folding it into
+  `denied`, or the caller loses the I9 signal.
+
+**Phase 7 (the relay) was deliberately skipped, not missed.** It requires DeepMyst-side
+endpoints that do not exist — team membership, per-peer routing, an attach socket, and an
+authorization check that fails closed. Writing a client against a non-existent API is waste,
+and the plan itself marks it optional and last.
+
+### 16.6 What needs a human, a second machine, or a live model
+
+None of this can be closed by more building:
+
+1. **Two real machines.** Every cross-machine claim is verified only against in-process fakes.
+   Pairing, transport, and the challenge/replay path have never touched a network.
+2. **An interactive F5 run.** No Desk code has ever executed in an Extension Host. The B3 smoke
+   matrix was already outstanding before this work.
+3. **A live model for the serving turn.** `DeskServing` is tested against a stubbed
+   `ServingModel`. The I2 claim — that a `<read:NONCE>` in the model's own output is inert — is
+   proven against the dispatcher, but has never been tried against a real model that was
+   actively induced to emit one.
+4. **The `.claude/settings.local.json` GitHub tokens** still want rotating. Gitignored and
+   untracked, so never committed, but plaintext and readable by any local process.
