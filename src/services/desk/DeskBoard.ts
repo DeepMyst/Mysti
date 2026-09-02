@@ -55,6 +55,33 @@
 /** Claim arbitration cannot accept an unbounded jump — see the header. */
 export const LAMPORT_MAX_JUMP = 64;
 
+/**
+ * Ceiling on a claim lease, and the reason it exists.
+ *
+ * `leaseMs` arrives on the wire, so it is a sender-chosen number — and a
+ * sender-chosen number is exactly what I17 says must never bound anything.
+ * `Infinity` or `NaN` both produced a claim that NEVER expires: the expiry
+ * test is `now >= claimedAt + leaseMs`, and that comparison is false against
+ * either. A peer could hold a task forever with one field, which is precisely
+ * the blocked-frontier failure leases exist to prevent.
+ *
+ * An over-long lease is CLAMPED to this ceiling rather than honoured. Clamped,
+ * not dropped: dropping the claim would hand a peer a way to delete a rival's
+ * legitimate claim by following it with a malformed one.
+ */
+export const LEASE_MAX_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What a MALFORMED lease gets — NaN, zero, negative.
+ *
+ * Deliberately the short default and NOT {@link LEASE_MAX_MS}: falling back to
+ * the ceiling would mean a peer sending `leaseMs: 0` was granted the maximum
+ * hold, i.e. malformed input buying MORE authority than well-formed input. The
+ * conservative reading of "this number is nonsense" is a short lease that frees
+ * the task soon, not a long one.
+ */
+export const LEASE_DEFAULT_MS = 15 * 60 * 1000;
+
 export type TaskState = 'open' | 'claimed' | 'done' | 'failed';
 
 /** One signed board event. `receivedAt` is stamped LOCALLY on arrival. */
@@ -103,6 +130,18 @@ interface Internal {
   lamport: number;
   /** The winning event id, for deterministic tie-breaks. */
   eventId: string;
+}
+
+/**
+ * Coerce a wire-supplied lease into a usable duration.
+ *
+ * Returns null when the event carries no lease at all (every non-claim kind),
+ * which the view layer renders as "no expiry recorded" rather than "expired".
+ */
+function clampLease(raw: number | undefined): number | null {
+  if (raw === undefined) { return null; }
+  if (!Number.isFinite(raw) || raw <= 0) { return LEASE_DEFAULT_MS; }
+  return Math.min(raw, LEASE_MAX_MS);
 }
 
 function stateFor(kind: BoardEvent['kind']): TaskState {
@@ -161,7 +200,7 @@ export function fold(events: BoardEvent[], now: number): BoardState {
         state: stateFor(e.kind),
         owner: e.kind === 'claim' ? e.peerId : null,
         claimedAt: e.kind === 'claim' ? e.receivedAt : null,
-        leaseMs: e.kind === 'claim' ? (e.leaseMs ?? null) : null,
+        leaseMs: e.kind === 'claim' ? clampLease(e.leaseMs) : null,
         generation: e.generation,
         lamport: e.lamport,
         eventId: e.eventId,
@@ -180,7 +219,7 @@ export function fold(events: BoardEvent[], now: number): BoardState {
     current.state = stateFor(e.kind);
     current.owner = e.kind === 'claim' ? e.peerId : null;
     current.claimedAt = e.kind === 'claim' ? e.receivedAt : null;
-    current.leaseMs = e.kind === 'claim' ? (e.leaseMs ?? null) : null;
+    current.leaseMs = e.kind === 'claim' ? clampLease(e.leaseMs) : null;
     current.generation = e.generation;
     current.lamport = e.lamport;
     current.eventId = e.eventId;

@@ -12,6 +12,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   LAMPORT_MAX_JUMP,
+  LEASE_DEFAULT_MS,
+  LEASE_MAX_MS,
   fold,
   renderStandup,
 } from '../../../src/services/desk/DeskBoard';
@@ -245,5 +247,63 @@ describe('renderStandup — deterministic and model-free', () => {
   it('calls out work that needs attention', () => {
     const stale = ev({ eventId: 'e1', taskId: 't1', kind: 'claim', leaseMs: 1000, title: 'Stalled' });
     expect(renderStandup(fold([stale], NOW + 5000), NOW + 5000)).toContain('### Needs attention (1)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `leaseMs` arrives on the wire, so it is a sender-chosen number — and I17 says
+// a sender-chosen number must never bound anything. Infinity and NaN both made
+// the expiry test (`now >= claimedAt + leaseMs`) false forever, so a peer could
+// hold a task permanently with one field: the blocked-frontier failure leases
+// exist to prevent.
+// ---------------------------------------------------------------------------
+describe('fold — a wire-supplied lease cannot buy an immortal claim', () => {
+  const hostile = (leaseMs: number | undefined) => ev({
+    eventId: 'e1', taskId: 't1', kind: 'claim',
+    peerId: 'p_bob', title: 'Held forever', receivedAt: NOW,
+    ...(leaseMs === undefined ? {} : { leaseMs }),
+  });
+
+  for (const [label, value] of [
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['NaN', NaN],
+    ['zero', 0],
+    ['negative', -1],
+    ['absurdly long', Number.MAX_SAFE_INTEGER],
+  ] as Array<[string, number]>) {
+    it(`expires a claim whose lease is ${label}`, () => {
+      const state = fold([hostile(value)], NOW + LEASE_MAX_MS + 1);
+      expect(state.tasks[0].state, `${label} must not hold the task`).toBe('failed');
+      expect(state.tasks[0].owner).toBeNull();
+    });
+  }
+
+  it('gives a MALFORMED lease the short default, never the ceiling', () => {
+    // Falling back to the maximum would mean nonsense input buys MORE hold
+    // than well-formed input.
+    for (const bad of [NaN, 0, -1, Infinity * 0]) {
+      const state = fold([hostile(bad)], NOW);
+      expect(state.tasks[0].leaseExpiresAt, String(bad)).toBe(NOW + LEASE_DEFAULT_MS);
+    }
+  });
+
+  it('caps an over-long lease at the ceiling rather than honouring it', () => {
+    const state = fold([hostile(LEASE_MAX_MS * 100)], NOW);
+    expect(state.tasks[0].leaseExpiresAt).toBe(NOW + LEASE_MAX_MS);
+  });
+
+  it('honours an ordinary lease unchanged', () => {
+    const state = fold([hostile(60_000)], NOW);
+    expect(state.tasks[0].leaseExpiresAt).toBe(NOW + 60_000);
+  });
+
+  it('CLAMPS rather than drops, so a malformed claim cannot delete a rival one', () => {
+    // Dropping the event would hand a peer a way to erase a legitimate claim by
+    // following it with a malformed one.
+    const state = fold([hostile(Infinity)], NOW);
+    expect(state.tasks).toHaveLength(1);
+    expect(state.tasks[0].state).toBe('claimed');
+    expect(state.tasks[0].owner).toBe('p_bob');
   });
 });
