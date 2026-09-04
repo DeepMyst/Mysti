@@ -13,6 +13,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}' {{cspSource}}; img-src {{cspSource}} data: blob:; form-action 'none'; base-uri 'none';">
   <title>Mysti</title>
   <link rel="stylesheet" href="{{chatCssUri}}">
+  <link rel="stylesheet" href="{{deskCssUri}}">
   <script nonce="{{nonce}}" src="{{resourceBase}}/dompurify.min.js"></script>
   <script nonce="{{nonce}}" src="{{resourceBase}}/marked.min.js"></script>
   <script nonce="{{nonce}}" src="{{resourceBase}}/prism-bundle.js"></script>
@@ -1182,5 +1183,9 @@
 
   <script nonce="{{nonce}}">window.__MYSTI_BOOT__ = {{bootJson}};</script>
   <script nonce="{{nonce}}" src="{{chatJsUri}}"></script>
+
+  <!-- Desk rail (Plan 26). Hidden until mysti.desk.enabled and a roster arrives. -->
+  <section id="desk-rail" class="desk-rail hidden" aria-label="Desk teammates"></section>
+  <script nonce="{{nonce}}" src="{{deskJsUri}}"></script>
 </body>
 </html>

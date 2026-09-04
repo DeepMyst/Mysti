@@ -64,6 +64,8 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   };
   const chatCssUri = assetUri(['media', 'chat', 'chat.css']);
   const chatJsUri = assetUri(['media', 'chat', 'chat.js']);
+  const deskCssUri = assetUri(['media', 'chat', 'desk.css']);
+  const deskJsUri = assetUri(['media', 'chat', 'desk.js']);
 
   // URIs for library scripts loaded lazily by the chat script.
   const mermaidUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'mermaid.min.js'));
@@ -134,6 +136,8 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     resourceBase,
     chatCssUri,
     chatJsUri,
+    deskCssUri,
+    deskJsUri,
     bootJson,
     version
   };

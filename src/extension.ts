@@ -53,6 +53,11 @@ import { AnnouncementManager } from './managers/AnnouncementManager';
 import { ConnectionsPanelManager } from './managers/ConnectionsPanelManager';
 import { McpConfigManager } from './services/McpConfigManager';
 import { PerfTracker } from './utils/PerfTracker';
+import { randomUUID } from 'crypto';
+import { DeskIdentity } from './services/desk/DeskIdentity';
+import { DeskPairing } from './managers/DeskPairing';
+import { DeskPeerBook } from './managers/DeskPeerBook';
+import { DeskPairingFlow } from './managers/DeskPairingFlow';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -318,6 +323,47 @@ export async function activate(context: vscode.ExtensionContext) {
     brainstormManager,
   });
 
+
+  // --------------------------------------------------------------------------
+  // Desk (Plan 21 / Plan 26) — cross-machine teamwork, off by default.
+  //
+  // Constructed unconditionally but INERT unless `mysti.desk.enabled` is on:
+  // the objects hold no timer, open no socket and read nothing until a message
+  // arrives. Gating construction on the setting instead would mean a toggle
+  // needs a window reload to take effect, and a security feature that needs a
+  // reload is one people leave off.
+  // --------------------------------------------------------------------------
+  const deskIdentity = new DeskIdentity({
+    // `vscode.SecretStorage` returns Thenable, which is not assignable to
+    // Promise; adapting here keeps the vscode types out of the sealed Desk set.
+    get: (key) => Promise.resolve(context.secrets.get(key)),
+    store: (key, value) => Promise.resolve(context.secrets.store(key, value)),
+    delete: (key) => Promise.resolve(context.secrets.delete(key)),
+  });
+  const deskPeerBook = new DeskPeerBook(
+    {
+      get: <T,>(key: string) => context.globalState.get<T>(key),
+      update: (key: string, value: unknown) => Promise.resolve(context.globalState.update(key, value)),
+    },
+    () => Date.now(),
+    {
+      servingBudgetUsdPerDay: vscode.workspace
+        .getConfiguration('mysti').get<number>('desk.servingBudgetUsdPerDay', 0.5),
+    },
+  );
+  const deskPairing = new DeskPairing({
+    now: () => Date.now(),
+    newId: () => randomUUID().replace(/-/g, ''),
+  });
+  const deskFlow = new DeskPairingFlow({
+    pairing: deskPairing,
+    peerBook: deskPeerBook,
+    // Filled on first use; `ensure()` is what actually mints or loads the key.
+    ownPublicKey: '',
+    now: () => Date.now(),
+    newSessionId: () => randomUUID(),
+  });
+
   // Initialize the chat view provider
   chatViewProvider = new ChatViewProvider(
     context.extensionUri,
@@ -341,7 +387,14 @@ export async function activate(context: vscode.ExtensionContext) {
     visualTestManager,
     canvasManager,
     modelRegistryService,
-    checkpointManager
+    checkpointManager,
+    {
+      identity: deskIdentity,
+      pairing: deskPairing,
+      peerBook: deskPeerBook,
+      flow: deskFlow,
+      enabled: () => vscode.workspace.getConfiguration('mysti').get<boolean>('desk.enabled', false),
+    }
   );
 
   // F-11: run the one-time settings→secrets migration BEFORE any service reads
@@ -540,6 +593,33 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand('mysti.chatView.focus');
     })
   );
+
+  // Plan 26: pairing is a deliberate, human-initiated act, so it lives behind a
+  // command as well as the rail button — a keyboard user must be able to reach
+  // it without hunting for an affordance in a collapsed panel.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mysti.deskRoster', async () => {
+      await vscode.commands.executeCommand('mysti.chatView.focus');
+      chatViewProvider?.refreshDeskRoster();
+    }),
+    vscode.commands.registerCommand('mysti.deskPair', async () => {
+      if (!vscode.workspace.getConfiguration('mysti').get<boolean>('desk.enabled', false)) {
+        vscode.window.showInformationMessage(
+          'Mysti Desk is off. Turn on "mysti.desk.enabled" to pair with a teammate.');
+        return;
+      }
+      const url = await vscode.window.showInputBox({
+        title: 'Pair with a teammate',
+        prompt: 'Paste the desk://pair link they sent you',
+        placeHolder: 'desk://pair?...',
+        ignoreFocusOut: true,
+      });
+      if (!url) { return; }
+      await vscode.commands.executeCommand('mysti.chatView.focus');
+      chatViewProvider?.beginDeskPairing(url);
+    }),
+  );
+
 
   // Plan 04: DeepMyst sign-in / sign-out + Connections panel
   context.subscriptions.push(

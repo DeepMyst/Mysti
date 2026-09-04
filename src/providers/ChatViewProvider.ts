@@ -124,6 +124,10 @@ import type { CanvasSecrets } from '../services/CanvasSecrets';
 import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
 import { DevServerManager } from '../managers/DevServerManager';
+import { DeskIdentity } from '../services/desk/DeskIdentity';
+import { DeskPairing, buildInviteUrl } from '../managers/DeskPairing';
+import { DeskPeerBook } from '../managers/DeskPeerBook';
+import { DeskPairingFlow } from '../managers/DeskPairingFlow';
 import type { WebviewMessage, Settings, ContextItem, Attachment, QuickActionSuggestion, Message, MessageSegment, MessageThinking, MessageThinkingStyle, ToolCall, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualTestStreamChunk, VisualObservation, VisualTestInteraction } from '../types';
 import { AUTONOMOUS_CONTINUATION_DELAY_MS, DEFAULT_PROVIDER, DEFAULT_FALLBACK_MODEL, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S, SUBAGENT_MAX_RETRIES } from '../constants';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
@@ -170,6 +174,26 @@ interface PanelState {
   isSidebar: boolean;
   /** Per-panel settings overrides (provider, model) so panels don't contaminate each other */
   settingsOverrides?: Partial<Pick<Settings, 'provider' | 'model'>>;
+}
+
+
+/**
+ * Everything the Desk rail needs, passed as ONE object.
+ *
+ * Plan 21 §6 Phase 2 is explicit that this must not become positional argument
+ * 23. The constructor is already at 22 positional parameters — known debt, and
+ * the way it got there was exactly this: one more dependency at a time, each
+ * individually reasonable. Converting all 22 unattended is a large mechanical
+ * diff that silently mis-maps if one argument is transposed, so the existing
+ * list is left alone and the growth stops here instead.
+ */
+export interface DeskDependencies {
+  identity: DeskIdentity;
+  pairing: DeskPairing;
+  peerBook: DeskPeerBook;
+  flow: DeskPairingFlow;
+  /** Machine-scoped `mysti.desk.enabled`, read fresh so a toggle takes effect. */
+  enabled(): boolean;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -352,6 +376,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _pendingAskUserQuestions: Map<string, string> = new Map();
   // Store pending question data for memory learning when user answers
   private _pendingQuestionData: Map<string, AskUserQuestionData> = new Map();
+  /** Desk wiring, or undefined when the feature was never constructed. */
+  private _desk?: DeskDependencies;
+  /** The in-flight pairing ceremony, if any. One at a time by design. */
+  private _deskSession: string | null = null;
   // Semi-autonomous question timeout handles (toolCallId -> timeout)
   private _semiAutoQuestionTimeouts: Map<string, NodeJS.Timeout> = new Map();
   // Pending sub-agent questions awaiting user answers (key: panelId-toolCallId -> resolver)
@@ -394,8 +422,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     visualTestManager: VisualTestManager,
     canvasManager: CanvasManager,
     modelRegistry: ModelRegistryService,
-    checkpointManager: CheckpointManager
+    checkpointManager: CheckpointManager,
+    desk?: DeskDependencies
   ) {
+    this._desk = desk;
     this._extensionUri = extensionUri;
     this._extensionContext = extensionContext;
     this._contextManager = contextManager;
@@ -1520,6 +1550,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'enhancePrompt':
         await this._handleEnhancePrompt(msg.payload as string, msg.panelId);
+        break;
+
+      case 'deskRequestRoster':
+      case 'deskCreateInvite':
+      case 'deskPairBegin':
+      case 'deskPairVerify':
+      case 'deskPairFinish':
+      case 'deskPairCancel':
+      case 'deskRevoke':
+        await this._handleDeskMessage(msg);
         break;
 
       case 'newConversation':
@@ -12457,6 +12497,219 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Dispose the provider and clean up all resources
    * Critical: Prevents memory leaks from panel states and tracking maps
    */
+
+  // ==========================================================================
+  // Desk (Plan 26) — pairing rail
+  //
+  // Every branch below fails CLOSED when Desk is disabled or unwired: the rail
+  // is told it is off rather than being left to guess from silence, because a
+  // rail that renders nothing is indistinguishable from a rail that is broken.
+  // ==========================================================================
+
+  /** True only when Desk is wired AND the machine-scoped flag is on. */
+  private _deskEnabled(): boolean {
+    if (!this._desk) { return false; }
+    try { return this._desk.enabled(); } catch { return false; }
+  }
+
+  /**
+   * Push the roster to one panel.
+   *
+   * The peer's alias is the LOCALLY typed one from DeskPeerBook — never a
+   * display name a peer supplied (I12). `desk.js` escapes everything anyway;
+   * sending the local alias means there is nothing hostile to escape.
+   */
+  private async _sendDeskRoster(panelId: string): Promise<void> {
+    if (!this._deskEnabled() || !this._desk) {
+      this._postToPanel(panelId, { type: 'deskRosterUpdated', payload: { enabled: false, peers: [] } } as WebviewMessage);
+      return;
+    }
+    let identity: { peerId: string } | null = null;
+    try {
+      identity = await this._desk.identity.ensure();
+    } catch (err) {
+      // A corrupt vault must NOT silently mint a new identity — that would drop
+      // every pinned peer without telling anyone. Surface it as an off rail.
+      console.error('[Mysti] Desk: identity unavailable', err);
+      this._postToPanel(panelId, { type: 'deskRosterUpdated', payload: { enabled: false, peers: [] } } as WebviewMessage);
+      return;
+    }
+    const peers = this._desk.peerBook.listPeers().map(p => {
+      const grant = this._desk!.peerBook.getGrant(p.peerId);
+      return {
+        peerId: p.peerId,
+        alias: this._desk!.peerBook.renderAlias(p.peerId) ?? p.alias,
+        trustDomain: p.trustDomain,
+        verbs: grant ? grant.verbs : [],
+        revoked: this._desk!.peerBook.isRevoked(p.peerId),
+        rotatedFrom: this._desk!.peerBook.rotatedFrom(p.peerId) ?? undefined,
+      };
+    });
+    this._postToPanel(panelId, {
+      type: 'deskRosterUpdated',
+      payload: { enabled: true, peers, identity: { peerId: identity.peerId } },
+    } as WebviewMessage);
+  }
+
+  /** Handle every `desk*` message from the rail. */
+  private async _handleDeskMessage(msg: WebviewMessageWithPanel): Promise<void> {
+    const panelId = msg.panelId;
+    if (!this._deskEnabled() || !this._desk) {
+      await this._sendDeskRoster(panelId);
+      return;
+    }
+    const desk = this._desk;
+
+    switch (msg.type) {
+      case 'deskRequestRoster':
+        await this._sendDeskRoster(panelId);
+        return;
+
+      case 'deskCreateInvite': {
+        try {
+          const identity = await desk.identity.ensure();
+          const invite = desk.pairing.createInvite(identity.publicKey);
+          const url = buildInviteUrl(invite);
+          const msLeft = invite.expiresAt - Date.now();
+          this._postToPanel(panelId, {
+            type: 'deskInvite',
+            payload: {
+              url,
+              expiresInMs: msLeft,
+              expiresLabel: `expires in ${Math.max(0, Math.floor(msLeft / 60000))}:${String(
+                Math.max(0, Math.floor((msLeft % 60000) / 1000))).padStart(2, '0')}`,
+            },
+          } as WebviewMessage);
+        } catch (err) {
+          console.error('[Mysti] Desk: could not create an invite', err);
+          await this._sendDeskRoster(panelId);
+        }
+        return;
+      }
+
+      case 'deskPairBegin': {
+        const identity = await desk.identity.ensure();
+        void identity;
+        const url = String((msg as unknown as { url?: unknown }).url ?? '');
+        const begun = desk.flow.begin(url);
+        if (!begun.ok) {
+          vscode.window.showWarningMessage(`Mysti Desk: that invite cannot be used (${begun.reason}).`);
+          await this._sendDeskRoster(panelId);
+          return;
+        }
+        this._deskSession = begun.challenge.sessionId;
+        this._postToPanel(panelId, { type: 'deskChallenge', payload: begun.challenge } as WebviewMessage);
+        return;
+      }
+
+      case 'deskPairVerify': {
+        const answers = (msg as unknown as { answers?: unknown }).answers;
+        if (!this._deskSession) { await this._sendDeskRoster(panelId); return; }
+        const res = desk.flow.answer(this._deskSession, Array.isArray(answers) ? answers : []);
+        if (res.ok) {
+          this._postToPanel(panelId, {
+            type: 'deskGrantStep',
+            payload: { peerId: this._deskSession },
+          } as WebviewMessage);
+          return;
+        }
+        if (res.reason === 'exhausted') {
+          this._deskSession = null;
+          // Named plainly: the invite is spent, and pretending otherwise sends
+          // the user back into a flow that cannot succeed.
+          vscode.window.showWarningMessage(
+            'Mysti Desk: too many wrong answers. Ask your teammate for a fresh invite link.');
+          await this._sendDeskRoster(panelId);
+          return;
+        }
+        vscode.window.showWarningMessage(
+          `Mysti Desk: those digits do not match — ${res.attemptsLeft} attempt(s) left. ` +
+          'If they keep not matching, someone may be intercepting this pairing.');
+        return;
+      }
+
+      case 'deskPairFinish': {
+        if (!this._deskSession) { await this._sendDeskRoster(panelId); return; }
+        const p = msg as unknown as { alias?: unknown; trustDomain?: unknown; verbs?: unknown };
+        const done = await desk.flow.complete(this._deskSession, {
+          alias: String(p.alias ?? ''),
+          trustDomain: String(p.trustDomain ?? ''),
+          verbs: (Array.isArray(p.verbs) ? p.verbs : []) as never,
+        });
+        if (!done.ok) {
+          vscode.window.showErrorMessage(`Mysti Desk: pairing failed — ${done.reason}`);
+        } else {
+          this._deskSession = null;
+          vscode.window.showInformationMessage(
+            `Mysti Desk: paired with ${done.peer.alias}. They cannot ask anything until they pair with you too.`);
+        }
+        await this._sendDeskRoster(panelId);
+        return;
+      }
+
+      case 'deskPairCancel':
+        if (this._deskSession) { desk.flow.abandon(this._deskSession); this._deskSession = null; }
+        await this._sendDeskRoster(panelId);
+        return;
+
+      case 'deskRevoke': {
+        const peerId = String((msg as unknown as { peerId?: unknown }).peerId ?? '');
+        const peer = desk.peerBook.getPeerById(peerId);
+        if (!peer) { await this._sendDeskRoster(panelId); return; }
+        const alias = desk.peerBook.renderAlias(peerId) ?? peer.alias;
+        const choice = await vscode.window.showWarningMessage(
+          `Revoke ${alias}?`,
+          { modal: true, detail: 'They will not be able to ask anything of this machine again. Re-pairing needs a new invite and a fresh safety-number comparison.' },
+          'Revoke',
+        );
+        if (choice !== 'Revoke') { return; }
+        try {
+          await desk.peerBook.revoke(peerId, 'revoked by the user');
+        } catch (err) {
+          // A revocation that did not persist is worse than none, because the
+          // roster would show it as done. Say so loudly.
+          vscode.window.showErrorMessage(
+            `Mysti Desk: revoking ${alias} could not be saved (${err instanceof Error ? err.message : 'unknown'}). They are still paired — try again.`);
+        }
+        await this._sendDeskRoster(panelId);
+        return;
+      }
+
+      default:
+        return;
+    }
+  }
+
+
+  /**
+   * Re-push the roster to whichever panel is in front.
+   *
+   * Public because the `mysti.deskRoster` command needs it and commands live in
+   * extension.ts. It takes no panel argument on purpose: a command has no panel
+   * context, and guessing one would refresh a rail the user is not looking at.
+   */
+  public refreshDeskRoster(): void {
+    const panelId = this._lastActivePanelId || this._sidebarId;
+    if (!panelId) { return; }
+    void this._sendDeskRoster(panelId);
+  }
+
+  /**
+   * Start a ceremony from a pasted link.
+   *
+   * The URL arrives from an input box, i.e. from the user, and is handed
+   * straight to `DeskPairing.hold()` — which validates every field and drops
+   * rather than repairs. Nothing here inspects or normalises it first: a second
+   * parse is a second chance to disagree about which invite was approved.
+   */
+  public beginDeskPairing(url: string): void {
+    const panelId = this._lastActivePanelId || this._sidebarId;
+    if (!panelId) { return; }
+    void this._handleDeskMessage({
+      type: 'deskPairBegin', panelId, url,
+    } as unknown as WebviewMessageWithPanel);
+  }
+
   public dispose(): void {
     console.log('[Mysti] ChatViewProvider: Disposing and cleaning up resources');
 

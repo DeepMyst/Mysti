@@ -100,6 +100,16 @@
     },
     "commands": [
       {
+        "command": "mysti.deskPair",
+        "title": "Desk: Pair with a teammate",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.deskRoster",
+        "title": "Desk: Show teammates",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.openChat",
         "title": "Open Chat",
         "shortTitle": "Chat",
