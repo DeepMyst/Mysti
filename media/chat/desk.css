@@ -1,0 +1,333 @@
+/**
+ * Mysti - AI Coding Agent
+ * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Desk rail and pairing ceremony (Plan 26).
+ *
+ * Every colour is a `--vscode-*` token, so the rail inherits the user's theme
+ * rather than asserting one. Nothing here loads a font, an image or any remote
+ * resource: Plan 21 I37 forbids the rail fetching anything referenced by peer
+ * data, and the simplest way to keep that true is for the stylesheet to have no
+ * fetching construct in it at all — no `url()`, no `@import`, no web font.
+ */
+
+/* ------------------------------------------------------------------ rail -- */
+
+.desk-rail {
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--vscode-foreground);
+}
+
+.desk-rail.hidden { display: none; }
+
+.desk-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.desk-empty-text { color: var(--vscode-descriptionForeground); }
+
+.desk-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.desk-title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ----------------------------------------------------------------- peers -- */
+
+.desk-roster { list-style: none; margin: 0; padding: 0; }
+
+.desk-peer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.18));
+}
+
+.desk-peer:last-child { border-bottom: none; }
+
+.desk-peer-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+.desk-peer-alias {
+  font-weight: 600;
+  /* A long alias truncates rather than pushing the Revoke button off-screen:
+     the control must stay reachable regardless of what the peer is called. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desk-peer-meta {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 10px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  min-width: 0;
+}
+
+.desk-peer-domain, .desk-peer-verbs {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desk-peer-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* A rotated key is a NEW identity (I13). It is styled as a warning rather than
+   as a neutral tag so the roster cannot be misread as a continuation. */
+.desk-badge-warn {
+  background: var(--vscode-inputValidation-warningBackground, rgba(255, 200, 0, 0.15));
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  border: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.desk-badge-revoked {
+  background: var(--vscode-inputValidation-errorBackground, rgba(255, 80, 80, 0.12));
+  color: var(--vscode-editorError-foreground, #f14c4c);
+}
+
+/* Revoked rows stay visible, dimmed. Removing the row would make revocation
+   indistinguishable from a bug at the exact moment a user wants confirmation. */
+.desk-peer-revoked { opacity: 0.55; }
+.desk-peer-revoked .desk-peer-alias { text-decoration: line-through; }
+
+.desk-identity {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+}
+
+.desk-identity-id { font-family: var(--vscode-editor-font-family, monospace); }
+
+/* -------------------------------------------------------------- ceremony -- */
+
+.desk-ceremony { padding: 4px 0; }
+
+.desk-ceremony-title { margin: 0 0 6px; font-size: 13px; }
+
+/* The failure, stated first and loudest — it is the thing that makes someone
+   actually compare the digits. */
+.desk-ceremony-warn {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--vscode-inputValidation-warningBackground, rgba(255, 200, 0, 0.12));
+  border-left: 3px solid var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.desk-sn-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin: 8px 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 13px;
+  /* Digits line up in columns, which is what makes a mismatch visible at a
+     glance rather than only on a careful character-by-character read. */
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-sn-group {
+  position: relative;
+  padding: 5px 4px 5px 14px;
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
+  letter-spacing: 0.06em;
+}
+
+.desk-sn-index {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  font-size: 8px;
+  opacity: 0.5;
+}
+
+/* The demanded groups are marked by border AND weight, not colour alone — the
+   ceremony has to work for someone who cannot distinguish the accent hue. */
+.desk-sn-demanded {
+  outline: 2px solid var(--vscode-focusBorder, #007acc);
+  font-weight: 700;
+  background: var(--vscode-editor-selectionBackground, rgba(0, 122, 204, 0.18));
+}
+
+.desk-ceremony-hint,
+.desk-ceremony-both,
+.desk-ceremony-attempts {
+  margin: 8px 0 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+}
+
+.desk-ceremony-attempts { color: var(--vscode-editorWarning-foreground, #cca700); }
+
+.desk-ceremony-ask { margin: 10px 0 4px; font-weight: 600; }
+
+.desk-answers { display: flex; gap: 8px; }
+
+.desk-answer { display: flex; flex-direction: column; gap: 2px; }
+
+.desk-answer-label { font-size: 9px; color: var(--vscode-descriptionForeground); }
+
+.desk-answer-input {
+  width: 72px;
+  padding: 4px 6px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 3px;
+}
+
+.desk-answer-input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.desk-ceremony-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* ----------------------------------------------------------------- grant -- */
+
+.desk-grant-title { margin: 0 0 8px; font-size: 13px; }
+
+.desk-grant-rows { display: flex; flex-direction: column; gap: 6px; }
+
+.desk-grant-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 6px;
+  align-items: start;
+  cursor: pointer;
+}
+
+.desk-grant-verb {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 600;
+}
+
+.desk-grant-text { color: var(--vscode-descriptionForeground); font-size: 10px; }
+
+.desk-grant-note {
+  margin: 10px 0 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+}
+
+.desk-field { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+
+.desk-field-label { font-size: 10px; color: var(--vscode-descriptionForeground); }
+
+.desk-field-input {
+  padding: 4px 6px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------- invite -- */
+
+.desk-invite-label { margin: 0 0 4px; font-size: 10px; color: var(--vscode-descriptionForeground); }
+
+.desk-invite-url {
+  display: block;
+  padding: 6px;
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  /* The link is long; wrapping beats a horizontal scrollbar in a narrow rail. */
+  word-break: break-all;
+}
+
+.desk-invite-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.desk-invite-expiry { font-size: 10px; color: var(--vscode-descriptionForeground); }
+
+.desk-invite-expired .desk-invite-url { opacity: 0.5; text-decoration: line-through; }
+.desk-invite-expired .desk-invite-expiry { color: var(--vscode-editorWarning-foreground, #cca700); }
+
+.desk-invite-note {
+  margin: 8px 0 0;
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* --------------------------------------------------------------- buttons -- */
+
+.desk-btn {
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+}
+
+.desk-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15)); }
+
+.desk-btn:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.desk-btn-primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border-color: transparent;
+}
+
+.desk-btn-primary:hover { background: var(--vscode-button-hoverBackground); }
+
+.desk-btn-link {
+  border-color: transparent;
+  color: var(--vscode-textLink-foreground);
+  padding: 3px 4px;
+}
+
+.desk-btn-danger { color: var(--vscode-editorError-foreground, #f14c4c); }
+
+@media (prefers-reduced-motion: reduce) {
+  .desk-rail * { transition: none !important; animation: none !important; }
+}
