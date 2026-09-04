@@ -15,6 +15,15 @@
 /* ------------------------------------------------------------------ rail -- */
 
 .desk-rail {
+  /* The rail is the last child of #app, which is `display:flex;
+     flex-direction:column; height:100vh`. Without an explicit basis the
+     flexible message list would squash it toward zero as the conversation
+     grows, so it is pinned: never grow, never shrink, size to content. */
+  flex: 0 0 auto;
+  /* …but a roster of thirty teammates must not eat the chat either, so the
+     rail caps itself and scrolls internally rather than pushing anything out. */
+  max-height: 40vh;
+  overflow-y: auto;
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
   padding: 8px 10px;
   font-size: 11px;

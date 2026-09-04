@@ -822,6 +822,13 @@
     </div>
     <!-- mysti:provider-literals:allow-end -->
 
+    <!-- Desk rail (Plan 26). Last child of #app so it sits at the bottom of
+         the sidebar column. NOT a sibling of #app: that container is
+         `height: 100vh`, so a sibling renders a full viewport below the
+         fold. The overlays nearby get away with being siblings because
+         they are position:fixed; this one is inline. -->
+    <section id="desk-rail" class="desk-rail hidden" aria-label="Desk teammates"></section>
+
   </div>
 
   <!-- Setup Overlay (legacy - kept for backward compatibility) -->
