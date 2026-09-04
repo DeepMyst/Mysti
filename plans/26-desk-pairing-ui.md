@@ -81,8 +81,9 @@ Then type groups  3, 7 and 12  to continue:
 - Three groups of five digits ⇒ guessing is ~1 in 10¹⁵. Typing the whole number is
   disproportionate; picking from three candidate numbers is a 1-in-3 guess and shoulder-checks
   too easily.
-- **Which three groups are demanded is chosen randomly per ceremony**, so a user cannot learn
-  "it's always the first three" and stop looking at the rest.
+- **Which three groups are demanded is derived from the safety number itself** (§6.1), so both
+  machines highlight the same three and a user still cannot learn "it's always the first three" —
+  the indices differ per peer.
 - The digits are grouped in fives because that is what people read aloud accurately. A wall of
   hex is not read aloud; it is skimmed.
 
@@ -254,17 +255,58 @@ commits.
 
 ---
 
-## 6. Open questions — worth your call before Phase C
+## 6. The three judgment calls, decided
 
-1. **Three groups, or fewer?** Three gives ~1-in-10¹⁵ and takes maybe twenty seconds. One group
-   is 1-in-100 000 and takes five. My read is three, because pairing happens once per teammate
-   and this is the root of all later trust — but it is a friction judgment on your product, not a
-   security fact.
-2. **Should `consult` be grantable at pairing time, or only later from the roster?** Defaulting to
-   `status` + `locate` is safe, but if every real use needs `consult`, forcing a second trip makes
-   the safe default feel like an obstacle and people will grant everything at pairing to avoid it.
-3. **Does the rail belong in the sidebar, or behind a command?** A visible rail invites discovery;
-   a command keeps an off-by-default feature genuinely invisible until wanted.
+Left open in the first draft, then decided on the instruction "do whatever you feel best for
+developers". Each is a product judgment, so the reasoning is recorded rather than just the answer.
+
+### 6.1 Three groups — and both sides are shown the SAME three
+
+**Decided: three groups, with the indices derived deterministically from the safety number.**
+
+Three groups of five digits is ~1-in-10^15 to guess and takes about fifteen seconds to read
+aloud. One group (1-in-100 000) is guessable by someone who gets a few attempts at a ceremony
+they can re-trigger; typing all twelve is disproportionate for something whose whole job is to be
+completed honestly.
+
+The refinement that matters for the developer experience: the demanded indices are derived from
+`sha256(safetyNumber)`, so **both machines highlight the same three groups**. Without that, the
+call goes "which ones do you need? …no, mine says 4, 9 and 2" — a coordination step that adds
+nothing and gives people a reason to give up. With it: both screens say *groups 3, 7 and 12*, one
+person reads fifteen digits, the other types them.
+
+Deriving rather than randomising also means a retry shows the same groups, so a typo is
+correctable. Brute force is not the threat at 10^15; a person who mistyped is. Attempts are capped
+at three, after which the session is destroyed and the invite must be re-issued.
+
+### 6.2 Grant at pairing, with `consult` unchecked and its cost stated
+
+**Decided: all grantable verbs appear at pairing. `status` and `locate` default on; `consult` and
+`review` default off with the consequence written next to them.**
+
+The grant is written by the RECEIVER, so what is actually being decided is "may this person spend
+my tokens and my attention". That is a real decision and it should be visible at the moment trust
+is established, not buried in a roster nobody revisits.
+
+But making it a *second trip* would backfire. If every real use of Desk needs `consult`, then a
+safe default that forces a second navigation reads as an obstacle, and the reliable human response
+to an obstacle is to grant everything up front next time to avoid it. One screen, honest defaults,
+the cost stated inline:
+
+> ☐ **consult** — alice may ask your agent questions about your code. Each question costs you a
+> model turn, and you approve the answer before it is sent.
+
+### 6.3 The rail is visible when the feature is on, and collapses when empty
+
+**Decided: no rail at all when `mysti.desk.enabled` is false; a single collapsed line when
+enabled with no peers; expanded when peers exist. Commands exist as well, for keyboard users.**
+
+Command-only is the wrong default for a feature someone deliberately turned on — it gets
+forgotten, and a forgotten Desk is a Desk that never gets tested. But an empty panel eating
+sidebar space in a window with no teammates is the standard way features earn resentment.
+
+Collapsed-when-empty gets both: one line reading `Desk — no teammates yet · Invite`, which is
+discoverable and costs nothing.
 
 ---
 
