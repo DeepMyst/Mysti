@@ -264,16 +264,31 @@ describe('.vscodeignore globs are recursive where they must be', () => {
 });
 
 describe('fossils are excluded', () => {
-  // Both exist on disk on purpose (the native permission path may be worth
-  // resurrecting; fabric was the old canvas renderer) and neither may ship:
-  // `mcp-permission-server.js` is a dead entrypoint requiring a file nothing
-  // builds, and `fabric.min.js` is 314 KB loaded by no HTML.
-  for (const fossil of ['resources/mcp-permission-server.js', 'resources/fabric.min.js']) {
+  // KEPT on disk on purpose, and must never ship: a dead entrypoint that
+  // `require`s a file nothing builds. The CLI-native `--permission-prompt-tool`
+  // path it belonged to may be worth resurrecting (its replacement, stream-level
+  // interception, is what failed open on Windows), so the file stays as the
+  // record of that design.
+  for (const fossil of ['resources/mcp-permission-server.js']) {
     it(`${fossil} is not packaged`, () => {
       expect(fs.existsSync(path.join(ROOT, fossil)), `${fossil} is gone; drop its .vscodeignore line too.`).toBe(true);
       expect(isIgnored(fossil), `${fossil} would ship.`).toBe(true);
     });
   }
+
+  // DELETED 2026-09-05, not merely un-shipped: an MIT bundle whose copyright
+  // banner had been stripped, redistributed under this repo's Apache-2.0 —
+  // a licence-compliance defect, not just dead weight. It was 314 KB loaded by
+  // no HTML and referenced only by the dead CanvasManager. Re-adding a vendored
+  // asset requires a NOTICE entry (see the notice suite below), so this pins the
+  // deletion rather than the ignore rule.
+  it('resources/fabric.min.js is gone from the repository entirely', () => {
+    expect(
+      fs.existsSync(path.join(ROOT, 'resources/fabric.min.js')),
+      'fabric.min.js is back. It is an MIT bundle with its copyright banner stripped; '
+      + 'if it is genuinely needed, restore the banner and add it to NOTICE.',
+    ).toBe(false);
+  });
 });
 
 describe('walkthrough media resolve on disk AND survive packaging', () => {

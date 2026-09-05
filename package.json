@@ -702,6 +702,7 @@
           "description": "Custom model for Kimi Code (e.g. kimi-for-coding, kimi-for-coding-highspeed, k3, kimi-k2.7-code). Passed to the CLI via the ANTHROPIC_MODEL env; the model is otherwise chosen inside Kimi with `/model`. Leave empty to use the account default."
         },
         "mysti.customModels": {
+          "scope": "machine",
           "type": "object",
           "default": {},
           "additionalProperties": {
@@ -1021,9 +1022,10 @@
           "description": "Maximum number of activity entries to display"
         },
         "mysti.activeMode.autoStartDaemon": {
+          "scope": "machine",
           "type": "boolean",
           "default": false,
-          "description": "Automatically start OpenClaw daemon if not running on extension activation"
+          "description": "Automatically start the OpenClaw daemon (`openclaw gateway --detach`) when it is not running at extension activation. Only in trusted workspaces; a workspace's settings cannot enable this."
         },
         "mysti.lifecycle.enabled": {
           "type": "boolean",
@@ -2223,7 +2225,6 @@
     "test:watch": "vitest",
     "sync-agents": "node scripts/sync-agents.js",
     "sync-agents:force": "node scripts/sync-agents.js --force",
-    "fetch-stargazers": "node scripts/fetch-stargazers.js",
     "perf:sizes": "node scripts/perf-sizes.js",
     "test:vscode": "tsc -p tsconfig.vscode-test.json && node ./scripts/prepare-vscode-fixture.js && vscode-test",
     "pretest:vscode": "npm run compile"
@@ -2239,7 +2240,6 @@
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
     "eslint": "^8.54.0",
-    "exceljs": "^4.4.0",
     "jsdom": "^29.1.1",
     "mocha": "^11.8.0",
     "ts-loader": "^9.5.1",

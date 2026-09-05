@@ -106,6 +106,91 @@ export function clampSafetyMode(current: string, inspect: InspectFn): { value: s
 }
 
 /**
+ * `mysti.visualTest.interactions` — the ceiling for a HUMAN driving the Visual
+ * Test dashboard. Declared enum order in package.json, low → high authority;
+ * `settingsClamp.test.ts` pins this array to that order.
+ */
+export const VISUAL_INTERACTION_LEVELS = ['off', 'safe', 'full'] as const;
+export type VisualInteractionLevel = typeof VISUAL_INTERACTION_LEVELS[number];
+
+/** Higher = more restrictive (off permits nothing; full permits every interaction). */
+const VISUAL_INTERACTIONS_RANK: Record<VisualInteractionLevel, number> = {
+  'off': 2,
+  'safe': 1,
+  'full': 0,
+};
+
+/** The two boolean/enum visual-test settings the ratchet covers. */
+export interface VisualTestAuthority {
+  /** `mysti.visualTest.enabled` — the master switch (false < true). */
+  enabled: boolean;
+  /** `mysti.visualTest.interactions` — the human interaction ceiling. */
+  interactions: VisualInteractionLevel;
+}
+
+/**
+ * Lower-only ratchet for a BOOLEAN setting where `false` is the safe value: a
+ * workspace may turn the feature OFF for a user who has it on, never ON for a
+ * user who turned it off. Same shape and rules as {@link clampOne}: no
+ * inspection or no workspace value ⇒ untouched; a non-boolean workspace value
+ * (a hand-edited or cloned settings file) is coerced to the user's own floor.
+ */
+function clampBooleanOne(
+  current: boolean,
+  inspection: SettingInspection | undefined,
+  fallback: boolean,
+): { value: boolean; clamped: boolean } {
+  if (!inspection) { return { value: current, clamped: false }; }
+  const ws = inspection.workspaceFolderValue ?? inspection.workspaceValue;
+  if (ws === undefined) { return { value: current, clamped: false }; }
+  const rawFloor = inspection.globalValue ?? inspection.defaultValue ?? fallback;
+  const floor = typeof rawFloor === 'boolean' ? rawFloor : fallback;
+  if (typeof ws !== 'boolean') {
+    return { value: floor, clamped: current !== floor };
+  }
+  // Workspace tried ON while the user's own policy is OFF, and the runtime
+  // value reflects that escalation: clamp back.
+  if (ws && !floor && current) {
+    return { value: false, clamped: true };
+  }
+  return { value: current, clamped: false };
+}
+
+/**
+ * Clamp the visual-test authority settings (Plan 27 §21.6c #6): a workspace
+ * may DISABLE visual testing or LOWER the human interaction ceiling for one
+ * repo, never re-enable or raise them above the user's own policy.
+ *
+ * Neither key is part of `Settings` (they are read straight from
+ * configuration by `ChatViewProvider._mystiVisualEnabled` and
+ * `_visualPolicyDeps`), so — like {@link clampSafetyMode} — this is a
+ * standalone ratchet the consumer calls with the raw `config.get` values and
+ * `config.inspect`. It is the precondition for moving the two keys from
+ * `machine` back to window scope: the scope may move ONLY once both reads go
+ * through here, in the same change that lists them in `CLAMPED_SETTINGS`.
+ * Until then they stay machine-scoped (a repo cannot set them at all).
+ */
+export function clampVisualTestSettings(
+  current: VisualTestAuthority,
+  inspect: InspectFn,
+): { settings: VisualTestAuthority; clampedFields: string[] } {
+  const clampedFields: string[] = [];
+
+  const enabled = clampBooleanOne(current.enabled, inspect('visualTest.enabled'), true);
+  if (enabled.clamped) { clampedFields.push('visualTest.enabled'); }
+
+  const interactions = clampOne<VisualInteractionLevel>(
+    current.interactions, inspect('visualTest.interactions'), VISUAL_INTERACTIONS_RANK, 'safe');
+  if (interactions.clamped) { clampedFields.push('visualTest.interactions'); }
+
+  if (clampedFields.length === 0) { return { settings: current, clampedFields }; }
+  return {
+    settings: { enabled: enabled.value, interactions: interactions.value },
+    clampedFields,
+  };
+}
+
+/**
  * The canonical runtime membership lists for the two authority settings.
  *
  * These exist as VALUES, not just types, because the danger is precisely that a
@@ -295,19 +380,34 @@ export const AUTHORITY_BEARING_SETTINGS: readonly string[] = [
 
   // Shell-shaped surfaces.
   'mysti.useShellForCli',
+  // Plan 27 N-2: turns extension activation into `openclaw gateway --detach`
+  // (ActiveModeManager.initialize → startDaemon). Machine-scoped AND gated on
+  // a trusted workspace; default off.
+  'mysti.activeMode.autoStartDaemon',
   'mysti.visualTest.devServerCommand',
   'mysti.visualTest.allowModelDevServerCommand',
   'mysti.visualTest.allowedOrigins',
   'mysti.visualTest.agentInteractions',
   // Plan 27 I-1: the master switch (default true — a repo could RE-ENABLE it
-  // for a user who turned it off), the HUMAN interaction ceiling, and the
-  // origin `allowedOrigins` constrains. Machine-scoped like their siblings.
+  // for a user who turned it off) and the HUMAN interaction ceiling. Machine-
+  // scoped for now. The intended end state is the lower-only ratchet in
+  // `clampVisualTestSettings` (a repo may say "no browser here", never the
+  // reverse); the scope moves back to window ONLY when both ChatViewProvider
+  // reads go through that function and both keys join CLAMPED_SETTINGS.
   'mysti.visualTest.enabled',
   'mysti.visualTest.interactions',
 
-  // Provider policy selectors: `codexProfile` picks which ~/.codex/config.toml
-  // profile — and therefore which sandbox/approval policy — the Codex CLI runs
-  // under. A repo must not choose the sandbox its own code is judged in.
+  // Provider config selector: `codexProfile` becomes `--profile <name>`, which
+  // selects the rest of the Codex CLI's configuration (model, reasoning
+  // effort, model catalog — and, per the official docs, a profile MAY carry an
+  // `approval_policy`). It does NOT decide the sandbox Mysti runs Codex in:
+  // every `CodexProvider._addSandboxFlags` branch passes an explicit
+  // `--sandbox` / `--full-auto` / `--dangerously-bypass-approvals-and-sandbox`
+  // before `--profile`, and flag-vs-profile precedence is not stated in the
+  // official configuration docs we could find
+  // (https://learn.chatgpt.com/docs/config-file/config-advanced). Machine
+  // scope is still right: a repo must not pick which of the USER's config
+  // layers the CLI that judges its code runs with.
   'mysti.codexProfile',
 
   // Autonomous-mode authority (safetyMode is clamped above; these six decide

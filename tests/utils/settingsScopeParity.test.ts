@@ -33,6 +33,7 @@ import {
   clampSafetyMode,
   type SettingInspection,
 } from '../../src/utils/settingsClamp';
+import { MODEL_NAME_PATTERN, MODEL_NAME_MAX_LENGTH } from '../../src/utils/validation';
 import type { Settings } from '../../src/types';
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -289,8 +290,9 @@ describe('scope rules derived from key shape', () => {
  * hand-written list can only catch what someone remembered to write down:
  * `mysti.visualTest.enabled` (the hard block at visualTestPolicy.ts — a repo
  * could RE-ENABLE it for a user who turned it off), `.interactions` (the human
- * ceiling), `.url` and `mysti.codexProfile` (which sandbox/approval policy the
- * Codex CLI runs under) all shipped workspace-writable while the list advertised
+ * ceiling), `.url` and `mysti.codexProfile` (which of the USER's Codex config
+ * layers the CLI runs with — see the N-3 note in settingsClamp.ts: the sandbox
+ * itself is always an explicit flag) all shipped workspace-writable while the list advertised
  * an invariant it structurally could not enforce.
  *
  * So the candidate set is now derived from package.json by SHAPE — the
@@ -300,7 +302,12 @@ describe('scope rules derived from key shape', () => {
  * or not anyone remembered the list. The list stays as documentation.
  */
 describe('authority-shaped namespaces are machine-scoped OR clamped (structural, Plan 27 I-1)', () => {
-  const NAMESPACES: Array<{ name: string; re: RegExp; min: number }> = [
+  /**
+   * `tripwire` shapes have NO members today. They exist so that the first
+   * `*Token` a future change declares is judged here rather than shipping open;
+   * the roster-collapse check is skipped for them, by design.
+   */
+  const NAMESPACES: Array<{ name: string; re: RegExp; min: number; tripwire?: true }> = [
     { name: 'mysti.visualTest.*', re: /^mysti\.visualTest\./, min: 10 },
     { name: '*Profile', re: /Profile$/, min: 1 },
     { name: '*Endpoint', re: /Endpoint$/, min: 2 },
@@ -310,6 +317,13 @@ describe('authority-shaped namespaces are machine-scoped OR clamped (structural,
     { name: 'mysti.autonomous.*', re: /^mysti\.autonomous\./, min: 7 },
     { name: 'mysti.mysti.*', re: /^mysti\.mysti\./, min: 10 },
     { name: 'mysti.desk.*', re: /^mysti\.desk\./, min: 5 },
+    // Plan 27 §21.6c #10 (lane N-2): suffix shapes. Until these existed the
+    // "a fifth one fails HERE" property held only inside the nine above;
+    // `mysti.visualTest.url` was caught by its namespace, not by being a URL.
+    { name: '*Url', re: /[Uu]rl$/, min: 5 },
+    { name: '*Command', re: /Command$/, min: 2 },
+    { name: '*Token', re: /Token$/, min: 0, tripwire: true },
+    { name: '*Model(s)', re: /Models?$/, min: 18 },
   ];
 
   /**
@@ -328,6 +342,7 @@ describe('authority-shaped namespaces are machine-scoped OR clamped (structural,
     'mysti.agents.autoSuggest': 'only toggles the recommendation UI; the user still picks the agent',
     'mysti.agents.maxTokenBudget': 'size cap (0 = unlimited, else <= 16000) on agent content whose TRUST is decided by the loader, not here — a repo can lift the cap, not the trust',
     'mysti.autonomous.maxMemoryEntries': 'bounded 50..5000 capacity of the learning memory; not a decision input',
+    'mysti.canvas.stitchModel': 'enum of Stitch model ids; which Stitch model renders a design is not authority',
   };
 
   /**
@@ -347,6 +362,78 @@ describe('authority-shaped namespaces are machine-scoped OR clamped (structural,
     'mysti.visualTest.url': 'mysti.visualTest.allowedOrigins',
   };
 
+  /**
+   * Model SELECTORS (Plan 27 N-2). An open string, so neither EXEMPT (which
+   * demands a bound) nor EXTERNALLY_BOUNDED (no sibling setting bounds it) —
+   * and yet not authority: a model id selects WHICH weights answer, never what
+   * they may do. It reaches the backend as one argv element (array spawn; the
+   * shell-mode path rejects `SHELL_INJECTION_CHARS` in
+   * `BaseCliProvider._isUnsafeShellArg`) or as a JSON field sent to an endpoint
+   * that is itself machine-scoped (`*Endpoint`, `mysti.deepmyst.gatewayUrl`).
+   * The worst a repo can do is pick an expensive or unavailable model — cost
+   * and quality, which is what the user sees in the dropdown, not a
+   * capability. The one `*Model(s)` key that is NOT a plain selector,
+   * `mysti.customModels` (an object the UI writes only at Global scope, and
+   * whose entries `_getPanelModel` accepts WITHOUT `validateModelName`), is
+   * machine-scoped and pinned below instead.
+   *
+   * The reasoning above rests on `MODEL_NAME_PATTERN` rejecting whitespace and
+   * shell metacharacters; that fact is asserted in this describe so the class
+   * cannot outlive its premise.
+   */
+  const MODEL_SELECTOR_REASON = 'selects which model answers; argv element or JSON field to a machine-scoped endpoint; cost, not capability';
+  const MODEL_SELECTORS: Record<string, string> = {
+    'mysti.defaultModel': MODEL_SELECTOR_REASON,
+    'mysti.claudeCodeModel': MODEL_SELECTOR_REASON,
+    'mysti.codexModel': MODEL_SELECTOR_REASON,
+    'mysti.geminiModel': MODEL_SELECTOR_REASON,
+    'mysti.clineModel': MODEL_SELECTOR_REASON,
+    'mysti.copilotModel': MODEL_SELECTOR_REASON,
+    'mysti.cursorModel': MODEL_SELECTOR_REASON,
+    'mysti.openclawModel': MODEL_SELECTOR_REASON,
+    'mysti.opencodeModel': MODEL_SELECTOR_REASON,
+    'mysti.qwenCodeModel': MODEL_SELECTOR_REASON,
+    'mysti.ollamaModel': MODEL_SELECTOR_REASON,
+    'mysti.localaiModel': MODEL_SELECTOR_REASON,
+    'mysti.hermesModel': MODEL_SELECTOR_REASON,
+    'mysti.continueModel': MODEL_SELECTOR_REASON,
+    'mysti.openrouterModel': MODEL_SELECTOR_REASON,
+    'mysti.kimiCodeModel': MODEL_SELECTOR_REASON,
+    'mysti.compaction.smart.cheapModel':
+      'the summarisation model; a JSON `model` field sent only to the machine-scoped `mysti.deepmyst.gatewayUrl`, '
+      + 'metered on the user\'s own entitlement — cost, not capability',
+  };
+
+  /**
+   * Window-scoped keys OUTSIDE every shape that Plan 27 §21.6c #10 named, each
+   * reviewed and kept open for a written reason. The test below keeps the
+   * record honest: the key must still be declared with the recorded type and
+   * still be workspace-writable — narrowing one means deleting its line here,
+   * so the review is redone rather than silently outlived.
+   */
+  const REVIEWED_OPEN: Record<string, { type: string; why: string }> = {
+    'mysti.openclawUseGateway': {
+      type: 'boolean',
+      why: 'selects between two transports the user already has (Gateway WebSocket at the machine-scoped '
+        + '`mysti.openclawGatewayUrl`, or the CLI); neither path has more authority than the other',
+    },
+    'mysti.commitSignature.enabled': {
+      type: 'boolean',
+      why: 'badge bookkeeping — tracks that Mysti made a commit; off hides a statistic, on records one; no decision input',
+    },
+    'mysti.checkpoints.enabled': {
+      type: 'boolean',
+      why: 'a recovery convenience (pre-turn snapshots into a private repo outside the project). A repo turning it off '
+        + 'removes a safety net but does not widen what the agent may write — that is bounded by the clamped '
+        + 'accessLevel/defaultMode. Per-repo opt-out (huge monorepos, `checkpoints.maxFiles`) is the legitimate use',
+    },
+    'mysti.claude.backgroundWaitCeilingMs': {
+      type: 'number',
+      why: 'how long the headless claude process waits for background subagents (env CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS). '
+        + 'Worst case is a slow exit inside PROCESS_TIMEOUT — a resource nuisance, not a capability',
+    },
+  };
+
   const clamped = new Set(CLAMPED_SETTINGS);
   const bearing = new Set(AUTHORITY_BEARING_SETTINGS);
   const candidates = Object.keys(props).filter(k => NAMESPACES.some(n => n.re.test(k)));
@@ -354,6 +441,11 @@ describe('authority-shaped namespaces are machine-scoped OR clamped (structural,
   it('the shape filters still match a real roster (a collapse would pass silently)', () => {
     for (const n of NAMESPACES) {
       const count = Object.keys(props).filter(k => n.re.test(k)).length;
+      if (n.tripwire) {
+        // A tripwire with members is no longer a tripwire — promote it to a real shape with a min.
+        expect(count, `${n.name} is marked tripwire but matched ${count} settings; give it a real min`).toBe(0);
+        continue;
+      }
       expect(count, `${n.name} matched ${count} settings; the filter looks broken`).toBeGreaterThanOrEqual(n.min);
     }
   });
@@ -381,12 +473,66 @@ describe('authority-shaped namespaces are machine-scoped OR clamped (structural,
     }
   });
 
+  it('every model selector is a declared, shape-matched, open STRING that is not authority-bearing or double-classed', () => {
+    for (const [key, why] of Object.entries(MODEL_SELECTORS)) {
+      expect(props[key], `MODEL_SELECTORS names ${key}, which package.json no longer declares — delete the line`).toBeDefined();
+      expect(candidates, `${key} no longer matches any shape — the entry is dead, delete it`).toContain(key);
+      expect(props[key].type, `${key} is a model selector but not a string`).toBe('string');
+      expect(bearing.has(key), `${key} is in AUTHORITY_BEARING_SETTINGS and MODEL_SELECTORS at once (${why})`).toBe(false);
+      expect(key in EXEMPT || key in EXTERNALLY_BOUNDED, `${key} is classed twice`).toBe(false);
+      expect(why.length, `${key} needs a written reason`).toBeGreaterThan(20);
+    }
+    // Every declared *Model string selector is accounted for by SOME class.
+    const selectors = Object.keys(props).filter(k => /Models?$/.test(k) && props[k].type === 'string' && !deniesWorkspace(k));
+    const unclassed = selectors.filter(k => !(k in MODEL_SELECTORS) && !(k in EXEMPT));
+    expect(unclassed, `new *Model selectors need a MODEL_SELECTORS (or enum EXEMPT) entry: ${unclassed.join(', ')}`).toEqual([]);
+  });
+
+  it('the premise of MODEL_SELECTORS holds: MODEL_NAME_PATTERN rejects whitespace and shell metacharacters', () => {
+    for (const bad of ['a b', 'x;rm -rf /', '$(id)', '`id`', 'a|b', 'a&b', 'a>b', 'a"b', "a'b", 'a\\b', 'a\nb', '--dangerously-skip-permissions']) {
+      expect(MODEL_NAME_PATTERN.test(bad), `MODEL_NAME_PATTERN accepted ${JSON.stringify(bad)}`).toBe(false);
+    }
+    for (const good of ['claude-opus-4-6[1m]', 'owner/model:free', 'gpt-5.5', 'llama3.2']) {
+      expect(MODEL_NAME_PATTERN.test(good), `MODEL_NAME_PATTERN rejected ${good}`).toBe(true);
+    }
+    expect(MODEL_NAME_MAX_LENGTH).toBeLessThanOrEqual(128);
+  });
+
+  it('mysti.customModels is machine-scoped (the one *Model(s) key that is not a plain selector)', () => {
+    // Written only at ConfigurationTarget.Global by ModelRegistryService; a
+    // repo has no legitimate reason to set it, and `_getPanelModel` returns a
+    // listed entry without `validateModelName`. Machine scope closes that path.
+    const key = 'mysti.customModels';
+    expect(props[key]).toBeDefined();
+    expect(deniesWorkspace(key), `${key} is workspace-writable again (scope: ${JSON.stringify(props[key]?.scope ?? null)})`).toBe(true);
+    expect(key in MODEL_SELECTORS).toBe(false);
+  });
+
+  it('mysti.activeMode.autoStartDaemon is machine-scoped AND authority-bearing (it execs `openclaw gateway --detach`)', () => {
+    const key = 'mysti.activeMode.autoStartDaemon';
+    expect(props[key], `${key} must stay declared — it is read by ActiveModeManager.initialize()`).toBeDefined();
+    expect(props[key].default, `${key} must default OFF`).toBe(false);
+    expect(deniesWorkspace(key), `${key} is workspace-writable (scope: ${JSON.stringify(props[key]?.scope ?? null)})`).toBe(true);
+    expect(bearing.has(key), `${key} turns activation into a spawned process; list it`).toBe(true);
+  });
+
+  it('every REVIEWED_OPEN key is still declared with the recorded type, still open, and not authority-bearing', () => {
+    for (const [key, { type, why }] of Object.entries(REVIEWED_OPEN)) {
+      expect(props[key], `REVIEWED_OPEN names ${key}, which package.json no longer declares — delete the line`).toBeDefined();
+      expect(props[key].type, `${key} changed type; redo the review (${why})`).toBe(type);
+      expect(deniesWorkspace(key), `${key} was narrowed; delete its REVIEWED_OPEN line so the record stays true`).toBe(false);
+      expect(bearing.has(key), `${key} is authority-bearing and REVIEWED_OPEN at once`).toBe(false);
+      expect(candidates, `${key} now matches a shape — it belongs in EXEMPT/MODEL_SELECTORS, not REVIEWED_OPEN`).not.toContain(key);
+    }
+  });
+
   it('every authority-shaped setting is machine-scoped, clamped, or explicitly exempt — never merely open', () => {
-    const open = candidates.filter(k => !deniesWorkspace(k) && !clamped.has(k) && !(k in EXEMPT) && !(k in EXTERNALLY_BOUNDED));
+    const open = candidates.filter(k => !deniesWorkspace(k) && !clamped.has(k)
+      && !(k in EXEMPT) && !(k in EXTERNALLY_BOUNDED) && !(k in MODEL_SELECTORS));
     expect(
       open,
       'A repository\'s .vscode/settings.json can set these, and their shape says they carry authority. '
-      + 'Either add "scope": "machine" in package.json, clamp them, or write an EXEMPT reason: '
+      + 'Either add "scope": "machine" in package.json, clamp them, or write an EXEMPT / MODEL_SELECTORS reason: '
       + open.map(k => `${k} (scope: ${JSON.stringify(props[k]?.scope ?? null)})`).join(', '),
     ).toEqual([]);
   });

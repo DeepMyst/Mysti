@@ -10,6 +10,8 @@ import {
   LEGACY_MODE_ALIASES,
   OPERATION_MODES,
   ACCESS_LEVELS,
+  clampVisualTestSettings,
+  VISUAL_INTERACTION_LEVELS,
   type SettingInspection,
 } from '../../src/utils/settingsClamp';
 import { shouldGateToolUse } from '../../src/utils/permissionClassifier';
@@ -252,5 +254,111 @@ describe('Plan 27 gate — a LEGACY floor still ratchets', () => {
       inspector({ defaultMode: { globalValue: 'plan', workspaceValue: 'not-a-mode' } }),
     );
     expect(r.settings.mode).toBe('plan');
+  });
+});
+
+/**
+ * Plan 27 §21.6c #6 (lane N-1) — the lower-only ratchet extended to a boolean
+ * and an enum, for `mysti.visualTest.enabled` / `mysti.visualTest.interactions`.
+ *
+ * Round 3 machine-scoped both, which deletes a repo's ability to LOWER them
+ * ("no browser in this project"). The end state is the same one-way ratchet
+ * the three clamped settings have. This primitive is the ratchet; the two
+ * consumers in ChatViewProvider (`_mystiVisualEnabled`, `_visualPolicyDeps`)
+ * must read through it BEFORE the scope moves back to window.
+ */
+describe('clampVisualTestSettings (Plan 27 N-1)', () => {
+  const user = { enabled: true as boolean, interactions: 'safe' as const };
+
+  it('enabled: a workspace cannot RE-ENABLE visual testing for a user who turned it off', () => {
+    const r = clampVisualTestSettings(
+      { enabled: true, interactions: 'safe' },
+      inspector({ 'visualTest.enabled': { workspaceValue: true, globalValue: false } }),
+    );
+    expect(r.clampedFields).toEqual(['visualTest.enabled']);
+    expect(r.settings.enabled).toBe(false);
+  });
+
+  it('enabled: a workspace CAN turn it off (the ratchet is one-way, not a wall)', () => {
+    const r = clampVisualTestSettings(
+      { enabled: false, interactions: 'safe' },
+      inspector({ 'visualTest.enabled': { workspaceValue: false, globalValue: true } }),
+    );
+    expect(r.clampedFields).toEqual([]);
+    expect(r.settings.enabled).toBe(false);
+  });
+
+  it('enabled: the floor is the user\'s EXPLICIT global value, else the declared default (true)', () => {
+    // No global value: default true, workspace true ⇒ nothing to clamp.
+    const r = clampVisualTestSettings(
+      { enabled: true, interactions: 'safe' },
+      inspector({ 'visualTest.enabled': { workspaceValue: true, defaultValue: true } }),
+    );
+    expect(r.clampedFields).toEqual([]);
+    expect(r.settings.enabled).toBe(true);
+  });
+
+  it('enabled: a non-boolean workspace value lands on the user floor, never on "on"', () => {
+    const r = clampVisualTestSettings(
+      { enabled: true, interactions: 'safe' },
+      inspector({ 'visualTest.enabled': { workspaceValue: 'yes', globalValue: false } }),
+    );
+    expect(r.settings.enabled).toBe(false);
+    expect(r.clampedFields).toEqual(['visualTest.enabled']);
+  });
+
+  it('interactions: a workspace cannot raise the human ceiling (safe → full loses)', () => {
+    const r = clampVisualTestSettings(
+      { enabled: true, interactions: 'full' },
+      inspector({ 'visualTest.interactions': { workspaceValue: 'full', globalValue: 'safe' } }),
+    );
+    expect(r.clampedFields).toEqual(['visualTest.interactions']);
+    expect(r.settings.interactions).toBe('safe');
+  });
+
+  it('interactions: a workspace cannot raise off → safe either (the declared default is not a free pass)', () => {
+    const r = clampVisualTestSettings(
+      { enabled: true, interactions: 'safe' },
+      inspector({ 'visualTest.interactions': { workspaceValue: 'safe', globalValue: 'off' } }),
+    );
+    expect(r.clampedFields).toEqual(['visualTest.interactions']);
+    expect(r.settings.interactions).toBe('off');
+  });
+
+  it('interactions: a workspace CAN lower it (full → off wins)', () => {
+    const r = clampVisualTestSettings(
+      { enabled: true, interactions: 'off' },
+      inspector({ 'visualTest.interactions': { workspaceValue: 'off', globalValue: 'full' } }),
+    );
+    expect(r.clampedFields).toEqual([]);
+    expect(r.settings.interactions).toBe('off');
+  });
+
+  it('interactions: a value outside the enum is coerced to the user floor (Plan 23 B1 rule)', () => {
+    const r = clampVisualTestSettings(
+      { enabled: true, interactions: 'unrestricted' as unknown as 'safe' },
+      inspector({ 'visualTest.interactions': { workspaceValue: 'unrestricted', globalValue: 'safe' } }),
+    );
+    expect(r.settings.interactions).toBe('safe');
+    expect(r.clampedFields).toEqual(['visualTest.interactions']);
+  });
+
+  it('the enum order is the declared package.json order, low → high', () => {
+    // 'off' < 'safe' < 'full' is exactly `mysti.visualTest.interactions.enum`;
+    // the ratchet reads authority off that order.
+    expect([...VISUAL_INTERACTION_LEVELS]).toEqual(['off', 'safe', 'full']);
+  });
+
+  it('no inspection data ⇒ untouched, and the object identity is preserved', () => {
+    const current = { ...user };
+    const r = clampVisualTestSettings(current, () => undefined);
+    expect(r.clampedFields).toEqual([]);
+    expect(r.settings).toBe(current);
+  });
+
+  it('inspects exactly the two visualTest sections and nothing else', () => {
+    const asked: string[] = [];
+    clampVisualTestSettings({ ...user }, (s) => { asked.push(s); return undefined; });
+    expect(asked.sort()).toEqual(['visualTest.enabled', 'visualTest.interactions']);
   });
 });
