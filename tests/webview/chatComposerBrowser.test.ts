@@ -154,6 +154,8 @@ async function boot(): Promise<void> {
     },
   });
   await page.waitForSelector('#init-loading-overlay.hidden', { state: 'attached' });
+  pristineSetupContent = await page.$eval('#setup-overlay .setup-content', (e) => e.innerHTML)
+    .catch(() => '');
 }
 
 /** Drive the webview the way the extension does. */
@@ -161,6 +163,27 @@ async function send(msg: Record<string, unknown>): Promise<void> {
   await page!.evaluate((m) => {
     window.dispatchEvent(new MessageEvent('message', { data: m }));
   }, msg);
+}
+
+/**
+ * The setup-overlay tests destroy `.setup-content` (that is the state under
+ * test) and set `dismissedByUser`. One page is shared across every describe in
+ * this file, so without putting both back the tests after them are running
+ * against a panel that can never show a pristine overlay again — and any of
+ * them that touches setup passes or fails for the wrong reason.
+ */
+let pristineSetupContent = '';
+async function resetSetupOverlay(): Promise<void> {
+  await page!.evaluate((html) => {
+    const o = document.getElementById('setup-overlay')!;
+    const c = o.querySelector('.setup-content');
+    if (c && html) { c.innerHTML = html; }
+    o.classList.add('hidden');
+    // The flag lives in module scope; clear it the way the panel would, by
+    // replaying the state the extension sends on a fresh setup run.
+    window.dispatchEvent(new MessageEvent('message', { data: {
+      type: 'setupStatus', payload: { isReady: true, currentStep: 'idle' } } }));
+  }, pristineSetupContent);
 }
 
 async function posted(): Promise<Array<Record<string, unknown>>> {
@@ -1049,6 +1072,7 @@ describe('review round two: the fixes did not introduce their own bugs', () => {
     await page!.keyboard.press('Escape');
     expect((await posted()).some((m) => m.type === 'skipSetup')).toBe(true);
     expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
+    await resetSetupOverlay();
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('attachments belong to the message they were staged for', async () => {
@@ -1151,6 +1175,76 @@ describe('review round three', () => {
     // anyway — and by now the overlay has no buttons left in it.
     await send({ type: 'setupFailed', payload: { providerId: 'claude-code', error: 'timed out' } });
     expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
+    await resetSetupOverlay();
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 20000);
+});
+
+describe('review round four', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('declining autonomous does not leave you autonomous', async () => {
+    // The popup path records the level it came FROM before switching. Round
+    // three then overwrote that with the CURRENT level, so Cancel "reverted"
+    // into the very mode the user had just declined.
+    await page!.evaluate(() => {
+      const sel = document.getElementById('popup-autonomy-select') as HTMLSelectElement;
+      sel.disabled = false;
+      sel.value = 'manual';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      sel.value = 'autonomous';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await send({ type: 'showAutonomousConfirm', payload: {} });
+    await clearPosted();
+    await page!.evaluate(() => document.getElementById('autonomous-cancel-btn')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    const levels = (await posted()).filter((m) => m.type === 'autonomyLevelChanged')
+      .map((m) => (m.payload as { level: string }).level);
+    expect(levels).toEqual(['manual']);
+    expect(await page!.$eval('#popup-autonomy-select', (e) => (e as HTMLSelectElement).value)).toBe('manual');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a dismissed overlay hides rather than freezing on screen', async () => {
+    await page!.evaluate(() => {
+      const o = document.getElementById('setup-overlay')!;
+      o.classList.remove('hidden');
+    });
+    // A guard that merely declined to redraw left the wall up, frozen and
+    // uncontrollable; a dismissal has to hide it.
+    await page!.keyboard.press('Escape');
+    await send({ type: 'setupFailed', payload: { providerId: 'claude-code', error: 'timed out' } });
+    expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
+    await resetSetupOverlay();
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('an authPrompt cannot bring a dismissed wall back either', async () => {
+    await page!.evaluate(() => document.getElementById('setup-overlay')!.classList.remove('hidden'));
+    // Dismiss with ESCAPE, not the button. Restoring `.setup-content` replaces
+    // the skip button with a fresh element carrying no listener — which is the
+    // same reason the Escape fallback exists in the first place.
+    await page!.keyboard.press('Escape');
+    await send({ type: 'authPrompt', payload: { providerId: 'claude-code', message: 'Sign in' } });
+    expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
+    await resetSetupOverlay();
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a queued chip says how many files ride with it', async () => {
+    await send({ type: 'responseStarted' });
+    await send({ type: 'fileAttachmentSelected',
+      payload: { attachments: [{ name: 'a.png', type: 'image', dataUrl: 'data:,' }] } });
+    // Whatever is staged right now is what must ride with the queued message —
+    // asserting a hardcoded 1 would just be asserting test isolation.
+    const staged = await page!.$$eval('.attachment-preview-item', (e) => e.length);
+    expect(staged).toBeGreaterThan(0);
+    await page!.fill('#message-input', 'with a file');
+    await page!.keyboard.press('Tab');
+    expect(await page!.textContent('.queued-chip-att')).toContain(String(staged));
+    // Queueing takes them off the composer.
+    expect(await page!.$$eval('.attachment-preview-item', (e) => e.length)).toBe(0);
+    await send({ type: 'requestCancelled' });
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {

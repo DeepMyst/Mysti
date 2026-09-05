@@ -111,6 +111,7 @@ interface Rig {
   els: Record<string, El>;
   diagnosticsRuns: number;
   wizardHidden: number;
+  setupOverlayHidden: number;
 }
 
 /**
@@ -134,7 +135,7 @@ function runBindings(): Rig {
   };
   els['badge-toast'].className = 'badge-toast show';
 
-  const rig: Rig = { posted: [], els, diagnosticsRuns: 0, wizardHidden: 0 };
+  const rig: Rig = { posted: [], els, diagnosticsRuns: 0, wizardHidden: 0, setupOverlayHidden: 0 };
   const documentStub = {
     getElementById: (id: string) => els[id] || null,
     querySelector: (sel: string) => els[sel] || null,
@@ -143,13 +144,18 @@ function runBindings(): Rig {
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   new Function(
     'document', 'postMessageWithPanelId', 'state', 'requestDiagnostics', 'handleWizardDismissed',
+    // Plan 28 Phase 7: the setup-skip handler now also clears the overlay
+    // itself, for the same reason the wizard's skip does — the exit has to work
+    // even if the extension never answers.
+    'hideSetupOverlay',
     block
   )(
     documentStub,
     (msg: { type: string; payload?: Record<string, unknown> }) => { rig.posted.push(msg); },
     { setup: { providerId: 'claude-code' } },
     () => { rig.diagnosticsRuns++; },
-    () => { rig.wizardHidden++; }
+    () => { rig.wizardHidden++; },
+    () => { rig.setupOverlayHidden++; }
   );
   return rig;
 }
@@ -183,6 +189,8 @@ describe('D-1: the five rebound handlers do what the dead attributes did', () =>
       { type: 'retrySetup', payload: { providerId: 'claude-code' } },
       { type: 'skipSetup' },
     ]);
+    // The exit clears the wall itself rather than waiting to be told.
+    expect(rig.setupOverlayHidden).toBe(1);
   });
 
   it('the badge toast dismisses itself on click', () => {

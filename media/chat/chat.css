@@ -9329,3 +9329,10 @@
     .change-row.not-openable { cursor: default; }
     .change-row.not-openable:hover { border-color: var(--mysti-border); }
     .change-row.not-openable .change-path { opacity: .75; text-decoration: line-through; }
+
+    .queued-chip-att {
+      font-size: 10px;
+      color: var(--mysti-dim);
+      opacity: .85;
+      flex: none;
+    }

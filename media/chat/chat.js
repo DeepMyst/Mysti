@@ -2610,6 +2610,11 @@
         setupSkipBtn.addEventListener('click', function() {
           if (state.setup) { state.setup.dismissedByUser = true; }
           postMessageWithPanelId({ type: 'skipSetup' });
+          // Clear it here rather than waiting to be told, for the same reason
+          // the wizard's skip does: the exit has to work even if the extension
+          // never answers. Leaving it up and merely refusing to redraw is what
+          // made the guard worse than no guard.
+          hideSetupOverlay();
         });
       }
 
@@ -4035,13 +4040,13 @@
           var overlay = document.getElementById('setup-overlay');
           if (overlay && !overlay.classList.contains('hidden')) {
             e.preventDefault();
-            var s = document.getElementById('setup-skip-btn');
-            if (s) { s.click(); return; }
-            // `showAuthPromptUI` REPLACES `.setup-content`, destroying the skip
-            // button — so the "Waiting for authentication…" state is a
-            // full-screen wall with no controls at all. Clicking a button that
-            // no longer exists is exactly the D-1 failure this handler exists
-            // to prevent, so fall back to the message that button would post.
+            // Deliberately does NOT click `#setup-skip-btn`. Anything that
+            // replaces `.setup-content` — `showAuthPromptUI` does, and so does
+            // a redraw of the error pane — swaps in a FRESH button carrying no
+            // listener, so clicking it is silently inert. Escape exists exactly
+            // for the states where that button cannot be trusted, so it does
+            // the work itself. `skipSetup` carries no payload, so there is
+            // nothing here that has to stay in step with the button's handler.
             if (state.setup) { state.setup.dismissedByUser = true; }
             postMessageWithPanelId({ type: 'skipSetup' });
             hideSetupOverlay();
@@ -5585,11 +5590,21 @@
 
           case 'showAutonomousConfirm':
             {
-              // The cancel button reverts to `previousAutonomyLevel`, and this
-              // path — `mysti.toggleAutonomous`, Ctrl+Shift+A — never recorded
-              // it. A semi-auto user who opened the modal from the keybinding
-              // and then cancelled was reverted to whatever was stale in there.
-              state.previousAutonomyLevel = state.autonomyLevel;
+              // The cancel button reverts to `previousAutonomyLevel`. Two
+              // paths open this modal and only one of them records that:
+              //
+              //   popup      setAutonomyLevel('autonomous') already stored the
+              //              level we came FROM and moved us to 'autonomous'.
+              //   Ctrl+Shift+A  goes straight to the modal; nothing recorded.
+              //
+              // So record it only when we are NOT already on autonomous.
+              // Recording unconditionally overwrites the popup path's value
+              // with 'autonomous' itself, and Cancel then "reverts" into the
+              // mode the user just declined — the regression the note at the
+              // cancel handler says was already fixed once.
+              if (state.autonomyLevel !== 'autonomous') {
+                state.previousAutonomyLevel = state.autonomyLevel;
+              }
               var overlay = document.getElementById('autonomous-confirm-overlay');
               var goalInput = document.getElementById('autonomous-goal-input');
               if (overlay) overlay.classList.remove('hidden');
@@ -6314,9 +6329,17 @@
         // Every path that can re-raise this full-screen overlay has to respect
         // an explicit dismissal, not just `showSetupOverlay`. `skipSetup` does
         // not cancel the extension's auth poll, so a `setupFailed` arrives
-        // afterwards and used to bring the wall back — by then with its
-        // buttons replaced by `showAuthPromptUI`.
-        if (state.setup && state.setup.dismissedByUser) { return; }
+        // afterwards and used to bring the wall back — by then with its buttons
+        // replaced by `showAuthPromptUI`.
+        //
+        // It must HIDE, not merely decline to redraw: the skip BUTTON does not
+        // call hideSetupOverlay, so a bare early return left the wall on screen
+        // frozen on a stale message with no way to re-render its controls —
+        // strictly worse than no guard at all.
+        if (state.setup && state.setup.dismissedByUser) {
+          overlay.classList.add('hidden');
+          return;
+        }
 
         overlay.classList.remove('hidden');
 
@@ -6353,6 +6376,11 @@
       function showAuthPromptUI(payload) {
         var overlay = document.getElementById('setup-overlay');
         if (!overlay) return;
+        // The third path that un-hides this overlay. The invariant is "every
+        // path respects a dismissal the user made by hand", and an invariant
+        // with an exception is not one — an `authPrompt` arriving after a hand
+        // dismissal brought the wall straight back.
+        if (state.setup && state.setup.dismissedByUser) { return; }
 
         overlay.classList.remove('hidden');
         var content = overlay.querySelector('.setup-content');
@@ -9851,9 +9879,17 @@
         if (!host) return;
         host.classList.toggle('has-items', state.queue.length > 0);
         host.innerHTML = state.queue.map(function(q, i) {
+          var att = (q.attachments && q.attachments.length) || 0;
           return '<span class="queued-chip" data-id="' + escapeHtml(q.id) + '">' +
                    '<span class="queued-chip-n">' + (i + 1) + '</span>' +
                    '<span class="queued-chip-text">' + escapeHtml(q.text) + '</span>' +
+                   // Files ride with the message they were staged for, so the
+                   // chip has to say they are there — dropping the chip drops
+                   // them, and a silent discard is not a thing to do to a file
+                   // someone attached.
+                   (att ? '<span class="queued-chip-att" title="' + att +
+                          ' attachment' + (att === 1 ? '' : 's') + ' go with this">' +
+                          att + '\u2009\u{1F4CE}</span>' : '') +
                    '<button class="queued-chip-remove" data-id="' + escapeHtml(q.id) + '" ' +
                      'title="Remove from queue" aria-label="Remove from queue">&times;</button>' +
                  '</span>';
