@@ -2385,6 +2385,30 @@
       flex: 1;
     }
 
+    /* Plan 28 Phase 1 — the unattended section of the trust popup. Unattended
+       is a duration granted on Auto/Full, so it sits below a divider rather
+       than reading as a fifth rung. */
+    .mode-popup-divider {
+      height: 1px;
+      background: var(--mysti-border);
+      margin: 6px 0;
+    }
+    .mode-popup-unattended {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 2px 10px 8px;
+    }
+    .mode-popup-unattended .select:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .mode-popup-unattended-hint {
+      font-size: 10px;
+      color: var(--mysti-dim);
+      line-height: 1.4;
+    }
+
     .behavior-indicator {
       display: flex;
       align-items: center;

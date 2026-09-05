@@ -1837,7 +1837,6 @@
       const badgesPanel = document.getElementById('badges-panel');
       const newConversationBtn = document.getElementById('new-conversation-btn');
       const newTabBtn = document.getElementById('new-tab-btn');
-      const modeSelect = document.getElementById('mode-select');
       const thinkingSelect = document.getElementById('thinking-select');
       const effortSelect = document.getElementById('effort-select');
       const modelSelect = document.getElementById('model-select');
@@ -1848,7 +1847,6 @@
       const customModelInput = document.getElementById('custom-model-input');
       const customModelError = document.getElementById('custom-model-error');
       const providerSelect = document.getElementById('provider-select');
-      const accessSelect = document.getElementById('access-select');
       const contextModeBtn = document.getElementById('context-mode-btn');
       const contextModeLabel = document.getElementById('context-mode-label');
       const addContextBtn = document.getElementById('add-context-btn');
@@ -3230,15 +3228,9 @@
         });
       }
 
-      modeSelect.addEventListener('change', function() {
-        state.settings.mode = modeSelect.value;
-        updateBehaviorIndicator();
-        updateBehaviorHint();
-        // Sync popup dropdown
-        var popupMode = document.getElementById('popup-mode-select');
-        if (popupMode) popupMode.value = modeSelect.value;
-        postMessageWithPanelId({ type: 'updateSettings', payload: { mode: modeSelect.value } });
-      });
+      // Plan 28 Phase 1: the `mode-select` / `access-select` change listeners
+      // lived here. Both elements are gone — the trust pill (applyChatMode) is
+      // the single writer of mode + accessLevel now.
 
       thinkingSelect.addEventListener('change', function() {
         state.settings.thinkingLevel = thinkingSelect.value;
@@ -3360,15 +3352,6 @@
       // W4: provider-specific inputs (Codex profile, endpoints, ...) are
       // rendered + bound by renderProviderSettingsSections from the manifest.
 
-      accessSelect.addEventListener('change', function() {
-        state.settings.accessLevel = accessSelect.value;
-        updateBehaviorHint();
-        // Sync popup dropdown
-        var popupAccess = document.getElementById('popup-access-select');
-        if (popupAccess) popupAccess.value = accessSelect.value;
-        postMessageWithPanelId({ type: 'updateSettings', payload: { accessLevel: accessSelect.value } });
-      });
-
       // Agent settings event handlers
       var autoSuggestToggle = document.getElementById('auto-suggest-toggle');
       var tokenLimitToggle = document.getElementById('token-limit-toggle');
@@ -3433,7 +3416,9 @@
       }
 
       // Autonomy level dropdown handler (mutually exclusive: manual / semi-autonomous / autonomous)
-      var autonomySelect = document.getElementById('autonomy-select');
+      // Plan 28 Phase 1: this select moved out of the settings panel and into
+      // the trust popup, where the tier it depends on is chosen.
+      var autonomySelect = document.getElementById('popup-autonomy-select');
       var manualTimeoutSection = document.getElementById('manual-timeout-section');
       var semiAutoSettings = document.getElementById('semi-auto-settings');
       var autonomousSettings = document.getElementById('autonomous-settings');
@@ -3860,7 +3845,23 @@
           if (isHidden) {
             // Highlight the current mode when the picker opens.
             renderModeOptions();
+            syncUnattendedAvailability();
           }
+        });
+
+        // Plan 28 Phase 1: Shift+Tab cycles the rung without opening anything.
+        // Scoped to the composer and the panel background so ordinary reverse-
+        // tab navigation still works inside the settings panel and the popup.
+        document.addEventListener('keydown', function(e) {
+          if (e.key !== 'Tab' || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) { return; }
+          var el = document.activeElement;
+          var onComposer = el && el.id === 'message-input';
+          var onBackground = !el || el === document.body;
+          if (!onComposer && !onBackground) { return; }
+          e.preventDefault();
+          var order = CHAT_MODES.map(function(m) { return m.id; });
+          var i = order.indexOf(deriveChatMode());
+          applyChatMode(order[((i < 0 ? 0 : i) + 1) % order.length]);
         });
 
         // Plan 06: pick a mode from the single Mode picker.
@@ -3917,31 +3918,9 @@
         });
       }
 
-      // Popup mode/access dropdowns sync with settings panel
-      var popupModeSelect = document.getElementById('popup-mode-select');
-      var popupAccessSelect = document.getElementById('popup-access-select');
-
-      if (popupModeSelect) {
-        popupModeSelect.addEventListener('change', function() {
-          var newMode = popupModeSelect.value;
-          state.settings.mode = newMode;
-          if (modeSelect) modeSelect.value = newMode;
-          updateBehaviorIndicator();
-          updateBehaviorHint();
-          postMessageWithPanelId({ type: 'updateSettings', payload: { mode: newMode } });
-        });
-      }
-
-      if (popupAccessSelect) {
-        popupAccessSelect.addEventListener('change', function() {
-          var newAccess = popupAccessSelect.value;
-          state.settings.accessLevel = newAccess;
-          var accessSelect = document.getElementById('access-select');
-          if (accessSelect) accessSelect.value = newAccess;
-          updateBehaviorHint();
-          postMessageWithPanelId({ type: 'updateSettings', payload: { accessLevel: newAccess } });
-        });
-      }
+      // Plan 28 Phase 1: `popup-mode-select` / `popup-access-select` were bound
+      // here, guarded, against ids that no longer exist in index.html — two more
+      // dead writers of the same decision. Removed with the live pair.
 
       // Strategy indicator click to cycle through brainstorm strategies
       var strategyIndicator = document.getElementById('strategy-indicator');
@@ -5296,12 +5275,11 @@
             break;
           case 'modeChanged':
             // Update mode when plan is executed
-            var newMode = message.payload.mode;
-            state.settings.mode = newMode;
-            var modeSelect = document.getElementById('mode-select');
-            if (modeSelect) modeSelect.value = newMode;
+            state.settings.mode = message.payload.mode;
             updateBehaviorIndicator();
-        updateBehaviorHint();
+            updateBehaviorHint();
+            renderModeOptions();
+            syncUnattendedAvailability();
             break;
           // Setup message handlers
           case 'setupStatus':
@@ -8568,9 +8546,7 @@
         // options, mention short-id map) before values are applied below.
         applyProviderManifest();
 
-        modeSelect.value = state.settings.mode;
         thinkingSelect.value = state.settings.thinkingLevel;
-        accessSelect.value = state.settings.accessLevel;
         if (contextModeLabel) {
           contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
         }
@@ -11550,37 +11526,64 @@
       // Plan 06: a single Mode axis replaces Mode × Access × Autonomy. Each mode
       // maps to the existing engine settings (mode/accessLevel/autonomyLevel);
       // deriveChatMode reverses the current settings back to one of these.
+      // Plan 28 Phase 1 — the Trust ladder. This table is a HAND-COPY of
+      // `src/utils/trustLadder.ts` (a static asset cannot import a TS module),
+      // and `tests/webview/trustLadderConformance.test.ts` fails if the two
+      // ever drift. Keep them in step or delete the test knowingly.
+      //
+      // `autonomy` is deliberately absent: unattended running is a duration on
+      // Auto/Full, not a rung. See the popup's unattended section.
       var CHAT_MODES = [
-        { id: 'plan',        label: 'Plan',        mode: 'detailed-plan',      access: 'read-only',      autonomy: 'manual',     desc: 'Read-only — proposes a plan, makes no changes' },
-        { id: 'ask',         label: 'Ask',         mode: 'ask-before-edit',    access: 'ask-permission', autonomy: 'manual',     desc: 'Asks before every edit & command' },
-        { id: 'auto-edit',   label: 'Auto-edit',   mode: 'edit-automatically', access: 'ask-permission', autonomy: 'manual',     desc: 'Auto-applies edits; asks before commands' },
-        { id: 'full-access', label: 'Full access', mode: 'edit-automatically', access: 'full-access',     autonomy: 'manual',     desc: 'Edits & runs commands without asking' },
-        { id: 'autonomous',  label: 'Autonomous',  mode: 'edit-automatically', access: 'full-access',     autonomy: 'autonomous', desc: 'Full access + keeps working on its own' }
+        { id: 'plan', label: 'Plan', mode: 'quick-plan',         access: 'read-only',      desc: 'Reads and plans. Writes nothing, runs nothing.' },
+        { id: 'ask',  label: 'Ask',  mode: 'ask-before-edit',    access: 'ask-permission', desc: 'Edits files, but asks before every write and every command.' },
+        { id: 'auto', label: 'Auto', mode: 'edit-automatically', access: 'ask-permission', desc: 'Edits inside the workspace on its own. Asks to leave it or reach the network.' },
+        { id: 'full', label: 'Full', mode: 'edit-automatically', access: 'full-access',    desc: 'Edits, runs commands, reaches the network. Only machine policy still holds it back.' }
       ];
       function chatModeById(id) {
         for (var i = 0; i < CHAT_MODES.length; i++) { if (CHAT_MODES[i].id === id) return CHAT_MODES[i]; }
         return null;
       }
+      // Mirrors `trustForAuthority` in src/utils/trustLadder.ts, branch for
+      // branch. The old version returned 'ask' for default+full-access — a pill
+      // that said "asks before every change" while `shouldGateToolUse` returned
+      // false for every tool. Do not reorder these without the module.
       function deriveChatMode() {
-        if (state.autonomyLevel === 'autonomous') return 'autonomous';
         var m = state.settings.mode, a = state.settings.accessLevel;
-        if (a === 'read-only' || m === 'quick-plan' || m === 'detailed-plan') return 'plan';
-        if (m === 'edit-automatically' && a === 'full-access') return 'full-access';
-        if (m === 'edit-automatically') return 'auto-edit';
+        // 1. A plan mode never writes, whatever the access level says.
+        if (m === 'quick-plan' || m === 'detailed-plan') return 'plan';
+        // 2. Read-only never writes either, whatever the mode says.
+        if (a === 'read-only') return 'plan';
+        // 3. ask-before-edit gates every change on any access level.
+        if (m === 'ask-before-edit') return 'ask';
+        // 4. Under ask-permission only edit-automatically reaches accept-edits.
+        if (a === 'ask-permission') return m === 'edit-automatically' ? 'auto' : 'ask';
+        // 5. full-access with a writing mode is ungated.
+        if (a === 'full-access') return 'full';
         return 'ask';
       }
       function applyChatMode(id) {
         var def = chatModeById(id);
         if (!def) return;
-        state.settings.mode = def.mode;
+        // Mirrors `authorityForTrust(stop, current)`: a user already on
+        // detailed-plan keeps it when they land on Plan, rather than being
+        // silently downgraded to quick-plan by a round trip through the pill.
+        // The two differ in output depth, not authority.
+        var mode = (id === 'plan' && state.settings.mode === 'detailed-plan')
+          ? 'detailed-plan' : def.mode;
+        state.settings.mode = mode;
         state.settings.accessLevel = def.access;
-        // Persist mode + access via the same message the old dropdowns used.
-        postMessageWithPanelId({ type: 'updateSettings', payload: { mode: def.mode, accessLevel: def.access } });
-        // Autonomy keeps its own activation path (AutonomousManager).
-        if (typeof setAutonomyLevel === 'function') { setAutonomyLevel(def.autonomy); }
+        postMessageWithPanelId({ type: 'updateSettings', payload: { mode: mode, accessLevel: def.access } });
+        // Unattended is NOT part of the rung — dropping to a tier that cannot
+        // run unattended must still stand it down, or the duration would
+        // outlive the authority it was granted under.
+        if (id !== 'auto' && id !== 'full' && state.autonomyLevel !== 'manual' &&
+            typeof setAutonomyLevel === 'function') {
+          setAutonomyLevel('manual');
+        }
         updateBehaviorIndicator();
         updateBehaviorHint();
         renderModeOptions();
+        syncUnattendedAvailability();
       }
       function renderModeOptions() {
         var active = deriveChatMode();
@@ -11594,12 +11597,36 @@
         if (!behaviorIndicator) return;
         var id = deriveChatMode();
         var def = chatModeById(id);
+        var label = def ? def.label : 'Ask';
         behaviorIndicator.classList.remove('autonomous-active', 'semi-auto-active');
-        if (id === 'autonomous') {
-          behaviorIndicator.innerHTML = '<span class="behavior-dot"></span>' + (def ? def.label : 'Autonomous');
+        // The rung is the label; unattended is a mark ON it, not a fifth name.
+        if (state.autonomyLevel === 'autonomous') {
+          behaviorIndicator.innerHTML = '<span class="behavior-dot"></span>' + escapeHtml(label) + ' · unattended';
           behaviorIndicator.classList.add('autonomous-active');
+        } else if (state.autonomyLevel === 'semi-autonomous') {
+          behaviorIndicator.innerHTML = '<span class="behavior-dot"></span>' + escapeHtml(label) + ' · semi';
+          behaviorIndicator.classList.add('semi-auto-active');
         } else {
-          behaviorIndicator.textContent = def ? def.label : 'Ask';
+          behaviorIndicator.textContent = label;
+        }
+      }
+
+      /**
+       * Unattended running is only offered on the two rungs that can act
+       * without a prompt. On Plan/Ask the control is disabled and says why.
+       */
+      function syncUnattendedAvailability() {
+        var sel = document.getElementById('popup-autonomy-select');
+        var hint = document.getElementById('popup-autonomy-hint');
+        if (!sel) return;
+        var id = deriveChatMode();
+        var allowed = (id === 'auto' || id === 'full');
+        sel.disabled = !allowed;
+        sel.value = state.autonomyLevel || 'manual';
+        if (hint) {
+          hint.textContent = allowed
+            ? 'It still stops for anything this tier would ask about.'
+            : 'Available on Auto and Full.';
         }
       }
 
