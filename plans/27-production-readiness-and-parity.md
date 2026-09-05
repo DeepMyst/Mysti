@@ -1553,10 +1553,11 @@ auto-approve replacing the 1-hour blanket, the `@`-mention surface
 (problems/terminal/git/url/folder), git state in turn context, images to all
 capable providers, and web search/fetch as coordinator tools.
 
-## 25. DESIGN — per-tool auto-approve, replacing the 1-hour blanket
+## 25. Per-tool auto-approve, replacing the 1-hour blanket
 
-*Plan 27 Phase 5. **Design only — nothing implemented.** Measured against
-`src/managers/PermissionManager.ts` on 2026-09-05.*
+*Plan 27 Phase 5. **Options A and B IMPLEMENTED 2026-09-05** in `0a50b86` — see
+§25.7. The design below is kept as written, because §25.5's invariant list is
+the checklist any future change to this code must still pass.*
 
 ### 25.1 What the button actually does today
 
@@ -1660,6 +1661,44 @@ assert **type-scoped** grants — and a new test should assert the escalation is
 gone: *approving a `file-edit` must not auto-approve a subsequent
 `bash-command` or `delegate` in the same scope.* That test is the point of the
 change and would fail today.
+
+### 25.7 IMPLEMENTED — A and B (2026-09-05)
+
+Grants are now `Map<scope, Map<PermissionActionType, SessionGrant>>`, and a
+`bash-command` grant additionally carries the set of approved leading tokens.
+
+`bashGrantToken` is deliberately conservative: any shell metacharacter,
+substitution, quoting or `FOO=bar` prefix yields **null**, and null is never
+granted and never matches a grant. So `npm test && curl evil` is approved for
+that run and remembered **not at all** — the next one asks again.
+
+**The label now states the exact grant** — *"…for editing files this session"*,
+*"…for npm commands this session"*, or *"Yes (this command only — too complex to
+remember safely)"*. A test asserts the shape, because if the label and the grant
+drift apart the card is lying about consent, which was the original defect.
+
+**A regression I introduced, caught by the existing tests.** My first cut
+replaced the auto-approve check outright and dropped the short-circuit for a
+user whose **own configured** access level is `full-access` — they would have
+been prompted for everything. The two concerns are now explicitly separate: a
+standing configured level short-circuits; a session grant answers only the
+per-type question. That is exactly what those tests were for.
+
+**Four tests pinned the old behaviour**, one of them named *"should auto-approve
+all subsequent requests after always-allow"* — the escalation, pinned as if it
+were the feature. All rewritten to the type-scoped contract, and the negative
+case (an edit must **not** approve `bash` or `delegate`) is now its own suite,
+verified red against the old semantics before being accepted.
+
+Every §25.5 invariant is covered by a test: `forceInteractive` still defeats
+grants, remote-origin records nothing, grants stay **in memory** with no
+settings or `globalState` write, TTL expiry and per-scope isolation unchanged.
+
+**Not done, and still worth doing:** there is no way to *see or revoke* the
+grants held in a conversation. Today they are invisible until they expire or a
+new conversation clears them. That is a smaller gap than the escalation was,
+but it is the natural next step and belongs with the Capabilities-panel idea in
+Phase 7.
 
 ## 22. The branch decision (publish-safety review, 8 agents)
 
