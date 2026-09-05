@@ -91,26 +91,32 @@ describe('PermissionManager', () => {
   });
 
   describe('always-allow decision', () => {
-    it('should upgrade session to full-access', async () => {
+    it('records a grant WITHOUT raising the session access level', async () => {
+      // Plan 27 §25: always-allow used to set the scope to `full-access`, so
+      // `sessionAccessLevel` reported an escalation the user never chose and
+      // every other action type rode along on it. A grant is now per action
+      // type and does not touch the configured level at all.
       const promise = pm.requestPermission('file-edit', 'Edit', 'desc', {}, postToWebview);
       const msg = webviewMessages[0] as { type: string; payload: { id: string } };
 
       pm.handleResponse({ requestId: msg.payload.id, decision: 'always-allow' });
       const result = await promise;
       expect(result).toBe(true);
-      expect(pm.sessionAccessLevel).toBe('full-access');
+      expect(pm.sessionAccessLevel).toBe('ask-permission');
     });
 
-    it('should auto-approve all subsequent requests after always-allow', async () => {
-      // First request: always-allow
+    it('auto-approves the SAME action type, and only that one', async () => {
+      // This test used to grant a file-edit and assert a `bash-command` was
+      // auto-approved — the escalation itself, pinned as if it were the
+      // feature. Plan 27 §25 removed it; the negative case now lives in
+      // tests/managers/permissionGrantScoping.test.ts.
       const promise1 = pm.requestPermission('file-edit', 'Edit', 'desc', {}, postToWebview);
       const msg = webviewMessages[0] as { type: string; payload: { id: string } };
       pm.handleResponse({ requestId: msg.payload.id, decision: 'always-allow' });
       await promise1;
 
-      // Second request: auto-approved without UI
       webviewMessages.length = 0;
-      const result = await pm.requestPermission('bash-command', 'Bash', 'desc', {}, postToWebview);
+      const result = await pm.requestPermission('file-edit', 'Edit again', 'desc', {}, postToWebview);
       expect(result).toBe(true);
       expect(webviewMessages).toHaveLength(0);
     });

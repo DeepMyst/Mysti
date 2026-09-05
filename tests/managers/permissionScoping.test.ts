@@ -53,13 +53,17 @@ describe('session upgrade is scoped to its owner', () => {
     expect(await p2).toBe(true);
   });
 
-  it('an always-allow DOES auto-approve later requests in the same panel', async () => {
+  it('an always-allow DOES auto-approve the SAME action type in the same panel', async () => {
+    // Plan 27 §25: the grant is per action type. This used to request a
+    // `bash-command` here and expect it approved — approving one file edit
+    // authorised the shell. That escalation is the bug the change removed;
+    // `permissionGrantScoping.test.ts` now asserts it cannot happen.
     const p1 = pm.requestPermission('file-edit', 'Edit', 'd', {}, h.post, undefined, 'panel-1');
     approve(pm, h.posted, 'always-allow');
     await p1;
 
     h.posted.length = 0;
-    const result = await pm.requestPermission('bash-command', 'Bash', 'd', {}, h.post, undefined, 'panel-1');
+    const result = await pm.requestPermission('file-edit', 'Edit again', 'd', {}, h.post, undefined, 'panel-1');
     expect(result).toBe(true);
     expect(h.posted).toHaveLength(0);
   });
@@ -75,15 +79,15 @@ describe('session upgrade is scoped to its owner', () => {
     pm.clearSessionUpgrade('panel-1');
 
     h.posted.length = 0;
-    const p1 = pm.requestPermission('bash-command', 'B', 'd', {}, h.post, undefined, 'panel-1');
+    const p1 = pm.requestPermission('file-edit', 'E', 'd', {}, h.post, undefined, 'panel-1');
     expect(h.posted).toHaveLength(1); // card raised again
     approve(pm, h.posted);
     await p1;
 
     h.posted.length = 0;
-    const r2 = await pm.requestPermission('bash-command', 'B', 'd', {}, h.post, undefined, 'panel-2');
+    const r2 = await pm.requestPermission('file-edit', 'E', 'd', {}, h.post, undefined, 'panel-2');
     expect(r2).toBe(true);
-    expect(h.posted).toHaveLength(0); // still upgraded
+    expect(h.posted).toHaveLength(0); // panel-2's grant survives
   });
 
   it('resetSessionAccessLevel drops every outstanding upgrade', async () => {
@@ -94,7 +98,7 @@ describe('session upgrade is scoped to its owner', () => {
     pm.resetSessionAccessLevel('ask-permission');
 
     h.posted.length = 0;
-    const p2 = pm.requestPermission('bash-command', 'B', 'd', {}, h.post, undefined, 'panel-1');
+    const p2 = pm.requestPermission('file-edit', 'E', 'd', {}, h.post, undefined, 'panel-1');
     expect(h.posted).toHaveLength(1);
     approve(pm, h.posted);
     await p2;
@@ -113,9 +117,11 @@ describe('session upgrade expires', () => {
     approve(pm, h.posted, 'always-allow');
     await p;
 
-    // Still inside the window.
+    // Still inside the window. Same action type as the grant — Plan 27 §25
+    // scoped grants per type, so probing with `bash-command` here would now be
+    // testing the escalation rather than the TTL.
     h.posted.length = 0;
-    expect(await pm.requestPermission('bash-command', 'B', 'd', {}, h.post, undefined, 'panel-1')).toBe(true);
+    expect(await pm.requestPermission('file-edit', 'E', 'd', {}, h.post, undefined, 'panel-1')).toBe(true);
     expect(h.posted).toHaveLength(0);
 
     // Jump past the 1h TTL.
@@ -123,7 +129,7 @@ describe('session upgrade expires', () => {
     try {
       Date.now = () => realNow() + 61 * 60 * 1000;
       h.posted.length = 0;
-      const later = pm.requestPermission('bash-command', 'B', 'd', {}, h.post, undefined, 'panel-1');
+      const later = pm.requestPermission('file-edit', 'E', 'd', {}, h.post, undefined, 'panel-1');
       expect(h.posted).toHaveLength(1); // card raised again
       approve(pm, h.posted);
       expect(await later).toBe(true);
@@ -147,15 +153,15 @@ describe('remoteOrigin can never be auto-approved', () => {
     approve(pm, h.posted, 'always-allow');
     await p;
 
-    // A local request is now silent…
+    // A local request of the GRANTED type is now silent…
     h.posted.length = 0;
-    expect(await pm.requestPermission('bash-command', 'B', 'd', {}, h.post, undefined, 'panel-1')).toBe(true);
+    expect(await pm.requestPermission('file-edit', 'E', 'd', {}, h.post, undefined, 'panel-1')).toBe(true);
     expect(h.posted).toHaveLength(0);
 
-    // …but a remote-origin one is not.
+    // …but a remote-origin one is not, even for that same type.
     h.posted.length = 0;
     const remote = pm.requestPermission(
-      'bash-command', 'B', 'd', {}, h.post, undefined, 'panel-1', false, /* remoteOrigin */ true,
+      'file-edit', 'E', 'd', {}, h.post, undefined, 'panel-1', false, /* remoteOrigin */ true,
     );
     expect(h.posted).toHaveLength(1);
     approve(pm, h.posted);

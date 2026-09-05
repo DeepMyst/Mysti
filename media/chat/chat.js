@@ -9906,6 +9906,45 @@
         scrollToBottom();
       }
 
+      /**
+       * The "don't ask again" label, Plan 27 §25.
+       *
+       * It used to read "Yes, and don't ask again this session" while the
+       * button granted FULL ACCESS to every action type in the scope for an
+       * hour — approving one file edit silently authorised bash, delete and
+       * delegate. The grant is now per action type (and per binary for bash),
+       * so the label states exactly what it covers. If these two ever drift
+       * apart again, the card is lying about consent.
+       */
+      var ALWAYS_ALLOW_NOUNS = {
+        'file-create': 'creating files',
+        'file-edit': 'editing files',
+        'file-delete': 'deleting files',
+        'multi-file-edit': 'multi-file edits',
+        'web-request': 'web requests',
+        'delegate': 'delegating to sub-agents',
+        'canvas-edit': 'canvas edits'
+      };
+
+      function alwaysAllowLabel(request) {
+        var type = request && request.actionType;
+        if (type === 'bash-command') {
+          // Mirrors bashGrantToken in PermissionManager: only a single plain
+          // binary is remembered, and the label must not promise more.
+          var cmd = ((request.details && request.details.command) || '').trim();
+          var bad = /[|&;<>(){}$`\\!*?~\n]/.test(cmd);
+          var first = bad ? '' : cmd.split(/\s+/)[0];
+          if (first && /^[A-Za-z0-9._/-]+$/.test(first) && first.indexOf('=') === -1) {
+            return 'Yes, and don\u2019t ask again for ' + first + ' commands this session';
+          }
+          return 'Yes (this command only \u2014 too complex to remember safely)';
+        }
+        var noun = ALWAYS_ALLOW_NOUNS[type];
+        return noun
+          ? 'Yes, and don\u2019t ask again for ' + noun + ' this session'
+          : 'Yes, and don\u2019t ask again for this kind of action this session';
+      }
+
       function renderPermissionCard(request) {
         var card = document.createElement('div');
         var cardClass = 'permission-card pending';
@@ -9965,7 +10004,7 @@
             '</button>' +
             '<button class="permission-option" data-action="always-allow">' +
               '<span class="option-number">2</span>' +
-              "<span>Yes, and don't ask again this session</span>" +
+              '<span>' + escapeHtml(alwaysAllowLabel(request)) + '</span>' +
             '</button>' +
             '<button class="permission-option" data-action="deny">' +
               '<span class="option-number">3</span>' +

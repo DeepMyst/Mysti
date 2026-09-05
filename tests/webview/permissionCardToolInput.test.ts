@@ -103,6 +103,9 @@ beforeAll(() => {
     'renderDiffRowsHtml', 'renderEditReportCard',
     'permissionEditInput', 'permissionEditInfo', 'renderPermissionDiffHtml',
     'renderPermissionDetails', 'buildPermissionQuestion', 'formatTimeRemaining',
+    // Plan 27 §25 — the card's always-allow label is computed, because it now
+    // has to state the exact grant (per action type, per binary for bash).
+    'alwaysAllowLabel',
     'renderPermissionCard',
   ];
   const capMatch = /var EDIT_DIFF_PREVIEW_LINES = (\d+);/.exec(chatJs);
@@ -117,8 +120,12 @@ beforeAll(() => {
       querySelectorAll: () => [], querySelector: () => null }),
   };
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  // alwaysAllowLabel reads this map; extractFunction only pulls functions.
+  const nounsMatch = /var ALWAYS_ALLOW_NOUNS = \{[\s\S]*?\};/.exec(chatJs);
+  expect(nounsMatch, 'ALWAYS_ALLOW_NOUNS not found in chat.js').toBeTruthy();
   rig = new Function('state', 'document', `
     var EDIT_DIFF_PREVIEW_LINES = ${capMatch![1]};
+    ${nounsMatch![0]}
     ${src}
     // Count the differ's entries. A function declaration is a mutable binding,
     // so the wrapped name is what every extracted caller resolves.
@@ -408,7 +415,11 @@ describe('H-1 (5): the card keyboard model is intact', () => {
     expect(two).toBeGreaterThan(one);
     expect(three).toBeGreaterThan(two);
     expect(html.slice(one, two)).toContain('<span>Yes</span>');
-    expect(html.slice(two, three)).toContain("Yes, and don't ask again this session");
+    // Plan 27 §25: option 2's text is now computed and names the exact grant,
+    // so this asserts the SHAPE (a scoped "don't ask again"), not a fixed
+    // string. tests/managers/permissionGrantScoping.test.ts pins the semantics
+    // the label describes.
+    expect(html.slice(two, three)).toMatch(/Yes, and don\u2019t ask again for .+ this session/);
     expect(html.slice(three)).toContain('<span>No</span>');
     expect(html.slice(one - 80, one)).toContain('data-action="approve"');
     expect(html.slice(two - 80, two)).toContain('data-action="always-allow"');

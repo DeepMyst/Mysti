@@ -39,9 +39,50 @@ import { SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S } from '../constants';
  */
 const SESSION_UPGRADE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-interface SessionUpgrade {
-  level: AccessLevel;
+/**
+ * One "don't ask again" grant, Plan 27 §25.
+ *
+ * BEFORE: `always-allow` set the whole scope to `full-access` for an hour, so
+ * approving one file edit silently authorised `bash-command`, `file-delete`,
+ * `web-request` and `delegate` too — while the button only said "don't ask
+ * again this session". That was a consent MISMATCH, not merely a coarse grant:
+ * the permission card is the one surface that must not understate what it asks
+ * for.
+ *
+ * NOW: a grant is per ACTION TYPE (§25 option A), and for `bash-command` it is
+ * further keyed on the command's leading token (§25 option B) — approving `npm`
+ * never approves `curl`. Anything with no recorded grant raises a card.
+ */
+interface SessionGrant {
   expiresAt: number;
+  /**
+   * `bash-command` only: the approved leading tokens. A grant with an empty set
+   * matches nothing, so the type can never be blanket-approved by accident.
+   */
+  tokens?: Set<string>;
+}
+
+/**
+ * The leading token of a shell command — the binary being run.
+ *
+ * Deliberately conservative: anything that is not a bare `[A-Za-z0-9._/-]+`
+ * word returns null, and a null token is NEVER granted and never matches a
+ * grant. So a compound command (`npm test && curl evil`), a quoted or
+ * substituted binary, or an env-prefixed invocation all fall back to asking.
+ * The classifier that decides whether a command is safe at all is
+ * SafetyClassifier's job and is unchanged; this only decides whether a card the
+ * user already answered can be skipped.
+ */
+export function bashGrantToken(command: string | undefined): string | null {
+  const raw = (command ?? '').trim();
+  if (!raw) { return null; }
+  // Any shell metacharacter means "more than one thing is happening here".
+  if (/[|&;<>(){}$`\\!*?~\n]/.test(raw)) { return null; }
+  const first = raw.split(/\s+/)[0];
+  if (!first || !/^[A-Za-z0-9._/-]+$/.test(first)) { return null; }
+  // `FOO=bar cmd` — an assignment is not a binary.
+  if (first.includes('=')) { return null; }
+  return first;
 }
 
 export class PermissionManager {
@@ -57,7 +98,8 @@ export class PermissionManager {
    * other panel — and for a remote-origin task inheriting an approval the user
    * gave an hour earlier for unrelated local work.
    */
-  private _sessionUpgrades: Map<string, SessionUpgrade> = new Map();
+  /** scope -> action type -> grant. Plan 27 §25. */
+  private _sessionGrants: Map<string, Map<PermissionActionType, SessionGrant>> = new Map();
   private _config: PermissionConfig;
   private _onSemiAutonomousTimeout: ((requestId: string, postToWebview: (msg: unknown) => void) => void) | null = null;
 
@@ -78,14 +120,34 @@ export class PermissionManager {
    * there is no reaper timer to leak.
    */
   private _effectiveAccessLevel(scope: string): AccessLevel {
-    const upgrade = this._sessionUpgrades.get(scope);
-    if (!upgrade) { return this._baseAccessLevel; }
-    if (Date.now() >= upgrade.expiresAt) {
-      this._sessionUpgrades.delete(scope);
-      console.log('[Mysti] PermissionManager: session upgrade expired for scope', scope);
-      return this._baseAccessLevel;
+    // Session grants are per-action-type now (Plan 27 §25) and no longer raise
+    // the scope's access LEVEL. The user's own configured level is the only
+    // thing this reports; `_isGranted` answers the per-type question.
+    void scope;
+    return this._baseAccessLevel;
+  }
+
+  /**
+   * Has the user already said "don't ask again" for THIS action, in this scope?
+   *
+   * Expiry is lazy, so there is no reaper timer to leak — the same discipline
+   * the scope-wide upgrade used.
+   */
+  private _isGranted(scope: string, actionType: PermissionActionType, details?: PermissionDetails): boolean {
+    const byType = this._sessionGrants.get(scope);
+    const grant = byType?.get(actionType);
+    if (!grant) { return false; }
+    if (Date.now() >= grant.expiresAt) {
+      byType?.delete(actionType);
+      console.log('[Mysti] PermissionManager: grant expired', scope, actionType);
+      return false;
     }
-    return upgrade.level;
+    // §25 option B — a bash grant covers only the binaries already approved.
+    if (grant.tokens) {
+      const token = bashGrantToken(details?.command);
+      return token !== null && grant.tokens.has(token);
+    }
+    return true;
   }
 
   /**
@@ -95,10 +157,10 @@ export class PermissionManager {
    */
   clearSessionUpgrade(ownerKey?: string): void {
     if (ownerKey === undefined) {
-      this._sessionUpgrades.clear();
+      this._sessionGrants.clear();
       return;
     }
-    this._sessionUpgrades.delete(this._scopeKey(ownerKey));
+    this._sessionGrants.delete(this._scopeKey(ownerKey));
   }
 
   /**
@@ -153,9 +215,21 @@ export class PermissionManager {
     // may FORCE an interactive card (a non-safe coordinator `bash`) that must
     // be confirmed even under session full-access — the session upgrade grants
     // authority for CLI-backend tools, not for the coordinator's own shell.
-    if (this._effectiveAccessLevel(this._scopeKey(ownerKey)) === 'full-access' && !forceInteractive) {
-      console.log('[Mysti] PermissionManager: Auto-approved (session full-access)');
-      return true;
+    // Two distinct things auto-approve, and conflating them was the bug this
+    // replaced. The user's OWN configured access level is a standing choice and
+    // still short-circuits everything. A session GRANT is a per-card "don't ask
+    // again", and after Plan 27 §25 it covers only the action type the card was
+    // about (and, for bash, only that binary).
+    if (!forceInteractive) {
+      const scope = this._scopeKey(ownerKey);
+      if (this._effectiveAccessLevel(scope) === 'full-access') {
+        console.log('[Mysti] PermissionManager: Auto-approved (configured full-access)');
+        return true;
+      }
+      if (this._isGranted(scope, actionType, details)) {
+        console.log('[Mysti] PermissionManager: Auto-approved (grant for', actionType + ')');
+        return true;
+      }
     }
 
     // Read-only operations are always allowed
@@ -256,11 +330,34 @@ export class PermissionManager {
     // property does not depend on that reasoning holding elsewhere.
     if (response.decision === 'always-allow' && !request.remoteOrigin) {
       const scope = this._scopeKey(request.ownerKey);
-      this._sessionUpgrades.set(scope, {
-        level: 'full-access',
-        expiresAt: Date.now() + SESSION_UPGRADE_TTL_MS,
-      });
-      console.log('[Mysti] PermissionManager: Session upgraded to full-access for scope', scope);
+      const type = request.actionType;
+
+      // §25 option B: a bash grant is keyed on the binary. A command whose
+      // leading token cannot be read conservatively (compound, quoted,
+      // substituted, env-prefixed) records NOTHING — the user approved this one
+      // run, and the next one asks again.
+      let tokens: Set<string> | undefined;
+      let record = true;
+      if (type === 'bash-command') {
+        const token = bashGrantToken(request.details?.command);
+        if (token === null) {
+          // Not a single plain binary. This run stays approved — the user said
+          // yes — but nothing is remembered, so the next one asks again.
+          record = false;
+          console.log('[Mysti] PermissionManager: always-allow not recorded — command is not a single plain binary');
+        } else {
+          const existing = this._sessionGrants.get(scope)?.get(type);
+          tokens = new Set(existing?.tokens ?? []);
+          tokens.add(token);
+        }
+      }
+
+      if (record) {
+        let byType = this._sessionGrants.get(scope);
+        if (!byType) { byType = new Map(); this._sessionGrants.set(scope, byType); }
+        byType.set(type, { expiresAt: Date.now() + SESSION_UPGRADE_TTL_MS, tokens });
+        console.log('[Mysti] PermissionManager: granted', type, tokens ? `for ${[...tokens].join(', ')}` : '', 'in scope', scope);
+      }
     }
 
     // Resolve the promise
@@ -398,7 +495,7 @@ export class PermissionManager {
     this._baseAccessLevel = level;
     // An explicit reset drops every outstanding upgrade — otherwise lowering
     // the floor would leave a prior "always allow" still auto-approving above it.
-    this._sessionUpgrades.clear();
+    this._sessionGrants.clear();
     console.log('[Mysti] PermissionManager: Session access level reset to:', level);
   }
 
