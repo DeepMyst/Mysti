@@ -1,0 +1,72 @@
+# -----------------------------------------------------------------------------
+# Integration — the tests that run inside a REAL VS Code.
+#
+# WHY THIS IS A SEPARATE WORKFLOW FROM ci.yml
+# The unit suite mocks `vscode` (tests/helpers/mockVscode.ts) and the browser
+# suite runs webview markup in bare Chromium. Neither contains VS Code. Every
+# canvas failure that reached production so far was a VS Code HOST behaviour —
+# the frame topology behind `ev.source`, `srcdoc` inheriting the panel CSP,
+# `vscode-resource` asset URIs, panel widths. This lane is the only thing in the
+# repo that can see them, and it downloads a ~200 MB VS Code build to do it, so
+# it runs on its own cadence rather than inside the fast gate.
+#
+# STATUS: BLOCKING on ubuntu, informational elsewhere. Verified green locally on
+# darwin-arm64 against VS Code 1.136.1 before this file was written — 7 passing
+# in 3 s — so it starts green rather than landing red and being ignored.
+#
+# THE LINUX DISPLAY REQUIREMENT
+# VS Code is an Electron app: it needs a display server even "headless". On
+# ubuntu runners it must be wrapped in xvfb-run, which is the documented
+# approach for extension tests.
+#   https://code.visualstudio.com/api/working-with-extensions/continuous-integration
+# macOS and Windows runners have a window server already and must NOT be
+# wrapped. Getting this wrong looks like a hang, not an error.
+# -----------------------------------------------------------------------------
+name: integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vscode:
+    name: VS Code host (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Cache the downloaded VS Code build. Keyed on the resolved version so a
+      # `version: 'stable'` bump invalidates it rather than silently testing an
+      # old build. .vscode-test/ is where @vscode/test-cli puts it.
+      - name: Cache VS Code
+        uses: actions/cache@v4
+        with:
+          path: .vscode-test
+          key: vscode-test-${{ runner.os }}-${{ hashFiles('.vscode-test.mjs') }}
+
+      - name: Test (Linux — needs a display server)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:vscode
+
+      - name: Test (macOS / Windows)
+        if: runner.os != 'Linux'
+        run: npm run test:vscode

@@ -142,8 +142,42 @@ jobs:
       - name: Install
         run: npm ci
 
+      # The canvas browser suites run against a real Chromium. Without it they
+      # do not fail — they SKIP (tests/webview/chromiumAvailability.ts drives
+      # `it.skipIf`), so CI would silently lose the only real-browser coverage
+      # in the repo: artboard CSP, the sandboxed live frame, agent sync, panes,
+      # layout and perf. Playwright is a webpack external and its browser
+      # binaries are deliberately not shipped in the VSIX, so CI installs one.
+      # Chromium only — the suites pin chromium, and the other engines would be
+      # ~300 MB of download for nothing.
+      - name: Install Chromium for the browser suites
+        run: npx playwright install --with-deps chromium
+
       - name: Test
         run: npm test
+
+      # Fails the job if Chromium was installed and the browser suites skipped
+      # anyway — otherwise a broken install downgrades to a silent skip and the
+      # job still passes green.
+      - name: Assert the browser suites actually ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx vitest run tests/webview/canvasFrameCspBrowser.test.ts --reporter=json --outputFile=/tmp/browser.json
+          node -e "
+            const r = require('/tmp/browser.json');
+            const skipped = r.numPendingTests ?? 0;
+            const passed = r.numPassedTests ?? 0;
+            // ZERO PENDING is the assertion, not passed>0: this file also holds
+            // static tests that pass with no browser at all (measured on a
+            // machine with no headless shell: 7 passed, 6 pending). Only
+            // 'nothing skipped' proves Chromium was actually usable.
+            if (skipped !== 0) {
+              console.error('Chromium was installed but ' + skipped + ' test(s) still skipped — the browser suites are not running. See tests/webview/chromiumAvailability.ts for the probe.');
+              process.exit(1);
+            }
+            console.log('browser suite: ' + passed + ' passed, 0 skipped');
+          "
 
   # ---------------------------------------------------------------------------
   # JOB 3 - lint. NON-BLOCKING BY DESIGN, FOR NOW.
