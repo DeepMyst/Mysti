@@ -898,3 +898,44 @@ describe('every panel still opens after the header diet', () => {
     expect(pageErrors).toEqual([]);
   }, 30000);
 });
+
+describe('the first-run screens have a second exit', () => {
+  /*
+   * Both are position:fixed full-screen at z-index 100000, and a Skip BUTTON
+   * was the only way out of either. That is the D-1 shape this codebase already
+   * shipped once: when the single exit is unreachable, the panel is a wall.
+   */
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Escape leaves the wizard, and the dismissal sticks', async () => {
+    await page!.evaluate(() => document.getElementById('setup-wizard')!.classList.remove('hidden'));
+    await clearPosted();
+    await page!.keyboard.press('Escape');
+
+    const dismiss = (await posted()).filter((m) => m.type === 'dismissWizard');
+    expect(dismiss.length).toBe(1);
+    // It must go through the skip button's own path, so it persists.
+    expect((dismiss[0].payload as { dontShowAgain: boolean }).dontShowAgain).toBe(true);
+    expect(await page!.$eval('#setup-wizard', (e) => e.classList.contains('hidden'))).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Escape leaves the setup overlay too', async () => {
+    await page!.evaluate(() => document.getElementById('setup-overlay')!.classList.remove('hidden'));
+    await clearPosted();
+    await page!.keyboard.press('Escape');
+    expect((await posted()).some((m) => m.type === 'skipSetup')).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('and does not fire when neither is up', async () => {
+    await page!.evaluate(() => {
+      document.getElementById('setup-wizard')!.classList.add('hidden');
+      document.getElementById('setup-overlay')!.classList.add('hidden');
+    });
+    await clearPosted();
+    await page!.keyboard.press('Escape');
+    const p2 = await posted();
+    expect(p2.some((m) => m.type === 'dismissWizard' || m.type === 'skipSetup')).toBe(false);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 20000);
+});

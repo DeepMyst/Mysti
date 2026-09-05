@@ -3997,6 +3997,35 @@
           overflowMenu.addEventListener('click', function() { overflowMenu.classList.add('hidden'); });
         }
 
+      /**
+         * Plan 28 Phase 7 — Escape leaves the first-run screens.
+         *
+         * Both are `position: fixed` full-screen at z-index 100000, and a Skip
+         * BUTTON was the only way out of either. That is the shape of the D-1
+         * bug this codebase already shipped once: when the single exit is
+         * unreachable — CSP-dead then, off-screen or scrolled now — the panel is
+         * a wall. Escape is a second exit that cannot be laid out away.
+         *
+         * It CLICKS the existing skip control rather than posting the message
+         * itself, so the dismissal persists by exactly the path the button uses
+         * (`dontShowAgain: true` for the wizard). A second copy of that decision
+         * is how "dismissed" quietly stops sticking.
+         */
+        document.addEventListener('keydown', function(e) {
+          if (e.key !== 'Escape') { return; }
+          var wizard = document.getElementById('setup-wizard');
+          if (wizard && !wizard.classList.contains('hidden')) {
+            var skip = document.querySelector('.wizard-skip-btn');
+            if (skip) { e.preventDefault(); skip.click(); }
+            return;
+          }
+          var overlay = document.getElementById('setup-overlay');
+          if (overlay && !overlay.classList.contains('hidden')) {
+            var s = document.getElementById('setup-skip-btn');
+            if (s) { e.preventDefault(); s.click(); }
+          }
+        });
+
         // Plan 28 Phase 4 — Changes dock wiring.
         var changesBtn = document.getElementById('changes-btn');
         if (changesBtn) { changesBtn.addEventListener('click', function() { toggleChangesDock(); }); }
