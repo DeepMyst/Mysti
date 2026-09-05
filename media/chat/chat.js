@@ -6455,7 +6455,8 @@
           '<div class="setup-auth-prompt">' +
             '<div class="setup-icon">🔐</div>' +
             '<div class="setup-step">Authentication Required</div>' +
-            '<div class="setup-message">' + payload.message + '</div>' +
+            // Escaped: this text comes from a provider's own error output.
+            '<div class="setup-message">' + escapeHtml(payload.message || '') + '</div>' +
             '<div class="setup-buttons">' +
               '<button class="setup-btn primary" id="auth-confirm-btn">Sign In</button>' +
               '<button class="setup-btn secondary" id="auth-skip-btn">Later</button>' +
@@ -6464,12 +6465,28 @@
 
         document.getElementById('auth-confirm-btn').addEventListener('click', function() {
           postMessageWithPanelId({ type: 'authConfirm', payload: { providerId: payload.providerId } });
+          // Plan 28 Phase 7 — ROOT CAUSE of the buttonless wall. This replaced
+          // the content with a waiting state carrying NO controls, on a
+          // full-screen overlay. Everything downstream — the dismissal latch,
+          // Escape's fallback, the guards on three render paths — exists
+          // because this one state had no way out. It keeps one.
           content.innerHTML =
             '<div class="setup-progress">' +
               '<div class="setup-icon">⏳</div>' +
               '<div class="setup-step">Waiting for authentication...</div>' +
               '<div class="setup-message">Complete sign-in in the terminal that opened</div>' +
+              '<div class="setup-buttons">' +
+                '<button class="setup-btn secondary" id="auth-wait-skip-btn">Continue without it</button>' +
+              '</div>' +
             '</div>';
+          var waitSkip = document.getElementById('auth-wait-skip-btn');
+          if (waitSkip) {
+            waitSkip.addEventListener('click', function() {
+              if (state.setup) { state.setup.dismissedByUser = true; }
+              postMessageWithPanelId({ type: 'skipSetup' });
+              hideSetupOverlay();
+            });
+          }
         });
 
         document.getElementById('auth-skip-btn').addEventListener('click', function() {

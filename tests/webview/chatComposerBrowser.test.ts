@@ -1307,6 +1307,31 @@ describe('the setup overlay, on a pristine page each time', () => {
     expect(await hidden()).toBe(true);
   }, 30000);
 
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the auth prompt offers a way out, and so does the waiting state', async () => {
+    // The ROOT CAUSE of every guard in this area: signing in replaced the
+    // content with a waiting state that had no controls at all, on a
+    // full-screen overlay.
+    await fire({ type: 'authPrompt', payload: { providerId: 'claude-code', message: 'Sign in to continue' } });
+    expect(await hidden()).toBe(false);
+    expect(await pg!.$('#auth-skip-btn')).not.toBeNull();
+
+    await pg!.click('#auth-confirm-btn');
+    expect(await pg!.textContent('#setup-overlay')).toContain('Waiting for authentication');
+    const out = await pg!.$('#auth-wait-skip-btn');
+    expect(out, 'the waiting state must keep an exit').not.toBeNull();
+
+    await pg!.click('#auth-wait-skip-btn');
+    expect(await hidden()).toBe(true);
+    expect((await sent()).some((m) => m.type === 'skipSetup')).toBe(true);
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a provider error message cannot inject markup', async () => {
+    await fire({ type: 'authPrompt', payload: {
+      providerId: 'claude-code', message: '<img src=x onerror="window.__pwned=1">' } });
+    expect(await pg!.evaluate(() => (window as unknown as { __pwned?: number }).__pwned)).toBeUndefined();
+    expect(await pg!.textContent('#setup-overlay')).toContain('<img src=x');
+  }, 30000);
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
     expect(errs).toEqual([]);
   }, 30000);
