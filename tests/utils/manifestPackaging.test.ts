@@ -18,6 +18,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import { describe, it, expect } from 'vitest';
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -288,6 +289,83 @@ describe('fossils are excluded', () => {
       'fabric.min.js is back. It is an MIT bundle with its copyright banner stripped; '
       + 'if it is genuinely needed, restore the banner and add it to NOTICE.',
     ).toBe(false);
+  });
+});
+
+describe('the release path VERIFIES the agent trust root, never re-signs it', () => {
+  // scripts/generate-core-agent-manifest.js has two modes:
+  //   (write)   rebuild src/generated/coreAgentManifest.ts from the files ON DISK
+  //   --check   rebuild in memory, compare to the committed file, exit 1 on drift
+  //
+  // `vsce package` runs `vscode:prepublish`, which used to run `compile`, which
+  // runs the generator in WRITE mode. So packaging RE-SIGNED the trust root:
+  // tamper a bundled persona/skill/role, run `vsce package`, and the manifest
+  // was regenerated to match the tampered bytes — which then shipped as
+  // `trusted`, reaching the system prompt. Measured before the fix: write mode
+  // exits 0 on a tampered file; --check exits 1. The trust root is only a root
+  // if the release path checks it against what was committed.
+  //
+  // The dev path (`npm run compile`) may still regenerate — that is how you
+  // legitimately land an edit to a bundled agent file.
+  const scripts: Record<string, string> = pkg.scripts ?? {};
+  const GEN = 'generate-core-agent-manifest.js';
+
+  /** Every script body reachable from `name` by `npm run` / `npm-run-all`. */
+  const resolveChain = (name: string, seen = new Set<string>()): string[] => {
+    if (seen.has(name) || !scripts[name]) { return []; }
+    seen.add(name);
+    const body = scripts[name];
+    const out = [body];
+    for (const m of body.matchAll(/npm run ([\w:-]+)/g)) { out.push(...resolveChain(m[1], seen)); }
+    return out;
+  };
+
+  it('vscode:prepublish exists and is the only thing vsce runs before packaging', () => {
+    expect(scripts['vscode:prepublish'], 'vsce runs this; without it nothing guards packaging').toBeTruthy();
+  });
+
+  it('the release chain invokes the generator ONLY with --check', () => {
+    const chain = resolveChain('vscode:prepublish');
+    expect(chain.length, 'vscode:prepublish resolved to nothing').toBeGreaterThan(0);
+    const invocations = chain.filter((b) => b.includes(GEN));
+    expect(
+      invocations.length,
+      'the release chain never invokes the manifest generator at all — it must VERIFY the trust root, '
+      + `not skip it. Chain: ${JSON.stringify(chain)}`,
+    ).toBeGreaterThan(0);
+    for (const body of invocations) {
+      // Isolate the generator's own segment so a `--check` elsewhere in a
+      // compound command cannot vouch for a bare write-mode call.
+      for (const seg of body.split('&&').map((x) => x.trim()).filter((x) => x.includes(GEN))) {
+        expect(
+          seg,
+          `RELEASE PATH RE-SIGNS THE TRUST ROOT: "${seg}" runs the generator in WRITE mode. `
+          + 'Packaging would regenerate the manifest from whatever is on disk, so a tampered bundled '
+          + 'agent file ships as trusted. Add --check.',
+        ).toContain('--check');
+      }
+    }
+  });
+
+  it('the write-mode script is NOT reachable from the release path', () => {
+    const chain = resolveChain('vscode:prepublish');
+    const writeMode = chain.filter((b) => b.includes(GEN) && !b.split('&&').some((seg) => seg.includes(GEN) && seg.includes('--check')));
+    expect(writeMode, `write-mode generator reachable from vscode:prepublish: ${JSON.stringify(writeMode)}`).toEqual([]);
+  });
+
+  it('the dev path may still regenerate — this is not a ban on the generator', () => {
+    // Stated as a test so nobody "fixes" the item above by deleting the
+    // generator from the build entirely, which would leave the manifest stale.
+    const dev = resolveChain('compile').join(' ; ');
+    expect(dev, '`npm run compile` should still build the manifest for developers').toContain(GEN);
+  });
+
+  it('the committed manifest is in sync with the files on disk right now', () => {
+    // If this fails, the release path would (correctly) refuse to package.
+    const res = spawnSync(process.execPath, ['scripts/generate-core-agent-manifest.js', '--check'], {
+      cwd: ROOT, encoding: 'utf8',
+    });
+    expect(res.status, `--check failed:\n${res.stdout}\n${res.stderr}`).toBe(0);
   });
 });
 

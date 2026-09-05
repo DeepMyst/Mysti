@@ -2213,9 +2213,10 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run compile:release",
     "build:core-manifest": "node scripts/generate-core-agent-manifest.js",
     "compile": "npm run build:core-manifest && webpack --mode production",
+    "compile:release": "node scripts/generate-core-agent-manifest.js --check && webpack --mode production",
     "watch": "npm run build:core-manifest && webpack --mode development --watch",
     "lint": "node scripts/check-provider-literals.js && node scripts/generate-core-agent-manifest.js --check && eslint src --ext ts && eslint media --ext js",
     "lint:provider-literals": "node scripts/check-provider-literals.js",
