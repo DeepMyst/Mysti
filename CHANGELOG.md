@@ -4,6 +4,45 @@ All notable changes to the Mysti extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-05
+
+Pre-release channel (odd minor). First publishable build since 0.4.0; everything under 0.4.0's
+"What's New" in the READMEs still describes that release. This entry covers the Plan 27 production-readiness
+pass on top of the features listed under *Added* below.
+
+### Security
+
+- **Repository-authored instructions are fenced before they reach a CLI backend.** `mysti.md` and `.mysti/rules/*.md` were joined raw into the system position — two lines after auto-memory was correctly nonce-fenced. Both now pass through the same `UNTRUSTED DATA` fence, so a cloned repository's instructions are reference material, not operator commands.
+- **On Windows, the permission card denies instead of prompting over a running tool.** The gate pauses the CLI while you decide; Windows cannot pause it, and the card was shown while the tool executed underneath. When the process cannot be held, the action is denied and the card says so — the same fail-closed rule collaborator children already followed.
+- **Bundled agent content is re-verified at the moment it is used, not once at load.** A core persona, skill or role tampered on disk after activation kept its `trusted` flag — and, for roles, its write authority — because the integrity check ran once and was carried forward by value. Trust is now a property of the bytes about to be injected. A workspace skill's `category` could also reach the coordinator's system sentence verbatim; it is now clamped to a short slug.
+- **Model- and tool-supplied URLs pass one origin policy.** A URL scraped from an MCP tool's text was fetched with no scheme, host or address check. Outbound fetches now reject non-http(s) schemes, embedded credentials, and private, loopback, link-local and metadata addresses — including after redirects. MCP bearer tokens go only over HTTPS or to loopback.
+- **A repository can no longer widen its own authority through settings.** `ollamaEndpoint`, `localaiEndpoint`, `useShellForCli`, `visualTest.devServerCommand`, every `agents.*CustomPrompt` / `*Persona`, the `autonomous.*` policy keys, and (round 3) `visualTest.enabled`, `visualTest.interactions` and `codexProfile` are machine-scoped; a parity test asserts, in both directions, that every authority-bearing setting is either machine-scoped or clamped. Values a repository had set for those three keys in `.vscode/settings.json` are ignored from this release. `visualTest.url` stays workspace-configurable on purpose: `visualTestPolicy` refuses any URL outside the machine-scoped `visualTest.allowedOrigins`, so per-repo dev-server ports remain legitimate and the destination is already machine-controlled. The superseded `mysti.visualTest.interactionsEnabled` (declared, default on, read by nothing) is removed — VS Code will flag it as unknown if it is still in your settings.
+- **A v0.4.0 `defaultMode: "plan"` migrates to `quick-plan`, not `default`.** The legacy value meant "never write" and was being coerced to the tier that writes — and on the send path the raw value still went through, so CLI backends fell to their no-permissions flag and the coordinator's local-execution gate opened for exactly the user who had asked it never to. Unknown mode values now coerce to the safe end.
+- **A user- or workspace-authored role no longer leads the collaborator prompt.** In `@agent:role` collaboration, a role that is not integrity-verified (anything under `~/.mysti/agents/roles`, `.mysti/agents/roles`, synced plugins, or a bundled file tampered after activation) now runs as the neutral Advisor stance with its body fenced as reference data, matching how personas and skills were already treated. This changes legitimate user-authored roles too, not only tampered ones: they inform the collaborator, they do not instruct it. The webview card still shows the role's name.
+- **Shared-conversation deep links are treated as hostile input.** `vscode://…/import?data=…` is unauthenticated; its payload is now capped (message count, content and title length, inflated size — a deflate bomb is refused before inflation), coerced (provider id must be a real backend, including the `mysti.defaultProvider` fallback) and pruned (non-record elements dropped), never thrown out of `activate()` and never persisted raw. Per-panel context keys are swept on activation so a disposed panel's persisted context cannot accumulate.
+
+### Fixed
+
+- **Codex remembered nothing after the first turn.** History was suppressed whenever a session id existed on the assumption the CLI would resume it; Codex records a thread id but has no resume flag. Suppression now follows the provider's declared `sessionKind`. `cli-resume` providers are unaffected.
+- **Stop no longer corrupts Claude Code's stdin.** The default interrupt wrote `\x03` into the stream-json pipe, making the next message unparseable.
+- **A backend that crashed mid-stream was reported as a complete answer.** Persistent-process exit codes are inspected; a non-zero exit or signal emits an error, never `done`.
+- **You can see the diff before approving an edit.** The permission card for Write/Edit renders the same line-level diff the edit report already computed, with every value escaped. Round 3: the card now receives the tool's real name and input (capped by size, up to 64 KB, with an explicit truncation marker) instead of a 500-character JSON slice, so a realistic multi-line Edit renders a diff rather than nothing; the card's headline names the target path; the diff is capped before it is built rather than after.
+- **The first-run wizard could not be dismissed.** Its exit button was an inline handler the page's own CSP blocked, and dismissal was never persisted. Every inline handler is rebound and dismissal sticks.
+- **`scrollToBottom` was called 21 times and defined nowhere**, throwing on every coordinator, job, brainstorm and permission-card render. `media/**/*.js` is now linted with `no-undef` so this class cannot recur.
+- **Opening a canvas on Windows broke every subsequent send** — the shell-argument validator rejected the backslashes in `--mcp-config <path>`.
+- **Corrupt conversation storage can no longer prevent activation.** The store is schema-versioned and validated; an unreadable blob is parked under a named key rather than thrown out of `activate()`, and the import path now applies the same size caps as live writes.
+- **Canvas `edit_page` / `insert_page` respect pins.** The page-level ops — the only write path 13 of 14 CLI backends are taught — replaced artboards wholesale, destroying hand edits that `write_page` correctly refused on; `insert_page` could also shadow a live pinned artboard by reusing its id.
+- **Live model-authored HTML artboards no longer allow `img-src https:`**, closing the canvas's one outbound beacon channel. The chat panel had already made the same decision. Round 3: the canvas SHELL's own policy — which every `srcdoc` artboard inherits — drops its `https:` scheme-sources from `img-src`, `font-src` and `connect-src` and gains `form-action 'none'; base-uri 'none'`, so the canvas is no longer the one Mysti webview that could fetch the internet.
+- **Canvas `delete_page` respects pins** and the pin-refusal message names a tool the calling backend can actually reach; `regraftPins` no longer manufactures ownership of cells the human never touched, and applying a legacy patch no longer clobbers the source view.
+- **Four settings were read under names `package.json` never declared** (`mysti.mode`, `mysti.defaultAccessLevel`, `mysti.model`, `mysti.autonomous.enabled`), so the configured mode, access level and model were silently ignored on those paths.
+- **`mysti.checkpoints.maxSnapshots` is enforced.** It was declared with a default of 200 and read by nothing.
+- **The `mysti.mysti.skills` description was false**: it said `full` was unimplemented while `full` gates `publish` / `skillrun`. It now states all of the co-conditions.
+
+### Packaging & process
+
+- Publishable: `0.5.1` on the pre-release channel; an explicit `capabilities` block (`untrustedWorkspaces: false`, `virtualWorkspaces: false`); recursive `.vscodeignore` globs (2 MB of Playwright `.d.ts` no longer ships); two dead vendored files excluded from the artifact; walkthrough images actually included; `@modelcontextprotocol/sdk` declared instead of resolving through a transitive hoist; `vsce` pinned per invocation with `--dependencies` (the `--no-dependencies` form ships an extension with Playwright missing).
+- CI from zero: `.github/workflows/ci.yml` (type-check, tests on Linux/macOS/Windows, lint, package-shape check) plus CODEOWNERS, issue and PR templates, dependabot and `SECURITY.md`. Every CPU-bound test loop carries an explicit budget, so a timeout is a real regression.
+
 ### Added
 
 - **The agent catalog — `@mysti` can find and read the project's reusable practices (Plan 20)**. Off by default (`mysti.mysti.skills`, machine-scoped: `off` | `prose` | `full`).

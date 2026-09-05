@@ -1,0 +1,60 @@
+# Dependabot.
+#
+# Grouped and monthly on purpose. This repo has one maintainer; a daily stream
+# of single-package PRs gets muted, and a muted bot is worse than none.
+#
+# Security advisories are NOT affected by the schedule below — Dependabot opens
+# those as soon as they land, which is the behaviour worth having here given
+# that the production tree currently carries advisories reached transitively
+# through @google/stitch-sdk -> @modelcontextprotocol/sdk.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      # Toolchain moves together or not at all — a lone webpack or ts-loader
+      # bump usually just fails against its siblings.
+      build-toolchain:
+        patterns:
+          - webpack*
+          - ts-loader
+          - typescript
+          - "@types/*"
+      lint-and-test:
+        patterns:
+          - eslint
+          - "@typescript-eslint/*"
+          - vitest
+          - "@vscode/test-*"
+          - mocha
+          - "@types/mocha"
+      runtime:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - webpack*
+          - ts-loader
+          - typescript
+          - "@types/*"
+          - eslint
+          - "@typescript-eslint/*"
+          - vitest
+          - "@vscode/test-*"
+          - mocha
+    ignore:
+      # `playwright` is a webpack external and its browser binaries are NOT
+      # shipped; the user installs them separately with `npx playwright install
+      # chromium`. A major bump can change the driver protocol out from under an
+      # already-installed browser, so majors are taken deliberately, not by bot.
+      - dependency-name: playwright
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3

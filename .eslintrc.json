@@ -17,8 +17,12 @@
       "warn",
       {
         "selector": "memberLike",
-        "modifiers": ["private"],
-        "format": ["camelCase"],
+        "modifiers": [
+          "private"
+        ],
+        "format": [
+          "camelCase"
+        ],
         "leadingUnderscore": "require"
       }
     ],
@@ -35,6 +39,50 @@
   },
   "ignorePatterns": [
     "dist",
-    "node_modules"
+    "node_modules",
+    "resources",
+    "**/*.min.js",
+    "out-test",
+    "out-vscode-test"
+  ],
+  "overrides": [
+    {
+      "files": [
+        "media/**/*.js"
+      ],
+      "parser": "espree",
+      "parserOptions": {
+        "ecmaVersion": 2022,
+        "sourceType": "script"
+      },
+      "env": {
+        "browser": true,
+        "es2022": true
+      },
+      "globals": {
+        "acquireVsCodeApi": "readonly",
+        "Prism": "readonly",
+        "marked": "readonly",
+        "DOMPurify": "readonly",
+        "mermaid": "readonly",
+        "__MYSTI_BOOT__": "readonly"
+      },
+      "rules": {
+        "no-undef": "error",
+        "@typescript-eslint/no-explicit-any": "off",
+        "@typescript-eslint/no-unused-vars": "off",
+        "@typescript-eslint/naming-convention": "off",
+        "@typescript-eslint/no-var-requires": "off",
+        "no-unused-vars": [
+          "warn",
+          {
+            "argsIgnorePattern": "^_",
+            "varsIgnorePattern": "^_"
+          }
+        ],
+        "no-control-regex": "off",
+        "no-redeclare": "warn"
+      }
+    }
   ]
 }

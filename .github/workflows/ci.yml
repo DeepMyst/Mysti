@@ -1,0 +1,243 @@
+# Mysti CI
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# Before this workflow, a clean `tsc --noEmit`, 11,361 passing tests and a RED
+# `npm run lint` all had exactly the same consequence: none. `vscode:prepublish`
+# runs only `npm run compile`, there is no git hook, and there was no `.github/`
+# directory at all. Every gate in this repo was advisory.
+#
+# THE RATCHET
+# -----------
+# This workflow is deliberately GREEN ON DAY ONE. Jobs that pass today are
+# blocking; jobs that fail today (`lint`, `package-shape`) run with
+# `continue-on-error: true` and carry an explicit note saying what must reach
+# zero before the flag comes off. A red-on-arrival pipeline teaches people to
+# ignore red, which is the exact failure mode this exists to prevent.
+#
+# WHY THREE OPERATING SYSTEMS
+# ---------------------------
+# Two of this repo's known defects are Windows-only and are unverifiable on the
+# maintainer's machine (process-tree kill via `taskkill /T` in
+# src/utils/processKill.ts, and CLI discovery of `.cmd` shims / `node.exe`).
+# Windows is not a nice-to-have here; it is the only way those paths ever get
+# executed at all. The Windows checkout also exercises the CRLF assumption baked
+# into the core-agent integrity manifest (`.gitattributes` sets `* text=auto`,
+# and the manifest hashes LF-normalised content precisely because of that).
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A new push to the same ref cancels the previous run. The full matrix is
+# several CPU-minutes per OS, almost all of it webpack.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # JOB 1 - build gates. BLOCKING.
+  #
+  # Every command here was run locally against the tree this workflow was added
+  # to (macOS, Node 22.20.0) and exits 0:
+  #   npx tsc --noEmit                                     -> exit 0 (~10 s)
+  #   node scripts/check-provider-literals.js              -> exit 0
+  #   node scripts/generate-core-agent-manifest.js --check -> exit 0, 42 files
+  #   npm run compile                                      -> exit 0 (~4 min)
+  # ---------------------------------------------------------------------------
+  gates:
+    name: gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # The gate that is actually holding today: webpack + ts-loader type-check
+      # on every build, so a type error already breaks F5. This makes it also
+      # break the branch.
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      # Guards the provider-id literal allowlist. See scripts/check-provider-literals.js.
+      - name: Provider-literal guard
+        run: node scripts/check-provider-literals.js
+
+      # MUST RUN BEFORE `npm run compile`. DO NOT REORDER.
+      #
+      # `compile` invokes this same generator in WRITE mode, which RE-SIGNS the
+      # Plan-20 core-agent integrity root instead of verifying it. Running
+      # `--check` first is the only ordering in which CI actually verifies that
+      # the committed hashes still match resources/agents/core on disk. Moved
+      # below `compile`, this step becomes a no-op that can never fail.
+      - name: Core-agent manifest is in sync (verify, do not re-sign)
+        run: node scripts/generate-core-agent-manifest.js --check
+
+      - name: Compile
+        run: npm run compile
+
+  # ---------------------------------------------------------------------------
+  # JOB 2 - the vitest suite. BLOCKING.
+  #
+  # WALL TIME (macOS, Node 22.20.0, three consecutive local runs on an unchanged
+  # tree): vitest reports 93.96 s / 94.25 s / 93.82 s; wall including npm
+  # overhead was 99 s / 98 s / 97 s. 288 files, 11,361 tests.
+  #
+  # ~90 s of that ~94 s is ONE test:
+  #   tests/managers/brainstormManager.test.ts
+  #     > "should emit agent_error when an agent goes silent"   ~90,000 ms
+  # It waits out a real 90-second silence timeout on a real timer. That single
+  # test is ~96 % of the suite's wall clock; every other file is fast (a
+  # single-file run is ~400-600 ms). Converting it to fake timers would take the
+  # suite from ~94 s to a few seconds. That change is not in this workflow's lane.
+  #
+  # WHY THERE IS NO `--retry`
+  # -------------------------
+  # An earlier draft of this job carried `--retry=2` after two local runs saw
+  # CPU-bound loops time out under worker-pool contention (deskPairingFlow
+  # :125, roundTrip :343 — "Test timed out in 5000ms"). That was settled on
+  # 2026-09-05 with 69,372 test executions across six full runs, three of them
+  # at 3x pool oversubscription: 0 failures, two runs identical test-for-test.
+  # The suite is NOT flaky; the loops were simply running against vitest's
+  # unconfigured 5 s default, which DOES apply to synchronous bodies, with
+  # 5-14x load amplification measured. Every CPU-bound loop now carries an
+  # explicit 30 s budget in the test itself (pageCompiler :518/:540/:592/:610,
+  # roundTrip :343/:347, deskPairingFlow :118/:125), so a timeout here is a
+  # real regression and must fail the job on the first attempt. Do not
+  # re-add `--retry`: it hides a real regression's first two failures.
+  # ---------------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # JOB 3 - lint. NON-BLOCKING BY DESIGN, FOR NOW.
+  #
+  # `npm run lint` exits 1 today: 126 problems / 89 errors, 84 of which are
+  # @typescript-eslint/no-explicit-any (117 of the repo's `any`s live in
+  # ChatViewProvider.ts alone). It has presumably exited 1 for months and
+  # nothing noticed, which is the whole reason this workflow exists.
+  #
+  # TO MAKE THIS BLOCKING: get the ERROR count to zero once, then delete the
+  # `continue-on-error:` line below. Do not get there by lowering rule severity
+  # - that trades a visible debt for an invisible one.
+  #
+  # Note `npm run lint` also re-runs check-provider-literals and the manifest
+  # --check. Those two are gated for real in job 1, so a red lint job here never
+  # means those two went unverified.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: lint (non-blocking until the error count is 0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+  # ---------------------------------------------------------------------------
+  # JOB 4 - package shape. NON-BLOCKING BY DESIGN, FOR NOW.
+  #
+  # scripts/check-package-shape.js asserts CLASSES OF THING about the built
+  # VSIX, never counts. (Counts are the wrong instrument: the audit's headline
+  # "212 .map / 210 .d.ts" was measured on a fresh build and does NOT reproduce
+  # against the committed mysti-0.5.0-dev.vsix, which has 188 and 194. "Zero
+  # .map files" is a property; "212 .map files" is a snapshot.)
+  #
+  # It FAILS on the current tree - that is the point. The known failures are
+  # documented at the top of the script.
+  #
+  # TO MAKE THIS BLOCKING: fix the assertions it reports, then delete the
+  # `continue-on-error:` line below.
+  # ---------------------------------------------------------------------------
+  package-shape:
+    name: package shape (non-blocking until the assertions pass)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: gates
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # `vsce package` runs `vscode:prepublish` itself, which runs `npm run
+      # compile`. Version-pinned so a vsce release cannot silently change what
+      # ships without a visible diff here.
+      #
+      # `--dependencies` is pinned deliberately and must stay. `.vscodeignore`
+      # un-ignores `node_modules/playwright*`, and a `!` rule can only
+      # re-include something vsce actually walked; `--no-dependencies` never
+      # walks node_modules, so Playwright silently vanishes and
+      # `require('playwright')` throws in the packaged extension. Measured on
+      # this tree: 677 files with dependency resolution, 135 without. This
+      # mirrors the `package` script in package.json byte for byte (minus
+      # `--out`), and vsce is fetched per-invocation at a pinned version in BOTH
+      # places rather than declared as a devDependency: a devDependency has to
+      # be mirrored into package-lock.json, and when it was added without one,
+      # `npm ci` failed with EUSAGE and took every job in this file down at its
+      # Install step.
+      - name: Package
+        run: npx --yes --package @vscode/vsce@3.9.2 -- vsce package --dependencies --out mysti-ci.vsix
+
+      - name: Check package shape
+        run: node scripts/check-package-shape.js mysti-ci.vsix
+
+      - name: Upload VSIX
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysti-vsix
+          path: mysti-ci.vsix
+          if-no-files-found: warn

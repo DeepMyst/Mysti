@@ -1,0 +1,39 @@
+name: Feature request
+description: Something Mysti should do and does not.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do, and where does Mysti get in the way? Describe
+        the situation, not the solution — the best version of a feature is
+        usually not the one first imagined.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: Optional. If you already have a shape in mind, sketch it.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >
+        Existing settings, another provider, a persona or skill, doing it by
+        hand. If something almost works, saying why it falls short is the most
+        useful part of this form.
+
+  - type: checkboxes
+    id: authority
+    attributes:
+      label: Does this need new authority?
+      options:
+        - label: >
+            This would let a model read, write, execute, or send something it
+            cannot today. (Not a problem — but it changes the design, so it is
+            worth saying up front.)

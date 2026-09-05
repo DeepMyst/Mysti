@@ -8,8 +8,8 @@ tests/**
 *.vsix
 .gitignore
 .eslintrc.json
-*.map
-*.ts
+**/*.map
+**/*.ts
 tsconfig.json
 webpack.config.js
 .git/**
@@ -26,11 +26,69 @@ clipboard/**
 stargazers-*
 CONTRIBUTING.md
 
+# Build/test outputs and dev-shell files that were shipping by accident.
+out-test/**
+out-vscode-test/**
+tests-vscode/**
+tsconfig.vscode-test.json
+.vscode-test.mjs
+.github/**
+.nvmrc
+flake.nix
+flake.lock
+fetch-stargazers.log
+
+# Fossils. `mcp-permission-server.js` is the wrapper for the CLI-NATIVE
+# permission path (`--permission-prompt-tool`); it requires
+# dist/mcp/permissionServer.js, which does not exist and is built by nothing —
+# neither `--permission-prompt-tool` nor `permissionServer` appears anywhere in
+# src/. It is kept in the repo (the native path may be worth resurrecting) but
+# must not ship as a dead entrypoint. `fabric.min.js` (314 KB) is loaded by no
+# HTML and referenced only by the dead CanvasManager.
+resources/mcp-permission-server.js
+resources/fabric.min.js
+
 # Playwright is a webpack EXTERNAL (webpack.config.js), so it is required from
 # node_modules at RUNTIME rather than bundled — playwright-core locates browser
 # drivers by filesystem path and does not survive bundling. Without these
 # un-ignores every packaged build fails `require('playwright')` and visual
 # testing is dead on arrival in the VSIX. The browser BINARIES are not shipped
 # (hundreds of MB); the user installs them via `npx playwright install chromium`.
-!node_modules/playwright/**
-!node_modules/playwright-core/**
+#
+# These two un-ignores only do anything when vsce is collecting dependencies:
+# `vsce package --no-dependencies` never walks node_modules at all, so there is
+# nothing for a `!` rule to re-include and the packaged extension silently ships
+# without Playwright. Measured on this tree: `vsce ls` = 677 files, `vsce ls
+# --no-dependencies` = 135, and the entire 542-file difference is Playwright.
+# That is why `npm run package` pins `vsce package --dependencies`.
+# The `!(*.d.ts)` is load-bearing and must not be "simplified" to `**`.
+#
+# vsce does NOT resolve these patterns last-match-wins by position: it collects
+# every `!` rule and re-includes anything matching ANY of them, after all the
+# ignore rules have run. So a plain `!node_modules/playwright/**` overrides
+# `**/*.ts` at the top of this file unconditionally and drags in Playwright's
+# TypeScript declarations — 2.03 MB across 9 files, playwright-core/types/
+# types.d.ts alone being 922 KB. Nothing reads a .d.ts at runtime.
+#
+# Appending `node_modules/playwright/**/*.d.ts` BELOW these lines does not work;
+# it was measured (`vsce ls` stayed at 686 files, all 9 declarations still
+# listed). The exclusion has to be expressed inside the negation itself, which
+# is what the extglob does.
+#
+# Measured with `npx @vscode/vsce@3.9.2 ls`: 686 files with a bare `**`
+# negation, 677 with this one, and the difference is exactly those 9 `.d.ts` —
+# all 542 Playwright RUNTIME files are still shipped. Verify with `node
+# scripts/check-package-shape.js` (assertions C and D) after any change here:
+# getting it wrong ships an extension whose `require('playwright')` throws.
+!node_modules/playwright/**/!(*.d.ts)
+!node_modules/playwright-core/**/!(*.d.ts)
+
+# The four `contributes.walkthroughs` step images live under docs/, which is
+# ignored above — so in every packaged install four of the five walkthrough
+# steps rendered with a broken image. They are re-included here rather than
+# relocated because the same files are referenced by all 11 README translations
+# (the Marketplace rewrites relative README paths against the repository).
+!docs/screenshots/quick-actions-welcome.png
+!docs/screenshots/settings-panel.png
+!docs/screenshots/user-experience.png
+!docs/screenshots/brainstorm-mode.png

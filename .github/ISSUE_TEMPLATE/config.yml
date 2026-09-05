@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/DeepMyst/Mysti/security/advisories/new
+    about: Report privately. Never in a public issue — see SECURITY.md.
+  - name: Question or idea
+    url: https://github.com/DeepMyst/Mysti/discussions
+    about: For anything that is not a bug report or a specific feature request.
