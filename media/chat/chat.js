@@ -2791,6 +2791,36 @@
       }
 
       // Render agent config panel
+      /**
+       * Plan 28 Phase 7 — where a persona or skill came from, and whether its
+       * text is TRUSTED or fenced.
+       *
+       * `source` says where the file was found; `trusted` says whether it is
+       * still the artifact Mysti shipped (Plan 20 invariant I1 — the core
+       * directory is writable by any local process, so location alone cannot
+       * justify system-tier authority). Only trusted content is concatenated
+       * into a system prompt; everything else is fenced as untrusted data.
+       *
+       * Deliberately worded as provenance, not as a verdict: the Tier-1 flag is
+       * measured at LOAD and is not re-measured until the next reload, so an
+       * external writer can leave it stale. Authority decisions read the
+       * Tier-2/3 value; this is for the human to look at.
+       */
+      function agentOriginBadge(a) {
+        if (!a || typeof a.source === 'undefined') { return ''; }
+        // The case worth shouting about: bundled, but no longer the bytes we shipped.
+        if (a.source === 'core' && a.trusted === false) {
+          return '<span class="agent-origin danger" title="This shipped with Mysti but no longer matches the version that was published. Its text is fenced as untrusted data rather than trusted instructions.">changed since it shipped</span>';
+        }
+        if (a.source === 'core') { return ''; }
+        var label = { user: 'yours', workspace: 'this repo', plugin: 'imported' }[a.source] || a.source;
+        var warn = a.warnings > 0
+          ? ' \u00b7 ' + a.warnings + ' finding' + (a.warnings === 1 ? '' : 's')
+          : '';
+        return '<span class="agent-origin" title="Not bundled with Mysti, so its text is fenced as untrusted data rather than concatenated into the system prompt.">' +
+               escapeHtml(label + warn) + '</span>';
+      }
+
       function renderAgentConfigPanel() {
         var personaGrid = document.getElementById('persona-grid');
         var skillsList = document.getElementById('skills-list');
@@ -2806,7 +2836,8 @@
           card.title = p.description;
           card.innerHTML =
             '<span class="persona-card-icon">' + personaIconHtml(p) + '</span>' +
-            '<span class="persona-card-name">' + escapeHtml(p.name) + '</span>';
+            '<span class="persona-card-name">' + escapeHtml(p.name) + '</span>' +
+            agentOriginBadge(p);
 
           card.onclick = function() {
             togglePersona(p.id);
@@ -2825,7 +2856,8 @@
           item.title = s.description;
           item.innerHTML =
             '<div class="skill-toggle"></div>' +
-            '<span class="skill-name">' + escapeHtml(s.name) + '</span>';
+            '<span class="skill-name">' + escapeHtml(s.name) + '</span>' +
+            agentOriginBadge(s);
 
           item.onclick = function() {
             toggleSkill(s.id);

@@ -9304,3 +9304,22 @@
       cursor: pointer;
     }
     .stall-btn:hover { color: var(--mysti-fg); border-color: var(--vscode-focusBorder); }
+
+    /* Plan 28 Phase 7 — provenance on a persona or skill. Quiet by default;
+       loud only for a bundled file that no longer matches what shipped. */
+    .agent-origin {
+      font-size: 9px;
+      line-height: 14px;
+      padding: 0 5px;
+      border-radius: 3px;
+      border: 1px solid var(--mysti-border);
+      color: var(--mysti-dim);
+      white-space: nowrap;
+      flex: none;
+    }
+    .agent-origin.danger {
+      color: var(--mysti-err);
+      border-color: var(--mysti-err);
+    }
+    .persona-card .agent-origin { margin-top: 2px; }
+    .skill-item .agent-origin { margin-left: auto; }

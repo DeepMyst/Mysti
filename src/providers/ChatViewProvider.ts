@@ -707,8 +707,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * falling back to the legacy static tables until the loader is ready.
    */
   private _mapAgentLists(): {
-    availablePersonas: { id: string; name: string; description: string; icon: string; keyCharacteristics: string; category?: string; source?: string }[];
-    availableSkills: { id: string; name: string; description: string; instructions: string; category?: string; source?: string }[];
+    // Plan 28 Phase 7: `trusted` and the content-scan findings now travel with
+    // personas and skills, as they already did for roles. Only `trusted`
+    // content is concatenated into a system prompt; everything else is fenced
+    // as untrusted data (AgentLoader, Plan 20 invariant I1), and the panel had
+    // no way to tell the user which of the two a given skill is.
+    availablePersonas: { id: string; name: string; description: string; icon: string; keyCharacteristics: string; category?: string; source?: string; trusted?: boolean; warnings?: number }[];
+    availableSkills: { id: string; name: string; description: string; instructions: string; category?: string; source?: string; trusted?: boolean; warnings?: number }[];
     availableRoles: { id: string; name: string; description: string; icon: string; access: string; category?: string; source?: string; trusted: boolean }[];
   } {
     const availablePersonas = this._agentsLoaded
@@ -719,7 +724,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           icon: p.icon || '👤',
           keyCharacteristics: '', // Loaded on demand via three-tier system
           category: p.category,
-          source: p.source
+          source: p.source,
+          trusted: p.trusted,
+          warnings: p.contentWarnings?.length ?? 0
         }))
       : Object.values(DEVELOPER_PERSONAS);
 
@@ -730,7 +737,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           description: s.description,
           instructions: '', // Loaded on demand via three-tier system
           category: s.category,
-          source: s.source
+          source: s.source,
+          trusted: s.trusted,
+          warnings: s.contentWarnings?.length ?? 0
         }))
       : Object.values(DEVELOPER_SKILLS);
 

@@ -712,3 +712,60 @@ describe('Plan 28 Phase 7 — a silent backend says so', () => {
     expect(await page2!.$('#stall-card')).toBeNull();
   }, 30000);
 });
+
+describe('Plan 28 Phase 7 — where a persona or skill came from', () => {
+  const badges = () => page!.$$eval('#skills-list .skill-item',
+    (els) => els.map((e) => ({
+      name: e.querySelector('.skill-name')?.textContent ?? '',
+      origin: e.querySelector('.agent-origin')?.textContent ?? null,
+      danger: !!e.querySelector('.agent-origin.danger'),
+    })));
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('says nothing about a bundled file that is unchanged', async () => {
+    await send({ type: 'agentsUpdated', payload: {
+      availablePersonas: [],
+      availableSkills: [
+        { id: 'core-ok', name: 'Threat modelling', description: '', instructions: '', source: 'core', trusted: true, warnings: 0 },
+      ],
+      availableRoles: [],
+    } });
+    const rows = await badges();
+    expect(rows.find((r) => r.name === 'Threat modelling')?.origin).toBeNull();
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('marks a bundled file that no longer matches what shipped', async () => {
+    await send({ type: 'agentsUpdated', payload: {
+      availablePersonas: [],
+      availableSkills: [
+        { id: 'core-bad', name: 'Tampered', description: '', instructions: '', source: 'core', trusted: false, warnings: 0 },
+      ],
+      availableRoles: [],
+    } });
+    const row = (await badges()).find((r) => r.name === 'Tampered');
+    expect(row?.origin).toBe('changed since it shipped');
+    expect(row?.danger).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('names the origin of anything not bundled, with its findings', async () => {
+    await send({ type: 'agentsUpdated', payload: {
+      availablePersonas: [],
+      availableSkills: [
+        { id: 'mine', name: 'Mine', description: '', instructions: '', source: 'user', trusted: false, warnings: 0 },
+        { id: 'repo', name: 'Repo', description: '', instructions: '', source: 'workspace', trusted: false, warnings: 0 },
+        { id: 'imported', name: 'Imported', description: '', instructions: '', source: 'plugin', trusted: false, warnings: 2 },
+      ],
+      availableRoles: [],
+    } });
+    const rows = await badges();
+    const by = Object.fromEntries(rows.map((r) => [r.name, r.origin]));
+    expect(by['Mine']).toBe('yours');
+    expect(by['Repo']).toBe('this repo');
+    expect(by['Imported']).toBe('imported · 2 findings');
+    // Provenance, not a verdict — none of these shouts.
+    expect(rows.filter((r) => r.danger).length).toBe(0);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 20000);
+});
