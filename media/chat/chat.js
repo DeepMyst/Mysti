@@ -2595,9 +2595,24 @@
         });
       }
 
+      /**
+       * Plan 28 Phase 7 — re-arm the setup overlay.
+       *
+       * `dismissedByUser` stops a stale poll from re-raising a wall the user
+       * already left. It must NOT mean "never show setup again": as a one-way
+       * latch it silently swallowed the `authPrompt` that the wizard's own Sign
+       * in button asks for, stranding the wizard at "Checking authentication…"
+       * with no way forward short of reloading the webview. Anything the user
+       * does to REQUEST setup clears it.
+       */
+      function rearmSetupOverlay() {
+        if (state.setup) { state.setup.dismissedByUser = false; }
+      }
+
       var setupRetryBtn = document.getElementById('setup-retry-btn');
       if (setupRetryBtn) {
         setupRetryBtn.addEventListener('click', function() {
+          rearmSetupOverlay();
           postMessageWithPanelId({
             type: 'retrySetup',
             payload: { providerId: state.setup && state.setup.providerId }
@@ -2628,6 +2643,9 @@
       var wizardSignInBtn = document.getElementById('wizard-signin-btn');
       if (wizardSignInBtn) {
         wizardSignInBtn.addEventListener('click', function() {
+          // The user is asking to authenticate — a previous dismissal of a
+          // stale poll must not swallow the prompt they just requested.
+          rearmSetupOverlay();
           vscode.postMessage({ type: 'signInDeepMyst' });
         });
       }
@@ -4024,10 +4042,14 @@
          * unreachable — CSP-dead then, off-screen or scrolled now — the panel is
          * a wall. Escape is a second exit that cannot be laid out away.
          *
-         * It CLICKS the existing skip control rather than posting the message
-         * itself, so the dismissal persists by exactly the path the button uses
-         * (`dontShowAgain: true` for the wizard). A second copy of that decision
-         * is how "dismissed" quietly stops sticking.
+         * The two branches deliberately differ. The WIZARD branch clicks the
+         * existing skip control, so its dismissal persists by exactly the path
+         * that button uses (`dontShowAgain: true`) — a second copy of that
+         * decision is how "dismissed" quietly stops sticking. The SETUP-OVERLAY
+         * branch does the work itself: anything that replaces `.setup-content`
+         * swaps in a fresh skip button carrying no listener, so deferring to it
+         * there is silently inert in exactly the states Escape exists for.
+         * `skipSetup` has no payload, so there is nothing to keep in step.
          */
         document.addEventListener('keydown', function(e) {
           if (e.key !== 'Escape') { return; }

@@ -154,8 +154,6 @@ async function boot(): Promise<void> {
     },
   });
   await page.waitForSelector('#init-loading-overlay.hidden', { state: 'attached' });
-  pristineSetupContent = await page.$eval('#setup-overlay .setup-content', (e) => e.innerHTML)
-    .catch(() => '');
 }
 
 /** Drive the webview the way the extension does. */
@@ -166,24 +164,28 @@ async function send(msg: Record<string, unknown>): Promise<void> {
 }
 
 /**
- * The setup-overlay tests destroy `.setup-content` (that is the state under
- * test) and set `dismissedByUser`. One page is shared across every describe in
- * this file, so without putting both back the tests after them are running
- * against a panel that can never show a pristine overlay again — and any of
- * them that touches setup passes or fails for the wrong reason.
+ * A brand-new panel page. The setup screens destroy `.setup-content` and latch
+ * `dismissedByUser`, and nothing in the product clears that except a
+ * user-requested setup action — so sharing one page with the rest of the file
+ * left every later test running against a permanently-dismissed panel. A
+ * helper that "reset" it by replaying `setupStatus` did not work either:
+ * `handleSetupStatus` never touches that flag. Its own page is the honest fix.
  */
-let pristineSetupContent = '';
-async function resetSetupOverlay(): Promise<void> {
-  await page!.evaluate((html) => {
-    const o = document.getElementById('setup-overlay')!;
-    const c = o.querySelector('.setup-content');
-    if (c && html) { c.innerHTML = html; }
-    o.classList.add('hidden');
-    // The flag lives in module scope; clear it the way the panel would, by
-    // replaying the state the extension sends on a fresh setup run.
-    window.dispatchEvent(new MessageEvent('message', { data: {
-      type: 'setupStatus', payload: { isReady: true, currentStep: 'idle' } } }));
-  }, pristineSetupContent);
+async function newPanelPage(): Promise<import('playwright').Page> {
+  const ctx = await browser!.newContext({ permissions: ['clipboard-write'] });
+  const pg = await ctx.newPage();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-panel-'));
+  const file = path.join(dir, 'chat.html');
+  fs.writeFileSync(file, composeHtml(), 'utf8');
+  await pg.goto(`file://${file}`, { waitUntil: 'load' });
+  await pg.evaluate(() => {
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'initialState', payload: {
+      settings: { provider: 'claude-code', model: '', mode: 'ask-before-edit', thinkingLevel: 'none',
+        effortLevel: 'high', accessLevel: 'ask-permission', contextMode: 'auto', autonomousMode: false },
+      messages: [], context: [], conversations: [],
+    } } }));
+  });
+  return pg;
 }
 
 async function posted(): Promise<Array<Record<string, unknown>>> {
@@ -1072,7 +1074,6 @@ describe('review round two: the fixes did not introduce their own bugs', () => {
     await page!.keyboard.press('Escape');
     expect((await posted()).some((m) => m.type === 'skipSetup')).toBe(true);
     expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
-    await resetSetupOverlay();
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('attachments belong to the message they were staged for', async () => {
@@ -1175,7 +1176,6 @@ describe('review round three', () => {
     // anyway — and by now the overlay has no buttons left in it.
     await send({ type: 'setupFailed', payload: { providerId: 'claude-code', error: 'timed out' } });
     expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
-    await resetSetupOverlay();
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
@@ -1207,29 +1207,7 @@ describe('review round four', () => {
     expect(await page!.$eval('#popup-autonomy-select', (e) => (e as HTMLSelectElement).value)).toBe('manual');
   }, 20000);
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('a dismissed overlay hides rather than freezing on screen', async () => {
-    await page!.evaluate(() => {
-      const o = document.getElementById('setup-overlay')!;
-      o.classList.remove('hidden');
-    });
-    // A guard that merely declined to redraw left the wall up, frozen and
-    // uncontrollable; a dismissal has to hide it.
-    await page!.keyboard.press('Escape');
-    await send({ type: 'setupFailed', payload: { providerId: 'claude-code', error: 'timed out' } });
-    expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
-    await resetSetupOverlay();
-  }, 20000);
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('an authPrompt cannot bring a dismissed wall back either', async () => {
-    await page!.evaluate(() => document.getElementById('setup-overlay')!.classList.remove('hidden'));
-    // Dismiss with ESCAPE, not the button. Restoring `.setup-content` replaces
-    // the skip button with a fresh element carrying no listener — which is the
-    // same reason the Escape fallback exists in the first place.
-    await page!.keyboard.press('Escape');
-    await send({ type: 'authPrompt', payload: { providerId: 'claude-code', message: 'Sign in' } });
-    expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
-    await resetSetupOverlay();
-  }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('a queued chip says how many files ride with it', async () => {
     await send({ type: 'responseStarted' });
@@ -1250,4 +1228,84 @@ describe('review round four', () => {
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
     expect(pageErrors).toEqual([]);
   }, 20000);
+});
+
+describe('the setup overlay, on a pristine page each time', () => {
+  /*
+   * `dismissedByUser` latches, and only a user-requested setup action clears
+   * it — so these need a panel nobody has dismissed yet. Each test gets one.
+   */
+  let pg: import('playwright').Page | undefined;
+  const errs: string[] = [];
+
+  beforeEach(async () => {
+    if (CHROMIUM_UNAVAILABLE) { return; }
+    pg = await newPanelPage();
+    pg.on('pageerror', (e) => errs.push(String(e)));
+  }, 60000);
+  afterEach(async () => { await pg?.close(); pg = undefined; });
+
+  const fire = (m: Record<string, unknown>) =>
+    pg!.evaluate((x) => { window.dispatchEvent(new MessageEvent('message', { data: x })); }, m);
+  const sent = () => pg!.evaluate(() =>
+    (window as unknown as { __posted: Array<{ type: string }> }).__posted);
+  const show = () => pg!.evaluate(() =>
+    document.getElementById('setup-overlay')!.classList.remove('hidden'));
+  const hidden = () => pg!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'));
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a stale setupFailed cannot re-raise a dismissed wall', async () => {
+    await show();
+    await pg!.keyboard.press('Escape');
+    expect(await hidden()).toBe(true);
+    // skipSetup does not cancel the extension's auth poll, so this arrives anyway.
+    await fire({ type: 'setupFailed', payload: { providerId: 'claude-code', error: 'timed out' } });
+    expect(await hidden()).toBe(true);
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('nor can a stale authPrompt', async () => {
+    await show();
+    await pg!.keyboard.press('Escape');
+    await fire({ type: 'authPrompt', payload: { providerId: 'claude-code', message: 'Sign in' } });
+    expect(await hidden()).toBe(true);
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('but asking to sign in RE-ARMS it — the latch is per run, not forever', async () => {
+    await show();
+    await pg!.keyboard.press('Escape');
+    expect(await hidden()).toBe(true);
+
+    // The wizard's own Sign in button. Without the re-arm this swallowed the
+    // very prompt the user just asked for, stranding the wizard at
+    // "Checking authentication…" with no way forward but a reload.
+    await pg!.evaluate(() => document.getElementById('wizard-signin-btn')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await fire({ type: 'authPrompt', payload: { providerId: 'claude-code', message: 'Sign in' } });
+    expect(await hidden()).toBe(false);
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Retry re-arms it too', async () => {
+    await show();
+    await pg!.keyboard.press('Escape');
+    await pg!.evaluate(() => document.getElementById('setup-retry-btn')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect((await sent()).some((m) => m.type === 'retrySetup')).toBe(true);
+    await fire({ type: 'setupProgress', payload: { providerId: 'claude-code', progress: 40, message: 'installing' } });
+    expect(await hidden()).toBe(false);
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Escape works when the auth state has destroyed the skip button', async () => {
+    await show();
+    await pg!.evaluate(() => {
+      const c = document.getElementById('setup-overlay')!.querySelector('.setup-content');
+      if (c) { c.innerHTML = '<div>Waiting for authentication…</div>'; }
+    });
+    expect(await pg!.$('#setup-skip-btn')).toBeNull();
+    await pg!.keyboard.press('Escape');
+    expect((await sent()).some((m) => m.type === 'skipSetup')).toBe(true);
+    expect(await hidden()).toBe(true);
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(errs).toEqual([]);
+  }, 30000);
 });
