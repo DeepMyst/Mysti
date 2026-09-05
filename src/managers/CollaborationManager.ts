@@ -238,6 +238,18 @@ export class CollaborationManager {
   /** collaboratorId -> role display name, captured during spec build. */
   private _roleNames: Map<string, string> = new Map();
 
+  /**
+   * The name a role may show the user. Trusted (hash-verified bundled) roles
+   * keep their `name:`; every other role is named by its id plus a marker.
+   * Fail-closed: `trusted` must be exactly `true`, mirroring `_buildPrompt`.
+   */
+  private static _roleDisplayName(roleId: string, roleCtx: { name: string; trusted: boolean }): string {
+    if (roleCtx.trusted === true && roleCtx.name) {
+      return roleCtx.name;
+    }
+    return `${roleId} (unverified role)`;
+  }
+
   private async _buildSpecs(input: CollaborationRunInput, runId: string): Promise<CollaboratorSpec[]> {
     this._roleNames = new Map();
     const specs: CollaboratorSpec[] = [];
@@ -254,9 +266,19 @@ export class CollaborationManager {
       const collaboratorId = `${specs.length}-${req.agentId}${suffix}`;
 
       const providerName = getProviderDisplayName(req.agentId);
-      const label = roleCtx?.name ? `${providerName} · ${roleCtx.name}` : providerName;
-      if (roleCtx?.name) {
-        this._roleNames.set(collaboratorId, roleCtx.name);
+      // Plan 27 lane M (#5): the role's file-authored `name:` is user-facing
+      // text — it becomes CollaboratorSpec.label, i.e. the permission card's
+      // "<label> wants to: <tool>" (reachable for an untrusted role via a
+      // read-only advisor's gated WebFetch) and the `<<<COLLAB … — label`
+      // header the MAIN agent reads. Lane F fenced an untrusted role's BODY;
+      // its NAME gets the same treatment: only an integrity-verified role may
+      // display its own name. Anything else is shown by the id the user typed
+      // (`@gemini:<roleId>` — loaded ids are slug-validated by AgentLoader),
+      // tagged so the demotion to the Advisor stance is visible, not silent.
+      const roleDisplay = roleCtx && req.roleId ? CollaborationManager._roleDisplayName(req.roleId, roleCtx) : undefined;
+      const label = roleDisplay ? `${providerName} · ${roleDisplay}` : providerName;
+      if (roleDisplay) {
+        this._roleNames.set(collaboratorId, roleCtx?.trusted === true ? roleDisplay : (req.roleId as string));
       }
 
       specs.push({

@@ -20,6 +20,7 @@
  * than node count. Figma never transforms live content.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
@@ -38,7 +39,6 @@ const SANDBOX = path.join(ROOT, 'resources', 'canvas-sandbox');
 let browser: Browser | undefined;
 let page: Page | undefined;
 let bundle = '';
-let unavailable: string | null = null;
 
 interface Report { p50: number; p95: number; dropped: number; frames: number; nodes: number }
 
@@ -172,20 +172,20 @@ async function pacedPan(ticks: number): Promise<Report> {
 
 describe('live-artboard performance (real design from Mysti-Test-Project)', () => {
   beforeAll(async () => {
-    try {
-      const { chromium } = await import('playwright');
-      bundle = await buildBundle();
-      browser = await chromium.launch();
-      page = await browser.newPage();
-      await page.setViewportSize({ width: 1400, height: 900 });
-    } catch (err) { unavailable = err instanceof Error ? err.message : String(err); }
+    if (CHROMIUM_UNAVAILABLE) { return; }
+    const { chromium } = await import('playwright');
+    bundle = await buildBundle();
+    browser = await chromium.launch();
+    page = await browser.newPage();
+    await page.setViewportSize({ width: 1400, height: 900 });
   }, 180_000);
   afterAll(async () => { await browser?.close(); });
 
-  it('measures a pan with LIVE frames mounted vs static previews', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
-    const art = realArtifact();
-    if (!art) { console.warn('[Mysti] skipping — Mysti-Test-Project artifact not found'); return; }
+  // Two preconditions, both declared so vitest reports a SKIP rather than a
+  // green tick with nothing measured: a launchable Chromium, and the real
+  // design fixture from the sibling Mysti-Test-Project checkout.
+  it.skipIf(CHROMIUM_UNAVAILABLE || !fs.existsSync(REAL_ARTIFACT))('measures a pan with LIVE frames mounted vs static previews', async () => {
+    const art = realArtifact()!;
     console.log(`[perf] real design: ${art.pages.length} artboards`);
 
     // Zoomed in enough that frames are allowed to mount (threshold 0.35).

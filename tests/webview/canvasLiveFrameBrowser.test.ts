@@ -32,9 +32,10 @@
  * `'unsafe-inline'`) rather than the stripped one every other browser test
  * uses, because a live frame is exactly what that policy broke once already.
  *
- * Degrades to a warning where Chromium is unavailable, like its siblings.
+ * Skipped (it.skipIf) where Chromium is unavailable, like its siblings.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Browser, Frame, Page } from 'playwright';
@@ -56,7 +57,6 @@ const HEADING = 'aaaaaaaaaa';
 let browser: Browser | undefined;
 let page: Page | undefined;
 let bundle = '';
-let unavailable: string | null = null;
 
 /** React, ReactDOM, the 22 primitives and the harness, keyed by fake URI. */
 function runtimeFiles(): Record<string, string> {
@@ -242,13 +242,12 @@ async function focused(): Promise<string> {
 }
 
 beforeAll(async () => {
-  try {
-    const { chromium } = await import('playwright');
-    bundle = await buildBundle();
-    browser = await chromium.launch();
-    page = await browser.newPage();
-    await page.setViewportSize({ width: 1600, height: 1000 });
-  } catch (err) { unavailable = err instanceof Error ? err.message : String(err); }
+  if (CHROMIUM_UNAVAILABLE) { return; }
+  const { chromium } = await import('playwright');
+  bundle = await buildBundle();
+  browser = await chromium.launch();
+  page = await browser.newPage();
+  await page.setViewportSize({ width: 1600, height: 1000 });
 }, 180_000);
 afterAll(async () => { await browser?.close(); });
 
@@ -276,8 +275,7 @@ describe('the shell policy this file loads the live frame under (static)', () =>
 describe('canvas live artboard frames (real browser)', () => {
   /* ───────────── CANVAS-P3-4 — a device change must reach the frame ───────────── */
 
-  it('CANVAS-P3-4 · a device change re-lays-out the LIVE document, not just its box', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CANVAS-P3-4 · a device change re-lays-out the LIVE document, not just its box', async () => {
     await freshApp([pageFixture('p1', 0, 'Login', docOf(
       { mid: HEADING, tag: 'UI.Heading', text: 'Welcome' },
     ))]);
@@ -313,8 +311,7 @@ describe('canvas live artboard frames (real browser)', () => {
 
   /* ── R4-1 — a mount and a patch must never describe the same op ── */
 
-  it('R4-1 · an element op batched with a theme op is applied ONCE', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('R4-1 · an element op batched with a theme op is applied ONCE', async () => {
     await freshApp([pageFixture('p1', 0, 'Login', docOf(
       { mid: HEADING, tag: 'UI.Heading', text: 'Welcome' },
     ))]);
@@ -352,8 +349,7 @@ describe('canvas live artboard frames (real browser)', () => {
     ).toBe(1);
   }, 180_000);
 
-  it('R4-1 · a remove batched with a theme op reports no spurious frame error', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('R4-1 · a remove batched with a theme op reports no spurious frame error', async () => {
     await freshApp([pageFixture('p1', 0, 'Login', docOf(
       { mid: HEADING, tag: 'UI.Heading', text: 'Welcome' },
       { mid: 'cccccccccc', tag: 'UI.Text', text: 'Doomed' },
@@ -379,8 +375,7 @@ describe('canvas live artboard frames (real browser)', () => {
 
   /* ───────────────── R3-3 — a frame must not be a tab stop ───────────────── */
 
-  it('R3-3 · sequential navigation never drops focus inside an artboard frame', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('R3-3 · sequential navigation never drops focus inside an artboard frame', async () => {
     // Two artboards, both mobile so zoom-to-fit lands well above the live
     // threshold and both frames are genuinely mounted.
     await freshApp([
@@ -412,8 +407,7 @@ describe('canvas live artboard frames (real browser)', () => {
 
   /* ────────── R3-2 — a walk that cannot move must release the key ────────── */
 
-  it('R3-2 · Tab falls through when the element walk has nowhere to go', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('R3-2 · Tab falls through when the element walk has nowhere to go', async () => {
     // ONE selectable element: `tabTarget` wraps modulo, so `(0 + 1 + 1) % 1`
     // hands back the mid the user is already on — a walk that does not move.
     await freshApp([pageFixture('p1', 0, 'Login', docOf(
@@ -472,7 +466,7 @@ describe('harness op projection (real frame)', () => {
   let bare: Page | undefined;
 
   beforeAll(async () => {
-    if (unavailable) { return; }
+    if (CHROMIUM_UNAVAILABLE) { return; }
     bare = await browser!.newPage();
   }, 120_000);
   afterAll(async () => { await bare?.close(); });
@@ -561,8 +555,7 @@ describe('harness op projection (real frame)', () => {
     };
   }
 
-  it('CANVAS-P3-6 · el.move onto its own gap stays put instead of appending', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CANVAS-P3-6 · el.move onto its own gap stays put instead of appending', async () => {
     const doc = docOf(
       { mid: 'aaaaaaaaaa', tag: 'UI.Text', text: 'one' },
       { mid: 'bbbbbbbbbb', tag: 'UI.Text', text: 'two' },
@@ -588,8 +581,7 @@ describe('harness op projection (real frame)', () => {
 
   /* ── R4-2 — a theme/device re-mount is not a document replacement ── */
 
-  it('R4-2 · a doc-less re-mount keeps the human\u2019s in-flight inline edit', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('R4-2 · a doc-less re-mount keeps the human\u2019s in-flight inline edit', async () => {
     const f = await mountFrame(docOf({ mid: HEADING, tag: 'UI.Heading', text: 'Welcome' }));
 
     // Exactly what the parent does on a double-click: open the edit, then let
@@ -612,8 +604,7 @@ describe('harness op projection (real frame)', () => {
     expect(await f.errors(), 'a doc-less mount reported an error').toEqual([]);
   }, 180_000);
 
-  it('R4-2 · a mount that DOES replace the document still ends the edit', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('R4-2 · a mount that DOES replace the document still ends the edit', async () => {
     const f = await mountFrame(docOf({ mid: HEADING, tag: 'UI.Heading', text: 'Welcome' }));
     await f.send({ t: 'beginTextEdit', mid: HEADING });
     await bare!.keyboard.type('Welcome EDITED');
@@ -625,8 +616,7 @@ describe('harness op projection (real frame)', () => {
     expect(await f.textOf(HEADING)).toBe('Replaced');
   }, 180_000);
 
-  it('CANVAS-P3-6 · an anchor this frame cannot resolve is a MISS, not an append', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CANVAS-P3-6 · an anchor this frame cannot resolve is a MISS, not an append', async () => {
     const doc = docOf(
       { mid: 'aaaaaaaaaa', tag: 'UI.Text', text: 'one' },
       { mid: 'bbbbbbbbbb', tag: 'UI.Text', text: 'two' },

@@ -29,6 +29,7 @@
  * measures. Playwright is already a dependency (`ScreenshotService`).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
@@ -39,7 +40,6 @@ const WIDTHS = [320, 380, 479, 480, 500, 639, 640, 700, 800, 959, 960, 1200, 140
 
 let browser: Browser | undefined;
 let page: Page | undefined;
-let unavailable: string | null = null;
 
 /**
  * Colour maths, injected once into the page: sRGB parsing (including the
@@ -183,9 +183,8 @@ async function boot(): Promise<void> {
 }
 
 beforeAll(async () => {
-  try { await boot(); } catch (err) {
-    unavailable = err instanceof Error ? err.message : String(err);
-  }
+  if (CHROMIUM_UNAVAILABLE) { return; }
+  await boot();
 }, 120_000);
 afterAll(async () => { await browser?.close(); });
 
@@ -204,8 +203,7 @@ async function boardWidth(w: number, classes = '', checked: string[] = []): Prom
 }
 
 describe('canvas shell layout (real browser)', () => {
-  it('gives the board a usable width at every breakpoint', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('gives the board a usable width at every breakpoint', async () => {
     const measured: Record<number, number> = {};
     for (const w of WIDTHS) { measured[w] = await boardWidth(w); }
     // Before the fix: 0 at every width <= 639.
@@ -214,26 +212,22 @@ describe('canvas shell layout (real browser)', () => {
     }
   }, 120_000);
 
-  it('keeps the board visible when the user hides the pages rail', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the board visible when the user hides the pages rail', async () => {
     // The `[` toggle. Before the fix this was 0px and the inspector took the space.
     expect(await boardWidth(1200, 'layout-wide rail-collapsed', ['rail-hidden'])).toBeGreaterThan(100);
     expect(await boardWidth(800, 'layout-medium rail-collapsed', ['rail-hidden'])).toBeGreaterThan(100);
   }, 120_000);
 
-  it('keeps the board visible when the user hides the inspector', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the board visible when the user hides the inspector', async () => {
     expect(await boardWidth(1200, 'layout-wide inspector-collapsed', ['inspector-hidden'])).toBeGreaterThan(100);
   }, 120_000);
 
-  it('keeps the board visible with BOTH side panes hidden', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the board visible with BOTH side panes hidden', async () => {
     const w = await boardWidth(1200, 'layout-wide rail-collapsed inspector-collapsed', ['rail-hidden', 'inspector-hidden']);
     expect(w).toBeGreaterThan(900);
   }, 120_000);
 
-  it('never lets the page scroll sideways', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('never lets the page scroll sideways', async () => {
     for (const w of [320, 640, 1400]) {
       await boardWidth(w);
       const overflow = await page!.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -428,8 +422,7 @@ const probe = <T>(fn: string, ...args: unknown[]): Promise<T> =>
   page!.evaluate(({ fn, args }) => (window as unknown as { __probe: Record<string, (...a: unknown[]) => unknown> }).__probe[fn](...args) as T, { fn, args });
 
 describe('canvas theme correctness (real browser, per VS Code theme class)', () => {
-  it('CV-T2 · delimits every artboard from the board, with shadows forced off', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CV-T2 · delimits every artboard from the board, with shadows forced off', async () => {
     const seen: Record<string, unknown> = {};
     for (const name of ALL_THEMES) {
       await theme(name);
@@ -450,8 +443,7 @@ describe('canvas theme correctness (real browser, per VS Code theme class)', () 
     }
   }, 120_000);
 
-  it('CV-T3 · keeps quiet UI text above the contrast floor in every theme', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CV-T3 · keeps quiet UI text above the contrast floor in every theme', async () => {
     // Each of these is real, non-decorative text: the capability chips, the
     // device badge on every rail row, and the inspector's help line.
     const targets = ['.chip', '.thumb-badge', '.ctl-note'];
@@ -466,8 +458,7 @@ describe('canvas theme correctness (real browser, per VS Code theme class)', () 
     expect(failing, `low-contrast text: ${JSON.stringify(measured, null, 1)}`).toEqual([]);
   }, 120_000);
 
-  it('CV-T4 · still answers a hover in high contrast, where fills are switched off', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CV-T4 · still answers a hover in high contrast, where fills are switched off', async () => {
     for (const name of HIGH_CONTRAST) {
       await theme(name);
       for (const sel of ['.history-btn', '#btn-zoom-in']) {
@@ -493,8 +484,7 @@ describe('canvas theme correctness (real browser, per VS Code theme class)', () 
     }
   }, 120_000);
 
-  it('R3-4 · a hover never outranks the SELECTION ring in high contrast', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('R3-4 · a hover never outranks the SELECTION ring in high contrast', async () => {
     // The hover treatment added for CV-T4 is (0,5,1); the high-contrast
     // selection ring on `.thumb.active` / `.insp-tab.active` is (0,2,1) and
     // loses, so hovering the page currently open on the board swapped its SOLID
@@ -547,8 +537,7 @@ describe('canvas theme correctness (real browser, per VS Code theme class)', () 
     });
   }, 120_000);
 
-  it('CV-T4 · keeps the progress track visible when --bg-hover is transparent', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CV-T4 · keeps the progress track visible when --bg-hover is transparent', async () => {
     for (const name of HIGH_CONTRAST) {
       await theme(name);
       const fb = await probe<{ fillRatio: number; borderRatio: number; outlineRatio: number }>('feedback', '.agent-progress');
@@ -557,8 +546,7 @@ describe('canvas theme correctness (real browser, per VS Code theme class)', () 
     }
   }, 120_000);
 
-  it('CV-T5 · dims the board behind an overlay pane in every theme', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CV-T5 · dims the board behind an overlay pane in every theme', async () => {
     const measured: Record<string, unknown> = {};
     for (const name of ALL_THEMES) {
       await theme(name, 500);                       // narrow: the rail is an overlay
@@ -574,8 +562,7 @@ describe('canvas theme correctness (real browser, per VS Code theme class)', () 
     }
   }, 120_000);
 
-  it('CV-T6 · pairs the top bar background with a foreground guaranteed against it', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CV-T6 · pairs the top bar background with a foreground guaranteed against it', async () => {
     const targets = ['.brand', '#artifact-name', '#btn-export'];
     const measured: Record<string, number> = {};
     for (const name of ALL_THEMES) {
@@ -592,8 +579,7 @@ describe('canvas theme correctness (real browser, per VS Code theme class)', () 
     expect(failing, `top-bar text below 4.5:1 — ${JSON.stringify(measured, null, 1)}`).toEqual([]);
   }, 120_000);
 
-  it('CV-T7 · draws the agent cursor label with a guaranteed colour pair', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CV-T7 · draws the agent cursor label with a guaranteed colour pair', async () => {
     const measured: Record<string, number> = {};
     for (const name of ALL_THEMES) {
       await theme(name);
@@ -606,8 +592,7 @@ describe('canvas theme correctness (real browser, per VS Code theme class)', () 
     expect(failing, `agent cursor label below 4.5:1 — ${JSON.stringify(measured)}`).toEqual([]);
   }, 120_000);
 
-  it('SYNC-4 · pulses the status dot only while the agent is actually working', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('SYNC-4 · pulses the status dot only while the agent is actually working', async () => {
     await theme('dark');
     const animationFor = async (state: string): Promise<string> => {
       await page!.evaluate(s => { document.getElementById('agent-status')!.setAttribute('data-state', s); }, state);
@@ -626,8 +611,7 @@ describe('canvas theme correctness (real browser, per VS Code theme class)', () 
     await page!.evaluate(() => { document.getElementById('agent-status')!.removeAttribute('data-motion'); });
   }, 120_000);
 
-  it('A11Y-7 · leaves an overlay pane closable by keyboard, and announces no empty control', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('A11Y-7 · leaves an overlay pane closable by keyboard, and announces no empty control', async () => {
     await theme('dark', 500);                        // narrow: both panes are overlays
     await page!.evaluate(() => { (document.getElementById('rail-shown') as HTMLInputElement).checked = true; });
 
@@ -669,24 +653,21 @@ describe('overlay panes are actually usable (R3-1)', () => {
   // zero and the inspector was a 1px sliver of border, while its scrim still
   // covered the board and ate every click. The old suite measured only #board
   // and the scrim's display, so it was blind to this.
-  it('opens the inspector to a real width at every overlay breakpoint', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('opens the inspector to a real width at every overlay breakpoint', async () => {
     for (const w of [380, 500, 639, 700, 800, 959]) {
       const width = await paneWidth('inspector', w, '', ['inspector-shown']);
       expect(width, `inspector overlay width at ${w}px`).toBeGreaterThan(200);
     }
   }, 120_000);
 
-  it('opens the rail to a real width at narrow widths', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('opens the rail to a real width at narrow widths', async () => {
     for (const w of [380, 500, 639]) {
       const width = await paneWidth('pages-rail', w, '', ['rail-shown']);
       expect(width, `rail overlay width at ${w}px`).toBeGreaterThan(160);
     }
   }, 120_000);
 
-  it('does NOT let a docked pane span the whole grid', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('does NOT let a docked pane span the whole grid', async () => {
     // The naive fix (a bare `grid-column: 1 / -1` on the :has() rules) made the
     // DOCKED rail 700-959px wide at medium and wide widths.
     for (const [w, cls] of [[1200, 'layout-wide'], [800, 'layout-medium']] as Array<[number, string]>) {
@@ -696,8 +677,7 @@ describe('overlay panes are actually usable (R3-1)', () => {
     }
   }, 120_000);
 
-  it('keeps the board usable while an overlay pane is open', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the board usable while an overlay pane is open', async () => {
     expect(await paneWidth('board', 800, '', ['inspector-shown'])).toBeGreaterThan(100);
   }, 120_000);
 });
@@ -707,8 +687,7 @@ describe('board interaction affordances', () => {
   // frames. What was missing is the FEEDBACK that makes an interaction feel
   // responsive: the board had no cursor rule of any kind, so pan was both
   // undiscoverable and unconfirmed.
-  it('shows a grab cursor when space is held, and grabbing while panning', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows a grab cursor when space is held, and grabbing while panning', async () => {
     await page!.setViewportSize({ width: 1400, height: 900 });
     const cursors = await page!.evaluate(() => {
       const el = document.getElementById('board-scroll')!;

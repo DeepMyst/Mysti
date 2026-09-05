@@ -908,6 +908,9 @@
               description: r.description || '',
               icon: r.icon || '🎭',
               access: r.access || 'read-only',
+              // Plan 27 lane M (#5): integrity verdict from the extension
+              // (undefined on an older host that never sends it).
+              trusted: r.trusted,
               score: bestScore
             });
           }
@@ -931,12 +934,22 @@
           var iconChar = (item.icon && /[^\x00-\x7F]/.test(item.icon)) ? item.icon : '🎭';
           var iconHtml = '<span class="mention-file-icon">' + iconChar + '</span>';
           var nameHtml = highlightMatch(item.displayName, query);
-          var accessBadge = item.access === 'gated-write'
+          // Plan 27 lane M (#5): a role that is not integrity-verified runs as
+          // the read-only Advisor stance with its body fenced (lane F) — say so
+          // where the role is picked, and show the access it will ACTUALLY get
+          // rather than the `access:` its file declares. Strict comparison: an
+          // older extension host that never sends `trusted` renders unchanged.
+          var trustBadge = item.trusted === false
+            ? '<span class="mention-shortname mention-unverified" title="not integrity-verified — advisory only (runs read-only; its instructions are treated as reference data)">unverified</span>'
+            : '';
+          var effectiveAccess = item.trusted === false ? 'read-only' : item.access;
+          var accessBadge = effectiveAccess === 'gated-write'
             ? '<span class="mention-shortname" title="can edit files (gated)">writes</span>'
             : '<span class="mention-shortname" title="advisory, read-only">read-only</span>';
           return '<div class="mention-menu-item' + (idx === state.mentionMenuIndex ? ' selected' : '') + '" data-index="' + idx + '" data-type="role" data-value="' + item.value + '">'
             + iconHtml
             + '<span class="mention-name">' + nameHtml + '</span>'
+            + trustBadge
             + accessBadge
             + '</div>';
         }).join('');

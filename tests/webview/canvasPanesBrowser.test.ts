@@ -26,6 +26,7 @@
  * emit — never a hand-written approximation of them.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
@@ -43,7 +44,6 @@ const ROOT = path.resolve(__dirname, '../..');
 
 let browser: Browser | undefined;
 let page: Page | undefined;
-let unavailable: string | null = null;
 
 async function boot(): Promise<void> {
   const { chromium } = await import('playwright');
@@ -62,9 +62,8 @@ async function boot(): Promise<void> {
 }
 
 beforeAll(async () => {
-  try { await boot(); } catch (err) {
-    unavailable = err instanceof Error ? err.message : String(err);
-  }
+  if (CHROMIUM_UNAVAILABLE) { return; }
+  await boot();
 }, 120_000);
 afterAll(async () => { await browser?.close(); });
 
@@ -193,8 +192,7 @@ async function railTextContrast(row: Serialized, needle: string): Promise<number
 }
 
 describe('rail thumbnails in a dark editor (real browser)', () => {
-  it('paints the design\'s own text on the design\'s own paper, not the shell\'s', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('paints the design\'s own text on the design\'s own paper, not the shell\'s', async () => {
     // Before the fix the tile carried no `--theme-*` vars at all, so
     // `color: var(--theme-color-text)` was invalid at computed-value time and
     // the design's text INHERITED the shell's #CCCCCC, while
@@ -233,8 +231,7 @@ function inspectorPanelDom(): Serialized {
 }
 
 describe('inspector controls have a real accessible name (real browser)', () => {
-  it('clicking a property label moves focus into that property\'s control', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('clicking a property label moves focus into that property\'s control', async () => {
     // The one thing the fake DOM cannot answer: whether the `for`/`id` pair the
     // panel writes is the association the BROWSER honours — which is the same
     // association the accessibility tree computes each control's NAME from.
@@ -303,8 +300,7 @@ function railList(count: number): Serialized {
 }
 
 describe('the pages rail is one tab stop (real browser)', () => {
-  it('never puts a row action in the Tab order', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('never puts a row action in the Tab order', async () => {
     // The class documents "exactly one tab stop rather than one per row plus
     // three per row's actions", but only the ROW ever got a tabindex — and a
     // <button> is tabbable by default. A 20-artboard rail was 80 tab stops, and
@@ -358,8 +354,7 @@ async function stylesheetDocking(width: number): Promise<{ appWidth: number; rai
 }
 
 describe('the JS layout mode agrees with the container-query ladder (real browser)', () => {
-  it('names the same panes docked as the stylesheet does, from any previous mode', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('names the same panes docked as the stylesheet does, from any previous mode', async () => {
     // Two authorities decide whether a pane is a docked column or a modal
     // overlay: `@container canvas-shell` in canvas.css §5, and
     // `paneIsDocked(decideLayoutMode(width))` in the shell. They pick WHICH of

@@ -33,6 +33,7 @@
  * declarations those modules actually emit.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
@@ -48,7 +49,6 @@ const ROOT = path.resolve(__dirname, '../..');
 
 let browser: Browser | undefined;
 let page: Page | undefined;
-let unavailable: string | null = null;
 
 async function boot(): Promise<void> {
   const { chromium } = await import('playwright');
@@ -67,9 +67,8 @@ async function boot(): Promise<void> {
 }
 
 beforeAll(async () => {
-  try { await boot(); } catch (err) {
-    unavailable = err instanceof Error ? err.message : String(err);
-  }
+  if (CHROMIUM_UNAVAILABLE) { return; }
+  await boot();
 }, 120_000);
 afterAll(async () => { await browser?.close(); });
 
@@ -273,8 +272,7 @@ describe('CANVAS-P3-2 · the layer stamps the design theme on every pane', () =>
 /* ═════════════════ the review queue's Before / After panes ═════════════════ */
 
 describe('CANVAS-P3-2 · a staged restyle must LOOK different (real browser)', () => {
-  it('paints Before and After in the DESIGN’s theme, not identically', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('paints Before and After in the DESIGN’s theme, not identically', async () => {
     await mountUnderDarkShell(stagedRowDom(), 'staged-rail');
 
     const before = await cardPaint('.sr-before .sr-preview');
@@ -293,8 +291,7 @@ describe('CANVAS-P3-2 · a staged restyle must LOOK different (real browser)', (
     expect(parseFloat(after.radius), 'After lost its radius').toBeGreaterThan(0);
   }, 120_000);
 
-  it('keeps the design’s own text legible in a dark editor', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the design’s own text legible in a dark editor', async () => {
     await mountUnderDarkShell(stagedRowDom(), 'staged-rail');
     // Measured at 2.71:1 before the fix — the design's #CCCCCC-inherited text
     // on the hardcoded white `--canvas-paper` of `.sr-preview`.
@@ -308,8 +305,7 @@ describe('CANVAS-P3-2 · a staged restyle must LOOK different (real browser)', (
 /* ════════════ the renderer's own last resort, for a bare host ════════════ */
 
 describe('CANVAS-P3-2 · a preview on a bare host degrades, it does not collapse', () => {
-  it('stays legible and structurally intact with no --theme-* anywhere', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('stays legible and structurally intact with no --theme-* anywhere', async () => {
     // `historyUi._renderVersion` mounts a thumbnail exactly like this: no theme
     // custom properties on the tile, on a `--canvas-paper` white ground. Before
     // the renderer carried a fallback arm this measured 1.61:1 with

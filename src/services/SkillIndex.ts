@@ -40,7 +40,13 @@ export interface IndexedArtifact {
   category: string;
   type: 'persona' | 'skill' | 'role';
   activationTriggers?: string[];
-  /** Integrity-verified bundled content (Plan 20 Phase 0). Affects labelling only. */
+  /**
+   * Integrity-verified bundled content (Plan 20 Phase 0). Affects labelling
+   * only — and it is the TIER-1 snapshot copied when the index was built, so
+   * a bundled file tampered after activation still carries `true` here (see
+   * the `AgentLoader` doc on `trusted`). `renderHits` therefore takes the
+   * at-use verdict from its caller and treats this field as a fallback.
+   */
   trusted?: boolean;
 }
 
@@ -231,15 +237,26 @@ export class SkillIndex {
     return `${this._docs.length} available: ${parts.join(', ')}`;
   }
 
-  /** Render hits for the model. Kept here so the wording is testable. */
-  renderHits(hits: SkillSearchHit[]): string {
+  /**
+   * Render hits for the model. Kept here so the wording is testable.
+   *
+   * Plan 27 lane M (#7): the "[user-authored]" label is an integrity claim,
+   * so it must come from the bytes in hand, not from memory. `trustedAtUse`
+   * is the Tier-2 verdict for an id (`AgentLoader.loadInstructions(id)
+   * .trusted`, re-measured against the file NOW); an id the resolver cannot
+   * vouch for (`undefined`) is labelled — fail closed. Without a resolver the
+   * Tier-1 snapshot on the artifact is all there is; callers that render for
+   * a model should pass one.
+   */
+  renderHits(hits: SkillSearchHit[], trustedAtUse?: (id: string) => boolean | undefined): string {
     if (hits.length === 0) { return ''; }
     return hits.map(h => {
       const a = h.artifact;
       const triggers = a.activationTriggers?.length
         ? ` [triggers: ${a.activationTriggers.slice(0, 6).join(', ')}]`
         : '';
-      return `${a.id} (${a.type}, ${a.category})${a.trusted ? '' : ' [user-authored]'} — ${a.description}${triggers}`;
+      const trusted = trustedAtUse ? trustedAtUse(a.id) === true : a.trusted === true;
+      return `${a.id} (${a.type}, ${a.category})${trusted ? '' : ' [user-authored]'} — ${a.description}${triggers}`;
     }).join('\n');
   }
 

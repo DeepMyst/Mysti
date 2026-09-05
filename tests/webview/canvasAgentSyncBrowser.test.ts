@@ -28,9 +28,10 @@
  * with: a live region that is not the whole status bar, and a button that
  * reveals a pane the stylesheet had collapsed.
  *
- * Like its siblings it degrades to a warning where Chromium is unavailable.
+ * Like its siblings it is SKIPPED (it.skipIf) where Chromium is unavailable.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
@@ -47,7 +48,6 @@ const HEADING = 'aaaaaaaaaa';
 let browser: Browser | undefined;
 let page: Page | undefined;
 let bundle = '';
-let unavailable: string | null = null;
 
 function pageFixture(id: string, x: number, title: string): ArtifactPage {
   return {
@@ -163,16 +163,14 @@ async function staged(count: number): Promise<void> {
 
 describe('canvas agent status (real browser)', () => {
   beforeAll(async () => {
-    try { await bootPage(); } catch (err) {
-      unavailable = err instanceof Error ? err.message : String(err);
-    }
+    if (CHROMIUM_UNAVAILABLE) { return; }
+    await bootPage();
   }, 180_000);
   afterAll(async () => { await browser?.close(); });
 
   /* ───────── SYNC-6 — the stamped attributes must reach the cascade ───────── */
 
-  it('SYNC-6 · a stamped rail row is actually drawn differently', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('SYNC-6 · a stamped rail row is actually drawn differently', async () => {
     await freshApp();
 
     // The shipped stylesheet alone: this is the state the finding describes —
@@ -208,8 +206,7 @@ describe('canvas agent status (real browser)', () => {
     expect(measured).toContain('inset');
   }, 120_000);
 
-  it('SYNC-6 · the layer attaches that sheet itself while a job is live', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('SYNC-6 · the layer attaches that sheet itself while a job is live', async () => {
     await freshApp();
     await job({ jobId: 'j1', type: 'started', label: 'Canvas · write_page_jsx', pageId: 'p2' });
 
@@ -232,8 +229,7 @@ describe('canvas agent status (real browser)', () => {
 
   /* ───────── A11Y-3 — the live region is a sentence, not the bar ───────── */
 
-  it('A11Y-3 · the ticking clock is not inside a live region', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('A11Y-3 · the ticking clock is not inside a live region', async () => {
     await freshApp();
     await job({ jobId: 'j1', type: 'started', label: 'Canvas · write_page_jsx', pageId: 'p1' });
 
@@ -269,8 +265,7 @@ describe('canvas agent status (real browser)', () => {
     expect(shape.liveRect).toBeLessThanOrEqual(2);
   }, 120_000);
 
-  it('A11Y-3 · a second of ticking changes the clock and not the announcement', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('A11Y-3 · a second of ticking changes the clock and not the announcement', async () => {
     await freshApp();
     await job({ jobId: 'j1', type: 'started', label: 'Canvas · write_page_jsx', pageId: 'p1' });
     const read = () => page!.evaluate(() => ({
@@ -287,8 +282,7 @@ describe('canvas agent status (real browser)', () => {
 
   /* ───────── SYNC-3 — the toast cannot take the status with it ───────── */
 
-  it('SYNC-3 · the status survives the 1.8 s toast that owns #agent-activity', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('SYNC-3 · the status survives the 1.8 s toast that owns #agent-activity', async () => {
     await freshApp();
     // The real path: `app.ts`'s `job` handler calls `_flash('Designing...')`
     // right after handing the event to the liveness layer.
@@ -325,8 +319,7 @@ describe('canvas agent status (real browser)', () => {
 
   /* ───────── SYNC-5 — the review button opens the queue it names ───────── */
 
-  it('SYNC-5 · clicking “N to review” reveals the collapsed pane holding the queue', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('SYNC-5 · clicking “N to review” reveals the collapsed pane holding the queue', async () => {
     await freshApp();
     await staged(3);
 

@@ -29,6 +29,7 @@
  * so it asserts orders of magnitude, never milliseconds-to-the-digit.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
@@ -48,7 +49,6 @@ const MOVES = 120;
 let browser: Browser | undefined;
 let page: Page | undefined;
 let bundle = '';
-let unavailable: string | null = null;
 
 interface PanReport { moveBatchMs: number; perMoveMs: number; frames: number[]; longTasks: number }
 
@@ -187,20 +187,18 @@ async function measurePan(moves: number): Promise<PanReport> {
 
 // File-scope setup: every suite in this file shares one browser.
 beforeAll(async () => {
-  try {
-    const { chromium } = await import('playwright');
-    bundle = await buildBundle();
-    browser = await chromium.launch();
-    page = await browser.newPage();
-    await page.setViewportSize({ width: 1400, height: 900 });
-  } catch (err) { unavailable = err instanceof Error ? err.message : String(err); }
+  if (CHROMIUM_UNAVAILABLE) { return; }
+  const { chromium } = await import('playwright');
+  bundle = await buildBundle();
+  browser = await chromium.launch();
+  page = await browser.newPage();
+  await page.setViewportSize({ width: 1400, height: 900 });
 }, 180_000);
 afterAll(async () => { await browser?.close(); });
 
 describe('canvas board interaction performance', () => {
 
-  it(`processes a ${MOVES}-move pan over ${ARTBOARDS} artboards without per-event reflow`, async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)(`processes a ${MOVES}-move pan over ${ARTBOARDS} artboards without per-event reflow`, async () => {
     await freshBoard(ARTBOARDS);
     const r = await measurePan(MOVES);
     const p95 = [...r.frames].sort((a, b) => a - b)[Math.floor(r.frames.length * 0.95)] ?? 0;
@@ -215,8 +213,7 @@ describe('canvas board interaction performance', () => {
       .toBeLessThan(1.0);
   }, 180_000);
 
-  it('scales sub-linearly with artboard count', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('scales sub-linearly with artboard count', async () => {
     await freshBoard(6);
     const small = await measurePan(MOVES);
     await freshBoard(48);
@@ -273,8 +270,7 @@ async function measurePacedPan(zoom: number, ticks: number): Promise<{ p50: numb
 }
 
 describe('zoomed-out board cost (the reported complaint)', () => {
-  it('compares a pan at 100% zoom against one zoomed out', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('compares a pan at 100% zoom against one zoomed out', async () => {
     await freshBoard(48);
 
     const near = await measurePacedPan(1.0, 60);

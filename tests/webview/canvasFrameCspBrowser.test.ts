@@ -27,6 +27,7 @@
  *   source expression and Chromium discarded it.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import type { Browser, Page } from 'playwright';
 import { buildFrameDocument } from '../../src/webview/canvas/sandboxDoc';
 import { assetCspSource } from '../../src/webview/canvas/boot';
@@ -74,7 +75,6 @@ const DESKTOP_ASSET_URL = `${DESKTOP_ASSET_BASE}/deadbeef0011.png`;
 
 let browser: Browser | undefined;
 let page: Page | undefined;
-let unavailable: string | null = null;
 
 /** Mount a frame document as srcdoc under a parent carrying the shell CSP. */
 async function mount(frameDoc: string): Promise<{ messages: string[]; violations: string[] }> {
@@ -150,23 +150,20 @@ function legacyFrameDoc(nonce?: string, csp?: string): string {
 
 describe('artboard frame under the shell CSP (real browser)', () => {
   beforeAll(async () => {
-    try {
-      const { chromium } = await import('playwright');
-      browser = await chromium.launch();
-      page = await browser.newPage();
-    } catch (err) { unavailable = err instanceof Error ? err.message : String(err); }
+    if (CHROMIUM_UNAVAILABLE) { return; }
+    const { chromium } = await import('playwright');
+    browser = await chromium.launch();
+    page = await browser.newPage();
   }, 120_000);
   afterAll(async () => { await browser?.close(); });
 
-  it('runs the frame runtime when the nonce is stamped', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('runs the frame runtime when the nonce is stamped', async () => {
     const { messages, violations } = await mount(frameDoc(NONCE));
     expect(violations, `CSP violations: ${violations.join(' | ')}`).toHaveLength(0);
     expect(messages).toContain('frame_hello');
   }, 120_000);
 
-  it('is BLOCKED without the nonce — the bug this file exists for', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('is BLOCKED without the nonce — the bug this file exists for', async () => {
     const { messages, violations } = await mount(frameDoc(undefined));
     expect(messages).not.toContain('frame_hello');
     expect(violations.length).toBeGreaterThan(0);
@@ -208,15 +205,13 @@ describe('artboard frame under the shell CSP (real browser)', () => {
       expect(imgSrc.split(/\s+/)).toContain(source);
     });
 
-    it('lets a live artboard load an image from the desktop asset origin', async () => {
-      if (unavailable) { return; }
+    it.skipIf(CHROMIUM_UNAVAILABLE)('lets a live artboard load an image from the desktop asset origin', async () => {
       const { messages } = await mount(imageFrameDoc([assetCspSource(DESKTOP_ASSET_BASE)!]));
       expect(messages).toContain('frame_hello');
       expect(messages.filter(m => m.startsWith('violation:'))).toEqual([]);
     }, 120_000);
 
-    it('and blocks it when no origin is allowed — the control for the probe', async () => {
-      if (unavailable) { return; }
+    it.skipIf(CHROMIUM_UNAVAILABLE)('and blocks it when no origin is allowed — the control for the probe', async () => {
       const { messages } = await mount(imageFrameDoc([]));
       expect(messages).toContain('violation:img-src');
     }, 120_000);
@@ -225,8 +220,7 @@ describe('artboard frame under the shell CSP (real browser)', () => {
   /* ── R4-1: legacy JSX artboards ── */
 
   describe('legacy JSX artboards (R4-1)', () => {
-    it('cannot eval inside the panel — the cause, measured', async () => {
-      if (unavailable) { return; }
+    it.skipIf(CHROMIUM_UNAVAILABLE)('cannot eval inside the panel — the cause, measured', async () => {
       const { messages } = await mount(legacyFrameDoc(NONCE));
       // The frame's own meta grants `'unsafe-eval'`; the INHERITED shell policy
       // does not, and an inherited policy cannot be widened. `new Function`
@@ -234,8 +228,7 @@ describe('artboard frame under the shell CSP (real browser)', () => {
       expect(messages).toContain('eval:false');
     }, 120_000);
 
-    it('paints an honest notice instead of a blank rectangle', async () => {
-      if (unavailable) { return; }
+    it.skipIf(CHROMIUM_UNAVAILABLE)('paints an honest notice instead of a blank rectangle', async () => {
       const { messages } = await mount(legacyFrameDoc(NONCE));
       const text = messages.find(m => m.startsWith('text:')) ?? '';
       expect(text, 'the frame rendered nothing at all').not.toBe('text:');

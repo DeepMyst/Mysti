@@ -23,6 +23,7 @@
  * A11Y-6 (the template disclosure's state and keyboard exit), CANVAS-W6.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
@@ -39,7 +40,6 @@ const STACK = 'cccccccccc';
 let browser: Browser | undefined;
 let page: Page | undefined;
 let bundle = '';
-let unavailable: string | null = null;
 
 function pageFixture(id: string, x: number, title: string): ArtifactPage {
   return {
@@ -176,10 +176,8 @@ async function agentOp(text = 'Rewritten by the agent'): Promise<void> {
  */
 describe('overlay panes at narrow widths (real browser)', () => {
   beforeAll(async () => {
-    try { await bootPage(); } catch (err) {
-      unavailable = err instanceof Error ? err.message : String(err);
-      console.warn('[Mysti] skipping — Chromium unavailable:', unavailable);
-    }
+    if (CHROMIUM_UNAVAILABLE) { return; }
+    await bootPage();
   }, 180_000);
   afterAll(async () => { await browser?.close(); browser = undefined; });
 
@@ -213,8 +211,7 @@ describe('overlay panes at narrow widths (real browser)', () => {
     });
   }
 
-  it('R4-3 · opens at most one overlay pane, and it is actually clickable', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('R4-3 · opens at most one overlay pane, and it is actually clickable', async () => {
     for (const width of [320, 360, 400]) {
       const state = await pressBackslash(width);
       expect(state.mode, `layout at ${width}px`).toContain('layout-narrow');
@@ -237,8 +234,7 @@ describe('overlay panes at narrow widths (real browser)', () => {
     }
   }, 180_000);
 
-  it('R4-3 · still opens BOTH panes where they are docked columns', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('R4-3 · still opens BOTH panes where they are docked columns', async () => {
     // At wide widths the panes are columns, not overlays: nothing collides, so
     // `\` keeps its documented "show/hide both" meaning.
     await freshApp();
@@ -263,16 +259,14 @@ describe('overlay panes at narrow widths (real browser)', () => {
 
 describe('canvas app focus (real browser)', () => {
   beforeAll(async () => {
-    try { await bootPage(); } catch (err) {
-      unavailable = err instanceof Error ? err.message : String(err);
-    }
+    if (CHROMIUM_UNAVAILABLE) { return; }
+    await bootPage();
   }, 180_000);
   afterAll(async () => { await browser?.close(); });
 
   /* ───────── A11Y-4 — an agent op must not take the keyboard ───────── */
 
-  it('A11Y-4 · keeps the focused rail row focused across an agent op', async () => {
-    if (unavailable) { console.warn('[Mysti] skipping — Chromium unavailable:', unavailable); return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('A11Y-4 · keeps the focused rail row focused across an agent op', async () => {
     await freshApp();
 
     const before = await page!.evaluate(() => {
@@ -290,8 +284,7 @@ describe('canvas app focus (real browser)', () => {
     expect(await page!.evaluate(() => document.activeElement?.tagName ?? '')).not.toBe('BODY');
   }, 120_000);
 
-  it('A11Y-4 · keeps a half-typed inspector value and its caret', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('A11Y-4 · keeps a half-typed inspector value and its caret', async () => {
     await freshApp();
     await page!.evaluate(() => {
       (window as unknown as { __app: { board: { select(p: string, m: string[]): void } } })
@@ -327,8 +320,7 @@ describe('canvas app focus (real browser)', () => {
     expect(after.connected).toBe(true);
   }, 120_000);
 
-  it('A11Y-4 · repaints the inspector from the store once focus leaves it', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('A11Y-4 · repaints the inspector from the store once focus leaves it', async () => {
     await freshApp();
     await page!.evaluate(() => {
       (window as unknown as { __app: { board: { select(p: string, m: string[]): void } } })
@@ -358,8 +350,7 @@ describe('canvas app focus (real browser)', () => {
 
   /* ───────── A11Y-6 — the template disclosure ───────── */
 
-  it('A11Y-6 · announces its state, takes focus, and gives it back on Escape', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('A11Y-6 · announces its state, takes focus, and gives it back on Escape', async () => {
     await freshApp();
 
     expect(await page!.getAttribute('#btn-add-page', 'aria-expanded')).toBe('false');
@@ -377,8 +368,7 @@ describe('canvas app focus (real browser)', () => {
     expect(await page!.evaluate(() => document.activeElement?.id ?? '')).toBe('btn-add-page');
   }, 120_000);
 
-  it('A11Y-6 · returns focus to the button when a template is chosen', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('A11Y-6 · returns focus to the button when a template is chosen', async () => {
     await freshApp();
     await page!.click('#btn-add-page');
     await page!.click('#scaffold-menu .sm-item');
@@ -392,8 +382,7 @@ describe('canvas app focus (real browser)', () => {
 
   /* ───────── SYNC-8 / CANVAS-W5 — cues that have to survive the cascade ───────── */
 
-  it('SYNC-8 · shows a visible, non-colour difference between on and off chips', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('SYNC-8 · shows a visible, non-colour difference between on and off chips', async () => {
     await freshApp();
     await page!.evaluate(() => {
       window.postMessage({
@@ -426,8 +415,7 @@ describe('canvas app focus (real browser)', () => {
     expect(chips[0].width).toBeGreaterThan(0);
   }, 120_000);
 
-  it('CANVAS-W5 · draws an “Ask Mysti” the stylesheet actually shows', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CANVAS-W5 · draws an “Ask Mysti” the stylesheet actually shows', async () => {
     await freshApp();
     await page!.evaluate(() => {
       (window as unknown as { __app: { board: { select(p: string, m: string[]): void } } })
@@ -448,8 +436,7 @@ describe('canvas app focus (real browser)', () => {
 
   /* ───────── CANVAS-W6 — the alert region the shell ships ───────── */
 
-  it('CANVAS-W6 · shows a failed runtime fetch on screen, not only in the console', async () => {
-    if (unavailable) { return; }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('CANVAS-W6 · shows a failed runtime fetch on screen, not only in the console', async () => {
     await freshApp();
 
     const banner = await page!.evaluate(() => {
