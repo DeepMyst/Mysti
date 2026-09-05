@@ -84,11 +84,19 @@ export interface QueuedChannelMessage {
   timestamp: number;
 }
 
+type PendingAskMatchResult =
+  | { status: 'matched'; ask: PendingAsk }
+  | { status: 'ambiguous'; count: number }
+  | { status: 'none' };
+
 /** A contact that Mysti has initiated a conversation with */
 interface TrackedContact {
   /** Normalized identifier (lowercase name or E.164 phone) */
   identifier: string;
-  channel: string;
+  /** Exact OpenClaw channel id when available */
+  channelId: string;
+  /** Channel type used as a fallback when session polling lacks a concrete id */
+  channelType: string;
   /** When the outbound message was sent */
   sentAt: number;
 }
@@ -353,7 +361,7 @@ RULES:
       const prompt = `Send the following message to ${action.to} on ${action.channel}:\n\n${action.content}`;
       const ok = await this._activeModeManager.sendAgentTask(prompt, action.channel);
       console.log(`[Mysti] ChannelBridge: Delegated send to '${action.to}' via agent: ${ok ? 'accepted' : 'failed'}`);
-      if (ok && action.to) { this._trackContact(action.to, action.channel); }
+      if (ok && action.to) { this._trackContact(action.to, channelId, this._resolveChannelType(channelId, action.channel)); }
       return ok;
     }
 
@@ -361,7 +369,7 @@ RULES:
     const target = action.to || this._resolveChannelTarget(action.channel);
     const ok = await this._activeModeManager.sendToChannel(channelId, action.content, target || undefined);
     console.log(`[Mysti] ChannelBridge: Sent to ${action.channel} (${channelId}${target ? ', to: ' + target : ''}): ${ok ? 'success' : 'failed'}`);
-    if (ok && action.to) { this._trackContact(action.to, action.channel); }
+    if (ok && action.to) { this._trackContact(action.to, channelId, this._resolveChannelType(channelId, action.channel)); }
     return ok;
   }
 
@@ -393,7 +401,7 @@ RULES:
     }
 
     // Track the contact so inbound replies are routed
-    if (ok && action.to) { this._trackContact(action.to, action.channel); }
+    if (ok && action.to) { this._trackContact(action.to, channelId, this._resolveChannelType(channelId, action.channel)); }
 
     // Register PendingAsk for both paths so inbound replies can be matched
     if (ok && action.askId) {
@@ -564,7 +572,7 @@ RULES:
               const parsed = this._parseSessionEntry(entry, channelType);
               if (parsed && !this._isDuplicate(parsed)) {
                 // Only route messages from contacts we've actively messaged
-                if (!this._isTrackedConversation(parsed.sender, parsed.channelType)) {
+                if (!this._isTrackedConversation(parsed.sender, parsed.channelId, parsed.channelType)) {
                   continue;
                 }
                 console.log(`[Mysti] ChannelBridge: Inbound poll detected message from ${parsed.sender || 'unknown'} on ${channelType}`);
@@ -676,7 +684,7 @@ RULES:
     }
 
     // Only process messages from contacts we've actively messaged
-    if (!this._isTrackedConversation(event.sender, event.channelType)) {
+    if (!this._isTrackedConversation(event.sender, event.channelId, event.channelType)) {
       return;
     }
 
@@ -686,8 +694,13 @@ RULES:
     const sender = event.sender;
 
     // First, check if this reply matches a pending outbound ask
-    const matchedAsk = this._tryMatchPendingAsk(channelId, channelType, content, sender);
-    if (matchedAsk) {
+    const askMatch = this._tryMatchPendingAsk(channelId, channelType, content, sender);
+    if (askMatch.status === 'ambiguous') {
+      console.log(`[Mysti] ChannelBridge: Ignoring ambiguous ${channelType} reply; ${askMatch.count} pending asks match this channel/sender`);
+      return;
+    }
+    if (askMatch.status === 'matched') {
+      const matchedAsk = askMatch.ask;
       // Auto-trigger Claude with the reply if agent is idle
       if (this._delegate) {
         const panelId = matchedAsk.panelId;
@@ -749,49 +762,64 @@ RULES:
     this._delegate.injectChannelMessage(panelId, channelName, content, sender);
   }
 
-  private _tryMatchPendingAsk(channelId: string, channelType: string, content: string, sender?: string): PendingAsk | null {
-    // Search all panels for a matching pending ask
-    for (const [_panelId, asks] of this._pendingAsks) {
-      const channelAsks = asks.filter(a =>
-        !a.reply && (a.channelId === channelId || a.channel === channelType)
-      );
-      if (channelAsks.length === 0) { continue; }
-
-      // Prefer sender-aware matching when both sender and ask.to are available
-      if (sender) {
-        const senderLower = sender.toLowerCase();
-        const senderMatch = channelAsks.find(a =>
-          a.to && senderLower.includes(a.to.toLowerCase())
-        );
-        if (senderMatch) {
-          senderMatch.reply = content;
-          senderMatch.repliedAt = Date.now();
-          console.log(`[Mysti] ChannelBridge: Matched reply from '${sender}' to ask '${senderMatch.askId}'`);
-          return senderMatch;
-        }
-      }
-
-      // Fall back to oldest channel-only match
-      const fallback = channelAsks[0];
-      fallback.reply = content;
-      fallback.repliedAt = Date.now();
-      console.log(`[Mysti] ChannelBridge: Matched reply to ask '${fallback.askId}' from ${channelType} (channel-only match)`);
-      return fallback;
+  private _tryMatchPendingAsk(channelId: string, channelType: string, content: string, sender?: string): PendingAskMatchResult {
+    // Search all panels, but only bind replies when there is exactly one valid ask.
+    const channelAsks: PendingAsk[] = [];
+    for (const asks of this._pendingAsks.values()) {
+      channelAsks.push(...asks.filter(a => !a.reply && this._matchesInboundChannel(a, channelId, channelType)));
     }
-    return null;
+    if (channelAsks.length === 0) { return { status: 'none' }; }
+
+    // Prefer sender-aware matching when both sender and ask.to are available.
+    if (sender) {
+      const senderLower = sender.toLowerCase();
+      const senderMatches = channelAsks.filter(a =>
+        a.to && senderLower.includes(a.to.toLowerCase())
+      );
+      if (senderMatches.length === 1) {
+        return { status: 'matched', ask: this._markPendingAskReplied(senderMatches[0], content, sender) };
+      }
+      if (senderMatches.length > 1) {
+        return { status: 'ambiguous', count: senderMatches.length };
+      }
+    }
+
+    if (channelAsks.length === 1) {
+      return { status: 'matched', ask: this._markPendingAskReplied(channelAsks[0], content) };
+    }
+
+    return { status: 'ambiguous', count: channelAsks.length };
+  }
+
+  private _markPendingAskReplied(ask: PendingAsk, content: string, sender?: string): PendingAsk {
+    ask.reply = content;
+    ask.repliedAt = Date.now();
+    const from = sender ? ` from '${sender}'` : '';
+    console.log(`[Mysti] ChannelBridge: Matched reply${from} to ask '${ask.askId}'`);
+    return ask;
   }
 
   private _resolveChannelId(channelTypeOrId: string): string | null {
+    const channel = this._resolveChannel(channelTypeOrId);
+    return channel?.id || null;
+  }
+
+  private _resolveChannel(channelTypeOrId: string): ChannelInfo | null {
     const channels = this._activeModeManager.getChannels();
     console.log(`[Mysti] ChannelBridge: Resolving '${channelTypeOrId}' against ${channels.length} channels:`,
       channels.map(c => `${c.id}(type=${c.type},status=${c.status})`).join(', '));
 
     // Try exact ID match first
     const byId = channels.find(c => c.id === channelTypeOrId && c.status === 'connected');
-    if (byId) { return byId.id; }
+    if (byId) { return byId; }
     // Try by type
     const byType = channels.find(c => c.type === channelTypeOrId && c.status === 'connected');
-    return byType?.id || null;
+    return byType || null;
+  }
+
+  private _resolveChannelType(channelId: string, fallback: string): string {
+    const channel = this._activeModeManager.getChannels().find(c => c.id === channelId);
+    return channel?.type || fallback;
   }
 
   private _getProcessedPositions(panelId: string): Set<number> {
@@ -827,14 +855,19 @@ RULES:
    * Register a contact that Mysti has sent a message to.
    * Only messages from tracked contacts will be routed inbound.
    */
-  private _trackContact(nameOrPhone: string, channel: string): void {
-    const key = this._normalizeContactId(nameOrPhone);
-    this._trackedContacts.set(key, {
-      identifier: key,
-      channel,
+  private _trackContact(nameOrPhone: string, channelId: string, channelType: string): void {
+    const identifier = this._normalizeContactId(nameOrPhone);
+    const tracked: TrackedContact = {
+      identifier,
+      channelId,
+      channelType,
       sentAt: Date.now(),
-    });
-    console.log(`[Mysti] ChannelBridge: Tracking contact '${key}' on ${channel} for inbound replies`);
+    };
+
+    for (const scope of this._trackingScopesForOutbound(channelId, channelType)) {
+      this._trackedContacts.set(this._trackedContactKey(scope, identifier), tracked);
+    }
+    console.log(`[Mysti] ChannelBridge: Tracking contact '${identifier}' on ${channelType} (${channelId}) for inbound replies`);
   }
 
   /**
@@ -842,11 +875,12 @@ RULES:
    * Returns false for unknown senders — prevents random conversations
    * from being routed into the AI agent.
    */
-  private _isTrackedConversation(sender: string | undefined, _channelType: string): boolean {
+  private _isTrackedConversation(sender: string | undefined, channelId: string | undefined, channelType: string): boolean {
     if (!sender) { return false; }
 
     const now = Date.now();
     const senderNorm = this._normalizeContactId(sender);
+    const scopes = this._trackingScopesForInbound(channelId, channelType);
 
     for (const [key, contact] of this._trackedContacts) {
       // Expire stale tracked contacts
@@ -856,14 +890,52 @@ RULES:
       }
 
       // Match by normalized identifier (case-insensitive, partial name match)
-      if (key === senderNorm) { return true; }
+      if (!scopes.includes(this._trackedContactScope(key))) { continue; }
+      if (contact.identifier === senderNorm) { return true; }
       // Fuzzy: tracked "Sharif" matches sender "+962792552872" if we also
       // track by phone. And tracked "+962..." matches conversation_label "+962..."
       // Also support partial: tracked "sharif" matches sender "Sharif Abu Nada"
-      if (senderNorm.includes(key) || key.includes(senderNorm)) { return true; }
+      if (senderNorm.includes(contact.identifier) || contact.identifier.includes(senderNorm)) { return true; }
     }
 
     return false;
+  }
+
+  private _matchesInboundChannel(ask: PendingAsk, channelId: string, channelType: string): boolean {
+    if (this._hasSpecificChannelId(channelId, channelType)) {
+      return ask.channelId === channelId;
+    }
+    return ask.channelId === channelId || ask.channel === channelType;
+  }
+
+  private _trackingScopesForOutbound(channelId: string, channelType: string): string[] {
+    const scopes: string[] = [];
+    if (this._hasSpecificChannelId(channelId, channelType)) {
+      scopes.push(`id:${channelId}`);
+    }
+    if (channelType) {
+      scopes.push(`type:${channelType}`);
+    }
+    return [...new Set(scopes)];
+  }
+
+  private _trackingScopesForInbound(channelId: string | undefined, channelType: string): string[] {
+    if (channelId && this._hasSpecificChannelId(channelId, channelType)) {
+      return [`id:${channelId}`];
+    }
+    return channelType ? [`type:${channelType}`] : [];
+  }
+
+  private _hasSpecificChannelId(channelId: string | undefined, channelType: string | undefined): channelId is string {
+    return Boolean(channelId && channelId !== channelType);
+  }
+
+  private _trackedContactKey(scope: string, identifier: string): string {
+    return `${scope}|${identifier}`;
+  }
+
+  private _trackedContactScope(key: string): string {
+    return key.split('|', 1)[0];
   }
 
   /**
