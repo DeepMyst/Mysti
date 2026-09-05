@@ -1,6 +1,7 @@
 /**
  * Mysti - AI Coding Agent
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
+ * Portions copyright (c) 2025 MostlyK
  *
  * Author: MostlyK <bruvistrue93@gmail.com>
  *

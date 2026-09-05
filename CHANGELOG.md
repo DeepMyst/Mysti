@@ -103,6 +103,10 @@ pass on top of the features listed under *Added* below.
   - Auth via `hermes setup` / `hermes setup --portal`; install script shown per-OS by the setup wizard
   - Model selection stays in Hermes (`hermes model`) — the provider honestly reports `modelSelection: none`
 
+### Thanks
+
+- **[3em0](https://github.com/3em0)** — the only external author of a merged security fix in this release: channel-scoped OpenClaw contact tracking in `ChannelBridge`, closing cross-channel sender spoofing (#43, fixes #42); exactly-one matching for `ChannelBridge` pending-ask replies (#45, re-landed by the maintainer as #48); and project-memory key isolation with legacy-directory migration (#47, re-landed as #49). The re-landed commits carry only tool co-author trailers; the fixes are theirs.
+
 ## [0.4.0] - March 2026
 
 ### Added

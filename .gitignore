@@ -40,7 +40,12 @@ coverage/
 # Clipboard
 clipboard/
 
-# Stargazers
+# Stargazers — harvested GitHub profile exports (names, emails). NEVER commit.
+# The filename patterns below only cover the exports that already exist; a
+# future export with a different name (e.g. gh-users.csv) would match nothing.
+# Put EVERY new export, in any format, under stargazers/ — the directory rule
+# covers it regardless of name.
+stargazers/
 .stargazers-cache-*
 stargazers-*.xlsx
 Mysti stargazers.xlsx

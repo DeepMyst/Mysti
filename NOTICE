@@ -1,0 +1,123 @@
+Mysti - AI Coding Agent
+Copyright (c) 2025 DeepMyst Inc.
+
+This product includes software developed by DeepMyst Inc. Mysti's own source
+code is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product also redistributes the third-party components listed below,
+vendored under resources/. They are NOT licensed under Mysti's Apache-2.0
+licence: each remains under its own licence, stated here together with its
+copyright holder as read from the vendored file's own banner or, where the
+bundle carries no banner, from the upstream project's LICENSE file (URL given).
+Where a banner exists at the top of the vendored file it has been preserved.
+
+===========================================================================
+Vendored third-party components
+===========================================================================
+
+Mermaid 11.6.0 — resources/mermaid.min.js
+  Copyright (c) 2014 - 2022 Knut Sveidqvist
+  Licence: MIT
+  Source of the notice: the bundle carries no top-level banner (it embeds
+  package metadata: author "Knut Sveidqvist", license "MIT"); the holder and
+  licence text are from
+  https://github.com/mermaid-js/mermaid/blob/mermaid%4011.6.0/LICENSE
+  The bundle additionally contains, verbatim, the licence banners of Mermaid's
+  own dependencies (including DOMPurify 3.2.4, (c) Cure53 and other
+  contributors, Apache License 2.0 and Mozilla Public License 2.0). Those
+  banners are preserved inside the file.
+
+Marked 15.0.0 — resources/marked.min.js
+  Copyright (c) 2011-2024, Christopher Jeffrey. (MIT Licensed)  [banner in file]
+  Copyright (c) 2018+, MarkedJS (https://github.com/markedjs/)
+  Licence: MIT
+  https://github.com/markedjs/marked/blob/v15.0.0/LICENSE.md
+
+DOMPurify 3.4.14 — resources/dompurify.min.js
+  (c) Cure53 and other contributors  [banner in file]
+  Licence: Released under the Apache License 2.0 and Mozilla Public License 2.0
+  (dual-licensed; the banner in the file states both, the LICENSE file at the
+  tag carries the Apache-2.0 text). No upstream NOTICE file exists.
+  https://github.com/cure53/DOMPurify/blob/3.4.14/LICENSE
+
+Prism 1.29.0 — resources/prism-bundle.js
+  (a concatenation of prism-core, prism-markup, prism-css, prism-clike,
+  prism-javascript and prism-file-highlight; prism-core is byte-identical to
+  the prismjs@1.29.0 package)
+  Copyright (c) 2012 Lea Verou
+  Licence: MIT  [banner in file: "@license MIT", "@author Lea Verou"]
+  https://github.com/PrismJS/prism/blob/v1.29.0/LICENSE
+
+React 18.3.1 — resources/canvas-sandbox/react.production.min.js
+React DOM 18.3.1 — resources/canvas-sandbox/react-dom.production.min.js
+  Copyright (c) Facebook, Inc. and its affiliates  [banner in each file]
+  Licence: MIT
+  https://github.com/facebook/react/blob/v18.3.1/LICENSE
+  (react-dom.production.min.js additionally embeds "Modernizr 3.0.0pre
+  (Custom Build) | MIT", banner preserved.)
+
+@babel/standalone 7.26.4 — resources/canvas-sandbox/babel.min.js
+  Copyright (c) 2014-present Sebastian McKenzie and other contributors
+  Licence: MIT
+  Source of the notice: the bundle carries no top-level banner; the holder and
+  licence text are from https://github.com/babel/babel/blob/v7.26.4/LICENSE
+  The bundle embeds regenerator-runtime: "Copyright (c) 2014-present,
+  Facebook, Inc. -- license (MIT)", banner preserved.
+
+---------------------------------------------------------------------------
+The MIT License (applies to Mermaid, Marked, Prism, React, React DOM and
+@babel/standalone above, each with the copyright holder stated for it)
+---------------------------------------------------------------------------
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+===========================================================================
+Trademarks
+===========================================================================
+
+Section 6 of the Apache License, Version 2.0 grants no trademark rights, and
+nothing in this repository's LICENSE licenses any third-party mark.
+
+The provider logos under resources/icons/ are trademarks or logos of their
+respective owners. They are used nominatively — solely to identify the
+third-party tools and services Mysti integrates with — and are NOT licensed
+under this repository's Apache-2.0 licence. No affiliation with, sponsorship
+by, or endorsement from those owners is implied. The files are:
+
+  resources/icons/Claude.png            (Claude / Claude Code)
+  resources/icons/cline.png             (Cline)
+  resources/icons/continue.png          (Continue)
+  resources/icons/copilot.png           (GitHub Copilot)
+  resources/icons/cursor.png            (Cursor)
+  resources/icons/gemini.png.webp       (Google Gemini)
+  resources/icons/hermes.png            (Hermes)
+  resources/icons/kimi.png              (Kimi Code)
+  resources/icons/localai.png           (LocalAI)
+  resources/icons/manus.png             (Manus)
+  resources/icons/ollama.png            (Ollama)
+  resources/icons/ollama_color.png      (Ollama)
+  resources/icons/openai.svg            (OpenAI / Codex)
+  resources/icons/openai_white.png      (OpenAI / Codex)
+  resources/icons/openclaw.png          (OpenClaw)
+  resources/icons/opencode.png          (OpenCode)
+  resources/icons/openrouter.png        (OpenRouter)
+  resources/icons/qwen.png              (Qwen Code)
+
+"Mysti", the Mysti logo (resources/Mysti-Logo.png, resources/icon.svg) and
+"DeepMyst" belong to DeepMyst Inc.

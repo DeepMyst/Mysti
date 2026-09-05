@@ -38,15 +38,13 @@ flake.nix
 flake.lock
 fetch-stargazers.log
 
-# Fossils. `mcp-permission-server.js` is the wrapper for the CLI-NATIVE
+# Fossil. `mcp-permission-server.js` is the wrapper for the CLI-NATIVE
 # permission path (`--permission-prompt-tool`); it requires
 # dist/mcp/permissionServer.js, which does not exist and is built by nothing —
 # neither `--permission-prompt-tool` nor `permissionServer` appears anywhere in
 # src/. It is kept in the repo (the native path may be worth resurrecting) but
-# must not ship as a dead entrypoint. `fabric.min.js` (314 KB) is loaded by no
-# HTML and referenced only by the dead CanvasManager.
+# must not ship as a dead entrypoint.
 resources/mcp-permission-server.js
-resources/fabric.min.js
 
 # Playwright is a webpack EXTERNAL (webpack.config.js), so it is required from
 # node_modules at RUNTIME rather than bundled — playwright-core locates browser

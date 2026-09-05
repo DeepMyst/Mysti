@@ -128,7 +128,7 @@ Grounded in the working tree (branch `feature/visual-testing`).
 - **UI today**: personas/skills are flattened into the settings payload for the chat webview (`ChatViewProvider.ts:480-502`) and surfaced via dropdown-ish settings (per-provider `mysti.agents.<provider>Persona` enums, `package.json:666-963`) plus `agentRecommendations`/`getAgentDetails` messages (`ChatViewProvider.ts:1291-1297`, `:1318-1330`). There is no create/edit/delete, no source visibility, no skill picker with bodies.
 - **Skills acquisition today**: `scripts/sync-agents.js` — a build-time/manual Node script with a hardcoded `CURATED_PLUGINS` list pulled from `wshobson/agents` into `resources/agents/plugins/` with a 24h cache. No in-product discovery, no registry search, no mining.
 
-### What DeepMyst does that we are adapting (from `/tmp/mysti-planning/research/deepmyst-mcp-connections.md`)
+### What DeepMyst does that we are adapting (internal research dossier — removed from the public tree 2026-09-05)
 
 - Connection rows `pending | connected | failed | revoked`, per-user, brokered via Smithery; 2s poll / 5min re-arm; per-card busy keys; "My connections" + "Browse catalog" two-tab hub; per-agent slots panel.
 - In-chat: always-on `request_connector` meta-tool → side-effect-free sentinel → typed `connector_required` SSE + clean `{"status":"awaiting_user_connection"}` tool_result → inline ConnectorBlock → modal → poll → flip to connected → **implicit resume** (tools rebuilt from connected servers at the start of every turn).

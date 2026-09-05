@@ -2,7 +2,7 @@
 
 Date: 2026-06-12 · Produced by a 63-agent review workflow (5 code reviewers, 6 researchers, adversarial verification of every high/critical finding, 6 plan writers, completeness critic + fix round).
 
-Detailed research reports backing these plans: [plans/research/](research/) (11 reports: providers, core managers, collab managers, webview/chat, canvas, performance, GitHub triage, model discovery, DeepMyst MCP connections, DeepMyst presentation/canvas, unified-chat UX). Plan files referencing `/tmp/mysti-planning/research/` paths resolve to this directory.
+Detailed research reports backing these plans: [plans/research/](research/) (9 reports: providers, core managers, collab managers, webview/chat, canvas, performance, GitHub triage, model discovery, unified-chat UX; the two DeepMyst reports: (internal research dossier — removed from the public tree 2026-09-05)). Plan files referencing `/tmp/mysti-planning/research/` paths resolve to this directory.
 
 > **Execution log** — 2026-06-12:
 > - **Plan 00 Batch 1 complete.** Local fixes committed (B1/B2/B6/B9/B15, #31 timer leak, #32 model entry, #39 stopgap). GitHub: PR #43 merged; #45 landed as #48; #47 landed as #49 (+legacy-dir migration); issues #42/#44/#46/#36/#41 closed; PR #38 closed; #39 needs-info posted.
