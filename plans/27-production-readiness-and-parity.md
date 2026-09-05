@@ -1515,6 +1515,44 @@ anything not starting with `mysti.`, since a webview message is untrusted input.
 
 **Gate 4 is met.** 321 test files / 0 failures; lint and package shape unchanged.
 
+### 23.7 Phase 5 — parity floor, first two items
+
+**`AGENTS.md` / `CLAUDE.md` / `GEMINI.md` are now read**, and so are
+`.agents/skills` and `.claude/skills`. These were the two items the competitive
+research (§17) put at the top: `AGENTS.md` is the open convention Codex, Cursor,
+Jules and VS Code's own agent mode all honour, and Mysti read only the
+`mysti.md` it invented for the same job — so a repository that had already
+written its conventions down for every other tool got none of them here.
+
+**Neither needed new machinery, which is exactly what Phase 3 bought.**
+
+- The instruction files are **one more entry in the existing nonce-fenced
+  array** — the D-7 comment predicted this verbatim ("never a second fence").
+  They are by construction present in cloned third-party repos, so reading them
+  unfenced would have handed any clone the system position. Phase 3 was the
+  stated hard prerequisite and it paid for itself here.
+- The skill directories needed **no structural change either**: the loader reads
+  `<dir>/skills`, so registering `.agents` and `.claude` resolves to exactly the
+  conventional paths. They load at `source: 'workspace'` — the lowest trust tier
+  — after `.mysti/agents`, so a Mysti-native skill of the same id still wins.
+
+**No new setting.** Both ride the existing `mysti.projectContext.enabled`. A
+switch per convention would have grown the surface §24 is trying to shrink, and
+VS Code defaults its own equivalents to on. Third-party files are capped at 16k
+chars and **say** they truncated — `mysti.md` is the user's own file and stays
+uncapped; these are somebody else's.
+
+**Two mock-fidelity gaps closed, both real:** `RelativePattern` was missing, so
+anything invoking `ProjectContextManager.initialize()` threw in tests; and four
+inline stubs did not implement the new method, failing 26 tests across 4 files.
+Fixed the stubs rather than making production defensive — a stub that does not
+implement the interface is the thing that is wrong.
+
+**Remaining in Phase 5:** skills injected into the coordinator, per-tool
+auto-approve replacing the 1-hour blanket, the `@`-mention surface
+(problems/terminal/git/url/folder), git state in turn context, images to all
+capable providers, and web search/fetch as coordinator tools.
+
 ## 22. The branch decision (publish-safety review, 8 agents)
 
 **`DeepMyst/Mysti` is PUBLIC** (1,137 stars, 55 forks). A dev branch there would be public — visibility is
