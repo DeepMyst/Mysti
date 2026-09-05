@@ -128,11 +128,11 @@ Unattended stops being a fifth mode and becomes a **duration** granted on Auto o
 - `⏎` **steers** the running turn where the backend accepts mid-turn input; elsewhere it queues with an honest note, or offers stop-and-resend.
 - `esc` stops, unchanged.
 
-**The honest constraint.** Mysti spawns most backends one-shot with piped stdin and `--output-format stream-json`; those cannot take mid-turn input. Steering is therefore **capability-gated**, not universal: add `supportsSteering` to `ProviderCapabilities`, declare it truthfully per provider (the persistent-process ACP backends — Hermes, Kimi — are the likely first yeses), and let the composer degrade to queueing. Declaring it falsely must fail a test, the way `supportsPromptEnhancement` already does in `tests/providers/promptEnhancement.test.ts`.
+**The honest constraint — resolved during implementation (Open Question 3).** No backend can be steered today, and not for want of work: the one-shot path closes stdin immediately, and every persistent backend speaks a structured protocol where a mid-turn write corrupts the next message. So **queueing is the whole of Phase 2's shipped behaviour**, and `Enter` queues exactly as `Tab` does. `supportsSteering` exists on `ProviderCapabilities`, is false everywhere, and `tests/providers/steering.test.ts` fails if a provider declares it — flipping it requires deleting an assertion and reading why it was there. Declaring it without a real mid-turn input path would offer a key that silently eats what the user typed.
 
 **Files.** `chat.js` (input keydown, queue state, chip render), `ChatViewProvider` (queue drain), `src/types.ts` (capability flag), `index.html`, per-provider capability declarations.
 
-**Done when.** A queued message sent during a turn arrives after it without being retyped, on all fifteen backends.
+**Done when.** A queued message sent during a turn arrives after it without being retyped, on all fifteen backends. **SHIPPED** — pending F5, like every webview change in this plan.
 
 ---
 
@@ -239,5 +239,5 @@ Provider streaming, message contracts, persistence, the canvas, the coordinator'
 
 1. **Where do Badges and About go?** A VS Code Walkthrough is the obvious home, but nobody has asked whether the badges system should survive at all. Phase 5 assumes it does and only relocates it.
 2. **Should `Plan` be one stop or two?** `OperationMode` distinguishes `quick-plan` from `detailed-plan`. The ladder collapses them; the depth becomes a per-request thing (`/plan --detailed`). Confirm before Phase 1 lands.
-3. **Which backends can genuinely steer?** Needs one experiment per persistent-process provider before Phase 2's capability flags are declared.
+3. ~~**Which backends can genuinely steer?**~~ **ANSWERED — none, and the reason is structural.** The single-shot path calls `stdin.end()` the moment the prompt is written, so there is no pipe left to write into. The persistent path keeps stdin open, but every persistent backend speaks a *structured* protocol on it — Claude Code's `--input-format stream-json` (NDJSON), Hermes/Kimi's ACP (JSON-RPC over stdio) — where an unsolicited mid-turn write is not an interrupt but one more token in a stream nobody is reading, corrupting the next message. This is the same finding already recorded on `BaseCliProvider._interruptPersistentProcess`, which is why cancelling tears the process down rather than writing a byte. `supportsSteering` is therefore declared false everywhere and pinned by `tests/providers/steering.test.ts`. Making any backend steerable is protocol work, not a flag.
 4. **Does the Runs dock replace the five producers eventually, or stay a view?** Phase 3 deliberately defers this. Revisit once the dock has shipped.

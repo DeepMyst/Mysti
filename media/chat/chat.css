@@ -2570,6 +2570,51 @@
       align-items: flex-end;
     }
 
+    /* Plan 28 Phase 2 — queued messages. Sit above the composer, drop with the
+       x, send in order when the running turn lands. */
+    .queued-messages {
+      display: none;
+      width: 100%;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 0 0 6px 0;
+    }
+    .queued-messages.has-items { display: flex; }
+    .queued-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
+      padding: 3px 4px 3px 7px;
+      border: 1px solid var(--mysti-border);
+      background: var(--mysti-surface);
+      border-radius: 4px;
+      font-size: 11px;
+      color: var(--mysti-dim);
+    }
+    .queued-chip-n {
+      color: var(--mysti-dim);
+      opacity: 0.7;
+      font-variant-numeric: tabular-nums;
+    }
+    .queued-chip-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 220px;
+    }
+    .queued-chip-remove {
+      background: none;
+      border: none;
+      color: var(--mysti-dim);
+      opacity: 0.6;
+      cursor: pointer;
+      padding: 0 3px;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .queued-chip-remove:hover { opacity: 1; color: var(--mysti-fg); }
+
     .attachment-previews {
       display: none;
       width: 100%;

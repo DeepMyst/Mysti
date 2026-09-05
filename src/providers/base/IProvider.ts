@@ -111,6 +111,28 @@ export interface ProviderCapabilities {
    */
   supportsPromptEnhancement: boolean;
 
+  /**
+   * Plan 28 Phase 2 — true only where the backend can accept a NEW instruction
+   * while a turn is already streaming ("steering", in the Codex sense).
+   *
+   * NOTHING declares this today, and the reason is structural rather than
+   * missing work. The single-shot path calls `stdin.end()` the moment the
+   * prompt is written (BaseCliProvider), so there is no pipe left to write to.
+   * The persistent path keeps stdin open, but every persistent backend speaks a
+   * STRUCTURED protocol on it — Claude Code's `--input-format stream-json`
+   * (NDJSON), Hermes/Kimi's ACP (JSON-RPC over stdio) — where an unsolicited
+   * mid-turn write is not an interrupt: it is one more token in a stream the
+   * backend is not reading, and it makes the NEXT message unparseable. That is
+   * the same finding recorded on `_interruptPersistentProcess`.
+   *
+   * Until a provider implements a real mid-turn input path, the composer queues
+   * instead (which needs no backend support at all). Flipping this to true
+   * without that path is the "lying capability flag" class — the webview would
+   * offer a key that silently drops what the user typed.
+   * Pinned by tests/providers/steering.test.ts.
+   */
+  supportsSteering?: boolean;
+
   // --- Plan 02 Phase 1: capability-driven rendering fields ---
   /** How thinking output is emitted (kills provider-name forks W1/W2/W3) */
   thinkingStyle: ThinkingStyle;

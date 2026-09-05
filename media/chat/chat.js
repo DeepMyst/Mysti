@@ -371,6 +371,13 @@
         focusedPermissionId: null,
         // Autonomy level: 'manual' | 'semi-autonomous' | 'autonomous'
         autonomyLevel: 'manual',
+        // Plan 28 Phase 2: messages typed while a turn was in flight. Drains in
+        // order on responseComplete. Deliberately NOT drained on cancel — if you
+        // pressed Escape, firing the next thing at the backend is the last thing
+        // you wanted. Webview-only: a panel reload drops it, which is correct
+        // for queued intent nobody has committed to yet.
+        queue: [],
+        queueSeq: 0,
         // Track previous level for cancel/revert
         previousAutonomyLevel: 'manual',
         // Agent configuration state (per-conversation)
@@ -2314,6 +2321,17 @@
           e.preventDefault();
           postMessageWithPanelId({ type: 'cancelRequest' });
           return;
+        }
+
+        // Plan 28 Phase 2: the composer no longer goes dead for the length of
+        // a turn. Runs AFTER the slash/mention/autocomplete handlers above, so
+        // Tab keeps its completion meaning wherever one is offered.
+        if (state.isLoading && !e.shiftKey && (e.key === 'Tab' || e.key === 'Enter')) {
+          if (inputEl.value.trim()) {
+            e.preventDefault();
+            enqueueMessage(inputEl.value);
+            return;
+          }
         }
 
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -4686,6 +4704,9 @@
                           'total:', totalContextTokens);
               updateContextUsage(totalContextTokens, null);
             }
+            // Plan 28 Phase 2: the turn landed, so send whatever was lined up
+            // behind it. `requestCancelled` deliberately does NOT do this.
+            drainQueue();
             break;
           case 'contextWindowInfo':
             // Update context window size for the current model
@@ -8977,6 +8998,63 @@
         }
       }
 
+      /**
+       * Plan 28 Phase 2 — the composer stops blocking.
+       *
+       * NO BACKEND CAN BE STEERED TODAY. The single-shot path calls
+       * `stdin.end()` the moment the prompt is written, and every persistent
+       * backend speaks a STRUCTURED stdin protocol (Claude Code's
+       * `--input-format stream-json`, Hermes/Kimi's ACP JSON-RPC) where an
+       * unsolicited mid-turn write is not a steer — it is a byte that makes the
+       * next message on that pipe unparseable. See BaseCliProvider's
+       * `_interruptPersistentProcess` note. So Enter queues exactly like Tab
+       * until a provider implements a real steer path and declares
+       * `supportsSteering`.
+       */
+      function enqueueMessage(text) {
+        var content = (text || '').trim();
+        if (!content) return false;
+        state.queue.push({ id: 'q' + (++state.queueSeq), text: content });
+        inputEl.value = '';
+        inputEl.style.height = 'auto';
+        clearAutocomplete();
+        renderQueue();
+        return true;
+      }
+
+      document.addEventListener('click', function(e) {
+        var btn = e.target && e.target.closest ? e.target.closest('.queued-chip-remove') : null;
+        if (btn) { e.preventDefault(); removeQueued(btn.getAttribute('data-id')); }
+      });
+
+      function removeQueued(id) {
+        state.queue = state.queue.filter(function(q) { return q.id !== id; });
+        renderQueue();
+      }
+
+      function renderQueue() {
+        var host = document.getElementById('queued-messages');
+        if (!host) return;
+        host.classList.toggle('has-items', state.queue.length > 0);
+        host.innerHTML = state.queue.map(function(q, i) {
+          return '<span class="queued-chip" data-id="' + escapeHtml(q.id) + '">' +
+                   '<span class="queued-chip-n">' + (i + 1) + '</span>' +
+                   '<span class="queued-chip-text">' + escapeHtml(q.text) + '</span>' +
+                   '<button class="queued-chip-remove" data-id="' + escapeHtml(q.id) + '" ' +
+                     'title="Remove from queue" aria-label="Remove from queue">&times;</button>' +
+                 '</span>';
+        }).join('');
+      }
+
+      /** Send the next queued message. Only ever called from responseComplete. */
+      function drainQueue() {
+        if (state.isLoading || state.queue.length === 0) return;
+        var next = state.queue.shift();
+        renderQueue();
+        inputEl.value = next.text;
+        sendMessage();
+      }
+
       function sendMessage() {
         var content = inputEl.value.trim();
         if (!content && state.attachments.length === 0) return;
@@ -11161,8 +11239,20 @@
       // disabled state, and the quick-actions visibility. Called IMMEDIATELY on
       // send (so Stop is available during the pre-first-token window), and on
       // every terminal path (complete/error/cancel). Idempotent.
+      /** Plan 28 Phase 2: the placeholder tells you the queue exists. */
+      function syncComposerAffordance() {
+        if (!inputEl) return;
+        inputEl.placeholder = state.isLoading
+          ? 'Working \u2014 press Tab to queue this for next\u2026'
+          : 'Ask Mysti\u2026';
+      }
+
       function setProcessing(on) {
         state.isLoading = on;
+        syncComposerAffordance();
+        // The composer input itself is NEVER disabled — Plan 28 Phase 2. Only
+        // the send button changes, because there is now something else to do
+        // with a keystroke while a turn is running.
         if (sendBtn) { sendBtn.style.display = on ? 'none' : 'flex'; sendBtn.disabled = on; }
         if (stopBtn) { stopBtn.style.display = on ? 'flex' : 'none'; }
         var quickActionsContainer = document.getElementById('quick-actions-container');
