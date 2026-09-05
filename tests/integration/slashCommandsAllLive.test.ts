@@ -128,3 +128,33 @@ describe('the collaboration commands compose a real mention', () => {
     expect(slash.slice(idx, idx + 2200)).toMatch(/No other agent is available/);
   });
 });
+
+describe('user-feedback messages reach the user (Plan 27 Phase 4)', () => {
+  /**
+   * These four were posted and received by nothing, so the user was told
+   * nothing. `mentionWarning` is the one that loses work: @-mentions past
+   * MAX_MENTIONS_PER_MESSAGE are silently dropped, so eight mentions run five
+   * agents with no explanation. `mystiUnavailable` is a dead end on the DEFAULT
+   * agent — an empty synthesis and no reason.
+   */
+  for (const type of ['mentionWarning', 'mystiUnavailable', 'permissionResult', 'editApplied']) {
+    it(`${type} is posted by the extension AND handled by the webview`, () => {
+      expect(provider, `${type} is no longer posted`).toContain(`type: '${type}'`);
+      expect(js, `${type} has no webview handler — the user is told nothing`).toContain(`case '${type}'`);
+    });
+  }
+
+  it('they render through showToast, which uses textContent (no markup injection)', () => {
+    const idx = js.indexOf("case 'mentionWarning':");
+    expect(idx).toBeGreaterThan(-1);
+    expect(js.slice(idx, idx + 900)).toContain('showToast');
+    const toast = js.indexOf('function showToast');
+    expect(js.slice(toast, toast + 400)).toContain('textContent');
+  });
+
+  it('the silent-truncation path warns rather than dropping quietly', () => {
+    // The producer must still explain WHAT was dropped, not just that something was.
+    const idx = provider.indexOf("type: 'mentionWarning'");
+    expect(provider.slice(idx, idx + 300)).toMatch(/Only the first/);
+  });
+});

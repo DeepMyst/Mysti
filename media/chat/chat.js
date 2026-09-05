@@ -5441,6 +5441,36 @@
            * The name is echoed verbatim: the extension keys on it, and the only
            * thing the webview adds is the panelId the handlers require.
            */
+          /**
+           * Plan 27 Phase 4 — four extension -> webview feedback messages that
+           * had no receiver, so the user was told nothing.
+           *
+           * `mentionWarning` is the worst of them: @-mentions past the cap are
+           * SILENTLY DROPPED. You mention eight agents, five run, and nothing
+           * says so. `mystiUnavailable` is a dead end on the DEFAULT agent —
+           * the turn returns an empty synthesis with no explanation.
+           *
+           * showToast uses textContent, so a payload cannot inject markup.
+           */
+          case 'mentionWarning':
+            showToast((message.payload && message.payload.message) || 'Some @-mentions were not processed.', 'warning');
+            break;
+          case 'mystiUnavailable':
+            showToast((message.payload && message.payload.message) || 'The Mysti agent is unavailable.', 'error');
+            break;
+          case 'permissionResult':
+            if (message.payload) {
+              showToast(
+                (message.payload.allowed ? 'Allowed: ' : 'Denied: ') + (message.payload.action || 'action'),
+                message.payload.allowed ? 'info' : 'warning'
+              );
+            }
+            break;
+          case 'editApplied':
+            if (message.payload && message.payload.success) {
+              showToast('Applied edit to ' + (message.payload.path || 'file'), 'info');
+            }
+            break;
           case 'triggerShareLink':
           case 'triggerInitTeam':
           case 'triggerOpenMemory':
