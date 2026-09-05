@@ -153,12 +153,12 @@ describe('the setup dismissal latch is released by every request path', () => {
     // -g` — SetupManager emits `checking, 5%` within milliseconds — so a second
     // click raced two global installs, which is the hazard the disable exists
     // for. Terminal messages and an explicit re-arm force it; progress must not.
-    expect(CHAT_JS).toContain('function reviveSetupRetry(force)');
+    expect(CHAT_JS).toContain('function reviveSetupRetry()');
     for (const caller of ['function handleSetupFailed', 'function handleSetupComplete',
                           'function rearmSetupOverlay']) {
       const at = CHAT_JS.indexOf(caller);
       expect(at, caller).toBeGreaterThan(-1);
-      expect(CHAT_JS.slice(at, at + 900), `${caller} must revive Retry`).toMatch(/reviveSetupRetry\(true\)/);
+      expect(CHAT_JS.slice(at, at + 900), `${caller} must revive Retry`).toContain('reviveSetupRetry()');
     }
     const prog = CHAT_JS.indexOf('function handleSetupProgress');
     expect(prog).toBeGreaterThan(-1);
@@ -169,10 +169,22 @@ describe('the setup dismissal latch is released by every request path', () => {
       .not.toContain('reviveSetupRetry(');
   });
 
-  it('an in-flight retry cannot be started twice', () => {
+  it('the Retry button disables itself on click — that is the double-click guard', () => {
+    // An earlier version also kept a `retryInFlight` flag; every call site
+    // passed `force`, so the guard never fired and the flag was cleared on the
+    // next line. A string-matching test approved that inert code, which is why
+    // this one asserts the mechanism that actually runs.
     const at = CHAT_JS.indexOf("setupRetryBtn.addEventListener('click'");
-    expect(CHAT_JS.slice(at, at + 900)).toContain('retryInFlight = true');
-    expect(CHAT_JS).toContain('state.setup.retryInFlight && !force');
+    expect(at).toBeGreaterThan(-1);
+    expect(CHAT_JS.slice(at, at + 900)).toContain('setupRetryBtn.disabled = true');
+    expect(CHAT_JS, 'the inert flag should be gone').not.toContain('retryInFlight');
+  });
+
+  it('nothing hides the pane that holds Retry and Skip', () => {
+    // Both live inside `.setup-error`, and the only producer of `setupProgress`
+    // is the Retry button — so hiding that pane fired exclusively during a
+    // retry's own install, leaving a buttonless full-screen overlay.
+    expect(CHAT_JS).not.toMatch(/setup-error'\)[\s\S]{0,120}classList\.add\('hidden'\)/);
   });
 
   it('every way out of the auth prompt actually leaves', () => {

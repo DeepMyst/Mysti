@@ -2608,7 +2608,7 @@
       function rearmSetupOverlay() {
         if (state.setup) { state.setup.dismissedByUser = false; }
         // A re-shown overlay must not come back with a dead Retry.
-        reviveSetupRetry(true);
+        reviveSetupRetry();
       }
 
       var setupRetryBtn = document.getElementById('setup-retry-btn');
@@ -2625,7 +2625,6 @@
           // buttons at all for the length of an npm install — the same trap
           // this whole thread of fixes exists to close.
           setupRetryBtn.disabled = true;
-          if (state.setup) { state.setup.retryInFlight = true; }
           var errMsg = document.querySelector('#setup-overlay .setup-error-message');
           if (errMsg) { errMsg.textContent = 'Retrying\u2026'; }
           // No re-arm here: this button lives INSIDE the overlay, which is
@@ -6327,7 +6326,7 @@
       }
 
       function handleSetupComplete(payload) {
-        reviveSetupRetry(true);   // terminal
+        reviveSetupRetry();   // terminal
         state.setup.isReady = true;
         state.setup.currentStep = 'ready';
         state.setup.message = 'Setup complete!';
@@ -6340,29 +6339,34 @@
       }
 
       /**
-       * Re-enable Retry — but only when a retry is not still running.
+       * Re-enable Retry.
        *
-       * The first version revived on EVERY setup message, and `SetupManager`
-       * emits `checking, 5%` within milliseconds of the retry starting. So the
-       * button came back alive during its own `npm install -g`, and since the
-       * error pane is no longer hidden it was visible and clickable the whole
-       * time: two concurrent global installs, which is the exact hazard the
-       * disable was added for.
+       * Called from TERMINAL messages only — `setupFailed`, `setupComplete` —
+       * and from an explicit re-arm. Not from progress: SetupManager emits
+       * `checking, 5%` within milliseconds of a retry starting, so reviving
+       * there brought the button back alive during its own `npm install -g`,
+       * and `SetupManager.setupProvider` has no in-flight guard, so a second
+       * click raced two global installs.
        *
-       * `setupRetryInFlight` is cleared only by a TERMINAL message (failed or
-       * complete) or by an explicit re-arm, so progress ticks cannot revive it
-       * and a run that dies silently still leaves a usable button after the
-       * next terminal event.
+       * The `disabled` attribute IS the double-click protection. An earlier
+       * version added a separate in-flight flag as well; every call site passed
+       * `force`, so that guard never fired and the flag was cleared on the next
+       * line — inert code which a string-matching test happily approved. Gone,
+       * and a test now asserts the mechanism that actually runs.
+       *
+       * If a run dies without a terminal message (neither `_handleRetrySetup`
+       * nor `setupProvider` has a try/catch), the button stays disabled — but
+       * Escape still leaves the overlay, and reopening setup re-arms it. That
+       * is a worse outcome than a live button and a better one than two
+       * concurrent global installs.
        */
-      function reviveSetupRetry(force) {
-        if (state.setup && state.setup.retryInFlight && !force) { return; }
-        if (state.setup) { state.setup.retryInFlight = false; }
+      function reviveSetupRetry() {
         var retryBtn = document.getElementById('setup-retry-btn');
         if (retryBtn) { retryBtn.disabled = false; }
       }
 
       function handleSetupFailed(payload) {
-        reviveSetupRetry(true);
+        reviveSetupRetry();
         state.setup.currentStep = 'failed';
         state.setup.providerId = payload.providerId;
         state.setup.error = payload.error;
@@ -6419,13 +6423,13 @@
         }
 
         overlay.classList.remove('hidden');
-        // Nothing else ever re-hides `.setup-error` — `updateSetupOverlay` only
-        // un-hid it — so a later, unrelated setup run came back wearing the
-        // previous failure's ⚠️ pane and a Retry wired to the OLD provider id.
-        var errorPane = overlay.querySelector('.setup-error');
-        if (errorPane && state.setup.currentStep !== 'failed') {
-          errorPane.classList.add('hidden');
-        }
+        // NOT hiding `.setup-error` here, deliberately. Retry AND Skip both
+        // live inside that pane, and the only producer of `setupProgress` is
+        // the Retry button itself — so hiding it fired exclusively during a
+        // retry's own `npm install -g`, leaving a buttonless full-screen
+        // overlay for the length of the install. A stale pane is a cosmetic
+        // problem; no exit is the problem this whole area exists to avoid.
+        // The click already replaces the stale text with "Retrying…".
 
         var progressEl = overlay.querySelector('.setup-progress-bar');
         var messageEl = overlay.querySelector('.setup-message');
