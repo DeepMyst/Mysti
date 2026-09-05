@@ -527,7 +527,7 @@ describe('PageCompiler — compilePartial', () => {
         expect(r.ok, `${scaffold.id}@${pct}%: ${r.ok ? '' : r.error}`).toBe(hasRoot(cut));
       }
     }
-  });
+  }, 30_000);
 
   it('has no root to show while a page is still declaring local bindings', () => {
     const dashboard = PAGE_SCAFFOLDS.find(s => s.id === 'dashboard')!.jsx;
@@ -548,7 +548,7 @@ describe('PageCompiler — compilePartial', () => {
       expect(counts[i]).toBeGreaterThanOrEqual(counts[i - 1]);
     }
     expect(counts[counts.length - 1]).toBe([...walk(ok(full))].length);
-  });
+  }, 30_000);
 
   it('cuts back past a half-written attribute', () => {
     const r = compilePartial('function Page(){ return (<UI.Screen><UI.Card sty');
@@ -604,8 +604,11 @@ describe('PageCompiler — compilePartial', () => {
     for (const input of inputs) {
       expect(() => compilePartial(input)).not.toThrow();
     }
-    expect(Date.now() - started).toBeLessThan(6000);
-  });
+    // 25 s, not 6: this guards against an UNBOUNDED (ReDoS-class) blow-up, and a
+    // real one runs for minutes. Under 3x worker-pool contention the sibling test
+    // below measured 13.7x amplification, so a 6 s ceiling was a scheduling test.
+    expect(Date.now() - started).toBeLessThan(25_000);
+  }, 30_000);
 
   it('handles EVERY byte-level prefix of every scaffold, not just tidy ones', () => {
     // A stream cuts wherever the token boundary falls: mid-entity, mid-attribute

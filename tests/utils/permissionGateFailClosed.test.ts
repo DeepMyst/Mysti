@@ -94,7 +94,11 @@ describe('known combinations are unchanged', () => {
 describe('normalizeAuthoritySettings', () => {
   it('coerces unknown values and reports what it changed', () => {
     const res = normalizeAuthoritySettings(base('plan', 'Ask-Permission'));
-    expect(res.settings.mode).toBe('default');
+    // Plan 27 A-1: 'plan' is not merely "unknown" — it was v0.4.0's MOST
+    // restrictive selectable value, so it migrates to 'quick-plan' (MODE_RANK 3),
+    // never down to 'default' (MODE_RANK 1, which writes). See
+    // LEGACY_MODE_ALIASES and settingsClamp.test.ts.
+    expect(res.settings.mode).toBe('quick-plan');
     expect(res.settings.accessLevel).toBe('ask-permission');
     expect(res.coerced.join(' ')).toContain('plan');
     expect(res.coerced.join(' ')).toContain('Ask-Permission');

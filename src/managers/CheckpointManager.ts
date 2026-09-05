@@ -40,6 +40,27 @@ export type RewindResult =
 export const CHECKPOINT_FORCED_PATHS = ['.mysti/agents', '.mysti/skills.staged'] as const;
 
 /**
+ * Retention cap for `mysti.checkpoints.maxSnapshots` (0 = unlimited). Mirrors
+ * the default declared in package.json; kept here rather than in constants.ts
+ * so the cap and the code that enforces it cannot drift apart unnoticed.
+ */
+export const CHECKPOINT_DEFAULT_MAX_SNAPSHOTS = 200;
+
+/**
+ * One ref per checkpoint, ordered by a zero-padded counter.
+ *
+ * Snapshots are parentless ROOT commits held alive by these refs, not a single
+ * linear chain. That is what makes the cap enforceable: git's history is a
+ * Merkle chain, so dropping the oldest commit of a chain rewrites every
+ * descendant's SHA — which would invalidate the rewind target stored on every
+ * message in the conversation, not just the pruned ones. Independent roots let
+ * the oldest refs be deleted and garbage-collected while every retained
+ * checkpoint keeps the exact SHA the UI already holds.
+ */
+const CHECKPOINT_REF_PREFIX = 'refs/mysti/checkpoints/';
+const CHECKPOINT_REF_PAD = 12;
+
+/**
  * Default ignore rules for the shadow repo, written to <gitDir>/info/exclude.
  * The user's own nested .gitignore files are honored natively by `git add -A`
  * against the work-tree; this is the safety net for repos that don't ignore
@@ -183,7 +204,14 @@ export class CheckpointManager {
 
   // --- Snapshot / rewind implementations (run inside _opQueue) ------------
 
-  private async _snapshotImpl(label: string, allowHeal: boolean): Promise<string | null> {
+  /**
+   * `prune = false` is used by the pre-rewind safety snapshot: pruning there
+   * can delete the very checkpoint the rewind is about to restore (the target
+   * becomes the oldest once the safety snapshot pushes the count over the cap),
+   * which turned a valid rewind into "Checkpoint no longer exists." The rewind
+   * prunes once it has finished instead.
+   */
+  private async _snapshotImpl(label: string, allowHeal: boolean, prune = true): Promise<string | null> {
     try {
       await this.ensureRepo();
       await this._clearStaleLock();
@@ -205,19 +233,40 @@ export class CheckpointManager {
       for (const artifactPath of CHECKPOINT_FORCED_PATHS) {
         await this._runGit(['add', '-A', '-f', '--', artifactPath]);
       }
-      await this._runGitOrThrow([
+      // Preserve any pre-existing chained history from an older Mysti build:
+      // once HEAD starts moving to root commits, that chain is reachable from
+      // nothing and the first gc would delete every checkpoint the user has.
+      const existing = await this._listSnapshotRefs();
+      if (existing.length === 0) {
+        const priorHead = await this._runGit(['rev-parse', '--verify', '--quiet', 'HEAD']);
+        const priorSha = priorHead.code === 0 ? priorHead.stdout.trim() : '';
+        if (priorSha) {
+          await this._runGit(['update-ref', this._snapshotRef(0), priorSha]);
+          existing.push(this._snapshotRef(0));
+        }
+      }
+
+      const tree = (await this._runGitOrThrow(['write-tree'])).stdout.trim();
+      const sha = (await this._runGitOrThrow([
         '-c', `user.name=${CHECKPOINT_AUTHOR_NAME}`,
         '-c', `user.email=${CHECKPOINT_AUTHOR_EMAIL}`,
-        'commit', '--allow-empty', '--no-verify', '--no-gpg-sign',
+        '-c', 'commit.gpgsign=false',
+        'commit-tree', tree,
         '-m', label && label.trim() ? label.slice(0, 200) : 'checkpoint'
-      ]);
-      const head = await this._runGitOrThrow(['rev-parse', 'HEAD']);
-      return head.stdout.trim() || null;
+      ])).stdout.trim();
+      if (!sha) { return null; }
+
+      await this._runGitOrThrow(['update-ref', this._nextSnapshotRef(existing), sha]);
+      // HEAD tracks the newest checkpoint so `add -A` and `reset --hard` behave
+      // exactly as before; the per-checkpoint refs are what keep the rest alive.
+      await this._runGitOrThrow(['update-ref', 'HEAD', sha]);
+      if (prune) { await this._pruneSnapshots(); }
+      return sha;
     } catch (err) {
       if (allowHeal && this._looksCorrupt(err)) {
         console.log('[Mysti] CheckpointManager: repo unhealthy, reinitializing.', err);
         await this._heal();
-        return this._snapshotImpl(label, false);
+        return this._snapshotImpl(label, false, prune);
       }
       console.log('[Mysti] CheckpointManager: snapshot failed:', err);
       return null;
@@ -236,13 +285,15 @@ export class CheckpointManager {
       }
 
       // Safety snapshot first so the rewind can itself be undone.
-      const safetyCommit = await this._snapshotImpl('pre-rewind safety snapshot', true);
+      const safetyCommit = await this._snapshotImpl('pre-rewind safety snapshot', true, false);
 
       await this._runGitOrThrow(['reset', '--hard', commit]);
       // clean -fd (NOT -x): remove files created after the checkpoint while
       // honoring .gitignore + info/exclude (never nukes node_modules etc.).
       await this._runGitOrThrow(['clean', '-fd']);
 
+      // Deferred from the safety snapshot above, now that the restore is done.
+      await this._pruneSnapshots();
       return { ok: true, safetyCommit };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -309,6 +360,60 @@ export class CheckpointManager {
     return vscode.workspace
       .getConfiguration('mysti')
       .get<number>('checkpoints.maxFiles', CHECKPOINT_DEFAULT_MAX_FILES);
+  }
+
+  /**
+   * `mysti.checkpoints.maxSnapshots` — retained checkpoints per workspace.
+   * 0 (or a nonsense value) means unlimited. Until this was read, the Settings
+   * UI advertised a cap of 200 that nothing anywhere enforced.
+   */
+  private _maxSnapshots(): number {
+    const raw = vscode.workspace
+      .getConfiguration('mysti')
+      .get<number>('checkpoints.maxSnapshots', CHECKPOINT_DEFAULT_MAX_SNAPSHOTS);
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
+      return CHECKPOINT_DEFAULT_MAX_SNAPSHOTS;
+    }
+    return Math.floor(raw);
+  }
+
+  private _snapshotRef(index: number): string {
+    return `${CHECKPOINT_REF_PREFIX}${String(index).padStart(CHECKPOINT_REF_PAD, '0')}`;
+  }
+
+  /** Checkpoint refs, oldest first (for-each-ref sorts by refname). */
+  private async _listSnapshotRefs(): Promise<string[]> {
+    const res = await this._runGit(['for-each-ref', '--format=%(refname)', CHECKPOINT_REF_PREFIX]);
+    if (res.code !== 0) { return []; }
+    return res.stdout.split('\n').map(l => l.trim()).filter(Boolean);
+  }
+
+  private _nextSnapshotRef(existing: string[]): string {
+    let max = -1;
+    for (const ref of existing) {
+      const n = Number.parseInt(ref.slice(CHECKPOINT_REF_PREFIX.length), 10);
+      if (Number.isFinite(n) && n > max) { max = n; }
+    }
+    return this._snapshotRef(max + 1);
+  }
+
+  /**
+   * Drop the oldest checkpoints beyond the cap and reclaim their objects.
+   * Best-effort: a failed prune must never fail the snapshot that triggered it.
+   */
+  private async _pruneSnapshots(): Promise<void> {
+    const cap = this._maxSnapshots();
+    if (cap <= 0) { return; }
+    const refs = await this._listSnapshotRefs();
+    if (refs.length <= cap) { return; }
+    for (const ref of refs.slice(0, refs.length - cap)) {
+      await this._runGit(['update-ref', '-d', ref]);
+    }
+    // Without expiring the reflogs the pruned commits stay reachable from
+    // HEAD's log and gc keeps every object — the cap would bound the ref count
+    // and nothing else.
+    await this._runGit(['reflog', 'expire', '--expire=now', '--expire-unreachable=now', '--all']);
+    await this._runGit(['gc', '--prune=now', '--quiet']);
   }
 
   private _workspaceRoot(): string | undefined {

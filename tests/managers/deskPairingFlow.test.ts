@@ -120,7 +120,7 @@ describe('demandedGroups', () => {
     for (let i = 0; i < 1_000; i++) {
       expect(demandedGroups(String(i), CHALLENGE_GROUPS)).toHaveLength(CHALLENGE_GROUPS);
     }
-  });
+  }, 30_000);
 
   it('varies across peers, so nobody learns "it is always the first three"', () => {
     const seen = new Set<string>();
@@ -128,7 +128,7 @@ describe('demandedGroups', () => {
       seen.add(demandedGroups(safetyNumber(generateKeyPair().publicKey, generateKeyPair().publicKey)).join(','));
     }
     expect(seen.size).toBeGreaterThan(5);
-  });
+  }, 30_000);
 });
 
 describe('the challenge is the only gate', () => {

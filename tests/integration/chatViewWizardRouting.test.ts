@@ -44,6 +44,7 @@ import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { PermissionManager } from '../../src/managers/PermissionManager';
 import { clearMockConfig, getMockConfigUpdates, Uri } from '../helpers/mockVscode';
 import type { WebviewMessage, Settings } from '../../src/types';
+import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -99,6 +100,11 @@ function createHarness(): Harness {
     setAgentContextManager: () => undefined,
     getProvider: () => undefined,
     getProviderInstance: () => undefined,
+    // Reachable only since D-1: _sendInitialState no longer returns at the
+    // showWizard post, so it now builds and sends initialState underneath.
+    getProviders: () => [],
+    getRegistry: () => ({ getAll: () => [] }),
+    getModelContextWindow: () => 200000,
   } as any;
   const setupManager = {
     getWizardStatus: async () => ({ ...WIZARD_STATUS }),
@@ -119,10 +125,15 @@ function createHarness(): Harness {
     subscribeToChannelEvents: () => () => undefined,
     isConnected: () => false,
     isInstalled: () => false,
+    isIntegrationEnabled: () => false,
+    getDaemonStatus: () => 'stopped',
   } as any;
   const engagementManager = {
     trackCustomPersonaCreated: () => undefined,
     trackCustomSkillCreated: () => undefined,
+    getUsageStats: () => ({}),
+    getAllBadges: () => [],
+    getUnlockedCount: () => 0,
   } as any;
   const noop = {} as any;
 
@@ -146,7 +157,10 @@ function createHarness(): Harness {
     engagementManager,
     noop,                  // projectContextManager
     noop,                  // visualTestManager
-    noop                   // canvasManager
+    noop,                  // canvasManager
+    createModelRegistryStub() as any, // modelRegistry
+    // Also reachable only since D-1 removed the early return.
+    { isAvailable: async () => false, snapshot: async () => null, rewindTo: async () => null } as any
   );
 
   // Register a fake sidebar panel (normally done in resolveWebviewView)

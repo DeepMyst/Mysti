@@ -343,5 +343,5 @@ describe('round trip — generated documents', () => {
   it('a different seed covers a different shape space', () => {
     const build = generator(0xc0ffee);
     for (let i = 0; i < 250; i++) { roundTrip(build(0), `generated2#${i}`); }
-  });
+  }, 30_000);
 });

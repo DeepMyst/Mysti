@@ -16,6 +16,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ContextItem } from '../types';
 
+/** workspaceState key prefix for a panel's persisted context (Plan 07 A5). */
+const CONTEXT_KEY_PREFIX = 'mysti.context:';
+
+/**
+ * Panel ids that survive a reload and therefore keep their persisted context:
+ * the sidebar view (ChatViewProvider `_sidebarId`) and the no-panel fallback
+ * every `panelId?` parameter defaults to. Every other id is minted per open
+ * (`panel_<Date.now()>`, `canvas-<Date.now()>`, …) and is never seen again
+ * once its webview is gone, so its key is an orphan.
+ */
+const STABLE_PANEL_IDS: ReadonlySet<string> = new Set(['sidebar', 'default']);
+
+/**
+ * Upper bound on orphan keys deleted per activation. Keeps the sweep O(1)-ish
+ * on a store that leaked for months; the remainder goes on the next reload.
+ */
+export const CONTEXT_SWEEP_LIMIT = 500;
+
 export class ContextManager {
   private _panelContexts: Map<string, ContextItem[]> = new Map();
   private _autoContext: boolean = true;
@@ -24,6 +42,7 @@ export class ContextManager {
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
     this._autoContext = vscode.workspace.getConfiguration('mysti').get('autoContext', true);
+    this._sweepOrphanedPersistedContext();
   }
 
   /**
@@ -162,7 +181,47 @@ export class ContextManager {
   // (Selections keep their snapshot content — they aren't re-readable by range.)
 
   private _persistKey(panelId: string): string {
-    return `mysti.context:${panelId}`;
+    return `${CONTEXT_KEY_PREFIX}${panelId}`;
+  }
+
+  /** Delete a panel's persisted key. Never throws, never leaves a rejection unhandled. */
+  private _forgetPersisted(key: string): void {
+    try {
+      const pending = this._extensionContext.workspaceState.update(key, undefined);
+      if (pending && typeof (pending as Thenable<void>).then === 'function') {
+        (pending as Thenable<void>).then(undefined, (err) => {
+          console.log('[Mysti] context key delete failed:', err);
+        });
+      }
+    } catch (err) {
+      console.log('[Mysti] context key delete failed:', err);
+    }
+  }
+
+  /**
+   * Tab panels get a fresh id every time they are opened and `onDidDispose`
+   * does not reliably fire on a window reload, so the dispose path alone
+   * cannot keep the store clean. On construction, delete (bounded) every
+   * context key whose panel id cannot come back. Runs once, never throws.
+   */
+  private _sweepOrphanedPersistedContext(): void {
+    try {
+      const ws = this._extensionContext.workspaceState as { keys?: () => readonly string[] };
+      if (typeof ws.keys !== 'function') { return; }
+      let swept = 0;
+      for (const key of ws.keys()) {
+        if (!key.startsWith(CONTEXT_KEY_PREFIX)) { continue; }
+        if (STABLE_PANEL_IDS.has(key.slice(CONTEXT_KEY_PREFIX.length))) { continue; }
+        if (swept >= CONTEXT_SWEEP_LIMIT) { break; }
+        this._forgetPersisted(key);
+        swept++;
+      }
+      if (swept > 0) {
+        console.log(`[Mysti] context: swept ${swept} orphaned panel context key(s)`);
+      }
+    } catch (err) {
+      console.log('[Mysti] context sweep failed:', err);
+    }
   }
 
   private _persist(panelId: string): void {
@@ -222,6 +281,9 @@ export class ContextManager {
    */
   public clearPanelContext(panelId: string) {
     this._panelContexts.delete(panelId);
+    // The panel id is minted per open and never reused, so its persisted key
+    // would otherwise outlive the tab forever.
+    this._forgetPersisted(this._persistKey(panelId));
   }
 
   public async refreshContext(panelId?: string) {

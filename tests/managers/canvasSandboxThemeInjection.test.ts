@@ -88,8 +88,10 @@ describe('CANVAS-SEC-1: a theme token cannot break out of the frame stylesheet',
   });
 
   it('buildPageDocument emits no injected script for a poisoned theme (legacy html mode)', () => {
-    // The legacy frame is the worse case: SANDBOX_INNER_CSP keeps
-    // `img-src … https:`, so an injected script there is a working exfil beacon.
+    // The legacy frame is the worse case: SANDBOX_INNER_CSP still allows
+    // `script-src 'unsafe-inline' 'unsafe-eval'`, so an injected script there
+    // runs (E-2 narrowed its `img-src` to `data: blob:`, closing the beacon
+    // half — the injection half is what this test pins).
     const html = buildPageDocument({
       page: docPage({ legacy: { mode: 'html', source: '<p>hi</p>' } }),
       theme: poisoned({ primary: BREAKOUT }), format: desktop, runtime,

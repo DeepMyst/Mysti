@@ -367,6 +367,14 @@ export class AgentContextManager {
     access: 'read-only' | 'gated-write';
     pattern: 'one-shot' | 'rounds';
     name: string;
+    /**
+     * Plan 27 lane F: the same integrity verdict that clamped `access`, exported
+     * so the prompt assembler can decide WHERE `prompt` lands. `prompt` is the
+     * role body formatted as a stance either way; only when this is true may it
+     * be placed as leading instructions — otherwise the consumer must fence it
+     * as reference data (`CollaborationManager._buildPrompt`).
+     */
+    trusted: boolean;
   } | null> {
     const instructions = await this._agentLoader.loadInstructions(roleId);
     if (!instructions) {
@@ -387,12 +395,22 @@ export class AgentContextManager {
     // which come from a third-party GitHub repo and are not in the manifest;
     // write-capable collaboration ships WITH the extension or not at all.
     const declaredAccess = meta?.roleAccess ?? 'read-only';
-    const access = meta?.trusted === true ? declaredAccess : 'read-only';
+    // Plan 27 gate: the clamp must read the TIER-2 verdict, not the Tier-1
+    // cache. `meta` is a raw `_metadataCache` entry whose `trusted` was decided
+    // against the bytes read at activation; `instructions.trusted` was
+    // re-measured against the bytes assembled into the prompt two lines below.
+    // Consulting only `meta` reopened the exact escalation the comment above
+    // says it closed: tamper a bundled role after load (no editor save, so no
+    // reload), and `loadInstructions` correctly reported `trusted: false` while
+    // this line still handed back the file's declared `gated-write`.
+    const trusted = meta?.trusted === true && instructions.trusted === true;
+    const access = trusted ? declaredAccess : 'read-only';
     return {
       prompt: this.buildRolePrompt(instructions),
       access,
       pattern: meta?.rolePattern ?? 'one-shot',
       name: instructions.name,
+      trusted,
     };
   }
 

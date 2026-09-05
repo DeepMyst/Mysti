@@ -13,6 +13,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { isLoopbackHost } from './outboundUrlPolicy';
 
 /**
  * A thin extension-host MCP **client** (Plan 05 §9 / Phase 6.2). Used for
@@ -53,6 +54,22 @@ export class McpClient {
 
   private async _connect(): Promise<Client> {
     if (this._client) { return this._client; }
+    // A bearer is a live account credential. The endpoint comes from a setting
+    // (machine-scoped, but still a string), so refuse to put the token on the
+    // wire in cleartext: https, or loopback for a local dev broker. This does
+    // NOT replace the caller's `isDeepMystHost` check — it is the floor beneath
+    // it, and it is the only check on the paths that forget to make one.
+    if (this._bearer) {
+      let parsed: URL;
+      try {
+        parsed = new URL(this._url);
+      } catch {
+        throw new Error('MCP endpoint URL is not parseable');
+      }
+      if (parsed.protocol !== 'https:' && !isLoopbackHost(parsed.hostname)) {
+        throw new Error(`refusing to send an MCP bearer token in cleartext to ${parsed.host}`);
+      }
+    }
     const client = new Client({ name: 'mysti', version: '1.0.0' }, { capabilities: {} });
     const transport = new StreamableHTTPClientTransport(new URL(this._url), {
       requestInit: this._bearer ? { headers: { authorization: `Bearer ${this._bearer}` } } : undefined,

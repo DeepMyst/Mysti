@@ -25,6 +25,23 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type AccessLevel = 'read-only' | 'ask-permission' | 'full-access';
 export type ContextMode = 'auto' | 'manual';
 export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code';
+
+/**
+ * Pseudo-agents: selectable in the agent menu, but NOT registered providers —
+ * they have no CLI, no install command and no model list of their own.
+ *   'mysti'      — the coordinator agent (its own model + gated delegation)
+ *   'brainstorm' — two backends collaborating (routed as `sendBrainstormMessage`)
+ */
+export type PseudoAgentType = 'mysti' | 'brainstorm';
+
+/**
+ * What the user picked in the agent menu. A superset of ProviderType — the
+ * selection may be a pseudo-agent, the BACKEND resolved for it never is.
+ * `ChatViewProvider._getPanelAgent()` returns this; `_getPanelProvider()`
+ * returns a registered ProviderType and must never return a pseudo-agent.
+ */
+export type AgentSelection = ProviderType | PseudoAgentType;
+
 export type AutocompleteType = 'sentence' | 'paragraph' | 'message';
 
 // Agent and Brainstorm types
@@ -300,6 +317,34 @@ export interface WebviewMessage {
 // stay on the loose WebviewMessage type until the full discriminated-union
 // migration (Plan 02 Open Question 6).
 // ============================================================================
+
+/**
+ * Payload of the `promptEnhanced` message.
+ *
+ * Every `enhancePrompt()` implementation resolves the ORIGINAL prompt when its
+ * CLI fails, so "we got a string back" is not the same as "the prompt was
+ * enhanced" — `changed` carries that distinction to the webview so a silent
+ * no-op stops looking like a success. `enhancedBy` names the backend that did
+ * the rewrite, which differs from the active provider when `fallback` is true.
+ */
+export interface PromptEnhancedPayload {
+  prompt: string;
+  enhancedBy: string;
+  enhancedById: string;
+  fallback: boolean;
+  changed: boolean;
+}
+
+/**
+ * Payload of the `promptEnhanceUnavailable` message — posted instead of
+ * `promptEnhanced` when neither the active provider nor any installed backend
+ * implements prompt enhancement. The webview disables the button and shows
+ * `reason` rather than pretending the request succeeded.
+ */
+export interface PromptEnhanceUnavailablePayload {
+  activeProviderName: string;
+  reason: string;
+}
 
 /**
  * Provider Manifest payload — posted inside `initialState` (as
@@ -1153,6 +1198,19 @@ export interface PermissionDetails {
 
   // Whether the CLI process was suspended via SIGSTOP (true = tool cannot execute until approved)
   suspended?: boolean;
+
+  /**
+   * P0#2 — the gated tool call itself, so the permission card can render the
+   * diff being approved. `command` above stays the 500-char JSON preview for
+   * older consumers, but a sliced JSON string is unparseable past 500 chars, so
+   * a realistic 3-line Edit rendered NO diff. `toolInput` is a structurally
+   * intact copy of the tool_use input: when it exceeds the wire budget the
+   * producer truncates the long STRING fields inside it (with an explicit
+   * `…[truncated N chars]` marker) rather than slicing the JSON, so it always
+   * parses and `file_path` / `edits[]` / key set survive.
+   */
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
 }
 
 export interface PermissionRequest {

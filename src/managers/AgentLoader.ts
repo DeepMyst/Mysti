@@ -54,6 +54,16 @@ export interface AgentMetadata {
    * backend, which runs with no sandbox around it — so location alone can never
    * justify system-tier authority. Only `trusted` content may be concatenated
    * into a system prompt; everything else is fenced as untrusted data.
+   *
+   * Scope of the measurement differs by tier. On a plain `AgentMetadata`
+   * (Tier 1: `loadAllMetadata()`, `getPersonas()/getSkills()/getRoles()`) it
+   * describes the bytes read at load time and is NOT re-measured until the next
+   * reload — an external writer that never triggers `onDidSaveTextDocument`
+   * leaves it stale. `AgentInstructions` / `AgentFull` (Tiers 2/3) re-measure
+   * it against the bytes they themselves read (`_verifyAtUse`), so on those
+   * objects it describes the content in hand. Any authority or routing decision
+   * must therefore read the Tier-2/3 value, never the Tier-1 cache (this is the
+   * exact gap `buildRoleContext` had).
    */
   trusted: boolean;
   filePath: string;
@@ -332,8 +342,17 @@ export class AgentLoader {
       const content = await fs.promises.readFile(metadata.filePath, 'utf-8');
       const parsed = parseAgentMarkdown(content);
 
+      // Plan 20 Phase 0 (invariant I1) at the point of USE. `metadata.trusted`
+      // was decided against the bytes read during loadAllMetadata(); these are
+      // different bytes, read now. Inheriting the boolean through the spread
+      // would make trust a memory rather than a measurement.
+      const verdict = this._verifyAtUse(metadata, content, parsed.frontmatter);
+      if (!verdict) { return null; }
+
       const instructions: AgentInstructions = {
         ...metadata,
+        trusted: verdict.trusted,
+        contentWarnings: verdict.contentWarnings,
         instructions: extractAgentInstructions(parsed.body),
         communicationStyle: extractAgentSection(parsed.body, 'Communication Style'),
         priorities: extractAgentList(parsed.body, 'Priorities'),
@@ -374,8 +393,15 @@ export class AgentLoader {
       const content = await fs.promises.readFile(instructions.filePath, 'utf-8');
       const parsed = parseAgentMarkdown(content);
 
+      // Tier 3 performs its own read (the Tier 2 result may have been served
+      // from cache), so it must establish trust from these bytes too.
+      const verdict = this._verifyAtUse(instructions, content, parsed.frontmatter);
+      if (!verdict) { return null; }
+
       const full: AgentFull = {
         ...instructions,
+        trusted: verdict.trusted,
+        contentWarnings: verdict.contentWarnings,
         codeExamples: extractAgentSection(parsed.body, 'Code Examples'),
         fullContent: parsed.body
       };
@@ -550,6 +576,46 @@ export class AgentLoader {
       return false;
     }
     return true;
+  }
+
+  /**
+   * Re-establish trust for content that has just been read from disk.
+   *
+   * Tier 1 decides `trusted` for the bytes it read; Tiers 2 and 3 read the file
+   * again, and those are the bytes that reach a prompt. Between the two reads
+   * the file can change — the core directory is writable by any local process,
+   * and the only auto-reload (`onDidSaveTextDocument`) does not fire for a
+   * write made outside the editor — so trust must be re-measured here rather
+   * than inherited through the `{ ...metadata }` spread.
+   *
+   * Verifies the content ALREADY IN HAND: no extra read, one SHA-256 over a few
+   * KB on a cache miss. Returns null when the content must not load at all
+   * (same refusals as `_loadMetadata`: failed content scan, authority-granting
+   * frontmatter), matching the "hard load failure, not a fence" rule.
+   */
+  private _verifyAtUse(
+    metadata: AgentMetadata,
+    content: string,
+    frontmatter: Record<string, unknown>
+  ): { trusted: boolean; contentWarnings?: AgentContentFinding[] } | null {
+    const scan = scanAgentContent(content);
+    if (scan.rejected) {
+      const reasons = scan.findings.filter(f => f.severity === 'reject')
+        .map(f => `${f.code}${f.detail ? ` (${f.detail})` : ''}`).join(', ');
+      console.error(`[Mysti] Refusing agent content — failed content scan: ${metadata.filePath} [${reasons}]`);
+      return null;
+    }
+
+    const authorityKeys = findAuthorityFrontmatterKeys(frontmatter);
+    if (authorityKeys.length > 0) {
+      console.error(`[Mysti] Refusing agent content — authority-granting frontmatter (${authorityKeys.join(', ')}): ${metadata.filePath}`);
+      return null;
+    }
+
+    return {
+      trusted: metadata.source === 'core' && this._verifyCoreIntegrity(metadata.filePath, content),
+      contentWarnings: scan.findings.length > 0 ? scan.findings : undefined,
+    };
   }
 
   /**

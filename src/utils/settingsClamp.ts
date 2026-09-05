@@ -64,11 +64,12 @@ function clampOne<T extends string>(
   inspection: SettingInspection | undefined,
   rank: Record<T, number>,
   fallback: T,
+  aliases: Readonly<Record<string, T>> = {},
 ): { value: T; clamped: boolean } {
   if (!inspection) { return { value: current, clamped: false }; }
   const ws = (inspection.workspaceFolderValue ?? inspection.workspaceValue) as T | undefined;
   if (ws === undefined) { return { value: current, clamped: false }; }
-  if (!(ws in rank)) {
+  if (!Object.prototype.hasOwnProperty.call(rank, ws as string)) {
     // Plan 23 B1: a workspace supplying a value outside the enum used to pass
     // through unclamped. It is not a legitimate setting, and the runtime
     // compares by literal, so leaving it in place is how a cloned repo turns
@@ -76,7 +77,16 @@ function clampOne<T extends string>(
     const floor = ((inspection.globalValue as T | undefined) ?? (inspection.defaultValue as T | undefined) ?? fallback);
     return { value: floor, clamped: current !== floor };
   }
-  const userFloor = ((inspection.globalValue as T | undefined) ?? (inspection.defaultValue as T | undefined) ?? fallback);
+  // The floor may be a LEGACY value — someone who picked "plan" in v0.4.0 still
+  // has that literal in their global settings.json. `MODE_RANK` has no `plan`
+  // key, so ranking it raw collapsed a rank-3 floor to `rank[fallback]` (1) and
+  // a repo could then set `defaultMode` to `default` or `ask-before-edit` and be
+  // accepted with clampedFields []. Resolve the alias BEFORE ranking, so the
+  // one-way ratchet sees the authority the user actually chose.
+  const rawFloor = ((inspection.globalValue as T | undefined) ?? (inspection.defaultValue as T | undefined) ?? fallback);
+  const userFloor = !isMember(rank, rawFloor) && isMember(rank, aliases[rawFloor as string])
+    ? aliases[rawFloor as string]
+    : rawFloor;
   const floorRank = rank[userFloor] ?? rank[fallback];
   // Workspace tried to be LESS restrictive than the user's own policy…
   if (rank[ws] < floorRank && rank[current] <= rank[ws]) {
@@ -111,7 +121,58 @@ export const ACCESS_LEVELS: readonly string[] = ['read-only', 'ask-permission', 
 export const OPERATION_MODES: readonly string[] = ['default', 'ask-before-edit', 'edit-automatically', 'quick-plan', 'detailed-plan'];
 
 /**
- * Coerce authority settings to known enum members (Plan 23 B1).
+ * Own-property membership. `x in RANK` also answers true for every inherited
+ * key (`'toString'`, `'constructor'`), so a settings file holding one of those
+ * strings used to sail through normalization as if it were a real enum member.
+ * The gate stays closed either way (permissionClassifier re-tests against the
+ * runtime arrays), but a value that is not a member must be COERCED, not
+ * waved through.
+ */
+function isMember(rank: Record<string, number>, value: unknown): boolean {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(rank, value);
+}
+
+/**
+ * Values that were selectable in an earlier release and are therefore sitting
+ * in real users' settings.json right now, mapped to their nearest modern
+ * equivalent that is EQUAL-OR-MORE restrictive.
+ *
+ * v0.4.0's `mysti.defaultMode` enum was
+ * `["ask-before-edit","edit-automatically","plan"]`. `"plan"` meant "produce a
+ * plan, make no changes" — the MOST restrictive tier. VS Code does not validate
+ * a declared enum at read time (see the note on `normalizeAuthoritySettings`),
+ * so the literal string survives the upgrade. Coercing it as merely
+ * "unrecognized" landed it on `'default'`, and MODE_RANK counts HIGHER = MORE
+ * restrictive: `'quick-plan'` is 3 and `'default'` is 1. That silently moved a
+ * user who chose "never write" into a mode that writes.
+ *
+ * The same mapping already existed for the `/mode plan` slash-command argument
+ * (`SlashCommandManager` settings:mode); this is it applied to the persisted
+ * setting, which is where it actually matters.
+ *
+ * INVARIANT, asserted by `settingsClamp.test.ts`: for every alias,
+ * `MODE_RANK[alias] >= MODE_RANK[<the modern default>]`. An alias may only ever
+ * land on an equal-or-stricter mode. Get that inequality backwards and this map
+ * becomes the bug it was written to fix.
+ */
+export const LEGACY_MODE_ALIASES: Readonly<Record<string, OperationMode>> = Object.freeze({
+  plan: 'quick-plan',
+});
+
+/**
+ * Where a mode that is neither modern nor a known legacy alias lands.
+ *
+ * `'ask-before-edit'` (rank 2), not `'default'` (rank 1). The module's own rule
+ * is that the safe failure is "the user gets asked", not "nothing works", and
+ * `'default'` does not actually deliver that: it only gates when `accessLevel`
+ * happens to be `ask-permission`, so an unrecognized mode on a full-access
+ * install used to gate nothing. `'ask-before-edit'` gates every change at any
+ * access level, and still leaves a working install.
+ */
+const UNKNOWN_MODE_FALLBACK: OperationMode = 'ask-before-edit';
+
+/**
+ * Coerce authority settings to known enum members (Plan 23 B1, Plan 27 A-1).
  *
  * `_getSettingsForPanel` reads these with `config.get(...) as any`, and VSCode
  * does NOT validate a declared `enum` at read time — whatever string is in the
@@ -122,26 +183,35 @@ export const OPERATION_MODES: readonly string[] = ['default', 'ask-before-edit',
  * "no gate" rather than "ask".
  *
  * `clampSettingsToUserPolicy` cannot cover this — `clampOne` deliberately
- * early-returns on `!(ws in rank)`, so a non-enum workspace value passes through
- * unclamped rather than being rejected.
+ * early-returns on a value the rank table does not own, so a non-enum workspace
+ * value passes through unclamped rather than being rejected.
  *
- * Coerces to `ask-permission` / `default` rather than the MOST restrictive
- * values: the safe failure here is "the user gets asked", not "nothing works".
- * Falling all the way to read-only would turn a typo into a broken install and
- * teach people to turn the feature off.
+ * Three rules, in order:
+ *  1. a value that IS a known enum member is left alone;
+ *  2. a known LEGACY value is migrated through `LEGACY_MODE_ALIASES`, which is
+ *     only ever allowed to land on an equal-or-MORE restrictive mode;
+ *  3. anything else lands on ASK — `ask-permission` / `ask-before-edit`. The
+ *     safe failure here is "the user gets asked", not "nothing works": falling
+ *     all the way to read-only would turn a typo into a broken install and
+ *     teach people to turn the feature off.
  */
 export function normalizeAuthoritySettings(settings: Settings): { settings: Settings; coerced: string[] } {
   const coerced: string[] = [];
   let accessLevel = settings.accessLevel;
   let mode = settings.mode;
 
-  if (!(accessLevel in ACCESS_RANK)) {
+  if (!isMember(ACCESS_RANK, accessLevel)) {
     coerced.push(`accessLevel="${String(accessLevel)}"`);
     accessLevel = 'ask-permission';
   }
-  if (!(mode in MODE_RANK)) {
-    coerced.push(`mode="${String(mode)}"`);
-    mode = 'default';
+  if (!isMember(MODE_RANK, mode)) {
+    const alias = Object.prototype.hasOwnProperty.call(LEGACY_MODE_ALIASES, String(mode))
+      ? LEGACY_MODE_ALIASES[String(mode)]
+      : undefined;
+    coerced.push(alias
+      ? `mode="${String(mode)}" (legacy -> "${alias}")`
+      : `mode="${String(mode)}"`);
+    mode = alias ?? UNKNOWN_MODE_FALLBACK;
   }
   if (coerced.length === 0) { return { settings, coerced }; }
   return { settings: { ...settings, accessLevel, mode }, coerced };
@@ -162,7 +232,7 @@ export function clampSettingsToUserPolicy(
   if (access.clamped) { clampedFields.push('accessLevel'); }
 
   const mode = clampOne<OperationMode>(
-    settings.mode, inspect('defaultMode'), MODE_RANK, 'default');
+    settings.mode, inspect('defaultMode'), MODE_RANK, 'default', LEGACY_MODE_ALIASES);
   if (mode.clamped) { clampedFields.push('mode'); }
 
   if (clampedFields.length === 0) { return { settings, clampedFields }; }
@@ -171,3 +241,100 @@ export function clampSettingsToUserPolicy(
     clampedFields,
   };
 }
+
+/**
+ * The settings this module actually clamps (Plan 27 D-12/D-14).
+ *
+ * These three are deliberately LEFT window-scoped: a workspace has a legitimate
+ * reason to make Mysti *stricter* for a repo ("this project is read-only"), and
+ * `clampSettingsToUserPolicy` / `clampSafetyMode` are what make that a one-way
+ * ratchet. Machine-scoping them would remove the ability to lower authority per
+ * repo, which is the behaviour worth keeping. Never drop one of these without
+ * extending the clamp to its replacement in the same change.
+ */
+export const CLAMPED_SETTINGS: readonly string[] = [
+  'mysti.accessLevel',
+  'mysti.defaultMode',
+  'mysti.autonomous.safetyMode',
+];
+
+/**
+ * Every setting whose value can raise Mysti's authority, widen its egress, or
+ * put attacker-chosen text into a model's instruction surface.
+ *
+ * The invariant `settingsScopeParity.test.ts` enforces in both directions:
+ * each of these is declared in package.json, and each is EITHER machine- (or
+ * application-) scoped, so a repository's `.vscode/settings.json` cannot set it
+ * at all, OR listed in `CLAMPED_SETTINGS` and therefore ratcheted at runtime.
+ * There is no third option, and a new authority-bearing setting that is neither
+ * fails the test rather than shipping silently workspace-writable.
+ */
+export const AUTHORITY_BEARING_SETTINGS: readonly string[] = [
+  // Authority level itself — clamped, not machine-scoped (see above).
+  'mysti.accessLevel',
+  'mysti.defaultMode',
+  'mysti.autonomous.safetyMode',
+
+  // Coordinator capability gates: each one turns a capability from
+  // "not even parsed" into "exists". All machine-scoped.
+  'mysti.mysti.localExecution',
+  'mysti.mysti.mcpTools',
+  'mysti.mysti.visualTools',
+  'mysti.mysti.skills',
+  'mysti.mysti.bashNetwork',
+
+  // Permission-card behaviour: `timeoutBehavior: auto-accept` turns an
+  // unanswered card into an approval, which is authority by inaction.
+  'mysti.permission.timeout',
+  'mysti.permission.timeoutBehavior',
+
+  // Egress destinations. A workspace-settable endpoint redirects every prompt
+  // (and, for LocalAI, the machine-scoped API key) to a host of its choosing.
+  'mysti.ollamaEndpoint',
+  'mysti.localaiEndpoint',
+
+  // Shell-shaped surfaces.
+  'mysti.useShellForCli',
+  'mysti.visualTest.devServerCommand',
+  'mysti.visualTest.allowModelDevServerCommand',
+  'mysti.visualTest.allowedOrigins',
+  'mysti.visualTest.agentInteractions',
+  // Plan 27 I-1: the master switch (default true — a repo could RE-ENABLE it
+  // for a user who turned it off), the HUMAN interaction ceiling, and the
+  // origin `allowedOrigins` constrains. Machine-scoped like their siblings.
+  'mysti.visualTest.enabled',
+  'mysti.visualTest.interactions',
+
+  // Provider policy selectors: `codexProfile` picks which ~/.codex/config.toml
+  // profile — and therefore which sandbox/approval policy — the Codex CLI runs
+  // under. A repo must not choose the sandbox its own code is judged in.
+  'mysti.codexProfile',
+
+  // Autonomous-mode authority (safetyMode is clamped above; these six decide
+  // what an auto-approved decision is allowed to do).
+  'mysti.autonomous.maxSessionDuration',
+  'mysti.autonomous.blockPatterns',
+  'mysti.autonomous.allowFileCreation',
+  'mysti.autonomous.allowFileEdit',
+  'mysti.autonomous.allowBashCommands',
+  'mysti.autonomous.continuationMode',
+
+  // Instruction surface: `*CustomPrompt` is arbitrary text spliced into the
+  // system prompt, and `*Persona` selects which instructions get spliced.
+  'mysti.agents.claudePersona', 'mysti.agents.claudeCustomPrompt',
+  'mysti.agents.codexPersona', 'mysti.agents.codexCustomPrompt',
+  'mysti.agents.geminiPersona', 'mysti.agents.geminiCustomPrompt',
+  'mysti.agents.clinePersona', 'mysti.agents.clineCustomPrompt',
+  'mysti.agents.copilotPersona', 'mysti.agents.copilotCustomPrompt',
+  'mysti.agents.cursorPersona', 'mysti.agents.cursorCustomPrompt',
+  'mysti.agents.openclawPersona', 'mysti.agents.openclawCustomPrompt',
+  'mysti.agents.opencodePersona', 'mysti.agents.opencodeCustomPrompt',
+  'mysti.agents.ollamaPersona', 'mysti.agents.ollamaCustomPrompt',
+  'mysti.agents.localaiPersona', 'mysti.agents.localaiCustomPrompt',
+  'mysti.agents.qwenCodePersona', 'mysti.agents.qwenCodeCustomPrompt',
+  'mysti.agents.hermesPersona', 'mysti.agents.hermesCustomPrompt',
+  'mysti.agents.continuePersona', 'mysti.agents.continueCustomPrompt',
+  'mysti.agents.openrouterPersona', 'mysti.agents.openrouterCustomPrompt',
+  'mysti.agents.kimiCodePersona', 'mysti.agents.kimiCodeCustomPrompt',
+  'mysti.agents.skillSources',
+];

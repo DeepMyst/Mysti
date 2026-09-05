@@ -278,9 +278,12 @@ describe('CanvasSandbox — legacy jsx mode', () => {
     expect(built.indexOf('BABEL-STANDALONE')).toBeGreaterThan(built.indexOf('/*react*/'));
   });
 
-  it('keeps the legacy CSP (Babel needs unsafe-eval; old pages may use remote images)', () => {
+  it('keeps unsafe-eval (Babel needs it) but NOT the remote-image wildcard', () => {
     expect(built).toContain("script-src 'unsafe-inline' 'unsafe-eval'");
-    expect(built).toContain('img-src data: blob: https:');
+    // E-2: `img-src … https:` used to be here, justified as "old pages may use
+    // remote images". It is gone: `mode:'html'` is a shape a MODEL can author.
+    expect(built).toContain('img-src data: blob:;');
+    expect(built).toContain('font-src data:;');
   });
 
   it('omits Babel when the caller supplied none (the harness then says so)', () => {
