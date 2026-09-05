@@ -1374,7 +1374,49 @@ constraint on `settingsClamp`, in a different shape.
 > the object — otherwise every existing user's CLI paths, personas and custom prompts silently revert to
 > defaults on upgrade.
 
-### 24.5 What I would actually do
+### 24.5 EXECUTED: Tier A only (2026-09-05) — 189 → 181
+
+Tier A applied in `992f6fb`. **Tier B was NOT applied**, and the reason changed
+after the proposal was written — see 24.6.
+
+Two existing guards fired on the deletion. Both were right, and both were
+updated with their reason rather than weakened:
+
+- `settingsScopeParity`'s `mysti.desk.*` namespace `min` 5 → 4. That minimum
+  exists so a regex that silently stops matching cannot make the scope
+  invariant vacuously true. A real deletion legitimately lowers it.
+- `settingsScopeHardening` pinned "safe defaults" for `desk.bind` and
+  `desk.shareCeiling`. **A safe default on a setting nothing reads protects
+  nothing**, so those entries are gone; the three that gate real behaviour stay.
+
+### 24.6 Tier B — STOPPED, with evidence the proposal did not have
+
+The proposal said `*Path`, `ollama.*` and `localai.*` were the safe collapses
+because they carry no enums, so no dropdown is lost. That is true and it is not
+the whole cost. Measured afterwards:
+
+**There is no central map from provider → path setting.** All twelve `*Path`
+values are read as hardcoded strings, one per provider file:
+
+```
+ClaudeCodeProvider.ts:204   config.get<string>('claudeCodePath', 'claude')
+GeminiProvider.ts:150       config.get<string>('geminiPath', 'gemini')
+…10 more, plus ResponseClassifier.ts:354 and ActiveModeManager.ts:273
+```
+
+So collapsing to `mysti.cliPaths` means editing **CLI resolution for all 15
+providers** — the code path that decides whether the extension can start at all
+— plus a migration, plus rewriting the shape rule that currently enforces
+`/Path$/` is machine-scoped. The gain is **−21 settings toward a target
+(≤ 80) that §24.3 already established is unreachable mechanically** (113 at
+best).
+
+**That is a bad trade and I stopped.** Deleting dead settings is free; rewriting
+the spawn path of every backend to shorten a settings list is not. Reconsider
+Tier B only if it rides along with a refactor that is touching provider CLI
+resolution anyway.
+
+### 24.7 What I would still do
 
 1. **Tier A now** — 8 deletions, no cost, no migration, closes a class of UI that lies. *(−8 → 181)*
 2. **Tier B partially: D, F, G only** — `*Path`, `ollama.*`, `localai.*` carry **no enums**, so no dropdown
