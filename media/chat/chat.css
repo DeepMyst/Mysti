@@ -9323,3 +9323,9 @@
     }
     .persona-card .agent-origin { margin-top: 2px; }
     .skill-item .agent-origin { margin-left: auto; }
+
+    /* A deleted file has nothing to open — say so with the cursor rather than
+       swallowing the click under a pointer that promises something. */
+    .change-row.not-openable { cursor: default; }
+    .change-row.not-openable:hover { border-color: var(--mysti-border); }
+    .change-row.not-openable .change-path { opacity: .75; text-decoration: line-through; }

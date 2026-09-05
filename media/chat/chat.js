@@ -3641,6 +3641,17 @@
           showAutonomySubSettings(state.autonomyLevel);
           updateAutonomyIndicator();
           updateBehaviorIndicator();
+          syncUnattendedAvailability();
+          // The extension is the authority for semi-autonomous behaviour and
+          // was never told about the revert, so it kept treating the panel as
+          // autonomous: the UI said Semi-Auto while askUserQuestion stopped
+          // getting its auto-answer timer. Removing the duplicate `change`
+          // listener made this visible — the redundant second call used to send
+          // it by accident.
+          postMessageWithPanelId({
+            type: 'autonomyLevelChanged',
+            payload: { level: state.autonomyLevel }
+          });
           postMessageWithPanelId({ type: 'cancelAutonomousActivation' });
         });
       }
@@ -4022,8 +4033,16 @@
           }
           var overlay = document.getElementById('setup-overlay');
           if (overlay && !overlay.classList.contains('hidden')) {
+            e.preventDefault();
             var s = document.getElementById('setup-skip-btn');
-            if (s) { e.preventDefault(); s.click(); }
+            if (s) { s.click(); return; }
+            // `showAuthPromptUI` REPLACES `.setup-content`, destroying the skip
+            // button — so the "Waiting for authentication…" state is a
+            // full-screen wall with no controls at all. Clicking a button that
+            // no longer exists is exactly the D-1 failure this handler exists
+            // to prevent, so fall back to the message that button would post.
+            postMessageWithPanelId({ type: 'skipSetup' });
+            hideSetupOverlay();
           }
         });
 
@@ -9364,6 +9383,16 @@
               title: buildPermissionQuestion ? buildPermissionQuestion(p, null) : 'Permission needed',
               detail: 'waiting for you' });
             break;
+          case 'semiAutonomousDecision':
+            // Mysti answered the card on the user's behalf. It is no longer
+            // waiting on anyone, and leaving it in `needs` would both keep the
+            // badge lit and — since the stall watcher treats `needs` as "the
+            // backend is correctly quiet" — disable the stall card for the rest
+            // of the session. A leak that was cosmetic became load-bearing the
+            // moment something else started reading the same state.
+            if (p.targetType === 'permission' && p.requestId) { runDrop('perm:' + p.requestId); }
+            if (p.targetType === 'question' && p.toolCallId) { runDrop('auq:' + p.toolCallId); }
+            break;
           case 'permissionDismissed':
             // {requestIds: [...]} — superseded gates, dropped in bulk.
             (p.requestIds || []).forEach(function(id) { runDrop('perm:' + id); });
@@ -9807,8 +9836,15 @@
         // the send and put back — draining must never cost the user a sentence
         // they were in the middle of.
         var draft = inputEl.value;
+        // …and whatever was staged for it. sendMessage consumes
+        // state.attachments, so a file picked for the DRAFT would otherwise be
+        // sent with the queued message and then cleared.
+        var draftAttachments = state.attachments.slice();
         inputEl.value = next.text;
+        state.attachments = [];
         sendMessage();
+        state.attachments = draftAttachments;
+        renderAttachmentPreviews();
         if (draft) {
           inputEl.value = draft;
           autoResizeTextarea();

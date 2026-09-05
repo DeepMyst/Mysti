@@ -1021,3 +1021,70 @@ describe('review round: the nine findings stay fixed', () => {
     expect(pageErrors).toEqual([]);
   }, 20000);
 });
+
+describe('review round two: the fixes did not introduce their own bugs', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a semi-autonomous decision clears the card it answered', async () => {
+    await send({ type: 'permissionRequest', payload: {
+      id: 'perm_sa', actionType: 'bash-command', toolName: 'Bash', expiresAt: 0,
+      details: { toolName: 'Bash', command: 'ls' } } });
+    expect(await page!.$eval('#runs-badge', (e) => e.classList.contains('hidden'))).toBe(false);
+    await send({ type: 'semiAutonomousDecision', payload: {
+      requestId: 'perm_sa', targetType: 'permission', approved: true } });
+    // Otherwise it sits in `needs` forever — which since round one also
+    // permanently disarms the stall card.
+    expect(await page!.$eval('#runs-badge', (e) => e.classList.contains('hidden'))).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Escape leaves the overlay even when the skip button is gone', async () => {
+    await page!.evaluate(() => {
+      const o = document.getElementById('setup-overlay')!;
+      o.classList.remove('hidden');
+      // Exactly what showAuthPromptUI does: replace the body, taking the only
+      // control with it.
+      const c = o.querySelector('.setup-content');
+      if (c) { c.innerHTML = '<div>Waiting for authentication…</div>'; }
+    });
+    expect(await page!.$('#setup-skip-btn')).toBeNull();
+    await clearPosted();
+    await page!.keyboard.press('Escape');
+    expect((await posted()).some((m) => m.type === 'skipSetup')).toBe(true);
+    expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('draining keeps the draft AND what was staged for it', async () => {
+    await send({ type: 'responseStarted' });
+    await page!.fill('#message-input', 'queued');
+    await page!.keyboard.press('Tab');
+    await page!.fill('#message-input', 'draft');
+    // Stage a file against the draft, the way the panel does — via a message it
+    // handles — so this stays a black-box test.
+    await send({ type: 'fileAttachmentSelected',
+      payload: { name: 'a.png', type: 'image', dataUrl: 'data:,' } });
+    const before = await page!.$$eval('.attachment-preview-item', (e) => e.length);
+    await send({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'ok' } } });
+    const after = await page!.$$eval('.attachment-preview-item', (e) => e.length);
+    expect(await page!.$eval('#message-input', (e) => (e as HTMLTextAreaElement).value)).toBe('draft');
+    expect(after, 'attachments staged for the draft must survive the drain').toBe(before);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('cancelling autonomous activation tells the extension the level reverted', async () => {
+    await clearPosted();
+    await page!.evaluate(() => document.getElementById('autonomous-cancel-btn')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    const posts = await posted();
+    // The extension is the authority for semi-autonomous behaviour; without
+    // this it kept treating the panel as autonomous.
+    expect(posts.some((m) => m.type === 'autonomyLevelChanged')).toBe(true);
+    expect(posts.some((m) => m.type === 'cancelAutonomousActivation')).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a deleted row looks unclickable, not just behaves that way', async () => {
+    await send({ type: 'sessionChanges', payload: { available: true, files: [
+      { path: 'gone.ts', added: 0, removed: 3, status: 'D' } ] } });
+    expect(await page!.$eval('.change-row.not-openable', (e) => getComputedStyle(e).cursor)).toBe('default');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 20000);
+});
