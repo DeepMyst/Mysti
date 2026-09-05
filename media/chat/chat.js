@@ -13734,8 +13734,16 @@
         }
 
         // Close mention menu when clicking outside (but not when clicking the input)
+        //
+        // `var inputEl` used to be re-declared HERE, ten lines below its first
+        // use in the slash-menu guard above. `var` hoists to the top of the
+        // function as undefined, so with the slash menu open every outside
+        // click threw `undefined.contains` at that guard — and everything after
+        // it in this handler died with it: the mention menu stopped closing,
+        // the agent menu stopped closing, and the tool-call copy button stopped
+        // working. The outer `inputEl` (declared once, near the top) is the one
+        // this handler always meant to use.
         var mentionMenuEl = document.getElementById('mention-menu');
-        var inputEl = document.getElementById('message-input');
         if (mentionMenuEl && !mentionMenuEl.contains(e.target) && e.target !== inputEl) {
           hideMentionMenu();
         }

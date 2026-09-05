@@ -769,3 +769,80 @@ describe('Plan 28 Phase 7 — where a persona or skill came from', () => {
     expect(pageErrors).toEqual([]);
   }, 20000);
 });
+
+describe('every control in the panel actually does something', () => {
+  /*
+   * A static reference check says each id appears somewhere in chat.js. It does
+   * NOT say a handler is bound, and "revive all eight dead slash-menu entries"
+   * is a real commit in this repo's history. So this clicks every button in the
+   * panel on a FRESH page and asserts that none of them throws — the cheapest
+   * true statement about whether the UI is wired.
+   */
+  let page3: import('playwright').Page | undefined;
+  const errors: string[] = [];
+
+  beforeAll(async () => {
+    if (CHROMIUM_UNAVAILABLE) { return; }
+    // Clipboard write is a real thing several of these buttons do; headless
+    // Chromium denies it unless the context is granted the permission, and a
+    // denial is an environment artifact rather than a product defect.
+    const ctx = await browser!.newContext({ permissions: ['clipboard-write'] });
+    page3 = await ctx.newPage();
+    page3.on('pageerror', (e) => errors.push(String(e)));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-clickall-'));
+    const file = path.join(dir, 'chat.html');
+    fs.writeFileSync(file, composeHtml(), 'utf8');
+    await page3.goto(`file://${file}`, { waitUntil: 'load' });
+    await page3.evaluate(() => {
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'initialState', payload: {
+        settings: { provider: 'claude-code', model: '', mode: 'ask-before-edit', thinkingLevel: 'none',
+          effortLevel: 'high', accessLevel: 'ask-permission', contextMode: 'auto', autonomousMode: false },
+        messages: [], context: [], conversations: [],
+      } } }));
+    });
+  }, 60000);
+
+  afterAll(async () => { await page3?.close(); });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('finds a substantial number of buttons to try', async () => {
+    const n = await page3!.$$eval('button[id]', (els) => els.length);
+    expect(n).toBeGreaterThanOrEqual(30);
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('clicks every one of them without a single uncaught error', async () => {
+    const ids = await page3!.$$eval('button[id]', (els) => els.map((e) => e.id));
+    const clicked: string[] = [];
+    for (const id of ids) {
+      // Dispatch rather than page.click: many are inside collapsed panels, and
+      // what is under test is the HANDLER, not whether the element is on screen.
+      const ok = await page3!.evaluate((btnId) => {
+        const el = document.getElementById(btnId);
+        if (!el) { return false; }
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return true;
+      }, id);
+      if (ok) { clicked.push(id); }
+      // Close anything a click may have opened, so the next one is reachable.
+      await page3!.evaluate(() => {
+        document.querySelectorAll('.palette, #overflow-menu, #agent-menu, #behavior-popup, #slash-menu, #mention-menu')
+          .forEach((e) => e.classList.add('hidden'));
+        document.getElementById('second-opinion-menu')?.remove();
+      });
+    }
+    expect(clicked.length).toBe(ids.length);
+    expect(errors, `uncaught errors while clicking: ${errors.join(' | ')}`).toEqual([]);
+  }, 60000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('every select changes without throwing', async () => {
+    const ids = await page3!.$$eval('select[id]', (els) => els.map((e) => e.id));
+    for (const id of ids) {
+      await page3!.evaluate((selId) => {
+        const el = document.getElementById(selId) as HTMLSelectElement | null;
+        if (!el) { return; }
+        if (el.options.length > 1) { el.selectedIndex = el.options.length - 1; }
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }, id);
+    }
+    expect(errors, `uncaught errors while changing selects: ${errors.join(' | ')}`).toEqual([]);
+  }, 60000);
+});
