@@ -695,7 +695,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _mapAgentLists(): {
     availablePersonas: { id: string; name: string; description: string; icon: string; keyCharacteristics: string; category?: string; source?: string }[];
     availableSkills: { id: string; name: string; description: string; instructions: string; category?: string; source?: string }[];
-    availableRoles: { id: string; name: string; description: string; icon: string; access: string; category?: string; source?: string }[];
+    availableRoles: { id: string; name: string; description: string; icon: string; access: string; category?: string; source?: string; trusted: boolean }[];
   } {
     const availablePersonas = this._agentsLoaded
       ? this._agentContextManager.getAllPersonas().map(p => ({
@@ -730,7 +730,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           icon: r.icon || '🎭',
           access: r.roleAccess || 'read-only',
           category: r.category,
-          source: r.source
+          source: r.source,
+          // Plan 27 §21.6c #5: `source` says where the file was FOUND; `trusted`
+          // is the Plan 20 verdict on whether it may carry authority. The two
+          // diverge (a workspace-shadowed core role is untrusted), and only the
+          // second is what the user needs to see. Strict boolean — never
+          // inferred from `source`, fail-closed when absent.
+          trusted: r.trusted === true
         }))
       : [];
 
@@ -6998,6 +7004,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._vtDashboardPanelId = null;
       this._vtDashboardChatOrigin = null;
       this._panelStates.delete(panelId);
+      // Plan 27 §21.6c #11: the id is minted per open, so a persisted
+      // `mysti.context:<panelId>` would outlive the panel — same as the chat tab.
+      this._contextManager.clearPanelContext(panelId);
       // Cancel running test on close
       this._visualTestManager.cancelTest(panelId);
     });
@@ -7556,6 +7565,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._canvasToolServer = null;
       this._canvasMcpHttp = null;
       this._panelStates.delete(panelId);
+      // Plan 27 §21.6c #11: release the per-open context key, as the chat tab does.
+      this._contextManager.clearPanelContext(panelId);
     });
 
     // Plan 22 Phase 0: the `sessionId` → `canvasLoad` round-trip is gone with
@@ -7834,11 +7845,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           );
         }
         const verb = info.kind === 'write' ? (info.exists ? 'overwrite' : 'create') : 'edit';
+        // Plan 27 §21.6c #3: the card draws its diff from `toolInput`, and the
+        // coordinator's own write/edit used to post only line COUNTS — the
+        // user approved "edit 3 lines" blind. Shape the gate info as the
+        // Write/Edit tool call a CLI backend would have made and run it
+        // through the SAME size-capped path (H-1): a 64 KB budget, long
+        // strings truncated with a marker, the object never half-sent.
+        const toolCall = info.kind === 'write'
+          ? { name: 'Write', input: { file_path: info.relPath, content: info.content } }
+          : { name: 'Edit', input: { file_path: info.relPath, old_string: info.oldString, new_string: info.newString, ...(info.replaceAll ? { replace_all: true } : {}) } };
         return this.requestPermissionInline(
           action,
           `Mysti wants to ${verb} a file`,
           `Mysti (coordinator) will ${verb} ${info.relPath}`,
-          { filePath: info.relPath, fileName: (info.relPath || '').split('/').pop(), linesAdded: info.linesAdded, linesRemoved: info.linesRemoved, riskLevel },
+          { filePath: info.relPath, fileName: (info.relPath || '').split('/').pop(), linesAdded: info.linesAdded, linesRemoved: info.linesRemoved, riskLevel, ...this._permissionToolDetails(toolCall) },
           panelId, toolId, ownerKey,
         );
       },

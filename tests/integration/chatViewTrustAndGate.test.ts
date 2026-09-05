@@ -41,8 +41,13 @@ vi.mock('../../src/managers/PlanOptionManager', () => ({
 
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { PermissionManager } from '../../src/managers/PermissionManager';
-import { clearMockConfig, Uri } from '../helpers/mockVscode';
-import type { Settings, StreamChunk, WebviewMessage } from '../../src/types';
+import { clearMockConfig, setMockConfig, Uri, window as mockWindow, workspace as mockWorkspace } from '../helpers/mockVscode';
+import { MystiLocalExec } from '../../src/services/MystiLocalExec';
+import { MystiLocalTools } from '../../src/services/MystiLocalTools';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import type { PermissionDetails, Settings, StreamChunk, WebviewMessage } from '../../src/types';
 import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 
 const SETTINGS: Settings = {
@@ -64,6 +69,8 @@ interface Harness {
   setProjectFiles(files: { mystiMd?: string; rules?: string; memory?: string }): void;
   setSuspendResult(value: boolean): void;
   suspendCalls(): number;
+  /** The ContextManager stub's `clearPanelContext` — K-3 asserts the dispose paths reach it. */
+  clearPanelContext: ReturnType<typeof vi.fn>;
   dispose(): void;
 }
 
@@ -182,13 +189,14 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
     getThreshold: () => 75,
   } as any;
 
+  const clearPanelContext = vi.fn();
   const provider = new ChatViewProvider(
     extensionUri,
     extensionContext,
     {
       getContext: () => [],
       setAutoContext: () => undefined,
-      clearPanelContext: () => undefined,
+      clearPanelContext,
       restorePanelContext: async () => [],
     } as any,
     conversationManager,
@@ -206,7 +214,7 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
     activeModeManager,
     engagementManager,
     projectContextManager,
-    {} as any,                       // visualTestManager
+    { cancelTest: () => undefined } as any, // visualTestManager (K-3 disposes a dashboard)
     {} as any,                       // canvasManager
     createModelRegistryStub() as any,
     { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any
@@ -244,6 +252,7 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
     setProjectFiles(files) { projectFiles = files; },
     setSuspendResult(value) { suspendResult = value; },
     suspendCalls() { return suspendCallCount; },
+    clearPanelContext,
     dispose() {
       (provider as any)._channelBridge?.dispose?.();
       permissionManager.dispose();
@@ -686,5 +695,228 @@ describe('H-1: the CLI gate puts the intact tool input on the permission card', 
       expect(details).toEqual({ toolName: 'Bash' });
       expect('toolInput' in details).toBe(false);
     });
+  });
+});
+
+// ===========================================================================
+// Plan 27 §21.6c #3 (lane K-1) — the coordinator's OWN write/edit card used to
+// post only {filePath, fileName, linesAdded, linesRemoved, riskLevel}: the
+// same blind-approve class as H-1, one directive lane over. The gate info now
+// carries the bytes and the producer shapes them as the Write/Edit tool call a
+// CLI backend would have made, through the same size-capped path.
+// ===========================================================================
+
+/** The private surface these tests reach into, typed so no `any` is needed. */
+interface ProviderInternals {
+  _runMystiLocalExec(d: Record<string, unknown>, settings: Settings, panelId: string, toolId: string): Promise<{ ok: boolean; output: string }>;
+  _mystiLocalExec: MystiLocalExec;
+  _agentsLoaded: boolean;
+  _agentContextManager: unknown;
+  _mapAgentLists(): { availableRoles: Array<Record<string, unknown>> };
+  _panelStates: Map<string, unknown>;
+}
+const internals = (h: Harness): ProviderInternals => h.provider as unknown as ProviderInternals;
+/** The vscode mock's `window` / `workspace` objects are plain mutable records. */
+const mutableWindow = mockWindow as unknown as Record<string, unknown>;
+const mutableWorkspace = mockWorkspace as unknown as Record<string, unknown>;
+type PostedDetails = PermissionDetails & { toolInput?: Record<string, unknown> };
+const str = (v: unknown): string => (typeof v === 'string' ? v : String(v));
+
+describe('K-1: the coordinator\'s own <write:>/<edit:> card carries the bytes the user is approving', () => {
+  let h: Harness;
+  let root: string;
+  const GATED: Settings = { ...SETTINGS, provider: 'mysti', mode: 'ask-before-edit', accessLevel: 'ask-permission' };
+  const BUDGET = 64 * 1024;
+
+  beforeEach(() => {
+    clearMockConfig();
+    h = createHarness();
+    // realpath: on macOS os.tmpdir() is a symlink (/var → /private/var) and
+    // MystiLocalTools reports relPosix against the REAL root.
+    root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'mysti-k1-ws-'));
+    fs.mkdirSync(path.join(root, 'src'));
+    fs.writeFileSync(path.join(root, 'src', 'a.ts'), 'const x = 1;\nconst y = 2;\nconst z = 3;\n');
+    // Root the coordinator's exec chokepoint at a real temp workspace; the
+    // gate closure under test is the one _runMystiLocalExec builds.
+    internals(h)._mystiLocalExec = new MystiLocalExec(new MystiLocalTools({ getWorkspaceRoot: () => root }));
+    setMockConfig('mysti.localExecution', 'on');
+    mutableWorkspace.isTrusted = true;
+  });
+  afterEach(() => {
+    delete mutableWorkspace.isTrusted;
+    fs.rmSync(root, { recursive: true, force: true });
+    h.dispose();
+  });
+
+  function postedDetails(): PostedDetails {
+    const req = h.sidebarMessages.find(m => m.type === 'permissionRequest');
+    expect(req, 'no permissionRequest reached the webview').toBeDefined();
+    return req!.payload.details as PostedDetails;
+  }
+  const run = (d: Record<string, unknown>) => internals(h)._runMystiLocalExec(d, GATED, 'sidebar', 'tu-k1');
+
+  it('a 3-line <edit:> arrives with parseable toolInput in the Edit shape the card diffs', async () => {
+    const oldString = 'const x = 1;\nconst y = 2;\nconst z = 3;\n';
+    const newString = 'const x = 1;\nconst w = 0;\nconst y = 2;\nconst z = 3;\n';
+    const r = await run({ kind: 'edit', path: 'src/a.ts', oldString, newString, replaceAll: false });
+    expect(r.ok, r.output).toBe(true);                 // the harness auto-approves the card
+
+    const d = postedDetails();
+    // The counts are still there for older consumers…
+    expect(d).toMatchObject({ filePath: 'src/a.ts', fileName: 'a.ts', linesAdded: 1, linesRemoved: 0 });
+    // …and the bytes now ride alongside, in exactly the keys the webview's
+    // parseFileEditInfo reads for an `edit` (old_string / new_string).
+    expect(d.toolName).toBe('Edit');
+    expect(d.toolInput).toEqual({ file_path: 'src/a.ts', old_string: oldString, new_string: newString });
+    expect(JSON.parse(JSON.stringify(d.toolInput))).toEqual(d.toolInput);
+    // A diff is derivable from the payload: the inserted line is present in
+    // new_string and absent from old_string.
+    const oldLines = str(d.toolInput!.old_string).split('\n');
+    expect(str(d.toolInput!.new_string).split('\n').filter(l => !oldLines.includes(l))).toEqual(['const w = 0;']);
+    expect(fs.readFileSync(path.join(root, 'src', 'a.ts'), 'utf8')).toBe(newString);
+  });
+
+  it('replace_all is surfaced on the card when the edit is a replace-all', async () => {
+    fs.writeFileSync(path.join(root, 'src', 'a.ts'), 'a\na\na\n');
+    const r = await run({ kind: 'edit', path: 'src/a.ts', oldString: 'a', newString: 'b', replaceAll: true });
+    expect(r.ok, r.output).toBe(true);
+    expect(postedDetails().toolInput).toEqual({ file_path: 'src/a.ts', old_string: 'a', new_string: 'b', replace_all: true });
+  });
+
+  it('a <write:> arrives with the full content in the Write shape', async () => {
+    const content = 'export const a = 1;\nexport const b = 2;\n';
+    const r = await run({ kind: 'write', path: 'src/new.ts', content });
+    expect(r.ok, r.output).toBe(true);
+    const d = postedDetails();
+    expect(d.toolName).toBe('Write');
+    expect(d.toolInput).toEqual({ file_path: 'src/new.ts', content });
+    expect(d).toMatchObject({ linesAdded: 3, linesRemoved: 0 });
+  });
+
+  it('a huge <write:> is capped by the SAME 64 KB budget: content truncated with a marker, object intact', async () => {
+    const content = Array.from({ length: 50000 }, (_, i) => `line ${i}`).join('\n');
+    expect(JSON.stringify({ file_path: 'src/huge.txt', content }).length).toBeGreaterThan(BUDGET);
+    const r = await run({ kind: 'write', path: 'src/huge.txt', content });
+    expect(r.ok, r.output).toBe(true);
+    const d = postedDetails();
+    expect(d.toolName).toBe('Write');
+    expect(JSON.stringify(d.toolInput).length).toBeLessThanOrEqual(BUDGET);
+    expect(Object.keys(d.toolInput!).sort()).toEqual(['content', 'file_path']);
+    expect(d.toolInput!.file_path).toBe('src/huge.txt');
+    const m = /^([\s\S]*)…\[truncated (\d+) chars\]$/.exec(str(d.toolInput!.content));
+    expect(m, 'explicit truncation marker missing').toBeTruthy();
+    expect(content.startsWith(m![1])).toBe(true);
+    expect(Number(m![2])).toBe(content.length - m![1].length);
+    // The file on disk got the WHOLE content — the cap is a wire cap, not a write cap.
+    expect(fs.readFileSync(path.join(root, 'src', 'huge.txt'), 'utf8')).toBe(content);
+  });
+
+  it('the field names are the ones the webview parser actually reads (contract pin)', () => {
+    const chatJs = fs.readFileSync(path.join(__dirname, '..', '..', 'media', 'chat', 'chat.js'), 'utf8');
+    const start = chatJs.indexOf('function parseFileEditInfo(');
+    expect(start).toBeGreaterThan(-1);
+    const body = chatJs.slice(start, start + 4000);
+    expect(body).toContain('input.file_path');
+    expect(body).toContain('input.content');
+    expect(body).toContain('input.old_string');
+    expect(body).toContain('input.new_string');
+    expect(body).toContain("toolLower === 'write'");
+    expect(body).toContain("toolLower === 'edit'");
+  });
+});
+
+// ===========================================================================
+// Plan 27 §21.6c #5 (lane K-2, ChatViewProvider half) — role trust was
+// invisible to the user: the picker payload carried `source` (where the file
+// was FOUND) but not `trusted` (whether it may carry authority).
+// ===========================================================================
+
+describe('K-2: the role picker payload carries `trusted`', () => {
+  let h: Harness;
+  beforeEach(() => { clearMockConfig(); h = createHarness(); });
+  afterEach(() => { h.dispose(); });
+
+  function lists(roles: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+    internals(h)._agentsLoaded = true;
+    internals(h)._agentContextManager = {
+      getAllPersonas: () => [],
+      getAllSkills: () => [],
+      getAllRoles: () => roles,
+    };
+    return internals(h)._mapAgentLists().availableRoles;
+  }
+  const role = (over: Record<string, unknown>) => ({
+    id: 'reviewer', name: 'Reviewer', description: 'd', icon: '🎭', roleAccess: 'read-only', category: 'c', kind: 'role', ...over,
+  });
+
+  it('surfaces trusted:false for a workspace role and trusted:true for a core one, next to source', () => {
+    const availableRoles = lists([
+      role({ id: 'ws-role', source: 'workspace', trusted: false }),
+      role({ id: 'core-role', source: 'core', trusted: true }),
+    ]);
+    expect(availableRoles).toHaveLength(2);
+    expect(availableRoles[0]).toMatchObject({ id: 'ws-role', source: 'workspace', trusted: false });
+    expect(availableRoles[1]).toMatchObject({ id: 'core-role', source: 'core', trusted: true });
+  });
+
+  it('never infers trust from `source`: a missing/non-boolean verdict reads as untrusted', () => {
+    const availableRoles = lists([
+      role({ id: 'no-verdict', source: 'core' }),
+      role({ id: 'string-verdict', source: 'core', trusted: 'yes' }),
+    ]);
+    expect(availableRoles.map(r => r.trusted)).toEqual([false, false]);
+  });
+});
+
+// ===========================================================================
+// Plan 27 §21.6c #11 (lane K-3, ChatViewProvider half) — canvas-* and
+// vt-dashboard-* panels are minted with a fresh id per open, so a persisted
+// `mysti.context:<panelId>` for them can never be reached again. The chat
+// tab's dispose path calls clearPanelContext; these two did not.
+// ===========================================================================
+
+describe('K-3: canvas and visual-test panels release their per-panel context on dispose', () => {
+  let h: Harness;
+  let disposeHandlers: Array<() => void>;
+
+  beforeEach(() => {
+    clearMockConfig();
+    h = createHarness();
+    disposeHandlers = [];
+    mutableWindow.createWebviewPanel = vi.fn(() => ({
+      webview: {
+        postMessage: vi.fn(() => Promise.resolve(true)),
+        onDidReceiveMessage: vi.fn(() => ({ dispose() {} })),
+        asWebviewUri: (u: unknown) => u,
+        cspSource: 'vscode-webview://mock',
+        html: '',
+      },
+      onDidDispose: (cb: () => void) => { disposeHandlers.push(cb); return { dispose() {} }; },
+      reveal: vi.fn(),
+      dispose: vi.fn(),
+      iconPath: undefined,
+    }));
+  });
+  afterEach(() => {
+    delete mutableWindow.createWebviewPanel;
+    h.dispose();
+  });
+
+  it('vt-dashboard-*: closing the dashboard clears its context key', () => {
+    const panelId = h.provider.openVisualTestDashboard();
+    expect(panelId).toMatch(/^vt-dashboard-\d+$/);
+    expect(h.clearPanelContext).not.toHaveBeenCalledWith(panelId);
+    for (const cb of disposeHandlers) { cb(); }
+    expect(h.clearPanelContext).toHaveBeenCalledWith(panelId);
+    expect(internals(h)._panelStates.has(panelId)).toBe(false);
+  });
+
+  it('canvas-*: closing the canvas clears its context key', () => {
+    const panelId = h.provider.openCanvas();
+    expect(panelId).toMatch(/^canvas-\d+$/);
+    expect(h.clearPanelContext).not.toHaveBeenCalledWith(panelId);
+    for (const cb of disposeHandlers) { cb(); }
+    expect(h.clearPanelContext).toHaveBeenCalledWith(panelId);
+    expect(internals(h)._panelStates.has(panelId)).toBe(false);
   });
 });

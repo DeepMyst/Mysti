@@ -152,6 +152,25 @@ describe('MystiLocalExec', () => {
     expect(rd('src/a.ts')).toBe('const x = 1;\nconst y = 2;\n');
     expect(checkpoint).not.toHaveBeenCalled();
   });
+
+  // ── Plan 27 §21.6c #3 (K-1): the gate sees the BYTES, not just line counts ──
+  it('hands the gate the exact old/new text of an edit so the card can draw a diff', async () => {
+    const oldString = 'const x = 1;\nconst y = 2;\n';
+    const newString = 'const x = 1;\nconst z = 3;\nconst y = 2;\n';
+    const r = await exec.edit('src/a.ts', oldString, newString, false, ctx());
+    expect(r.ok).toBe(true);
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(gate.mock.calls[0][0]).toMatchObject({
+      kind: 'edit', oldString, newString, replaceAll: false,
+    });
+  });
+  it('hands the gate the full content of a write (create and overwrite alike)', async () => {
+    await exec.write('src/new.ts', 'export const a = 1;\n', ctx());
+    await exec.write('src/a.ts', 'replaced\n', ctx());
+    expect(gate).toHaveBeenCalledTimes(2);
+    expect(gate.mock.calls[0][0]).toMatchObject({ kind: 'write', exists: false, content: 'export const a = 1;\n' });
+    expect(gate.mock.calls[1][0]).toMatchObject({ kind: 'write', exists: true, content: 'replaced\n' });
+  });
 });
 
 describe('MystiLocalExec.applyPatch', () => {

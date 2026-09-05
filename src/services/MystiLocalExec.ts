@@ -58,6 +58,17 @@ export interface LocalExecGateInfo {
   exists?: boolean;
   linesAdded?: number;
   linesRemoved?: number;
+  /**
+   * The bytes the user is being asked to approve. Without them the permission
+   * card can only say "edit 3 lines" — a blind approve. write: the full new
+   * file content; edit: the exact text being replaced and its replacement.
+   * The consumer runs them through the same size cap as a CLI Write/Edit
+   * tool call before they reach the webview.
+   */
+  content?: string;
+  oldString?: string;
+  newString?: string;
+  replaceAll?: boolean;
   // Shell (bash):
   command?: string;
   /** Whether this command will run under an OS sandbox (false ⇒ read-only-only host). */
@@ -157,6 +168,7 @@ export class MystiLocalExec {
     const approved = await ctx.gate({
       kind: 'write', absPath: target.abs, relPath: target.relPosix, exists,
       linesAdded: newLines, linesRemoved: exists ? prevLines : 0,
+      content,
     });
     if (!approved) { return { ok: false, output: `write to "${target.relPosix}" was denied.`, denied: true }; }
 
@@ -204,6 +216,7 @@ export class MystiLocalExec {
     const approved = await ctx.gate({
       kind: 'edit', absPath: target.abs, relPath: target.relPosix, exists: true,
       linesAdded: Math.max(0, after - before), linesRemoved: Math.max(0, before - after),
+      oldString, newString, replaceAll,
     });
     if (!approved) { return { ok: false, output: `edit to "${target.relPosix}" was denied.`, denied: true }; }
 
