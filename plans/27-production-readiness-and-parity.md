@@ -1088,6 +1088,66 @@ verified: `mysti-merged-ff788f3.bundle` (48 MB, in the session scratchpad — **
 visibility, clamp-lower-only + parity shapes, publish-review compliance, store residuals) — results in
 §21.8 when its gate lands.
 
+## 21.8 Round 4 — final automatic pass. Gate: GREEN
+
+Six lanes ran; **the session limit killed 7 of 10 confirms and the gate**, so the verification below was done
+by hand instead. Two cross-lane collisions were caught that way — both were tests written *defensively* by an
+earlier round, whose own failure messages named the fix.
+
+| Measure | Before | After |
+|---|---|---|
+| `tsc --noEmit` | 0 | **0** |
+| Tests | 312 / 11,676 | **314 files passed, 6 skipped, 0 failed** |
+| Lint | src 89/37 · media 0/441 | **src 89/36 · media 0/441** |
+| `check-package-shape` | 7/7 | **7/7** |
+| Compile | 2.53 MiB | 2.54 MiB |
+| Lockfile | in sync | in sync (`exceljs` removed) |
+
+Commits `41ac4de` (compliance) · `ce6415f` (coordinator card) · `330ad7e` (canvas apply-time pins) ·
+`e129f88` (trust visibility) · `3eb6b0b` (settings ratchet) · `c058ad2` (stores) · `37f8782` (this log).
+
+### 21.8a The honest result on N-1 — the scope was NOT flipped
+
+Lane N built `clampVisualTestSettings` (lower-only: a repo may disable visual testing or lower the human
+interaction ceiling, never raise either) and then **deliberately left both keys machine-scoped**, writing the
+precondition into the function's own docblock: the scope may move to window ONLY once
+`ChatViewProvider._mystiVisualEnabled` and `_visualPolicyDeps` route their raw `config.get` reads through the
+clamp. Flipping first would have *raised* the authority a repository can obtain.
+
+That is the correct call, and it means **the rule-4 scope-widening exception was never exercised.**
+Machine scope is strictly stronger than window+clamp. The clamp currently has no production caller — which is
+the shape that made round 2's SSRF policy a defect — but it is **not** the same class: there, a dead policy sat
+beside a *live* vulnerable call site; here nothing is reachable, because a repo cannot set the keys at all.
+It is staged infrastructure, and the remaining work is a two-line wiring change plus the scope flip.
+
+**This is a decision for the user, not an automatic one.** Wiring it trades "a repo cannot touch these" for
+"a repo can only lower these" — a real convenience gain (per-project disable, which the gate flagged as
+legitimately lost) against a small reduction in the strongest possible posture.
+
+### 21.8b Two collisions the hand-verification caught
+
+1. **`manifestPackaging.test.ts` asserted `resources/fabric.min.js` EXISTS** and is vscodeignored — round 3's
+   pin, written before lane O deleted the file. Its own message read *"fabric.min.js is gone; drop its
+   .vscodeignore line too."* Nobody owned that file this round. The fossil block is now split: the retained
+   `mcp-permission-server.js` is pinned as present-and-ignored; `fabric.min.js` is pinned as **gone from the
+   repository entirely**, so re-adding a vendored asset forces a NOTICE entry rather than an ignore line.
+2. **`plans/05-canvas-overhaul.md` still referenced both deleted dossiers** in three places. Lane O owned
+   plans/04 and plans/README but not plans/05, so it recorded the file in a shrink-only `PENDING_HANDOFF` set
+   guarded by a "the pending-handoff list is not stale" test. Discharging the references made that test fail
+   *by design*, telling the next reader to empty the set. Both done.
+
+### 21.8c What is verified, and what is still only static
+
+Verified by hand this round: apply-time pin refusal is wired (`applyStagedOp` → `pinsDestroyedByPagePatch`);
+nine browser suites now `it.skipIf` instead of warn-and-return — the **6 skipped files / 62 skipped tests are
+the honest number, previously counted as passes**; the trust badge reads `item.trusted === false`; 3em0 is
+credited in README and CHANGELOG; both licence headers carry *Portions copyright*; NOTICE ships; the
+stargazers directory rule is in place; and no reference to either deleted dossier survives without its marker.
+
+Still true, and unchanged by four rounds of work: **the interactive F5 smoke matrix has never been run.** Every
+green number in this document is static analysis and unit tests. The coordinator's native tool-calling loop and
+the MCP path have no live-account exercise on record.
+
 ## 22. The branch decision (publish-safety review, 8 agents)
 
 **`DeepMyst/Mysti` is PUBLIC** (1,137 stars, 55 forks). A dev branch there would be public — visibility is
