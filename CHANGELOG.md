@@ -38,6 +38,10 @@ pass on top of the features listed under *Added* below.
 - **`mysti.checkpoints.maxSnapshots` is enforced.** It was declared with a default of 200 and read by nothing.
 - **The `mysti.mysti.skills` description was false**: it said `full` was unimplemented while `full` gates `publish` / `skillrun`. It now states all of the co-conditions.
 
+### Removed
+
+- **Eight settings that were declared and read by nothing** — `mysti.canvas.autoSave`, `mysti.canvas.defaultVariantCount`, `mysti.canvas.stitchDeviceType`, `mysti.canvas.stitchVariantCount`, `mysti.desk.bind`, `mysti.desk.maxDeskCalls`, `mysti.desk.shareCeiling`, `mysti.activeMode.showActivityFeed`. None had a read site anywhere in the extension, so changing them never did anything; they only appeared in the Settings UI and implied a control that did not exist. If you have one in your `settings.json`, VS Code will flag it as unknown and you can delete the line — no behaviour changes either way. A test now pins the deletions and catches the next declared-but-unread setting at the moment it is added.
+
 ### Packaging & process
 
 - Publishable: `0.5.1` on the pre-release channel; an explicit `capabilities` block (`untrustedWorkspaces: false`, `virtualWorkspaces: false`); recursive `.vscodeignore` globs (2 MB of Playwright `.d.ts` no longer ships); two dead vendored files excluded from the artifact; walkthrough images actually included; `@modelcontextprotocol/sdk` declared instead of resolving through a transitive hoist; `vsce` pinned per invocation with `--dependencies` (the `--no-dependencies` form ships an extension with Playwright missing).

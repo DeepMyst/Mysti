@@ -117,11 +117,13 @@ describe('settings scope hardening (Plan 21 Phase 0)', () => {
 
   it('every mysti.desk.* setting defaults to off, empty, or the strictest option', () => {
     // A capability that ships on is a capability nobody chose.
+    // `mysti.desk.bind` and `mysti.desk.shareCeiling` were deleted in Plan 27
+    // §24 Tier A: both were declared and read by NOTHING, so their "safe
+    // default" protected nothing. The remaining three are the ones that gate
+    // real behaviour, and they stay pinned here.
     const defaults: Record<string, unknown> = {
       'mysti.desk.enabled': false,
       'mysti.desk.serve': false,
-      'mysti.desk.bind': 'off',
-      'mysti.desk.shareCeiling': [],
       'mysti.desk.minRetentionClass': 'zero-retention',
     };
     for (const [key, expected] of Object.entries(defaults)) {

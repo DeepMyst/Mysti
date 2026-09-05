@@ -218,6 +218,44 @@ describe('the three clamped settings remain window-scoped (do not "harden" these
  * sixteenth provider adds `mysti.agents.<x>Persona`, `mysti.agents.<x>CustomPrompt`
  * and `mysti.<x>Path` in one commit, and must fail HERE rather than ship open.
  */
+describe('no setting is declared and read by nothing (Plan 27 §24 Tier A)', () => {
+  /**
+   * A declared setting that nothing reads is worse than no setting: it appears
+   * in the Settings UI, invites the user to change it, and silently does
+   * nothing. Eight were deleted in the Tier A cut — four `canvas.*`, three
+   * `desk.*`, and `activeMode.showActivityFeed`.
+   *
+   * This pins the DELETIONS so they cannot drift back, and — more usefully —
+   * catches the next one at the moment it is added. The scanner below is the
+   * repo-wide one already used for read-but-undeclared, run in reverse.
+   */
+  const DELETED = [
+    'mysti.canvas.autoSave',
+    'mysti.canvas.defaultVariantCount',
+    'mysti.canvas.stitchDeviceType',
+    'mysti.canvas.stitchVariantCount',
+    'mysti.desk.bind',
+    'mysti.desk.maxDeskCalls',
+    'mysti.desk.shareCeiling',
+    'mysti.activeMode.showActivityFeed',
+  ];
+
+  it('the eight Tier A settings stay deleted', () => {
+    const back = DELETED.filter((k) => k in props);
+    expect(
+      back,
+      'these were removed because NOTHING read them. If one is genuinely needed now, wire a read '
+      + 'in the same commit that re-declares it, then delete it from this list.',
+    ).toEqual([]);
+  });
+
+  it('re-declaring one without wiring a read fails here', () => {
+    // Proves the guard above is a real check and not a tautology: the same
+    // predicate, applied to a key that IS declared, must see it.
+    expect('mysti.defaultAgent' in props).toBe(true);
+  });
+});
+
 describe('scope rules derived from key shape', () => {
   const shapes: Array<{ name: string; re: RegExp; min: number; why: string }> = [
     {
@@ -316,7 +354,7 @@ describe('authority-shaped namespaces are machine-scoped OR clamped (structural,
     { name: 'mysti.agents.*', re: /^mysti\.agents\./, min: 30 },
     { name: 'mysti.autonomous.*', re: /^mysti\.autonomous\./, min: 7 },
     { name: 'mysti.mysti.*', re: /^mysti\.mysti\./, min: 10 },
-    { name: 'mysti.desk.*', re: /^mysti\.desk\./, min: 5 },
+    { name: 'mysti.desk.*', re: /^mysti\.desk\./, min: 4 },  // 7 -> 4: bind / maxDeskCalls / shareCeiling were declared-and-unread (Plan 27 §24 Tier A).
     // Plan 27 §21.6c #10 (lane N-2): suffix shapes. Until these existed the
     // "a fifth one fails HERE" property held only inside the nine above;
     // `mysti.visualTest.url` was caught by its namespace, not by being a URL.
