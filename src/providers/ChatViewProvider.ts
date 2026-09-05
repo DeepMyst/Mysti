@@ -4136,6 +4136,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         [
           { label: 'mysti.md', content: mystiMdContent },
           { label: '.mysti/rules', content: projectRules },
+          // Plan 27 Phase 5 — the cross-vendor convention files (AGENTS.md,
+          // CLAUDE.md, GEMINI.md). One more entry in this array, exactly as the
+          // D-7 fix anticipated: never a second fence.
+          ...(projectContextEnabled ? this._projectContextManager.getCrossVendorInstructions() : []),
         ],
       );
       console.log(`[Mysti] ⏱️ Auto-memory in ${Date.now() - _tMem}ms`);

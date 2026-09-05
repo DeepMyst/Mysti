@@ -218,7 +218,7 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
     {} as any,                        // slashCommandManager
     activeModeManager,
     engagementManager,
-    { readRules: () => '', getMystiMdContent: () => '' } as any,
+    { readRules: () => '', getMystiMdContent: () => '', getCrossVendorInstructions: () => [] } as any,
     {} as any,                        // visualTestManager
     {} as any,                        // canvasManager
     createModelRegistryStub() as any,

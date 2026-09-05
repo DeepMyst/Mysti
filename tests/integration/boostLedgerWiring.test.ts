@@ -173,7 +173,7 @@ function createHarness(): Harness {
       trackCustomPersonaCreated: () => undefined, trackCustomSkillCreated: () => undefined,
       trackMessageSent: () => [], trackSuccessfulResponse: () => undefined,
     } as any,
-    { readRules: () => '', getMystiMdContent: () => '' } as any,
+    { readRules: () => '', getMystiMdContent: () => '', getCrossVendorInstructions: () => [] } as any,
     noop,                                                          // visualTestManager
     noop,                                                          // canvasManager
     createModelRegistryStub() as any,                              // modelRegistry

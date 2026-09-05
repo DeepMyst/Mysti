@@ -178,6 +178,7 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
   const projectContextManager = {
     readRules: () => projectFiles.rules ?? '',
     getMystiMdContent: () => projectFiles.mystiMd ?? '',
+    getCrossVendorInstructions: () => [],
   } as any;
 
   const compactionManager = {

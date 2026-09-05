@@ -215,6 +215,24 @@ export function resetWindowStubs(): void {
   window.showQuickPick = () => Promise.resolve(undefined);
 }
 
+/**
+ * `new vscode.RelativePattern(base, pattern)` — the glob form file watchers
+ * take. Real enough for code under test to construct one and for assertions to
+ * read `base`/`pattern` back; it does no matching, because nothing in the mock
+ * watches a real filesystem.
+ */
+export class RelativePattern {
+  public baseUri: { fsPath: string };
+  public base: string;
+  constructor(base: string | { uri?: { fsPath: string }; fsPath?: string }, public pattern: string) {
+    const fsPath = typeof base === 'string'
+      ? base
+      : (base?.uri?.fsPath ?? base?.fsPath ?? '');
+    this.base = fsPath;
+    this.baseUri = { fsPath };
+  }
+}
+
 /** Editor column targets — `createWebviewPanel`'s third argument. */
 export enum ViewColumn {
   Active = -1,

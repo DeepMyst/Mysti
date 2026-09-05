@@ -38,6 +38,16 @@ export interface WorkspaceScanResult {
 }
 
 /**
+ * Per-file cap on third-party instruction files (AGENTS.md / CLAUDE.md /
+ * GEMINI.md). `mysti.md` is the user's own file and is uncapped; these are
+ * somebody else's and an oversized one would silently eat the context window.
+ * Module scope rather than a class property: the repo's naming rule wants
+ * camelCase for class members, and every sibling cap constant here is a
+ * module-level SCREAMING_CASE const.
+ */
+const CROSS_VENDOR_CAP = 16_000;
+
+/**
  * ProjectContextManager owns reading mysti.md and .mysti/rules/ for prompt injection.
  * It never auto-modifies mysti.md — that's the user's file.
  * Matches Claude Code's architecture: CLAUDE.md (user-written) + .claude/rules/ (path-specific).
@@ -320,6 +330,57 @@ export class ProjectContextManager {
     lines.push('<!-- Additional context for Mysti -->', '');
 
     return lines.join('\n');
+  }
+
+  /**
+   * Cross-vendor agent instruction files (Plan 27 Phase 5).
+   *
+   * `AGENTS.md` is the open convention (agents.md) that Codex, Cursor, Jules
+   * and VS Code's own agent mode all read; `CLAUDE.md` and `GEMINI.md` are the
+   * vendor equivalents. Mysti read only the `mysti.md` it invented for the same
+   * job, so a repository that had already written its conventions down for
+   * every other tool got none of them here.
+   *
+   * These are read under the SAME `mysti.projectContext.enabled` gate as
+   * mysti.md — no new setting — and they land in the SAME nonce-fenced block.
+   * That fencing (Plan 27 Phase 3, D-7) was the hard prerequisite: these files
+   * are, by construction, present in cloned third-party repositories, so
+   * reading them unfenced would have handed any clone the system position.
+   *
+   * Capped per file: unlike mysti.md these are somebody else's files, and a
+   * large one would otherwise silently consume the context window. The cap is
+   * announced in the injected text rather than truncating in silence.
+   */
+  public getCrossVendorInstructions(): Array<{ label: string; content: string }> {
+    if (!this._workspaceRoot) { return []; }
+    const root = this._workspaceRoot;
+
+    // label -> first existing candidate. Order is the vendor's own convention.
+    const families: Array<{ label: string; candidates: string[] }> = [
+      { label: 'AGENTS.md', candidates: ['AGENTS.md'] },
+      { label: 'CLAUDE.md', candidates: ['CLAUDE.md', path.join('.claude', 'CLAUDE.md')] },
+      { label: 'GEMINI.md', candidates: ['GEMINI.md'] },
+    ];
+
+    const out: Array<{ label: string; content: string }> = [];
+    for (const family of families) {
+      for (const rel of family.candidates) {
+        const full = path.join(root, rel);
+        if (!fs.existsSync(full)) { continue; }
+        try {
+          const raw = fs.readFileSync(full, 'utf-8');
+          if (!raw.trim()) { break; }
+          const content = raw.length > CROSS_VENDOR_CAP
+            ? `${raw.slice(0, CROSS_VENDOR_CAP)}\n\n[truncated — ${raw.length - CROSS_VENDOR_CAP} more characters not shown]`
+            : raw;
+          out.push({ label: rel, content });
+        } catch (error) {
+          console.warn(`[Mysti] Failed to read ${full}:`, error);
+        }
+        break; // first hit per family wins
+      }
+    }
+    return out;
   }
 
   /**

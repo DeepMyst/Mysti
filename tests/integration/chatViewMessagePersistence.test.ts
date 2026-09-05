@@ -175,6 +175,7 @@ function createHarness(): Harness {
   const projectContextManager = {
     readRules: () => '',
     getMystiMdContent: () => '',
+    getCrossVendorInstructions: () => [],
   } as any;
 
   const suggestionManager = {

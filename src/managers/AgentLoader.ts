@@ -199,11 +199,36 @@ export class AgentLoader {
     // Workspace agents (.mysti/agents/ in workspace root)
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (workspaceFolders && workspaceFolders.length > 0) {
-      const workspaceDir = path.join(workspaceFolders[0].uri.fsPath, '.mysti', 'agents');
+      const workspaceRoot = workspaceFolders[0].uri.fsPath;
+      const workspaceDir = path.join(workspaceRoot, '.mysti', 'agents');
       this._sourceDirs.push({
         path: workspaceDir,
         source: 'workspace'
       });
+
+      // Plan 27 Phase 5 — the CROSS-CLIENT skill directories.
+      //
+      // `.agents/skills/<name>/SKILL.md` is the convention other Agent Skills
+      // clients read, and `.claude/skills` is Claude's equivalent. Mysti scanned
+      // only `.mysti/agents/skills`, so a repository that had already written
+      // skills for another tool had none of them here.
+      //
+      // No structural change is needed: this scanner reads `<dir>/skills`, so
+      // pointing it at `.agents` and `.claude` resolves to exactly the
+      // conventional paths. Their `personas/` and `roles/` siblings do not
+      // exist, and `_collectAgentFiles` returns nothing for a missing dir.
+      //
+      // Both are `source: 'workspace'` — the LOWEST trust tier. A cloned repo
+      // can contain anything, so these load as delimited reference data with an
+      // authority ceiling, never as trusted instructions (Plan 20 Phase 0).
+      // They come after `.mysti/agents` so a Mysti-native skill of the same id
+      // wins.
+      for (const crossClient of ['.agents', '.claude']) {
+        this._sourceDirs.push({
+          path: path.join(workspaceRoot, crossClient),
+          source: 'workspace'
+        });
+      }
     }
   }
 
