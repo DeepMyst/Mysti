@@ -384,6 +384,13 @@
         runsById: {},
         runOrder: [],
         runsTab: 'working',
+        // Plan 28 Phase 4: path -> Set-ish map of agents observed editing it.
+        // Attribution ONLY. The file list and the line counts come from the
+        // shadow repo, so a file an agent claimed but did not touch never
+        // appears, and a file changed with no tool call behind it is listed as
+        // the user's own.
+        editedBy: {},
+        changes: null,
         // Track previous level for cancel/revert
         previousAutonomyLevel: 'manual',
         // Agent configuration state (per-conversation)
@@ -3873,6 +3880,17 @@
           }
         });
 
+        // Plan 28 Phase 4 — Changes dock wiring.
+        var changesBtn = document.getElementById('changes-btn');
+        if (changesBtn) { changesBtn.addEventListener('click', function() { toggleChangesDock(); }); }
+        document.addEventListener('click', function(e) {
+          var crow = e.target && e.target.closest ? e.target.closest('.change-row') : null;
+          if (crow) {
+            e.preventDefault();
+            postMessageWithPanelId({ type: 'openFile', payload: { path: crow.getAttribute('data-path') } });
+          }
+        });
+
         // Plan 28 Phase 3 — Runs dock wiring.
         var runsBtn = document.getElementById('runs-btn');
         if (runsBtn) { runsBtn.addEventListener('click', function() { toggleRunsDock(); }); }
@@ -3887,9 +3905,18 @@
             toggleRunsDock();
             return;
           }
+          // Ctrl/Cmd+Shift+A — freed by Phase 1, where autonomy stopped being a
+          // mode you toggle.
+          if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
+            e.preventDefault();
+            toggleChangesDock();
+            return;
+          }
           if (e.key === 'Escape') {
-            var dock = document.getElementById('runs-dock');
-            if (dock && !dock.classList.contains('hidden')) { e.preventDefault(); toggleRunsDock(false); }
+            var rd = document.getElementById('runs-dock');
+            var cd = document.getElementById('changes-dock');
+            if (rd && !rd.classList.contains('hidden')) { e.preventDefault(); toggleRunsDock(false); }
+            else if (cd && !cd.classList.contains('hidden')) { e.preventDefault(); toggleChangesDock(false); }
           }
         });
 
@@ -9166,6 +9193,19 @@
             runFinish('perm:' + (p.id || p.requestId), { ok: false, detail: 'expired' });
             break;
 
+          // Plan 28 Phase 4 — attribution ledger. Only the "who"; the file
+          // list itself always comes from the shadow repo.
+          case 'toolUse':
+            observeEdit(message.payload, state.settings.provider);
+            break;
+          case 'subAgentToolUse':
+            observeEdit((message.payload || {}).toolCall || message.payload, (message.payload || {}).agentId);
+            break;
+          case 'sessionChanges':
+            state.changes = p;
+            renderChanges();
+            break;
+
           case 'askUserQuestion':
           case 'subAgentAskUserQuestion':
             runUpsert('auq:' + (p.toolCallId || 'q'), { kind: 'question', state: 'needs',
@@ -9229,12 +9269,120 @@
         var app = document.getElementById('app');
         if (!dock || !app) { return; }
         var open = typeof force === 'boolean' ? force : dock.classList.contains('hidden');
+        if (open) { toggleChangesDock(false); }
         dock.classList.toggle('hidden', !open);
-        app.classList.toggle('runs-open', open);
+        app.classList.toggle('dock-open', open || !document.getElementById('changes-dock').classList.contains('hidden'));
         if (open) {
           var first = RUN_STATES.filter(function(st) { return runsIn(st).length > 0; })[0];
           setRunsTab(first || 'working');
         }
+      }
+
+      // ======================================================================
+      // Plan 28 Phase 4 — the Changes dock
+      // ======================================================================
+
+      function recordEdit(filePath, agentId) {
+        if (!filePath) { return; }
+        var norm = String(filePath).replace(/\\/g, '/').replace(/^\.\//, '');
+        var who = state.editedBy[norm] || (state.editedBy[norm] = []);
+        if (agentId && who.indexOf(agentId) < 0) { who.push(agentId); }
+      }
+
+      /** Pull the edited path out of a file-edit tool call, reusing the
+       *  existing parser rather than re-deriving which input field holds it. */
+      function observeEdit(toolCall, agentId) {
+        if (!toolCall || !toolCall.name || !isFileEditTool(toolCall.name)) { return; }
+        try {
+          var info = parseFileEditInfo(toolCall.name, toolCall.input || {}, '', 0);
+          if (info && info.filePath) { recordEdit(info.filePath, agentId); }
+        } catch (err) { /* attribution is best-effort; the file list is not */ }
+      }
+
+      function requestChanges() {
+        postMessageWithPanelId({ type: 'requestSessionChanges' });
+      }
+
+      function renderChanges() {
+        var list = document.getElementById('changes-list');
+        var summary = document.getElementById('changes-summary');
+        var empty = document.getElementById('changes-empty');
+        var badge = document.getElementById('changes-badge');
+        if (!list || !summary) { return; }
+
+        var data = state.changes;
+        var files = (data && data.files) || [];
+
+        if (badge) {
+          badge.textContent = String(files.length);
+          badge.classList.toggle('hidden', files.length === 0);
+        }
+        if (empty) {
+          empty.classList.toggle('hidden', files.length > 0);
+          empty.textContent = (data && data.available === false)
+            ? 'Checkpoints are off, so there is nothing to compare against.'
+            : 'Nothing has changed yet.';
+        }
+
+        var add = 0, del = 0;
+        files.forEach(function(f) {
+          if (f.added > 0) { add += f.added; }
+          if (f.removed > 0) { del += f.removed; }
+        });
+        summary.innerHTML = files.length
+          ? escapeHtml(files.length + (files.length === 1 ? ' file' : ' files')) +
+            ' <span class="plus">+' + add + '</span> <span class="minus">&minus;' + del + '</span>'
+          : '';
+
+        // Split by whether any observed tool call claims the file.
+        var mine = [], theirs = [];
+        files.forEach(function(f) {
+          var who = state.editedBy[f.path];
+          (who && who.length ? theirs : mine).push(f);
+        });
+
+        function row(f, isMine) {
+          var who = state.editedBy[f.path] || [];
+          var byNames = who.map(function(a) { return (getAgentDisplay(a) || {}).name || a; }).join(', ');
+          var slash = f.path.lastIndexOf('/');
+          var dir = slash >= 0 ? f.path.slice(0, slash + 1) : '';
+          var base = slash >= 0 ? f.path.slice(slash + 1) : f.path;
+          var stat = f.added < 0
+            ? '<span class="change-by">binary</span>'
+            : '<span class="change-stat"><span class="plus">+' + f.added + '</span> ' +
+              '<span class="minus">&minus;' + f.removed + '</span></span>';
+          return '<div class="change-row" data-path="' + cssAttr(f.path) + '" data-mine="' + (isMine ? '1' : '0') + '">' +
+                   '<span class="change-status">' + escapeHtml(f.status) + '</span>' +
+                   '<span class="change-path"><bdi><span class="change-dir">' + escapeHtml(dir) + '</span>' +
+                     escapeHtml(base) + '</bdi></span>' +
+                   (byNames ? '<span class="change-by">' + escapeHtml(byNames) + '</span>' : '') +
+                   stat +
+                 '</div>';
+        }
+
+        var html = '';
+        if (theirs.length) {
+          html += '<div class="changes-group">Changed by an agent</div>' +
+                  theirs.map(function(f) { return row(f, false); }).join('');
+        }
+        if (mine.length) {
+          html += '<div class="changes-group yours">Changed with no agent behind it</div>' +
+                  '<div class="changes-note">Yours, as far as Mysti can tell &mdash; no tool call claimed these. ' +
+                  'Nothing here is offered for revert.</div>' +
+                  mine.map(function(f) { return row(f, true); }).join('');
+        }
+        list.innerHTML = html;
+      }
+
+      function toggleChangesDock(force) {
+        var dock = document.getElementById('changes-dock');
+        var app = document.getElementById('app');
+        if (!dock || !app) { return; }
+        var open = typeof force === 'boolean' ? force : dock.classList.contains('hidden');
+        if (open) { toggleRunsDock(false); }
+        dock.classList.toggle('hidden', !open);
+        app.classList.toggle('dock-open', open || !document.getElementById('runs-dock').classList.contains('hidden'));
+        if (open) { requestChanges(); }
       }
 
       /**

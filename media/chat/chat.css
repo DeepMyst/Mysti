@@ -2575,9 +2575,9 @@
     /* Plan 28 Phase 3 — the Runs dock. At sidebar width it SWAPS IN for the
        transcript rather than floating over it; in an editor tab the same
        markup sits beside the conversation (see the Wide artboard). */
-    #app.runs-open .messages,
-    #app.runs-open .quick-actions-container { display: none; }
-    .runs-dock {
+    #app.dock-open .messages,
+    #app.dock-open .quick-actions-container { display: none; }
+    .dock {
       flex: 1 1 auto;
       min-height: 0;
       display: flex;
@@ -2585,7 +2585,7 @@
       background: var(--mysti-surface);
       border-bottom: 1px solid var(--mysti-border);
     }
-    .runs-dock.hidden { display: none; }
+    .dock.hidden { display: none; }
     .runs-dock-tabs {
       display: flex;
       gap: 4px;
@@ -8995,3 +8995,64 @@
     .mysti-action-spent { opacity: 0.6; }
     .mysti-action-spent button { cursor: default; }
 
+
+    /* Plan 28 Phase 4 — the Changes dock rides the same shell as Runs. */
+    .dock-summary {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--mysti-border);
+      font-size: 11px;
+      color: var(--mysti-dim);
+      flex: none;
+    }
+    .dock-summary .plus { color: var(--mysti-ok); }
+    .dock-summary .minus { color: var(--mysti-err); }
+    .changes-group {
+      font-size: 10px;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      color: var(--mysti-dim);
+      font-weight: 600;
+      padding: 6px 0 2px;
+    }
+    .changes-group.yours { color: var(--mysti-warn); }
+    .changes-note {
+      font-size: 11px;
+      color: var(--mysti-dim);
+      line-height: 1.5;
+      padding: 0 0 4px;
+    }
+    .change-row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 7px 10px;
+      border: 1px solid var(--mysti-border);
+      border-radius: 6px;
+      background: var(--vscode-editor-background);
+      cursor: pointer;
+    }
+    .change-row:hover { border-color: var(--vscode-focusBorder); }
+    .change-row[data-mine="1"] { border-style: dashed; }
+    .change-path {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      direction: rtl;
+      text-align: left;
+    }
+    .change-path bdi { direction: ltr; unicode-bidi: isolate; }
+    .change-dir { color: var(--mysti-dim); }
+    .change-stat { font-size: 11px; white-space: nowrap; flex: none; }
+    .change-by { font-size: 10px; color: var(--mysti-dim); white-space: nowrap; flex: none; }
+    .change-status {
+      width: 14px; flex: none; text-align: center;
+      font-size: 10px; font-weight: 700; color: var(--mysti-dim);
+    }

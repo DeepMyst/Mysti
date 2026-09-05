@@ -386,3 +386,85 @@ describe('Plan 28 Phase 3 — the Runs dock', () => {
     expect(pageErrors).toEqual([]);
   }, 20000);
 });
+
+describe('Plan 28 Phase 4 — the Changes dock', () => {
+  const rowsOf = () => page!.$$eval('#changes-list .change-row',
+    (els) => els.map((e) => ({
+      path: e.getAttribute('data-path'),
+      mine: e.getAttribute('data-mine'),
+      by: e.querySelector('.change-by')?.textContent ?? '',
+    })));
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('asks the extension what actually changed', async () => {
+    await clearPosted();
+    await page!.keyboard.press('Control+Shift+A');
+    expect(await page!.$eval('#changes-dock', (e) => e.classList.contains('hidden'))).toBe(false);
+    expect((await posted()).some((m) => m.type === 'requestSessionChanges')).toBe(true);
+    // Only one dock at a time.
+    expect(await page!.$eval('#runs-dock', (e) => e.classList.contains('hidden'))).toBe(true);
+    expect(await page!.$eval('#messages', (e) => getComputedStyle(e).display)).toBe('none');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('separates agent edits from edits nothing claimed', async () => {
+    // One file an agent was seen editing...
+    await send({ type: 'toolUse', payload: { id: 't1', name: 'Edit', input: { file_path: 'src/a.ts' } } });
+    // ...and git reports that one plus a second nobody touched through a tool.
+    await send({ type: 'sessionChanges', payload: { available: true, files: [
+      { path: 'src/a.ts', added: 9, removed: 2, status: 'M' },
+      { path: 'webpack.config.js', added: 1, removed: 1, status: 'M' },
+    ] } });
+
+    const rows = await rowsOf();
+    const byPath = Object.fromEntries(rows.map((r) => [r.path, r]));
+    expect(byPath['src/a.ts'].mine).toBe('0');
+    expect(byPath['src/a.ts'].by).toBeTruthy();
+    // The one no tool call claimed is the user's, and is marked as such.
+    expect(byPath['webpack.config.js'].mine).toBe('1');
+    expect(byPath['webpack.config.js'].by).toBe('');
+
+    const groups = await page!.$$eval('.changes-group', (els) => els.map((e) => e.textContent));
+    expect(groups.some((g) => /agent/i.test(g ?? ''))).toBe(true);
+    expect(groups.some((g) => /no agent behind it/i.test(g ?? ''))).toBe(true);
+    expect(await page!.textContent('.changes-note')).toContain('Nothing here is offered for revert');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('totals the diff and badges the header', async () => {
+    expect(await page!.textContent('#changes-summary')).toContain('2 files');
+    expect(await page!.textContent('#changes-summary')).toContain('+10');
+    expect(await page!.textContent('#changes-summary')).toContain('3');
+    expect(await page!.$eval('#changes-badge', (e) => e.textContent)).toBe('2');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('never invents a line count for a binary file', async () => {
+    await send({ type: 'sessionChanges', payload: { available: true, files: [
+      { path: 'resources/logo.png', added: -1, removed: -1, status: 'A' },
+    ] } });
+    expect(await page!.textContent('#changes-list')).toContain('binary');
+    expect(await page!.textContent('#changes-list')).not.toContain('-1');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('opens the file when a row is clicked', async () => {
+    await clearPosted();
+    await page!.click('.change-row');
+    const opens = (await posted()).filter((m) => m.type === 'openFile');
+    expect(opens.length).toBe(1);
+    expect((opens[0].payload as { path: string }).path).toBe('resources/logo.png');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('says so plainly when there is nothing to compare against', async () => {
+    await send({ type: 'sessionChanges', payload: { available: false, files: [], reason: 'no-checkpoint' } });
+    expect(await page!.$eval('#changes-empty', (e) => e.classList.contains('hidden'))).toBe(false);
+    expect(await page!.textContent('#changes-empty')).toContain('Checkpoints are off');
+    expect(await page!.$eval('#changes-badge', (e) => e.classList.contains('hidden'))).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Escape closes it and restores the transcript', async () => {
+    await page!.keyboard.press('Escape');
+    expect(await page!.$eval('#changes-dock', (e) => e.classList.contains('hidden'))).toBe(true);
+    expect(await page!.$eval('#messages', (e) => getComputedStyle(e).display)).not.toBe('none');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 20000);
+});

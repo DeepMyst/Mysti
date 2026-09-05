@@ -91,6 +91,12 @@
           </svg>
           <span class="runs-badge hidden" id="runs-badge">0</span>
         </button>
+        <button id="changes-btn" class="icon-btn" title="Changes — every edit this session (Ctrl/Cmd+Shift+A)">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 2v12M11 2v12M2 5h12M2 11h12"/>
+          </svg>
+          <span class="runs-badge hidden" id="changes-badge">0</span>
+        </button>
         <button id="agent-config-btn" class="icon-btn" title="Agent Configuration">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M11 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>
@@ -538,7 +544,7 @@
          that already exist (sub-agent cards, brainstorm stepper, coordinator
          nodes, background jobs, sticky todos) — a VIEW, built by observing the
          same messages those producers consume. None of them was modified. -->
-    <div id="runs-dock" class="runs-dock hidden">
+    <div id="runs-dock" class="dock runs-dock hidden">
       <div class="runs-dock-tabs">
         <button class="runs-tab" data-runs-tab="needs">Needs you <span class="runs-tab-count" data-count="needs">0</span></button>
         <button class="runs-tab active" data-runs-tab="working">Working <span class="runs-tab-count" data-count="working">0</span></button>
@@ -546,6 +552,17 @@
       </div>
       <div id="runs-list" class="runs-list"></div>
       <div id="runs-empty" class="runs-empty">Nothing here.</div>
+    </div>
+
+    <!-- Plan 28 Phase 4: the Changes dock. The file list and the line counts
+         come from the shadow repo (what is actually on disk); only the "who"
+         comes from the file-edit tool calls the webview observed. Anything git
+         reports that no tool call claims is the user's own work and is listed
+         apart, so a revert can never reach it. -->
+    <div id="changes-dock" class="dock changes-dock hidden">
+      <div class="dock-summary" id="changes-summary"></div>
+      <div id="changes-list" class="runs-list"></div>
+      <div id="changes-empty" class="runs-empty">Nothing has changed yet.</div>
     </div>
 
     <!-- Quick actions (dynamically populated) -->

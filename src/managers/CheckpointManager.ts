@@ -47,6 +47,56 @@ export const CHECKPOINT_FORCED_PATHS = ['.mysti/agents', '.mysti/skills.staged']
 export const CHECKPOINT_DEFAULT_MAX_SNAPSHOTS = 200;
 
 /**
+ * Plan 28 Phase 4 — one changed file, as the shadow repo sees it.
+ *
+ * `added`/`removed` are -1 for a binary file, which is what git reports as
+ * `-`/`-`. `status` is git's own: added, modified or deleted. Renames are
+ * deliberately NOT detected (`--no-renames`) — a rename shows as a delete plus
+ * an add, which is the honest thing to put in front of someone deciding what
+ * to keep, and it keeps the numstat records unambiguous to parse.
+ */
+export interface ShadowFileChange {
+  path: string;
+  added: number;
+  removed: number;
+  status: 'A' | 'M' | 'D';
+}
+
+/**
+ * Parse `git diff --numstat -z` + `git diff --name-status -z` into one list.
+ *
+ * Pure, and exported so it can be tested without a workspace. `-z` matters:
+ * without it git QUOTES paths containing spaces or non-ASCII, and the quoting
+ * would have to be un-escaped by hand. With it, numstat records are
+ * `added\tremoved\tpath\0` and name-status records alternate
+ * `status\0path\0`, both unambiguous.
+ */
+export function parseShadowDiff(numstatZ: string, nameStatusZ: string): ShadowFileChange[] {
+  const status = new Map<string, 'A' | 'M' | 'D'>();
+  const statusFields = nameStatusZ.split('\0').filter((f) => f !== '');
+  for (let i = 0; i + 1 < statusFields.length; i += 2) {
+    const code = statusFields[i].charAt(0);
+    if (code === 'A' || code === 'M' || code === 'D') {
+      status.set(statusFields[i + 1], code);
+    }
+  }
+
+  const out: ShadowFileChange[] = [];
+  for (const record of numstatZ.split('\0')) {
+    if (record === '') { continue; }
+    const parts = record.split('\t');
+    if (parts.length < 3) { continue; }
+    // A path may itself contain a tab; only the first two fields are counts.
+    const filePath = parts.slice(2).join('\t');
+    const added = parts[0] === '-' ? -1 : Number.parseInt(parts[0], 10);
+    const removed = parts[1] === '-' ? -1 : Number.parseInt(parts[1], 10);
+    if (!filePath || Number.isNaN(added) || Number.isNaN(removed)) { continue; }
+    out.push({ path: filePath, added, removed, status: status.get(filePath) ?? 'M' });
+  }
+  return out;
+}
+
+/**
  * One ref per checkpoint, ordered by a zero-padded counter.
  *
  * Snapshots are parentless ROOT commits held alive by these refs, not a single
@@ -193,6 +243,40 @@ export class CheckpointManager {
       return { ok: false, reason: 'Checkpoints are unavailable (git not found or feature disabled).' };
     }
     return this._enqueue(() => this._rewindImpl(commit));
+  }
+
+  /**
+   * Plan 28 Phase 4 — every file that differs between `commit` and the CURRENT
+   * work tree, with line counts. Never throws; null when checkpoints are
+   * unavailable, so the caller degrades to no Changes dock rather than an error.
+   *
+   * Staging first (`add -A`) is what makes untracked files visible to the diff,
+   * exactly as `_snapshotImpl` does. It touches only the SHADOW index — the
+   * --git-dir points at Mysti's own repo, never the user's — so this cannot
+   * disturb a staged change the user was preparing.
+   */
+  public async diffSince(commit: string): Promise<ShadowFileChange[] | null> {
+    // The SHA reaches us from a persisted conversation. Anything that is not
+    // plainly a hex object name is refused rather than handed to git, where a
+    // leading dash would be read as an option.
+    if (!/^[0-9a-f]{7,40}$/i.test(commit)) { return null; }
+    if (!(await this.isAvailable())) { return null; }
+    return this._enqueue(() => this._diffSinceImpl(commit));
+  }
+
+  private async _diffSinceImpl(commit: string): Promise<ShadowFileChange[] | null> {
+    try {
+      await this.ensureRepo();
+      await this._runGit(['add', '-A']);
+      const numstat = await this._runGit(
+        ['diff', '--numstat', '--no-renames', '-z', '--cached', commit, '--']);
+      if (numstat.code !== 0) { return null; }
+      const nameStatus = await this._runGit(
+        ['diff', '--name-status', '--no-renames', '-z', '--cached', commit, '--']);
+      return parseShadowDiff(numstat.stdout, nameStatus.code === 0 ? nameStatus.stdout : '');
+    } catch {
+      return null;
+    }
   }
 
   public dispose(): void {

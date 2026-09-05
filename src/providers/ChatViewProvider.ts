@@ -1681,6 +1681,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case 'requestSessionChanges': {
+        // Plan 28 Phase 4 — the Changes dock asks what actually changed on disk.
+        //
+        // The baseline is the checkpoint on the FIRST user message of this
+        // conversation that has one. `_captureCheckpoint` snapshots BEFORE each
+        // turn runs, so that commit is the tree as it stood before the agent
+        // touched anything, and the diff from it to the current work tree is
+        // every change this session produced — the agents' and the user's own.
+        //
+        // Attribution is NOT decided here. The webview joins this list against
+        // the file-edit tool calls it observed; anything git reports that no
+        // tool call claims is shown as the user's own and kept out of any
+        // revert. That split is deliberate: the file list and the line counts
+        // come from disk, and only the "who" comes from what a model said.
+        void (async () => {
+          const scPanelState = this._panelStates.get(msg.panelId);
+          const scConversation = scPanelState?.currentConversationId
+            ? this._conversationManager.getConversation(scPanelState.currentConversationId)
+            : this._conversationManager.getCurrentConversation();
+          const baseline = scConversation?.messages.find(m => m.checkpoint?.commit)?.checkpoint;
+          if (!baseline) {
+            this._postToPanel(msg.panelId, {
+              type: 'sessionChanges',
+              payload: { files: [], available: false, reason: 'no-checkpoint' }
+            });
+            return;
+          }
+          const files = await this._checkpointManager.diffSince(baseline.commit);
+          this._postToPanel(msg.panelId, {
+            type: 'sessionChanges',
+            payload: files === null
+              ? { files: [], available: false, reason: 'unavailable' }
+              : { files, available: true, since: baseline.createdAt, baseCommit: baseline.commit }
+          });
+        })();
+        break;
+      }
+
       case 'requestUpdateStatus': {
         // Webview asks on open (and after a reload) for whatever cards are
         // outstanding. Pure cache read — never triggers a probe or a network call.

@@ -160,6 +160,10 @@ Unattended stops being a fifth mode and becomes a **duration** granted on Auto o
 
 **Guardrail.** Attribution is the correctness question. A file the developer edited by hand between two agent turns must never be presented as agent-authored, and reverting one file must not touch any other.
 
+**SHIPPED, read-only.** The list and the line counts come from the shadow repo (`CheckpointManager.diffSince`, baselined on the first checkpoint of the conversation — `_captureCheckpoint` snapshots *before* each turn, so that commit is the tree as it stood before any agent touched it). Attribution comes separately, from the file-edit tool calls the webview observes. Anything git reports that no tool call claims is shown as the developer's own and grouped apart. So a file an agent *claimed* but did not touch never appears, and a file changed with nothing behind it is never presented as agent-authored.
+
+**The destructive actions are deliberately NOT wired, and this is the reason.** `ChatViewProvider._handleRevertFileEdit` reverts through VS Code's `git.clean` / `git.checkout` against the **user's real repository**, not the shadow repo. On a file that carries both an agent edit and the developer's own uncommitted work, that discards both — exactly the hazard this phase exists to prevent. Wiring it into a dock that lists *every* changed file would turn a rare hazard into a routine one. The fix is to revert from the shadow repo instead (`git checkout <baseCommit> -- <path>` against `--git-dir`), which restores one file to its pre-session state and cannot reach anything else; that is a prerequisite for Keep / Revert / Rewind-to-before, not part of this phase.
+
 ---
 
 ### Phase 5 — `⌘K` and the chrome diet
