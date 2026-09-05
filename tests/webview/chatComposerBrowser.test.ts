@@ -364,7 +364,15 @@ describe('Plan 28 Phase 3 — the Runs dock', () => {
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('clears it when the permission is answered', async () => {
-    await send({ type: 'permissionResult', payload: { id: 'perm_1' } });
+    // The extension's `permissionResult` carries {action, allowed} and never
+    // says WHICH request — so the dock learns from the click, where the id is
+    // known. This test used to send a made-up {id} and pass for the wrong
+    // reason; a review caught that the real reply cannot clear anything.
+    await page!.evaluate(() => {
+      document.querySelector('.permission-card[data-id="perm_1"] .permission-option[data-action="deny"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await send({ type: 'permissionResult', payload: { action: 'Bash', allowed: false } });
     expect((await badge()).hidden).toBe(true);
     expect(await rows()).toEqual([]);
   }, 20000);
@@ -933,6 +941,80 @@ describe('the first-run screens have a second exit', () => {
     await page!.keyboard.press('Escape');
     const p2 = await posted();
     expect(p2.some((m) => m.type === 'dismissWizard' || m.type === 'skipSetup')).toBe(false);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 20000);
+});
+
+describe('review round: the nine findings stay fixed', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('answering a permission clears Needs-you (it has no id on the way back)', async () => {
+    await send({ type: 'permissionRequest', payload: {
+      id: 'perm_r1', actionType: 'bash-command', toolName: 'Bash', expiresAt: 0,
+      details: { toolName: 'Bash', command: 'ls' } } });
+    expect(await page!.$eval('#runs-badge', (e) => e.textContent)).toBe('1');
+
+    // The extension answers with {action, allowed} — no request id at all — so
+    // the dock has to learn about it from the click, not the reply.
+    await page!.evaluate(() => {
+      document.querySelector('.permission-card[data-id="perm_r1"] .permission-option[data-action="approve"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await send({ type: 'permissionResult', payload: { action: 'Bash', allowed: true } });
+    expect(await page!.$eval('#runs-badge', (e) => e.classList.contains('hidden'))).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a superseded gate is dropped by requestIds', async () => {
+    await send({ type: 'permissionRequest', payload: {
+      id: 'perm_r2', actionType: 'bash-command', toolName: 'Bash', expiresAt: 0,
+      details: { toolName: 'Bash', command: 'ls' } } });
+    expect(await page!.$eval('#runs-badge', (e) => e.classList.contains('hidden'))).toBe(false);
+    await send({ type: 'permissionDismissed', payload: { requestIds: ['perm_r2'] } });
+    expect(await page!.$eval('#runs-badge', (e) => e.classList.contains('hidden'))).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('draining a queued message does not eat a half-typed draft', async () => {
+    await send({ type: 'responseStarted' });
+    await page!.fill('#message-input', 'queue this one');
+    await page!.keyboard.press('Tab');
+    await page!.fill('#message-input', 'a draft I was still writing');
+    await send({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'ok' } } });
+    expect(await page!.$eval('#message-input', (e) => (e as HTMLTextAreaElement).value))
+      .toBe('a draft I was still writing');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the Changes badge counts before the dock is ever opened', async () => {
+    await page!.evaluate(() => document.getElementById('changes-dock')!.classList.add('hidden'));
+    await send({ type: 'sessionChanges', payload: { available: true, files: [
+      { path: 'a.ts', added: 1, removed: 0, status: 'M' },
+      { path: 'b.ts', added: 2, removed: 0, status: 'A' },
+    ] } });
+    expect(await page!.$eval('#changes-badge', (e) => e.textContent)).toBe('2');
+    expect(await page!.$eval('#changes-badge', (e) => e.classList.contains('hidden'))).toBe(false);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a deleted file is not offered for opening', async () => {
+    await send({ type: 'sessionChanges', payload: { available: true, files: [
+      { path: 'gone.ts', added: 0, removed: 12, status: 'D' },
+    ] } });
+    await clearPosted();
+    await page!.evaluate(() => document.querySelector('.change-row')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect((await posted()).filter((m) => m.type === 'openFile').length).toBe(0);
+    expect(await page!.$eval('.change-row', (e) => e.getAttribute('data-openable'))).toBe('0');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the autonomous feed goes above the work area, not into its row', async () => {
+    await send({ type: 'autonomousDecision', payload: { safetyLevel: 'safe', description: 'read a file' } });
+    const parentId = await page!.$eval('#autonomous-decision-feed', (e) => e.parentElement?.id ?? '');
+    expect(parentId).toBe('app');
+    const before = await page!.evaluate(() => {
+      const feed = document.getElementById('autonomous-decision-feed')!;
+      const wa = document.getElementById('workarea')!;
+      return feed.compareDocumentPosition(wa) & Node.DOCUMENT_POSITION_FOLLOWING;
+    });
+    expect(before).toBeTruthy();
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {

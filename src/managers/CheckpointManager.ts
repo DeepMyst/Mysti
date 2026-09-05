@@ -267,7 +267,16 @@ export class CheckpointManager {
   private async _diffSinceImpl(commit: string): Promise<ShadowFileChange[] | null> {
     try {
       await this.ensureRepo();
-      await this._runGit(['add', '-A']);
+      // Same preconditions `_snapshotImpl` observes before it stages. A stale
+      // index.lock makes `add -A` fail, and an over-cap workspace makes it
+      // expensive — and this runs on every landed turn now, not just when the
+      // dock is opened. Returning null degrades to "no Changes dock", which is
+      // the honest outcome; presenting a half-staged index as ground truth is
+      // not.
+      await this._clearStaleLock();
+      if (await this._overFileCap()) { return null; }
+      const staged = await this._runGit(['add', '-A']);
+      if (staged.code !== 0) { return null; }
       const numstat = await this._runGit(
         ['diff', '--numstat', '--no-renames', '-z', '--cached', commit, '--']);
       if (numstat.code !== 0) { return null; }

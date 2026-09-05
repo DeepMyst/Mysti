@@ -3610,13 +3610,14 @@
         });
       }
 
-      // Popup autonomy dropdown
-      var popupAutonomySelect = document.getElementById('popup-autonomy-select');
-      if (popupAutonomySelect) {
-        popupAutonomySelect.addEventListener('change', function() {
-          setAutonomyLevel(popupAutonomySelect.value);
-        });
-      }
+      // Plan 28 Phase 1 note: a second `change` listener used to be bound here,
+      // against an id that did not exist in index.html at the time — dead code.
+      // Moving the autonomy control into the trust popup gave that id an
+      // element, which made the dead listener live and fired setAutonomyLevel
+      // TWICE per pick. The second call recorded `previousAutonomyLevel =
+      // 'autonomous'`, so cancelling the confirmation modal restored the UI to
+      // the very state the user had just declined. `autonomySelect` above is
+      // the single binding.
 
       if (autonomousConfirmBtn) {
         autonomousConfirmBtn.addEventListener('click', function() {
@@ -4033,6 +4034,7 @@
           var crow = e.target && e.target.closest ? e.target.closest('.change-row') : null;
           if (crow) {
             e.preventDefault();
+            if (crow.getAttribute('data-openable') !== '1') { return; }
             postMessageWithPanelId({ type: 'openFile', payload: { path: crow.getAttribute('data-path') } });
           }
         });
@@ -4916,6 +4918,11 @@
             // Plan 28 Phase 2: the turn landed, so send whatever was lined up
             // behind it. `requestCancelled` deliberately does NOT do this.
             drainQueue();
+            // Plan 28 Phase 4: a turn is exactly when files change, so refresh
+            // the Changes model now. Without this the header count only ever
+            // appeared AFTER opening the dock — a badge that advertises nothing
+            // until you look is not a badge — and an open dock went stale.
+            requestChanges();
             break;
           case 'contextWindowInfo':
             // Update context window size for the current model
@@ -5626,8 +5633,18 @@
                 feedContainer.id = 'autonomous-decision-feed';
                 feedContainer.style.maxHeight = '120px';
                 feedContainer.style.overflowY = 'auto';
+                // Plan 28 Phase 7: `#messages` now lives inside `#workarea`,
+                // which is a flex ROW at >=900px so a dock can sit beside the
+                // conversation. Inserting before #messages would therefore make
+                // this feed a third COLUMN. It belongs above the whole work
+                // area, which is where it visually was.
+                var workarea = document.getElementById('workarea');
                 var messagesContainer = document.getElementById('messages');
-                if (messagesContainer) messagesContainer.parentNode.insertBefore(feedContainer, messagesContainer);
+                if (workarea && workarea.parentNode) {
+                  workarea.parentNode.insertBefore(feedContainer, workarea);
+                } else if (messagesContainer) {
+                  messagesContainer.parentNode.insertBefore(feedContainer, messagesContainer);
+                }
               }
               var card = document.createElement('div');
               card.className = 'autonomous-decision-card' + (payload.safetyLevel === 'blocked' ? ' blocked' : payload.safetyLevel === 'caution' ? ' caution' : '');
@@ -9347,9 +9364,9 @@
               title: buildPermissionQuestion ? buildPermissionQuestion(p, null) : 'Permission needed',
               detail: 'waiting for you' });
             break;
-          case 'permissionResult':
           case 'permissionDismissed':
-            runDrop('perm:' + (p.id || p.requestId));
+            // {requestIds: [...]} — superseded gates, dropped in bulk.
+            (p.requestIds || []).forEach(function(id) { runDrop('perm:' + id); });
             break;
           case 'permissionExpired':
             runFinish('perm:' + (p.id || p.requestId), { ok: false, detail: 'expired' });
@@ -9463,6 +9480,11 @@
 
       function stallTick() {
         if (!state.isLoading) { return; }
+        // The backend is SUPPOSED to be quiet while it waits on a human. An
+        // open permission card or an unanswered question is not a stall, and
+        // saying "nothing for 90s" next to a card asking for a decision blames
+        // the agent for doing the right thing.
+        if (runsIn('needs').length > 0) { noteStreamActivity(); return; }
         if (Date.now() - lastStreamAt < STALL_AFTER_MS) { return; }
         if (document.getElementById('stall-card')) { return; }
 
@@ -9688,7 +9710,11 @@
             ? '<span class="change-by">binary</span>'
             : '<span class="change-stat"><span class="plus">+' + f.added + '</span> ' +
               '<span class="minus">&minus;' + f.removed + '</span></span>';
-          return '<div class="change-row" data-path="' + cssAttr(f.path) + '" data-mine="' + (isMine ? '1' : '0') + '">' +
+          // A deleted file has nothing to open; posting `openFile` for one
+          // reaches a handler with no error path and rejects unhandled.
+          var openable = f.status !== 'D';
+          return '<div class="change-row' + (openable ? '' : ' not-openable') + '" data-path="' + cssAttr(f.path) +
+                 '" data-mine="' + (isMine ? '1' : '0') + '" data-openable="' + (openable ? '1' : '0') + '">' +
                    '<span class="change-status">' + escapeHtml(f.status) + '</span>' +
                    '<span class="change-path"><bdi><span class="change-dir">' + escapeHtml(dir) + '</span>' +
                      escapeHtml(base) + '</bdi></span>' +
@@ -9775,8 +9801,18 @@
         if (state.isLoading || state.queue.length === 0) return;
         var next = state.queue.shift();
         renderQueue();
+        // Phase 2 made the composer live for the whole turn, so by the time a
+        // queued item drains there may be a HALF-TYPED DRAFT sitting in it.
+        // sendMessage reads and clears inputEl, so the draft is saved across
+        // the send and put back — draining must never cost the user a sentence
+        // they were in the middle of.
+        var draft = inputEl.value;
         inputEl.value = next.text;
         sendMessage();
+        if (draft) {
+          inputEl.value = draft;
+          autoResizeTextarea();
+        }
       }
 
       function sendMessage() {
@@ -11141,7 +11177,15 @@
             return; // Backend will handle expiration
           }
 
-          timerEl.textContent = isSemiAuto
+          // Plan 28 Phase 7: reuse `permissionTimerText` rather than
+          // re-deriving the label here. This tick used to write a bare
+          // countdown, so the card said "auto-ACCEPTS in 30s" for exactly one
+          // second and then quietly dropped the only part that told the user
+          // which way the clock falls.
+          var pending = state.pendingPermissions.get(requestId);
+          timerEl.textContent = pending
+            ? permissionTimerText(pending, remaining)
+            : isSemiAuto
             ? 'AI decides in ' + formatTimeRemaining(remaining)
             : formatTimeRemaining(remaining);
           timerEl.className = 'permission-timer ' +
@@ -11152,6 +11196,13 @@
       function handlePermissionAction(requestId, action) {
         var card = document.querySelector('.permission-card[data-id="' + requestId + '"]');
         if (!card) return;
+
+        // Plan 28 Phase 3: this card is no longer waiting on anyone. The
+        // extension's `permissionResult` reports {action, allowed} and never
+        // says WHICH request, so the dock has to be told here, where the id is
+        // actually known — otherwise "Needs you" keeps counting a question the
+        // user has already answered.
+        runDrop('perm:' + requestId);
 
         // Update visual state
         card.classList.remove('pending');
