@@ -1063,6 +1063,31 @@ which needs the clamp extended to a boolean and an enum. Listed in 21.6c.
 13. Lint debt, non-blocking by design: src 89 (84 `no-explicit-any`); ~100 more test-side `any` outside the lint globs. CI lint stays `continue-on-error` until 0.
 14. **Never run: the interactive F5 smoke matrix (Plan 23 B3).** The coordinator native tool-calling loop and the MCP `mcptool` path have no live-account exercise on record — across ~130 commits and three fix rounds. **This is the single largest remaining unknown.**
 
+## 21.7 Committed and merged (2026-09-05, user: "consider my review done")
+
+The working tree was committed in **six concern-sliced commits** (your 42 untouched in-flight files first, so
+Plan 27 sits on top of the work it audited), then **`main` was merged** and the merge verified the way the
+runbook demanded — semantically, not by exit code:
+
+| Commit | Content |
+|---|---|
+| `391781f` | chore: snapshot of in-flight Plan 25/26 work — 42 files byte-identical to the pre-audit snapshot |
+| `e19d687` | docs(plan-27) — this document |
+| `c5a1d0e` | chore(release): CI, package-shape, `.vscodeignore`, `package.json` 0.5.1 + capabilities + scopes, CHANGELOG |
+| `a7dfbde` | fix(webview): wizard exit, `scrollToBottom`, diff before approval, dead `setInputValue` case, lint pass |
+| `e4c67d4` | fix(providers): Codex history, Stop/crash, Windows gate + shell args, prompt fencing, undeclared keys, SSRF wiring |
+| `e5f8c22` | fix(core): trust-root TOCTOU, store resilience, settings clamp, canvas pins, SSRF policy |
+| `5966ea3` | **Merge `main`** — all 12 symbol counts for #43/#48/#49 present, all 4 removal counterparts absent; one add/add conflict resolved as a union (git had factored the shared `bridge.dispose(); }); });` suffix out of both halves — restored to each) |
+| `ff788f3` | test(canvas): a **pre-existing 1-in-2 cleanup race** surfaced on the first merged-tree run (`ENOTEMPTY` — floated `void store.save()` vs `rmSync`); tracked and awaited |
+
+`main` is fully contained (`0/137`). **59 commits on no remote, nothing published.** Bundle refreshed and
+verified: `mysti-merged-ff788f3.bundle` (48 MB, in the session scratchpad — **move it off this machine**).
+`pre-merge-backup` is a named ref at `e5f8c22` if the merge ever needs to be re-examined.
+
+**Final automatic pass in flight** (six lanes: coordinator-card content, canvas apply-time pins, trust
+visibility, clamp-lower-only + parity shapes, publish-review compliance, store residuals) — results in
+§21.8 when its gate lands.
+
 ## 22. The branch decision (publish-safety review, 8 agents)
 
 **`DeepMyst/Mysti` is PUBLIC** (1,137 stars, 55 forks). A dev branch there would be public — visibility is
