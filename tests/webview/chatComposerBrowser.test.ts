@@ -295,3 +295,94 @@ describe('Plan 28 Phase 2 — the composer stays live', () => {
     expect(pageErrors).toEqual([]);
   });
 });
+
+describe('Plan 28 Phase 3 — the Runs dock', () => {
+  const rows = () => page!.$$eval('#runs-list .runs-row',
+    (els) => els.map((e) => ({
+      title: e.querySelector('.runs-row-title')?.textContent ?? '',
+      state: e.getAttribute('data-state'),
+    })));
+  const badge = () => page!.$eval('#runs-badge',
+    (e) => ({ hidden: e.classList.contains('hidden'), text: e.textContent }));
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('starts closed, with no badge', async () => {
+    expect(await page!.$eval('#runs-dock', (e) => e.classList.contains('hidden'))).toBe(true);
+    expect((await badge()).hidden).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('lists work from four different producers at once', async () => {
+    await send({ type: 'responseStarted' });
+    await send({ type: 'jobStarted', payload: { jobId: 'j1', title: 'full test suite' } });
+    await send({ type: 'subAgentStarted', payload: { agentId: 'openai-codex' } });
+    await send({ type: 'brainstormStarted', payload: { agents: ['claude-code', 'openai-codex'], strategy: 'red-team' } });
+
+    await page!.click('#runs-btn');
+    expect(await page!.$eval('#runs-dock', (e) => e.classList.contains('hidden'))).toBe(false);
+    // Opens on Working, because nothing needs a human yet.
+    expect(await page!.$eval('.runs-tab.active', (e) => e.getAttribute('data-runs-tab'))).toBe('working');
+    const titles = (await rows()).map((r) => r.title);
+    expect(titles).toContain('This turn');
+    expect(titles).toContain('full test suite');
+    expect(titles).toContain('Brainstorm');
+    expect(titles.length).toBeGreaterThanOrEqual(4);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('swaps in for the transcript rather than floating over it', async () => {
+    expect(await page!.$eval('#messages', (e) => getComputedStyle(e).display)).toBe('none');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('badges the header the moment something needs a human', async () => {
+    await send({ type: 'permissionRequest', payload: {
+      id: 'perm_1', toolName: 'Bash', expiresAt: 0, details: { command: 'rm -rf build' } } });
+    const b = await badge();
+    expect(b.hidden).toBe(false);
+    expect(b.text).toBe('1');
+    await page!.click('.runs-tab[data-runs-tab="needs"]');
+    const needs = await rows();
+    expect(needs.length).toBe(1);
+    expect(needs[0].state).toBe('needs');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('clears it when the permission is answered', async () => {
+    await send({ type: 'permissionResult', payload: { id: 'perm_1' } });
+    expect((await badge()).hidden).toBe(true);
+    expect(await rows()).toEqual([]);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('moves finished work to Done with an outcome', async () => {
+    await send({ type: 'jobComplete', payload: { jobId: 'j1' } });
+    await send({ type: 'subAgentComplete', payload: { agentId: 'openai-codex', hasError: true } });
+    await page!.click('.runs-tab[data-runs-tab="done"]');
+    const done = await rows();
+    expect(done.map((r) => r.title)).toContain('full test suite');
+    expect(await page!.$$eval('#runs-list .runs-row-mark.ok', (e) => e.length)).toBeGreaterThanOrEqual(1);
+    expect(await page!.$$eval('#runs-list .runs-row-mark.bad', (e) => e.length)).toBeGreaterThanOrEqual(1);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Ctrl+Shift+R opens on whatever needs you', async () => {
+    await page!.keyboard.press('Escape');                     // close
+    expect(await page!.$eval('#runs-dock', (e) => e.classList.contains('hidden'))).toBe(true);
+    await send({ type: 'askUserQuestion', payload: {
+      toolCallId: 'q1', questions: [{ question: 'Per-request or per-session?' }] } });
+    await page!.keyboard.press('Control+Shift+R');
+    expect(await page!.$eval('#runs-dock', (e) => e.classList.contains('hidden'))).toBe(false);
+    // Not Working — it opened on the tab that has something waiting.
+    expect(await page!.$eval('.runs-tab.active', (e) => e.getAttribute('data-runs-tab'))).toBe('needs');
+    expect((await rows())[0].title).toBe('A question for you');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a landed turn clears the question it was blocked on', async () => {
+    await send({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'ok' } } });
+    expect((await badge()).hidden).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Escape closes the dock and restores the transcript', async () => {
+    await page!.keyboard.press('Escape');
+    expect(await page!.$eval('#runs-dock', (e) => e.classList.contains('hidden'))).toBe(true);
+    expect(await page!.$eval('#messages', (e) => getComputedStyle(e).display)).not.toBe('none');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 20000);
+});

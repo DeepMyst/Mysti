@@ -378,6 +378,12 @@
         // for queued intent nobody has committed to yet.
         queue: [],
         queueSeq: 0,
+        // Plan 28 Phase 3: the Runs dock's model. `runsById` is the record,
+        // `runOrder` preserves first-seen order so the list does not jump
+        // around as entries change state.
+        runsById: {},
+        runOrder: [],
+        runsTab: 'working',
         // Track previous level for cancel/revert
         previousAutonomyLevel: 'manual',
         // Agent configuration state (per-conversation)
@@ -3867,6 +3873,26 @@
           }
         });
 
+        // Plan 28 Phase 3 — Runs dock wiring.
+        var runsBtn = document.getElementById('runs-btn');
+        if (runsBtn) { runsBtn.addEventListener('click', function() { toggleRunsDock(); }); }
+        document.addEventListener('click', function(e) {
+          var tab = e.target && e.target.closest ? e.target.closest('.runs-tab') : null;
+          if (tab) { e.preventDefault(); setRunsTab(tab.getAttribute('data-runs-tab')); }
+        });
+        document.addEventListener('keydown', function(e) {
+          // Ctrl/Cmd+Shift+R opens the dock on whatever most deserves attention.
+          if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'R' || e.key === 'r')) {
+            e.preventDefault();
+            toggleRunsDock();
+            return;
+          }
+          if (e.key === 'Escape') {
+            var dock = document.getElementById('runs-dock');
+            if (dock && !dock.classList.contains('hidden')) { e.preventDefault(); toggleRunsDock(false); }
+          }
+        });
+
         // Plan 28 Phase 1: Shift+Tab cycles the rung without opening anything.
         // Scoped to the composer and the panel background so ordinary reverse-
         // tab navigation still works inside the settings panel and the popup.
@@ -4612,6 +4638,10 @@
       });
 
       function handleMessage(message) {
+        // Plan 28 Phase 3: keep the Runs dock in step. Deliberately BEFORE the
+        // switch and outside it, so adding a run kind never means editing the
+        // producer that draws it.
+        try { observeRun(message); } catch (err) { console.warn('[Mysti Webview] runs observer:', err); }
         switch (message.type) {
           case 'initialState':
             initializeState(message.payload);
@@ -8995,6 +9025,215 @@
           showToast(payload.undone ? 'Rewind undone.' : 'Code rewound to checkpoint.', 'info');
         } else if (payload.reason && payload.reason !== 'cancelled') {
           showToast('Rewind failed: ' + payload.reason, 'error');
+        }
+      }
+
+      // ======================================================================
+      // Plan 28 Phase 3 — the Runs dock
+      //
+      // Five things could already tell you something was happening, in five
+      // different shapes: sub-agent cards, the brainstorm stepper, coordinator
+      // nodes, background job cards and sticky todos. None of them answered the
+      // only question that matters mid-run — "what is waiting on ME?".
+      //
+      // This is a VIEW, not a refactor. `observeRun` sits at the top of
+      // handleMessage and reads the same messages the producers consume; not
+      // one of them was modified. That is deliberate: the producers own how a
+      // run RENDERS in the transcript, this owns whether it is listed.
+      // ======================================================================
+
+      var RUN_STATES = ['needs', 'working', 'done'];
+
+      function runUpsert(id, patch) {
+        var e = state.runsById[id];
+        if (!e) {
+          e = state.runsById[id] = { id: id, startedAt: Date.now(), state: 'working' };
+          state.runOrder.push(id);
+        }
+        for (var k in patch) { if (Object.prototype.hasOwnProperty.call(patch, k)) { e[k] = patch[k]; } }
+        if (e.state === 'done' && !e.endedAt) { e.endedAt = Date.now(); }
+        renderRuns();
+        return e;
+      }
+
+      function runFinish(id, patch) {
+        if (!state.runsById[id]) { return; }
+        runUpsert(id, Object.assign({ state: 'done' }, patch || {}));
+      }
+
+      function runDrop(id) {
+        if (!state.runsById[id]) { return; }
+        delete state.runsById[id];
+        state.runOrder = state.runOrder.filter(function(x) { return x !== id; });
+        renderRuns();
+      }
+
+      /** Every run currently in a given state, in first-seen order. */
+      function runsIn(st) {
+        return state.runOrder
+          .map(function(id) { return state.runsById[id]; })
+          .filter(function(e) { return e && e.state === st; });
+      }
+
+      /**
+       * The single hook. Reads messages already flowing to the producers and
+       * keeps the dock's model in step. Adding a run kind is a case here, not a
+       * change to whatever draws it in the transcript.
+       */
+      function observeRun(message) {
+        var p = (message && message.payload) || {};
+        switch (message && message.type) {
+          // The main turn is a run too — usually the only one.
+          case 'responseStarted':
+            runUpsert('turn', { kind: 'turn', title: 'This turn', agentId: state.settings.provider, state: 'working' });
+            break;
+          case 'responseComplete':
+            runFinish('turn', { ok: true });
+            // A question is answered by continuing the turn; nothing else
+            // reports that, so the turn landing is what clears it.
+            state.runOrder.slice().forEach(function(id) {
+              if (id.indexOf('auq:') === 0) { runDrop(id); }
+            });
+            break;
+          case 'requestCancelled':
+            runFinish('turn', { ok: false, detail: 'stopped' });
+            break;
+
+          case 'subAgentStarted':
+            runUpsert('sub:' + p.agentId, { kind: 'sub', agentId: p.agentId, state: 'working',
+              title: (getAgentDisplay(p.agentId) || {}).name || p.agentId, detail: 'sub-agent' });
+            break;
+          case 'subAgentStatus':
+            runUpsert('sub:' + p.agentId, { detail: p.status || p.text || 'working' });
+            break;
+          case 'subAgentComplete':
+            runFinish('sub:' + p.agentId, { ok: !p.hasError, detail: p.hasError ? 'failed' : 'done' });
+            break;
+          case 'subAgentError':
+            runFinish('sub:' + p.agentId, { ok: false, detail: p.error || 'failed' });
+            break;
+
+          case 'jobStarted':
+            runUpsert('job:' + p.jobId, { kind: 'job', state: 'working',
+              title: p.title || 'Background job', detail: 'running in background' });
+            break;
+          case 'jobProgress':
+            runUpsert('job:' + p.jobId, { detail: p.status || p.text || 'running in background' });
+            break;
+          case 'jobComplete':
+            runFinish('job:' + p.jobId, { ok: true, detail: 'done' });
+            break;
+          case 'jobError':
+            runFinish('job:' + p.jobId, { ok: false, detail: p.error || 'failed' });
+            break;
+          case 'jobCancelled':
+            runFinish('job:' + p.jobId, { ok: false, detail: 'cancelled' });
+            break;
+
+          case 'mystiStarted':
+            runUpsert('mysti', { kind: 'mysti', state: 'working',
+              title: 'Mysti coordinator', detail: p.brief || 'planning' });
+            break;
+          case 'mystiComplete':
+            runFinish('mysti', { ok: !p.cancelled, detail: p.cancelled ? 'cancelled' : 'done' });
+            break;
+          case 'mystiError':
+            runFinish('mysti', { ok: false, detail: p.error || 'failed' });
+            break;
+
+          case 'brainstormStarted':
+            runUpsert('brainstorm', { kind: 'brainstorm', state: 'working',
+              title: 'Brainstorm', detail: (p.agents || []).join(' + ') || (p.strategy || '') });
+            break;
+          case 'brainstormComplete':
+            runFinish('brainstorm', { ok: true, detail: 'synthesised' });
+            break;
+          case 'brainstormError':
+            runFinish('brainstorm', { ok: false, detail: p.error || 'failed' });
+            break;
+
+          // The two things that actually need a human.
+          case 'permissionRequest':
+            runUpsert('perm:' + p.id, { kind: 'permission', state: 'needs',
+              title: buildPermissionQuestion ? buildPermissionQuestion(p, null) : 'Permission needed',
+              detail: 'waiting for you' });
+            break;
+          case 'permissionResult':
+          case 'permissionDismissed':
+            runDrop('perm:' + (p.id || p.requestId));
+            break;
+          case 'permissionExpired':
+            runFinish('perm:' + (p.id || p.requestId), { ok: false, detail: 'expired' });
+            break;
+
+          case 'askUserQuestion':
+          case 'subAgentAskUserQuestion':
+            runUpsert('auq:' + (p.toolCallId || 'q'), { kind: 'question', state: 'needs',
+              agentId: p.agentId, title: 'A question for you',
+              detail: (p.questions && p.questions[0] && p.questions[0].question) || '' });
+            break;
+        }
+      }
+
+      function renderRuns() {
+        var badge = document.getElementById('runs-badge');
+        var needs = runsIn('needs').length;
+        if (badge) {
+          badge.textContent = String(needs);
+          badge.classList.toggle('hidden', needs === 0);
+        }
+        RUN_STATES.forEach(function(st) {
+          var c = document.querySelector('.runs-tab-count[data-count="' + st + '"]');
+          if (c) { c.textContent = String(runsIn(st).length); }
+        });
+
+        var list = document.getElementById('runs-list');
+        if (!list) { return; }
+        var rows = runsIn(state.runsTab);
+        var empty = document.getElementById('runs-empty');
+        if (empty) { empty.classList.toggle('hidden', rows.length > 0); }
+
+        list.innerHTML = rows.map(function(e) {
+          var d = e.agentId ? (getAgentDisplay(e.agentId) || {}) : {};
+          var av = d.logo
+            ? '<img class="runs-row-logo" src="' + cssAttr(d.logo) + '" alt="" />'
+            : '<span class="runs-row-glyph">' + escapeHtml((d.shortId || e.kind || '?').slice(0, 1).toUpperCase()) + '</span>';
+          var when = (e.state === 'done' && e.endedAt) ? formatTimeAgo(e.endedAt) : '';
+          var mark = e.state === 'done'
+            ? (e.ok === false ? '<span class="runs-row-mark bad">&#10005;</span>'
+                              : '<span class="runs-row-mark ok">&#10003;</span>')
+            : (e.state === 'needs' ? '<span class="runs-row-mark needs">!</span>' : '<span class="runs-row-spin"></span>');
+          return '<div class="runs-row" data-run="' + cssAttr(e.id) + '" data-state="' + cssAttr(e.state) + '">' +
+                   av +
+                   '<span class="runs-row-body">' +
+                     '<span class="runs-row-title">' + escapeHtml(e.title || e.id) + '</span>' +
+                     (e.detail ? '<span class="runs-row-detail">' + escapeHtml(String(e.detail)) + '</span>' : '') +
+                   '</span>' +
+                   '<span class="runs-row-meta">' + escapeHtml(when) + '</span>' + mark +
+                 '</div>';
+        }).join('');
+      }
+
+      function setRunsTab(tab) {
+        if (RUN_STATES.indexOf(tab) < 0) { return; }
+        state.runsTab = tab;
+        document.querySelectorAll('.runs-tab').forEach(function(b) {
+          b.classList.toggle('active', b.getAttribute('data-runs-tab') === tab);
+        });
+        renderRuns();
+      }
+
+      /** Open on whatever most deserves attention. */
+      function toggleRunsDock(force) {
+        var dock = document.getElementById('runs-dock');
+        var app = document.getElementById('app');
+        if (!dock || !app) { return; }
+        var open = typeof force === 'boolean' ? force : dock.classList.contains('hidden');
+        dock.classList.toggle('hidden', !open);
+        app.classList.toggle('runs-open', open);
+        if (open) {
+          var first = RUN_STATES.filter(function(st) { return runsIn(st).length > 0; })[0];
+          setRunsTab(first || 'working');
         }
       }
 

@@ -146,6 +146,8 @@ Unattended stops being a fifth mode and becomes a **duration** granted on Auto o
 
 **Guardrail.** Build the dock as a *view* over existing events first. Do not refactor the five producers in the same phase.
 
+**SHIPPED.** The hook is a single `observeRun(message)` at the top of `handleMessage`, before the switch — so adding a run kind is a case there, never an edit to whatever draws it in the transcript. The diff is **purely additive (0 deletions)** and all five producers are byte-identical; a test asserts it. Covered by ten browser tests. Pending F5, like every webview change in this plan.
+
 ---
 
 ### Phase 4 — The Changes dock
