@@ -231,3 +231,30 @@ describe('the setup dismissal latch is released by every request path', () => {
     expect(CHAT_JS.slice(Math.max(0, at - 300), at)).not.toContain('rearmSetupOverlay();');
   });
 });
+
+describe('a setup run that fails always says so', () => {
+  /*
+   * The panel's Retry button disables itself on click to stop two `npm install
+   * -g` runs racing, and is revived only by a terminal message. So a setup run
+   * that rejects WITHOUT posting one leaves the button dead until the webview
+   * is reloaded — which is the loose end round ten accepted knowingly. The fix
+   * belongs on the extension side: every entry point reports.
+   */
+  const PROVIDER = fs.readFileSync(path.join(ROOT, 'src/providers/ChatViewProvider.ts'), 'utf8');
+
+  it('_handleRetrySetup catches and posts setupFailed', () => {
+    const at = PROVIDER.indexOf('private async _handleRetrySetup(');
+    expect(at).toBeGreaterThan(-1);
+    const body = PROVIDER.slice(at, at + 1400);
+    expect(body).toContain('try {');
+    expect(body).toContain("type: 'setupFailed'");
+  });
+
+  it('the startProviderSetup entry point catches and reports a failed step', () => {
+    const at = PROVIDER.indexOf("case 'startProviderSetup':");
+    expect(at).toBeGreaterThan(-1);
+    const body = PROVIDER.slice(at, at + 1400);
+    expect(body).toContain('try {');
+    expect(body).toContain("step: 'failed'");
+  });
+});

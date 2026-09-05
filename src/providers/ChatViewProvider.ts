@@ -2096,12 +2096,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this._handleRequestWizardStatus(msg.panelId);
         break;
 
-      case 'startProviderSetup':
-        await this._handleStartProviderSetup(
-          msg.payload as { providerId: string; autoInstall?: boolean },
-          msg.panelId
-        );
+      case 'startProviderSetup': {
+        // Plan 28 Phase 7: same reason as `_handleRetrySetup`. This has no
+        // try/catch of its own, and a setup run that rejects without saying so
+        // leaves the wizard sitting on "Checking current status…" for good.
+        const spsPayload = msg.payload as { providerId: string; autoInstall?: boolean };
+        try {
+          await this._handleStartProviderSetup(spsPayload, msg.panelId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error('[Mysti] Provider setup failed:', message);
+          this._postToPanel(msg.panelId, {
+            type: 'providerSetupStep',
+            payload: {
+              providerId: spsPayload?.providerId,
+              step: 'failed',
+              progress: 0,
+              message: `Setup failed: ${message}`
+            }
+          });
+        }
         break;
+      }
 
       case 'selectAuthMethod':
         await this._handleSelectAuthMethod(
@@ -13000,7 +13016,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle retry setup request
    */
   private async _handleRetrySetup(providerId: string, panelId: string): Promise<void> {
-    await this._runAutoSetup(providerId, panelId);
+    // Plan 28 Phase 7. Neither this nor `SetupManager.setupProvider` had a
+    // try/catch, so a rejection out of discoverCli / autoInstallCli /
+    // checkAuthentication posted NOTHING back — the panel's Retry button, which
+    // disables itself on click to stop two `npm install -g` runs racing, then
+    // had no terminal message to revive it and stayed dead until the webview
+    // was reloaded. A setup run that fails must always say so.
+    try {
+      await this._runAutoSetup(providerId, panelId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[Mysti] Setup retry failed:', message);
+      this._postToPanel(panelId, {
+        type: 'setupFailed',
+        payload: {
+          providerId,
+          error: `Setup failed: ${message}`,
+          canRetry: true,
+          requiresManual: false
+        }
+      });
+    }
   }
 
   /**
