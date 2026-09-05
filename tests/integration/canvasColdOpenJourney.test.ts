@@ -38,11 +38,15 @@ describe('canvas cold-open journey (real store, temp workspace)', () => {
   let router: CanvasJobRouter;
   let posted: CanvasHostMessage[];
   let bridge: CanvasBridge;
+  /** Every save the bridge floats. Awaited before the temp root is removed —
+   *  a tmp+rename write landing between readdir and rmdir is ENOTEMPTY. */
+  let pending: Promise<unknown>[];
 
   const canvasDir = () => path.join(root, '.mysti', 'canvas');
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-cold-open-'));
+    pending = [];
     store = new ArtifactStore({ getRoot: () => root });
     posted = [];
     router = new CanvasJobRouter(() => {});
@@ -57,18 +61,21 @@ describe('canvas cold-open journey (real store, temp workspace)', () => {
       viewToken: () => TOKEN,
       approvalMode: () => 'auto',
       caps: () => [],
-      scheduleSave: () => { void store.save(artifact); },
+      scheduleSave: () => { pending.push(store.save(artifact)); },
       onAddScaffold: (scaffold) => {
         dispatchCanvasTool('scaffold_page', { scaffold }, {
           artifact, store, executor, jobId: 'j1', runId: 'human', approvalMode: 'auto',
         });
-        void store.save(artifact);
+        pending.push(store.save(artifact));
       },
       log: () => {},
     });
   });
 
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+  afterEach(async () => {
+    await Promise.allSettled(pending);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
 
   it('starts genuinely empty — nothing on disk, nothing to load', async () => {
     expect(artifact.pages).toHaveLength(0);
