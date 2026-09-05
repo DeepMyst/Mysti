@@ -3880,6 +3880,39 @@
           }
         });
 
+        // Plan 28 Phase 7 — the stall card's three ways out.
+        document.addEventListener('click', function(e) {
+          var b = e.target && e.target.closest ? e.target.closest('.stall-btn') : null;
+          if (!b) { return; }
+          e.preventDefault();
+          var action = b.getAttribute('data-stall');
+          var card = document.getElementById('stall-card');
+          if (card) { card.remove(); }
+          if (action === 'wait') { noteStreamActivity(); return; }
+          if (action === 'stop') { postMessageWithPanelId({ type: 'cancelRequest' }); return; }
+          if (action === 'hand') {
+            // Stop first, then re-ask the same question of a different agent —
+            // down the mention path, so nothing is retyped and no new route
+            // is invented.
+            var question = state.lastSentContent || '';
+            postMessageWithPanelId({ type: 'cancelRequest' });
+            if (!question) { showToast('Nothing to hand over \u2014 no question in flight.', 'error'); return; }
+            var anchor = document.getElementById('agent-select-btn');
+            var fake = document.createElement('div');
+            fake.className = 'message assistant';
+            fake.setAttribute('data-provider', state.settings.provider || '');
+            fake.innerHTML = '<div class="message-content"></div>';
+            var q = document.createElement('div');
+            q.className = 'message user';
+            q.innerHTML = '<div class="message-content"></div>';
+            q.querySelector('.message-content').textContent = question;
+            messagesEl.appendChild(q); messagesEl.appendChild(fake);
+            showSecondOpinionMenu(anchor || b, fake);
+            q.remove(); fake.remove();
+            return;
+          }
+        });
+
         // Plan 28 Phase 6 — second opinion from any finished answer.
         document.addEventListener('click', function(e) {
           var act = e.target && e.target.closest ? e.target.closest('[data-second-opinion]') : null;
@@ -9165,8 +9198,18 @@
        * keeps the dock's model in step. Adding a run kind is a case here, not a
        * change to whatever draws it in the transcript.
        */
+      /** Message types that are evidence the BACKEND is still producing. */
+      var STREAM_ALIVE = {
+        responseChunk: 1, responseStarted: 1, toolUse: 1, toolResult: 1,
+        thinking: 1, subAgentChunk: 1, subAgentToolUse: 1, subAgentToolResult: 1,
+        subAgentStatus: 1, jobProgress: 1, jobToolUse: 1, jobToolResult: 1,
+        mystiEvent: 1, mystiDelegateTrace: 1, brainstormAgentChunk: 1,
+        brainstormDiscussionChunk: 1, brainstormSynthesisChunk: 1, permissionRequest: 1
+      };
+
       function observeRun(message) {
         var p = (message && message.payload) || {};
+        if (message && STREAM_ALIVE[message.type]) { noteStreamActivity(); }
         switch (message && message.type) {
           // The main turn is a run too — usually the only one.
           case 'responseStarted':
@@ -9334,6 +9377,66 @@
           var first = RUN_STATES.filter(function(st) { return runsIn(st).length > 0; })[0];
           setRunsTab(first || 'working');
         }
+      }
+
+      // ======================================================================
+      // Plan 28 Phase 7 — a silent backend says so
+      //
+      // Fifteen backends means fifteen ways to go quiet, and nothing told you
+      // the difference between a long think and a dead process. This watches
+      // the gap since the last stream event while a turn is running, and after
+      // STALL_AFTER_MS puts up a card that says what it was doing and offers a
+      // way out. It never cancels anything on its own.
+      // ======================================================================
+
+      var STALL_AFTER_MS = 90000;
+      var stallTimer = null;
+      var lastStreamAt = 0;
+
+      /** Any sign of life from the backend resets the clock. */
+      function noteStreamActivity() {
+        lastStreamAt = Date.now();
+        var card = document.getElementById('stall-card');
+        if (card) { card.remove(); }
+      }
+
+      function stallTick() {
+        if (!state.isLoading) { return; }
+        if (Date.now() - lastStreamAt < STALL_AFTER_MS) { return; }
+        if (document.getElementById('stall-card')) { return; }
+
+        var working = runsIn('working')[0];
+        var what = working && working.detail ? String(working.detail) : '';
+        var secs = Math.round((Date.now() - lastStreamAt) / 1000);
+        var card = document.createElement('div');
+        card.className = 'stall-card';
+        card.id = 'stall-card';
+        card.innerHTML =
+          '<div class="stall-head">Nothing from ' +
+            escapeHtml((getAgentDisplay(state.settings.provider) || {}).name || 'the agent') +
+            ' for ' + secs + 's</div>' +
+          '<div class="stall-body">' +
+            escapeHtml(what ? 'Last thing it reported: ' + what + '.' : 'It has not reported anything since the turn began.') +
+            ' A long think looks like this too &mdash; nothing has been cancelled.' +
+          '</div>' +
+          '<div class="stall-actions">' +
+            '<button class="stall-btn" data-stall="wait">Keep waiting</button>' +
+            '<button class="stall-btn" data-stall="stop">Stop</button>' +
+            '<button class="stall-btn" data-stall="hand">Hand to another agent</button>' +
+          '</div>';
+        if (messagesEl) { messagesEl.appendChild(card); scrollToBottom(); }
+      }
+
+      function startStallWatch() {
+        noteStreamActivity();
+        if (stallTimer) { clearInterval(stallTimer); }
+        stallTimer = setInterval(stallTick, 5000);
+      }
+
+      function stopStallWatch() {
+        if (stallTimer) { clearInterval(stallTimer); stallTimer = null; }
+        var card = document.getElementById('stall-card');
+        if (card) { card.remove(); }
       }
 
       // ======================================================================
@@ -11851,6 +11954,7 @@
       function setProcessing(on) {
         state.isLoading = on;
         syncComposerAffordance();
+        if (on) { startStallWatch(); } else { stopStallWatch(); }
         // The composer input itself is NEVER disabled — Plan 28 Phase 2. Only
         // the send button changes, because there is now something else to do
         // with a keystroke while a turn is running.
@@ -12237,6 +12341,14 @@
         contentSegmentIndex = 0;
       }
 
+      /** A rough token count for N characters. Rough on purpose: ~4 chars per
+       *  token is the usual approximation and the label says "~". */
+      function approxTokenLabel(chars) {
+        var t = Math.round(chars / 4);
+        if (t >= 1000) { return '~' + (t / 1000).toFixed(t >= 10000 ? 0 : 1) + 'k'; }
+        return '~' + t;
+      }
+
       function updateContext(context) {
         state.context = context || [];
         var panel = document.getElementById('context-panel');
@@ -12254,6 +12366,11 @@
         items.innerHTML = state.context.map(function(item) {
           var on = item.enabled !== false;
           if (on) { activeCount++; approxChars += (item.content ? item.content.length : 0); }
+          // Plan 28 Phase 7: what this row costs, on the row. Trimming context
+          // should be a decision you can see rather than a guess — and the
+          // aggregate was already being computed here, just never shown per item.
+          var itemChars = item.content ? item.content.length : 0;
+          var itemCost = itemChars ? approxTokenLabel(itemChars) : '';
           var name = getFileName(item.path) +
             (item.type === 'selection' ? ':' + (item.startLine || '') + '-' + (item.endLine || '') : '');
           var icon = item.type === 'selection' ? '⌷' : (item.type === 'folder' ? '📁' : '📄');
@@ -12263,6 +12380,8 @@
               (on ? '●' : '○') + '</button>' +
             '<span class="context-item-icon">' + icon + '</span>' +
             '<span class="context-item-path" title="' + escapeHtml(item.path) + '">' + escapeHtml(name) + '</span>' +
+            (itemCost ? '<span class="context-item-cost" title="Approximate tokens this row adds to the prompt">' +
+              escapeHtml(itemCost) + '</span>' : '') +
             '<button class="context-item-remove" data-id="' + item.id + '" title="Remove from context">✕</button>' +
             '</div>';
         }).join('');
@@ -12274,8 +12393,7 @@
         }
         var tokensEl = document.getElementById('context-tokens');
         if (tokensEl) {
-          var tok = Math.round(approxChars / 4);
-          tokensEl.textContent = tok > 0 ? '~' + (tok >= 1000 ? (tok / 1000).toFixed(1) + 'k' : tok) + ' tok' : '';
+          tokensEl.textContent = approxChars > 0 ? approxTokenLabel(approxChars) + ' tok' : '';
         }
 
         items.querySelectorAll('.context-item-remove').forEach(function(btn) {

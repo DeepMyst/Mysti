@@ -9269,3 +9269,38 @@
       /* The suggestions rail belongs to the conversation, not the dock. */
       #app.dock-open .quick-actions-container { display: none; }
     }
+
+    /* Plan 28 Phase 7 — per-row context cost, and the silence card. */
+    .context-item-cost {
+      font-size: 10px;
+      color: var(--mysti-dim);
+      font-variant-numeric: tabular-nums;
+      flex: none;
+      padding: 0 4px;
+    }
+    .context-item.off .context-item-cost { opacity: .5; text-decoration: line-through; }
+
+    .stall-card {
+      margin: 12px 0;
+      padding: 11px 13px;
+      border: 1px solid var(--mysti-warn);
+      border-radius: 8px;
+      background: var(--vscode-editor-background);
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+    .stall-head { font-size: 12px; color: var(--mysti-fg); }
+    .stall-body { font-size: 11px; color: var(--mysti-dim); line-height: 1.55; }
+    .stall-actions { display: flex; gap: 5px; flex-wrap: wrap; }
+    .stall-btn {
+      padding: 3px 9px;
+      border-radius: 4px;
+      border: 1px solid var(--mysti-border);
+      background: transparent;
+      color: var(--mysti-dim);
+      font-size: 11px;
+      font-family: var(--vscode-font-family);
+      cursor: pointer;
+    }
+    .stall-btn:hover { color: var(--mysti-fg); border-color: var(--vscode-focusBorder); }

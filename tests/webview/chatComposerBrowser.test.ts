@@ -70,12 +70,7 @@ function bootPayload(): Record<string, unknown> {
   return boot;
 }
 
-async function boot(): Promise<void> {
-  const { chromium } = await import('playwright');
-  browser = await chromium.launch();
-  page = await browser.newPage();
-  page.on('pageerror', (err) => pageErrors.push(String(err)));
-
+function composeHtml(): string {
   let html = read('media/chat/index.html');
   // CSP is another suite's subject; strip it so inline injection is not the
   // thing under test here.
@@ -122,6 +117,16 @@ async function boot(): Promise<void> {
   html = html
     .replace('<script nonce="n" src="{{chatJsUri}}"></script>', () => `<script>${read('media/chat/chat.js')}</script>`)
     .replace('<script nonce="n" src="{{deskJsUri}}"></script>', () => `<script>${read('media/chat/desk.js')}</script>`);
+
+  return html;
+}
+
+async function boot(): Promise<void> {
+  const { chromium } = await import('playwright');
+  browser = await chromium.launch();
+  page = await browser.newPage();
+  page.on('pageerror', (err) => pageErrors.push(String(err)));
+  const html = composeHtml();
 
   // NOT `setContent`: Playwright implements it with `document.write`, which
   // re-parses the inlined libraries and chokes on their regex literals and
@@ -611,4 +616,99 @@ describe('Plan 28 Phase 6 — a team is a verb', () => {
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
     expect(pageErrors).toEqual([]);
   }, 20000);
+});
+
+describe('Plan 28 Phase 7 — context rows carry their own cost', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows what each row adds, and strikes it through when off', async () => {
+    await send({ type: 'contextUpdated', payload: [
+      { id: 'c1', type: 'file', path: '/repo/src/big.ts', content: 'x'.repeat(8000), enabled: true },
+      { id: 'c2', type: 'file', path: '/repo/src/off.ts', content: 'y'.repeat(400), enabled: false },
+    ] });
+    const costs = await page!.$$eval('.context-item-cost', (els) => els.map((e) => e.textContent));
+    expect(costs).toContain('~2.0k');   // 8000 chars / 4
+    expect(costs).toContain('~100');
+    // The disabled row still shows what it WOULD cost, struck through.
+    const offStruck = await page!.$eval('.context-item.off .context-item-cost',
+      (e) => getComputedStyle(e).textDecorationLine);
+    expect(offStruck).toContain('line-through');
+  }, 20000);
+});
+
+describe('Plan 28 Phase 7 — a silent backend says so', () => {
+  let page2: import('playwright').Page | undefined;
+
+  beforeAll(async () => {
+    if (CHROMIUM_UNAVAILABLE) { return; }
+    // Its own page, under a mocked clock: the threshold is 90 real seconds, and
+    // putting every other test in this file under a fake clock would break the
+    // ones that read real timestamps.
+    page2 = await browser!.newPage();
+    await page2.clock.install();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-stall-'));
+    const file = path.join(dir, 'chat.html');
+    fs.writeFileSync(file, composeHtml(), 'utf8');
+    await page2.goto(`file://${file}`, { waitUntil: 'load' });
+  }, 60000);
+
+  afterAll(async () => { await page2?.close(); });
+
+  const fire = (m: Record<string, unknown>) =>
+    page2!.evaluate((x) => { window.dispatchEvent(new MessageEvent('message', { data: x })); }, m);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('stays quiet while the backend is producing', async () => {
+    await fire({ type: 'responseStarted' });
+    await page2!.clock.fastForward('01:00');
+    await fire({ type: 'responseChunk', payload: { content: 'still going' } });
+    await page2!.clock.fastForward('01:00');
+    expect(await page2!.$('#stall-card')).toBeNull();
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('counts a long THINKING pass as alive', async () => {
+    // The case a stall detector must not get wrong: a model reasoning for two
+    // minutes streams `thinking` and nothing else. The first draft listed a
+    // type name that never existed, so this would have false-alarmed.
+    await fire({ type: 'thinking', payload: { content: 'still reasoning' } });
+    await page2!.clock.fastForward('01:00');
+    expect(await page2!.$('#stall-card')).toBeNull();
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('speaks up after ninety seconds of silence', async () => {
+    await page2!.clock.fastForward('02:00');
+    const card = await page2!.$('#stall-card');
+    expect(card).not.toBeNull();
+    const text = await page2!.textContent('#stall-card');
+    // It says a long think looks the same — it has not decided the turn is dead.
+    expect(text).toContain('A long think looks like this too');
+    expect(text).toContain('nothing has been cancelled');
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('offers keep-waiting, stop, and a hand-off', async () => {
+    const actions = await page2!.$$eval('.stall-btn', (els) => els.map((e) => e.getAttribute('data-stall')));
+    expect(actions).toEqual(['wait', 'stop', 'hand']);
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keep-waiting dismisses it and restarts the clock', async () => {
+    await page2!.click('.stall-btn[data-stall="wait"]');
+    expect(await page2!.$('#stall-card')).toBeNull();
+    await page2!.clock.fastForward('00:30');
+    expect(await page2!.$('#stall-card')).toBeNull();   // clock was reset
+    await page2!.clock.fastForward('02:00');
+    expect(await page2!.$('#stall-card')).not.toBeNull();
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('stop asks the extension to cancel, and nothing else does', async () => {
+    await page2!.evaluate(() => { (window as unknown as { __posted: unknown[] }).__posted.length = 0; });
+    await page2!.click('.stall-btn[data-stall="stop"]');
+    const posted = await page2!.evaluate(() => (window as unknown as { __posted: Array<{ type: string }> }).__posted);
+    expect(posted.filter((m) => m.type === 'cancelRequest').length).toBe(1);
+    expect(await page2!.$('#stall-card')).toBeNull();
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('disappears when the turn ends', async () => {
+    await fire({ type: 'responseStarted' });
+    await page2!.clock.fastForward('02:00');
+    expect(await page2!.$('#stall-card')).not.toBeNull();
+    await fire({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'done' } } });
+    expect(await page2!.$('#stall-card')).toBeNull();
+  }, 30000);
 });
