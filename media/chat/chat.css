@@ -9056,3 +9056,123 @@
       width: 14px; flex: none; text-align: center;
       font-size: 10px; font-weight: 700; color: var(--mysti-dim);
     }
+
+    /* ── Plan 28 Phase 5 — the chrome diet ────────────────────────────────
+       The status line went from ten segments to four: who and what model,
+       trust, context, spend. The six that left are NOT deleted — they stay in
+       the DOM, still synced by syncInlineSelectors, and the palette drives
+       them. Hiding rather than removing is what keeps the palette a router
+       over real controls instead of a second implementation of them. */
+    .input-status-line #slash-cmd-btn,
+    .input-status-line #tools-menu-btn,
+    .input-status-line #strategy-indicator,
+    .input-status-line #model-select-inline,
+    .input-status-line #mysti-model-btn,
+    .input-status-line #effort-select-inline { display: none !important; }
+
+    /* The overflow menu that took the eight header buttons. */
+    .overflow-menu {
+      position: absolute;
+      top: 38px;
+      right: 10px;
+      z-index: 10001;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 6px;
+      min-width: 44px;
+      border: 1px solid var(--vscode-widget-border, var(--mysti-border));
+      border-radius: 6px;
+      background: var(--vscode-editor-background);
+      box-shadow: 0 6px 20px rgba(0,0,0,.35);
+    }
+    .overflow-menu.hidden { display: none; }
+    .overflow-menu .icon-btn { width: 100%; justify-content: flex-start; }
+
+    /* ── the command palette ───────────────────────────────────────────── */
+    .palette {
+      position: fixed;
+      inset: 0;
+      z-index: 10002;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 48px 16px 16px;
+      /* Deliberately light: the conversation stays readable behind it. */
+      background: rgba(0, 0, 0, .28);
+    }
+    .palette.hidden { display: none; }
+    .palette-box {
+      width: 100%;
+      max-width: 460px;
+      max-height: 70vh;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--vscode-widget-border, var(--mysti-border));
+      border-radius: 8px;
+      background: var(--vscode-editor-background);
+      box-shadow: 0 16px 44px rgba(0,0,0,.5);
+      overflow: hidden;
+    }
+    .palette-search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--mysti-border);
+      color: var(--mysti-dim);
+      flex: none;
+    }
+    .palette-search input {
+      flex: 1 1 auto;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--mysti-fg);
+      font-family: var(--vscode-font-family);
+      font-size: 13px;
+    }
+    .palette-esc, .palette-key {
+      border: 1px solid var(--mysti-border);
+      border-radius: 3px;
+      padding: 0 4px;
+      font-size: 10px;
+      font-family: ui-monospace, Menlo, monospace;
+      color: var(--mysti-dim);
+    }
+    .palette-results { flex: 1 1 auto; overflow-y: auto; padding: 4px 0; }
+    .palette-group {
+      font-size: 10px;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      color: var(--mysti-dim);
+      font-weight: 600;
+      padding: 8px 12px 3px;
+    }
+    .palette-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 12px;
+      font-size: 12px;
+      color: var(--mysti-fg);
+      cursor: pointer;
+    }
+    .palette-item.selected { background: var(--vscode-list-activeSelectionBackground, var(--mysti-surface-2)); }
+    .palette-item:hover { background: var(--vscode-list-hoverBackground); }
+    .palette-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .palette-active { font-size: 10px; color: var(--mysti-ok); flex: none; }
+    .palette-hint {
+      font-size: 10px; color: var(--mysti-dim); flex: 0 1 auto;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%;
+    }
+    .palette-empty { padding: 12px; font-size: 12px; color: var(--mysti-dim); }
+    .palette-empty.hidden { display: none; }
+    .palette-foot {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px;
+      border-top: 1px solid var(--mysti-border);
+      font-size: 10px; color: var(--mysti-dim);
+      flex: none;
+    }
+    .palette-foot span:last-child { margin-left: auto; }

@@ -3880,6 +3880,48 @@
           }
         });
 
+        // Plan 28 Phase 5 — palette + overflow wiring.
+        var paletteInput = document.getElementById('palette-input');
+        if (paletteInput) {
+          paletteInput.addEventListener('input', function() { paletteIndex = 0; renderPalette(paletteInput.value); });
+          paletteInput.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowDown') { e.preventDefault(); paletteIndex = Math.min(paletteIndex + 1, paletteRows.length - 1); renderPalette(paletteInput.value); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); paletteIndex = Math.max(paletteIndex - 1, 0); renderPalette(paletteInput.value); }
+            else if (e.key === 'Enter') { e.preventDefault(); runPaletteSelection(); }
+            else if (e.key === 'Escape') { e.preventDefault(); togglePalette(false); }
+          });
+        }
+        document.addEventListener('click', function(e) {
+          var item = e.target && e.target.closest ? e.target.closest('.palette-item') : null;
+          if (item) {
+            e.preventDefault();
+            paletteIndex = parseInt(item.getAttribute('data-i'), 10) || 0;
+            runPaletteSelection();
+            return;
+          }
+          var pal = document.getElementById('palette');
+          if (pal && !pal.classList.contains('hidden') && !e.target.closest('.palette-box')) {
+            togglePalette(false);
+          }
+        });
+
+        var overflowBtn = document.getElementById('overflow-btn');
+        var overflowMenu = document.getElementById('overflow-menu');
+        if (overflowBtn && overflowMenu) {
+          overflowBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            overflowMenu.classList.toggle('hidden');
+          });
+          document.addEventListener('click', function(e) {
+            if (!overflowMenu.classList.contains('hidden') &&
+                !overflowMenu.contains(e.target) && e.target !== overflowBtn && !overflowBtn.contains(e.target)) {
+              overflowMenu.classList.add('hidden');
+            }
+          });
+          // Anything chosen from the overflow closes it.
+          overflowMenu.addEventListener('click', function() { overflowMenu.classList.add('hidden'); });
+        }
+
         // Plan 28 Phase 4 — Changes dock wiring.
         var changesBtn = document.getElementById('changes-btn');
         if (changesBtn) { changesBtn.addEventListener('click', function() { toggleChangesDock(); }); }
@@ -3903,6 +3945,12 @@
           if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'R' || e.key === 'r')) {
             e.preventDefault();
             toggleRunsDock();
+            return;
+          }
+          // Cmd/Ctrl+K — everything, without covering the conversation.
+          if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
+            e.preventDefault();
+            togglePalette();
             return;
           }
           // Ctrl/Cmd+Shift+A — freed by Phase 1, where autonomy stopped being a
@@ -9276,6 +9324,121 @@
           var first = RUN_STATES.filter(function(st) { return runsIn(st).length > 0; })[0];
           setRunsTab(first || 'working');
         }
+      }
+
+      // ======================================================================
+      // Plan 28 Phase 5 — the command palette
+      //
+      // A ROUTER, not a new settings surface. Every entry drives a control that
+      // already exists — the agent menu's items, the inline model and effort
+      // selects, the trust ladder, the docks — so relocating something into the
+      // palette never removes it, and the palette can never drift out of step
+      // with what the panel can actually do.
+      // ======================================================================
+
+      var paletteIndex = 0;
+      var paletteRows = [];
+
+      function paletteEntries() {
+        var out = [];
+        var here = deriveChatMode();
+        CHAT_MODES.forEach(function(m) {
+          out.push({ group: 'Trust', label: m.label, hint: m.desc, active: m.id === here,
+                     run: function() { applyChatMode(m.id); } });
+        });
+
+        document.querySelectorAll('#agent-menu .agent-menu-item[data-agent]').forEach(function(el) {
+          var name = (el.textContent || '').trim().split('\n')[0].trim();
+          if (!name) { return; }
+          out.push({ group: 'Agent', label: name, active: el.classList.contains('selected'),
+                     run: function() { el.click(); } });
+        });
+
+        [['Model', 'model-select-inline'], ['Effort', 'effort-select-inline']].forEach(function(pair) {
+          var sel = document.getElementById(pair[1]);
+          if (!sel || !sel.options) { return; }
+          Array.prototype.forEach.call(sel.options, function(o) {
+            out.push({ group: pair[0], label: o.text, active: sel.value === o.value,
+                       run: function() {
+                         sel.value = o.value;
+                         sel.dispatchEvent(new Event('change', { bubbles: true }));
+                       } });
+          });
+        });
+
+        out.push({ group: 'Do', label: 'Runs \u2014 everything in flight', hint: 'Ctrl/Cmd+Shift+R',
+                   run: function() { toggleRunsDock(true); } });
+        out.push({ group: 'Do', label: 'Changes \u2014 every edit this session', hint: 'Ctrl/Cmd+Shift+A',
+                   run: function() { toggleChangesDock(true); } });
+        [['New conversation', 'new-conversation-btn'], ['Open in a tab', 'new-tab-btn'],
+         ['Export conversation', 'export-conversation-btn'], ['Enhance the prompt', 'enhance-btn'],
+         ['Look at the running app', 'visual-test-btn'], ['Open the canvas', 'canvas-btn'],
+         ['Personas and skills', 'agent-config-btn'], ['Connections', 'connections-btn'],
+         ['Set the coordinator model\u2026', 'mysti-model-btn'],
+         ['All settings\u2026', 'settings-btn']].forEach(function(pair) {
+          var el = document.getElementById(pair[1]);
+          // A control the panel is currently hiding (the coordinator model
+          // picker on a non-Mysti agent, say) is not offered — the palette
+          // routes to real controls, so it must not offer an unavailable one.
+          if (el && !el.classList.contains('hidden')) {
+            out.push({ group: 'Do', label: pair[0], run: function() { el.click(); } });
+          }
+        });
+        return out;
+      }
+
+      function renderPalette(query) {
+        var host = document.getElementById('palette-results');
+        var empty = document.getElementById('palette-empty');
+        if (!host) { return; }
+        var q = (query || '').trim();
+        var all = paletteEntries();
+        paletteRows = q
+          // fuzzyScore(text, query) — not the other way round.
+          ? all.map(function(e) { return { e: e, s: fuzzyScore(e.group + ' ' + e.label, q) }; })
+               .filter(function(r) { return r.s > 0; })
+               .sort(function(a, b) { return b.s - a.s; })
+               .map(function(r) { return r.e; })
+          : all;
+        if (paletteIndex >= paletteRows.length) { paletteIndex = 0; }
+        if (empty) { empty.classList.toggle('hidden', paletteRows.length > 0); }
+
+        var html = '', lastGroup = null;
+        paletteRows.forEach(function(e, i) {
+          if (e.group !== lastGroup) {
+            html += '<div class="palette-group">' + escapeHtml(e.group) + '</div>';
+            lastGroup = e.group;
+          }
+          html += '<div class="palette-item' + (i === paletteIndex ? ' selected' : '') + '" data-i="' + i + '" role="option">' +
+                    '<span class="palette-label">' + escapeHtml(e.label) + '</span>' +
+                    (e.active ? '<span class="palette-active">current</span>' : '') +
+                    (e.hint ? '<span class="palette-hint">' + escapeHtml(e.hint) + '</span>' : '') +
+                  '</div>';
+        });
+        host.innerHTML = html;
+        var sel = host.querySelector('.palette-item.selected');
+        if (sel && sel.scrollIntoView) { sel.scrollIntoView({ block: 'nearest' }); }
+      }
+
+      function togglePalette(force) {
+        var el = document.getElementById('palette');
+        var input = document.getElementById('palette-input');
+        if (!el) { return; }
+        var open = typeof force === 'boolean' ? force : el.classList.contains('hidden');
+        el.classList.toggle('hidden', !open);
+        if (open) {
+          paletteIndex = 0;
+          if (input) { input.value = ''; input.focus(); }
+          renderPalette('');
+        } else if (input) {
+          input.blur();
+        }
+      }
+
+      function runPaletteSelection() {
+        var e = paletteRows[paletteIndex];
+        togglePalette(false);
+        if (e && typeof e.run === 'function') { e.run(); }
       }
 
       // ======================================================================

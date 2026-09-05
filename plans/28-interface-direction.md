@@ -177,6 +177,10 @@ Unattended stops being a fifth mode and becomes a **duration** granted on Auto o
 
 **Guardrail.** Plan 06's rule holds: moved controls stay reachable via `/`, `@`, the palette, the overflow, and the keyboard. Nothing is removed, only relocated — except the marketing, which is removed.
 
+**SHIPPED, with one deliberate departure.** The palette is a *router over controls that already exist* — it reads the agent menu's items, the inline model and effort `<select>`s, and `CHAT_MODES`, and drives them by clicking or dispatching `change`. So it cannot drift out of step with what the panel can do, and a control the panel is currently hiding (the coordinator model picker on a non-Mysti agent) is not offered. Header: twelve icons to three on the right, the other eight moved into an overflow menu **keeping their ids**, so every existing handler and test still binds. Status line: ten segments to four slots (spend is correctly absent until there is a saving).
+
+**The settings panel was NOT deleted, contrary to this phase's own wording.** It still holds the only home for provider-specific sections rendered from the manifest, brainstorm agent selection, the token budget, and the autonomy sub-settings. Deleting it would have removed capability, which this phase's own guardrail forbids; it moved into the overflow and is reachable from the palette as "All settings…". Routing those remaining sections to VS Code's settings editor is real work, not a deletion.
+
 ---
 
 ### Phase 6 — A team is a verb

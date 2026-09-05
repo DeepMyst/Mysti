@@ -468,3 +468,84 @@ describe('Plan 28 Phase 4 — the Changes dock', () => {
     expect(pageErrors).toEqual([]);
   }, 20000);
 });
+
+describe('Plan 28 Phase 5 — the chrome diet and the palette', () => {
+  const visible = (sel: string) => page!.$$eval(sel,
+    (els) => els.filter((e) => getComputedStyle(e).display !== 'none').length);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('leaves three buttons on the right of the header', async () => {
+    expect(await visible('.header-right > .icon-btn')).toBe(3);
+    for (const id of ['runs-btn', 'changes-btn', 'overflow-btn']) {
+      expect(await page!.$(`.header-right > #${id}`), id).not.toBeNull();
+    }
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('moves the rest into the overflow without deleting one of them', async () => {
+    // Same ids, so every handler and every other test that binds them still works.
+    for (const id of ['new-tab-btn', 'export-conversation-btn', 'active-mode-btn',
+      'agent-config-btn', 'badges-btn', 'about-btn', 'connections-btn', 'settings-btn']) {
+      expect(await page!.$(`#overflow-menu > #${id}`), id).not.toBeNull();
+    }
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows four segments under the composer, not ten', async () => {
+    // Four SLOTS: agent · model, trust, context, spend. Spend is correctly
+    // absent until there is a saving to report, so three show at rest.
+    expect(await visible('.input-status-line > *:not(.status-spacer)')).toBe(3);
+    for (const id of ['agent-select-btn', 'context-usage', 'behavior-indicator']) {
+      expect(await page!.$eval(`#${id}`, (e) => getComputedStyle(e).display), id).not.toBe('none');
+    }
+    for (const id of ['slash-cmd-btn', 'tools-menu-btn', 'model-select-inline', 'effort-select-inline']) {
+      expect(await page!.$(`#${id}`), id).not.toBeNull();     // still in the DOM
+      expect(await page!.$eval(`#${id}`, (e) => getComputedStyle(e).display), id).toBe('none');
+    }
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('opens on Cmd/Ctrl+K without covering the conversation', async () => {
+    await page!.focus('#message-input');
+    await page!.keyboard.press('Control+k');
+    expect(await page!.$eval('#palette', (e) => e.classList.contains('hidden'))).toBe(false);
+    // The transcript is still rendered behind it — that is the whole rule.
+    expect(await page!.$eval('#messages', (e) => getComputedStyle(e).display)).not.toBe('none');
+    expect(await page!.$eval('#palette-input', (e) => e === document.activeElement)).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('routes to controls that already exist', async () => {
+    const groups = await page!.$$eval('.palette-group', (els) => els.map((e) => e.textContent));
+    expect(groups).toContain('Trust');
+    expect(groups).toContain('Agent');
+    expect(groups).toContain('Do');
+    // One entry per rung, sourced from the same CHAT_MODES the pill uses.
+    const trust = await page!.$$eval('.palette-item',
+      (els) => els.map((e) => e.querySelector('.palette-label')?.textContent));
+    for (const rung of ['Plan', 'Ask', 'Auto', 'Full']) { expect(trust).toContain(rung); }
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('filters as you type and applies on Enter', async () => {
+    await page!.fill('#palette-input', 'full');
+    const labels = await page!.$$eval('.palette-item .palette-label', (els) => els.map((e) => e.textContent));
+    expect(labels.length).toBeGreaterThan(0);
+    expect(labels.some((l) => l === 'Full')).toBe(true);
+
+    await clearPosted();
+    await page!.fill('#palette-input', 'Full');
+    await page!.keyboard.press('Enter');
+    expect(await page!.$eval('#palette', (e) => e.classList.contains('hidden'))).toBe(true);
+    // It drove the real trust control, not a copy of it.
+    const updates = (await posted()).filter((m) => m.type === 'updateSettings');
+    expect(updates.length).toBe(1);
+    expect(updates[0].payload).toMatchObject({ mode: 'edit-automatically', accessLevel: 'full-access' });
+    expect(await page!.textContent('#behavior-indicator')).toContain('Full');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('closes on Escape', async () => {
+    await page!.keyboard.press('Control+k');
+    expect(await page!.$eval('#palette', (e) => e.classList.contains('hidden'))).toBe(false);
+    await page!.keyboard.press('Escape');
+    expect(await page!.$eval('#palette', (e) => e.classList.contains('hidden'))).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 20000);
+});
