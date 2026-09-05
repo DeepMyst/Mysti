@@ -38,6 +38,8 @@ import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
 import { clampEffort } from '../../utils/effort';
+import { killProcessTree, isProcessLive } from '../../utils/processKill';
+import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
 
 /**
  * Extended per-panel session state for Claude Code provider.
@@ -172,6 +174,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     supportsImages: true,
     supportsFileAttachments: true,
     supportsAutoInstall: true,
+    supportsPromptEnhancement: true,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'streamed',     // incremental thinking deltas
     thinkingLevelEffective: true,  // levels map to real token budgets (getThinkingTokens)
@@ -452,6 +455,43 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       }
     };
     return JSON.stringify(message) + '\n';
+  }
+
+  /**
+   * Cancel the in-flight turn on the persistent `--input-format stream-json`
+   * process.
+   *
+   * The base class used to write a raw ETX byte (`\x03`) into stdin. For this
+   * provider stdin is an NDJSON pipe, not a terminal: the byte is not an
+   * interrupt, it lands inside the current JSON line and the NEXT
+   * `{"type":"user",...}` message Mysti writes is unparseable — so Stop
+   * silently bricked the session instead of cancelling the turn.
+   *
+   * Claude Code does expose a stdin control protocol with an interrupt request,
+   * but its wire shape is not part of the published CLI documentation, and a
+   * guessed frame on this pipe would reintroduce exactly the corruption being
+   * fixed. What IS documented is the signal contract: "To end the turn instead,
+   * send SIGINT, or call the Agent SDK's interrupt(), before you stop the
+   * process."
+   * (https://code.claude.com/docs/en/headless — "Stop a run with SIGTERM")
+   *
+   * So: SIGINT first (the documented end-the-turn signal, which lets the CLI
+   * flush its session file), with killProcessTree's SIGKILL escalation as the
+   * backstop, then evict the process. The next turn respawns and re-attaches
+   * via `--resume <sessionId>` in buildPersistentCliArgs, so the conversation
+   * survives — same trade Hermes and Kimi already make, for the same reason.
+   */
+  protected _interruptPersistentProcess(session: PanelSessionState): void {
+    const proc = session.persistentProcess;
+    if (isProcessLive(proc)) {
+      console.log(`[Mysti] Claude: SIGINT to end the turn on the persistent process for panel: ${session.panelId}`);
+      void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, {
+        label: this.displayName,
+        initialSignal: 'SIGINT',
+      });
+    }
+    session.persistentProcess = null;
+    session.persistentReady = false;
   }
 
   /**

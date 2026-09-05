@@ -42,6 +42,58 @@ import type { AgentContextManager } from '../../managers/AgentContextManager';
 import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TIMEOUT_MS, STREAM_INACTIVITY_TIMEOUT_MS } from '../../constants';
 import { getCommonSearchPaths, validateCliPath, checkCommandExists, getEnrichedEnv, filterInstallMethodsForOS } from '../../utils/platform';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
+
+/**
+ * How much of a persistent process's stderr to keep for crash reporting.
+ * Enough for a stack tail or an OOM message; small enough that a chatty CLI
+ * cannot grow the session state without bound.
+ */
+const PERSISTENT_STDERR_TAIL_CHARS = 2000;
+
+/**
+ * Characters that make a shell argument a genuine injection vector. Refused in
+ * EVERY argument before a `shell: true` spawn. Node applies no quoting of its
+ * own on that path — on Windows `shell: true` sets `windowsVerbatimArguments`,
+ * so "No quoting or escaping of arguments is done"
+ * (https://nodejs.org/api/child_process.html) — which makes this screen, plus
+ * the quoting below, the only thing between an argument and the shell.
+ *
+ * Square brackets are NOT here: some model ids use them (claude-opus-4-6[1m]);
+ * they are glob characters, not injection vectors, and _quoteShellArgsForBrackets
+ * makes them literal on POSIX.
+ */
+const SHELL_INJECTION_CHARS = /[;&|`$(){}<>!"'\\#~*?\n\r]/;
+
+/**
+ * A win32 absolute filesystem path: a drive root (`C:`) or a UNC root
+ * (`\\server`), then one or more `\`-separated segments.
+ *
+ * This exists because `\` is a directory separator on Windows and the injection
+ * screen above rejects it, so ANY path-valued argument — `--mcp-config
+ * C:\Users\me\AppData\Local\Temp\mysti-canvas-x.json` for a canvas-linked
+ * session, an attachment temp file — made every send throw on Windows.
+ *
+ * It is an exemption from exactly two characters of the screen and nothing else:
+ *   - `\`  — the whole point; in cmd.exe `\` is not an escape character, and the
+ *            value is double-quoted below so it is not one in a POSIX shell either.
+ *   - `~`  — rejected by the screen for POSIX tilde expansion, which cmd.exe does
+ *            not perform; real Windows paths contain it as 8.3 short names
+ *            (`C:\Users\ADMINI~1\...`). Inside double quotes even a POSIX shell
+ *            leaves it literal.
+ * Everything else the screen rejects is still rejected here, and the class adds
+ * four more rejections on top of it:
+ *   - `%` and `^` — cmd.exe variable expansion and escape, which the POSIX-shaped
+ *                   screen does not cover.
+ *   - `/` and `:`  — separators/illegal in Windows filenames; excluded so this
+ *                   cannot match anything but a plain local path.
+ * A space IS permitted (`C:\Users\John Doe\...` is an ordinary path) because the
+ * value is quoted; without quoting Node would split it into two arguments.
+ */
+const WIN32_PATH_SEGMENT = String.raw`[^\\/:*?"<>|;&\x60$(){}!'#%^\r\n\t]+`;
+const WIN32_PATH_ARG = new RegExp(
+  `^(?:[A-Za-z]:|\\\\\\\\${WIN32_PATH_SEGMENT})(?:\\\\${WIN32_PATH_SEGMENT})+\\\\?$`,
+);
+import { looksLikeOsExecutionBlock, assessExecutable, describeOsExecutionBlock } from '../../utils/gatekeeper';
 import type { CliSearchConfig } from '../../utils/platform';
 
 /**
@@ -101,6 +153,12 @@ export interface PanelSessionState {
   };
   /** Buffered stdout data received during persistent process initialization */
   _initBuffer?: string;
+  /**
+   * Rolling tail of the persistent process's stderr, kept so a mid-stream crash
+   * can be reported with the backend's own last words instead of a bare code.
+   * Reset each time a persistent process is spawned.
+   */
+  _persistentStderr?: string;
 }
 
 /**
@@ -441,15 +499,33 @@ export abstract class BaseCliProvider implements ICliProvider {
   // ============================================================================
 
   /**
-   * Send interrupt signal (Ctrl+C) to a persistent process to cancel the
-   * current request without terminating the process.
-   * Subclasses can override for provider-specific interrupt handling.
+   * Cancel the in-flight request on a persistent process.
+   *
+   * This used to write a raw ETX byte (`\x03`) into the child's stdin on the
+   * assumption that a CLI reads it as Ctrl+C. That is only true for a process
+   * attached to a TTY in cooked mode. Every persistent backend Mysti drives
+   * speaks a STRUCTURED stdin protocol over a pipe — Claude Code's
+   * `--input-format stream-json` (NDJSON), Hermes/Kimi's ACP (JSON-RPC over
+   * stdio) — where the byte is not an interrupt at all: it is one more
+   * character in the current line, and it makes the NEXT message on that pipe
+   * unparseable. Hermes and Kimi each had to override this for exactly that
+   * reason.
+   *
+   * The default therefore never writes to stdin. It tears the process down
+   * (liveness-gated SIGTERM with SIGKILL escalation) and evicts it, so the next
+   * turn respawns a process with clean protocol state and re-establishes the
+   * session through the provider's normal args. Overriding subclasses may do
+   * something cheaper if — and only if — their protocol defines a cancel
+   * message.
    */
   protected _interruptPersistentProcess(session: PanelSessionState): void {
-    if (session.persistentProcess?.stdin?.writable) {
-      // Send ETX (Ctrl+C) which CLIs interpret as interrupt
-      session.persistentProcess.stdin.write('\x03');
+    console.log(`[Mysti] ${this.displayName}: No protocol-level cancel — tearing down the persistent process for panel: ${session.panelId}`);
+    const proc = session.persistentProcess;
+    if (isProcessLive(proc)) {
+      void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
     }
+    session.persistentProcess = null;
+    session.persistentReady = false;
   }
 
   /**
@@ -498,6 +574,14 @@ export abstract class BaseCliProvider implements ICliProvider {
     let firstChunkTime: number | null = null;
     let firstContentTime: number | null = null;
     const streamStartTime = Date.now();
+    // D-5: a persistent backend that dies mid-turn closes stdout WITHOUT ever
+    // emitting a response boundary. sendMessage's terminal chunk is an
+    // unconditional `done`, so a crashed / OOM-killed / non-zero exit rendered
+    // in the UI as a successful, complete answer. Track both facts so the
+    // failure can be surfaced as an `error` chunk instead.
+    let sawBoundary = false;
+    let uncleanExit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+    let emittedTerminalError = false;
 
     const onData = (data: Buffer) => {
       if (firstChunkTime === null) {
@@ -515,6 +599,7 @@ export abstract class BaseCliProvider implements ICliProvider {
         if (this._isResponseBoundary(line)) {
           const parsed = this.parseStreamLine(line, session);
           if (parsed) { chunks.push(parsed); }
+          sawBoundary = true;
           done = true;
           session.process = null;
           session.lastHealthCheck = Date.now();
@@ -537,6 +622,11 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     const onClose = () => {
       done = true;
+      // The process exited. If it did so before completing the response, record
+      // how it died — a non-zero code or a signal is a crash, not an answer.
+      if (!sawBoundary) {
+        uncleanExit = { code: proc.exitCode, signal: proc.signalCode };
+      }
       proc.stdout?.removeListener('data', onData);
       if (waitResolve) { waitResolve(); }
     };
@@ -574,6 +664,7 @@ export abstract class BaseCliProvider implements ICliProvider {
           void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: `${this.displayName} persistent-inactivity` });
           session.persistentProcess = null;
           session.persistentReady = false;
+          emittedTerminalError = true;
           yield {
             type: 'error',
             content: `${this.displayName} produced no output for ${Math.round(parkInactivityMs / 60000)} minutes — the request timed out and the process was terminated (a fresh one will spawn on the next message).`,
@@ -584,6 +675,31 @@ export abstract class BaseCliProvider implements ICliProvider {
       // Yield remaining chunks
       while (chunks.length > 0) {
         yield chunks.shift()!;
+      }
+
+      // D-5: the backend died mid-response. Report it instead of letting
+      // sendMessage's unconditional `done` present a truncated answer as a
+      // complete one. A user-initiated Stop is not a crash (cancelCurrentRequest
+      // kills the process on purpose), and the inactivity watchdog above has
+      // already emitted its own terminal error — neither is reported twice.
+      // Scope: a CLEAN exit 0 with no boundary is deliberately left alone here,
+      // so this only fires on a genuinely abnormal death.
+      const exited = uncleanExit as { code: number | null; signal: NodeJS.Signals | null } | null;
+      if (exited && !emittedTerminalError && !session.cancelled) {
+        const abnormal = (exited.code !== null && exited.code !== 0) || exited.signal !== null;
+        if (abnormal) {
+          session.persistentProcess = null;
+          session.persistentReady = false;
+          const how = exited.signal
+            ? `was terminated by ${exited.signal}`
+            : `exited with code ${exited.code}`;
+          const tail = this._cleanStderr(session._persistentStderr || '');
+          console.error(`[Mysti] ${this.displayName}: persistent process ${how} mid-response (stderr tail: ${(session._persistentStderr || '').slice(-500)})`);
+          yield {
+            type: 'error',
+            content: `${this.displayName} ${how} while streaming its response — the answer above is incomplete.${tail ? ` ${tail}` : ''} A fresh process will spawn on the next message.`,
+          };
+        }
       }
     } finally {
       proc.stdout?.removeListener('data', onData);
@@ -656,7 +772,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       // persistent (Claude) spawn path had the glob-safety hole the single-shot
       // path already closed.
       for (const arg of args) {
-        if (/[;&|`$(){}<>!"'\\#~*?\n\r]/.test(arg)) {
+        if (this._isUnsafeShellArg(arg)) {
           console.error(`[Mysti] Rejecting unsafe CLI argument in shell mode (persistent spawn)`);
           throw new Error('Invalid argument detected in shell mode');
         }
@@ -666,10 +782,15 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     session.persistentProcess = spawn(cliPath, persistentSpawnArgs, persistentSpawnOpts);
 
-    // Log stderr but don't treat it as fatal
+    // Log stderr but don't treat it as fatal. A bounded tail is retained so
+    // that if this process dies mid-stream, _readUntilBoundary can quote its
+    // last words rather than reporting a bare exit code.
+    session._persistentStderr = '';
     if (session.persistentProcess.stderr) {
       session.persistentProcess.stderr.on('data', (data: Buffer) => {
-        console.log(`[Mysti] ${this.displayName} persistent stderr:`, data.toString());
+        const text = data.toString();
+        session._persistentStderr = ((session._persistentStderr || '') + text).slice(-PERSISTENT_STDERR_TAIL_CHARS);
+        console.log(`[Mysti] ${this.displayName} persistent stderr:`, text);
       });
     }
 
@@ -713,6 +834,30 @@ export abstract class BaseCliProvider implements ICliProvider {
   }
 
   /**
+   * The conversation history to fold into this turn's prompt.
+   *
+   * History is suppressed ONLY for providers that genuinely resume a CLI-owned
+   * session (`capabilities.sessionKind === 'cli-resume'`): those CLIs already
+   * hold the transcript, so re-sending it doubles input tokens every turn.
+   *
+   * It is NOT suppressed merely because `session.sessionId` is truthy. A
+   * `prompt-history` provider replays history in the prompt by definition, and
+   * some of them still record an id: Codex stores the `thread_id` from
+   * `thread.started` while its argv (`codex exec --json ... -`) carries no
+   * resume flag at all, so gating on the id alone left every Codex turn after
+   * the first with neither history nor resume — context-blind.
+   */
+  protected _conversationForPrompt(
+    session: PanelSessionState,
+    conversation: Conversation | null,
+  ): Conversation | null {
+    if (this.capabilities.sessionKind === 'cli-resume' && session.sessionId) {
+      return null;
+    }
+    return conversation;
+  }
+
+  /**
    * Send a message via a persistent process and yield chunks until the response boundary.
    * Falls back to null (caller should use single-shot) on any failure.
    */
@@ -752,8 +897,9 @@ export abstract class BaseCliProvider implements ICliProvider {
     // Prepare attachments (write temp files, set filePaths) — mirrors single-shot path
     const attachmentCleanup = await this.prepareAttachments(attachments, []);
 
-    // Persistent process always has a session — skip conversation history
-    const effectiveConversation = session.sessionId ? null : conversation;
+    // Skip history only when the CLI itself resumes the session (see
+    // _conversationForPrompt) — never on a bare truthy sessionId.
+    const effectiveConversation = this._conversationForPrompt(session, conversation);
     const _ptPrompt0 = Date.now();
     const fullPrompt = await this.buildPromptAsync(
       content, context, effectiveConversation, settings, persona, agentConfig, attachments, session.channelSystemContext,
@@ -1107,9 +1253,35 @@ export abstract class BaseCliProvider implements ICliProvider {
    */
   protected _quoteShellArgsForBrackets(args: string[]): string[] {
     if (process.platform === 'win32') {
-      return args;
+      // cmd.exe: `[` and `]` do not glob, and `'` is not a quote character — so
+      // the POSIX single-quoting below would be passed through literally and
+      // break the .cmd shim invocation. What DOES need quoting here is a
+      // filesystem path: Node does no escaping on this path
+      // (windowsVerbatimArguments), so an unquoted `C:\Users\John Doe\x.json`
+      // would split into two arguments. Double quotes are cmd.exe's quoting and
+      // `\` is not an escape inside them; `"` is refused by the injection
+      // screen, so a quoted path cannot break out.
+      return args.map(arg => (this._isWin32PathArg(arg) ? `"${arg}"` : arg));
     }
     return args.map(arg => (arg.includes('[') || arg.includes(']')) ? `'${arg}'` : arg);
+  }
+
+  /**
+   * True when `arg` is a plain win32 filesystem path (see {@link WIN32_PATH_ARG}).
+   * win32-only by construction: a POSIX shell never reaches this exemption.
+   */
+  protected _isWin32PathArg(arg: string): boolean {
+    return process.platform === 'win32' && WIN32_PATH_ARG.test(arg);
+  }
+
+  /**
+   * The `shell: true` argument screen. Refuses genuine shell-injection vectors,
+   * with one shape-based exemption for win32 filesystem paths (which are then
+   * double-quoted by {@link _quoteShellArgsForBrackets}).
+   */
+  protected _isUnsafeShellArg(arg: string): boolean {
+    if (this._isWin32PathArg(arg)) { return false; }
+    return SHELL_INJECTION_CHARS.test(arg);
   }
 
   /**
@@ -1160,7 +1332,9 @@ export abstract class BaseCliProvider implements ICliProvider {
         // separators). On POSIX shells they would still glob-expand if a
         // matching filename exists in cwd, so _quoteShellArgsForBrackets below
         // single-quotes any bracketed arg to force literal interpretation.
-        if (/[;&|`$(){}<>!"'\\#~*?\n\r]/.test(arg)) {
+        // Win32 filesystem paths are exempted by shape (see _isUnsafeShellArg)
+        // and double-quoted below — otherwise `--mcp-config C:\...` threw.
+        if (this._isUnsafeShellArg(arg)) {
           console.error(`[Mysti] Rejecting unsafe CLI argument in shell mode`);
           throw new Error('Invalid argument detected in shell mode');
         }
@@ -1206,9 +1380,11 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     try {
       // Build prompt AFTER spawning (parallelizes CLI startup with prompt building)
-      // When resuming a session (sessionId exists), the CLI already has the full
-      // conversation context — don't re-send history in the prompt (avoids doubling input tokens).
-      const effectiveConversation = session.sessionId ? null : conversation;
+      // When the CLI itself resumes the session it already has the full
+      // conversation context — don't re-send history in the prompt (avoids
+      // doubling input tokens). See _conversationForPrompt for why a truthy
+      // sessionId alone is NOT that condition.
+      const effectiveConversation = this._conversationForPrompt(session, conversation);
       const fullPrompt = await this.buildPromptAsync(content, context, effectiveConversation, settings, persona, agentConfig, attachments, session.channelSystemContext);
 
       // Check if spawn failed during prompt building (async error on Windows)
@@ -1252,7 +1428,19 @@ export abstract class BaseCliProvider implements ICliProvider {
       const storedUsage = this.getStoredUsage(panelId);
       yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
     } catch (error) {
-      yield this.handleError(error);
+      // A spawn-time refusal (EACCES/EPERM on a Gatekeeper-blocked binary)
+      // lands here rather than in processStream, so it gets the same upgrade
+      // from an opaque errno to an actionable explanation.
+      const chunk = this.handleError(error);
+      if (chunk.type === 'error' && chunk.content) {
+        chunk.content = await this._explainOsExecutionBlock(chunk.content, {
+          exitCode: null,
+          signal: null,
+          stderr: `${chunk.content}\n${stderrRef.output}`,
+          hasOutput: false
+        });
+      }
+      yield chunk;
     } finally {
       // Liveness-gated cleanup (not `.killed`): a SIGTERM'd-but-alive CLI must
       // still be escalated to SIGKILL, which the old `!killed` guard skipped.
@@ -1388,6 +1576,10 @@ export abstract class BaseCliProvider implements ICliProvider {
     const exitCode = await this.waitForProcess(session);
     console.log(`[Mysti] ${this.displayName}: Process exited with code:`, exitCode);
 
+    // Node clears `session.process` in the caller's finally block, so capture
+    // the signal alongside the code while the handle is still around.
+    const exitSignal = session.process?.signalCode ?? null;
+
     if (exitCode !== 0 && exitCode !== null) {
       const rawStderr = stderrRef.output;
       const errorMsg = this._cleanStderr(rawStderr) || `${this.displayName} exited with code ${exitCode}`;
@@ -1400,7 +1592,15 @@ export abstract class BaseCliProvider implements ICliProvider {
           providerName: this.displayName
         };
       } else {
-        yield { type: 'error', content: errorMsg };
+        yield {
+          type: 'error',
+          content: await this._explainOsExecutionBlock(errorMsg, {
+            exitCode,
+            signal: exitSignal,
+            stderr: rawStderr,
+            hasOutput: hasYieldedContent
+          })
+        };
       }
     } else if (!hasYieldedContent) {
       const rawStderr = stderrRef.output;
@@ -1414,8 +1614,55 @@ export abstract class BaseCliProvider implements ICliProvider {
           providerName: this.displayName
         };
       } else {
-        yield { type: 'error', content: errorMsg };
+        yield {
+          type: 'error',
+          content: await this._explainOsExecutionBlock(errorMsg, {
+            exitCode,
+            signal: exitSignal,
+            stderr: rawStderr,
+            hasOutput: false
+          })
+        };
       }
+    }
+  }
+
+  /**
+   * Upgrade an opaque CLI failure into an actionable one when macOS refused to
+   * execute the binary.
+   *
+   * A Gatekeeper block SIGKILLs the process before the CLI runs, so all Mysti
+   * ever saw was "exited with code 1" or "No response received from CLI" —
+   * while macOS separately showed the user a "Malware Blocked" dialog that
+   * reads as if Mysti did something wrong. The common real cause is a revoked
+   * vendor signing certificate (see src/utils/gatekeeper.ts), which a CLI
+   * reinstall fixes.
+   *
+   * Returns `fallbackMessage` unchanged unless `spctl` actually confirms a
+   * block, so a normal CLI error is never mislabelled as a signing problem.
+   */
+  protected async _explainOsExecutionBlock(
+    fallbackMessage: string,
+    signals: { exitCode: number | null; signal: NodeJS.Signals | null; stderr: string; hasOutput: boolean }
+  ): Promise<string> {
+    if (!looksLikeOsExecutionBlock(signals)) { return fallbackMessage; }
+
+    let cliPath: string;
+    try {
+      cliPath = this.getCliPath();
+    } catch {
+      return fallbackMessage;
+    }
+    if (!cliPath) { return fallbackMessage; }
+
+    try {
+      const block = await assessExecutable(cliPath);
+      if (!block) { return fallbackMessage; }
+      console.error(`[Mysti] ${this.displayName}: binary blocked by macOS (${block.reason}): ${block.binaryPath}`);
+      return describeOsExecutionBlock(this.displayName, block, this.getInstallCommand());
+    } catch (error) {
+      console.error(`[Mysti] ${this.displayName}: Gatekeeper assessment failed:`, error);
+      return fallbackMessage;
     }
   }
 

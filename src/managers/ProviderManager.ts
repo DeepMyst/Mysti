@@ -26,7 +26,8 @@ import type {
   ProviderConfig,
   ModelInfo,
   AgentConfiguration,
-  ProviderType
+  ProviderType,
+  PromptEnhancedPayload
 } from '../types';
 import { DEFAULT_PROVIDER, DEFAULT_FALLBACK_MODEL, PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
 import { killProcessTree } from '../utils/processKill';
@@ -50,6 +51,21 @@ interface ModelRegistrySink {
  */
 interface ProcessPidSink {
   registerProcessPid(panelId: string, pid: number): void;
+}
+
+/**
+ * Thrown by `ProviderManager.enhancePrompt` when neither the active provider
+ * nor any installed backend implements prompt enhancement. Typed (rather than
+ * a silent pass-through of the original prompt) so the webview can disable the
+ * affordance and say why instead of reporting a fake success.
+ */
+export class PromptEnhancementUnsupportedError extends Error {
+  constructor(public readonly activeProviderName: string) {
+    super(
+      `${activeProviderName} does not support prompt enhancement, and no other installed backend does either.`
+    );
+    this.name = 'PromptEnhancementUnsupportedError';
+  }
 }
 
 /**
@@ -161,6 +177,15 @@ export class ProviderManager {
    */
   private _getDefaultProviderId(): string {
     const config = vscode.workspace.getConfiguration('mysti');
+    // Plan 25: when the user's selected agent IS a real backend, that is the
+    // backend these provider-level helpers should run on (prompt enhancement,
+    // etc.) — otherwise picking Cursor in the menu would still enhance on
+    // `defaultProvider`. A pseudo-agent selection (`mysti`/`brainstorm`) has no
+    // registry entry, so it is skipped here and `defaultProvider` answers.
+    const selectedAgent = config.get<string>('defaultAgent', '');
+    if (selectedAgent && this._registry.get(selectedAgent)) {
+      return selectedAgent;
+    }
     return config.get<string>('defaultProvider', DEFAULT_PROVIDER);
   }
 
@@ -266,9 +291,12 @@ export class ProviderManager {
     if (provider) {
       return provider.config.defaultModel;
     }
-    // Fallback to global default
+    // Fallback to global default. The declared key is `mysti.defaultModel` —
+    // this read used to be `'model'`, which package.json does not declare, so
+    // `get` always missed and the user's configured model was never honoured
+    // here (every caller silently got DEFAULT_FALLBACK_MODEL instead).
     const config = vscode.workspace.getConfiguration('mysti');
-    return config.get<string>('model', DEFAULT_FALLBACK_MODEL);
+    return config.get<string>('defaultModel', '') || DEFAULT_FALLBACK_MODEL;
   }
 
   /**
@@ -506,14 +534,74 @@ export class ProviderManager {
   }
 
   /**
-   * Enhance a prompt using the default provider (if supported)
+   * Enhance a prompt, falling back to another INSTALLED backend when the
+   * active provider cannot do it itself.
+   *
+   * Only 4 of the 16 backends implement `enhancePrompt()`. This used to end in
+   * a bare `return prompt`, so with any of the other 12 active the webview got
+   * back byte-identical text, cleared its spinner and looked broken. Now the
+   * caller always learns which backend ran (`enhancedById`), whether that was
+   * a fallback, and whether the text actually changed — and gets a typed throw
+   * when nothing installed can do the job at all.
+   *
+   * The fallback re-routes the user's prompt text to a DIFFERENT local CLI than
+   * the one they selected, so it is reported to the UI rather than done
+   * silently; the webview attributes the result to `enhancedBy`.
    */
-  public async enhancePrompt(prompt: string): Promise<string> {
-    const provider = this._getActiveProvider();
-    if (provider.enhancePrompt) {
-      return provider.enhancePrompt(prompt);
+  public async enhancePrompt(prompt: string): Promise<PromptEnhancedPayload> {
+    const active = this._getActiveProvider();
+
+    if (typeof active.enhancePrompt === 'function') {
+      const enhanced = await active.enhancePrompt(prompt);
+      return this._buildEnhancementResult(prompt, enhanced, active, false);
     }
-    return prompt;
+
+    const fallback = await this._findEnhancementFallback(active.id);
+    if (!fallback) {
+      throw new PromptEnhancementUnsupportedError(active.displayName);
+    }
+
+    console.log(`[Mysti] Prompt enhancement: ${active.displayName} cannot enhance — falling back to ${fallback.displayName}`);
+    const enhanced = await fallback.enhancePrompt!(prompt);
+    return this._buildEnhancementResult(prompt, enhanced, fallback, true);
+  }
+
+  /**
+   * First registered provider that both declares the capability and has its
+   * CLI on disk. Registry order (not a hardcoded preference list) decides the
+   * winner so no provider-name literal is introduced here.
+   */
+  private async _findEnhancementFallback(excludeId: string): Promise<ICliProvider | undefined> {
+    for (const provider of this._registry.getAll()) {
+      if (provider.id === excludeId) { continue; }
+      if (!provider.capabilities.supportsPromptEnhancement) { continue; }
+      if (typeof provider.enhancePrompt !== 'function') { continue; }
+      try {
+        const discovery = await provider.discoverCli();
+        if (discovery.found) { return provider; }
+      } catch (error) {
+        console.error(`[Mysti] Prompt enhancement: discovery failed for ${provider.id}:`, error);
+      }
+    }
+    return undefined;
+  }
+
+  private _buildEnhancementResult(
+    original: string,
+    enhanced: string,
+    provider: ICliProvider,
+    fallback: boolean
+  ): PromptEnhancedPayload {
+    // Every implementation resolves the ORIGINAL prompt on CLI failure, so an
+    // unchanged string means "nothing happened", not "success".
+    const changed = enhanced.trim() !== original.trim() && enhanced.trim().length > 0;
+    return {
+      prompt: changed ? enhanced : original,
+      enhancedBy: provider.displayName,
+      enhancedById: provider.id,
+      fallback,
+      changed
+    };
   }
 
   /**
