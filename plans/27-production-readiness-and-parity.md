@@ -1148,6 +1148,78 @@ Still true, and unchanged by four rounds of work: **the interactive F5 smoke mat
 green number in this document is static analysis and unit tests. The coordinator's native tool-calling loop and
 the MCP path have no live-account exercise on record.
 
+## 23. Phase 0 and Phase 1 — execution (2026-09-05)
+
+### 23.1 Phase 0 — CLOSED except the push
+
+| # | State |
+|---|---|
+| 0.1 | snapshot ✅ (3 verified bundles + 2 tarballs) · **push ❌ — the branch decision, §22** |
+| 0.2 | ✅ 13 commits across 4 rounds; tree clean |
+| 0.3 | ✅ `main` merged and verified SEMANTICALLY — 12 symbol counts present, 4 removal counterparts absent |
+| 0.4 | ✅ the false `mysti.mysti.skills` description now names all co-conditions |
+| 0.5 | `.nvmrc` ✅ · `engines.node` ✅ · **CONTRIBUTING ✅** · **`preLaunchTask` deliberately NOT wired** |
+
+**CONTRIBUTING's provider checklist was six steps and materially wrong** — it sent contributors to
+`src/webview/webviewContent.ts` for the agent menu, which holds **zero** provider cards (they are in
+`media/chat/index.html`, 11 of them, since Plan 03 extracted the chat UI to static assets); it named only
+`ProviderType`, not `AgentType`, so a follower's build breaks on the second union; and it omitted every
+*enforced* step — the four exhaustive `Record` maps, the `check-provider-literals.js` allowlist that runs
+first in lint, the capability-honesty rule `promptEnhancement.test.ts` asserts, machine-scoping, and the four
+test registries. Now ten steps, every path and symbol verified against this tree.
+
+`.vscode/tasks.json` carried a real latent bug: both tasks were **unlabelled** (so nothing could reference
+them) and the watch task declared **`"$tsc-watch"` against `webpack --watch`** — markers webpack never prints.
+
+**`preLaunchTask` is the one item I would not ship.** Its failure mode is *F5 hangs forever*, and verifying it
+needs an interactive Extension Development Host — the thing this plan records as never having been run. I
+tested rather than trusting the canonical recipe: with `infrastructureLogging: { level: 'log' }` webpack emits
+`Compiler '<name>' starting...` **only at launch, not per rebuild**, and the end marker is
+`compiled successfully in N ms`. That is not a usable begin/end pair for a background matcher here, so I
+reverted the config change rather than ship an untestable one. **It belongs in the F5 smoke matrix.**
+
+### 23.2 Phase 1 — 7 of 8 done
+
+| # | State |
+|---|---|
+| 1.1 | ✅ gates job runs all four |
+| 1.2 | ✅ **the trust root is now VERIFIED, not re-signed** — see below |
+| 1.3 | ✅ **90.3 s → 1.25 s**; Chromium installed in CI with a no-silent-skip guard |
+| 1.4 | ✅ `media/**/*.js` linted (0 errors) |
+| 1.5 | ✅ `check-package-shape.js` 7/7, asserts classes |
+| 1.6 | ✅ `integration.yml` — and `test:vscode` verified green locally FIRST, as the plan demanded |
+| 1.7 | ✅ three-OS matrix on gates, test, and the new integration lane |
+| 1.8 | ❌ **branch protection — needs a remote, so it follows the push** |
+
+**1.2 was a live security defect, not hygiene.** `--check` existed in exactly one script — `lint` — which no
+packaging path runs. `vsce package` → `vscode:prepublish` → `compile` → `build:core-manifest` = **write mode**,
+so packaging regenerated the manifest from whatever was on disk. Proven by tampering
+`resources/agents/core/personas/architect.md`:
+
+```
+write mode  -> exit 0, tampered file SILENTLY RE-SIGNED
+--check     -> exit 1, "Manifest is out of date"
+```
+
+`vscode:prepublish` now runs `compile:release` = `--check && webpack --mode production`. The dev path still
+regenerates — that is how a legitimate edit to a bundled agent file lands; the *release* path may not. Pinned
+by five tests that resolve the npm-script chain and assert per `&&` segment, so a `--check` elsewhere in a
+compound command cannot vouch for a bare write-mode call. Red against the old wiring, green after.
+
+**1.3 removed the reason the suite ever looked flaky.** The silence test waited out a real 90 s timeout —
+98% of the suite's wall clock. The hang it simulates is `await new Promise(() => {})`, never a timer, so the
+only real clock was the manager's own `setTimeout`. Faked and advanced with `advanceTimersByTimeAsync` (the
+sync form fires the timer then deadlocks on the generator's pending await). **Suite: 91 s → 34-41 s**, 314
+files passed, 6 skipped, exit 0.
+
+**1.6 discharged the plan's own warning.** It said this lane "can land red" — its last run was 15 days and 32
+commits old. Run first, as instructed: **green, 7 passing in 3 s** against VS Code 1.136.1. Linux wraps in
+`xvfb-run -a`; macOS and Windows must not — getting that backwards presents as a hang, not an error, so both
+are explicit `if:` steps.
+
+**Gate 1 status:** lint runs on `media/` ✅; the matrix has three OSes ✅; "CI red blocks merge" ❌ — that is
+branch protection, which needs the remote. **Gate 1 closes with the push, exactly as Gate 0 does.**
+
 ## 22. The branch decision (publish-safety review, 8 agents)
 
 **`DeepMyst/Mysti` is PUBLIC** (1,137 stars, 55 forks). A dev branch there would be public — visibility is
