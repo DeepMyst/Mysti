@@ -2,22 +2,49 @@
   "version": "2.0.0",
   "tasks": [
     {
+      // The default build. `npm run watch` is `webpack --mode development
+      // --watch`, so the matcher must be a WEBPACK one: this task used to
+      // declare "$tsc-watch", whose begin/end markers webpack never prints.
+      // Anything relying on that matcher to know the build had settled would
+      // have waited forever.
+      "label": "watch",
       "type": "npm",
       "script": "watch",
-      "problemMatcher": "$tsc-watch",
-      "isBackground": true,
-      "presentation": {
-        "reveal": "never"
+      "problemMatcher": {
+        "owner": "webpack",
+        "source": "webpack",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^\\s*(ERROR|WARNING) in (.*?)(?::(\\d+):(\\d+))?$",
+          "severity": 1,
+          "file": 2,
+          "line": 3,
+          "column": 4,
+          "message": 0
+        }
       },
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      }
+      "isBackground": true,
+      "presentation": { "reveal": "never" },
+      "group": { "kind": "build", "isDefault": true }
     },
     {
+      // One-shot production build — what `vscode:prepublish` runs.
+      "label": "compile",
       "type": "npm",
       "script": "compile",
-      "problemMatcher": "$tsc",
+      "problemMatcher": {
+        "owner": "webpack",
+        "source": "webpack",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^\\s*(ERROR|WARNING) in (.*?)(?::(\\d+):(\\d+))?$",
+          "severity": 1,
+          "file": 2,
+          "line": 3,
+          "column": 4,
+          "message": 0
+        }
+      },
       "group": "build"
     }
   ]
