@@ -2612,7 +2612,11 @@
       var setupRetryBtn = document.getElementById('setup-retry-btn');
       if (setupRetryBtn) {
         setupRetryBtn.addEventListener('click', function() {
-          rearmSetupOverlay();
+          // No re-arm here: this button lives INSIDE the overlay, which is
+          // hidden whenever the latch is set and which nothing re-shows while
+          // it is — so it is unreachable in the only state a re-arm would
+          // matter. The reachable request paths are the three
+          // `startProviderSetup` posts.
           postMessageWithPanelId({
             type: 'retrySetup',
             payload: { providerId: state.setup && state.setup.providerId }
@@ -2643,9 +2647,10 @@
       var wizardSignInBtn = document.getElementById('wizard-signin-btn');
       if (wizardSignInBtn) {
         wizardSignInBtn.addEventListener('click', function() {
-          // The user is asking to authenticate — a previous dismissal of a
-          // stale poll must not swallow the prompt they just requested.
-          rearmSetupOverlay();
+          // Deliberately does NOT re-arm the setup overlay: this runs
+          // `mysti.deepmyst.signIn` and can never produce a setup message, so
+          // clearing the latch here would only let an unrelated in-flight
+          // auto-setup re-raise the wall the user had already left.
           vscode.postMessage({ type: 'signInDeepMyst' });
         });
       }
@@ -7021,6 +7026,7 @@
           case 'install':
           case 'retry':
             if (supportsAutoInstall) {
+              rearmSetupOverlay();
               postMessageWithPanelId({
                 type: 'startProviderSetup',
                 payload: { providerId: providerId, autoInstall: state.wizard.npmAvailable }
@@ -7034,6 +7040,7 @@
             }
             break;
           case 'auth':
+            rearmSetupOverlay();
             postMessageWithPanelId({
               type: 'startProviderSetup',
               payload: { providerId: providerId, autoInstall: false }
@@ -7264,6 +7271,8 @@
         var progressSection = document.getElementById('install-progress-section');
         if (autoSection) autoSection.classList.add('hidden');
         if (progressSection) progressSection.classList.remove('hidden');
+
+        rearmSetupOverlay();
 
         postMessageWithPanelId({
           type: 'startProviderSetup',

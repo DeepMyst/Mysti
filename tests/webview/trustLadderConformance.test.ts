@@ -101,3 +101,36 @@ describe('webview Trust ladder — the duplicate policy surface is gone', () => 
     expect(offered).toEqual([...TRUST_STOPS]);
   });
 });
+
+describe('the setup dismissal latch is released by every request path', () => {
+  /*
+   * `dismissedByUser` stops a stale poll re-raising a wall the user left. As a
+   * one-way latch it also swallowed the prompts the user themselves asked for,
+   * stranding the wizard at "Checking authentication…". The rule is therefore:
+   * every path that REQUESTS setup must clear it first.
+   *
+   * Asserted statically rather than by clicking, because the reachable request
+   * paths live inside the wizard's own render/bind cycle — a DOM test of them
+   * ends up testing wizard bootstrapping, and one that clicks the wrong button
+   * passes while proving nothing. This reads the shipped bytes.
+   */
+  it('every startProviderSetup post is preceded by a re-arm', () => {
+    const posts = [...CHAT_JS.matchAll(/type: 'startProviderSetup'/g)].map((m) => m.index ?? 0);
+    expect(posts.length).toBeGreaterThanOrEqual(3);
+    for (const at of posts) {
+      const before = CHAT_JS.slice(Math.max(0, at - 400), at);
+      expect(before, `startProviderSetup at offset ${at} is not preceded by rearmSetupOverlay()`)
+        .toContain('rearmSetupOverlay();');
+    }
+  });
+
+  it('the latch is written false somewhere — it is not one-way', () => {
+    expect(CHAT_JS).toMatch(/dismissedByUser\s*=\s*false/);
+  });
+
+  it('sign-in does NOT re-arm, because it cannot cause a setup message', () => {
+    const at = CHAT_JS.indexOf("type: 'signInDeepMyst'");
+    expect(at).toBeGreaterThan(-1);
+    expect(CHAT_JS.slice(Math.max(0, at - 300), at)).not.toContain('rearmSetupOverlay();');
+  });
+});
