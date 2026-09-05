@@ -913,7 +913,15 @@ export interface BrainstormStreamChunk {
 // @-Mention Types
 // ============================================================================
 
-export type MentionType = 'agent' | 'file';
+/**
+ * Plan 27 Phase 5 — the @-mention surface.
+ *
+ * `problems` and `git` are WORKSPACE-STATE mentions: they resolve to a
+ * generated summary rather than a file on disk, so they carry no path and are
+ * never written back. Both are read-only reads of state the user can already
+ * see in the editor.
+ */
+export type MentionType = 'agent' | 'file' | 'problems' | 'git';
 
 export interface Mention {
   type: MentionType;

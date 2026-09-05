@@ -31,6 +31,14 @@ import type {
   SubAgentQuestionCallback
 } from '../types';
 
+/**
+ * Cap on a generated state summary (`@problems`, `@git`). These land in the
+ * prompt of the turn that mentions them, so an unbounded one would silently eat
+ * the context window. Module scope rather than a class property: the repo's
+ * naming rule wants camelCase for class members.
+ */
+const STATE_SUMMARY_CAP = 8_000;
+
 // Agent display names come from the Provider Manifest (Plan 02 Phase 1) via
 // getProviderDisplayName() — the local 7-entry map (which silently missed
 // opencode/ollama/localai/qwen-code) is gone.
@@ -78,6 +86,14 @@ export class MentionRouter {
         type: 'file_resolution_warning',
         content: `Could not read ${failedFiles.length} file(s): ${failedFiles.join(', ')}`
       };
+    }
+
+    // 1b. Workspace-state mentions (Plan 27 Phase 5). `@problems` and `@git`
+    // resolve to a generated summary, not a file: they are read-only views of
+    // state the user can already see in the editor, and nothing writes back.
+    const stateItems = await this._resolveStateMentions(mentions);
+    if (stateItems.length > 0) {
+      yield { type: 'files_resolved', resolvedFiles: stateItems };
     }
 
     // 2. Generate task list for agent mentions
@@ -705,6 +721,113 @@ export class MentionRouter {
   /**
    * Resolve @file mentions to transient ContextItems (not added to persistent context)
    */
+  /**
+   * Resolve `@problems` and `@git` into transient context items.
+   *
+   * Both are read-only and generated: `@problems` reads VS Code's own
+   * diagnostics (what the Problems panel shows) and `@git` reads the built-in
+   * git extension's API. Neither touches disk, neither can be written back, and
+   * a failure degrades to "not included" rather than failing the turn — a
+   * mention that cannot resolve must never cost the user their message.
+   */
+  private async _resolveStateMentions(mentions: Mention[]): Promise<ContextItem[]> {
+    const items: ContextItem[] = [];
+    const cap = (text: string): string => text.length > STATE_SUMMARY_CAP
+      ? `${text.slice(0, STATE_SUMMARY_CAP)}\n… [truncated]`
+      : text;
+
+    if (mentions.some(m => m.type === 'problems')) {
+      try {
+        const summary = this._summarizeDiagnostics();
+        items.push({
+          id: `mention_problems_${Date.now()}`,
+          type: 'file',
+          path: 'Problems (diagnostics)',
+          content: cap(summary),
+          language: 'text',
+        });
+      } catch (error) {
+        console.warn('[Mysti] @problems could not be resolved:', error);
+      }
+    }
+
+    if (mentions.some(m => m.type === 'git')) {
+      try {
+        const summary = await this._summarizeGit();
+        if (summary) {
+          items.push({
+            id: `mention_git_${Date.now()}`,
+            type: 'file',
+            path: 'Git status',
+            content: cap(summary),
+            language: 'text',
+          });
+        }
+      } catch (error) {
+        console.warn('[Mysti] @git could not be resolved:', error);
+      }
+    }
+    return items;
+  }
+
+  /** VS Code's own diagnostics — exactly what the Problems panel shows. */
+  private _summarizeDiagnostics(): string {
+    const all = vscode.languages.getDiagnostics();
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const sev = ['Error', 'Warning', 'Information', 'Hint'];
+    const lines: string[] = [];
+    let errors = 0;
+    let warnings = 0;
+
+    for (const [uri, diags] of all) {
+      if (diags.length === 0) { continue; }
+      const rel = root ? path.relative(root, uri.fsPath) : uri.fsPath;
+      for (const d of diags) {
+        if (d.severity === 0) { errors++; } else if (d.severity === 1) { warnings++; }
+        lines.push(`${rel}:${d.range.start.line + 1}:${d.range.start.character + 1} `
+          + `[${sev[d.severity] ?? 'Unknown'}] ${d.message}`);
+      }
+    }
+    if (lines.length === 0) { return 'No problems reported in the workspace.'; }
+    // Errors first — a 400-warning workspace must not bury the 2 errors.
+    lines.sort((a, b) => (a.includes('[Error]') ? 0 : 1) - (b.includes('[Error]') ? 0 : 1));
+    return `${errors} error(s), ${warnings} warning(s):\n\n${lines.join('\n')}`;
+  }
+
+  /** Branch, upstream, working-tree status and staged/unstaged file lists. */
+  private async _summarizeGit(): Promise<string | null> {
+    const ext = vscode.extensions.getExtension('vscode.git');
+    if (!ext) { return null; }
+    const api = (ext.isActive ? ext.exports : await ext.activate())?.getAPI?.(1);
+    const repo = api?.repositories?.[0];
+    if (!repo) { return null; }
+
+    const head = repo.state.HEAD;
+    const parts: string[] = [];
+    parts.push(`Branch: ${head?.name ?? '(detached)'}`);
+    if (head?.upstream) {
+      parts.push(`Upstream: ${head.upstream.remote}/${head.upstream.name} `
+        + `(ahead ${head.ahead ?? 0}, behind ${head.behind ?? 0})`);
+    } else {
+      parts.push('Upstream: none');
+    }
+
+    const fmt = (label: string, changes: Array<{ uri: { fsPath: string } }>): void => {
+      if (!changes?.length) { return; }
+      const root = repo.rootUri?.fsPath;
+      parts.push(`\n${label} (${changes.length}):`);
+      for (const c of changes.slice(0, 50)) {
+        parts.push(`  ${root ? path.relative(root, c.uri.fsPath) : c.uri.fsPath}`);
+      }
+      if (changes.length > 50) { parts.push(`  … and ${changes.length - 50} more`); }
+    };
+    fmt('Staged', repo.state.indexChanges);
+    fmt('Modified', repo.state.workingTreeChanges);
+    fmt('Untracked', repo.state.untrackedChanges ?? []);
+
+    return parts.join('\n');
+  }
+
   private async _resolveFileMentions(fileMentions: Mention[]): Promise<{ items: ContextItem[]; failedFiles: string[] }> {
     const items: ContextItem[] = [];
     const failedFiles: string[] = [];

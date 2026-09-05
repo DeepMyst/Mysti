@@ -9005,6 +9005,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       && vscode.workspace.isTrusted
       && new MystiSandbox().available();
     const skillHeader = skillsEnabled ? this._mystiSkillIndex().categoryHeader() : '';
+
+    // Plan 27 Phase 5 — the coordinator honours the SELECTED persona/skills.
+    //
+    // `buildPromptContext` had exactly one caller, BaseCliProvider, so the 20
+    // bundled personas, 16 skills and 6 roles reached the fifteen CLI backends
+    // and NOT the default agent. A user could pick "security" in the agent
+    // panel, switch to @mysti, and be silently ignored.
+    //
+    // Same builder, same two-tier contract as the CLI path: verified bundled
+    // content is instruction text, and non-verified (user/plugin/workspace)
+    // definitions arrive as a delimited reference block that must never prefix
+    // the trusted tier. This is a selection the USER made in the UI, so it is
+    // an instruction surface — not the untrusted repository-file family, which
+    // goes through _fenceUntrustedSystemBlock instead.
+    let agentPersonaContext = '';
+    try {
+      const agentConfig = this._conversationManager.getAgentConfig(conversationId);
+      if (agentConfig && this._agentContextManager) {
+        const ctx = await this._agentContextManager.buildPromptContext(agentConfig);
+        for (const warning of ctx.warnings) { console.warn(`[Mysti] coordinator agents: ${warning}`); }
+        agentPersonaContext = (ctx.systemPrompt ?? '') + (ctx.untrustedBlock ?? '');
+        if (agentPersonaContext) {
+          console.log(`[Mysti] coordinator: agent context ~${ctx.estimatedTokens} tokens`);
+        }
+      }
+    } catch (error) {
+      // Never fail a turn over persona assembly — the coordinator still works
+      // with its base prompt.
+      console.warn('[Mysti] coordinator: agent context failed, continuing without it:', error);
+    }
     // Per-RUN connect-card dedupe (review round-7 #8/#10): a run-LOCAL set, not
     // the shared instance field — so a background job dedupes correctly and one
     // run can never suppress or reset another concurrent run's connect cards.
@@ -9034,6 +9064,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const projectBrain = await this._buildMystiProjectBrain(nonce, delegateNonce);
     const messages: GatewayChatMessage[] = [
       { role: 'system', content: this._mystiAgenticSystemPrompt(backends, delegateNonce, gov, planMode, settings.accessLevel === 'read-only', execEnabled, connectEnabled, mcpToolset?.tools ?? [], skillHeader, capabilitiesEnabled, visualCaps, visualAppLine) },
+      // The user's persona/skill selection, AFTER the operating protocol so it
+      // shapes style and priorities without being able to restate the rules.
+      ...(agentPersonaContext ? [{ role: 'system' as const, content: agentPersonaContext }] : []),
       {
         role: 'user',
         content: this._buildMystiDirectPrompt(brief, context, conversation, nonce, delegateNonce)

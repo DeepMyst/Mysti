@@ -775,6 +775,30 @@
             });
           }
         });
+        // Plan 27 Phase 5 — workspace-state mentions. They score and sort with
+        // the agents so `@pro` reaches @problems, and they are listed there
+        // because they answer the same question ("who/what should look at
+        // this?") rather than naming a file.
+        [
+          { value: 'problems', displayName: 'Problems', shortName: 'problems',
+            hint: 'Errors and warnings from the Problems panel' },
+          { value: 'git', displayName: 'Git', shortName: 'git',
+            hint: 'Branch, upstream, staged and modified files' }
+        ].forEach(function(entry) {
+          var score = Math.max(fuzzyScore(entry.displayName, query), fuzzyScore(entry.shortName, query));
+          if (score >= 0) {
+            scoredAgents.push({
+              type: entry.value,          // 'problems' | 'git' — the MentionType
+              value: entry.value,
+              displayName: entry.displayName,
+              shortName: entry.shortName,
+              hint: entry.hint,
+              logo: null,
+              score: score
+            });
+          }
+        });
+
         // Sort agents by score descending
         scoredAgents.sort(function(a, b) { return b.score - a.score; });
 
@@ -1044,6 +1068,20 @@
         while ((match = regex.exec(content)) !== null) {
           var word = match[1].toLowerCase();
           var role = match[2] ? match[2].toLowerCase() : undefined;
+          // Plan 27 Phase 5 — workspace-state mentions. Checked BEFORE the file
+          // branch so a repo containing a file literally named `git` cannot
+          // shadow `@git`, and before the agent map so neither can be an agent
+          // id (both names are reserved by this check).
+          if (word === 'problems' || word === 'git') {
+            mentions.push({
+              type: word,
+              value: word,
+              displayName: '@' + word,
+              startIndex: match.index,
+              endIndex: match.index + match[0].length
+            });
+            continue;
+          }
           // M5: Check if it's a known agent shortname (not just any string)
           if (MENTION_SHORT_MAP[word]) {
             mentions.push({

@@ -268,6 +268,21 @@ export const commands = {
   executeCommand: () => Promise.resolve(),
 };
 
+/**
+ * `vscode.languages` — only what the code under test uses. `getDiagnostics()`
+ * with no argument returns every [uri, diagnostics] pair, which is what the
+ * `@problems` mention reads. Tests override it:
+ *   languages.getDiagnostics = () => [[{ fsPath: '/a.ts' }, [{ severity: 0, ... }]]];
+ * `resetLanguageStubs()` puts the empty default back.
+ */
+export const languages = {
+  getDiagnostics: (..._args: unknown[]): unknown[] => [],
+};
+
+export function resetLanguageStubs(): void {
+  languages.getDiagnostics = () => [];
+}
+
 export const extensions = {
   getExtension: (_id: string) => undefined as unknown,
   all: [] as unknown[],
