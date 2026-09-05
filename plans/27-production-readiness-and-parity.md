@@ -1425,6 +1425,55 @@ resolution anyway.
 4. **Treat ≤ 80 as aspirational** until there is a decision about what the product stops doing. 160 honest,
    working, correctly-scoped settings beat 80 reached by hiding things in JSON blobs.
 
+### 23.5 Phase 4 — half the slash menu was dead
+
+**Eight of the sixteen slash-menu entries advertised a description and did
+nothing.** Not missing features — broken wiring, and one of them was a pure
+direction bug.
+
+| Entry | Posted | Why it did nothing |
+|---|---|---|
+| `/share` `/init-team` `/memory` `/rules` | `trigger*` | `ChatViewProvider` has ALWAYS handled these exact names **webview → extension**; `SlashCommandManager` has always sent them **extension → webview**. The echo in the middle — which `triggerExport` and `triggerImport` have — was never written. `_initTeamWorkspace`, `_openProjectMemory`, `_openProjectRules` and the share builder were correct and unreachable. |
+| `/consult` `/review` `/critique` `/panel` | `composeCollaboration` | Addressed a webview picker that was never built. |
+| `/canvas` | `openCanvas` | No handler; `mysti.openCanvas` was a registered command all along. |
+
+The collaboration four now open a **native QuickPick** over the registered
+providers — a 16th backend appears with no edit, and the agent you are already
+talking to is excluded — and write the composed `@agent:role` mention into the
+input via `setInputValue`. **It writes rather than dispatches**: a slash command
+should not fan work out to several backends without the user seeing what will
+run and pressing Enter. Cancelling posts nothing; no second agent returns a
+sentence instead of silence.
+
+**Then four user-feedback messages that reached nobody**, of which one loses
+work: `mentionWarning` — @-mentions past the cap are dropped **silently**, so
+eight mentions run five agents and nothing says so, while the producer had
+already built the sentence explaining it. Plus `mystiUnavailable` (a dead end on
+the **default** agent), `permissionResult` and `editApplied`. All four now
+render through the existing `showToast`, which uses `textContent`.
+
+**Unhandled extension → webview types: 20 → 11.** The eleven left are a
+different class and are deliberately not touched: four are the collaboration
+live cards that `ChatViewProvider.ts:3282` records as F5-gated (the synthesized
+answer renders today), and the rest are editor-event and visual-test surfaces
+that need a design decision, not a receiver.
+
+**Two tests had to change, and both are the point:**
+- `slashCommandCollaboration.test.ts` asserted `composeCollaboration` was
+  **posted**, never that anything received it — exactly the shape that let eight
+  dead entries survive a green suite. It now asserts the outcome.
+- `setInputValueSingleHandler.test.ts` (written in Phase 2) **caught this change
+  itself**: it pinned "SlashCommandManager posts a bare string", no longer the
+  whole truth once the composer sends `{ value }`.
+
+`mockVscode` gained `showQuickPick` (defaulting to cancelled) and
+`resetWindowStubs()` — the audit had flagged it as covering 6 of 18 `window` APIs.
+
+**Gate 4 status:** diff before approving ✅ (Phase 2 + round 3) · every error
+offers an action 🟡 (these four now speak; the coordinator action card still
+reaches 1 of 16 agents) · every capability reachable from the UI 🟡 (the menu is
+live; the **Capabilities panel** is not built). **Gate 4 is not yet met.**
+
 ## 22. The branch decision (publish-safety review, 8 agents)
 
 **`DeepMyst/Mysti` is PUBLIC** (1,137 stars, 55 forks). A dev branch there would be public — visibility is
