@@ -43,6 +43,8 @@ import type { ArtifactPage, DocNode } from '../../src/types';
 import { getThemePreset } from '../../src/managers/CanvasThemePresets';
 import { getFormat } from '../../src/managers/CanvasFormats';
 import { buildFrameDocument } from '../../src/webview/canvas/sandboxDoc';
+import { getCanvasContent } from '../../src/webview/canvasContent';
+import { mintViewToken } from '../../src/canvas/protocol';
 
 const ROOT = path.resolve(__dirname, '../..');
 const SANDBOX = path.join(ROOT, 'resources/canvas-sandbox');
@@ -139,15 +141,15 @@ async function buildBundle(): Promise<string> {
  * The shell with its REAL policy: the exact shape `getCanvasContent` emits, with
  * the bundle inlined under the same nonce a webview script would carry.
  */
+function shellCspMeta(): string {
+  // Taken from the real emitter rather than hand-written: a model of the shell
+  // policy that drifts (this one carried `https:` scheme-sources J-6 removed)
+  // validates the live frame under a policy that no longer ships.
+  return realShellCspMeta('https://canvas.test.invalid', NONCE);
+}
+
 function shellHtml(): string {
-  const cspSource = 'https://canvas.test.invalid';
-  const csp = '<meta http-equiv="Content-Security-Policy" content="'
-    + 'default-src \'none\'; '
-    + `img-src ${cspSource} data: blob: https:; media-src data: blob:; `
-    + 'frame-src \'self\' blob: data:; child-src \'self\' blob: data:; '
-    + `style-src ${cspSource} 'unsafe-inline'; `
-    + `script-src 'nonce-${NONCE}' ${cspSource}; `
-    + `font-src ${cspSource} https: data:; connect-src ${cspSource} https: data:;">`;
+  const csp = shellCspMeta();
   const css = fs.readFileSync(path.join(ROOT, 'media/canvas/canvas.css'), 'utf8');
   return fs.readFileSync(path.join(ROOT, 'media/canvas/index.html'), 'utf8')
     .replace('{{cspMeta}}', csp)
@@ -155,6 +157,23 @@ function shellHtml(): string {
     .replace('{{boot}}', '')
     .replace(/<script[^>]*src="\{\{jsUri\}\}"[^>]*><\/script>/, `<script nonce="${NONCE}">${bundle}</script>`)
     .replace(/\{\{nonce\}\}/g, NONCE);
+}
+
+/**
+ * The shell's REAL `<meta http-equiv="Content-Security-Policy">`, taken from
+ * `getCanvasContent` (the same extraction `canvasShellCsp.test.ts` uses) with
+ * the generated nonce swapped for this file's fixed one.
+ */
+function realShellCspMeta(cspSource: string, nonce: string): string {
+  const webview = {
+    cspSource,
+    asWebviewUri: (uri: { fsPath: string }) => ({ toString: () => cspSource + uri.fsPath }),
+  } as never;
+  const extensionUri = { fsPath: ROOT, path: ROOT } as never;
+  const html = getCanvasContent(webview, extensionUri, '1.2.3', undefined, undefined, { viewToken: mintViewToken() });
+  const meta = /<meta http-equiv="Content-Security-Policy" content="[^"]+">/.exec(html);
+  if (!meta) { throw new Error('getCanvasContent emitted no CSP meta'); }
+  return meta[0].replace(/'nonce-[^']+'/, `'nonce-${nonce}'`);
 }
 
 /** A fresh shell + app + artifact, with every artboard's frame actually live. */
@@ -232,6 +251,27 @@ beforeAll(async () => {
   } catch (err) { unavailable = err instanceof Error ? err.message : String(err); }
 }, 180_000);
 afterAll(async () => { await browser?.close(); });
+
+describe('the shell policy this file loads the live frame under (static)', () => {
+  // Round-3 gate. This file's `shellHtml` claims "the shell with its REAL policy"
+  // and is the only test that runs a LIVE frame under it, so a hand-written
+  // model that drifts from `canvasContent.ts` validates the frame bundle under a
+  // policy that no longer ships. J-6 removed every `https:` scheme-source and
+  // added `form-action`/`base-uri`; this pins the model to the real emitter.
+  it('is the policy getCanvasContent actually emits (J-6: no https: scheme-source)', () => {
+    const meta = /content="([^"]+)"/.exec(shellCspMeta());
+    expect(meta).not.toBeNull();
+    const csp = meta![1];
+    expect(csp).not.toMatch(/\bhttps:(?=[\s;])/);
+    expect(csp).toContain("form-action 'none'");
+    expect(csp).toContain("base-uri 'none'");
+    // Directive-for-directive equality with the shipped shell, modulo the two
+    // per-instance tokens (cspSource, nonce).
+    const real = /content="([^"]+)"/.exec(realShellCspMeta('https://canvas.test.invalid', NONCE))![1];
+    const norm = (v: string) => v.split(';').map(d => d.trim()).filter(Boolean).sort();
+    expect(norm(csp)).toEqual(norm(real));
+  });
+});
 
 describe('canvas live artboard frames (real browser)', () => {
   /* ───────────── CANVAS-P3-4 — a device change must reach the frame ───────────── */

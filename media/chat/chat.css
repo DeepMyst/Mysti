@@ -2265,6 +2265,16 @@
       text-align: left;
     }
     .tools-menu-item:hover { background: var(--vscode-list-hoverBackground); }
+    /* A tool the active backend genuinely cannot do (e.g. prompt enhancement on
+       a provider with no enhancePrompt implementation) stays visible but inert,
+       with the reason in its tooltip — better than a live button that no-ops. */
+    .tools-menu-item:disabled,
+    .tools-menu-item[disabled] {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .tools-menu-item:disabled:hover,
+    .tools-menu-item[disabled]:hover { background: transparent; }
     .tools-menu-divider { height: 1px; background: var(--mysti-border); margin: 4px 0; }
 
     /* Plan 07: context files panel (above the input) */
@@ -4816,6 +4826,27 @@
       display: flex;
       gap: 8px;
       margin-bottom: 4px;
+    }
+
+    /* P0#2 — the diff on a PENDING permission card.
+       Deliberately not `.edit-report-diff`: that wrapper is `max-height: 0`
+       unless it sits inside an `.edit-report-card.expanded`, so reusing it
+       here would render an invisible diff. The ROWS inside are the shared
+       `.edit-report-diff-line` markup and pick up their colours from it. */
+    .permission-diff {
+      margin-top: 8px;
+      max-height: 220px;
+      overflow: auto;
+      background: var(--vscode-editor-background, var(--vscode-textCodeBlock-background));
+      border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+      border-radius: 4px;
+    }
+
+    .permission-diff-more {
+      padding: 4px 8px;
+      font-size: 11px;
+      opacity: 0.7;
+      border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
     }
 
     .permission-detail-row:last-child {
@@ -8604,4 +8635,44 @@
       font-weight: 600;
     }
     .mysti-signin-btn:hover { background: var(--vscode-button-hoverBackground); }
+
+    /* Plan 25 — recoverable-failure action card */
+    .mysti-action-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .mysti-action-row .mysti-signin-btn { margin-top: 0; }
+    .mysti-action-secondary {
+      background: var(--vscode-button-secondaryBackground, transparent);
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, rgba(128,128,128,0.35))) !important;
+    }
+    .mysti-action-secondary:hover {
+      background: var(--vscode-button-secondaryHoverBackground, rgba(128,128,128,0.15));
+    }
+    .mysti-action-agents {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .mysti-action-agent {
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      cursor: pointer;
+      background: var(--vscode-badge-background, rgba(128,128,128,0.2));
+      color: var(--vscode-badge-foreground, var(--vscode-foreground));
+      border: 1px solid transparent;
+    }
+    .mysti-action-agent:hover { border-color: var(--vscode-focusBorder); }
+    .mysti-action-note {
+      margin-top: 8px;
+      font-size: 12px;
+      opacity: 0.75;
+    }
+    .mysti-action-spent { opacity: 0.6; }
+    .mysti-action-spent button { cursor: default; }
 

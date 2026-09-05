@@ -648,7 +648,7 @@
         <span id="vt-mini-status-text">Visual Test: Running...</span>
         <button id="vt-mini-cancel" class="vt-mini-cancel">Cancel</button>
       </div>
-      <div id="badge-toast" class="badge-toast" onclick="this.classList.remove('show')">
+      <div id="badge-toast" class="badge-toast">
         <span class="badge-toast-icon" id="badge-toast-icon"></span>
         <div class="badge-toast-content">
           <span class="badge-toast-tier" id="badge-toast-tier"></span>
@@ -747,10 +747,16 @@
          updateThemeAwareLogos). -->
     <div id="agent-menu" class="agent-menu hidden">
       <div class="agent-menu-header">Select Agent</div>
-      <div class="agent-menu-item selected" data-agent="claude-code">
+      <div class="agent-menu-item selected" data-agent="mysti">
+        <span class="agent-item-icon"><img src="{{resourceBase}}/Mysti-Logo.png" alt="" /></span>
+        <span class="agent-item-name">Mysti</span>
+        <span class="agent-item-desc">Plans &amp; delegates across agents</span>
+        <span class="agent-item-badge">Active</span>
+      </div>
+      <div class="agent-menu-divider"></div>
+      <div class="agent-menu-item" data-agent="claude-code">
         <span class="agent-item-icon"><img src="{{resourceBase}}/icons/Claude.png" alt="" /></span>
         <span class="agent-item-name">Claude Code</span>
-        <span class="agent-item-badge">Active</span>
       </div>
       <div class="agent-menu-item" data-agent="cursor">
         <span class="agent-item-icon"><img class="cursor-logo" src="{{resourceBase}}/icons/cursor.png" alt="" /></span>
@@ -809,11 +815,6 @@
         <span class="agent-item-name">Kimi Code</span>
       </div>
       <div class="agent-menu-divider"></div>
-      <div class="agent-menu-item" data-agent="mysti">
-        <span class="agent-item-icon"><img src="{{resourceBase}}/Mysti-Logo.png" alt="" /></span>
-        <span class="agent-item-name">Mysti</span>
-        <span class="agent-item-desc">Plans &amp; delegates across agents</span>
-      </div>
       <div class="agent-menu-item" data-agent="brainstorm">
         <span class="agent-item-icon"><img src="{{resourceBase}}/Mysti-Logo.png" alt="" /></span>
         <span class="agent-item-name">Brainstorm</span>
@@ -846,8 +847,8 @@
         <div class="setup-error-icon">⚠️</div>
         <div class="setup-error-message"></div>
         <div class="setup-buttons">
-          <button class="setup-btn primary" onclick="postMessageWithPanelId({ type: 'retrySetup', payload: { providerId: state.setup.providerId } })">Retry</button>
-          <button class="setup-btn secondary" onclick="postMessageWithPanelId({ type: 'skipSetup' })">Skip</button>
+          <button id="setup-retry-btn" class="setup-btn primary">Retry</button>
+          <button id="setup-skip-btn" class="setup-btn secondary">Skip</button>
         </div>
       </div>
     </div>
@@ -1118,9 +1119,9 @@
 
       <!-- Footer -->
       <div class="wizard-footer">
-        <button class="wizard-skip-btn" onclick="postMessageWithPanelId({ type: 'dismissWizard', payload: { dontShowAgain: false } })">Skip for now</button>
+        <button class="wizard-skip-btn">Skip for now</button>
         <p class="wizard-footer-hint">You can configure providers later in Settings</p>
-        <button class="wizard-diagnose-btn" onclick="requestDiagnostics()">&#128269; Run Diagnostics</button>
+        <button class="wizard-diagnose-btn">&#128269; Run Diagnostics</button>
         <div id="diagnostics-panel" class="diagnostics-panel hidden"></div>
       </div>
     </div>
@@ -1190,9 +1191,6 @@
 
   <script nonce="{{nonce}}">window.__MYSTI_BOOT__ = {{bootJson}};</script>
   <script nonce="{{nonce}}" src="{{chatJsUri}}"></script>
-
-  <!-- Desk rail (Plan 26). Hidden until mysti.desk.enabled and a roster arrives. -->
-  <section id="desk-rail" class="desk-rail hidden" aria-label="Desk teammates"></section>
   <script nonce="{{nonce}}" src="{{deskJsUri}}"></script>
 </body>
 </html>

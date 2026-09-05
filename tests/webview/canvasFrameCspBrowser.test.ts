@@ -36,11 +36,21 @@ import type { ArtifactPage } from '../../src/types';
 
 const NONCE = 'testnonce0123456789';
 /**
- * The shell's real policy shape (src/webview/canvasContent.ts). `img-src`
- * carries `https:` there, so the INHERITED half never blocks a webview asset —
- * the block measured in R4-2 is entirely the frame's own hardened policy.
+ * What VS Code desktop hands an extension as `webview.cspSource`
+ * (`'self' https://*.vscode-cdn.net`; resources live under
+ * `https://file+.vscode-resource.vscode-cdn.net/…`).
  */
-const SHELL_CSP = `default-src 'none'; img-src data: blob: https:; style-src 'unsafe-inline'; script-src 'nonce-${NONCE}';`;
+const CSP_SOURCE = "'self' https://*.vscode-cdn.net";
+/**
+ * The shell's real policy shape (src/webview/canvasContent.ts). Since Plan 27
+ * J-6 `img-src` carries NO `https:` scheme-source there, so the INHERITED half
+ * is load-bearing too: a webview asset paints only because `cspSource`'s
+ * wildcard host matches the resource authority. The block measured in R4-2 is
+ * the frame's own hardened policy; this constant keeps the parent half honest.
+ */
+const SHELL_CSP = `default-src 'none'; img-src ${CSP_SOURCE} data: blob:; style-src 'unsafe-inline'; `
+  + `script-src 'nonce-${NONCE}'; font-src ${CSP_SOURCE} data:; connect-src ${CSP_SOURCE}; `
+  + `form-action 'none'; base-uri 'none';`;
 
 const PAGE: ArtifactPage = {
   id: 'p1', version: 1, actionTitle: 'Login', boardPos: { x: 0, y: 0 },

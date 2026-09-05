@@ -1,3 +1,4 @@
+/* global module */
 /**
  * Mysti - AI Coding Agent
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.

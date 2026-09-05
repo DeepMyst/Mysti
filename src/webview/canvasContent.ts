@@ -138,13 +138,25 @@ export function getCanvasContent(
     activeThemeId: 'clean-saas',
   };
 
+  // Plan 27 lane J, finding J-6. A `srcdoc` artboard INHERITS this policy —
+  // the frame's effective CSP is the intersection of this and its own — so
+  // the `https:` scheme-sources that used to sit in `img-src`, `font-src` and
+  // `connect-src` were the other half of the E-2 beacon, and `connect-src
+  // https:` made this the only Mysti webview that could fetch the internet.
+  // Everything the shell loads is named by `cspSource`: the lazy runtime fetch
+  // (`realEnv().fetchText` on `runtimeUris`/`harnessUri`/`babelUri`, all
+  // `asWebviewUri` outputs) and every image (`asset://` refs resolved to the
+  // webview asset origin in boot.ts). canvas.css declares no `@font-face`.
+  // `form-action`/`base-uri` do not fall back to `default-src`; the chat panel
+  // (media/chat/index.html, Plan 23 B2) already sets both to 'none'.
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="`
     + `default-src 'none'; `
-    + `img-src ${cspSource} data: blob: https:; media-src data: blob:; `
+    + `img-src ${cspSource} data: blob:; media-src data: blob:; `
     + `frame-src 'self' blob: data:; child-src 'self' blob: data:; `
     + `style-src ${cspSource} 'unsafe-inline'; `
     + `script-src 'nonce-${nonce}' ${cspSource}; `
-    + `font-src ${cspSource} https: data:; connect-src ${cspSource} https: data:;">`;
+    + `font-src ${cspSource} data:; connect-src ${cspSource}; `
+    + `form-action 'none'; base-uri 'none';">`;
 
   // Escape `<` so nothing in the boot JSON can break out of the <script> tag
   // (e.g. a literal `</script>`); `<` is valid JSON.

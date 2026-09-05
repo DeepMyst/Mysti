@@ -353,8 +353,10 @@
           contextWindow: 200000,
           percentage: 0
         },
+        // Last prompt the user sent (Plan 25 retry affordance; memory only)
+        lastSentContent: '',
         // Brainstorm mode state
-        activeAgent: 'claude-code', // mysti:provider-literals:allow-line — bootstrap default, replaced by initialState
+        activeAgent: 'mysti', // Plan 25 bootstrap default (pseudo-agent, no provider literal), replaced by initialState
         brainstormSession: null,
         brainstormPhase: null,
         brainstormStrategy: null,
@@ -1024,7 +1026,7 @@
         var mentions = [];
         // M3/Plan 14: allows alphanumeric, hyphens, dots, slashes, underscores,
         // plus an optional ":role" suffix for the @agent:role collaboration grammar.
-        var regex = /@([\w\-.\/]+)(?::([\w-]+))?/g;
+        var regex = /@([\w\-./]+)(?::([\w-]+))?/g;
         var match;
         while ((match = regex.exec(content)) !== null) {
           var word = match[1].toLowerCase();
@@ -1716,6 +1718,31 @@
         });
       }
 
+      /**
+       * Scroll the transcript to the newest content.
+       *
+       * D-2: 21 call sites referenced `scrollToBottom()` and NOTHING in this
+       * file defined it. Everything here lives inside one IIFE with no `window`
+       * export, so every one of those calls threw a ReferenceError and aborted
+       * its render half-finished - including the coordinator card, the
+       * background-job card, the brainstorm synthesis message and, worst,
+       * `handlePermissionRequest`, whose throw landed after `card.focus()` and
+       * stopped the handler returning normally.
+       *
+       * The body is the idiom already repeated inline ~20 times in this file
+       * (`messagesEl.scrollTop = messagesEl.scrollHeight`); there was no named
+       * sibling helper to reuse, so this becomes the one.
+       *
+       * It looks the element up rather than closing over the module-level
+       * `const messagesEl` (declared further down) so it is safe to call from
+       * any code path, including one that runs before that binding initialises
+       * - `typeof` does not protect against a `const` temporal dead zone.
+       */
+      function scrollToBottom() {
+        var el = document.getElementById('messages');
+        if (el) { el.scrollTop = el.scrollHeight; }
+      }
+
       // Helper to convert absolute paths to relative paths
       function makeRelativePath(absolutePath) {
         if (!absolutePath || !state.workspacePath) return absolutePath;
@@ -2371,7 +2398,7 @@
         var cursorPos = inputEl.selectionStart;
         var textBeforeCursor = inputEl.value.substring(0, cursorPos);
         // Plan 14: "@<knownAgent>:<partial>" → role picker; otherwise agent/file picker.
-        var roleMatch = textBeforeCursor.match(/@([\w\-.\/]+):([\w-]*)$/);
+        var roleMatch = textBeforeCursor.match(/@([\w\-./]+):([\w-]*)$/);
         var roleAgentShort = roleMatch ? resolveAgentShortName(roleMatch[1]) : null;
         var mentionMatch = textBeforeCursor.match(/@(\S*)$/);
 
@@ -2465,6 +2492,68 @@
           }
         }
       });
+
+      /**
+       * D-1: static chrome that used to carry inline `on*=` attributes.
+       *
+       * index.html ships `script-src 'nonce-...'` with no `'unsafe-inline'`.
+       * A nonce authorises SCRIPT ELEMENTS only — it can never authorise an
+       * inline event handler attribute, so every one of these five buttons was
+       * dead on arrival in the packaged extension. The worst of them was
+       * `.wizard-skip-btn`: the setup wizard's ONLY exit, on a full-screen
+       * overlay, which meant a first-run user with no CLI installed could not
+       * reach the chat at all.
+       *
+       * They are bound here instead. Everything below is a static element that
+       * exists in index.html at load time, so a one-shot binding is enough —
+       * no delegation, no re-binding on re-render.
+       */
+      var badgeToastEl = document.getElementById('badge-toast');
+      if (badgeToastEl) {
+        badgeToastEl.addEventListener('click', function() {
+          badgeToastEl.classList.remove('show');
+        });
+      }
+
+      var setupRetryBtn = document.getElementById('setup-retry-btn');
+      if (setupRetryBtn) {
+        setupRetryBtn.addEventListener('click', function() {
+          postMessageWithPanelId({
+            type: 'retrySetup',
+            payload: { providerId: state.setup && state.setup.providerId }
+          });
+        });
+      }
+
+      var setupSkipBtn = document.getElementById('setup-skip-btn');
+      if (setupSkipBtn) {
+        setupSkipBtn.addEventListener('click', function() {
+          postMessageWithPanelId({ type: 'skipSetup' });
+        });
+      }
+
+      var wizardSkipBtn = document.querySelector('.wizard-skip-btn');
+      if (wizardSkipBtn) {
+        wizardSkipBtn.addEventListener('click', function() {
+          // `dontShowAgain: true` — a dismissal has to STICK. Posting `false`
+          // (what the dead inline handler did) left the extension free to
+          // re-raise the same wall on the next panel load.
+          postMessageWithPanelId({
+            type: 'dismissWizard',
+            payload: { dontShowAgain: true }
+          });
+          // Optimistically clear the overlay so the exit works even if the
+          // extension never answers; `wizardDismissed` also calls this.
+          handleWizardDismissed();
+        });
+      }
+
+      var wizardDiagnoseBtn = document.querySelector('.wizard-diagnose-btn');
+      if (wizardDiagnoseBtn) {
+        wizardDiagnoseBtn.addEventListener('click', function() {
+          requestDiagnostics();
+        });
+      }
 
       settingsBtn.addEventListener('click', function() {
         settingsPanel.classList.toggle('hidden');
@@ -3919,7 +4008,7 @@
         var provider = state.providers.find(function(p) { return p.name === providerId; });
         if (provider && provider.models) {
           modelSelect.innerHTML = provider.models.map(function(m) {
-            return '<option value="' + m.id + '">' + m.name + '</option>';
+            return '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(m.name || m.id) + '</option>';
           }).join('');
 
           // Append "Custom..." option for custom model override
@@ -3943,9 +4032,70 @@
           customModelInput.style.borderColor = '';
         }
 
+        // Plan 01 Phase 4: ask the extension for this provider's current list.
+        // It answers synchronously from the registry's merged view and, when the
+        // cached list is past its TTL, kicks a background probe whose result
+        // arrives later as another 'modelsUpdated' — so switching agents keeps
+        // the picker self-healing without ever blocking the switch.
+        postMessageWithPanelId({ type: 'requestModels', payload: { provider: providerId } });
+
         // W4: render this provider's declarative settings sections
         renderProviderSettingsSections(providerId);
         syncInlineSelectors();
+      }
+
+      /**
+       * Plan 01 Phase 4: repaint the model picker from a provider's current list
+       * WITHOUT changing what is selected. Used by background model updates, which
+       * may land mid-conversation — silently switching the user's model there would
+       * be a real bug, so the active id is kept (and re-appended if the refreshed
+       * list no longer carries it).
+       */
+      function renderModelOptions(provider) {
+        if (!modelSelect || !provider || !Array.isArray(provider.models)) return;
+
+        var selected = modelSelect.value;
+        var activeId = (selected && selected !== '__custom__')
+          ? selected
+          : (state.settings && state.settings.model) || '';
+
+        var models = provider.models.slice();
+        if (activeId && !models.some(function(m) { return m.id === activeId; })) {
+          models.push({ id: activeId, name: activeId });
+        }
+
+        modelSelect.innerHTML = models.map(function(m) {
+          return '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(m.name || m.id) + '</option>';
+        }).join('') + '<option value="__custom__">Custom...</option>';
+
+        // Restore the prior selection ('__custom__' included — a custom model
+        // override must survive a background list refresh).
+        if (selected) {
+          modelSelect.value = selected;
+        } else if (activeId) {
+          modelSelect.value = activeId;
+        }
+        syncInlineSelectors();
+      }
+
+      /**
+       * Plan 01 Phase 4: merge an extension-pushed model list into state.providers.
+       * Every panel merges (so a later agent switch reads the fresh list), but only
+       * the panel currently showing that provider repaints.
+       */
+      function applyModelsUpdate(payload) {
+        if (!payload || !payload.provider || !Array.isArray(payload.models)) return;
+        if (!state.providers || state.providers.length === 0) return;
+
+        var provider = state.providers.find(function(p) { return p.name === payload.provider; });
+        if (!provider) return;
+
+        provider.models = payload.models;
+        if (payload.defaultModel) provider.defaultModel = payload.defaultModel;
+
+        if (state.settings && state.settings.provider === payload.provider) {
+          renderModelOptions(provider);
+        }
       }
 
       function updateAgentMenuSelection() {
@@ -3988,6 +4138,9 @@
         if (providerSelect && !isPseudoAgent && providerSelect.value !== state.activeAgent) {
           providerSelect.value = state.activeAgent;
         }
+        // Prompt enhancement is per-backend, so the affordance re-resolves on
+        // every agent switch (this runs at all provider-change sites).
+        updateEnhanceAffordance();
       }
 
       // W7: refresh every theme-aware provider logo from the manifest
@@ -4013,6 +4166,67 @@
         });
       }
 
+      // Prompt enhancement is capability-driven: only some backends implement
+      // enhancePrompt(). The button used to stay live for all of them, round-trip
+      // to the extension and hand back byte-identical text — indistinguishable
+      // from a broken button. Resolve, in order: the active provider itself, then
+      // any INSTALLED capable backend (the extension will route there and say so),
+      // then nothing, in which case the button is disabled with the reason.
+      // Returns null when we cannot decide yet (no manifest, or a pseudo-agent
+      // like brainstorm/mysti that resolves server-side) — the button stays
+      // enabled and the extension answers authoritatively on click.
+      function resolveEnhanceProvider() {
+        var manifest = state.providerManifest;
+        if (!manifest || !manifest.providers || manifest.providers.length === 0) {
+          return null;
+        }
+        var activeId = state.settings && state.settings.provider;
+        var entries = manifest.providers;
+        var activeEntry = null;
+        var i;
+        for (i = 0; i < entries.length; i++) {
+          if (entries[i].id === activeId) { activeEntry = entries[i]; break; }
+        }
+        // Pseudo-agents (brainstorm, mysti) have no manifest entry; the
+        // extension resolves them against mysti.defaultProvider.
+        if (!activeEntry) { return null; }
+        if (activeEntry.capabilities && activeEntry.capabilities.supportsPromptEnhancement) {
+          return { id: activeEntry.id, name: activeEntry.displayName, fallback: false };
+        }
+        var availability = state.providerAvailability || {};
+        for (i = 0; i < entries.length; i++) {
+          var entry = entries[i];
+          if (entry.id === activeId) { continue; }
+          if (!entry.capabilities || !entry.capabilities.supportsPromptEnhancement) { continue; }
+          if (availability[entry.id] && availability[entry.id].available) {
+            return { id: entry.id, name: entry.displayName, fallback: true };
+          }
+        }
+        return { id: null, name: activeEntry.displayName, fallback: false, unavailable: true };
+      }
+
+      function updateEnhanceAffordance() {
+        if (!enhanceBtn) return;
+        // A click already in flight owns the button's label/state.
+        if (enhanceBtn.classList.contains('enhancing')) return;
+
+        var resolved = resolveEnhanceProvider();
+        if (!resolved) {
+          enhanceBtn.disabled = false;
+          enhanceBtn.title = 'Enhance prompt';
+          return;
+        }
+        if (resolved.unavailable) {
+          enhanceBtn.disabled = true;
+          enhanceBtn.title = resolved.name + ' cannot enhance prompts, and no other installed agent can either';
+          return;
+        }
+        enhanceBtn.disabled = false;
+        enhanceBtn.title = resolved.fallback
+          ? 'Enhance prompt (via ' + resolved.name + ')'
+          : 'Enhance prompt';
+      }
+
       /**
        * Update provider availability in the UI
        * - Disables unavailable providers in dropdowns and agent menu
@@ -4021,6 +4235,7 @@
        */
       function updateProviderAvailability() {
         if (!state.providerAvailability) return;
+        updateEnhanceAffordance();
 
         var availability = state.providerAvailability;
 
@@ -4177,6 +4392,7 @@
 
       var enhanceTimeout = null;
       enhanceBtn.addEventListener('click', function() {
+        if (enhanceBtn.disabled) { return; }
         if (inputEl.value.trim() && !enhanceBtn.classList.contains('enhancing')) {
           // Add enhancing state - show loader and disable inputs
           enhanceBtn.classList.add('enhancing');
@@ -4188,7 +4404,7 @@
           enhanceTimeout = setTimeout(function() {
             if (enhanceBtn.classList.contains('enhancing')) {
               enhanceBtn.classList.remove('enhancing');
-              enhanceBtn.title = 'Enhance prompt';
+              updateEnhanceAffordance();
               var ia = document.querySelector('.input-area');
               if (ia) ia.classList.remove('enhancing');
               inputEl.placeholder = 'Enhancement timed out. Try again.';
@@ -4429,6 +4645,15 @@
             }
             break;
 
+          case 'modelsUpdated':
+            // Plan 01 Phase 4: model lists are NOT final at initialState — the
+            // automatic post-activation warm-up refreshes each agent's list in
+            // the background, and local servers / custom models can change one
+            // at any time. Merge and repaint in place; never move the user's
+            // current selection.
+            applyModelsUpdate(message.payload);
+            break;
+
           case 'providerAvailability':
             // Plan 03 Phase 3a: provider statuses are NOT final at
             // initialState — the extension posts this follow-up once the
@@ -4665,12 +4890,22 @@
             inputEl.value = message.payload;
             inputEl.focus();
             break;
-          case 'setInputValue':
-            inputEl.value = message.payload;
+          case 'setInputValue': {
+            // Two senders, two shapes: SlashCommandManager posts a bare string
+            // ('@'); the "Keep Planning" path posts { value }. A second handler
+            // for this label further down was unreachable (first matching case
+            // wins), so Keep Planning was writing "[object Object]" into the box.
+            var incoming = message.payload;
+            var text = (incoming !== null && typeof incoming === 'object')
+              ? (incoming.value === undefined || incoming.value === null ? '' : String(incoming.value))
+              : (incoming === undefined || incoming === null ? '' : String(incoming));
+            inputEl.value = text;
+            autoResizeTextarea();
             inputEl.focus();
             // Trigger input event to activate @-mention or slash menu detection
             inputEl.dispatchEvent(new Event('input'));
             break;
+          }
           case 'promptEnhanced':
             // Clear safety timeout
             if (enhanceTimeout) {
@@ -4679,13 +4914,54 @@
             }
             // Reset enhancing state
             enhanceBtn.classList.remove('enhancing');
-            enhanceBtn.title = 'Enhance prompt';
             var inputAreaReset = document.querySelector('.input-area');
             if (inputAreaReset) inputAreaReset.classList.remove('enhancing');
 
-            inputEl.value = message.payload;
+            // Payload is a PromptEnhancedPayload object; a bare string is the
+            // legacy shape a cached webview may still receive mid-upgrade.
+            var enhancedPayload = (typeof message.payload === 'string')
+              ? { prompt: message.payload, changed: true, fallback: false, enhancedBy: '' }
+              : (message.payload || { prompt: inputEl.value, changed: false, fallback: false, enhancedBy: '' });
+
+            if (enhancedPayload.changed === false) {
+              // Every backend's enhancePrompt() resolves the ORIGINAL prompt when
+              // its CLI fails, so an unchanged result is a no-op, not a success.
+              // Say so instead of silently repainting identical text.
+              showToast(
+                enhancedPayload.enhancedBy
+                  ? enhancedPayload.enhancedBy + ' returned no changes to the prompt'
+                  : 'No changes suggested for this prompt',
+                'warning'
+              );
+            } else {
+              inputEl.value = enhancedPayload.prompt;
+              if (enhancedPayload.fallback && enhancedPayload.enhancedBy) {
+                // The prompt was rewritten by a DIFFERENT backend than the
+                // selected one — attribute it rather than doing it silently.
+                showToast('Enhanced by ' + enhancedPayload.enhancedBy, 'info');
+              }
+            }
+            updateEnhanceAffordance();
             inputEl.focus();
             autoResizeTextarea();
+            break;
+
+          case 'promptEnhanceUnavailable':
+            // Authoritative "nothing installed can do this" from the extension:
+            // stop the spinner and disable the button with the reason, instead
+            // of handing back identical text and looking broken.
+            if (enhanceTimeout) {
+              clearTimeout(enhanceTimeout);
+              enhanceTimeout = null;
+            }
+            enhanceBtn.classList.remove('enhancing');
+            var inputAreaUnavail = document.querySelector('.input-area');
+            if (inputAreaUnavail) inputAreaUnavail.classList.remove('enhancing');
+
+            enhanceBtn.disabled = true;
+            enhanceBtn.title = (message.payload && message.payload.reason) || 'Prompt enhancement is not available';
+            showToast(enhanceBtn.title, 'warning');
+            inputEl.focus();
             break;
           case 'promptEnhanceError':
             // Clear safety timeout
@@ -4695,9 +4971,9 @@
             }
             // Reset enhancing state on error
             enhanceBtn.classList.remove('enhancing');
-            enhanceBtn.title = 'Enhance prompt';
             var inputAreaError = document.querySelector('.input-area');
             if (inputAreaError) inputAreaError.classList.remove('enhancing');
+            updateEnhanceAffordance();
 
             // Show error briefly in the input area
             var originalPlaceholder = inputEl.placeholder;
@@ -4809,11 +5085,24 @@
           case 'mystiSignInRequired':
             handleMystiSignInRequired(message.payload);
             break;
+          case 'mystiActionRequired':
+            renderMystiActionCard(message.payload);
+            break;
           case 'agentChanged':
             state.activeAgent = message.payload.agent;
             state.settings.provider = message.payload.agent;
             // Sync provider dropdown
             if (providerSelect) providerSelect.value = message.payload.agent;
+            // Plan 25: an extension-driven switch (the action card's "switch to
+            // another agent") must repaint the same surfaces a menu click does,
+            // or the model picker and capability chips keep showing the agent
+            // the user just switched AWAY from.
+            if (message.payload.agent !== 'brainstorm' && message.payload.agent !== 'mysti') {
+              updateModelsForProvider(message.payload.agent);
+            }
+            updateThinkingSectionVisibility(message.payload.agent);
+            updateEffortSectionVisibility(message.payload.agent);
+            updateStrategyIndicatorVisibility(message.payload.agent);
             updateAgentMenuSelection();
             break;
           case 'modelChanged':
@@ -4830,12 +5119,6 @@
             if (modeSelect) modeSelect.value = newMode;
             updateBehaviorIndicator();
         updateBehaviorHint();
-            break;
-          case 'setInputValue':
-            // For "Keep Planning" - insert prompt into input field
-            inputEl.value = message.payload.value;
-            autoResizeTextarea();
-            inputEl.focus();
             break;
           // Setup message handlers
           case 'setupStatus':
@@ -6123,11 +6406,17 @@
           html += '</div>';
         }
 
-        // Copy button
-        html += '<button class="diagnostics-copy-btn" onclick="copyDiagnostics()">&#128203; Copy to Clipboard</button>';
+        // Copy button. Bound below, never inline: the webview's script-src is
+        // nonce-only, so an `onclick=` attribute is inert (and `copyDiagnostics`
+        // lives inside this IIFE with no window export, so it would throw even
+        // under a permissive policy).
+        html += '<button class="diagnostics-copy-btn" type="button">&#128203; Copy to Clipboard</button>';
 
         panel.innerHTML = html;
         panel.classList.remove('hidden');
+
+        var copyBtn = panel.querySelector('.diagnostics-copy-btn');
+        if (copyBtn) { copyBtn.addEventListener('click', copyDiagnostics); }
 
         // Store for copy
         panel.setAttribute('data-diagnostics', JSON.stringify(result, null, 2));
@@ -7318,6 +7607,19 @@
           err.textContent = payload.error || 'Background job failed';
           card.appendChild(err);
         }
+        // Plan 25: a background credential failure is as recoverable as a
+        // foreground one — render the same action card below the job card.
+        if (payload.reason) {
+          renderMystiActionCard({
+            reason: payload.reason,
+            message: payload.error || 'Mysti could not run this background task.',
+            actions: payload.actions,
+            agents: payload.agents,
+            // The bg brief is not `lastSentContent`, so never offer to re-send
+            // something the user did not type here.
+            retryable: false
+          });
+        }
         delete jobOutputText[payload.jobId];
       }
 
@@ -7337,24 +7639,148 @@
         addSystemMessage('Background jobs:\n' + lines);
       }
 
-      // Mysti runs on the user's DeepMyst account — prompt sign-in when needed.
-      function handleMystiSignInRequired(payload) {
+      /**
+       * Plan 25 — the one card every recoverable Mysti failure renders into.
+       *
+       * A credential problem the user cannot act on from where they are reading
+       * it is a dead end, so this NEVER renders as bare text: each reason maps
+       * to buttons, and "switch agent" is offered on all of them because it is
+       * the one action that always works.
+       *
+       * `actions` and `agents` come from the extension (which owns the
+       * availability map); the webview only draws them.
+       */
+      var MYSTI_ACTION_LABELS = {
+        signIn: { label: 'Sign in to DeepMyst', primary: true, message: 'signInDeepMyst' },
+        signInAgain: { label: 'Sign in again', primary: true, message: 'signInDeepMystAgain' },
+        signUp: { label: 'Create an account', primary: false, message: 'openDeepMystSignup' },
+        topUp: { label: 'Top up credits', primary: true, message: 'openDeepMystBilling' },
+        openRouterSettings: { label: 'Open OpenRouter settings', primary: true, message: 'openOpenRouterSettings' }
+      };
+
+      function renderMystiActionCard(payload) {
         payload = payload || {};
         hideLoading();
+
+        var actions = Array.isArray(payload.actions) ? payload.actions : ['signIn'];
+        var agents = Array.isArray(payload.agents) ? payload.agents : [];
+        var retryContent = payload.retryable ? (state.lastSentContent || '') : '';
+        // One shot per card. `disabled` alone would be enough in a browser, but
+        // a duplicate send is a duplicate SPEND — guard it explicitly.
+        var spent = false;
+
         var div = document.createElement('div');
-        div.className = 'message assistant mysti-signin-card';
-        div.innerHTML =
-          '<div class="message-body"><div class="message-content">' +
-            escapeHtml(payload.message || 'Sign in to DeepMyst to use the Mysti agent.') +
-          '</div><button class="mysti-signin-btn" type="button">Sign in to DeepMyst</button></div>';
-        var btn = div.querySelector('.mysti-signin-btn');
-        if (btn) {
+        div.className = 'message assistant mysti-signin-card mysti-action-card';
+
+        var body = document.createElement('div');
+        body.className = 'message-body';
+
+        var content = document.createElement('div');
+        content.className = 'message-content';
+        content.textContent = payload.message || 'Mysti could not run this turn.';
+        body.appendChild(content);
+
+        var row = document.createElement('div');
+        row.className = 'mysti-action-row';
+
+        actions.forEach(function(action) {
+          if (action === 'switchAgent' || action === 'retry') return; // handled below
+          var spec = MYSTI_ACTION_LABELS[action];
+          if (!spec) return;
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'mysti-signin-btn' + (spec.primary ? '' : ' mysti-action-secondary');
+          btn.textContent = spec.label;
           btn.addEventListener('click', function() {
-            postMessageWithPanelId({ type: 'signInDeepMyst' });
+            postMessageWithPanelId({ type: spec.message });
           });
+          row.appendChild(btn);
+        });
+
+        // "Switch to another agent" — only offered when there IS one installed.
+        if (actions.indexOf('switchAgent') !== -1 && agents.length > 0) {
+          var switchBtn = document.createElement('button');
+          switchBtn.type = 'button';
+          switchBtn.className = 'mysti-signin-btn mysti-action-secondary';
+          switchBtn.textContent = 'Switch to another agent';
+          var list = document.createElement('div');
+          list.className = 'mysti-action-agents';
+          list.hidden = true;
+          agents.forEach(function(agent) {
+            if (!agent || !agent.id) return;
+            var item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'mysti-action-agent';
+            item.textContent = agent.name || agent.id;
+            item.addEventListener('click', function() {
+              if (spent) return;
+              disableCard();
+              postMessageWithPanelId({
+                type: 'switchAgentAndRetry',
+                payload: { agentId: agent.id, retryContent: retryContent }
+              });
+            });
+            list.appendChild(item);
+          });
+          switchBtn.addEventListener('click', function() {
+            list.hidden = !list.hidden;
+          });
+          row.appendChild(switchBtn);
+          body.appendChild(row);
+          body.appendChild(list);
+        } else {
+          if (actions.indexOf('switchAgent') !== -1) {
+            var none = document.createElement('div');
+            none.className = 'mysti-action-note';
+            none.textContent = 'No other agent is installed yet — install one from the agent menu to have a fallback.';
+            body.appendChild(row);
+            body.appendChild(none);
+          } else {
+            body.appendChild(row);
+          }
         }
+
+        // Retry runs the same prompt again on the SAME agent, once — a hard 401
+        // must not be click-loopable into repeated spend.
+        if (actions.indexOf('retry') !== -1 && retryContent) {
+          var retryBtn = document.createElement('button');
+          retryBtn.type = 'button';
+          retryBtn.className = 'mysti-signin-btn mysti-action-secondary';
+          retryBtn.textContent = 'Retry';
+          retryBtn.addEventListener('click', function() {
+            if (spent) return;
+            disableCard();
+            postMessageWithPanelId({
+              type: 'switchAgentAndRetry',
+              payload: { agentId: state.activeAgent, retryContent: retryContent }
+            });
+          });
+          row.appendChild(retryBtn);
+        }
+
+        function disableCard() {
+          spent = true;
+          div.classList.add('mysti-action-spent');
+          var all = div.querySelectorAll('button');
+          for (var i = 0; i < all.length; i++) { all[i].disabled = true; }
+        }
+
+        div.appendChild(body);
         messagesEl.appendChild(div);
         scrollToBottom();
+      }
+
+      // Mysti runs on the user's DeepMyst account — prompt sign-in when needed.
+      // Kept as a thin caller so there is exactly ONE card implementation.
+      function handleMystiSignInRequired(payload) {
+        payload = payload || {};
+        renderMystiActionCard({
+          reason: 'signin',
+          message: payload.message || 'Sign in to DeepMyst to use the Mysti agent.',
+          actions: ['signIn', 'signUp'],
+          agents: payload.agents || [],
+          retryable: false
+        });
       }
 
       function makeCollapsible(sectionId, label) {
@@ -7946,9 +8372,7 @@
         // Initialize agent configuration
         if (state.availablePersonas && state.availableSkills) {
           // Set agentConfig from conversation or use default
-          if (state.agentConfig) {
-            state.agentConfig = state.agentConfig;
-          } else {
+          if (!state.agentConfig) {
             state.agentConfig = { personaId: null, enabledSkills: [] };
           }
           renderAgentConfigPanel();
@@ -8067,11 +8491,11 @@
         var out = [];
         if (!dataTransfer) { return out; }
         var raw = '';
-        try { raw = dataTransfer.getData('text/uri-list') || dataTransfer.getData('application/vnd.code.uri-list') || ''; } catch (e) {}
+        try { raw = dataTransfer.getData('text/uri-list') || dataTransfer.getData('application/vnd.code.uri-list') || ''; } catch (e) { /* unreadable drop payload — treat as empty */ }
         raw.split(/\r?\n/).forEach(function(line) {
           line = (line || '').trim();
           if (line && line.indexOf('file:') === 0) {
-            try { out.push(decodeURIComponent(line.replace(/^file:\/\//, ''))); } catch (e) {}
+            try { out.push(decodeURIComponent(line.replace(/^file:\/\//, ''))); } catch (e) { /* malformed URI — skip this line */ }
           }
         });
         return out;
@@ -8352,6 +8776,11 @@
 
         // Parse @-mentions from content
         var parsedMentions = parseMentionsFromContent(content);
+
+        // Plan 25: the last thing the user actually asked for, so a credential
+        // failure can offer "switch agent and retry" instead of making them
+        // retype it. Kept in memory only — never persisted, never sent unasked.
+        state.lastSentContent = content;
 
         // Check if brainstorm mode is selected (use activeAgent which is set synchronously)
         if (state.activeAgent === 'brainstorm') {
@@ -9269,8 +9698,13 @@
         card.dataset.id = request.id;
         card.tabIndex = 0;
 
+        // P0#2 / H-1: the diff this card is gating, parsed ONCE for the whole
+        // card (headline, expanded state and details) — it used to run the
+        // differ a second time for the same card.
+        var editInfo = permissionEditInfo(request);
+
         // Build question-framed title
-        var questionTitle = buildPermissionQuestion(request);
+        var questionTitle = buildPermissionQuestion(request, editInfo);
 
         // Timer
         var timeRemaining = request.expiresAt > 0 ? Math.max(0, request.expiresAt - Date.now()) : 0;
@@ -9290,11 +9724,21 @@
           ? '<span><span class="permission-paused-dot"></span>Paused</span>'
           : '';
 
+        // P0#2: a card carrying a real diff opens with it VISIBLE. `.permission-details`
+        // is `display: none` until `.expanded`, so a diff rendered behind
+        // "Show details" would be the same defect as no diff at all.
+        var hasDiff = !!editInfo;
+        // Extension-minted (`perm_<uuid>`), but this card is the one surface
+        // that must not be spoofable, so nothing reaches an attribute raw.
+        var cardId = escapeHtml(request.id);
+
         card.innerHTML =
           '<div class="permission-question">' + escapeHtml(questionTitle) + '</div>' +
-          '<div class="permission-details-toggle" data-target="details-' + request.id + '">Show details</div>' +
-          '<div class="permission-details" id="details-' + request.id + '">' +
-            renderPermissionDetails(request) +
+          '<div class="permission-details-toggle" data-target="details-' + cardId + '">' +
+            (hasDiff ? 'Hide details' : 'Show details') +
+          '</div>' +
+          '<div class="permission-details' + (hasDiff ? ' expanded' : '') + '" id="details-' + cardId + '">' +
+            renderPermissionDetails(request, editInfo) +
           '</div>' +
           '<div class="permission-options">' +
             '<button class="permission-option approve-option" data-action="approve">' +
@@ -9311,11 +9755,11 @@
             '</button>' +
           '</div>' +
           '<div class="permission-custom-input">' +
-            '<input type="text" placeholder="Tell Mysti what to do instead..." data-request-id="' + request.id + '" />' +
+            '<input type="text" placeholder="Tell Mysti what to do instead..." data-request-id="' + cardId + '" />' +
           '</div>' +
           '<div class="permission-footer">' +
             '<span>Esc to cancel' + (pausedHtml ? ' · ' : '') + pausedHtml + '</span>' +
-            (timerText ? '<span class="permission-timer ' + timerClass + '" data-expires="' + request.expiresAt + '">' + timerText + '</span>' : '') +
+            (timerText ? '<span class="permission-timer ' + timerClass + '" data-expires="' + escapeHtml(request.expiresAt) + '">' + escapeHtml(timerText) + '</span>' : '') +
           '</div>';
 
         // Add click handlers to option buttons
@@ -9364,9 +9808,12 @@
         return card;
       }
 
-      function buildPermissionQuestion(request) {
+      function buildPermissionQuestion(request, editInfo) {
         var toolName = request.details.toolName || request.title || '';
-        var filePath = request.details.filePath || '';
+        // `details.filePath` is what an explicit caller sets; the CLI tool_use
+        // gate sets none, so without the parsed input the headline of a card
+        // that now SHOWS the diff still read "Allow file write?".
+        var filePath = request.details.filePath || (editInfo && editInfo.filePath) || '';
 
         // Map tool names to question-framed titles
         if (toolName.toLowerCase().includes('edit') || toolName.toLowerCase().includes('write')) {
@@ -9389,35 +9836,155 @@
           return 'Allow file read?';
         }
         // Fallback
-        return 'Allow ' + escapeHtml(toolName || request.title) + '?';
+        // NOT escaped here: renderPermissionCard escapes the whole question.
+        // Escaping twice rendered a tool named `A&B` as `A&amp;B` on the one
+        // card that must state exactly what it is about to authorise.
+        return 'Allow ' + (toolName || request.title) + '?';
       }
 
-      function renderPermissionDetails(request) {
+      /**
+       * P0#2 — recover the tool input a permission card is gating.
+       *
+       * The gate already has everything needed to show a diff; it just never
+       * did. `requestPermissionInline` is called with the TOOL NAME as the
+       * card's title, and today's `details.command` is
+       * `JSON.stringify(toolCall.input, null, 2).slice(0, 500)` — the whole
+       * input, JSON, truncated.
+       *
+       * `details.toolInput` is preferred when the extension supplies it
+       * (see the handoff in the L2 report: the 500-char truncation is the only
+       * reason a large edit still shows no diff). The `command` fallback is
+       * deliberately strict: a truncated blob fails JSON.parse and we fall back
+       * to the old text card, because a HALF diff on an approval prompt would
+       * be worse than none.
+       */
+      function permissionEditInput(request) {
+        var details = (request && request.details) || {};
+        var toolName = details.toolName || (request && request.title) || '';
+        if (details.toolInput && typeof details.toolInput === 'object' && !Array.isArray(details.toolInput)) {
+          return { toolName: toolName, input: details.toolInput };
+        }
+        var raw = details.command;
+        if (typeof raw !== 'string') { return null; }
+        try {
+          // No pre-sniffing of the first character: JSON.parse is the whole
+          // test. A bash command line, a truncated blob and a bare scalar all
+          // fail it, and only a plain object is accepted.
+          var parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { return null; }
+          return { toolName: toolName, input: parsed };
+        } catch (e) {
+          return null;
+        }
+      }
+
+      /**
+       * P0#2 — the diff for a pending permission card, or null.
+       *
+       * This is the SAME producer the post-hoc edit report card uses
+       * (`parseFileEditInfo` → `computeLineDiff`); there is deliberately no
+       * second differ. A tool the parser has no diff for (Bash, Read, a
+       * MultiEdit with no `edits`) yields an empty `diffLines` and therefore
+       * null, so the card falls back to exactly what it rendered before.
+       */
+      function permissionEditInfo(request) {
+        var parsed = permissionEditInput(request);
+        if (!parsed) { return null; }
+        var info;
+        try {
+          // Capped at the preview: the card can only ever show
+          // EDIT_DIFF_PREVIEW_LINES rows, so building the FULL row array first
+          // (50k row objects for a 50k-line Write, synchronously, on the render
+          // path) was pure waste. Counts stay exact; `diffLinesOmitted` carries
+          // what was not built.
+          info = parseFileEditInfo(parsed.toolName, parsed.input, '', EDIT_DIFF_PREVIEW_LINES);
+        } catch (e) {
+          return null;
+        }
+        if (!info || !info.diffLines || info.diffLines.length === 0) { return null; }
+        return info;
+      }
+
+      /**
+       * P0#2 — render that diff into the permission card.
+       *
+       * Rows come from the shared `renderDiffRowsHtml`, so they inherit the
+       * edit-report line styling. The WRAPPER is intentionally a different
+       * class: `.edit-report-diff` is `max-height: 0` unless it sits inside an
+       * `.edit-report-card.expanded`, and `expandEditReportDiff` resolves via
+       * `closest('.edit-report-card')` — reusing either here would render an
+       * invisible diff and a dead expander.
+       *
+       * The preview is capped at the same EDIT_DIFF_PREVIEW_LINES the report
+       * card uses. There is no expander: an approval prompt must stay a fixed,
+       * bounded size no matter how large a change the agent proposes.
+       */
+      function renderPermissionDiffHtml(editInfo) {
+        var diffLines = editInfo.diffLines || [];
+        var shown = diffLines.slice(0, EDIT_DIFF_PREVIEW_LINES);
+        // Rows the parser never built (capped at the preview) count as hidden
+        // too, so "N more lines not shown" states the real size of the change.
+        var hidden = (diffLines.length - shown.length) + (Number(editInfo.diffLinesOmitted) || 0);
+        var language = getLanguageFromPath(editInfo.filePath);
+        var html = '<div class="permission-diff">' + renderDiffRowsHtml(shown, language);
+        if (hidden > 0) {
+          html += '<div class="permission-diff-more">\u2026 ' + hidden +
+            ' more line' + (hidden !== 1 ? 's' : '') + ' not shown</div>';
+        }
+        return html + '</div>';
+      }
+
+      function renderPermissionDetails(request, precomputedEditInfo) {
         var details = request.details;
         var html = '';
 
-        if (details.filePath) {
+        // P0#2: the diff, if this card is gating a file write. The card
+        // renderer has already parsed it; only a direct caller pays for a parse.
+        var editInfo = precomputedEditInfo === undefined ? permissionEditInfo(request) : precomputedEditInfo;
+
+        // `details.filePath` is what an explicit caller sets; `editInfo.filePath`
+        // is what the tool input says. The gate that fires for a CLI tool_use
+        // sets only `command`, so without the second source the File row was
+        // missing on exactly the cards that most needed it.
+        var filePath = details.filePath || (editInfo ? editInfo.filePath : '');
+        if (filePath) {
           html += '<div class="permission-detail-row">' +
             '<span class="permission-detail-label">File:</span>' +
-            '<span class="permission-detail-value">' + makeRelativePath(details.filePath) + '</span>' +
+            // SECURITY: this was interpolated UNESCAPED. The path originates in
+            // model output, and this is the one card that must not be spoofable
+            // — a crafted file_path could inject markup into the approval UI.
+            '<span class="permission-detail-value">' + escapeHtml(makeRelativePath(filePath)) + '</span>' +
           '</div>';
         }
 
-        if (details.command) {
+        // With a diff on the card, the raw JSON blob is noise (it is the same
+        // bytes the diff was built from). Without one, it is still the only
+        // thing we can show, so it stays.
+        if (details.command && !editInfo) {
           html += '<div class="permission-detail-row">' +
             '<span class="permission-detail-label">Command:</span>' +
             '<span class="permission-detail-value">' + escapeHtml(details.command.substring(0, 100)) + (details.command.length > 100 ? '...' : '') + '</span>' +
           '</div>';
         }
 
-        if (details.linesAdded !== undefined || details.linesRemoved !== undefined) {
+        var linesAdded = details.linesAdded !== undefined
+          ? details.linesAdded
+          : (editInfo ? editInfo.linesAdded : undefined);
+        var linesRemoved = details.linesRemoved !== undefined
+          ? details.linesRemoved
+          : (editInfo ? editInfo.linesRemoved : undefined);
+        if (linesAdded !== undefined || linesRemoved !== undefined) {
           html += '<div class="permission-detail-row">' +
             '<span class="permission-detail-label">Changes:</span>' +
             '<span class="permission-detail-value">' +
-              (details.linesAdded ? '+' + details.linesAdded + ' lines ' : '') +
-              (details.linesRemoved ? '-' + details.linesRemoved + ' lines' : '') +
+              (linesAdded ? '+' + linesAdded + ' lines ' : '') +
+              (linesRemoved ? '-' + linesRemoved + ' lines' : '') +
             '</span>' +
           '</div>';
+        }
+
+        if (editInfo) {
+          html += renderPermissionDiffHtml(editInfo);
         }
 
         if (details.files && details.files.length > 0) {
@@ -10280,7 +10847,7 @@
 
         tabs.forEach(function(tab, idx) {
           var header = questions[idx].header || 'Q' + (idx + 1);
-          var isAnswered = container._answers.hasOwnProperty(header);
+          var isAnswered = Object.prototype.hasOwnProperty.call(container._answers, header);
           tab.classList.toggle('answered', isAnswered);
         });
       }
@@ -10292,7 +10859,7 @@
 
         questions.forEach(function(q, idx) {
           var header = q.header || 'Q' + (idx + 1);
-          if (container._answers.hasOwnProperty(header)) {
+          if (Object.prototype.hasOwnProperty.call(container._answers, header)) {
             answeredCount++;
           }
         });
@@ -10897,7 +11464,7 @@
         if (snap.byKind) {
           var kindLabels = { 'cheap-model': 'Cheaper model', 'cache-timing': 'Cache timing', 'avoided-compaction': 'Avoided compaction', 'prune': 'Pruning', 'retrieval': 'Retrieval' };
           for (var k in snap.byKind) {
-            if (snap.byKind.hasOwnProperty(k) && snap.byKind[k] && snap.byKind[k].usd > 0) {
+            if (Object.prototype.hasOwnProperty.call(snap.byKind, k) && snap.byKind[k] && snap.byKind[k].usd > 0) {
               lines.push('  • ' + (kindLabels[k] || k) + ': $' + formatSavingsUsd(snap.byKind[k].usd));
             }
           }
@@ -11232,9 +11799,17 @@
         return String(str).split(/\r?\n|\\n/);
       }
 
-      // GitHub-style diff: identify context lines (unchanged) vs actual changes
-      function computeLineDiff(oldLines, newLines) {
+      // GitHub-style diff: identify context lines (unchanged) vs actual changes.
+      // `limit` (optional) caps the ROWS built — a caller that can only show a
+      // preview must not pay for 50k row objects; `stats` (optional) receives
+      // the FULL additions/deletions/omitted counts, which stay exact under a cap.
+      function computeLineDiff(oldLines, newLines, limit, stats) {
         var result = [];
+        var omitted = 0;
+        var push = function(row) {
+          if (limit !== undefined && result.length >= limit) { omitted++; return; }
+          result.push(row);
+        };
 
         // Find common prefix (unchanged lines at start)
         var prefixLen = 0;
@@ -11254,26 +11829,31 @@
         // Add context lines from prefix (5 lines before changes)
         var contextBefore = Math.min(prefixLen, 5);
         for (var i = prefixLen - contextBefore; i < prefixLen; i++) {
-          result.push({ type: 'context', content: oldLines[i], lineNum: i + 1 });
+          push({ type: 'context', content: oldLines[i], lineNum: i + 1 });
         }
 
         // Add deletions (lines only in old)
         for (var i = prefixLen; i < oldLines.length - suffixLen; i++) {
-          result.push({ type: 'deletion', content: oldLines[i], lineNum: i + 1 });
+          push({ type: 'deletion', content: oldLines[i], lineNum: i + 1 });
         }
 
         // Add additions (lines only in new)
         for (var i = prefixLen; i < newLines.length - suffixLen; i++) {
-          result.push({ type: 'addition', content: newLines[i], lineNum: i + 1 });
+          push({ type: 'addition', content: newLines[i], lineNum: i + 1 });
         }
 
         // Add context lines from suffix (5 lines after changes)
         var contextAfter = Math.min(suffixLen, 5);
         var suffixStart = newLines.length - suffixLen;
         for (var i = suffixStart; i < suffixStart + contextAfter; i++) {
-          result.push({ type: 'context', content: newLines[i], lineNum: i + 1 });
+          push({ type: 'context', content: newLines[i], lineNum: i + 1 });
         }
 
+        if (stats) {
+          stats.additions = (stats.additions || 0) + (newLines.length - suffixLen - prefixLen);
+          stats.deletions = (stats.deletions || 0) + (oldLines.length - suffixLen - prefixLen);
+          stats.omitted = (stats.omitted || 0) + omitted;
+        }
         return result;
       }
 
@@ -11303,7 +11883,12 @@
           'kt': 'kotlin',
           'sql': 'sql'
         };
-        return langMap[ext] || 'javascript';
+        // A bare `langMap[ext]` walks Object.prototype: a file named
+        // `evil.constructor` returned a FUNCTION, which renderEditReportCard
+        // then interpolated raw into `data-language="..."` — an attribute
+        // breakout driven by a model-supplied file path. Own-property only,
+        // matching the null-prototype lookup idiom used in src/utils/toolNames.ts.
+        return (Object.prototype.hasOwnProperty.call(langMap, ext) && langMap[ext]) || 'javascript';
       }
 
       // Highlight code content using Prism.js if available
@@ -11318,14 +11903,26 @@
         return escapeHtml(content);
       }
 
-      function parseFileEditInfo(toolName, input, output) {
+      // `maxDiffLines` (optional): cap the ROWS built in `diffLines`. The
+      // permission card passes its preview limit; the post-hoc report card
+      // passes nothing and keeps the full array for its expander. Line COUNTS
+      // are exact either way; `diffLinesOmitted` is how many rows were not built.
+      function parseFileEditInfo(toolName, input, output, maxDiffLines) {
         var info = {
           action: 'edit',
           filePath: '',
           fileName: '',
           linesAdded: 0,
           linesRemoved: 0,
-          diffLines: []
+          diffLines: [],
+          diffLinesOmitted: 0
+        };
+        var additionRows = function(lines) {
+          var shown = maxDiffLines === undefined ? lines : lines.slice(0, maxDiffLines);
+          info.diffLinesOmitted += lines.length - shown.length;
+          return shown.map(function(line, idx) {
+            return { type: 'addition', content: line, lineNum: idx + 1 };
+          });
         };
 
         // Extract file path (convert to relative for display)
@@ -11347,9 +11944,7 @@
           if (input.content) {
             var lines = splitLines(input.content);
             info.linesAdded = lines.length;
-            info.diffLines = lines.map(function(line, idx) {
-              return { type: 'addition', content: line, lineNum: idx + 1 };
-            });
+            info.diffLines = additionRows(lines);
           }
         } else if (toolLower === 'edit') {
           info.action = 'edit';
@@ -11366,11 +11961,37 @@
           if (newLines.length === 1 && newLines[0] === '') newLines = [];
 
           // Use GitHub-style diff algorithm to identify context vs changes
-          info.diffLines = computeLineDiff(oldLines, newLines);
+          var editStats = {};
+          info.diffLines = computeLineDiff(oldLines, newLines, maxDiffLines, editStats);
 
-          // Count actual additions and deletions (not context lines)
-          info.linesAdded = info.diffLines.filter(function(l) { return l.type === 'addition'; }).length;
-          info.linesRemoved = info.diffLines.filter(function(l) { return l.type === 'deletion'; }).length;
+          // Actual additions and deletions (not context lines), exact even when capped
+          info.linesAdded = editStats.additions;
+          info.linesRemoved = editStats.deletions;
+          info.diffLinesOmitted = editStats.omitted;
+        } else if (toolLower === 'multiedit') {
+          // P0#2: MultiEdit carries `edits: [{ old_string, new_string }]`.
+          // Run the SAME line differ once per edit and concatenate — this is
+          // the only differ in the file and it stays that way. Without this
+          // branch a MultiEdit reaches the permission card with an empty
+          // diffLines array and the user approves a change they cannot see.
+          info.action = 'edit';
+          var multiEdits = Array.isArray(input.edits) ? input.edits : [];
+          var multiDiff = [];
+          var multiStats = { additions: 0, deletions: 0, omitted: 0 };
+          for (var mi = 0; mi < multiEdits.length; mi++) {
+            var ed = multiEdits[mi];
+            if (!ed) { continue; }
+            var edOld = splitLines(ed.old_string || '');
+            var edNew = splitLines(ed.new_string || '');
+            if (edOld.length === 1 && edOld[0] === '') { edOld = []; }
+            if (edNew.length === 1 && edNew[0] === '') { edNew = []; }
+            var remaining = maxDiffLines === undefined ? undefined : Math.max(0, maxDiffLines - multiDiff.length);
+            multiDiff = multiDiff.concat(computeLineDiff(edOld, edNew, remaining, multiStats));
+          }
+          info.diffLines = multiDiff;
+          info.linesAdded = multiStats.additions;
+          info.linesRemoved = multiStats.deletions;
+          info.diffLinesOmitted = multiStats.omitted;
         } else if (toolLower === 'multiwrite') {
           info.action = 'create';
           // MultiWrite may have multiple files - just show stats
@@ -11383,9 +12004,7 @@
           if (input.new_source) {
             var lines = splitLines(input.new_source);
             info.linesAdded = lines.length;
-            info.diffLines = lines.map(function(line, idx) {
-              return { type: 'addition', content: line, lineNum: idx + 1 };
-            });
+            info.diffLines = additionRows(lines);
           }
         }
 
@@ -11681,6 +12300,45 @@
         }, 50);
       }
 
+      /**
+       * P0#2: how many diff rows either card shows before it stops. The cap is
+       * a rendering bound, not a cosmetic one — an agent can hand us a 50k-line
+       * Write, and a permission card that tries to lay all of it out blocks the
+       * one interaction the user needs (approve / deny).
+       */
+      var EDIT_DIFF_PREVIEW_LINES = 20;
+
+      /**
+       * P0#2: the shared diff-row renderer.
+       *
+       * Emits the `edit-report-diff-line` rows used by BOTH the post-hoc edit
+       * report card and the pre-approval permission card, so the diff a user
+       * approves and the diff they are later shown can never disagree.
+       *
+       * Escaping: `line.content` goes through highlightCode(), which either
+       * hands it to Prism (which escapes) or falls back to escapeHtml(). The
+       * type/line-number values are produced by parseFileEditInfo() and
+       * computeLineDiff() and are never model-supplied, but they are escaped
+       * anyway — the permission card is the one surface that must not be
+       * spoofable, so nothing reaches an attribute unescaped.
+       */
+      function renderDiffRowsHtml(diffLines, language) {
+        var html = '';
+        var rows = diffLines || [];
+        for (var i = 0; i < rows.length; i++) {
+          var line = rows[i] || {};
+          var prefix = line.type === 'addition' ? '+' : (line.type === 'deletion' ? '-' : ' ');
+          var lineNum = line.lineNum ? line.lineNum : '';
+          var content = line.content == null ? '' : String(line.content);
+          html += '<div class="edit-report-diff-line ' + escapeHtml(line.type) + '">' +
+            '<span class="edit-report-diff-linenum">' + escapeHtml(lineNum) + '</span>' +
+            '<span class="edit-report-diff-prefix">' + prefix + '</span>' +
+            '<span class="edit-report-diff-content">' + highlightCode(content, language) + '</span>' +
+          '</div>';
+        }
+        return html;
+      }
+
       function renderEditReportCard(editInfo, thinkingContent) {
         var actionClass = editInfo.action;
         var actionLabel = editInfo.action.charAt(0).toUpperCase() + editInfo.action.slice(1);
@@ -11727,24 +12385,15 @@
         // Diff content (collapsed by default)
         html += '<div class="edit-report-diff">';
 
-        var maxPreviewLines = 20;
+        var maxPreviewLines = EDIT_DIFF_PREVIEW_LINES;
         var diffLines = editInfo.diffLines || [];
         var showLines = diffLines.slice(0, maxPreviewLines);
         var language = getLanguageFromPath(editInfo.filePath);
 
-        showLines.forEach(function(line) {
-          var prefix = line.type === 'addition' ? '+' : (line.type === 'deletion' ? '-' : ' ');
-          var lineNum = line.lineNum ? line.lineNum : '';
-          var highlightedContent = highlightCode(line.content, language);
-          html += '<div class="edit-report-diff-line ' + line.type + '">' +
-            '<span class="edit-report-diff-linenum">' + lineNum + '</span>' +
-            '<span class="edit-report-diff-prefix">' + prefix + '</span>' +
-            '<span class="edit-report-diff-content">' + highlightedContent + '</span>' +
-          '</div>';
-        });
+        html += renderDiffRowsHtml(showLines, language);
 
         if (diffLines.length > maxPreviewLines) {
-          html += '<div class="edit-report-show-more" data-full-diff="' + encodeURIComponent(JSON.stringify(diffLines)) + '" data-language="' + language + '">' +
+          html += '<div class="edit-report-show-more" data-full-diff="' + encodeURIComponent(JSON.stringify(diffLines)) + '" data-language="' + escapeHtml(language) + '">' +
             '... ' + (diffLines.length - maxPreviewLines) + ' more lines' +
           '</div>';
         }
@@ -12087,21 +12736,10 @@
           var language = btn.dataset.language || 'javascript';
           var diffContent = card.querySelector('.edit-report-diff');
 
-          // Render all lines with syntax highlighting
-          var html = '';
-          for (var i = 0; i < fullDiffData.length; i++) {
-            var line = fullDiffData[i];
-            var prefix = line.type === 'addition' ? '+' : (line.type === 'deletion' ? '-' : ' ');
-            var lineNum = line.lineNum ? line.lineNum : '';
-            var highlightedContent = highlightCode(line.content, language);
-            html += '<div class="edit-report-diff-line ' + line.type + '">' +
-              '<span class="edit-report-diff-linenum">' + lineNum + '</span>' +
-              '<span class="edit-report-diff-prefix">' + prefix + '</span>' +
-              '<span class="edit-report-diff-content">' + highlightedContent + '</span>' +
-            '</div>';
-          }
-
-          diffContent.innerHTML = html;
+          // P0#2: the third copy of the row markup, now the shared renderer.
+          // It also picks up the attribute escaping the copy here never had —
+          // and this path reads its data back out of a DOM attribute.
+          diffContent.innerHTML = renderDiffRowsHtml(fullDiffData, language);
           btn.remove(); // Remove "Show more" button
         } catch (e) {
           console.error('Failed to expand edit report diff:', e);
