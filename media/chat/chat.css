@@ -9219,3 +9219,53 @@
       border-top: 1px solid var(--mysti-border);
       margin-top: 4px;
     }
+
+    /* Plan 28 Phase 7 — the approval card says what yes does, and how far it goes. */
+    .permission-effects {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      padding: 8px 16px 0;
+    }
+    .permission-effect {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 5px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      border: 1px solid var(--mysti-border);
+      font-size: 11px;
+      color: var(--mysti-dim);
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .permission-effect-kind { color: var(--mysti-warn); font-weight: 600; }
+    .permission-effect[data-kind="deletes"] .permission-effect-kind,
+    .permission-effect[data-kind="remote"] .permission-effect-kind { color: var(--mysti-err); }
+    .permission-option-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .permission-option-scope { font-size: 11px; color: var(--mysti-dim); }
+
+    /* Plan 28 Phase 7 — one layout rule for two widths.
+       Narrow: the work area stacks and an open dock replaces the transcript.
+       Wide: it becomes a row and the dock sits beside the conversation, which
+       is the whole "nothing covers the conversation" claim made literal. */
+    .workarea {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    @media (min-width: 900px) {
+      .workarea { flex-direction: row; }
+      #app.dock-open .workarea > .messages { display: flex; flex: 1 1 auto; min-width: 0; }
+      #app.dock-open .workarea > .dock {
+        flex: 0 0 420px;
+        max-width: 46%;
+        border-left: 1px solid var(--mysti-border);
+        border-bottom: none;
+      }
+      /* The suggestions rail belongs to the conversation, not the dock. */
+      #app.dock-open .quick-actions-container { display: none; }
+    }

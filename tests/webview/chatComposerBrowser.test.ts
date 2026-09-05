@@ -327,8 +327,23 @@ describe('Plan 28 Phase 3 — the Runs dock', () => {
     expect(titles.length).toBeGreaterThanOrEqual(4);
   }, 20000);
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('swaps in for the transcript rather than floating over it', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('swaps in for the transcript at sidebar width', async () => {
+    await page!.setViewportSize({ width: 420, height: 900 });
     expect(await page!.$eval('#messages', (e) => getComputedStyle(e).display)).toBe('none');
+    expect(await page!.$eval('#runs-dock', (e) => getComputedStyle(e).display)).not.toBe('none');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('sits BESIDE the conversation in an editor tab', async () => {
+    await page!.setViewportSize({ width: 1280, height: 900 });
+    // Same markup, one layout rule — the transcript is not replaced here.
+    expect(await page!.$eval('#messages', (e) => getComputedStyle(e).display)).not.toBe('none');
+    const boxes = await page!.evaluate(() => {
+      const m = document.getElementById('messages')!.getBoundingClientRect();
+      const d = document.getElementById('runs-dock')!.getBoundingClientRect();
+      return { mRight: m.right, dLeft: d.left, mTop: m.top, dTop: d.top };
+    });
+    expect(boxes.dLeft).toBeGreaterThanOrEqual(boxes.mRight - 1);   // to the right of it
+    expect(Math.abs(boxes.dTop - boxes.mTop)).toBeLessThan(2);      // on the same row
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('badges the header the moment something needs a human', async () => {
@@ -377,9 +392,11 @@ describe('Plan 28 Phase 3 — the Runs dock', () => {
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('Escape closes the dock and restores the transcript', async () => {
+    await page!.setViewportSize({ width: 420, height: 900 });
     await page!.keyboard.press('Escape');
     expect(await page!.$eval('#runs-dock', (e) => e.classList.contains('hidden'))).toBe(true);
     expect(await page!.$eval('#messages', (e) => getComputedStyle(e).display)).not.toBe('none');
+    await page!.setViewportSize({ width: 1280, height: 900 });
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
@@ -402,7 +419,6 @@ describe('Plan 28 Phase 4 — the Changes dock', () => {
     expect((await posted()).some((m) => m.type === 'requestSessionChanges')).toBe(true);
     // Only one dock at a time.
     expect(await page!.$eval('#runs-dock', (e) => e.classList.contains('hidden'))).toBe(true);
-    expect(await page!.$eval('#messages', (e) => getComputedStyle(e).display)).toBe('none');
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('separates agent edits from edits nothing claimed', async () => {

@@ -106,6 +106,9 @@ beforeAll(() => {
     // Plan 27 §25 — the card's always-allow label is computed, because it now
     // has to state the exact grant (per action type, per binary for bash).
     'alwaysAllowLabel',
+    // Plan 28 Phase 7 — the card now also states what saying yes DOES, and
+    // which way the clock falls.
+    'cssAttr', 'permissionEffects', 'permissionTimerText',
     'renderPermissionCard',
   ];
   const capMatch = /var EDIT_DIFF_PREVIEW_LINES = (\d+);/.exec(chatJs);
@@ -118,6 +121,9 @@ beforeAll(() => {
   const fakeDocument = {
     createElement: () => ({ className: '', dataset: {}, tabIndex: -1, innerHTML: '',
       querySelectorAll: () => [], querySelector: () => null }),
+    // `permissionTimerText` reads the timeout-behaviour select. Absent here, so
+    // it falls back to the safe default — which is exactly what it must do.
+    getElementById: () => null,
   };
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   // alwaysAllowLabel reads this map; extractFunction only pulls functions.
@@ -448,5 +454,46 @@ describe('H-1 (5): the card keyboard model is intact', () => {
     for (const key of ["case '1':", "case '2':", "case '3':", "case 'Enter':", "case 'Escape':"]) {
       expect(handler).toContain(key);
     }
+  });
+});
+
+describe('Plan 28 Phase 7 — the card states what yes does', () => {
+  /** `wire` predates actionType; real cards always carry it (PermissionRequest). */
+  function typed(req: RequestLike, actionType: string): RequestLike {
+    (req as unknown as { actionType: string }).actionType = actionType;
+    return req;
+  }
+
+  it('lists the effect of a write before the buttons', () => {
+    const card = rig.renderPermissionCard(typed(
+      wire('Edit', { file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }, { toolInput: true }), 'file-edit'));
+    expect(card.innerHTML).toContain('permission-effects');
+    expect(card.innerHTML).toContain('writes');
+    expect(card.innerHTML).toContain('src/a.ts');
+  });
+
+  it('calls a command a command, and a delete a delete', () => {
+    const bash = rig.renderPermissionCard(typed(wire('Bash', { command: 'rm -rf build' }), 'bash-command'));
+    expect(bash.innerHTML).toContain('runs');
+    expect(bash.innerHTML).toContain('a command on this machine');
+  });
+
+  it('says which way the clock falls, not just how long is left', () => {
+    const req = typed(wire('Bash', { command: 'npm test' }), 'bash-command');
+    req.expiresAt = Date.now() + 25000;
+    // No timeout-behaviour control in this rig, so the safe default stands.
+    expect(rig.renderPermissionCard(req).innerHTML).toContain('auto-denies in');
+  });
+
+  it('a forced card auto-DENIES whatever the timeout setting says', () => {
+    const req = typed(wire('Bash', { command: 'curl https://example.com' }), 'bash-command');
+    req.expiresAt = Date.now() + 25000;
+    (req as unknown as { forceInteractive: boolean }).forceInteractive = true;
+    expect(rig.renderPermissionCard(req).innerHTML).toContain('auto-denies in');
+  });
+
+  it('does not invent an effect for a plain read', () => {
+    const read = rig.renderPermissionCard(typed(wire('Read', { file_path: '/repo/src/a.ts' }), 'file-read'));
+    expect(read.innerHTML).not.toContain('permission-effects');
   });
 });

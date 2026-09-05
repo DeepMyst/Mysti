@@ -10620,10 +10620,8 @@
         var timerClass = timeRemaining > 0 && timeRemaining < 10000 ? 'critical' :
                          timeRemaining > 0 && timeRemaining < 20000 ? 'warning' : '';
         var timerText;
-        if (request.semiAutonomous && request.expiresAt > 0) {
-          timerText = 'AI decides in ' + formatTimeRemaining(timeRemaining);
-        } else if (request.expiresAt > 0) {
-          timerText = formatTimeRemaining(timeRemaining);
+        if (request.expiresAt > 0) {
+          timerText = permissionTimerText(request, timeRemaining);
         } else {
           timerText = '';
         }
@@ -10643,6 +10641,15 @@
 
         card.innerHTML =
           '<div class="permission-question">' + escapeHtml(questionTitle) + '</div>' +
+          (function() {
+            var fx = permissionEffects(request);
+            if (!fx.length) { return ''; }
+            return '<div class="permission-effects">' + fx.map(function(f) {
+              return '<span class="permission-effect" data-kind="' + cssAttr(f.kind) + '">' +
+                     '<span class="permission-effect-kind">' + escapeHtml(f.kind) + '</span>' +
+                     escapeHtml(f.text) + '</span>';
+            }).join('') + '</div>';
+          })() +
           '<div class="permission-details-toggle" data-target="details-' + cardId + '">' +
             (hasDiff ? 'Hide details' : 'Show details') +
           '</div>' +
@@ -10715,6 +10722,40 @@
         }
 
         return card;
+      }
+
+      /**
+       * Plan 28 Phase 7 — what saying yes actually does, listed before you say
+       * it. Derived from the action type and the details the gate already
+       * carries; nothing here is inferred from the command string's prose.
+       */
+      function permissionEffects(request) {
+        var d = request.details || {};
+        var a = request.actionType || '';
+        var out = [];
+        if (a === 'file-create' || a === 'file-edit' || a === 'multi-file-edit') {
+          out.push({ kind: 'writes', text: d.filePath ? makeRelativePath(d.filePath) : 'a file in this workspace' });
+        }
+        if (a === 'file-delete') { out.push({ kind: 'deletes', text: d.filePath ? makeRelativePath(d.filePath) : 'a file' }); }
+        if (a === 'bash-command') { out.push({ kind: 'runs', text: 'a command on this machine' }); }
+        if (a === 'web-request') { out.push({ kind: 'network', text: 'reaches the network' }); }
+        if (a === 'delegate') { out.push({ kind: 'delegates', text: 'hands the work to another agent, which has its own tools' }); }
+        if (request.remoteOrigin) { out.push({ kind: 'remote', text: 'this run carries input written off this machine' }); }
+        return out;
+      }
+
+      /** Which way the clock falls, said out loud. */
+      function permissionTimerText(request, timeRemaining) {
+        var left = formatTimeRemaining(timeRemaining);
+        // A forced card (an un-undoable side effect, or remote-authored input)
+        // auto-DENIES on expiry regardless of the timeout setting.
+        if (request.forceInteractive || request.remoteOrigin) { return 'auto-denies in ' + left; }
+        if (request.semiAutonomous) { return 'Mysti decides in ' + left; }
+        var sel = document.getElementById('timeout-behavior-select');
+        var behavior = sel ? sel.value : 'auto-reject';
+        if (behavior === 'auto-accept') { return 'auto-ACCEPTS in ' + left; }
+        if (behavior === 'require-action') { return left + ' left'; }
+        return 'auto-denies in ' + left;
       }
 
       function buildPermissionQuestion(request, editInfo) {
