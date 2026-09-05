@@ -861,8 +861,25 @@
       <div class="wizard-header">
         <img src="{{resourceBase}}/Mysti-Logo.png" alt="Mysti" class="wizard-logo" />
         <h2>Welcome to Mysti</h2>
-        <p class="wizard-subtitle">Set up an AI provider to get started</p>
+        <p class="wizard-subtitle">Sign in to start now, or set up a local AI CLI</p>
       </div>
+
+      <!-- Zero-install path (Plan 27 Gate 2).
+           Every card below this needs an `npm install -g` in a terminal, i.e.
+           leaving the editor. The default agent is `@mysti`, which runs on the
+           DeepMyst gateway and needs no local CLI and no API key — so the
+           fastest route to a first answer belongs FIRST, not discovered later
+           via a failed turn. Posts `signInDeepMyst`, the same message the
+           coordinator's own failure card uses. -->
+      <div class="wizard-fastpath">
+        <div class="wizard-fastpath-text">
+          <strong>Start in seconds — nothing to install</strong>
+          <p>The Mysti agent runs on your DeepMyst account (free works). No local CLI, no API key.</p>
+        </div>
+        <button id="wizard-signin-btn" class="wizard-signin-btn" type="button">Sign in to DeepMyst</button>
+      </div>
+
+      <p class="wizard-or">or set up a local AI CLI</p>
 
       <!-- Prerequisites Warning -->
       <div id="wizard-prerequisites" class="wizard-prereq hidden">

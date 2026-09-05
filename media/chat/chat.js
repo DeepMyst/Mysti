@@ -2545,6 +2545,20 @@
         });
       }
 
+      /**
+       * `#wizard-signin-btn`: the wizard's zero-install path (Plan 27 Gate 2).
+       * Bound here, never as an inline `onclick=` — the page's script-src is
+       * nonce-only, which is exactly what disabled the wizard's exit button
+       * before (D-1). Reuses `signInDeepMyst`, the message the coordinator's
+       * own failure card already posts, so there is one sign-in route.
+       */
+      var wizardSignInBtn = document.getElementById('wizard-signin-btn');
+      if (wizardSignInBtn) {
+        wizardSignInBtn.addEventListener('click', function() {
+          vscode.postMessage({ type: 'signInDeepMyst' });
+        });
+      }
+
       var wizardSkipBtn = document.querySelector('.wizard-skip-btn');
       if (wizardSkipBtn) {
         wizardSkipBtn.addEventListener('click', function() {

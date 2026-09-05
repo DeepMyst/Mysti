@@ -6934,6 +6934,67 @@
       margin: 0;
     }
 
+    /* Zero-install fast path (Plan 27 Gate 2) — the primary action, above the
+       CLI cards. Uses the theme's own button/accent tokens so it reads as the
+       recommended route in every theme incl. the two high-contrast ones. */
+    .wizard-fastpath {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      padding: 16px;
+      margin-bottom: 16px;
+      border: 1px solid var(--vscode-focusBorder);
+      border-radius: 8px;
+      background: var(--vscode-editor-background);
+    }
+
+    .wizard-fastpath-text {
+      min-width: 0;
+    }
+
+    .wizard-fastpath-text strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 4px;
+    }
+
+    .wizard-fastpath-text p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .wizard-signin-btn {
+      flex: 0 0 auto;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: 1px solid transparent;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      padding: 8px 16px;
+    }
+
+    .wizard-signin-btn:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    /* Keep a visible focus ring: several :focus rules in this file start with
+       `outline: none`, which is a WCAG 2.1 failure the plan's Gate E calls out. */
+    .wizard-signin-btn:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
+    }
+
+    .wizard-or {
+      margin: 0 0 16px 0;
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      text-align: center;
+    }
+
     /* Prerequisites Warning */
     .wizard-prereq {
       display: flex;
