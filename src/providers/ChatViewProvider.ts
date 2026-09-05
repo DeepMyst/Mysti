@@ -226,6 +226,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _warnedShadowedAgentIds: Set<string> = new Set();
   private _mentionRouter: MentionRouter;
   private _collaboratorPool: CollaboratorPool;
+  /** Panels already told about a blocked capability — once per panel, not per turn. */
+  private _refusalAnnounced = new Set<string>();
   private _collaborationManager: CollaborationManager;
   private _mystiOrchestrator?: MystiOrchestratorManager;
   private _mystiCoordinator?: CoordinatorModelClient;
@@ -1380,6 +1382,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         {
           const jobId = (msg.payload as { jobId?: string })?.jobId;
           if (jobId) { this._abortMystiJob(jobId); }
+        }
+        break;
+
+      case 'openSettingKey':
+        // Gate 4: the refusal card's button. Opens the Settings UI filtered to
+        // the exact key that blocked, rather than the mysti.* namespace — one
+        // click instead of a search through ~180 settings.
+        if (typeof msg.payload === 'string' && msg.payload.startsWith('mysti.')) {
+          void vscode.commands.executeCommand('workbench.action.openSettings', msg.payload);
         }
         break;
 
@@ -4543,10 +4554,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
 
           case 'error':
-            this._postToPanel(panelId, {
-              type: 'error',
-              payload: chunk.content
-            });
+            // Gate 4: a missing CLI gets a card with an Install button; anything
+            // else keeps the plain error.
+            if (!this._postProviderFailure(panelId, effectiveSettings.provider, chunk.content ?? '')) {
+              this._postToPanel(panelId, {
+                type: 'error',
+                payload: chunk.content
+              });
+            }
             break;
 
           case 'auth_error':
@@ -4868,11 +4883,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._endCanvasTurn(panelId);
     } catch (error) {
       this._lifecycleManager.markIdle(panelId);
-      this._endCanvasTurn(panelId, error instanceof Error ? error.message : String(error));
-      this._postToPanel(panelId, {
-        type: 'error',
-        payload: error instanceof Error ? error.message : 'An unknown error occurred'
-      });
+      const rawErr = error instanceof Error ? error.message : String(error);
+      this._endCanvasTurn(panelId, rawErr);
+      // A spawn ENOENT lands here, not on the stream — the same card applies.
+      if (!this._postProviderFailure(panelId, settings.provider, rawErr)) {
+        this._postToPanel(panelId, {
+          type: 'error',
+          payload: rawErr || 'An unknown error occurred'
+        });
+      }
     }
   }
 
@@ -9276,6 +9295,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         if (errored || isCancelled()) { break; }
 
+        // Plan 27 Gate 4 / D-11 — REFUSAL MUST SPEAK.
+        //
+        // A gated group's tags are not added to `scanKinds`, so when the gate is
+        // off the tag "degrades to visible text": the model announces it is
+        // writing a file and the user sees the raw `<write:NONCE …>` markup, or
+        // nothing, and no explanation. The default agent cannot edit a file out
+        // of the box, and until now nothing said so.
+        //
+        // This does NOT change what is allowed — it only names the gate that
+        // already blocked, once per turn, with a button that opens the setting.
+        this._announceRefusedCapability(panelId, turnText, delegateNonce, scanKinds);
+
         // P0.5: max_tokens cut the turn mid-answer (finish_reason 'length') with
         // no directive closed — auto-continue instead of presenting a truncated
         // reply as complete. Checked BEFORE flush and carrying the scanner, so a
@@ -10207,6 +10238,96 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Classify a coordinator failure against the live credential state. */
+  /**
+   * Plan 27 Gate 4 — the CLI-backend twin of `_postMystiFailure`, for the ONE
+   * failure that had no action.
+   *
+   * Authentication already has one: providers yield an `auth_error` chunk and
+   * the webview renders a card with "Open Terminal & Authenticate". A MISSING
+   * CLI does not — a spawn ENOENT arrives as a plain red sentence, and it is
+   * the most likely first-run outcome of all, because every agent other than
+   * the coordinator needs an `npm install -g` first.
+   *
+   * Narrow on purpose. Anything not confidently a missing binary returns false
+   * and the caller falls back to the plain error, rather than offering an
+   * Install button for a failure installing cannot fix.
+   */
+  private _postProviderFailure(panelId: string, providerId: string, raw: string): boolean {
+    const text = String(raw ?? '');
+    const missing = /\bENOENT\b|command not found|is not recognized|no such file or directory/i.test(text);
+    if (!missing) { return false; }
+
+    const name = getProviderDisplayName(providerId) ?? providerId;
+    this._postToPanel(panelId, {
+      type: 'mystiActionRequired',
+      payload: {
+        reason: 'not-installed',
+        message: `${name} is not installed, or Mysti cannot find it on your PATH.`,
+        providerId,
+        providerName: name,
+        actions: ['installCli', 'switchAgent'],
+        agents: this._switchableAgents(),
+        // Retrying the same spawn fails the same way until it is installed.
+        retryable: false,
+      },
+    });
+    return true;
+  }
+
+  /**
+   * Plan 27 Gate 4 / D-11 — name the gate that silently blocked a capability.
+   *
+   * Every gated directive group is simply ABSENT from the scanner when its
+   * setting is off, which is a good security property (a capability that is not
+   * recognised cannot be half-executed) and a terrible product one: the user
+   * sees raw markup or nothing, and never learns the capability exists.
+   *
+   * Fires at most once per turn, and only when the model actually tried to use
+   * the capability — this is not a nag about settings the user has never
+   * needed. The card names the setting, so the fix is one click rather than a
+   * search through ~180 of them.
+   */
+  private _announceRefusedCapability(
+    panelId: string,
+    turnText: string,
+    nonce: string,
+    enabledKinds: readonly string[],
+  ): void {
+    if (!turnText || this._refusalAnnounced.has(panelId)) { return; }
+
+    const enabled = new Set(enabledKinds);
+    const GATES: Array<{ kinds: readonly string[]; setting: string; what: string }> = [
+      { kinds: MYSTI_EXEC_KINDS, setting: 'mysti.mysti.localExecution', what: 'edit files or run commands itself' },
+      { kinds: MYSTI_MCP_KINDS, setting: 'mysti.mysti.mcpTools', what: 'call your connected tools' },
+      { kinds: MYSTI_SKILL_KINDS, setting: 'mysti.mysti.skills', what: 'look up its own skills' },
+      { kinds: MYSTI_VISUAL_KINDS, setting: 'mysti.mysti.visualTools', what: 'look at your running app' },
+    ];
+
+    for (const gate of GATES) {
+      const blocked = gate.kinds.filter(k => !enabled.has(k));
+      if (blocked.length === 0) { continue; }
+      // Did the model actually TRY? The tag it would have emitted carries this
+      // run's nonce, so this cannot be triggered by a user pasting `<write:`.
+      const tried = blocked.some(k => turnText.includes(`<${k}:${nonce}`));
+      if (!tried) { continue; }
+
+      this._refusalAnnounced.add(panelId);
+      this._postToPanel(panelId, {
+        type: 'mystiActionRequired',
+        payload: {
+          reason: 'capability-off',
+          message: `The Mysti agent tried to ${gate.what}, but that capability is turned off. `
+            + 'It is off by default — turning it on changes what the agent may do without asking.',
+          settingKey: gate.setting,
+          actions: ['openCapabilitySetting'],
+          agents: [],
+          retryable: false,
+        },
+      });
+      return;
+    }
+  }
+
   private _classifyMystiFailure(raw: string): CoordinatorFailureReason {
     const credentials = this._mystiCoordinator?.credentialState()
       ?? { hasDeepMystKey: !!this._deepMystAuth?.isSignedIn(), usingOpenRouter: false };

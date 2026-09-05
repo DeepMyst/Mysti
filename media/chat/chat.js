@@ -7850,7 +7850,16 @@
         signInAgain: { label: 'Sign in again', primary: true, message: 'signInDeepMystAgain' },
         signUp: { label: 'Create an account', primary: false, message: 'openDeepMystSignup' },
         topUp: { label: 'Top up credits', primary: true, message: 'openDeepMystBilling' },
-        openRouterSettings: { label: 'Open OpenRouter settings', primary: true, message: 'openOpenRouterSettings' }
+        openRouterSettings: { label: 'Open OpenRouter settings', primary: true, message: 'openOpenRouterSettings' },
+        // Plan 27 Gate 4 — a MISSING CLI. `local` instead of `message`: the
+        // install flow (auto-install, per-OS methods, progress) already lives
+        // in this webview as showInstallProviderModal, so the button opens it
+        // rather than inventing a second install path through the extension.
+        installCli: { label: 'Install', primary: true, local: 'install' },
+        // Plan 27 Gate 4 / D-11 — the gate that blocked names itself and opens
+        // its own setting. `local` because VS Code's settings UI is reached by
+        // a command, and the panel already knows which key to filter to.
+        openCapabilitySetting: { label: 'Open this setting', primary: true, local: 'setting' }
       };
 
       function renderMystiActionCard(payload) {
@@ -7885,8 +7894,22 @@
           var btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'mysti-signin-btn' + (spec.primary ? '' : ' mysti-action-secondary');
-          btn.textContent = spec.label;
+          // The install button names the agent it will install, so the card
+          // reads as one sentence rather than a generic verb.
+          btn.textContent = (spec.local === 'install' && payload.providerName)
+            ? spec.label + ' ' + payload.providerName
+            : spec.label;
           btn.addEventListener('click', function() {
+            if (spec.local === 'install') {
+              if (payload.providerId) { showInstallProviderModal(payload.providerId); }
+              return;
+            }
+            if (spec.local === 'setting') {
+              if (payload.settingKey) {
+                vscode.postMessage({ type: 'openSettingKey', payload: payload.settingKey });
+              }
+              return;
+            }
             postMessageWithPanelId({ type: spec.message });
           });
           row.appendChild(btn);
