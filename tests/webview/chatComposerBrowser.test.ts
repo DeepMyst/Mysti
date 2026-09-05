@@ -846,3 +846,55 @@ describe('every control in the panel actually does something', () => {
     expect(errors, `uncaught errors while changing selects: ${errors.join(' | ')}`).toEqual([]);
   }, 60000);
 });
+
+describe('every panel still opens after the header diet', () => {
+  /*
+   * Phase 5 moved eight buttons out of the header and into an overflow menu.
+   * They kept their ids so their handlers still bind — but "the handler binds"
+   * and "the panel opens" are different claims, and this is the one that
+   * matters. Each button is clicked and the panel it owns must become visible.
+   */
+  const PANELS: Array<[string, string]> = [
+    ['settings-btn', 'settings-panel'],
+    ['about-btn', 'about-panel'],
+    ['badges-btn', 'badges-panel'],
+    ['agent-config-btn', 'agent-config-panel'],
+  ];
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('opens each panel its button owns', async () => {
+    for (const [btn, panel] of PANELS) {
+      // Close everything first so one panel's state cannot mask another's.
+      await page!.evaluate(() => {
+        document.querySelectorAll('.settings-panel, .about-panel, .badges-panel, .agent-config-panel')
+          .forEach((e) => e.classList.add('hidden'));
+      });
+      await page!.evaluate((id) => document.getElementById(id)!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true })), btn);
+      const open = await page!.$eval(`#${panel}`, (e) => !e.classList.contains('hidden'));
+      expect(open, `${btn} did not open #${panel}`).toBe(true);
+    }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the overflow menu reveals and then hides itself', async () => {
+    await page!.evaluate(() => document.getElementById('overflow-menu')!.classList.add('hidden'));
+    await page!.click('#overflow-btn');
+    expect(await page!.$eval('#overflow-menu', (e) => e.classList.contains('hidden'))).toBe(false);
+    // Choosing anything from it closes it.
+    await page!.evaluate(() => document.getElementById('about-btn')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(await page!.$eval('#overflow-menu', (e) => e.classList.contains('hidden'))).toBe(true);
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the eight relocated controls are all still reachable', async () => {
+    for (const id of ['new-tab-btn', 'export-conversation-btn', 'active-mode-btn', 'agent-config-btn',
+      'badges-btn', 'about-btn', 'connections-btn', 'settings-btn']) {
+      const inOverflow = await page!.$eval(`#${id}`,
+        (e) => !!e.closest('#overflow-menu'));
+      expect(inOverflow, id).toBe(true);
+    }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 30000);
+});
