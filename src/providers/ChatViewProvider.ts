@@ -13542,6 +13542,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Call this via the mysti.debugSetup command
    */
   public debugForceSetup(): void {
+    // Plan 28 Phase 7: this drives the overlay directly rather than through
+    // `startProviderSetup`, so it must clear the panel's dismissal latch
+    // itself — otherwise the command is silently inert for anyone who has ever
+    // skipped setup, until they reload the webview.
+    this._postToPanel(this._sidebarId, { type: 'setupRearm', payload: {} });
     // Show setup for sidebar panel
     this._postToPanel(this._sidebarId, {
       type: 'setupProgress',
@@ -13582,6 +13587,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Debug method: Force show setup failure for testing
    */
   public debugForceSetupFailure(): void {
+    // Same reason as `debugForceSetup`: this bypasses `startProviderSetup`,
+    // so it clears the dismissal latch itself.
+    this._postToPanel(this._sidebarId, { type: 'setupRearm', payload: {} });
     this._postToPanel(this._sidebarId, {
       type: 'setupFailed',
       payload: {

@@ -2612,6 +2612,15 @@
       var setupRetryBtn = document.getElementById('setup-retry-btn');
       if (setupRetryBtn) {
         setupRetryBtn.addEventListener('click', function() {
+          // `.setup-error` is only ever un-hidden, never re-hidden, and this
+          // button is never disabled — so the stale failure pane stays on
+          // screen through the retry and a second click starts a SECOND
+          // concurrent `_runAutoSetup`. `SetupManager.setupProvider` has no
+          // in-flight guard, so that is two `npm install -g` runs racing on the
+          // same global prefix. Take the pane down and the button out.
+          setupRetryBtn.disabled = true;
+          var errPane = document.querySelector('#setup-overlay .setup-error');
+          if (errPane) { errPane.classList.add('hidden'); }
           // No re-arm here: this button lives INSIDE the overlay, which is
           // hidden whenever the latch is set and which nothing re-shows while
           // it is — so it is unreachable in the only state a re-arm would
@@ -5572,6 +5581,14 @@
             syncUnattendedAvailability();
             break;
           // Setup message handlers
+          case 'setupRearm':
+            // `mysti.debugSetup` / `mysti.debugSetupFailure` drive the overlay
+            // directly with setupProgress/authPrompt/setupFailed, bypassing
+            // `startProviderSetup` — so after any dismissal they were silently
+            // inert until the webview was reloaded. The command says plainly
+            // that it is starting a new run.
+            rearmSetupOverlay();
+            break;
           case 'setupStatus':
             handleSetupStatus(message.payload);
             break;
@@ -6313,6 +6330,9 @@
       }
 
       function handleSetupFailed(payload) {
+        // A new failure re-arms the button the previous one disabled.
+        var retryBtn = document.getElementById('setup-retry-btn');
+        if (retryBtn) { retryBtn.disabled = false; }
         state.setup.currentStep = 'failed';
         state.setup.providerId = payload.providerId;
         state.setup.error = payload.error;

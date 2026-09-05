@@ -114,14 +114,39 @@ describe('the setup dismissal latch is released by every request path', () => {
    * ends up testing wizard bootstrapping, and one that clicks the wrong button
    * passes while proving nothing. This reads the shipped bytes.
    */
-  it('every startProviderSetup post is preceded by a re-arm', () => {
+  it('every startProviderSetup post is preceded by its OWN re-arm', () => {
     const posts = [...CHAT_JS.matchAll(/type: 'startProviderSetup'/g)].map((m) => m.index ?? 0);
     expect(posts.length).toBeGreaterThanOrEqual(3);
     for (const at of posts) {
-      const before = CHAT_JS.slice(Math.max(0, at - 400), at);
-      expect(before, `startProviderSetup at offset ${at} is not preceded by rearmSetupOverlay()`)
-        .toContain('rearmSetupOverlay();');
+      // A fixed lookback is not enough: the first two posts are ~145 bytes
+      // apart, so a new branch added beside them would be "covered" by its
+      // NEIGHBOUR's re-arm. Anchor instead on there being no other post
+      // between this one and the nearest re-arm above it.
+      const before = CHAT_JS.slice(0, at);
+      // The call that owns this `type:` line.
+      const ownPost = before.lastIndexOf('postMessageWithPanelId(');
+      expect(ownPost, `no postMessageWithPanelId( owns startProviderSetup at ${at}`).toBeGreaterThan(-1);
+      const rearm = before.slice(0, ownPost).lastIndexOf('rearmSetupOverlay();');
+      expect(rearm, `startProviderSetup at ${at} has no rearmSetupOverlay() above it`)
+        .toBeGreaterThan(-1);
+      // Nothing may post between the re-arm and the request it belongs to.
+      expect(before.slice(rearm, ownPost).includes('postMessageWithPanelId('),
+        `the nearest rearmSetupOverlay() above startProviderSetup at ${at} belongs to a different post`)
+        .toBe(false);
     }
+  });
+
+  it('the debug setup commands re-arm too — they bypass startProviderSetup', () => {
+    // `mysti.debugSetup` / `mysti.debugSetupFailure` drive the overlay directly,
+    // so without this they are silently inert for anyone who has ever skipped
+    // setup, until the webview is reloaded.
+    const provider = fs.readFileSync(path.join(ROOT, 'src/providers/ChatViewProvider.ts'), 'utf8');
+    for (const fn of ['debugForceSetup(): void {', 'debugForceSetupFailure(): void {']) {
+      const at = provider.indexOf(fn);
+      expect(at, fn).toBeGreaterThan(-1);
+      expect(provider.slice(at, at + 700), `${fn} must post setupRearm`).toContain("type: 'setupRearm'");
+    }
+    expect(CHAT_JS, 'the webview must handle setupRearm').toContain("case 'setupRearm':");
   });
 
   it('the latch is written false somewhere — it is not one-way', () => {
