@@ -381,6 +381,7 @@ describe('authority-shaped namespaces are machine-scoped OR clamped (structural,
     'mysti.agents.maxTokenBudget': 'size cap (0 = unlimited, else <= 16000) on agent content whose TRUST is decided by the loader, not here — a repo can lift the cap, not the trust',
     'mysti.autonomous.maxMemoryEntries': 'bounded 50..5000 capacity of the learning memory; not a decision input',
     'mysti.canvas.stitchModel': 'enum of Stitch model ids; which Stitch model renders a design is not authority',
+    'mysti.updates.notifyNewModels': 'a BOOLEAN caught by the *Model(s) shape on its name alone, not a selector — it only decides whether a "new model released" card is drawn. A repo setting it false hides a notification; setting it true draws one. Neither picks a model (that is still the clamped/validated per-agent *Model key) nor widens what any agent may do',
   };
 
   /**

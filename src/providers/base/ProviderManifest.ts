@@ -106,6 +106,51 @@ export const PROVIDER_CUSTOM_MODEL_SETTING_KEYS: Record<ProviderType, string> = 
 };
 
 /**
+ * npm package name backing each provider's CLI, or `null` for providers that
+ * are not installed from npm (shell-script installers, local servers, or pure
+ * API providers with no CLI at all).
+ *
+ * This is the ONLY source of package names for the update checker. It is a
+ * TOTAL Record — not Partial — on purpose: a new provider fails `tsc` until its
+ * author consciously declares either a package name or `null`, so "does this
+ * backend have an update story?" can never be answered by silent omission.
+ *
+ * Names are the bare package, WITHOUT any `@latest` dist-tag. The dist-tag is
+ * appended by the caller when it builds an install command; keeping it out here
+ * means the same string can be handed to `npm view <pkg> version` unmodified.
+ *
+ * SECURITY: values here are in-repo literals and are the only thing ever
+ * interpolated into an update command. Nothing the npm registry returns, and
+ * nothing a model emits, may reach that command line.
+ */
+export const PROVIDER_NPM_PACKAGES: Record<ProviderType, string | null> = {
+  'claude-code': '@anthropic-ai/claude-code',
+  'openai-codex': '@openai/codex',
+  'google-gemini': '@google/gemini-cli',
+  'cline': 'cline',
+  'github-copilot': '@github/copilot',
+  'cursor': null,        // curl | bash installer (cursor.com/install)
+  'openclaw': 'openclaw',
+  'opencode': 'opencode-ai',
+  'ollama': null,        // local server — brew / OllamaSetup.exe / install.sh
+  'localai': null,       // local server — Docker image or prebuilt binary
+  'qwen-code': '@qwen-code/qwen-code',
+  'hermes': null,        // curl | bash installer (hermes-agent.nousresearch.com)
+  'continue': '@continuedev/cli',
+  'openrouter': null,    // API-only, no CLI to update
+  'kimi-code': null      // curl | bash installer (code.kimi.com)
+};
+
+/**
+ * The npm package for a provider, or undefined when it has none (non-npm
+ * installer, local server, or API-only). Unknown ids return undefined rather
+ * than throwing — callers treat "no package" as "not update-checkable".
+ */
+export function getProviderNpmPackage(providerId: string): string | undefined {
+  return (PROVIDER_NPM_PACKAGES as Record<string, string | null>)[providerId] ?? undefined;
+}
+
+/**
  * Declarative provider-specific settings sections (replaces the hard-coded
  * codexSettingsSection in the webview — seam W4 — in Phase 2).
  */

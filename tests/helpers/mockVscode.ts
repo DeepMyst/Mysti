@@ -191,6 +191,13 @@ export const window = {
   showWarningMessage: () => Promise.resolve(undefined),
   showErrorMessage: () => Promise.resolve(undefined),
   showInputBox: () => Promise.resolve(undefined),
+  /**
+   * Defaults to "the user cancelled" — the safe answer for a picker, and the
+   * one that keeps a test honest unless it deliberately stubs a selection:
+   *   window.showQuickPick = async () => [{ label: 'Gemini', id: 'google-gemini' }];
+   * Restore it in afterEach; `resetWindowStubs()` below does that for you.
+   */
+  showQuickPick: (..._args: unknown[]): Promise<unknown> => Promise.resolve(undefined),
   // Invoke the task immediately with a no-op progress + cancellation token and
   // return its promise (matches vscode.window.withProgress semantics).
   withProgress: <T>(_opts: unknown, task: (progress: { report: (v: unknown) => void }, token: { isCancellationRequested: boolean; onCancellationRequested: () => { dispose: () => void } }) => Thenable<T>): Thenable<T> =>
@@ -202,6 +209,11 @@ export const window = {
     dispose: () => {},
   }),
 };
+
+/** Restore the stubbable `window` members to their defaults (use in afterEach). */
+export function resetWindowStubs(): void {
+  window.showQuickPick = () => Promise.resolve(undefined);
+}
 
 /** Editor column targets — `createWebviewPanel`'s third argument. */
 export enum ViewColumn {

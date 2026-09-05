@@ -46,6 +46,12 @@ const FAMILY_RATES: Array<{ match: RegExp; rate: ModelRate }> = [
   { match: /4o-mini|gpt-4o-mini|o4-mini/i, rate: { inputPerMTok: 0.15, outputPerMTok: 0.6 } },
   { match: /flash/i, rate: { inputPerMTok: 0.1, outputPerMTok: 0.4 } },
   { match: /gemini/i, rate: { inputPerMTok: 1.25, outputPerMTok: 5 } },
+  // GPT-6 Astra (2026-09-03). Standard rate, which applies at or below 272K
+  // input tokens; above that the whole request repriced to $20/$75. We bill the
+  // standard rate here — the ledger has no per-request input size at match time,
+  // and under-reporting a long-context request is the safer of the two errors
+  // versus inflating every ordinary one by 2x.
+  { match: /gpt-6/i, rate: { inputPerMTok: 10, outputPerMTok: 50 } },
   { match: /gpt-5|gpt-4\.1|gpt-4o|gpt-4/i, rate: { inputPerMTok: 2.5, outputPerMTok: 10 } },
 ];
 

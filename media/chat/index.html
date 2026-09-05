@@ -495,6 +495,10 @@
 
     <!-- Messages area -->
     <div id="messages" class="messages">
+      <!-- Local update notices: newly released models + stale CLI backends.
+           Populated by 'newModelsAvailable' / 'cliUpdatesAvailable'. Unlike
+           #inapp-messages these are computed on-device and work signed-out. -->
+      <div id="update-notices" class="update-notices" hidden></div>
       <!-- Dynamic in-app messages (feedback surveys, offers, banners) from DeepMyst -->
       <div id="inapp-messages" class="inapp-messages"></div>
       <!-- Fixed container for stuck in-progress items -->

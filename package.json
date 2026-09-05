@@ -591,6 +591,16 @@
           ],
           "description": "Reasoning effort tier (Claude Code parity). Each backend maps this to its native reasoning control (Claude Code \u2192 --effort, Codex \u2192 model_reasoning_effort, OpenRouter \u2192 reasoning.effort, \u2026). Backends with no reasoning control ignore it. Distinct from thinking level."
         },
+        "mysti.updates.notifyNewModels": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a notification when a backend publishes a model you have not seen before, with a one-click button to select it for that agent. Detection only — Mysti never switches your model on its own."
+        },
+        "mysti.updates.checkCliUpdates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check installed CLI backends against their published npm versions once a day and offer a one-click update. New models are often gated on a CLI version (GPT-6 Astra needs Codex CLI 0.153.1+). Nothing is ever installed without an explicit click."
+        },
         "mysti.defaultModel": {
           "type": "string",
           "default": "claude-sonnet-4-6",

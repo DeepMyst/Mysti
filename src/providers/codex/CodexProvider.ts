@@ -72,6 +72,18 @@ export class CodexProvider extends BaseCliProvider {
     displayName: 'OpenAI Codex',
     models: [
       {
+        // Released 2026-09-03. Codex CLI added support in v0.153.1 but keeps it
+        // OUT of its own model picker (Trusted Access Programme on-ramp), so it
+        // will never arrive by discovery — this curated entry is the only way it
+        // reaches the dropdown. Deliberately NOT the defaultModel: selecting it
+        // without Trusted Access, or on a CLI older than 0.153.1, fails.
+        id: 'gpt-6-astra',
+        name: 'GPT-6 Astra',
+        description: 'Flagship reasoning + coding model. Requires Trusted Access and Codex CLI 0.153.1+',
+        contextWindow: 1050000,
+        releasedAt: '2026-09-03'
+      },
+      {
         id: 'gpt-5.4-codex',
         name: 'GPT-5.4 Codex',
         description: 'Latest coding model, best for code generation',

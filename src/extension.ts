@@ -48,6 +48,8 @@ import { StitchService } from './services/StitchService';
 import { CanvasSecrets } from './services/CanvasSecrets';
 import { CliDiscoveryService } from './services/CliDiscoveryService';
 import { ModelRegistryService } from './services/ModelRegistryService';
+import { ModelAnnouncementService } from './services/ModelAnnouncementService';
+import { CliUpdateService } from './services/CliUpdateService';
 import { DeepMystAuthManager } from './managers/DeepMystAuthManager';
 import { AnnouncementManager } from './managers/AnnouncementManager';
 import { ConnectionsPanelManager } from './managers/ConnectionsPanelManager';
@@ -71,6 +73,8 @@ let permissionManager: PermissionManager;
 let setupManager: SetupManager;
 let cliDiscoveryService: CliDiscoveryService;
 let modelRegistryService: ModelRegistryService;
+let modelAnnouncementService: ModelAnnouncementService;
+let cliUpdateService: CliUpdateService;
 let telemetryManager: TelemetryManager;
 let memoryManager: MemoryManager;
 let autonomousManager: AutonomousManager;
@@ -242,6 +246,13 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize setup manager for CLI auto-setup (reads CLI/auth status
   // through the discovery cache — Plan 03 Phase 3a)
   setupManager = new SetupManager(context, providerManager, cliDiscoveryService);
+
+  // Update surfacing: "what's new" (models) and "what's stale" (CLIs). Both are
+  // detect-and-report only — neither writes a setting nor installs anything.
+  // CliUpdateService needs npm resolution, so it is built after SetupManager.
+  modelAnnouncementService = new ModelAnnouncementService(context);
+  cliUpdateService = new CliUpdateService(context, cliDiscoveryService, setupManager);
+  context.subscriptions.push(modelAnnouncementService, cliUpdateService);
 
   // Initialize memory, autonomous, and compaction managers
   memoryManager = new MemoryManager(context);
@@ -442,6 +453,11 @@ export async function activate(context: vscode.ExtensionContext) {
       enabled: () => vscode.workspace.getConfiguration('mysti').get<boolean>('desk.enabled', false),
     }
   );
+
+  // Update surfacing is injected post-construction: the ChatViewProvider
+  // constructor already takes 22 positional arguments, and two more would make
+  // a transposition even easier to introduce and harder to see.
+  chatViewProvider.setUpdateServices(modelAnnouncementService, cliUpdateService);
 
   // F-11: run the one-time settings→secrets migration BEFORE any service reads
   // a key, then prime StitchService and the image/video generation services
@@ -1127,6 +1143,57 @@ export async function activate(context: vscode.ExtensionContext) {
     }, MODEL_REFRESH_WARMUP_DELAY_MS);
     context.subscriptions.push({ dispose: () => clearTimeout(warmupTimer) });
   }
+
+  // ---------------------------------------------------------------------------
+  // New-model announcements
+  //
+  // Two triggers, because there are two ways a model becomes new to a user:
+  //  1. a backend published one   -> discovery lands -> onDidUpdateModels;
+  //  2. a Mysti upgrade added one -> the CURATED list grew, and for a provider
+  //     with no discoverModels (Codex, Cline, Hermes, Continue, Kimi) nothing
+  //     ever fires. Only the sweep below catches that case, which is exactly how
+  //     GPT-6 Astra reaches a Codex user.
+  //
+  // Both are cheap: reconcile() reads the already-merged list with
+  // revalidate:false (no probe) and no-ops unless an id is genuinely unseen.
+  // ---------------------------------------------------------------------------
+  const reconcileAnnouncements = (providerId: string): void => {
+    if (!vscode.workspace.getConfiguration('mysti').get<boolean>('updates.notifyNewModels', true)) {
+      return;
+    }
+    try {
+      const { models } = modelRegistryService.getModels(providerId, { revalidate: false });
+      modelAnnouncementService.reconcile(providerId, models);
+    } catch (err) {
+      console.warn(`[Mysti] Model announcement reconcile failed for ${providerId}: ${String(err)}`);
+    }
+  };
+
+  context.subscriptions.push(
+    modelRegistryService.onDidUpdateModels(({ providerId }) => reconcileAnnouncements(providerId))
+  );
+
+  // Curated sweep + CLI update check. Deliberately on their own timer rather
+  // than inside the models.autoRefresh block: a user who turned off live model
+  // discovery still wants to be told that the build they just installed added a
+  // model, and still wants a stale-CLI warning.
+  const updateSweepTimer = setTimeout(() => {
+    void (async () => {
+      await providerManager.whenReady.catch(() => undefined);
+
+      for (const id of providerManager.getAllProviderIds()) {
+        reconcileAnnouncements(id);
+      }
+
+      if (vscode.workspace.getConfiguration('mysti').get<boolean>('updates.checkCliUpdates', true)) {
+        // TTL'd (24h) and staggered internally; swallows its own failures.
+        await cliUpdateService.checkAll();
+      }
+    })().catch((err) => {
+      console.warn(`[Mysti] Update sweep failed: ${String(err)}`);
+    });
+  }, MODEL_REFRESH_WARMUP_DELAY_MS);
+  context.subscriptions.push({ dispose: () => clearTimeout(updateSweepTimer) });
 
   // Activation complete — coarse measure, always recorded and logged
   PerfTracker.measure('activation.total', 'activation.start');

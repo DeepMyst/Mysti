@@ -4626,6 +4626,111 @@
        Permission Approval Card
        ======================================== */
     /* ── Dynamic in-app messages (DeepMyst announcements) ─────────────────── */
+    /* ---- Update notices (new models / stale CLI backends) --------------
+       Deliberately reuses the .inapp-* visual language so a locally-detected
+       notice and a server-pushed message read as one system. */
+    .update-notices {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .update-notices[hidden] { display: none; }
+
+    .update-card {
+      position: relative;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-left: 3px solid var(--vscode-focusBorder, #007acc);
+      border-radius: 8px;
+      padding: 10px 12px;
+      animation: fadeSlideIn 0.3s ease forwards;
+    }
+
+    .update-card.update-card-cli {
+      border-left-color: var(--vscode-editorWarning-foreground, #cca700);
+    }
+
+    .update-card-head {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .update-badge {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--vscode-focusBorder, #007acc);
+    }
+
+    .update-card-cli .update-badge {
+      color: var(--vscode-editorWarning-foreground, #cca700);
+    }
+
+    .update-title {
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--vscode-foreground);
+    }
+
+    .update-agent {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .update-text {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--vscode-descriptionForeground);
+      margin-top: 4px;
+    }
+
+    .update-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .update-btn {
+      padding: 4px 11px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      background: var(--vscode-button-secondaryBackground, transparent);
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .update-btn:hover {
+      background: var(--vscode-list-hoverBackground);
+      border-color: var(--vscode-focusBorder, #007acc);
+    }
+
+    .update-btn.update-cta {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-color: transparent;
+    }
+
+    .update-btn.update-cta:hover {
+      background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+    }
+
+    .update-cmd {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 11px;
+      color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+      background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.12));
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
     .inapp-messages {
       display: flex;
       flex-direction: column;

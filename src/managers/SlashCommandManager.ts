@@ -340,8 +340,15 @@ export class SlashCommandManager {
       }
 
       case 'cmd:canvas': {
-        // Open the canvas in a separate editor tab
-        callbacks.postToPanel(panelId, { type: 'openCanvas' });
+        // Open the canvas in a separate editor tab.
+        //
+        // This used to post `openCanvas` to the webview, which handles no such
+        // message — so the menu entry did nothing. `mysti.openCanvas` is a
+        // registered VS Code command that calls the same
+        // `chatViewProvider.openCanvas()`, so invoke it directly rather than
+        // round-tripping through a webview that has no part to play. Same
+        // pattern as the settings and issue-tracker entries below.
+        await vscode.commands.executeCommand('mysti.openCanvas');
         return;
       }
 
@@ -382,37 +389,25 @@ export class SlashCommandManager {
       }
 
       // ---- Collaboration (Plan 14) ----
-      // These open the collaborator picker in the webview, prebound to a role.
-      // The user picks which agents play the role; ChatViewProvider then runs
-      // the CollaborationManager. Typing `@agent:role <brief>` is the direct
-      // (picker-free) path to the same machinery.
+      // These four posted `composeCollaboration` to open a collaborator picker
+      // in the webview. That picker was never built, and NOTHING handles the
+      // message — so all four menu entries did nothing, while advertising a
+      // description. The collaboration machinery itself works: ChatViewProvider
+      // parses `@agent:role` out of the message text and runs it.
+      //
+      // So the picker is a native QuickPick, and the composed mention goes into
+      // the input via `setInputValue` — leaving the user to read it, edit the
+      // brief and press Enter, rather than silently dispatching agents on their
+      // behalf. Nothing new is invented: this is the documented direct path,
+      // pre-composed.
       case 'cmd:consult':
-        callbacks.postToPanel(panelId, {
-          type: 'composeCollaboration',
-          payload: { role: 'advisor', brief: trimmedArgs || '' }
-        });
-        return;
-
+        return this._composeCollaboration(callbacks, panelId, 'advisor', trimmedArgs);
       case 'cmd:review':
-        callbacks.postToPanel(panelId, {
-          type: 'composeCollaboration',
-          payload: { role: 'reviewer', brief: trimmedArgs || '', target: 'diff' }
-        });
-        return;
-
+        return this._composeCollaboration(callbacks, panelId, 'reviewer', trimmedArgs);
       case 'cmd:critique':
-        callbacks.postToPanel(panelId, {
-          type: 'composeCollaboration',
-          payload: { role: 'critic', brief: trimmedArgs || '' }
-        });
-        return;
-
+        return this._composeCollaboration(callbacks, panelId, 'critic', trimmedArgs);
       case 'cmd:panel':
-        callbacks.postToPanel(panelId, {
-          type: 'composeCollaboration',
-          payload: { role: 'advisor', brief: trimmedArgs || '', panel: true }
-        });
-        return;
+        return this._composeCollaboration(callbacks, panelId, 'advisor', trimmedArgs, true);
 
       // ---- Settings ----
       case 'settings:mode': {
@@ -1121,4 +1116,57 @@ export class SlashCommandManager {
       '/brainstorm [on|off|status] - Toggle brainstorm mode\n' +
       '/compact - Compact conversation context';
   }
+
+  /**
+   * Compose an `@agent:role` mention for the collaboration slash commands
+   * (Plan 27 Phase 4).
+   *
+   * The webview picker these commands were written against does not exist, so
+   * the agent choice is a native QuickPick over the REGISTERED providers —
+   * `getAllProviders()`, so a sixteenth backend appears here with no edit — and
+   * the result is written into the chat input rather than dispatched. The user
+   * sees exactly what will run and still has to press Enter: a slash command
+   * should not fan work out to several backends without a visible confirmation.
+   *
+   * Returns a status string on cancel/none-available so the caller surfaces a
+   * reason instead of the silence these commands used to produce.
+   */
+  private async _composeCollaboration(
+    callbacks: SlashCommandCallbacks,
+    panelId: string,
+    role: string,
+    brief: string,
+    panel = false,
+  ): Promise<string | undefined> {
+    const active = callbacks.getPanelProvider(panelId);
+    const candidates = this._providerManager
+      .getAllProviders()
+      .filter(p => p.id !== active);
+
+    if (candidates.length === 0) {
+      return 'No other agent is available to collaborate with. Add a second backend first.';
+    }
+
+    const picked = await vscode.window.showQuickPick(
+      candidates.map(p => ({ label: p.displayName, id: p.id })),
+      {
+        title: panel ? `Convene a panel (${role})` : `Ask another agent as ${role}`,
+        placeHolder: panel ? 'Pick the agents for the panel' : `Pick the agent to act as ${role}`,
+        canPickMany: true,
+        ignoreFocusOut: true,
+      },
+    );
+
+    if (!picked || picked.length === 0) {
+      return undefined; // cancelled — the QuickPick closing is its own feedback
+    }
+
+    const mentions = picked.map(p => `@${p.id}:${role}`).join(' ');
+    callbacks.postToPanel(panelId, {
+      type: 'setInputValue',
+      payload: { value: `${mentions} ${brief}`.trim() + (brief ? '' : ' ') },
+    });
+    return undefined;
+  }
+
 }

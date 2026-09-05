@@ -16,7 +16,9 @@ import {
   getManifestAffectingSettingKeys,
   getProviderDisplayMeta,
   getProviderDisplayName,
-  PROVIDER_MANIFEST_SCHEMA_VERSION
+  PROVIDER_MANIFEST_SCHEMA_VERSION,
+  PROVIDER_NPM_PACKAGES,
+  getProviderNpmPackage
 } from '../../src/providers/base/ProviderManifest';
 import type { ProviderManifestEntry } from '../../src/providers/base/IProvider';
 
@@ -271,5 +273,110 @@ describe('buildProviderManifest', () => {
     expect(entries[0].color).toBe('#888888');
     expect(entries[0].customModelSettingKey).toBe('');
     expect(entries[0].settingsSections).toEqual([]);
+  });
+});
+
+/**
+ * PROVIDER_NPM_PACKAGES backs the CLI update checker. It is a TOTAL Record, so
+ * a new provider cannot be added without declaring a package or an explicit
+ * null — but totality alone does not stop a WRONG name, and a wrong name means
+ * either a silent no-op or an update card pointing at somebody else's package.
+ * These tests tie the map to what each provider actually tells users to install.
+ */
+describe('PROVIDER_NPM_PACKAGES', () => {
+  let registry: ProviderRegistry;
+
+  beforeAll(() => {
+    registry = new ProviderRegistry(createMockContext());
+  });
+
+  it('declares an entry for every provider id', () => {
+    for (const id of ALL_PROVIDER_IDS) {
+      expect(
+        Object.prototype.hasOwnProperty.call(PROVIDER_NPM_PACKAGES, id),
+        `${id} has no PROVIDER_NPM_PACKAGES entry`
+      ).toBe(true);
+    }
+  });
+
+  it('names a package only for providers whose install command is an npm install', () => {
+    for (const provider of registry.getAll()) {
+      const declared = getProviderNpmPackage(provider.id);
+      let installCommand = '';
+      try {
+        installCommand = provider.getInstallCommand() || '';
+      } catch {
+        installCommand = '';
+      }
+      const isNpmInstall = /\bnpm\s+(install|i)\s+-g\b/.test(installCommand);
+
+      if (declared) {
+        expect(
+          isNpmInstall,
+          `${provider.id} declares npm package "${declared}" but its install command is not an npm -g install: ${installCommand}`
+        ).toBe(true);
+        expect(
+          installCommand.includes(declared),
+          `${provider.id} declares "${declared}" but installs something else: ${installCommand}`
+        ).toBe(true);
+      } else if (isNpmInstall) {
+        throw new Error(
+          `${provider.id} installs from npm (${installCommand}) but declares null — it will never be update-checked`
+        );
+      }
+    }
+  });
+
+  it('stores bare package names, with no @latest dist-tag baked in', () => {
+    for (const pkg of Object.values(PROVIDER_NPM_PACKAGES)) {
+      if (pkg === null) { continue; }
+      expect(pkg, `"${pkg}" must not carry a dist-tag`).not.toMatch(/@latest$/);
+      // A shell metacharacter here would end up in an update command.
+      expect(pkg, `"${pkg}" is not a plain package name`).toMatch(/^(@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i);
+    }
+  });
+
+  it('getProviderNpmPackage returns undefined for null and unknown ids', () => {
+    expect(getProviderNpmPackage('cursor')).toBeUndefined();
+    expect(getProviderNpmPackage('not-a-provider')).toBeUndefined();
+    expect(getProviderNpmPackage('openai-codex')).toBe('@openai/codex');
+  });
+});
+
+/**
+ * The curated catalogue is the ONLY delivery path for a model a backend hides
+ * from its own discovery. GPT-6 Astra is exactly that case (Codex CLI 0.153.1
+ * supports it but keeps it out of the model picker), and Codex implements no
+ * discoverModels at all — so if this entry regresses, the model becomes
+ * unreachable in Mysti with no other test noticing.
+ */
+describe('curated catalogue: GPT-6 Astra (Codex)', () => {
+  let codex: { config: { models: Array<{ id: string; name: string; contextWindow?: number; releasedAt?: string }>; defaultModel: string } };
+
+  beforeAll(() => {
+    const registry = new ProviderRegistry(createMockContext());
+    codex = registry.getAll().find(p => p.id === 'openai-codex') as never;
+  });
+
+  it('is present with its real context window', () => {
+    const astra = codex.config.models.find(m => m.id === 'gpt-6-astra');
+    expect(astra, 'gpt-6-astra missing from the Codex catalogue').toBeDefined();
+    expect(astra!.name).toBe('GPT-6 Astra');
+    expect(astra!.contextWindow).toBe(1050000);
+  });
+
+  it('carries a parseable, non-future releasedAt so it can announce through a baseline', () => {
+    const astra = codex.config.models.find(m => m.id === 'gpt-6-astra')!;
+    expect(astra.releasedAt, 'without releasedAt it can never be announced on a first baseline').toBeTruthy();
+    const ts = Date.parse(astra.releasedAt!);
+    expect(Number.isNaN(ts), `releasedAt "${astra.releasedAt}" is not a date`).toBe(false);
+    // A future date fails the freshness check closed and would never announce.
+    expect(ts).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('is NOT the default model — it is Trusted-Access + CLI-version gated', () => {
+    // Defaulting to it would break every user without Trusted Access or on a
+    // Codex CLI older than 0.153.1.
+    expect(codex.config.defaultModel).not.toBe('gpt-6-astra');
   });
 });

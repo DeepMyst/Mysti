@@ -4106,6 +4106,112 @@
       }
 
       /**
+       * Render the local update notices: newly released models (with a
+       * per-agent "Use it" button) and stale CLI backends.
+       *
+       * Ordering puts the active agent's model notices first — a new model for
+       * the agent you are talking to right now is the actionable one — then the
+       * remaining models, then CLI updates. Everything is escaped: names and
+       * descriptions originate in provider catalogues and npm, not in Mysti.
+       */
+      function renderUpdateNotices() {
+        var host = document.getElementById('update-notices');
+        if (!host) return;
+
+        var models = (state.newModelNotices || []).slice();
+        var updates = (state.cliUpdateNotices || []).slice();
+
+        if (models.length === 0 && updates.length === 0) {
+          host.innerHTML = '';
+          host.hidden = true;
+          return;
+        }
+
+        models.sort(function(a, b) {
+          if (!!a.isActiveProvider !== !!b.isActiveProvider) return a.isActiveProvider ? -1 : 1;
+          return (b.announcedAt || 0) - (a.announcedAt || 0);
+        });
+
+        var html = '';
+
+        models.forEach(function(m) {
+          var ctx = m.contextWindow
+            ? ' · ' + Math.round(m.contextWindow / 1000).toLocaleString() + 'K context'
+            : '';
+          html += '<div class="update-card" data-kind="model"'
+            + ' data-provider="' + escapeHtml(m.providerId) + '"'
+            + ' data-model="' + escapeHtml(m.modelId) + '">'
+            + '<div class="update-card-head">'
+            + '<span class="update-badge">New model</span>'
+            + '<span class="update-title">' + escapeHtml(m.name || m.modelId) + '</span>'
+            + '<span class="update-agent">for ' + escapeHtml(m.providerLabel) + ctx + '</span>'
+            + '</div>'
+            + (m.description ? '<div class="update-text">' + escapeHtml(m.description) + '</div>' : '')
+            + '<div class="update-actions">'
+            + '<button class="update-btn update-cta" data-action="use-model">Use for '
+            + escapeHtml(m.providerLabel) + '</button>'
+            + '<button class="update-btn" data-action="dismiss-model">Dismiss</button>'
+            + '</div>'
+            + '</div>';
+        });
+
+        updates.forEach(function(u) {
+          html += '<div class="update-card update-card-cli" data-kind="cli"'
+            + ' data-provider="' + escapeHtml(u.providerId) + '">'
+            + '<div class="update-card-head">'
+            + '<span class="update-badge">Update available</span>'
+            + '<span class="update-title">' + escapeHtml(u.providerLabel) + ' CLI</span>'
+            + '<span class="update-agent">' + escapeHtml(u.installed) + ' &rarr; ' + escapeHtml(u.latest) + '</span>'
+            + '</div>'
+            + '<div class="update-text">Runs <span class="update-cmd">' + escapeHtml(u.command)
+            + '</span> in a terminal you can review first.</div>'
+            + '<div class="update-actions">'
+            + '<button class="update-btn update-cta" data-action="run-update">Update</button>'
+            + '</div>'
+            + '</div>';
+        });
+
+        host.innerHTML = html;
+        host.hidden = false;
+      }
+
+      /**
+       * One delegated listener for every notice button. Delegation (rather than
+       * per-card handlers) is what keeps this correct across the full re-render
+       * that follows each action.
+       */
+      (function bindUpdateNoticeActions() {
+        var host = document.getElementById('update-notices');
+        if (!host) return;
+        host.addEventListener('click', function(e) {
+          var btn = e.target && e.target.closest ? e.target.closest('button[data-action]') : null;
+          if (!btn) return;
+          var card = btn.closest('.update-card');
+          if (!card) return;
+
+          var provider = card.getAttribute('data-provider') || '';
+          var modelId = card.getAttribute('data-model') || '';
+          var action = btn.getAttribute('data-action');
+
+          if (action === 'use-model') {
+            postMessageWithPanelId({ type: 'selectAnnouncedModel', payload: { provider: provider, modelId: modelId } });
+          } else if (action === 'dismiss-model') {
+            postMessageWithPanelId({ type: 'dismissModelAnnouncement', payload: { provider: provider, modelId: modelId } });
+          } else if (action === 'run-update') {
+            postMessageWithPanelId({ type: 'runCliUpdate', payload: { provider: provider } });
+          }
+
+          // Optimistic removal; the extension re-broadcasts authoritative state.
+          if (action === 'use-model' || action === 'dismiss-model') {
+            state.newModelNotices = (state.newModelNotices || []).filter(function(m) {
+              return !(m.providerId === provider && m.modelId === modelId);
+            });
+            renderUpdateNotices();
+          }
+        });
+      })();
+
+      /**
        * Plan 01 Phase 4: merge an extension-pushed model list into state.providers.
        * Every panel merges (so a later agent switch reads the fresh list), but only
        * the panel currently showing that provider repaints.
@@ -4474,6 +4580,10 @@
         switch (message.type) {
           case 'initialState':
             initializeState(message.payload);
+            // Ask for any outstanding update notices. Kept out of initialState
+            // itself so a panel that reloads mid-session gets them back too;
+            // the extension answers from cache without probing anything.
+            postMessageWithPanelId({ type: 'requestUpdateStatus' });
             break;
           case 'messageAdded':
             addMessage(message.payload);
@@ -4672,6 +4782,14 @@
             }
             break;
 
+          case 'newModelsAvailable':
+            state.newModelNotices = (message.payload && message.payload.models) || [];
+            renderUpdateNotices();
+            break;
+          case 'cliUpdatesAvailable':
+            state.cliUpdateNotices = (message.payload && message.payload.updates) || [];
+            renderUpdateNotices();
+            break;
           case 'modelsUpdated':
             // Plan 01 Phase 4: model lists are NOT final at initialState — the
             // automatic post-activation warm-up refreshes each agent's list in
@@ -5308,6 +5426,26 @@
             break;
           case 'triggerImport':
             postMessageWithPanelId({ type: 'importFromFile' });
+            break;
+          /**
+           * Plan 27 Phase 4 — `/share`, `/init-team`, `/memory` and `/rules`.
+           *
+           * SlashCommandManager posts these extension -> webview; ChatViewProvider
+           * handles the SAME four names webview -> extension, reading msg.panelId.
+           * The echo in the middle — the hop `triggerExport`/`triggerImport`
+           * above have always had — was never written, so all four menu entries
+           * did nothing at all. The extension-side implementations
+           * (_initTeamWorkspace, _openProjectMemory, _openProjectRules and the
+           * share-link builder) have existed the whole time and are unchanged.
+           *
+           * The name is echoed verbatim: the extension keys on it, and the only
+           * thing the webview adds is the panelId the handlers require.
+           */
+          case 'triggerShareLink':
+          case 'triggerInitTeam':
+          case 'triggerOpenMemory':
+          case 'triggerOpenRules':
+            postMessageWithPanelId({ type: message.type });
             break;
           case 'openVisualTestDialog':
             // Redirect to opening the dashboard in a separate tab

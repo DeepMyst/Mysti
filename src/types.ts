@@ -419,7 +419,55 @@ export interface RequestModelsMessage {
 }
 
 /** Union of the new, strictly-typed extension→webview messages */
-export type TypedWebviewMessage = ManifestUpdatedMessage | StreamStatusMessage | ModelsUpdatedMessage;
+/**
+ * One "a new model was released" card. `settingKey` is the per-agent model
+ * setting the quick-select button writes (mysti.<key>), resolved extension-side
+ * from PROVIDER_CUSTOM_MODEL_SETTING_KEYS so the webview never has to know the
+ * provider→setting mapping.
+ */
+export interface AnnouncedModelPayload {
+  providerId: string;
+  providerLabel: string;
+  modelId: string;
+  name: string;
+  description?: string;
+  contextWindow?: number;
+  announcedAt: number;
+  settingKey: string;
+  /**
+   * True when this provider is the one the panel is currently using. The
+   * webview uses it to order cards, not to decide whether to show them —
+   * a new model on an idle agent is still worth surfacing.
+   */
+  isActiveProvider: boolean;
+}
+
+export interface NewModelsAvailableMessage {
+  type: 'newModelsAvailable';
+  payload: { models: AnnouncedModelPayload[] };
+}
+
+/** One outdated backend CLI. `command` is built from an in-repo package literal. */
+export interface CliUpdatePayload {
+  providerId: string;
+  providerLabel: string;
+  packageName: string;
+  installed: string;
+  latest: string;
+  command: string;
+}
+
+export interface CliUpdatesAvailableMessage {
+  type: 'cliUpdatesAvailable';
+  payload: { updates: CliUpdatePayload[] };
+}
+
+export type TypedWebviewMessage =
+  | ManifestUpdatedMessage
+  | StreamStatusMessage
+  | ModelsUpdatedMessage
+  | NewModelsAvailableMessage
+  | CliUpdatesAvailableMessage;
 
 export interface ProviderConfig {
   name: string;
@@ -448,6 +496,17 @@ export interface ModelInfo {
   source?: 'curated' | 'discovered' | 'custom';
   /** Curated feed can mark sunset models for de-emphasis in the UI. */
   deprecated?: boolean;
+  /**
+   * ISO-8601 date the model was publicly released, when known.
+   *
+   * Exists for one reason: the announcement baseline. A provider's FIRST
+   * reconcile is silent (otherwise every install would announce the entire
+   * catalogue), which would also swallow a model that genuinely shipped days
+   * ago — including on the very build that adds it. A model carrying a recent
+   * releasedAt announces THROUGH that baseline, and only inside a short window,
+   * so old entries never resurface as news.
+   */
+  releasedAt?: string;
 }
 
 /**

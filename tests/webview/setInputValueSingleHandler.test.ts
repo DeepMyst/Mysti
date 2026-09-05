@@ -85,10 +85,25 @@ describe('setInputValue: the extension sends exactly the two shapes the handler 
     for (const s of sends) { expect(s).toMatch(/^\{\s*value:/); }
   });
 
-  it('SlashCommandManager posts a bare string', () => {
+  it('SlashCommandManager posts a bare string AND the object shape', () => {
+    // It sends both: a bare `'@'` to open the mention menu, and `{ value }`
+    // from the collaboration composer (Plan 27 Phase 4). Both are shapes the
+    // single merged handler accepts — which is the property that matters, and
+    // is why this test asserts the SET of shapes rather than one per file.
     const src = fs.readFileSync(SLASH, 'utf8');
-    const sends = [...src.matchAll(/type:\s*'setInputValue',\s*payload:\s*([^\s}]+)/g)].map(m => m[1]);
-    expect(sends.length).toBeGreaterThan(0);
-    for (const s of sends) { expect(s).toMatch(/^'[^']*'$/); }
+    const bare = /type:\s*'setInputValue',\s*payload:\s*'[^']*'/.test(src);
+    const obj = /type:\s*'setInputValue',\s*\n?\s*payload:\s*\{\s*value:/.test(src);
+    expect(bare || obj, 'SlashCommandManager no longer posts setInputValue at all').toBe(true);
+    // Whatever it posts must be one of the two accepted shapes, never a third.
+    // Capture only the START of the value — a quoted string or an opening
+    // brace — so trailing `});` on the same line cannot fail the match.
+    const sends = [...src.matchAll(/type:\s*'setInputValue',\s*(?:\n\s*)?payload:\s*('[^']*'|\{)/g)].map(m => m[1]);
+    expect(sends.length, 'no setInputValue payload matched — the regex or the call shape changed').toBeGreaterThan(0);
+    for (const v of sends) {
+      expect(
+        /^'[^']*'$/.test(v) || v === '{',
+        `setInputValue payload starting ${v} is neither a bare string nor an object — the handler accepts only those two`,
+      ).toBe(true);
+    }
   });
 });

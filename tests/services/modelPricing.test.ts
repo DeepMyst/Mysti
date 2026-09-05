@@ -22,6 +22,17 @@ describe('ModelPricing.getModelRate', () => {
     expect(getModelRate('gpt-4o-mini')).toEqual({ inputPerMTok: 0.15, outputPerMTok: 0.6 });
   });
 
+  it('prices GPT-6 Astra at its own rate, not the GPT-5 fallback', () => {
+    // Before the gpt-6 pattern existed this returned null (billed as unknown),
+    // because /gpt-5|gpt-4/ does not match "gpt-6-astra".
+    expect(getModelRate('gpt-6-astra')).toEqual({ inputPerMTok: 10, outputPerMTok: 50 });
+    // The gpt-5 family must be unaffected by the new, earlier pattern.
+    expect(getModelRate('gpt-5.4-codex')).toEqual({ inputPerMTok: 2.5, outputPerMTok: 10 });
+    // Astra is 4x the GPT-5 input rate — a mismatch here understates spend.
+    expect(getModelRate('gpt-6-astra')!.inputPerMTok)
+      .toBeGreaterThan(getModelRate('gpt-5.2')!.inputPerMTok);
+  });
+
   it('returns null for unknown / missing models', () => {
     expect(getModelRate('totally-unknown-xyz')).toBeNull();
     expect(getModelRate(undefined)).toBeNull();

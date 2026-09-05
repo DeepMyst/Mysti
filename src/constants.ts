@@ -179,6 +179,39 @@ export const MODEL_CUSTOM_MAX_PER_PROVIDER = 50;               // hard cap on us
 export const MODEL_DISCOVERY_MAX_PER_PROVIDER = 250;            // hard cap on models persisted per provider from one discovery probe
 
 /**
+ * New-model announcements (model release notifications).
+ *
+ * MODEL_SEEN_MAX_PER_PROVIDER bounds the "ids we have already shown the user"
+ * set. It is deliberately larger than MODEL_DISCOVERY_MAX_PER_PROVIDER so a
+ * provider at the discovery cap still has headroom for ids that have since
+ * rotated out — trimming the seen-set is what would cause a stale id to be
+ * re-announced as "new", so the cap must not bite in normal operation.
+ *
+ * MODEL_ANNOUNCE_MAX_PENDING bounds the cards the UI can accumulate. A backend
+ * that publishes a large catalog in one go (OpenRouter) must not be able to
+ * bury the panel; the newest N survive and the rest are silently marked seen.
+ */
+export const MODEL_SEEN_MAX_PER_PROVIDER = 400;
+export const MODEL_ANNOUNCE_MAX_PENDING = 12;
+
+/**
+ * How recent a model's `releasedAt` must be to announce through a provider's
+ * FIRST (otherwise silent) reconcile. Bounds the one-off case where a model
+ * ships in the same build that first baselines its provider: inside the window
+ * it is news, outside it is just part of the catalogue.
+ */
+export const MODEL_ANNOUNCE_FRESH_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * CLI update checking (Plan 28). The check is a network read of the npm
+ * registry, so it is cached hard: 24h between checks, 8s per probe. Nothing is
+ * ever installed automatically — the check only decides whether to show a card.
+ */
+export const CLI_UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;     // 24h between npm registry checks
+export const CLI_UPDATE_PROBE_TIMEOUT_MS = 8000;                // hard cap per `npm view` probe
+export const CLI_UPDATE_STAGGER_MS = 600;                       // spacing between per-provider probes
+
+/**
  * Delay between activate() returning and the automatic background model-list
  * warm-up (Plan 01 Phase 3). The warm-up additionally waits for provider
  * initialization to settle, so this is a floor, not a guess: it keeps the

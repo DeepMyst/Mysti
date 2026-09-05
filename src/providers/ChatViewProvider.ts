@@ -122,6 +122,8 @@ import { CheckpointManager } from '../managers/CheckpointManager';
 import { ImageGenerationService } from '../services/ImageGenerationService';
 import { VideoGenerationService } from '../services/VideoGenerationService';
 import type { ModelRegistryService } from '../services/ModelRegistryService';
+import type { ModelAnnouncementService, AnnouncedModel } from '../services/ModelAnnouncementService';
+import type { CliUpdateService } from '../services/CliUpdateService';
 import type { CanvasSecrets } from '../services/CanvasSecrets';
 import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
@@ -140,6 +142,7 @@ import {
   getProviderDisplayName
 } from './base/ProviderManifest';
 import type { ProviderManifestPayload, StitchScreenRef, ModelsUpdatedPayload, PromptEnhanceUnavailablePayload } from '../types';
+import type { AnnouncedModelPayload, CliUpdatePayload } from '../types';
 import type { CollaboratorGateCallback, CollaboratorSpec, CollaboratorFailure } from '../types';
 import { validateModelName, validateProfileName } from '../utils/validation';
 import { filterInstallMethodsForOS } from '../utils/platform';
@@ -265,6 +268,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // context windows. Threaded in here for the consumer agent (Phase 4) to drive
   // the dynamic dropdown / modelsUpdated / requestModels wiring.
   private _modelRegistry: ModelRegistryService;
+  /**
+   * Update-surfacing services. Injected via setUpdateServices() AFTER
+   * construction rather than through the constructor, which already takes 22
+   * positional arguments — growing it further is a known hazard (a transposed
+   * pair is silent). Both are optional so every existing test that builds a
+   * ChatViewProvider keeps working untouched.
+   */
+  private _modelAnnouncements?: ModelAnnouncementService;
+  private _cliUpdates?: CliUpdateService;
   // Code checkpoints — shadow git repo backing "rewind code to here".
   private _checkpointManager: CheckpointManager;
   private _imageGenService: ImageGenerationService;
@@ -1654,6 +1666,57 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // onDidUpdateModels itself when a fresh list lands.
             void this._modelRegistry.refresh(rmProvider, { force: true });
           }
+        }
+        break;
+      }
+
+      case 'requestUpdateStatus': {
+        // Webview asks on open (and after a reload) for whatever cards are
+        // outstanding. Pure cache read — never triggers a probe or a network call.
+        this._postToPanel(msg.panelId, {
+          type: 'newModelsAvailable',
+          payload: { models: this._buildNewModelsPayload(msg.panelId) }
+        });
+        this._postToPanel(msg.panelId, {
+          type: 'cliUpdatesAvailable',
+          payload: { updates: this._buildCliUpdatesPayload() }
+        });
+        break;
+      }
+
+      case 'selectAnnouncedModel': {
+        // "Use it" on a new-model card: set that ONE agent's model override.
+        const samPayload = (msg.payload ?? {}) as { provider?: string; modelId?: string };
+        if (typeof samPayload.provider === 'string' && typeof samPayload.modelId === 'string') {
+          await this._applyAnnouncedModel(samPayload.provider, samPayload.modelId);
+        }
+        break;
+      }
+
+      case 'dismissModelAnnouncement': {
+        const dmaPayload = (msg.payload ?? {}) as { provider?: string; modelId?: string; all?: boolean };
+        if (dmaPayload.all === true) {
+          await this._modelAnnouncements?.dismissAll();
+        } else if (typeof dmaPayload.provider === 'string' && typeof dmaPayload.modelId === 'string') {
+          await this._modelAnnouncements?.dismiss(dmaPayload.provider, dmaPayload.modelId);
+        }
+        break;
+      }
+
+      case 'runCliUpdate': {
+        // The webview sends only a provider id. The COMMAND is looked up from
+        // the in-repo package map — a command string arriving from the webview
+        // is never honoured — and is run in a VISIBLE terminal the user can read
+        // and cancel, matching how SetupManager performs installs.
+        const rcuPayload = (msg.payload ?? {}) as { provider?: string };
+        const rcuProvider = typeof rcuPayload.provider === 'string' ? rcuPayload.provider : '';
+        const rcuCommand = rcuProvider ? this._cliUpdates?.getUpdateCommand(rcuProvider) : undefined;
+        if (rcuCommand) {
+          const terminal = vscode.window.createTerminal({
+            name: `Mysti: update ${getProviderDisplayName(rcuProvider) || rcuProvider}`
+          });
+          terminal.show();
+          terminal.sendText(rcuCommand);
         }
         break;
       }
@@ -12499,6 +12562,135 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } else {
       this._broadcastToAll(message);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Update surfacing (new models / stale CLIs)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Inject the update-surfacing services and start pushing their results to
+   * panels. Called once from activate(); safe to call before any panel exists
+   * (broadcasts to zero panels are no-ops, and the webview asks again on open).
+   */
+  public setUpdateServices(
+    announcements: ModelAnnouncementService,
+    cliUpdates: CliUpdateService
+  ): void {
+    this._modelAnnouncements = announcements;
+    this._cliUpdates = cliUpdates;
+
+    this._extensionContext.subscriptions.push(
+      announcements.onDidChangePending(() => this._broadcastNewModels()),
+      cliUpdates.onDidFindUpdates(() => this._broadcastCliUpdates())
+    );
+  }
+
+  /**
+   * Build the announcement cards. Model metadata (description, context window)
+   * is re-read from the registry rather than stored on the announcement, so a
+   * card always shows the CURRENT description even if it was raised days ago.
+   */
+  private _buildNewModelsPayload(panelId?: string): AnnouncedModelPayload[] {
+    const pending: AnnouncedModel[] = this._modelAnnouncements?.getPending() ?? [];
+    if (pending.length === 0) {
+      return [];
+    }
+    const activeProvider = panelId ? this._getPanelProvider(panelId) : undefined;
+
+    return pending.reduce<AnnouncedModelPayload[]>((acc, a) => {
+      const settingKey = getCustomModelSettingKey(a.providerId);
+      // No per-agent model setting => no quick-select target => no card. This
+      // drops pseudo-agents and any id that has fallen out of the manifest.
+      if (!settingKey) {
+        return acc;
+      }
+      const entry = this._modelRegistry
+        .getModels(a.providerId, { revalidate: false })
+        .models.find(m => m.id === a.modelId);
+
+      acc.push({
+        providerId: a.providerId,
+        providerLabel: getProviderDisplayName(a.providerId) || a.providerId,
+        modelId: a.modelId,
+        name: entry?.name || a.name,
+        description: entry?.description,
+        contextWindow: entry?.contextWindow,
+        announcedAt: a.announcedAt,
+        settingKey,
+        isActiveProvider: a.providerId === activeProvider
+      });
+      return acc;
+    }, []);
+  }
+
+  /** Push announcement cards to every open panel. */
+  private _broadcastNewModels(): void {
+    this._panelStates.forEach((state, panelId) => {
+      state.webview.postMessage({
+        type: 'newModelsAvailable',
+        payload: { models: this._buildNewModelsPayload(panelId) }
+      } as WebviewMessage);
+    });
+  }
+
+  /**
+   * Build the stale-CLI cards. The update COMMAND is taken from
+   * CliUpdateService (an in-repo package literal), never from the webview and
+   * never from the npm registry response.
+   */
+  private _buildCliUpdatesPayload(): CliUpdatePayload[] {
+    const updates = this._cliUpdates?.getUpdates() ?? [];
+    return updates.reduce<CliUpdatePayload[]>((acc, u) => {
+      const command = this._cliUpdates?.getUpdateCommand(u.providerId);
+      if (!command) {
+        return acc;
+      }
+      acc.push({
+        providerId: u.providerId,
+        providerLabel: getProviderDisplayName(u.providerId) || u.providerId,
+        packageName: u.packageName,
+        installed: u.installed,
+        latest: u.latest,
+        command
+      });
+      return acc;
+    }, []);
+  }
+
+  /** Push stale-CLI cards to every open panel. */
+  private _broadcastCliUpdates(): void {
+    const payload = { updates: this._buildCliUpdatesPayload() };
+    this._broadcastToAll({ type: 'cliUpdatesAvailable', payload });
+  }
+
+  /**
+   * Apply a "use this model" click: write the per-agent model override for that
+   * provider and retire the card.
+   *
+   * The model id is re-validated with validateModelName even though it came
+   * from our own announcement — the webview is the one sending it back, so it
+   * is treated as untrusted input on the way in, exactly like the customModel
+   * path in _handleUpdateSettings.
+   */
+  private async _applyAnnouncedModel(providerId: string, modelId: string): Promise<void> {
+    const settingKey = getCustomModelSettingKey(providerId);
+    if (!settingKey) {
+      return;
+    }
+    const validation = validateModelName(modelId);
+    if (!validation.valid) {
+      console.warn(`[Mysti] Announced model rejected: ${validation.error}`);
+      return;
+    }
+
+    await vscode.workspace
+      .getConfiguration('mysti')
+      .update(settingKey, modelId, vscode.ConfigurationTarget.Global);
+    console.log(`[Mysti] Selected announced model for ${providerId}: ${modelId}`);
+
+    await this._modelAnnouncements?.dismiss(providerId, modelId);
+    this._postModelsUpdated(undefined, providerId);
   }
 
   private _broadcastToAll(message: WebviewMessage) {
