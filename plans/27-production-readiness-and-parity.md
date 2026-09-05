@@ -1553,6 +1553,114 @@ auto-approve replacing the 1-hour blanket, the `@`-mention surface
 (problems/terminal/git/url/folder), git state in turn context, images to all
 capable providers, and web search/fetch as coordinator tools.
 
+## 25. DESIGN — per-tool auto-approve, replacing the 1-hour blanket
+
+*Plan 27 Phase 5. **Design only — nothing implemented.** Measured against
+`src/managers/PermissionManager.ts` on 2026-09-05.*
+
+### 25.1 What the button actually does today
+
+The permission card offers three options. The middle one reads:
+
+> **Yes, and don't ask again this session**
+
+Selecting it runs (`PermissionManager.ts:257-263`):
+
+```ts
+if (response.decision === 'always-allow' && !request.remoteOrigin) {
+  this._sessionUpgrades.set(scope, { level: 'full-access', expiresAt: Date.now() + 60*60*1000 });
+}
+```
+
+`_effectiveAccessLevel(scope) === 'full-access'` then auto-approves **every
+subsequent request in that scope, of every action type**, for an hour.
+
+**This is a consent mismatch, not merely coarse granularity.** A user approves
+*one file edit* and reads the label as "don't ask again about this". What they
+actually grant is `file-create`, `file-edit`, `file-delete`, `bash-command`,
+`web-request`, `multi-file-edit` **and `delegate`** — the last of which spawns a
+sub-agent that can run arbitrary tools. Nothing on the card says so. **The
+permission card is the one surface that must not understate what it is asking
+for**, and here it does.
+
+Two mitigations exist and neither closes it: `forceInteractive` still defeats the
+upgrade (the coordinator's own `bash`, anything remote-origin, forced MCP
+cards), and a new conversation clears all grants. Within one conversation, on
+the CLI-backend path, the escalation is real.
+
+### 25.2 What the field does
+
+| Product | Mechanism |
+|---|---|
+| VS Code agent mode | `chat.tools.eligibleForAutoApproval` (per tool), `chat.tools.terminal.autoApprove` (**per sub-command**, regex allow/deny), `chat.tools.edits.autoApprove` (globs), `chat.tools.urls.autoApprove` |
+| Continue | argument-level rules — `Write(**/*.ts)` |
+| Mysti today | one boolean: full-access, everything, one hour |
+
+### 25.3 Three options
+
+**A — scope the grant to the action type.** `_sessionUpgrades` becomes
+`Map<scope, Map<PermissionActionType, expiresAt>>`; `always-allow` records only
+the type that was on the card. The label becomes true: *"Yes, and don't ask
+again for **file edits** this session."*
+
+- **Cost:** one data-structure change, one label change, ~2 tests updated.
+- **Closes:** the entire escalation. Approving an edit can never authorise a
+  `delegate` or a `bash-command`.
+- **Leaves:** "all bash commands" still one grant.
+
+**B — A, plus a target predicate for the two types where the type alone is too
+broad.** For `bash-command`, key the grant on the **command's first token** (the
+binary) rather than the whole class — `npm` approved once does not approve
+`curl`. For file writes, optionally key on a directory prefix.
+
+- **Cost:** a small matcher plus a way to see and revoke what has been granted.
+- **Closes:** the remaining blast radius, and matches VS Code's per-subcommand
+  terminal rules without building a regex rule engine.
+
+**C — persisted per-tool rules in settings.** What VS Code does.
+
+- **Rejected.** It adds settings to a surface §24 is trying to shrink, it makes
+  a durable grant that outlives the conversation (today's grants deliberately
+  do not), and any workspace-writable spelling of it would be an authority
+  escalation of exactly the kind `settingsClamp` exists to stop. If it is ever
+  built it must be **machine-scoped** and in `AUTHORITY_BEARING_SETTINGS`.
+
+### 25.4 Recommendation: A now, B next, never C
+
+A is a contained change that converts a real escalation into an honest,
+type-scoped grant, and it is worth doing on its own — the card stops
+understating what it asks for. B is the follow-up that makes `bash-command`
+safe to grant at all; until B lands, the honest thing is that **`bash-command`
+and `delegate` should not offer always-allow at all** — a per-type grant for
+"run any shell command for an hour" is still too much to ask for behind a
+one-line label.
+
+### 25.5 Invariants any implementation must preserve
+
+Each is load-bearing today; a per-tool rewrite is exactly where one gets lost.
+
+1. `forceInteractive` defeats every grant — the coordinator's own `bash`, remote
+   origin, and forced MCP cards. It is folded into one place on purpose.
+2. `remoteOrigin` can never record a grant (`!request.remoteOrigin` at :257).
+3. A new conversation clears grants: consent in one conversation is not consent
+   in the next.
+4. Grants stay **in memory**. Nothing persists to settings or `globalState` —
+   there is no file a workspace could pre-seed.
+5. `file-read` and `canvas-read` never raise a card, and must not gain one.
+6. Timeout behaviour is unchanged: a forced card auto-**denies** on timeout.
+7. The card must state the exact scope of what it grants, and every value
+   interpolated into it stays escaped.
+
+### 25.6 What it would break
+
+`tests/integration/permissionManager.test.ts` and
+`tests/managers/permissionScoping.test.ts` pin the current behaviour; one
+assertion explicitly checks the full-access upgrade. Both must be rewritten to
+assert **type-scoped** grants — and a new test should assert the escalation is
+gone: *approving a `file-edit` must not auto-approve a subsequent
+`bash-command` or `delegate` in the same scope.* That test is the point of the
+change and would fail today.
+
 ## 22. The branch decision (publish-safety review, 8 agents)
 
 **`DeepMyst/Mysti` is PUBLIC** (1,137 stars, 55 forks). A dev branch there would be public — visibility is
