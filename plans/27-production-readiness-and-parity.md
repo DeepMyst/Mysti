@@ -1474,6 +1474,47 @@ offers an action 🟡 (these four now speak; the coordinator action card still
 reaches 1 of 16 agents) · every capability reachable from the UI 🟡 (the menu is
 live; the **Capabilities panel** is not built). **Gate 4 is not yet met.**
 
+### 23.6 Gate 4 — both remaining clauses closed
+
+**Clause 1 — every error offers an action.** Checking first narrowed this
+sharply: **authentication is already actionable.** Providers yield an
+`auth_error` chunk and the webview renders "Open Terminal & Authenticate". I
+nearly rebuilt a working feature.
+
+The real gap was a **missing CLI** — a spawn `ENOENT` arriving as a plain red
+sentence, and the likeliest first-run failure there is, because every agent
+except the coordinator needs an `npm install -g` first. It now posts the SAME
+card the coordinator has used since Plan 25, with Install and Switch-agent, at
+both CLI error paths (the stream's `error` chunk and the send-loop catch-all,
+where spawn failures actually land). Narrow on purpose: anything not confidently
+a missing binary keeps the plain error, because an Install button on a failure
+installing cannot fix is worse than no button. No Retry — retrying the same
+spawn fails identically. The button opens the **existing**
+`showInstallProviderModal`, not a second install path.
+
+**Clause 2 — refusal speaks.** A gated group's tags are simply absent from the
+coordinator's scanner when its setting is off. Good security property (an
+unrecognised capability cannot be half-executed), terrible product one: the tag
+degrades to visible text, so the model announces it is writing a file and the
+user sees raw `<write:NONCE …>` markup, or nothing. **That was D-11 — "the
+default agent cannot edit a file AND NOTHING TELLS THE USER".**
+
+`_announceRefusedCapability` names the gate, once per panel, with a button that
+opens **that exact setting** (one click, not a search through ~180). It fires
+only when the model actually emitted the tag **for this run's nonce** — a user
+pasting `<write:` cannot trigger it — and it reads state only: no setting
+written, no gate mutated, **no default flipped**. Appendix C item 6 settled
+that: *silence was the defect, not the default.* `openSettingKey` refuses
+anything not starting with `mysti.`, since a webview message is untrusted input.
+
+| Gate 4 clause | |
+|---|---|
+| Diff before approving | ✅ |
+| Every error offers an action | ✅ |
+| Every capability reachable from the UI | ✅ *(as "the gate that blocked names itself and opens its setting" — a browsable Capabilities panel remains a Phase 7 idea, not a Gate 4 requirement)* |
+
+**Gate 4 is met.** 321 test files / 0 failures; lint and package shape unchanged.
+
 ## 22. The branch decision (publish-safety review, 8 agents)
 
 **`DeepMyst/Mysti` is PUBLIC** (1,137 stars, 55 forks). A dev branch there would be public — visibility is
