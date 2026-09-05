@@ -1700,6 +1700,76 @@ new conversation clears them. That is a smaller gap than the escalation was,
 but it is the natural next step and belongs with the Capabilities-panel idea in
 Phase 7.
 
+### 23.8 Phase 5 — complete except web search/fetch, which needs your decision
+
+| Item | State |
+|---|---|
+| `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` | ✅ §23.7 |
+| `.agents/skills` + `.claude/skills` | ✅ §23.7 |
+| Skills/personas injected into the coordinator | ✅ |
+| Per-tool auto-approve replacing the 1-hour blanket | ✅ §25.7 |
+| `@`-mention surface | ✅ `@problems`, `@git` |
+| Git state in turn context | ✅ (delivered by `@git`) |
+| Images to all capable providers | ✅ 1 → 7 |
+| Web search / fetch as coordinator tools | ⛔ **not built — see §26** |
+
+**The coordinator now honours the persona you picked.**
+`AgentContextManager.buildPromptContext` had exactly ONE caller —
+`BaseCliProvider` — so 20 personas, 16 skills and 6 roles reached the fifteen
+CLI backends and **not `@mysti`, the default agent**. Same builder, same
+two-tier contract, placed after the operating protocol so a persona shapes
+style without restating the rules.
+
+**`@problems` and `@git`** are read-only generated summaries, not files: no real
+path, nothing writes back, capped at 8k, and a failure degrades to "not
+included" rather than costing the message. `@problems` sorts errors before
+warnings so a 400-warning workspace cannot bury two errors. Both names are
+reserved *before* the file branch, so a repo containing a file named `git`
+cannot shadow `@git`.
+
+**Images went 1 → 7.** The mechanism generalised into the base class (temp file
+under `.mysti/tmp`, path in the prompt, cleanup intact) and is enabled only for
+backends with file-read tools. Ollama, LocalAI and Continue keep claiming
+nothing — they cannot open a path, and the UI is capability-driven, so a flipped
+flag would render an attach button that silently fails.
+
+Four more mock-fidelity gaps closed on the way (`RelativePattern`,
+`showQuickPick`, `languages.getDiagnostics`, stubbing the git extension) — the
+audit had flagged the mock as covering 6 of 18 `window` APIs.
+
+## 26. Web search / fetch — NOT built, and why
+
+*The last Phase 5 item. Both are decisions rather than wiring, so I stopped.*
+
+Nothing exists today: no `web_fetch`/`web_search` tool, no search provider, no
+credential. `web-request` is declared as a `PermissionActionType` and **nothing
+produces it**.
+
+**`web_search` needs a product decision I cannot make for you.** It requires
+choosing a search provider (Brave, Tavily, Serper, …) and a credential to go
+with it. That is a vendor relationship, a cost, and a privacy question — every
+query leaves the machine — not a refactor.
+
+**`web_fetch` needs a gate, and a gate needs a setting.** It would be the
+coordinator's first *model-chosen* network egress. The infrastructure is
+already there and unusually good for it: `outboundUrlPolicy.fetchGuardedBytes`
+rejects non-http(s), embedded credentials, and private/loopback/link-local/
+metadata addresses **including after redirects**, and `web-request` already
+exists as a permission action. What is missing is the authority decision:
+
+- a new machine-scoped `mysti.mysti.webFetch` (default off), added to
+  `AUTHORITY_BEARING_SETTINGS` and covered by the parity test — which grows a
+  settings surface §24 is trying to shrink; and
+- a call: is a fetched page **untrusted content** requiring the
+  `_fenceUntrustedSystemBlock` treatment (it is — it is the most untrusted
+  input imaginable), and does each fetch raise a permission card, or does the
+  origin allowlist alone suffice?
+
+My recommendation if you want it: **`web_fetch` only, gated, always fenced,
+always carded on first use per origin** — and skip `web_search` until there is a
+reason to take on a vendor. But that is your call, and it is the last thing
+standing between Phase 5 and done.
+
 ## 22. The branch decision (publish-safety review, 8 agents)
 
 **`DeepMyst/Mysti` is PUBLIC** (1,137 stars, 55 forks). A dev branch there would be public — visibility is
