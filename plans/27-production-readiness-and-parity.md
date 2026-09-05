@@ -1220,6 +1220,47 @@ are explicit `if:` steps.
 **Gate 1 status:** lint runs on `media/` ✅; the matrix has three OSes ✅; "CI red blocks merge" ❌ — that is
 branch protection, which needs the remote. **Gate 1 closes with the push, exactly as Gate 0 does.**
 
+### 23.3 Phase 2 — items were already done; the GATE was not
+
+Every item Phase 2 lists had landed in earlier rounds: the wizard's five
+CSP-blocked handlers rebound and dismissal persisted (D-1), `scrollToBottom`
+defined (D-2), `0.5.1` + `capabilities` + recursive ignore globs + a pinned
+`package` script (D-9), all five walkthrough images resolving, and both fossils
+handled — `fabric.min.js` deleted, `mcp-permission-server.js` deliberately kept
+on disk and excluded from the artifact.
+
+**Gate 2 still failed, and the cause was ordering, not a missing feature.**
+`mysti.defaultAgent` defaults to `mysti`, which runs on the DeepMyst gateway and
+needs **no local CLI and no API key**. The wizard nevertheless opened with
+*"Set up an AI provider to get started"* above eleven provider cards, every one
+of which requires `npm install -g` in a terminal. The zero-install route was
+reachable only by sending a message, having the turn **fail**, and clicking the
+sign-in button on the coordinator's failure card. The product had already
+written the sentence for it — `MYSTI_SIGNIN_MESSAGE`, *"No local API key
+needed"* — and never showed it during onboarding.
+
+| | Actions for a stranger with no CLI |
+|---|---|
+| Before | open chat → read 11 install cards → pick one → **open a terminal** → `npm install -g` → return → authenticate the CLI → send a message |
+| After | open chat → **"Sign in to DeepMyst"** → OAuth → ask → answer |
+
+No new plumbing: the button posts `signInDeepMyst`, the same message the failure
+card posts, which `ChatViewProvider` already routes to `mysti.deepmyst.signIn`.
+Bound with `addEventListener` — an inline handler is what disabled the wizard's
+exit button in the first place. Theme tokens only, plus an explicit
+`:focus-visible` ring (Gate E). 13 tests pin it, including **order**: a
+zero-install option below eleven install cards is not an option a stranger finds.
+
+**One judgement for the user:** step 3 opens a browser for OAuth. I read the
+gate's *"without leaving the editor"* as *"without dropping to a terminal to
+install a CLI"* — the case that made the old path eight steps. If the gate means
+literally zero context switches, it is not met and the answer would be a device-
+code flow inside the panel.
+
+**Side effect worth recording:** with the 90 s timer faked (§23.2) and this
+change, the suite now runs in **10.2 s warm** / 34–41 s cold — inside the plan's
+Gate F target of "under 15 s so it can be a pre-push hook".
+
 ## 22. The branch decision (publish-safety review, 8 agents)
 
 **`DeepMyst/Mysti` is PUBLIC** (1,137 stars, 55 forks). A dev branch there would be public — visibility is
