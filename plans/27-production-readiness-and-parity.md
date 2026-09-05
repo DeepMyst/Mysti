@@ -1301,6 +1301,88 @@ return. Red against the raw join, green after.
 process cannot be paused, mirroring `CollaboratorPool`) · clause 3 ✅
 (`settingsScopeParity`, 37 tests, both directions). **Gate 3 is met.**
 
+## 24. PROPOSAL — the settings cut (Gate D, §6). **Not executed. Your call.**
+
+*Measured 2026-09-05 against `package.json`: **189 settings**. Gate D asks for ≤ 80. This section is a
+proposal with arithmetic and costs, not a change. Nothing here has been applied.*
+
+> **Which gate this serves.** "≤ 80 settings" is **Gate D** (the v1.0 quality bar, §7) — *not* Gate 4, whose
+> clauses are diff-before-approval, actionable errors, and capabilities reachable from the UI. Cutting
+> settings does not advance Gate 4.
+
+### 24.1 Tier A — delete outright: 8 settings that are declared and read by NOTHING
+
+Each verified individually: no `config.get`, no sub-section handle, no computed access, in `src/` or
+`media/`. A declared setting that does nothing is worse than no setting — it appears in the Settings UI and
+silently lies about what it controls.
+
+| Setting | Note |
+|---|---|
+| `mysti.canvas.autoSave` | 0 hits |
+| `mysti.canvas.defaultVariantCount` | 0 hits |
+| `mysti.canvas.stitchDeviceType` | 0 hits |
+| `mysti.canvas.stitchVariantCount` | 0 hits |
+| `mysti.desk.bind` | 0 hits — its 105 apparent matches are the English word "binding" |
+| `mysti.desk.maxDeskCalls` | 0 hits |
+| `mysti.desk.shareCeiling` | 1 hit, and it is a *comment* in `DeskScope.ts` |
+| `mysti.activeMode.showActivityFeed` | 0 hits |
+
+**Caveat:** the four `desk.*` keys belong to a subsystem that is default-off and roughly 30% wired. Deleting
+them and *wiring* them are both defensible; doing neither is not.
+
+### 24.2 Tier B — collapse families into object settings: −68
+
+| # | Family | Members | Saved | Becomes |
+|---|---|---|---|---|
+| B | `agents.*Persona` | 15 | 14 | `mysti.agents.personas` `{agentId: personaId}` |
+| C | `agents.*CustomPrompt` | 15 | 14 | `mysti.agents.customPrompts` `{agentId: text}` |
+| D | `*Path` | 12 | 11 | `mysti.cliPaths` `{agentId: path}` |
+| E | `*Model` | 20 | 19 | `mysti.models` `{agentId: model}` |
+| F | `ollama.*` | 6 | 5 | `mysti.ollama` `{endpoint, model, …}` |
+| G | `localai.*` | 6 | 5 | `mysti.localai` `{endpoint, model, …}` |
+
+### 24.3 The arithmetic, stated honestly
+
+```
+189 total
+ −8  Tier A (delete)
+−68  Tier B (collapse)
+───
+113 remaining          Gate D target: 80          STILL 33 OVER
+```
+
+**Mechanical collapse does not reach ≤ 80.** The remaining 33 would have to come from deleting settings that
+*work* — which is a product decision about what the extension stops supporting, not a refactor. I am not
+proposing a list for that; it needs your intent.
+
+### 24.4 Two costs that make this not a free win
+
+**1. Collapsing destroys the Settings-UI dropdown.** 45 of the 189 settings declare an `enum`, and **16 of
+those sit in collapse groups B and E** — e.g. `mysti.agents.claudePersona` is a 7-value enum the user picks
+from a list today. VS Code renders an object setting as **raw JSON**, with no per-field widget and no
+validation. Collapsing trades 68 rows in the settings list for hand-edited JSON on the settings people
+actually touch. That is a real regression, not a cleanup.
+
+**2. Collapsing can silently void the authority invariant.** `tests/utils/settingsScopeParity.test.ts`
+enforces scope **by key shape** — `/^mysti\.agents\..*CustomPrompt$/`, `/Path$/`, `/Endpoint$/`. Collapse
+those families and every one of those patterns matches **nothing**, so the invariant becomes vacuously true
+while the security property it protects disappears. This is the same hazard as the plan's standing ordering
+constraint on `settingsClamp`, in a different shape.
+
+> **Hard requirement if you proceed:** any collapse lands in the SAME commit as a rewritten parity test that
+> asserts the new object keys are `machine`-scoped, plus a migration that reads the old keys once and writes
+> the object — otherwise every existing user's CLI paths, personas and custom prompts silently revert to
+> defaults on upgrade.
+
+### 24.5 What I would actually do
+
+1. **Tier A now** — 8 deletions, no cost, no migration, closes a class of UI that lies. *(−8 → 181)*
+2. **Tier B partially: D, F, G only** — `*Path`, `ollama.*`, `localai.*` carry **no enums**, so no dropdown
+   is lost. *(−21 → 160)*
+3. **Hold B, C, E** — `*Persona` and `*Model` are the ones with dropdowns and the ones users touch most.
+4. **Treat ≤ 80 as aspirational** until there is a decision about what the product stops doing. 160 honest,
+   working, correctly-scoped settings beat 80 reached by hiding things in JSON blobs.
+
 ## 22. The branch decision (publish-safety review, 8 agents)
 
 **`DeepMyst/Mysti` is PUBLIC** (1,137 stars, 55 forks). A dev branch there would be public — visibility is
