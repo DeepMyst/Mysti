@@ -114,17 +114,32 @@ describe('BrainstormManager', () => {
       pm.setProviderChunks('google-gemini', makeTextChunks(['Gemini completed its analysis.']));
 
       const settings = createMockSettings();
-      const chunks = await collectChunks(manager.startBrainstormSession('Test query', [], settings, 'panel-timeout'));
 
-      // Should have an agent_error for claude-code
-      const errors = chunks.filter(c => c.type === 'agent_error' && c.agentId === 'claude-code');
-      expect(errors.length).toBe(1);
-      expect(errors[0].content).toContain('silent');
+      // FAKE timers. The hang is `await new Promise(() => {})` — never a timer —
+      // so the ONLY real clock here is the manager's own silence `setTimeout`.
+      // Waiting it out for real cost 90 s, which was ~98% of the entire suite's
+      // wall clock on three CI runners. advanceTimersByTimeAsync flushes
+      // microtasks between fires, so the async generator actually progresses;
+      // advanceTimersByTime (sync) would fire the timer and then deadlock on the
+      // generator's pending await.
+      vi.useFakeTimers();
+      try {
+        const pending = collectChunks(manager.startBrainstormSession('Test query', [], settings, 'panel-timeout'));
+        await vi.advanceTimersByTimeAsync(BRAINSTORM_SILENCE_TIMEOUT_MS + 1_000);
+        const chunks = await pending;
 
-      // Gemini should still complete
-      const geminiComplete = chunks.filter(c => c.type === 'agent_complete' && c.agentId === 'google-gemini');
-      expect(geminiComplete.length).toBe(1);
-    }, BRAINSTORM_SILENCE_TIMEOUT_MS + 30000); // Allow enough time for the timeout
+        // Should have an agent_error for claude-code
+        const errors = chunks.filter(c => c.type === 'agent_error' && c.agentId === 'claude-code');
+        expect(errors.length).toBe(1);
+        expect(errors[0].content).toContain('silent');
+
+        // Gemini should still complete
+        const geminiComplete = chunks.filter(c => c.type === 'agent_complete' && c.agentId === 'google-gemini');
+        expect(geminiComplete.length).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // =========================================================================
