@@ -137,6 +137,7 @@ export class ClineProvider extends BaseCliProvider {
 		supportsToolUse: true,
 		supportsSessions: true,
 		supportsAutoInstall: true,
+		supportsPromptEnhancement: true,
 		// Plan 02 Phase 1 capability matrix
 		thinkingStyle: 'complete-blocks',  // say:"reasoning" blocks arrive whole
 		thinkingLevelEffective: true,      // levels map to real CLI behavior

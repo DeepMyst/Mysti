@@ -30,7 +30,8 @@ import type {
   AuthStatus,
   ContextItem,
   Conversation,
-  AgentConfiguration
+  AgentConfiguration,
+  ModelInfo
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
@@ -159,6 +160,7 @@ export class CopilotProvider extends BaseCliProvider {
     supportsToolUse: false,
     supportsSessions: true,
     supportsAutoInstall: true,
+    supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'none',
     thinkingLevelEffective: false,
@@ -192,6 +194,43 @@ export class CopilotProvider extends BaseCliProvider {
 
   getCliPath(): string {
     return this._getCliPathCommon();
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3). The Copilot CLI has no `list models`
+   * subcommand, but `--model` is a CLOSED enum and its choices are printed in
+   * `copilot --help`:
+   *
+   *   --model <model>   Set the AI model to use (choices:
+   *                     "claude-sonnet-4.5", "claude-haiku-4.5", ..., "gpt-4.1")
+   *
+   * So the installed CLI is itself the authority on what it will accept — which
+   * is the whole point of refreshing automatically: GitHub rotates this set, and
+   * a bundled list goes stale the moment they do.
+   *
+   * The help text hard-wraps, so the output is whitespace-collapsed before
+   * matching and only the quoted ids inside the choices parenthesis are taken.
+   * Returns null on any failure (CLI absent, help text reworded, no choices
+   * found) so the registry keeps its curated/cached list. Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const raw = await this._runCliForDiscovery(['--help'], timeoutMs);
+    if (!raw) { return null; }
+
+    // Collapse the hard-wrapped help block onto one line before matching.
+    const flat = raw.replace(/\s+/g, ' ');
+    const choices = /--model\b[^(]*\(choices:([^)]*)\)/.exec(flat);
+    if (!choices) { return null; }
+
+    const seen = new Set<string>();
+    const models: ModelInfo[] = [];
+    for (const match of choices[1].matchAll(/"([^"]+)"/g)) {
+      const id = match[1].trim();
+      if (!id || seen.has(id)) { continue; }
+      seen.add(id);
+      models.push({ id, name: id });
+    }
+    return models.length > 0 ? models : null;
   }
 
   protected _getCliCommandName(): string {

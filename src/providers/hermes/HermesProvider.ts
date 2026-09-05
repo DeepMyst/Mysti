@@ -131,6 +131,7 @@ export class HermesProvider extends BaseCliProvider {
     supportsPersistentProcess: true,
     supportsImages: false,
     supportsAutoInstall: false,  // installed via the official install script (wizard shows the OS command)
+    supportsPromptEnhancement: false,
     thinkingStyle: 'none',
     thinkingLevelEffective: false,
     planMode: 'detected',

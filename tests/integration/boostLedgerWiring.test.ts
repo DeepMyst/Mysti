@@ -39,6 +39,7 @@ import { PermissionManager } from '../../src/managers/PermissionManager';
 import { BoostManager } from '../../src/managers/BoostManager';
 import { clearMockConfig, setMockConfig, Uri } from '../helpers/mockVscode';
 import type { Settings, StreamChunk, WebviewMessage, BoostTurnRecord } from '../../src/types';
+import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 
 const SETTINGS: Settings = {
   mode: 'edit-automatically',
@@ -175,7 +176,7 @@ function createHarness(): Harness {
     { readRules: () => '', getMystiMdContent: () => '' } as any,
     noop,                                                          // visualTestManager
     noop,                                                          // canvasManager
-    noop,                                                          // modelRegistry
+    createModelRegistryStub() as any,                              // modelRegistry
     { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any,
   );
 

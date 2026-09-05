@@ -108,6 +108,7 @@ export class LocalAIProvider extends BaseCliProvider {
     supportsSessions: false,
     supportsImages: false,
     supportsAutoInstall: false,
+    supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'none',
     thinkingLevelEffective: false,

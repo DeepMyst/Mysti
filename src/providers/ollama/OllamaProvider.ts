@@ -122,6 +122,7 @@ export class OllamaProvider extends BaseCliProvider {
     // before the request (Plan 00 Batch 3.5 owns wiring real image support).
     supportsImages: false,
     supportsAutoInstall: false,
+    supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'none',
     thinkingLevelEffective: false,

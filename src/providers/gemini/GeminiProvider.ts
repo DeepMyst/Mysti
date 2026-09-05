@@ -107,6 +107,7 @@ export class GeminiProvider extends BaseCliProvider {
     supportsSessions: true,
     supportsImages: false,
     supportsAutoInstall: true,
+    supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'none',
     thinkingLevelEffective: false,

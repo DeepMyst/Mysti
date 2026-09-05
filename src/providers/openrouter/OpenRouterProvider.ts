@@ -39,6 +39,7 @@ import type {
   AgentConfiguration,
   InstallMethod,
   UsageStats,
+  ModelInfo,
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
 import { OpenRouterClient, OPENROUTER_BASE_URL, OPENROUTER_FREE_ROUTER } from '../../services/OpenRouterClient';
@@ -82,6 +83,7 @@ export class OpenRouterProvider extends BaseCliProvider {
     supportsToolUse: false,
     supportsSessions: false,
     supportsAutoInstall: false,
+    supportsPromptEnhancement: false,
     thinkingStyle: 'streamed',
     thinkingLevelEffective: false,
     effortLevels: OPENROUTER_EFFORT_LEVELS,  // reasoning.effort (low/medium/high)
@@ -122,6 +124,37 @@ export class OpenRouterProvider extends BaseCliProvider {
 
   getCliPath(): string {
     return OPENROUTER_BASE_URL;
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3) via OpenRouter's public catalog
+   * (GET /models — no key required; the client sends one when configured).
+   *
+   * Scoped to the FREE tier on purpose. The full catalog is ~300 entries: too
+   * many to persist per activation and far too many to pick from in a dropdown,
+   * while the curated list already carries the handful of paid models worth
+   * one-click access (the merge keeps them — discovery adds, it never empties).
+   * Free models, by contrast, rotate constantly, which is exactly the list a
+   * background refresh should be keeping current.
+   *
+   * Returns null on any failure so the registry keeps its curated/cached list.
+   * Never throws.
+   */
+  async discoverModels(_timeoutMs: number): Promise<ModelInfo[] | null> {
+    try {
+      const free = await this._client.listFreeModels();
+      const models = free
+        .filter(m => typeof m.id === 'string' && m.id.length > 0)
+        .map<ModelInfo>(m => ({
+          id: m.id,
+          name: m.name || m.id,
+          description: m.supportsTools ? 'Free · tool-capable' : 'Free',
+          contextWindow: m.contextLength,
+        }));
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
   }
 
   // --- Authentication ---

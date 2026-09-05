@@ -101,6 +101,15 @@ export interface ProviderCapabilities {
   // and hands the result to whichever agent asked, so there is nothing
   // per-provider left to gate.)
   supportsAutoInstall: boolean;
+  /**
+   * True only where the provider actually implements `enhancePrompt()`. The
+   * webview keys the "Enhance prompt" affordance off this instead of assuming
+   * every backend can rewrite a prompt: before this flag, 12 of 16 providers
+   * fell through `ProviderManager.enhancePrompt`'s `return prompt` and handed
+   * back byte-identical text, which reads as a broken button. Drift between
+   * the flag and the method is caught by tests/providers/promptEnhancement.test.ts.
+   */
+  supportsPromptEnhancement: boolean;
 
   // --- Plan 02 Phase 1: capability-driven rendering fields ---
   /** How thinking output is emitted (kills provider-name forks W1/W2/W3) */

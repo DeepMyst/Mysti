@@ -142,6 +142,7 @@ export class CodexProvider extends BaseCliProvider {
     supportsSessions: true,  // Can resume sessions with `codex exec resume`
     supportsImages: false,
     supportsAutoInstall: true,
+    supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'complete-blocks',  // whole 'reasoning' blocks per event
     thinkingLevelEffective: false,     // getThinkingTokens returns undefined

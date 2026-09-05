@@ -41,6 +41,7 @@ import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { PermissionManager } from '../../src/managers/PermissionManager';
 import { clearMockConfig, Uri } from '../helpers/mockVscode';
 import type { Settings, StreamChunk, WebviewMessage } from '../../src/types';
+import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -223,7 +224,7 @@ function createHarness(): Harness {
     projectContextManager,
     noop,                  // visualTestManager
     noop,                  // canvasManager
-    noop,                  // modelRegistry (Plan 01)
+    createModelRegistryStub() as any, // modelRegistry (Plan 01)
     // checkpointManager — snapshot returns null so _captureCheckpoint no-ops
     // (these tests assert message persistence, not code checkpoints).
     { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any

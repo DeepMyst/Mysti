@@ -70,6 +70,7 @@ export class OpenCodeProvider extends BaseCliProvider {
     supportsSessions: true,
     supportsImages: false,
     supportsAutoInstall: true,
+    supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,

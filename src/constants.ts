@@ -11,7 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { ProviderType } from './types';
+import type { ProviderType, PseudoAgentType, AgentSelection } from './types';
 
 /**
  * Provider defaults (Plan 02 Phase 2, C5)
@@ -21,6 +21,22 @@ import type { ProviderType } from './types';
  * ChatViewProvider/ProviderManager — change the default in exactly one place.
  */
 export const DEFAULT_PROVIDER: ProviderType = 'claude-code';
+
+/**
+ * Plan 25: the agent SELECTION defaults (what the user talks to), which is not
+ * the same thing as DEFAULT_PROVIDER (the CLI backend a pseudo-agent delegates
+ * to, and the registry rescue in ProviderManager._getActiveProvider — that one
+ * must stay a REGISTERED provider id or an unknown-provider fallback throws).
+ */
+export const PSEUDO_AGENT_IDS: readonly PseudoAgentType[] = ['mysti', 'brainstorm'];
+
+/** True for a selectable agent that has no registered provider behind it. */
+export function isPseudoAgentId(id: string | undefined): id is PseudoAgentType {
+  return !!id && (PSEUDO_AGENT_IDS as readonly string[]).includes(id);
+}
+
+/** Fallback agent selection when `mysti.defaultAgent` is unset/invalid. */
+export const DEFAULT_AGENT: AgentSelection = 'mysti';
 
 /**
  * Last-resort model id used only when no panel/default model is configured.
@@ -160,6 +176,16 @@ export const MODEL_CACHE_TTL_CLI_MS = 24 * 60 * 60 * 1000;     // 24h for CLI-de
 export const MODEL_CACHE_TTL_LOCAL_MS = 5 * 60 * 1000;          // 5min for local servers (Ollama/LocalAI)
 export const MODEL_CURATED_FEED_TTL_MS = 24 * 60 * 60 * 1000;  // 24h for the remote curated feed
 export const MODEL_CUSTOM_MAX_PER_PROVIDER = 50;               // hard cap on user custom models per provider
+export const MODEL_DISCOVERY_MAX_PER_PROVIDER = 250;            // hard cap on models persisted per provider from one discovery probe
+
+/**
+ * Delay between activate() returning and the automatic background model-list
+ * warm-up (Plan 01 Phase 3). The warm-up additionally waits for provider
+ * initialization to settle, so this is a floor, not a guess: it keeps the
+ * discovery probes clear of the startup CLI-discovery burst on fast machines
+ * while `providerManager.whenReady` covers the slow ones.
+ */
+export const MODEL_REFRESH_WARMUP_DELAY_MS = 8000;
 
 /**
  * Visual testing constants

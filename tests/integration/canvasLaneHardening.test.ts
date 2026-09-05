@@ -50,8 +50,9 @@ import { CanvasJobRouter } from '../../src/managers/CanvasJobRouter';
 import { CanvasOpExecutor } from '../../src/managers/CanvasOpExecutor';
 import { CanvasOpParser } from '../../src/managers/CanvasOpParser';
 import { CanvasLiveness } from '../../src/canvas/CanvasLiveness';
-import { clearMockConfig, setMockConfig, Uri } from '../helpers/mockVscode';
+import { clearMockConfig, setMockConfig, setMockConfigInspect, Uri } from '../helpers/mockVscode';
 import type { CanvasArtifact, CanvasJobEvent, Settings } from '../../src/types';
+import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 
 const PAGE_SRC = 'function Page(){ return <UI.Screen><UI.Heading>Sign in</UI.Heading></UI.Screen>; }';
 
@@ -141,7 +142,7 @@ function createHarness(): Harness {
       isConnected: () => false,
       isInstalled: () => false,
     } as any,
-    noop, noop, noop, noop, noop,
+    noop, noop, noop, noop, createModelRegistryStub() as any,
   );
 
   // A real canvas session, wired the way openCanvas wires one.
@@ -635,12 +636,17 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
     // SYNC-2 — the host half of "nothing on this lane reads canvas notes".
     // ──────────────────────────────────────────────────────────────────
     it('reports steering as unreachable on a CLI lane and reachable on the coordinator', () => {
-      setMockConfig('defaultProvider', 'claude-code');
+      // Plan 25: the lane is decided by the AGENT SELECTION (`mysti.defaultAgent`),
+      // not by `defaultProvider`. This check used to ask `_getPanelProvider`,
+      // which validates against the provider registry and therefore could never
+      // return 'mysti' — the "reachable" branch was dead, and this test passed
+      // only because BOTH halves resolved to a CLI id.
+      setMockConfigInspect('defaultAgent', { globalValue: 'claude-code' });
       expect(h.provider._canvasSteeringReachable()).toBe(false);
-      setMockConfig('defaultProvider', 'mysti');
+      setMockConfigInspect('defaultAgent', { globalValue: 'mysti' });
       expect(h.provider._canvasSteeringReachable()).toBe(true);
-      // A live coordinator run is reachable whatever the panel's provider is.
-      setMockConfig('defaultProvider', 'claude-code');
+      // A live coordinator run is reachable whatever the panel's agent is.
+      setMockConfigInspect('defaultAgent', { globalValue: 'claude-code' });
       h.provider._canvasSteeringRuns.add('run-1');
       expect(h.provider._canvasSteeringReachable()).toBe(true);
     });

@@ -224,6 +224,7 @@ Libraries loaded from `resources/` folder: Marked.js (markdown), Prism.js (synta
 1. Create class extending `BaseCliProvider` in `src/providers/newprovider/`
 2. Implement abstract methods: `discoverCli()`, `getCliPath()`, `buildCliArgs()`, `parseStreamLine()`, `getAuthConfig()`, `checkAuthentication()`, `getAuthCommand()`, `getInstallCommand()`
 3. Implement `_createSession(panelId)` to return provider-specific session state
+   - Declare `capabilities.supportsPromptEnhancement` truthfully: `true` only if the provider implements the optional `enhancePrompt()`. The webview enables/disables the "Enhance prompt" button off this flag, and `tests/providers/promptEnhancement.test.ts` fails if the flag and the method ever disagree.
 4. Register in `src/providers/ProviderRegistry.ts` (add to `_registerBuiltInProviders()`)
 5. Add to `ProviderType` AND `AgentType` unions in `src/types.ts`
 6. Add entries to the two TS-enforced maps in `src/providers/base/ProviderManifest.ts` (`PROVIDER_DISPLAY_META`, `PROVIDER_CUSTOM_MODEL_SETTING_KEYS`) and the two in `BrainstormManager.ts` (`AGENT_BRAINSTORM_ICONS`, `agentKeyMap`) — these fail `tsc` if missed

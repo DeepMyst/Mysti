@@ -102,6 +102,57 @@ export interface CoordinatorStreamEvent {
 export const MYSTI_SIGNIN_MESSAGE =
   'Sign in to DeepMyst to use the Mysti agent — it runs on your DeepMyst account (free works). No local API key needed.';
 
+/**
+ * Why a coordinator turn could not run (Plan 25). Each reason maps to a set of
+ * BUTTONS in the chat, not to a sentence — a credential failure the user cannot
+ * act on from where they are reading it is a dead end.
+ */
+export type CoordinatorFailureReason =
+  /** No credential at all — sign in (or create an account). */
+  | 'signin'
+  /** A DeepMyst key exists and was rejected (401/403) — it is stale/revoked. */
+  | 'auth-rejected'
+  /** The OpenRouter key the user opted into was rejected — NOT a DeepMyst problem. */
+  | 'openrouter-rejected'
+  /** 402 / out of credits — top up, or switch to a local agent. */
+  | 'credits'
+  /** Anything else: shown as an ordinary error. */
+  | 'other';
+
+/** What the caller knows about which credential the failed turn actually used. */
+export interface CoordinatorCredentialState {
+  /** A `dm_` key is stored (so a 401 means it went stale, not that it is missing). */
+  hasDeepMystKey: boolean;
+  /** The run used the OpenRouter opt-in path rather than the DeepMyst gateway. */
+  usingOpenRouter: boolean;
+}
+
+/**
+ * Classify a raw coordinator/gateway error into an actionable reason.
+ *
+ * Deliberately mirrors the hard-stop test in `_isRetryable` — those are exactly
+ * the failures that fail identically on every model in the chain, i.e. the ones
+ * a user has to resolve rather than wait out. The credential state decides WHOSE
+ * credential to blame: telling someone on the OpenRouter path to "sign in to
+ * DeepMyst again" is advice that fixes nothing.
+ */
+export function classifyCoordinatorFailure(
+  raw: string,
+  credentials: CoordinatorCredentialState,
+): CoordinatorFailureReason {
+  const err = raw || '';
+  // Payment first: a 402 body often ALSO mentions the key/account, and
+  // "out of credits" is a different action from "signed out".
+  if (/\b402\b|insufficient[_ ]?(credit|funds|quota|balance)|out of credit|payment required|top[_ ]?up/i.test(err)) {
+    return 'credits';
+  }
+  if (/\b40[13]\b|unauthoriz|forbidden|invalid[_ ]?(api|key)|invalid[_ ]?api[_ ]?key|no auth credentials|authentication/i.test(err)) {
+    if (credentials.usingOpenRouter) { return 'openrouter-rejected'; }
+    return credentials.hasDeepMystKey ? 'auth-rejected' : 'signin';
+  }
+  return 'other';
+}
+
 export class CoordinatorModelClient {
   /**
    * Sticky chain index (P0.5): remember which chain entry last answered so a
@@ -135,6 +186,15 @@ export class CoordinatorModelClient {
   status(): { ready: boolean; reason?: 'signin' } {
     if (this._useOpenRouter()) { return { ready: true }; }
     return this._isSignedIn() ? { ready: true } : { ready: false, reason: 'signin' };
+  }
+
+  /**
+   * Which credential a turn would run on (Plan 25). The UI needs this to tell a
+   * stale DeepMyst key apart from a rejected OpenRouter key — both surface as a
+   * bare 401 from very different places.
+   */
+  credentialState(): CoordinatorCredentialState {
+    return { hasDeepMystKey: this._isSignedIn(), usingOpenRouter: this._useOpenRouter() };
   }
 
   /** The model id the coordinator will run on (first free gateway model, or the OpenRouter opt-in). */

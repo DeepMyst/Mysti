@@ -78,6 +78,7 @@ export class ContinueProvider extends BaseCliProvider {
     supportsSessions: true,
     supportsImages: false,
     supportsAutoInstall: true,   // plain npm global install
+    supportsPromptEnhancement: false,
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,
     planMode: 'detected',

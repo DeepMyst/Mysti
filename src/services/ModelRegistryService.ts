@@ -20,6 +20,7 @@ import {
   MODEL_DISCOVERY_TIMEOUT_MS,
   MODEL_CACHE_TTL_CLI_MS,
   MODEL_CACHE_TTL_LOCAL_MS,
+  MODEL_DISCOVERY_MAX_PER_PROVIDER,
 } from '../constants';
 
 /**
@@ -154,13 +155,20 @@ export class ModelRegistryService {
    * CURRENT merge is still returned now — the message-send path never awaits
    * discovery. The refresh fires onDidUpdateModels when it lands, prompting
    * consumers to re-read.
+   *
+   * `opts.revalidate: false` reads the merge WITHOUT kicking anything. It exists
+   * for the panel's first paint, which reads every registered provider in one
+   * loop: revalidating there would fire every stale provider's probe at once,
+   * during the very startup the automatic refresh is supposed to stay clear of.
+   * That path is covered anyway — the post-activation warm-up refreshes the same
+   * set, staggered, and pushes the result to the open panel.
    */
-  public getModels(providerId: string): ProviderModelState {
+  public getModels(providerId: string, opts?: { revalidate?: boolean }): ProviderModelState {
     const curated = this._getCuratedModels(providerId);
     const cached = this._memoryCache.get(providerId);
     const customIds = this._getCustomModelIds(providerId);
 
-    if (this._isStale(providerId, cached)) {
+    if (opts?.revalidate !== false && this._isStale(providerId, cached)) {
       // Fire-and-forget; deduped by refresh()'s in-flight map. Never awaited.
       void this.refresh(providerId);
     }
@@ -343,8 +351,14 @@ export class ModelRegistryService {
     }
 
     // Fresh result: persist {models, fetchedAt} (source recorded at merge time)
-    // and notify consumers.
-    this._memoryCache.set(providerId, { models: discovered, fetchedAt: Date.now() });
+    // and notify consumers. The list is capped (R7: bounded globalState growth)
+    // — a provider fronting a very large catalog (OpenRouter, an OpenAI-compatible
+    // endpoint) must not grow the cache we re-read on every activation without
+    // limit.
+    const bounded = discovered.length > MODEL_DISCOVERY_MAX_PER_PROVIDER
+      ? discovered.slice(0, MODEL_DISCOVERY_MAX_PER_PROVIDER)
+      : discovered;
+    this._memoryCache.set(providerId, { models: bounded, fetchedAt: Date.now() });
     await this._persistCache();
     this._onDidUpdateModels.fire({ providerId });
   }
@@ -379,10 +393,21 @@ export class ModelRegistryService {
    * spawns at activation doesn't spike CPU. Fire-and-forget — the post-activation
    * trigger in extension.ts does not await this. Providers without discoverModels
    * are skipped entirely (no spawn, no delay).
+   *
+   * TTL-aware: without `force`, a provider whose cached list is still inside its
+   * TTL is skipped too. This is what keeps the automatic startup warm-up cheap —
+   * opening a second window (or reloading) minutes later re-probes nothing, while
+   * a genuinely stale list (or a local server the user just pulled a model into,
+   * 5-min TTL) still refreshes on its own. `force: true` probes everything and
+   * backs the explicit "refresh models" action.
    */
   public async refreshAll(opts?: { force?: boolean }): Promise<void> {
     const ids = this._source?.getAllProviderIds() ?? [];
-    const targets = ids.filter(id => this._providerSupportsDiscovery(id));
+    const targets = ids.filter(id =>
+      opts?.force
+        ? this._providerSupportsDiscovery(id)
+        : this._isStale(id, this._memoryCache.get(id))
+    );
 
     for (let i = 0; i < targets.length; i++) {
       const id = targets[i];

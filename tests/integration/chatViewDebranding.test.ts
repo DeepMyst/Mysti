@@ -44,6 +44,7 @@ import { clearMockConfig, getMockConfigUpdates, Uri } from '../helpers/mockVscod
 import * as vscode from 'vscode';
 import { resolveVisualLook, isBlocked } from '../../src/services/visualTestPolicy';
 import type { WebviewMessage, Settings } from '../../src/types';
+import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 
 const ALL_PROVIDER_IDS = [
   'claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot',
@@ -216,7 +217,7 @@ function createHarness(): Harness {
     noop,                  // projectContextManager
     noop,                  // visualTestManager
     noop,                  // canvasManager
-    noop                   // modelRegistry (Plan 01) — threaded; not used by these tests
+    createModelRegistryStub() as any // modelRegistry (Plan 01) — subscribed to in the constructor
   );
 
   // Register a fake sidebar panel (normally done in resolveWebviewView)

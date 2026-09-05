@@ -47,6 +47,7 @@ import { CanvasOpExecutor } from '../../src/managers/CanvasOpExecutor';
 import { clearMockConfig, Uri } from '../helpers/mockVscode';
 import * as vscode from 'vscode';
 import type { CanvasArtifact } from '../../src/types';
+import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 
 /** A 1×1 transparent PNG. */
 const PNG_B64 =
@@ -131,7 +132,7 @@ function makeProvider(): any {
       isConnected: () => false,
       isInstalled: () => false,
     } as any,
-    noop, noop, noop, noop, noop,
+    noop, noop, noop, noop, createModelRegistryStub() as any,
   );
 }
 

@@ -114,6 +114,7 @@ export class CursorProvider extends BaseCliProvider {
 		supportsToolUse: true,
 		supportsSessions: false,
 		supportsAutoInstall: false,
+		supportsPromptEnhancement: true,
 		// Plan 02 Phase 1 capability matrix
 		thinkingStyle: 'none',
 		thinkingLevelEffective: false,

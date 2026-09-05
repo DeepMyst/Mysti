@@ -25,10 +25,17 @@ import type {
   Settings,
   StreamChunk,
   ProviderConfig,
-  AuthStatus
+  AuthStatus,
+  ModelInfo
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
 import { normalizeToolName, toolKind } from '../../utils/toolNames';
+
+/**
+ * qwen-code's default OpenAI-compatible endpoint (DashScope compatible-mode),
+ * used for model discovery when the user has not set OPENAI_BASE_URL.
+ */
+const QWEN_DEFAULT_OPENAI_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 
 /**
  * Per-panel session state for Qwen Code provider.
@@ -77,6 +84,7 @@ export class QwenCodeProvider extends BaseCliProvider {
     supportsSessions: true,
     supportsImages: false,
     supportsAutoInstall: true,
+    supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,
@@ -97,6 +105,67 @@ export class QwenCodeProvider extends BaseCliProvider {
 
   getCliPath(): string {
     return this._getCliPathCommon();
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3). Qwen Code has no `list models`
+   * subcommand, but it drives an OpenAI-COMPATIBLE endpoint (`--openai-base-url`
+   * / `--openai-api-key`), so the standard `GET {baseUrl}/models` is the list the
+   * `-m` flag will accept.
+   *
+   * A key is only ever sent to the endpoint it was configured FOR:
+   *   - OPENAI_BASE_URL set  -> probe it with OPENAI_API_KEY (the user paired
+   *     these two themselves for qwen-code);
+   *   - otherwise            -> probe DashScope's compatible-mode endpoint, and
+   *     ONLY with a DashScope/Qwen key.
+   * Never OPENAI_API_KEY against DashScope: that variable is very commonly set
+   * for a different provider entirely, and shipping it to Alibaba would leak a
+   * third party's credential. No usable pair (e.g. the common Qwen-account OAuth
+   * login) simply returns null and the curated list serves.
+   *
+   * Returns null on any failure so the registry keeps its curated/cached list.
+   * Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const target = this._openAiCompatibleTarget();
+    if (!target) { return null; }
+    try {
+      const response = await fetch(`${target.baseUrl}/models`, {
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: { Authorization: `Bearer ${target.apiKey}`, Accept: 'application/json' },
+      });
+      if (!response.ok) { return null; }
+      const data = await response.json() as { data?: Array<{ id?: string }> };
+      const seen = new Set<string>();
+      const models: ModelInfo[] = [];
+      for (const entry of data.data || []) {
+        const id = (entry?.id || '').trim();
+        if (!id || seen.has(id)) { continue; }
+        seen.add(id);
+        models.push({ id, name: id });
+      }
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The (baseUrl, apiKey) pair to probe for models, or undefined when there is no
+   * safely-pairable one. See discoverModels for why the pairing is strict.
+   */
+  private _openAiCompatibleTarget(): { baseUrl: string; apiKey: string } | undefined {
+    const explicitBase = (process.env.OPENAI_BASE_URL || '').trim();
+    if (explicitBase) {
+      const openAiKey = (process.env.OPENAI_API_KEY || '').trim();
+      if (!openAiKey || !/^https?:\/\//i.test(explicitBase)) { return undefined; }
+      return { baseUrl: explicitBase.replace(/\/+$/, ''), apiKey: openAiKey };
+    }
+    // No explicit endpoint: qwen-code's default OpenAI-compatible target is
+    // DashScope, so only a DashScope/Qwen key may be used here.
+    const dashscopeKey = (process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY || '').trim();
+    if (!dashscopeKey) { return undefined; }
+    return { baseUrl: QWEN_DEFAULT_OPENAI_BASE_URL, apiKey: dashscopeKey };
   }
 
   protected _getCliCommandName(): string {

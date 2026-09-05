@@ -38,6 +38,7 @@ import {
   MODEL_CACHE_TTL_CLI_MS,
   MODEL_CACHE_TTL_LOCAL_MS,
   MODEL_DISCOVERY_TIMEOUT_MS,
+  MODEL_DISCOVERY_MAX_PER_PROVIDER,
   DEFAULT_FALLBACK_MODEL,
 } from '../../src/constants';
 import type { ModelInfo } from '../../src/types';
@@ -659,5 +660,125 @@ describe('ModelRegistryService', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Automatic startup refresh: TTL-aware, and bounded in what it persists
+  // -------------------------------------------------------------------------
+
+  it('refreshAll() skips a provider whose cache is still inside its TTL', async () => {
+    const discover = vi.fn(async () => [{ id: 'fresh', name: 'Fresh' }] as ModelInfo[]);
+    const { context } = makeContext();
+    const registry = new ModelRegistryService(context);
+    registry.setProviderSource(
+      makeSource(
+        { 'claude-code': CURATED['claude-code'] },
+        { 'claude-code': makeProvider('claude-code', discover) }
+      )
+    );
+
+    // Seed a cache entry as if a previous window had just discovered it.
+    await registry._setDiscoveredModels('claude-code', [{ id: 'fresh', name: 'Fresh' }]);
+
+    await registry.refreshAll();
+
+    // This is what keeps opening a second window free: nothing is probed.
+    expect(discover).not.toHaveBeenCalled();
+    registry.dispose();
+  });
+
+  it('refreshAll({ force: true }) probes even a fresh cache', async () => {
+    const discover = vi.fn(async () => [{ id: 'fresh', name: 'Fresh' }] as ModelInfo[]);
+    const { context } = makeContext();
+    const registry = new ModelRegistryService(context);
+    registry.setProviderSource(
+      makeSource(
+        { 'claude-code': CURATED['claude-code'] },
+        { 'claude-code': makeProvider('claude-code', discover) }
+      )
+    );
+    await registry._setDiscoveredModels('claude-code', [{ id: 'fresh', name: 'Fresh' }]);
+
+    await registry.refreshAll({ force: true });
+
+    expect(discover).toHaveBeenCalledTimes(1);
+    registry.dispose();
+  });
+
+  it('refreshAll() DOES probe once the cached entry has aged past its TTL', async () => {
+    const discover = vi.fn(async () => [{ id: 'newer', name: 'Newer' }] as ModelInfo[]);
+    const { context, globalState } = makeContext();
+
+    // A cache written just over the CLI TTL ago — i.e. a genuinely stale list.
+    await globalState.update(MODEL_REGISTRY_CACHE_KEY, {
+      'claude-code': {
+        models: [{ id: 'older', name: 'Older' }],
+        fetchedAt: Date.now() - MODEL_CACHE_TTL_CLI_MS - 1000,
+      },
+    });
+
+    const registry = new ModelRegistryService(context);
+    registry.setProviderSource(
+      makeSource(
+        { 'claude-code': CURATED['claude-code'] },
+        { 'claude-code': makeProvider('claude-code', discover) }
+      )
+    );
+
+    await registry.refreshAll();
+    await Promise.resolve();
+
+    expect(discover).toHaveBeenCalledTimes(1);
+    registry.dispose();
+  });
+
+  it('getModels({ revalidate: false }) answers from cache without probing', () => {
+    // The panel's first paint reads every provider in one loop; probing there
+    // would fire the whole burst during startup.
+    const discover = vi.fn(async () => [{ id: 'x', name: 'X' }] as ModelInfo[]);
+    const { context } = makeContext();
+    const registry = new ModelRegistryService(context);
+    registry.setProviderSource(
+      makeSource(
+        { 'claude-code': CURATED['claude-code'] },
+        { 'claude-code': makeProvider('claude-code', discover) }
+      )
+    );
+
+    const state = registry.getModels('claude-code', { revalidate: false });
+
+    // Same answer as always...
+    expect(state.models.map(m => m.id)).toEqual([
+      'claude-sonnet-4-5-20250929',
+      'claude-opus-4-5-20251101',
+    ]);
+    // ...but nothing was spawned, even though the provider has never been discovered.
+    expect(discover).not.toHaveBeenCalled();
+    registry.dispose();
+  });
+
+  it('caps what one discovery probe may persist (bounded globalState growth)', async () => {
+    const huge: ModelInfo[] = Array.from(
+      { length: MODEL_DISCOVERY_MAX_PER_PROVIDER + 50 },
+      (_, i) => ({ id: `model-${i}`, name: `Model ${i}` })
+    );
+    const { context, globalState } = makeContext();
+    const registry = new ModelRegistryService(context);
+    registry.setProviderSource(
+      makeSource(
+        { openrouter: { defaultModel: 'model-0', models: [] } },
+        { openrouter: makeProvider('openrouter', async () => huge) }
+      )
+    );
+
+    await registry.refresh('openrouter');
+
+    const persisted = globalState.get(MODEL_REGISTRY_CACHE_KEY) as Record<
+      string,
+      { models: ModelInfo[] }
+    >;
+    expect(persisted.openrouter.models).toHaveLength(MODEL_DISCOVERY_MAX_PER_PROVIDER);
+    expect(registry.getModels('openrouter').models).toHaveLength(MODEL_DISCOVERY_MAX_PER_PROVIDER);
+    registry.dispose();
   });
 });

@@ -58,6 +58,7 @@ import { DeskIdentity } from './services/desk/DeskIdentity';
 import { DeskPairing } from './managers/DeskPairing';
 import { DeskPeerBook } from './managers/DeskPeerBook';
 import { DeskPairingFlow } from './managers/DeskPairingFlow';
+import { MODEL_REFRESH_WARMUP_DELAY_MS } from './constants';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -1050,18 +1051,34 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Post-activation model-list warm-up (Plan 01 Phase 3). Off the critical path:
-  // scheduled a few seconds AFTER activate() returns via setTimeout, never
-  // awaited here, gated by mysti.models.autoRefresh (default true). refreshAll()
-  // itself staggers per-provider discovery probes so the burst of CLI spawns
-  // doesn't spike CPU. Failures are swallowed inside the registry (curated/cached
-  // lists keep serving).
+  // Post-activation model-list warm-up (Plan 01 Phase 3). Every load refreshes
+  // each agent's model list automatically, and none of it is on the critical
+  // path: scheduled MODEL_REFRESH_WARMUP_DELAY_MS after activate() returns via
+  // setTimeout, never awaited here, gated by mysti.models.autoRefresh
+  // (default true).
+  //
+  // Three things keep it off the startup budget:
+  //  1. the timer floor puts it well after the window has painted;
+  //  2. it additionally awaits providerManager.whenReady, so on a slow machine
+  //     the probes never overlap the startup CLI-discovery burst (the timer
+  //     alone was a guess that a slow box could lose);
+  //  3. refreshAll() is TTL-aware and staggers what it does probe, so a second
+  //     window minutes later spawns nothing at all.
+  //
+  // Failures are swallowed inside the registry (curated/cached lists keep
+  // serving); a fresh list reaches open panels via ChatViewProvider's
+  // onDidUpdateModels -> 'modelsUpdated' broadcast.
   if (config.get<boolean>('models.autoRefresh', true)) {
     const warmupTimer = setTimeout(() => {
-      void modelRegistryService.refreshAll().catch((err) => {
+      void (async () => {
+        // whenReady rejects only if provider init blew up; either way the
+        // discovery probes below are independently safe to run.
+        await providerManager.whenReady.catch(() => undefined);
+        await modelRegistryService.refreshAll();
+      })().catch((err) => {
         console.warn(`[Mysti] Background model refresh failed: ${String(err)}`);
       });
-    }, 8_000); // ~8s after activation — well clear of the startup CLI-discovery burst
+    }, MODEL_REFRESH_WARMUP_DELAY_MS);
     context.subscriptions.push({ dispose: () => clearTimeout(warmupTimer) });
   }
 

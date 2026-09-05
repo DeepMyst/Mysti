@@ -162,6 +162,7 @@ export class KimiCodeProvider extends BaseCliProvider {
     supportsPersistentProcess: true,
     supportsImages: false,
     supportsAutoInstall: false,  // installed via the official script/Homebrew (wizard shows the OS command)
+    supportsPromptEnhancement: false,
     thinkingStyle: 'streamed',
     thinkingLevelEffective: false, // reasoning is governed by the Kimi model, not a Mysti level
     planMode: 'detected',
