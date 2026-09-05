@@ -2608,7 +2608,7 @@
       function rearmSetupOverlay() {
         if (state.setup) { state.setup.dismissedByUser = false; }
         // A re-shown overlay must not come back with a dead Retry.
-        reviveSetupRetry();
+        reviveSetupRetry(true);
       }
 
       var setupRetryBtn = document.getElementById('setup-retry-btn');
@@ -2625,6 +2625,7 @@
           // buttons at all for the length of an npm install — the same trap
           // this whole thread of fixes exists to close.
           setupRetryBtn.disabled = true;
+          if (state.setup) { state.setup.retryInFlight = true; }
           var errMsg = document.querySelector('#setup-overlay .setup-error-message');
           if (errMsg) { errMsg.textContent = 'Retrying\u2026'; }
           // No re-arm here: this button lives INSIDE the overlay, which is
@@ -6314,7 +6315,8 @@
       }
 
       function handleSetupProgress(payload) {
-        reviveSetupRetry();
+        // Progress is NOT terminal — see reviveSetupRetry. Reviving here is
+        // what let a second click race the first install.
         state.setup.currentStep = payload.step;
         state.setup.providerId = payload.providerId;
         state.setup.message = payload.message;
@@ -6325,6 +6327,7 @@
       }
 
       function handleSetupComplete(payload) {
+        reviveSetupRetry(true);   // terminal
         state.setup.isReady = true;
         state.setup.currentStep = 'ready';
         state.setup.message = 'Setup complete!';
@@ -6337,20 +6340,29 @@
       }
 
       /**
-       * Re-enable Retry. Called from every setup message, not just failure:
-       * `_handleRetrySetup` has no try/catch around `_runAutoSetup`, so a
-       * rejection out of discoverCli / checkAuthentication / autoInstallCli
-       * posts nothing back at all — and a button that only a `setupFailed`
-       * could revive would then be dead for good, where before the user could
-       * simply click again.
+       * Re-enable Retry — but only when a retry is not still running.
+       *
+       * The first version revived on EVERY setup message, and `SetupManager`
+       * emits `checking, 5%` within milliseconds of the retry starting. So the
+       * button came back alive during its own `npm install -g`, and since the
+       * error pane is no longer hidden it was visible and clickable the whole
+       * time: two concurrent global installs, which is the exact hazard the
+       * disable was added for.
+       *
+       * `setupRetryInFlight` is cleared only by a TERMINAL message (failed or
+       * complete) or by an explicit re-arm, so progress ticks cannot revive it
+       * and a run that dies silently still leaves a usable button after the
+       * next terminal event.
        */
-      function reviveSetupRetry() {
+      function reviveSetupRetry(force) {
+        if (state.setup && state.setup.retryInFlight && !force) { return; }
+        if (state.setup) { state.setup.retryInFlight = false; }
         var retryBtn = document.getElementById('setup-retry-btn');
         if (retryBtn) { retryBtn.disabled = false; }
       }
 
       function handleSetupFailed(payload) {
-        reviveSetupRetry();
+        reviveSetupRetry(true);
         state.setup.currentStep = 'failed';
         state.setup.providerId = payload.providerId;
         state.setup.error = payload.error;
@@ -6407,6 +6419,13 @@
         }
 
         overlay.classList.remove('hidden');
+        // Nothing else ever re-hides `.setup-error` — `updateSetupOverlay` only
+        // un-hid it — so a later, unrelated setup run came back wearing the
+        // previous failure's ⚠️ pane and a Retry wired to the OLD provider id.
+        var errorPane = overlay.querySelector('.setup-error');
+        if (errorPane && state.setup.currentStep !== 'failed') {
+          errorPane.classList.add('hidden');
+        }
 
         var progressEl = overlay.querySelector('.setup-progress-bar');
         var messageEl = overlay.querySelector('.setup-message');
@@ -6489,7 +6508,14 @@
           }
         });
 
+        // "Later" is an EXIT, and was not one: it neither recorded the
+        // dismissal nor hid the overlay, and `_handleAuthSkip` with no other
+        // ready provider answers `setupFailed`, which re-renders the same auth
+        // markup — with Retry and Skip already destroyed by this function. It
+        // now leaves the way the waiting-state button does.
         document.getElementById('auth-skip-btn').addEventListener('click', function() {
+          if (state.setup) { state.setup.dismissedByUser = true; }
+          hideSetupOverlay();
           postMessageWithPanelId({ type: 'authSkip', payload: { providerId: payload.providerId } });
         });
       }

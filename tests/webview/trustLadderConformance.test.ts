@@ -148,16 +148,42 @@ describe('the setup dismissal latch is released by every request path', () => {
     expect(CHAT_JS.slice(rearm, ownPost).includes('postMessageWithPanelId(')).toBe(false);
   });
 
-  it('a disabled Retry can always be revived', () => {
-    // `_handleRetrySetup` has no try/catch around `_runAutoSetup`, so a
-    // rejection posts nothing back. A button only a `setupFailed` could revive
-    // would be dead for good.
-    expect(CHAT_JS).toContain('function reviveSetupRetry()');
-    for (const caller of ['function handleSetupProgress', 'function handleSetupFailed',
+  it('Retry is revived by TERMINAL messages, never by progress', () => {
+    // Reviving on progress re-enabled the button during its own `npm install
+    // -g` — SetupManager emits `checking, 5%` within milliseconds — so a second
+    // click raced two global installs, which is the hazard the disable exists
+    // for. Terminal messages and an explicit re-arm force it; progress must not.
+    expect(CHAT_JS).toContain('function reviveSetupRetry(force)');
+    for (const caller of ['function handleSetupFailed', 'function handleSetupComplete',
                           'function rearmSetupOverlay']) {
       const at = CHAT_JS.indexOf(caller);
       expect(at, caller).toBeGreaterThan(-1);
-      expect(CHAT_JS.slice(at, at + 900), `${caller} must revive Retry`).toContain('reviveSetupRetry()');
+      expect(CHAT_JS.slice(at, at + 900), `${caller} must revive Retry`).toMatch(/reviveSetupRetry\(true\)/);
+    }
+    const prog = CHAT_JS.indexOf('function handleSetupProgress');
+    expect(prog).toBeGreaterThan(-1);
+    // Scope to THIS function — a fixed window runs into the next one, which
+    // legitimately does revive.
+    const nextFn = CHAT_JS.indexOf('\n      function ', prog + 1);
+    expect(CHAT_JS.slice(prog, nextFn), 'progress must NOT revive Retry')
+      .not.toContain('reviveSetupRetry(');
+  });
+
+  it('an in-flight retry cannot be started twice', () => {
+    const at = CHAT_JS.indexOf("setupRetryBtn.addEventListener('click'");
+    expect(CHAT_JS.slice(at, at + 900)).toContain('retryInFlight = true');
+    expect(CHAT_JS).toContain('state.setup.retryInFlight && !force');
+  });
+
+  it('every way out of the auth prompt actually leaves', () => {
+    // Both "Later" and the waiting state's button must record the dismissal
+    // AND hide, or they are decoration on a full-screen wall.
+    for (const id of ['auth-skip-btn', 'auth-wait-skip-btn']) {
+      const at = CHAT_JS.indexOf(`document.getElementById('${id}')`);
+      expect(at, id).toBeGreaterThan(-1);
+      const body = CHAT_JS.slice(at, at + 700);
+      expect(body, `${id} must record the dismissal`).toContain('dismissedByUser = true');
+      expect(body, `${id} must hide the overlay`).toContain('hideSetupOverlay()');
     }
   });
 
