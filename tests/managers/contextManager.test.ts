@@ -15,9 +15,12 @@ import type * as vscode from 'vscode';
 import { ContextManager } from '../../src/managers/ContextManager';
 
 function newMgr(store?: Map<string, unknown>): ContextManager {
+  // Memento-shaped: `update(k, undefined)` deletes and `keys()` enumerates, so
+  // the construction-time orphan sweep (G-2) runs in this suite too (P-4).
   const ws = {
     get: (k: string) => store?.get(k),
-    update: (k: string, v: unknown) => { store?.set(k, v); return Promise.resolve(); },
+    update: (k: string, v: unknown) => { if (v === undefined) { store?.delete(k); } else { store?.set(k, v); } return Promise.resolve(); },
+    keys: () => [...(store?.keys() ?? [])],
   };
   return new ContextManager({ workspaceState: ws } as unknown as vscode.ExtensionContext);
 }
@@ -109,5 +112,14 @@ describe('ContextManager — activate/deactivate (Plan 07)', () => {
     // Already has in-memory context → restore returns it without touching store.
     const restored = await m.restorePanelContext('sidebar');
     expect(restored).toHaveLength(1);
+  });
+  it('construction sweeps an orphaned tab key from a shared store but keeps sidebar (G-2 sweep, P-4)', async () => {
+    const store = new Map<string, unknown>();
+    store.set('mysti.context:panel_1700000000009', []);
+    store.set('mysti.context:sidebar', [{ id: 's', type: 'file', path: file, enabled: true }]);
+    newMgr(store);
+    await new Promise<void>(r => setTimeout(r, 0));
+    expect(store.has('mysti.context:panel_1700000000009')).toBe(false);
+    expect(store.has('mysti.context:sidebar')).toBe(true);
   });
 });

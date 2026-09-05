@@ -61,7 +61,8 @@ const CONVERSATIONS_CORRUPT_KEY_PREFIX = 'mysti.conversations.corrupt.';
 
 /**
  * Shareable deep-link bounds. `exportToShareable` emits at most
- * SHAREABLE_MESSAGE_LIMIT messages of SHAREABLE_CONTENT_CAP chars each;
+ * SHAREABLE_MESSAGE_LIMIT messages of SHAREABLE_CONTENT_CAP chars each and a
+ * title of at most SHAREABLE_TITLE_CAP chars;
  * `importFromShareable` — reachable from the UNAUTHENTICATED
  * `vscode://…/import?data=…` handler — enforces the same bounds on the way
  * in, and refuses to inflate a payload past SHAREABLE_INFLATED_MAX_BYTES
@@ -800,7 +801,8 @@ export class ConversationManager {
       return '';
     }
     const shareData = {
-      t: conversation.title,
+      // Same cap the importer enforces, so import(export(c)) is lossless.
+      t: conversation.title.slice(0, SHAREABLE_TITLE_CAP),
       p: conversation.provider,
       m: conversation.messages.slice(-SHAREABLE_MESSAGE_LIMIT).map(m => ({
         r: m.role === 'user' ? 'u' : 'a',

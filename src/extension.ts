@@ -59,6 +59,7 @@ import { DeskPairing } from './managers/DeskPairing';
 import { DeskPeerBook } from './managers/DeskPeerBook';
 import { DeskPairingFlow } from './managers/DeskPairingFlow';
 import { MODEL_REFRESH_WARMUP_DELAY_MS } from './constants';
+import type { Conversation } from './types';
 
 let chatViewProvider: ChatViewProvider;
 let contextManager: ContextManager;
@@ -87,6 +88,50 @@ let checkpointManager: CheckpointManager;
 let deepMystAuthManager: DeepMystAuthManager;
 let connectionsPanelManager: ConnectionsPanelManager;
 let stitchService: StitchService;
+
+/**
+ * Plan 27 §21.6c #11 (P-3). The `vscode://DeepMyst.mysti/import?data=…` deep
+ * link is reachable by anyone who can get the editor to open a URI — a web page,
+ * a chat message, an e-mail. Lane G bounded what the payload can contain; this
+ * is the human gate in front of it: a MODAL prompt whose first (default) button
+ * is Cancel and owns the close affordance (Escape / dismiss → Cancel), and whose
+ * only importing outcome is the exact confirm item by identity. Anything else —
+ * `undefined`, Cancel, a look-alike object — denies. Never rejects.
+ */
+export const SHAREABLE_IMPORT_CONFIRM: vscode.MessageItem = { title: 'Import conversation' };
+const SHAREABLE_IMPORT_CANCEL: vscode.MessageItem = { title: 'Cancel', isCloseAffordance: true };
+
+export async function handleShareableImportLink(
+  data: string,
+  deps: {
+    importFromShareable: (data: string) => Conversation | null;
+    onImported: (conversation: Conversation) => void;
+  },
+): Promise<void> {
+  try {
+    const choice = await vscode.window.showWarningMessage(
+      'Someone sent you a Mysti conversation — import it?',
+      {
+        modal: true,
+        detail: 'This link came from outside the editor. Importing adds the conversation to your history; its contents are shown as text and nothing in it is run.',
+      },
+      SHAREABLE_IMPORT_CANCEL,
+      SHAREABLE_IMPORT_CONFIRM,
+    );
+    if (choice !== SHAREABLE_IMPORT_CONFIRM) {
+      return;
+    }
+    const imported = deps.importFromShareable(data);
+    if (imported) {
+      deps.onImported(imported);
+      vscode.window.showInformationMessage(`Conversation loaded: "${imported.title}"`);
+    } else {
+      vscode.window.showErrorMessage('Could not load this conversation. The link may be invalid or expired.');
+    }
+  } catch (err) {
+    console.log('[Mysti] deep-link import prompt failed:', err);
+  }
+}
 
 export async function activate(context: vscode.ExtensionContext) {
   PerfTracker.mark('activation.start');
@@ -951,15 +996,16 @@ export async function activate(context: vscode.ExtensionContext) {
           const params = new URLSearchParams(uri.query);
           const data = params.get('data');
           if (data) {
-            const imported = conversationManager.importFromShareable(data);
-            if (imported) {
-              vscode.commands.executeCommand('mysti.chatView.focus');
-              chatViewProvider.postMessage({ type: 'conversationChanged' });
-              vscode.window.showInformationMessage(`Conversation loaded: "${imported.title}"`);
-              telemetryManager.sendEvent('deeplink.imported', {});
-            } else {
-              vscode.window.showErrorMessage('Could not load this conversation. The link may be invalid or expired.');
-            }
+            // Plan 27 P-3: the link is unauthenticated — ask before the store
+            // is touched (handleShareableImportLink never rejects).
+            return handleShareableImportLink(data, {
+              importFromShareable: (d) => conversationManager.importFromShareable(d),
+              onImported: () => {
+                vscode.commands.executeCommand('mysti.chatView.focus');
+                chatViewProvider.postMessage({ type: 'conversationChanged' });
+                telemetryManager.sendEvent('deeplink.imported', {});
+              },
+            });
           }
         }
       }

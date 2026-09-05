@@ -23,6 +23,7 @@ import {
   ConversationManager,
   SHAREABLE_CONTENT_CAP,
   SHAREABLE_MESSAGE_LIMIT,
+  SHAREABLE_TITLE_CAP,
 } from '../../src/managers/ConversationManager';
 import { clearMockConfig, setMockConfig } from '../helpers/mockVscode';
 import type * as vscode from 'vscode';
@@ -213,5 +214,21 @@ describe('ConversationManager.importFromShareable — deep-link payload hardenin
     let result: unknown = 'unset';
     expect(() => { result = manager.importFromShareable(bomb); }).not.toThrow();
     expect(result).toBeNull();
+  });
+  it('exportToShareable caps the title at SHAREABLE_TITLE_CAP so a round-trip is lossless (P-1)', () => {
+    const { context } = createMockContext();
+    const manager = new ConversationManager(context);
+    const conv = manager.getCurrentConversation()!;
+    manager.addMessage('user', 'hello');
+    manager.updateConversationTitle(conv.id, 'T'.repeat(SHAREABLE_TITLE_CAP + 300));
+
+    const payload = manager.exportToShareable(conv.id);
+    const decoded = JSON.parse(zlib.inflateSync(Buffer.from(payload, 'base64url')).toString('utf-8')) as { t: string };
+    // The link never carries more title than the importer will keep.
+    expect(decoded.t).toHaveLength(SHAREABLE_TITLE_CAP);
+
+    // Lossless: what the export put on the wire is exactly what the import stores.
+    const imported = manager.importFromShareable(payload)!;
+    expect(imported.title).toBe(decoded.t);
   });
 });

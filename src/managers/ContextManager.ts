@@ -231,7 +231,14 @@ export class ContextManager {
           ? c // selections keep their content snapshot
           : { ...c, content: undefined }, // files: drop content, re-read on restore
       );
-      void this._extensionContext.workspaceState.update(this._persistKey(panelId), items);
+      // Never let a failed write become an unhandled rejection: the in-memory
+      // list stays authoritative and the loss is logged, nothing more.
+      const pending = this._extensionContext.workspaceState.update(this._persistKey(panelId), items);
+      if (pending && typeof (pending as Thenable<void>).then === 'function') {
+        (pending as Thenable<void>).then(undefined, (err) => {
+          console.log('[Mysti] context persist failed:', err);
+        });
+      }
     } catch (err) {
       console.log('[Mysti] context persist failed:', err);
     }
