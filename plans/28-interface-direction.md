@@ -263,3 +263,33 @@ Provider streaming, message contracts, persistence, the canvas, the coordinator'
 2. **Should `Plan` be one stop or two?** `OperationMode` distinguishes `quick-plan` from `detailed-plan`. The ladder collapses them; the depth becomes a per-request thing (`/plan --detailed`). Confirm before Phase 1 lands.
 3. ~~**Which backends can genuinely steer?**~~ **ANSWERED — none, and the reason is structural.** The single-shot path calls `stdin.end()` the moment the prompt is written, so there is no pipe left to write into. The persistent path keeps stdin open, but every persistent backend speaks a *structured* protocol on it — Claude Code's `--input-format stream-json` (NDJSON), Hermes/Kimi's ACP (JSON-RPC over stdio) — where an unsolicited mid-turn write is not an interrupt but one more token in a stream nobody is reading, corrupting the next message. This is the same finding already recorded on `BaseCliProvider._interruptPersistentProcess`, which is why cancelling tears the process down rather than writing a byte. `supportsSteering` is therefore declared false everywhere and pinned by `tests/providers/steering.test.ts`. Making any backend steerable is protocol work, not a flag.
 4. **Does the Runs dock replace the five producers eventually, or stay a view?** Phase 3 deliberately defers this. Revisit once the dock has shipped.
+
+---
+
+## 12. Execution log — overnight session, 2026-09-05/06
+
+**26 commits, all local. 338 files / 12131 tests / 0 failed; tsc clean; provider-literals guard OK.**
+Nothing pushed: `git remote -v` shows one remote, a fork with its push URL set to `no_push`, so there is **no writable remote configured**.
+
+### Shipped
+Phases 1–6 complete. Phase 7 is 6 of 11 built, 3 closed by audit as already-shipped or design overreach, 2 not done (Plan & progress, Context & cost).
+
+A browser harness (`tests/webview/chatComposerBrowser.test.ts`) boots the real panel in Chromium and now carries ~92 tests. Chromium was installed, which also un-skipped 62 canvas browser tests that had never run here; they pass.
+
+### What the audits found that the plan did not
+Repeatedly, the machinery already existed and only the surfacing was missing — MCP drift, install remediation, context toggles, savings, error categories, multi-agent fan-out. Two plan items were **design overreach** and were not built, with reasons recorded: unifying plan options with the todo list, and a timer that names which option it will pick.
+
+### Real defects found and fixed
+- **`var inputEl` hoisting** — one open slash menu silently broke four other behaviours. Found by clicking every button in a real browser; a static reference check had passed.
+- **Ten review-round findings** across the new work, including answered permissions never leaving "Needs you", a queue drain eating a draft, and the honest timer lasting one second.
+- **A double-click on Retry raced two `npm install -g`** on the same global prefix.
+- **The auth waiting state had no controls at all** — the root cause of a long chain of guards.
+
+### Where I over-engineered, and reverted
+Rounds 5–10 all landed in the setup overlay, each fix creating the next. Round 10 removed two of my own additions (a pane-hide that took away both buttons during an install, and an unreachable in-flight flag whose test passed on inert code) rather than adding a third. **Two of my tests were vacuous and passed with the fix reverted**; both were replaced and the replacements were checked by reverting the fix and watching them go red.
+
+### Still owed
+1. **The F5 pass.** Everything above is static analysis plus a real browser. Nothing exercises the extension host: provider spawning, permission cards on live tool calls, autonomy actually activating.
+2. **A writable remote**, before any of this can leave the machine.
+3. Phase 7: Plan & progress, Context & cost (the latter needs per-category token accounting that does not exist yet).
+4. One full-suite run reported a failed *file* with zero failed tests; four consecutive runs since are clean. Seen once, not reproduced.
