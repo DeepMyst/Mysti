@@ -590,7 +590,14 @@ export function dispatchCanvasTool(name: string, args: Args, ctx: CanvasToolCont
     case 'remove_element': {
       const mid = requireMid(args.mid, 'remove_element');
       if (typeof mid !== 'string') { return mid; }
-      return submitV2({ op: 'el.remove', pageId: String(args.pageId), mid }, { baseVersion: numOrUndef(args.baseVersion) });
+      // Lane L, L-3: a subtree can hold many elements, so — as on every other
+      // op that spans more than one — an override names the element too.
+      const force = parseScopedForce(args.force, 'remove_element');
+      if (!force.ok) { return { ok: false, error: force.error }; }
+      return submitV2(
+        { op: 'el.remove', pageId: String(args.pageId), mid },
+        { baseVersion: numOrUndef(args.baseVersion), force: force.entries },
+      );
     }
 
     case 'move_element': {
@@ -598,6 +605,8 @@ export function dispatchCanvasTool(name: string, args: Args, ctx: CanvasToolCont
       if (typeof mid !== 'string') { return mid; }
       const newParentMid = requireMid(args.newParentMid, 'move_element');
       if (typeof newParentMid !== 'string') { return newParentMid; }
+      const force = parseScopedForce(args.force, 'move_element');
+      if (!force.ok) { return { ok: false, error: force.error }; }
       const op: Extract<CanvasOpV2, { op: 'el.move' }> = {
         op: 'el.move',
         pageId: String(args.pageId),
@@ -607,7 +616,7 @@ export function dispatchCanvasTool(name: string, args: Args, ctx: CanvasToolCont
       };
       const slot = typeof args.slot === 'string' && args.slot.trim() ? args.slot.trim() : undefined;
       if (slot) { op.slot = slot; }
-      return submitV2(op, { baseVersion: numOrUndef(args.baseVersion) });
+      return submitV2(op, { baseVersion: numOrUndef(args.baseVersion), force: force.entries });
     }
 
     case 'replace_element': {
@@ -624,7 +633,7 @@ export function dispatchCanvasTool(name: string, args: Args, ctx: CanvasToolCont
       if (!guarded.ok) { return guarded.result; }
       return submitV2(
         { op: 'el.replace', pageId: String(args.pageId), mid, node: guarded.node },
-        { baseVersion: numOrUndef(args.baseVersion) },
+        { baseVersion: numOrUndef(args.baseVersion), force: guarded.force },
       );
     }
 
@@ -830,9 +839,11 @@ function writePage(
       };
     }
     // Surviving pins ride along: the human still owns the cell after a
-    // wholesale write, so the next agent turn is still refused.
+    // wholesale write, so the next agent turn is still refused. The scoped
+    // force travels too: the executor re-runs this same comparison (lane L),
+    // and a cell the user asked to change must pass there as well.
     graftPins(compiled.doc, carry.keep);
-    const res = submitV2({ op: 'page.setDoc', pageId, doc: compiled.doc });
+    const res = submitV2({ op: 'page.setDoc', pageId, doc: compiled.doc }, { force: parsedForce.entries });
     if (titleOp && res.ok) { submitV2(titleOp); }
     if (!res.ok) { return res; }
     return {
@@ -986,8 +997,20 @@ function legacyView(op: CanvasOpV2, receipt: CanvasOpReceiptV2, runId: string): 
 
 function droppedFromReceipt(op: CanvasOpV2, receipt: CanvasOpReceiptV2): CanvasDroppedIntent[] {
   const out: CanvasDroppedIntent[] = [];
-  for (const cell of receipt.pinned ?? []) {
-    out.push({ mid: opMid(op) ?? undefined, cell, op: op.op, reason: 'pinned-by-human' });
+  for (const entry of receipt.pinned ?? []) {
+    // A cell op names the target's own cells bare; a refusal that spans more
+    // than one element (`page.setDoc`, `page.remove`, `el.remove` / `el.move` /
+    // `el.replace` over a subtree) names each as "<mid>:<cell>" — see
+    // `CanvasOpReceiptV2.pinned`. Split so `dropped` addresses the element the
+    // human actually owns, not the op's root.
+    const at = entry.indexOf(':');
+    const scoped = at > 0 && isMid(entry.slice(0, at));
+    out.push({
+      mid: scoped ? entry.slice(0, at) : (opMid(op) ?? undefined),
+      cell: scoped ? entry.slice(at + 1) : entry,
+      op: op.op,
+      reason: 'pinned-by-human',
+    });
   }
   if (out.length === 0 && receipt.status === 'stale') {
     out.push({ mid: opMid(op) ?? undefined, op: op.op, reason: 'stale', detail: receipt.error });
@@ -1045,12 +1068,22 @@ interface ForceIndex {
 
 const EMPTY_FORCE: ForceIndex = { has: () => false, size: 0 };
 
-function parseScopedForce(v: unknown, tool = 'write_page'): { ok: true; index: ForceIndex } | { ok: false; error: string } {
-  if (v === undefined || v === null) { return { ok: true, index: EMPTY_FORCE }; }
+/**
+ * `entries` is the normalized `"<mid>:<cell>"` list, forwarded to the executor
+ * verbatim: since lane L (L-1/L-3) the executor re-runs the pin rule for
+ * `page.setDoc` and the structural element ops itself — at submit AND at apply
+ * — and matches a forced address in exactly this spelling.
+ */
+function parseScopedForce(
+  v: unknown,
+  tool = 'write_page',
+): { ok: true; index: ForceIndex; entries: PinCell[] } | { ok: false; error: string } {
+  if (v === undefined || v === null) { return { ok: true, index: EMPTY_FORCE, entries: [] }; }
   if (!Array.isArray(v)) {
     return { ok: false, error: `${tool}: force must be an array of "<mid>:<cell>" strings, e.g. ["k7f2xq6b3m:text"]` };
   }
   const byMid = new Map<Mid, Set<PinCell>>();
+  const entries: PinCell[] = [];
   for (const raw of v) {
     if (typeof raw !== 'string' || !raw.trim()) { continue; }
     const entry = raw.trim();
@@ -1068,8 +1101,9 @@ function parseScopedForce(v: unknown, tool = 'write_page'): { ok: true; index: F
     const set = byMid.get(mid) ?? new Set<PinCell>();
     set.add(cell);
     byMid.set(mid, set);
+    entries.push(`${mid}:${cell}`);
   }
-  return { ok: true, index: { has: (mid, cell) => byMid.get(mid)?.has(cell) === true, size: byMid.size } };
+  return { ok: true, index: { has: (mid, cell) => byMid.get(mid)?.has(cell) === true, size: byMid.size }, entries };
 }
 
 /**
@@ -1284,14 +1318,14 @@ function guardReplacePins(
   mid: Mid,
   node: DocNodeInput,
   rawForce: unknown,
-): { ok: true; node: DocNodeInput } | { ok: false; result: CanvasToolResult } {
+): { ok: true; node: DocNodeInput; force: PinCell[] } | { ok: false; result: CanvasToolResult } {
   const page = ctx.store.getPage(ctx.artifact, pageId);
   const target = page ? findNode(page.doc, mid) : null;
   // No page or no such element: the executor owns that error, not this gate.
-  if (!target) { return { ok: true, node }; }
+  if (!target) { return { ok: true, node, force: [] }; }
   let pinned = false;
   for (const n of walk(target)) { if (pinnedCells(n).length > 0) { pinned = true; break; } }
-  if (!pinned) { return { ok: true, node }; }
+  if (!pinned) { return { ok: true, node, force: [] }; }
 
   const parsed = parseScopedForce(rawForce, 'replace_element');
   if (!parsed.ok) { return { ok: false, result: { ok: false, error: parsed.error } }; }
@@ -1310,9 +1344,11 @@ function guardReplacePins(
       },
     };
   }
-  // Surviving pins ride along: the human still owns the cell afterwards.
+  // Surviving pins ride along: the human still owns the cell afterwards. The
+  // scoped force travels with the op so the executor's own re-run of this
+  // comparison (lane L, at submit and again at apply) honours the override.
   graftPins(node, carry.keep, mid);
-  return { ok: true, node };
+  return { ok: true, node, force: parsed.entries };
 }
 
 function parseStyleMap(v: unknown): { ok: true; value: Record<string, string | null> } | { ok: false; error: string } {

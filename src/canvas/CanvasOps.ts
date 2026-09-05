@@ -195,7 +195,17 @@ export interface CanvasOpReceiptV2 {
   artifactVersion: number;
   /** Stale, but the target mid survived → re-applied against the current doc. */
   rebased?: boolean;
-  /** Cells refused because a human owns them. */
+  /**
+   * Cells refused because a human owns them.
+   *
+   * Two spellings, by op shape. An element cell op (`el.setText` /
+   * `el.setStyle` / `el.setProp`, legacy `edit_element`) names the target's
+   * own cells bare — `"text"`, `"style.color"`. Every refusal that can span
+   * more than one element — `page.setDoc`, `page.remove`, `el.remove` /
+   * `el.move` / `el.replace` over a subtree, and the legacy `edit_page` /
+   * `delete_page` — names each cell as `"<mid>:<cell>"`, which is also the
+   * spelling `force` takes for those ops.
+   */
   pinned?: PinCell[];
   /** Ids minted for nodes the writer sent without one. */
   newMids?: Record<string, Mid>;

@@ -215,14 +215,15 @@ describe('J-2 — a regrafted pin lands only on the value the human actually wro
     humanSetText(h, pageId, hero, 'HUMAN');
     expect(pinnedCells(findNode(doc(h, pageId), hero)!)).toEqual(['text']);
 
-    // Human accepts the card. The pin check is submit-time (a known residual,
-    // out of this lane), so the agent's value lands — but the HUMAN'S pin must
-    // not be grafted onto it: that would be a human ownership claim on text
-    // the human never wrote, refusing every later agent edit on their behalf.
-    h.executor.applyOp(h.artifact, staged.op!.opId, 'job-1');
+    // Human accepts the card. Since lane L (L-1) the pin check runs again at
+    // apply time, so the op is refused outright: the human's value AND the
+    // human's pin survive, and no pin sits on text the human never wrote.
+    const out = h.executor.applyOp(h.artifact, staged.op!.opId, 'job-1');
+    expect(out?.status).toBe('rejected');
+    expect(h.executor.lastReceipt()?.pinned).toEqual([`${hero}:text`]);
     const node = findNode(doc(h, pageId), hero)!;
-    expect(node.text === 'HUMAN' || pinnedCells(node).length === 0).toBe(true);
-    expect(pinnedCells(node)).toEqual([]);
+    expect(node.text).toBe('HUMAN');
+    expect(pinnedCells(node)).toEqual(['text']);
   });
 
   it('a staged patch that preserved the cell, accepted after the human retyped it, does not certify the stale value', () => {
@@ -240,11 +241,15 @@ describe('J-2 — a regrafted pin lands only on the value the human actually wro
     // Human retypes the same cell before accepting.
     humanSetText(h, pageId, hero, 'HUMAN v2');
 
-    h.executor.applyOp(h.artifact, staged.op!.opId, 'job-1');
+    // The stale `HUMAN v1` in the staged doc is no longer the value the human
+    // owns, so the apply-time gate (L-1) refuses the op outright: `v2` and its
+    // pin stay, and no pin ever sits on a value the human did not write.
+    const out = h.executor.applyOp(h.artifact, staged.op!.opId, 'job-1');
+    expect(out?.status).toBe('rejected');
+    expect(h.executor.lastReceipt()?.pinned).toEqual([`${hero}:text`]);
     const node = findNode(doc(h, pageId), hero)!;
-    // The reverted value is not something the human wrote in the pre-op tree,
-    // so no pin may sit on it.
-    if (node.text !== 'HUMAN v2') { expect(pinnedCells(node)).toEqual([]); }
+    expect(node.text).toBe('HUMAN v2');
+    expect(pinnedCells(node)).toEqual(['text']);
   });
 
   it('still regrafts when the value really did survive (the E-1 property)', () => {

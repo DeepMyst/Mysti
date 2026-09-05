@@ -40,12 +40,13 @@ import {
   putOwn,
   walk,
   type DocNode,
+  type DocNodeInput,
   type Mid,
   type PinCell,
   type PinRecord,
 } from '../canvas/doc/DocNode';
 import { withFreshMids } from '../canvas/doc/PageCompiler';
-import { boardPosForIndex, migratePage, refreshJsxCache } from '../canvas/pageMigration';
+import { boardPosForIndex, isDocNode, migratePage, refreshJsxCache } from '../canvas/pageMigration';
 import type {
   CanvasArtifact,
   ArtifactPage,
@@ -184,6 +185,12 @@ export class CanvasOpExecutor {
   private _journal = new Map<string, CanvasJournalEntry[]>();
   /** Pin ownership taken per op id, so undoing the op releases exactly it. */
   private _pinWrites = new Map<string, PinWrite>();
+  /**
+   * The `force` a writer submitted with, per op id, until the op resolves —
+   * so the apply-time re-run of the pin rule (L-1) sees the same override the
+   * submit-time run did. Bounded like the journal.
+   */
+  private _forces = new Map<string, PinCell[]>();
 
   constructor(store: ArtifactStore, router: CanvasJobRouter) {
     this._store = store;
@@ -259,30 +266,20 @@ export class CanvasOpExecutor {
 
     const pageId = opPageId(submission.op);
     const page = pageId ? this._store.getPage(artifact, pageId) : undefined;
+    this._rememberForce(record.opId, submission.force);
 
     // ── pins: a human owns these cells (§3.5) ────────────────────────────
+    // One rule for every op shape (cell ops, `page.remove` — J-1, `page.setDoc`
+    // and the structural element ops — L-3), and the SAME rule runs again in
+    // `applyStagedOp` against the tree as it is then (L-1).
     if (author === 'agent' && page) {
-      const refused = pinnedConflicts(page, submission.op, submission.force);
-      if (refused.length > 0) {
+      const refusal = this._pinRefusalV2(page, submission.op, submission.force);
+      if (refusal) {
         record.status = 'rejected';
-        this._lastSubmitError = `refused: ${refused.join(', ')} ${refused.length === 1 ? 'is' : 'are'} user-set`;
+        this._lastSubmitError = refusal.error;
         this._journalPush(artifact, record);
-        this._emitLegacy(jobId, 'op_error', record, this._lastSubmitError);
-        return this._receipt(artifact, record, { pinned: refused, error: this._lastSubmitError });
-      }
-    }
-
-    // Plan 27 lane J, finding J-1: `pinnedConflicts` addresses one element, so
-    // `page.remove` (MCP `remove_page`) walked past it and deleted every human
-    // pin on the artboard. Same rule as the legacy `delete_page` in `submit`.
-    if (author === 'agent' && page && submission.op.op === 'page.remove') {
-      const refused = pinnedAddresses(page);
-      if (refused.length > 0) {
-        record.status = 'rejected';
-        this._lastSubmitError = pageRemovalRefusal(refused);
-        this._journalPush(artifact, record);
-        this._emitLegacy(jobId, 'op_error', record, this._lastSubmitError);
-        return this._receipt(artifact, record, { pinned: refused, error: this._lastSubmitError });
+        this._emitLegacy(jobId, 'op_error', record, refusal.error);
+        return this._receipt(artifact, record, { pinned: refusal.pinned, error: refusal.error });
       }
     }
 
@@ -331,6 +328,7 @@ export class CanvasOpExecutor {
     if (!record) { return undefined; }
     if (record.status !== 'staged' && record.status !== 'stale') { return this._receipt(artifact, record, {}); }
     record.status = 'rejected';
+    this._forces.delete(opId);
     this._journalPush(artifact, record);
     this._emitLegacy(jobId, 'op_rejected', record);
     return this._receipt(artifact, record, {});
@@ -346,6 +344,24 @@ export class CanvasOpExecutor {
       record.status = 'stale';
       this._emitLegacy(jobId, 'op_staged', record);
       return this._receipt(artifact, record, {});
+    }
+    // Plan 27 lane L, finding L-1: the pin gate in `submitOp` ran against the
+    // tree as it WAS. In `staged` mode the human can pin a cell while the card
+    // is up (and a parked auto-mode op flushes only after the human's inline
+    // edit ended), so an op that passed then would destroy the pinned content
+    // now. Same rule, same receipt shape, against the tree as it IS.
+    if (record.author === 'agent') {
+      const pageId = opPageId(record.op);
+      const page = pageId ? this._store.getPage(artifact, pageId) : undefined;
+      const refusal = page ? this._pinRefusalV2(page, record.op, this._forces.get(opId)) : null;
+      if (refusal) {
+        record.status = 'rejected';
+        this._forces.delete(opId);
+        this._lastSubmitError = refusal.error;
+        this._journalPush(artifact, record);
+        this._emitLegacy(jobId, 'op_error', record, refusal.error);
+        return this._receipt(artifact, record, { pinned: refusal.pinned, error: refusal.error });
+      }
     }
     return this._commitV2(artifact, record, jobId, conflict === 'rebase');
   }
@@ -369,15 +385,23 @@ export class CanvasOpExecutor {
     jobId: string,
     mode: CanvasApprovalMode = 'staged',
   ): CanvasOp | null {
+    const author = submission.author ?? 'agent';
     const op: CanvasOp = {
       opId: crypto.randomUUID(),
       runId: submission.runId,
       kind: submission.kind,
       targetPageId: submission.targetPageId,
       baseVersion: submission.baseVersion,
-      proposedValue: submission.proposedValue,
+      // Plan 27 lane L, finding L-2: a `pins:{…}` map inside an AGENT's
+      // `edit_page` / `insert_page` document is a human-ownership claim the
+      // human never made — `migratePage` takes an `isDocNode` doc verbatim, and
+      // `regraftPins` then seeded its merge from those very records. Human
+      // payloads (the webview's own ops, undo restores) keep theirs.
+      proposedValue: author === 'agent'
+        ? withoutAgentPins(submission.kind, submission.proposedValue)
+        : submission.proposedValue,
       status: 'pending',
-      author: submission.author ?? 'agent',
+      author,
       ts: Date.now(),
     };
 
@@ -394,64 +418,34 @@ export class CanvasOpExecutor {
     }
 
     const page = op.targetPageId ? this._store.getPage(artifact, op.targetPageId) : undefined;
+    this._rememberForce(op.opId, submission.force);
 
-    // Pin enforcement for the one legacy kind that addresses an element.
-    if (op.author === 'agent' && page && op.kind === 'edit_element') {
-      const v2 = this._elementOpFor(op);
-      const refused = v2 ? pinnedConflicts(page, v2, submission.force) : [];
-      if (refused.length > 0) {
-        this._lastSubmitError = `refused: ${refused.join(', ')} ${refused.length === 1 ? 'is' : 'are'} user-set`;
-        op.status = 'rejected';
-        this._store.appendOp(artifact, op);
-        this._router.emit(jobId, { type: 'op_error', op, error: this._lastSubmitError });
-        this._lastReceipt = this._legacyReceipt(artifact, op, { pinned: refused, error: this._lastSubmitError });
-        return null;
-      }
-    }
-
-    // Pin enforcement for the legacy kind that rewrites a WHOLE artboard.
+    // Pin enforcement — one rule for the three legacy kinds that can touch a
+    // human-owned cell, and the SAME rule runs again in `applyOp` (L-1).
     //
-    // Plan 27 lane E, finding E-1. `edit_page` with a content patch hands
-    // `ArtifactStore.updatePage` a fresh document and `page.doc` is replaced
-    // wholesale, so every human pin — and the hand edit each pin records —
-    // died silently: `ok: true`, no `pinned`, no `dropped`, and the model
-    // reported success. `write_page` has always refused exactly this
-    // (`pinsAcrossReplace` in CanvasToolDispatch), and the two write
-    // vocabularies must agree, because `edit_page` is the one the fenced
-    // `canvas-op` lane TEACHES 13 of the 14 CLI backends.
+    //  - `edit_element`: the one legacy kind that addresses an element.
+    //  - `edit_page` (Plan 27 lane E, finding E-1): a content patch hands
+    //    `ArtifactStore.updatePage` a fresh document and `page.doc` is replaced
+    //    wholesale, so every human pin — and the hand edit each records — died
+    //    silently with `ok: true`. `write_page` has always refused exactly
+    //    this, and the two vocabularies must agree, because `edit_page` is the
+    //    one the fenced `canvas-op` lane TEACHES 13 of the 14 CLI backends.
+    //    `force` is deliberately NOT consulted for it: a bare cell name on a
+    //    whole-artboard rewrite would mean "every element on this artboard".
+    //  - `delete_page` (lane J, finding J-1): the same destruction, one
+    //    ungated op away. Its V2 twin `page.remove` is gated in `submitOp`.
     //
     // The check lives HERE rather than in the dispatcher because this is the
     // chokepoint both transports pass through — the MCP tool call and the
-    // fenced op. `submission.force` is deliberately NOT consulted: a bare cell
-    // name on a whole-artboard rewrite means "every element on this artboard",
-    // which is the reason `writePage` demands `<mid>:<cell>` scoping, and no
-    // caller passes `force` on an `edit_page` at all.
-    if (op.author === 'agent' && page && op.kind === 'edit_page') {
-      const refused = pinsDestroyedByPagePatch(page, op.proposedValue);
-      if (refused.length > 0) {
-        this._lastSubmitError = `refused: this patch would replace the whole artboard and destroy `
-          + `${refused.length} cell(s) the human owns (${refused.join(', ')}). ${PIN_REFUSAL_REMEDY} `
-          + 'Over MCP, write_page also works: it diffs your source against the current document and preserves them.';
+    // fenced op.
+    if (op.author === 'agent' && page) {
+      const refusal = this._pinRefusalLegacy(page, op, submission.force);
+      if (refusal) {
+        this._lastSubmitError = refusal.error;
         op.status = 'rejected';
         this._store.appendOp(artifact, op);
-        this._router.emit(jobId, { type: 'op_error', op, error: this._lastSubmitError });
-        this._lastReceipt = this._legacyReceipt(artifact, op, { pinned: refused, error: this._lastSubmitError });
-        return null;
-      }
-    }
-
-    // Plan 27 lane J, finding J-1: the destruction the gate above refuses was
-    // one ungated op away — `delete_page` took every human pin on the artboard
-    // with it, `ok: true`. Same gate, same shape; the V2 twin (`page.remove`,
-    // MCP `remove_page`) is gated in `submitOp`, so the vocabularies agree.
-    if (op.author === 'agent' && page && op.kind === 'delete_page') {
-      const refused = pinnedAddresses(page);
-      if (refused.length > 0) {
-        this._lastSubmitError = pageRemovalRefusal(refused);
-        op.status = 'rejected';
-        this._store.appendOp(artifact, op);
-        this._router.emit(jobId, { type: 'op_error', op, error: this._lastSubmitError });
-        this._lastReceipt = this._legacyReceipt(artifact, op, { pinned: refused, error: this._lastSubmitError });
+        this._router.emit(jobId, { type: 'op_error', op, error: refusal.error });
+        this._lastReceipt = this._legacyReceipt(artifact, op, { pinned: refusal.pinned, error: refusal.error });
         return null;
       }
     }
@@ -507,6 +501,24 @@ export class CanvasOpExecutor {
       this._router.emit(jobId, { type: 'op_staged', op });
       this._lastReceipt = this._legacyReceipt(artifact, op, {});
       return op;
+    }
+
+    // Plan 27 lane L, finding L-1: re-run the pin rule against the tree as it
+    // IS. The gate in `submit` ran when the card went up; a human who pinned a
+    // cell since (a hand edit while the card was showing, or while the op sat
+    // parked behind their inline edit) must not lose it to an "Accept".
+    const force = this._forces.get(op.opId);
+    this._forces.delete(op.opId);
+    if (op.author === 'agent' && op.targetPageId) {
+      const page = this._store.getPage(artifact, op.targetPageId);
+      const refusal = page ? this._pinRefusalLegacy(page, op, force) : null;
+      if (refusal) {
+        op.status = 'rejected';
+        this._lastSubmitError = refusal.error;
+        this._router.emit(jobId, { type: 'op_error', op, error: refusal.error });
+        this._lastReceipt = this._legacyReceipt(artifact, op, { pinned: refusal.pinned, error: refusal.error });
+        return op;
+      }
     }
 
     let affectedPageId: string | undefined;
@@ -567,6 +579,7 @@ export class CanvasOpExecutor {
     if (!op) { return undefined; }
     if (op.status === 'pending' || op.status === 'stale') {
       op.status = 'rejected';
+      this._forces.delete(opId);
       this._router.emit(jobId, { type: 'op_rejected', op });
     }
     return op;
@@ -932,6 +945,7 @@ export class CanvasOpExecutor {
     jobId: string,
     rebased: boolean,
   ): CanvasOpReceiptV2 {
+    this._forces.delete(record.opId);
     let outcome: { pageId?: string; inverse?: CanvasOpV2; newMids?: Record<string, Mid>; restore?: CanvasJournalEntry['restore'] };
     try {
       outcome = this._applyV2(artifact, record.op);
@@ -992,8 +1006,20 @@ export class CanvasOpExecutor {
     switch (op.op) {
       case 'page.add': {
         const spec = op.page;
+        // Plan 27 lane L, finding L-4: a writer-supplied `id` is a HINT, never
+        // an authority — the rule the legacy `insert_page` learned in E-1. A
+        // `page.add` carrying a LIVE page's id spliced a second page under
+        // that id, and `getPage` resolves by FIRST match, so at `index: 0` the
+        // newcomer shadowed the human's artboard for every later lookup. The
+        // undo/redo case that needs an exact id (a `page.remove` inverse) never
+        // collides: the page it restores is, by construction, gone.
+        let id = spec.id;
+        if (typeof id === 'string' && artifact.pages.some(p => p.id === id)) {
+          console.log(`[Mysti] canvas-op: page.add reused live page id ${id} — minting a fresh one`);
+          id = undefined;
+        }
         const page = this._store.makePage({
-          id: spec.id,
+          id,
           doc: spec.doc,
           actionTitle: spec.actionTitle,
           notes: spec.notes,
@@ -1008,7 +1034,7 @@ export class CanvasOpExecutor {
         // a stranger: every pin, comment, staged op and selection addressing
         // the old id is orphaned, silently. Recording what actually happened is
         // what makes redo deterministic (this is why `NewPageSpec.id` exists).
-        if (!spec.id) { spec.id = page.id; }
+        spec.id = page.id;
         return { pageId: page.id, inverse: { op: 'page.remove', pageId: page.id } };
       }
       case 'page.remove': {
@@ -1319,6 +1345,83 @@ export class CanvasOpExecutor {
   // ========================================================================
   // Pins
   // ========================================================================
+
+  /**
+   * Remember the cells a writer forced when it SUBMITTED, so the apply-time
+   * re-run of the pin rule (L-1) honours the same override — a `force` is
+   * consumed at submit and lives on neither the op nor the journal record.
+   */
+  private _rememberForce(opId: string, force: PinCell[] | undefined): void {
+    if (!force || force.length === 0) { return; }
+    this._forces.set(opId, [...force]);
+    if (this._forces.size > MAX_JOURNAL_ENTRIES) {
+      const oldest = this._forces.keys().next();
+      if (!oldest.done) { this._forces.delete(oldest.value); }
+    }
+  }
+
+  /**
+   * The §3.5 pin rule for one V2 op, as the fields a refusal receipt carries —
+   * or null when the op may proceed. Runs at submit AND at apply (L-1), so it
+   * must be a pure function of the page as it is at that moment.
+   *
+   *  - cell ops (`el.setText` / `el.setStyle` / `el.setProp`): the target's own
+   *    pinned cells, bare, minus a bare `force` (`pinnedConflicts`).
+   *  - `page.remove` (J-1): every human-owned cell on the artboard.
+   *  - `page.setDoc`: every human-owned cell the incoming document does not
+   *    carry with the same mid, tag and value — the rule `write_page`'s
+   *    `pinsAcrossReplace` applies before it submits, re-applied here because
+   *    the executor is the chokepoint and the tree can change in between.
+   *  - `el.remove` / `el.move` / `el.replace` (L-3): `opCells` is null for the
+   *    structural ops, so they walked past the cell gate — MCP `remove_element`
+   *    on a pinned subtree answered `ok: true`. Treated as the page-level ops
+   *    are: every human-owned cell in the subtree that would be destroyed
+   *    (remove), displaced (move) or changed (replace), as `<mid>:<cell>`,
+   *    unless `force` names it in that same spelling.
+   */
+  private _pinRefusalV2(page: ArtifactPage, op: CanvasOpV2, force?: PinCell[]): PinRefusal | null {
+    const cells = pinnedConflicts(page, op, force);
+    if (cells.length > 0) { return { pinned: cells, error: cellRefusal(cells) }; }
+    if (op.op === 'page.remove') {
+      const refused = pinnedAddresses(page);
+      return refused.length > 0 ? { pinned: refused, error: pageRemovalRefusal(refused) } : null;
+    }
+    if (op.op === 'page.setDoc') {
+      const refused = unforced(pinsDestroyedByRebuild(page.doc, indexIncoming(op.doc)), force);
+      return refused.length > 0 ? { pinned: refused, error: pageRewriteRefusal(refused, 'page.setDoc') } : null;
+    }
+    if (op.op === 'el.remove' || op.op === 'el.move' || op.op === 'el.replace') {
+      const target = findNode(page.doc, op.mid);
+      if (!target) { return null; }
+      const destroyed = op.op === 'el.replace'
+        ? pinsDestroyedByRebuild(target, indexIncoming(op.node, op.mid))
+        : pinnedAddressesUnder(target);
+      const refused = unforced(destroyed, force, op.mid);
+      return refused.length > 0 ? { pinned: refused, error: structuralRefusal(op.op, refused) } : null;
+    }
+    return null;
+  }
+
+  /** The same rule for the legacy kinds; see `submit` for why each is gated. */
+  private _pinRefusalLegacy(page: ArtifactPage, op: CanvasOp, force?: PinCell[]): PinRefusal | null {
+    switch (op.kind) {
+      case 'edit_element': {
+        const v2 = this._elementOpFor(op);
+        const cells = v2 ? pinnedConflicts(page, v2, force) : [];
+        return cells.length > 0 ? { pinned: cells, error: cellRefusal(cells) } : null;
+      }
+      case 'edit_page': {
+        const refused = pinsDestroyedByPagePatch(page, op.proposedValue);
+        return refused.length > 0 ? { pinned: refused, error: pageRewriteRefusal(refused, 'edit_page') } : null;
+      }
+      case 'delete_page': {
+        const refused = pinnedAddresses(page);
+        return refused.length > 0 ? { pinned: refused, error: pageRemovalRefusal(refused) } : null;
+      }
+      default:
+        return null;
+    }
+  }
 
   /**
    * Stamp a {@link PinRecord} on every cell a human op just wrote.
@@ -1811,8 +1914,27 @@ function ownValue(map: Record<string, unknown> | undefined, key: string): unknow
   return map && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
 }
 
+/**
+ * The cell-bearing shape both sides of a pin comparison share: the live tree
+ * holds `DocNode`s, an incoming payload holds `DocNodeInput`s (whose
+ * descendants may carry no mid at all), and `tag` is on both — which is what
+ * makes the identity check possible.
+ */
+interface CellHost {
+  tag: string;
+  text?: string;
+  style?: Record<string, string>;
+  props?: Record<string, unknown>;
+}
+
+/** What a pin refusal hands the receipt: the addresses, and the reason. */
+interface PinRefusal {
+  pinned: string[];
+  error: string;
+}
+
 /** The value of one addressed cell, or `undefined` when it is absent. */
-function cellValueOf(node: DocNode, cell: PinCell): unknown {
+function cellValueOf(node: CellHost, cell: PinCell): unknown {
   if (cell === 'text') { return node.text; }
   if (cell.startsWith('style.')) { return ownValue(node.style, cell.slice('style.'.length)); }
   if (cell.startsWith('props.')) { return ownValue(node.props, cell.slice('props.'.length)); }
@@ -1825,15 +1947,64 @@ function cellEqual(a: unknown, b: unknown): boolean {
   try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
 }
 
+/** Every node of a payload tree, parents before children (slots included). */
+function* walkInput(root: DocNodeInput): Generator<DocNodeInput> {
+  yield root;
+  for (const child of root.children ?? []) { yield* walkInput(child); }
+  for (const list of Object.values(root.slots ?? {})) {
+    for (const child of list) { yield* walkInput(child); }
+  }
+}
+
 /**
- * The human-owned cells a legacy `edit_page` content patch would destroy,
- * as `"<mid>:<cell>"` addresses.
+ * Index an incoming tree by the mid each node will actually END UP with.
+ *
+ * `DocPatch._replace` pins the payload ROOT to the op's target mid whatever the
+ * writer claimed, so `rootMid` mirrors that — the comparison is against the
+ * tree that will exist, not the one that was typed. First occurrence wins,
+ * matching `_resolveMid`, which re-mints a mid a later node tries to reuse.
+ */
+function indexIncoming(root: DocNodeInput, rootMid?: Mid): Map<Mid, CellHost> {
+  const out = new Map<Mid, CellHost>();
+  let first = true;
+  for (const n of walkInput(root)) {
+    const mid = first && rootMid !== undefined ? rootMid : n.mid;
+    first = false;
+    if (typeof mid === 'string' && mid && !out.has(mid)) { out.set(mid, n); }
+  }
+  return out;
+}
+
+/**
+ * The human-owned cells in `prev`'s subtree that a rebuild from `byMid` would
+ * destroy, as `"<mid>:<cell>"` addresses.
  *
  * Same rule the supported whole-page rewrite uses (`pinsAcrossReplace` in
- * `CanvasToolDispatch`): a pin survives only when the incoming document has a
- * node with the SAME mid AND the same tag — a reused id does not make it the
- * same element — carrying the same value in that cell. Anything else is a
- * destroyed cell, so the op is refused rather than applied.
+ * `CanvasToolDispatch`): a pin survives only when the incoming tree has a node
+ * with the SAME mid AND the same tag — a reused id does not make it the same
+ * element — carrying the same value in that cell. Anything else is a destroyed
+ * cell, so the op is refused rather than applied.
+ */
+function pinsDestroyedByRebuild(prev: DocNode, byMid: ReadonlyMap<Mid, CellHost>): string[] {
+  const destroyed: string[] = [];
+  for (const p of walk(prev)) {
+    const cells = pinnedCells(p);
+    if (cells.length === 0) { continue; }
+    const claimed = byMid.get(p.mid);
+    const next = claimed && claimed.tag === p.tag ? claimed : undefined;
+    for (const cell of cells) {
+      if (!next || !cellEqual(cellValueOf(p, cell), cellValueOf(next, cell))) {
+        destroyed.push(`${p.mid}:${cell}`);
+      }
+    }
+  }
+  return destroyed;
+}
+
+/**
+ * The human-owned cells a legacy `edit_page` content patch would destroy,
+ * as `"<mid>:<cell>"` addresses — {@link pinsDestroyedByRebuild} against the
+ * document `updatePage` is about to produce.
  *
  * Fails CLOSED: a patch whose document cannot be derived (a compile that
  * throws) is treated as destroying every pin on the page.
@@ -1841,10 +2012,7 @@ function cellEqual(a: unknown, b: unknown): boolean {
 function pinsDestroyedByPagePatch(page: ArtifactPage, proposed: unknown): string[] {
   const patch = (proposed ?? {}) as Record<string, unknown>;
   if (!patch || typeof patch !== 'object' || !patchRewritesContent(patch)) { return []; }
-
-  const pinnedNodes = [...walk(page.doc)].filter(n => pinnedCells(n).length > 0);
-  if (pinnedNodes.length === 0) { return []; }
-  const allCells = () => pinnedAddresses(page);
+  if (![...walk(page.doc)].some(n => pinnedCells(n).length > 0)) { return []; }
 
   let incoming: DocNode;
   try {
@@ -1857,23 +2025,14 @@ function pinsDestroyedByPagePatch(page: ArtifactPage, proposed: unknown): string
       boardPos: page.boardPos,
     }).page.doc;
   } catch {
-    return allCells();
+    return pinnedAddresses(page);
   }
+  return pinsDestroyedByRebuild(page.doc, indexIncoming(incoming));
+}
 
-  const byMid = new Map<Mid, DocNode>();
-  for (const n of walk(incoming)) { if (!byMid.has(n.mid)) { byMid.set(n.mid, n); } }
-
-  const destroyed: string[] = [];
-  for (const prev of pinnedNodes) {
-    const claimed = byMid.get(prev.mid);
-    const next = claimed && claimed.tag === prev.tag ? claimed : undefined;
-    for (const cell of pinnedCells(prev)) {
-      if (!next || !cellEqual(cellValueOf(prev, cell), cellValueOf(next, cell))) {
-        destroyed.push(`${prev.mid}:${cell}`);
-      }
-    }
-  }
-  return destroyed;
+/** Every human-owned cell in `root`'s subtree, as `"<mid>:<cell>"` addresses. */
+function pinnedAddressesUnder(root: DocNode): string[] {
+  return [...walk(root)].flatMap(n => pinnedCells(n).map(cell => `${n.mid}:${cell}`));
 }
 
 /**
@@ -1881,7 +2040,40 @@ function pinsDestroyedByPagePatch(page: ArtifactPage, proposed: unknown): string
  * whole-artboard removal would destroy.
  */
 function pinnedAddresses(page: ArtifactPage): string[] {
-  return [...walk(page.doc)].flatMap(n => pinnedCells(n).map(cell => `${n.mid}:${cell}`));
+  return pinnedAddressesUnder(page.doc);
+}
+
+/**
+ * Drop the addresses a writer forced. A scoped `"<mid>:<cell>"` entry matches
+ * exactly; a bare cell name matches only the op's OWN target (`targetMid`) —
+ * never a descendant, which is the review-F2 ambiguity ("every element this
+ * write covers") that made `write_page` demand scoping in the first place.
+ */
+function unforced(addresses: string[], force: PinCell[] | undefined, targetMid?: Mid): string[] {
+  if (!force || force.length === 0) { return addresses; }
+  const forced = new Set(force);
+  return addresses.filter(addr => {
+    if (forced.has(addr)) { return false; }
+    if (targetMid === undefined) { return true; }
+    const at = addr.indexOf(':');
+    return !(addr.slice(0, at) === targetMid && forced.has(addr.slice(at + 1)));
+  });
+}
+
+/**
+ * L-2: an AGENT's legacy `edit_page` / `insert_page` payload with its
+ * document's `pins` removed — a deep copy, so the caller's object is untouched
+ * and the op log records what was actually applied. Anything that is not an
+ * `isDocNode` document is left alone: `migratePage` ignores it anyway.
+ */
+function withoutAgentPins(kind: CanvasOpKind, proposed: unknown): unknown {
+  if (kind !== 'edit_page' && kind !== 'insert_page') { return proposed; }
+  if (!proposed || typeof proposed !== 'object') { return proposed; }
+  const value = proposed as Record<string, unknown>;
+  if (!isDocNode(value.doc)) { return proposed; }
+  const doc = cloneNode(value.doc);
+  for (const n of walk(doc)) { delete n.pins; }
+  return { ...value, doc };
 }
 
 /**
@@ -1894,10 +2086,36 @@ const PIN_REFUSAL_REMEDY =
   'Leave those cells as they are and change the other elements one at a time with edit_element, '
   + 'addressed by mid — the kind the fenced canvas-op lane and MCP both accept.';
 
+function cellRefusal(cells: PinCell[]): string {
+  return `refused: ${cells.join(', ')} ${cells.length === 1 ? 'is' : 'are'} user-set`;
+}
+
 function pageRemovalRefusal(refused: string[]): string {
   return `refused: deleting this artboard would destroy ${refused.length} cell(s) the human owns `
     + `(${refused.join(', ')}). Leave the artboard in place — only the human can remove a page they `
     + `have edited. ${PIN_REFUSAL_REMEDY}`;
+}
+
+/** The E-1 refusal, for the legacy `edit_page` patch and the V2 `page.setDoc` alike. */
+function pageRewriteRefusal(refused: string[], via: 'edit_page' | 'page.setDoc'): string {
+  const head = via === 'edit_page'
+    ? 'refused: this patch would replace the whole artboard and destroy '
+    : 'refused: this document would replace the whole artboard and destroy ';
+  const tail = via === 'edit_page'
+    ? 'Over MCP, write_page also works: it diffs your source against the current document and preserves them.'
+    : 'Drop `replace` so write_page diffs your source against the current document and preserves them — or, '
+      + 'only if the user asked for those specific changes, name them in force as "<mid>:<cell>".';
+  return `${head}${refused.length} cell(s) the human owns (${refused.join(', ')}). ${PIN_REFUSAL_REMEDY} ${tail}`;
+}
+
+/** L-3: the structural element ops, refused the way the page-level ops are. */
+function structuralRefusal(op: 'el.remove' | 'el.move' | 'el.replace', refused: string[]): string {
+  const verb = op === 'el.remove'
+    ? 'removing this element would destroy'
+    : (op === 'el.move' ? 'moving this element would displace' : 'replacing this element would change or destroy');
+  return `refused: ${verb} ${refused.length} cell(s) the human owns (${refused.join(', ')}). `
+    + 'Leave those elements where they are — only the human can remove or restructure an element they have '
+    + `edited. ${PIN_REFUSAL_REMEDY} Only if the user asked for exactly this, name each cell in force as "<mid>:<cell>".`;
 }
 
 /**
