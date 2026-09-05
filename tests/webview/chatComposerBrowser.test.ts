@@ -549,3 +549,50 @@ describe('Plan 28 Phase 5 — the chrome diet and the palette', () => {
     expect(pageErrors).toEqual([]);
   }, 20000);
 });
+
+describe('Plan 28 Phase 6 — a team is a verb', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('finds the question an answer was answering', async () => {
+    await page!.evaluate(() => {
+      document.getElementById('messages')!.insertAdjacentHTML('beforeend',
+        '<div class="message user"><div class="message-content">is the retry budget per-request?</div></div>' +
+        '<div class="message assistant" data-provider="claude-code" id="probe-answer">' +
+        '<div class="message-content">Per session.</div></div>');
+    });
+    expect(await page!.$('#probe-answer')).not.toBeNull();
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('asks a DIFFERENT agent the same question, through the mention path', async () => {
+    // Build the footer action directly on the probe answer — renderMessageFooter
+    // is what responseComplete calls, and it always appends this action now.
+    await page!.evaluate(() => {
+      const el = document.getElementById('probe-answer')!;
+      el.insertAdjacentHTML('beforeend',
+        '<div class="message-footer"><span class="message-footer-action" data-second-opinion="1">Second opinion</span></div>');
+    });
+    await page!.click('#probe-answer .message-footer-action');
+    const menu = await page!.$('#second-opinion-menu');
+    expect(menu).not.toBeNull();
+
+    // The agent that already answered is not offered again.
+    const offered = await page!.$$eval('.second-opinion-item', (els) => els.map((e) => e.getAttribute('data-agent')));
+    expect(offered.length).toBeGreaterThan(0);
+    expect(offered).not.toContain('claude-code');
+    expect(offered).not.toContain('brainstorm');
+
+    // It says plainly that it does not merge the answers.
+    expect(await page!.textContent('.second-opinion-note')).toContain('does not merge');
+
+    await clearPosted();
+    await page!.click('.second-opinion-item');
+    const sends = (await posted()).filter((m) => m.type === 'sendMessage');
+    expect(sends.length).toBe(1);
+    const content = (sends[0].payload as { content: string }).content;
+    // Straight down the existing @-mention route, carrying the original question.
+    expect(content.startsWith('@')).toBe(true);
+    expect(content).toContain('is the retry budget per-request?');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 20000);
+});

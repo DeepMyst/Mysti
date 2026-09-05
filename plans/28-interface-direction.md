@@ -189,6 +189,10 @@ Unattended stops being a fifth mode and becomes a **duration** granted on Auto o
 
 **Guardrail.** The synthesis must never average two positions into mush. Naming what is unsettled is the product.
 
+**SHIPPED, narrower than written, and the narrowing is the honest part.** Half of this phase turned out to be already built: `MentionRouter` has fanned out on two or more agent mentions since Plan 14, so `@claude @codex <question>` already dispatched to both. What was missing was reaching a second agent from an answer you *already have* — that is what shipped, as a **Second opinion** action on every finished answer, routing straight down the existing @-mention path with the question lifted from the user turn above. The agent that just answered is not offered again.
+
+**The verdict card is NOT built.** Rendering "agreed on 2 of 3" means comparing two answers, which is a model call and a convergence judgement — and `BrainstormManager` already does exactly that, with five strategies. Building a second, shallower comparator beside it would be duplicate machinery whose disagreements could contradict the real one. The menu says so in place: it sends the same question, it does not merge the answers, and `/brainstorm` is what argues them out.
+
 ---
 
 ### Phase 7 — The remaining surfaces

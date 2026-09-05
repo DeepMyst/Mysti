@@ -3880,6 +3880,16 @@
           }
         });
 
+        // Plan 28 Phase 6 — second opinion from any finished answer.
+        document.addEventListener('click', function(e) {
+          var act = e.target && e.target.closest ? e.target.closest('[data-second-opinion]') : null;
+          if (!act) { return; }
+          e.preventDefault();
+          e.stopPropagation();
+          var msgEl = act.closest('.message');
+          if (msgEl) { showSecondOpinionMenu(act, msgEl); }
+        });
+
         // Plan 28 Phase 5 — palette + overflow wiring.
         var paletteInput = document.getElementById('palette-input');
         if (paletteInput) {
@@ -12020,13 +12030,91 @@
           parts.push('<span class="message-footer-pill">' + escapeHtml(pill) + '</span>');
         });
 
+        // Plan 28 Phase 6 — a team is a verb. Any finished answer can be put
+        // to a different backend without retyping the question. This is a
+        // ROUTER over the @-mention path that already fans out (MentionRouter
+        // has handled two or more agent mentions since Plan 14); it adds no
+        // engine, and it deliberately does NOT synthesise an agreement — see
+        // the note on `/team` below.
+        // Only where a footer is being built anyway. `renderMessageFooter` has a
+        // tested contract that a message with no receipt at all — no usage, no
+        // session, no pills — gets NO footer node, and a bare action row would
+        // put an affordance on replayed and non-answer messages that have no
+        // question above them. Consequence, stated rather than hidden: a
+        // backend that reports neither usage nor a session id offers no Second
+        // opinion. Every backend that reports either one does.
         if (parts.length === 0) return null;
+
+        parts.push('<span class="message-footer-action" data-second-opinion="1" ' +
+          'role="button" tabindex="0" title="Ask a different agent the same question">Second opinion</span>');
 
         var footer = document.createElement('div');
         footer.className = 'message-footer';
         footer.innerHTML = parts.join('');
         messageEl.appendChild(footer);
         return footer;
+      }
+
+      /** The question this answer was answering: the nearest user turn above it. */
+      function questionAbove(messageEl) {
+        var el = messageEl && messageEl.previousElementSibling;
+        while (el) {
+          if (el.classList && el.classList.contains('message') && el.classList.contains('user')) {
+            var body = el.querySelector('.message-content');
+            return body ? (body.textContent || '').trim() : '';
+          }
+          el = el.previousElementSibling;
+        }
+        return '';
+      }
+
+      /** Offer the agents that are NOT the one that just answered. */
+      function showSecondOpinionMenu(anchorEl, messageEl) {
+        var existing = document.getElementById('second-opinion-menu');
+        if (existing) { existing.remove(); }
+        var question = questionAbove(messageEl);
+        if (!question) { showToast('Nothing to ask again — no question above this answer.', 'error'); return; }
+
+        var answered = (messageEl.getAttribute('data-provider') || '').trim();
+        var menu = document.createElement('div');
+        menu.id = 'second-opinion-menu';
+        menu.className = 'second-opinion-menu';
+
+        var offered = [];
+        document.querySelectorAll('#agent-menu .agent-menu-item[data-agent]').forEach(function(item) {
+          var id = item.getAttribute('data-agent');
+          if (!id || id === answered || id === 'brainstorm') { return; }
+          var d = getAgentDisplay(id) || {};
+          offered.push({ id: id, name: d.name || id, shortId: d.shortId || id });
+        });
+        if (!offered.length) { showToast('No other agent is set up yet.', 'error'); return; }
+
+        menu.innerHTML = offered.map(function(a) {
+          return '<button class="second-opinion-item" data-agent="' + cssAttr(a.id) + '" data-short="' +
+                 cssAttr(a.shortId) + '">' + escapeHtml(a.name) + '</button>';
+        }).join('') +
+        '<div class="second-opinion-note">Sends the same question. It does not merge the two answers &mdash; ' +
+        'use <span class="m">/brainstorm</span> when you want them argued out.</div>';
+
+        document.body.appendChild(menu);
+        var r = anchorEl.getBoundingClientRect();
+        menu.style.top = (r.bottom + 4) + 'px';
+        menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 240)) + 'px';
+
+        menu.addEventListener('click', function(ev) {
+          var btn = ev.target.closest ? ev.target.closest('.second-opinion-item') : null;
+          if (!btn) { return; }
+          ev.stopPropagation();
+          menu.remove();
+          // Straight down the existing @-mention path — no new dispatch route.
+          inputEl.value = '@' + btn.getAttribute('data-short') + ' ' + question;
+          sendMessage();
+        });
+        setTimeout(function() {
+          document.addEventListener('click', function close(ev) {
+            if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('click', close, true); }
+          }, true);
+        }, 0);
       }
 
       function finalizeStreamingMessage(msg) {
