@@ -136,6 +136,40 @@ describe('the setup dismissal latch is released by every request path', () => {
     }
   });
 
+  it('selectAuthMethod re-arms — it bypasses startProviderSetup as well', () => {
+    // It ends in `_pollAuthStatus`, whose setupComplete/setupFailed would be
+    // swallowed by a set latch, so a user who once skipped setup got no
+    // feedback at all when OAuth polling timed out.
+    const at = CHAT_JS.indexOf("type: 'selectAuthMethod'");
+    expect(at).toBeGreaterThan(-1);
+    const ownPost = CHAT_JS.slice(0, at).lastIndexOf('postMessageWithPanelId(');
+    const rearm = CHAT_JS.slice(0, ownPost).lastIndexOf('rearmSetupOverlay();');
+    expect(rearm).toBeGreaterThan(-1);
+    expect(CHAT_JS.slice(rearm, ownPost).includes('postMessageWithPanelId(')).toBe(false);
+  });
+
+  it('a disabled Retry can always be revived', () => {
+    // `_handleRetrySetup` has no try/catch around `_runAutoSetup`, so a
+    // rejection posts nothing back. A button only a `setupFailed` could revive
+    // would be dead for good.
+    expect(CHAT_JS).toContain('function reviveSetupRetry()');
+    for (const caller of ['function handleSetupProgress', 'function handleSetupFailed',
+                          'function rearmSetupOverlay']) {
+      const at = CHAT_JS.indexOf(caller);
+      expect(at, caller).toBeGreaterThan(-1);
+      expect(CHAT_JS.slice(at, at + 900), `${caller} must revive Retry`).toContain('reviveSetupRetry()');
+    }
+  });
+
+  it('the Retry click never hides the pane that holds the only Skip button', () => {
+    // `#setup-skip-btn` lives inside `.setup-error`; hiding it left a
+    // full-screen overlay with no buttons for the length of an npm install.
+    const at = CHAT_JS.indexOf("setupRetryBtn.addEventListener('click'");
+    expect(at).toBeGreaterThan(-1);
+    const body = CHAT_JS.slice(at, at + 1200);
+    expect(body).not.toMatch(/setup-error'\)[\s\S]{0,80}classList\.add\('hidden'\)/);
+  });
+
   it('the debug setup commands re-arm too — they bypass startProviderSetup', () => {
     // `mysti.debugSetup` / `mysti.debugSetupFailure` drive the overlay directly,
     // so without this they are silently inert for anyone who has ever skipped
