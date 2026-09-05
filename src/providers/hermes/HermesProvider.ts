@@ -129,7 +129,10 @@ export class HermesProvider extends BaseCliProvider {
     supportsToolUse: true,
     supportsSessions: true,
     supportsPersistentProcess: true,
-    supportsImages: false,
+    // Plan 27 Phase 5: attachments are written to a temp file and referenced
+    // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
+    // tools, so it can open what it is given.
+    supportsImages: true,
     supportsAutoInstall: false,  // installed via the official install script (wizard shows the OS command)
     supportsPromptEnhancement: false,
     thinkingStyle: 'none',

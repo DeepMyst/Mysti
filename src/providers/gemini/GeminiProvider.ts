@@ -105,7 +105,10 @@ export class GeminiProvider extends BaseCliProvider {
     supportsThinking: false, // Gemini doesn't expose thinking tokens like Claude
     supportsToolUse: true,
     supportsSessions: true,
-    supportsImages: false,
+    // Plan 27 Phase 5: attachments are written to a temp file and referenced
+    // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
+    // tools, so it can open what it is given.
+    supportsImages: true,
     supportsAutoInstall: true,
     supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix

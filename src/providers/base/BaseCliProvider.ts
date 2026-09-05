@@ -13,6 +13,7 @@
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as nodePath from 'path';
 import { spawn, ChildProcess, SpawnOptions } from 'child_process';
 import type {
@@ -1903,10 +1904,52 @@ export abstract class BaseCliProvider implements ICliProvider {
   }
 
   protected async prepareAttachments(
-    _attachments: Attachment[] | undefined,
+    attachments: Attachment[] | undefined,
     _args: string[]
   ): Promise<(() => Promise<void>) | null> {
-    return null;
+    // Plan 27 Phase 5 — images reached ONE provider of fifteen.
+    //
+    // This was a no-op base with a single override in ClaudeCodeProvider, so
+    // `supportsImages` was true for Claude Code and false everywhere else and
+    // the attach button was dead on fourteen backends.
+    //
+    // The mechanism generalises exactly as Claude's did: write the bytes to a
+    // temp file and put its PATH in the prompt. Every CLI backend here has
+    // file-read tools, so "look at .mysti/tmp/x.png" is a request it can
+    // actually satisfy. This is deliberately NOT enabled for the HTTP
+    // providers (ollama, localai, openrouter): they have no filesystem tools,
+    // so a path would be a capability flag that lies — they need base64 in the
+    // request payload, which is separate work.
+    if (!attachments || attachments.length === 0) { return null; }
+    const usable = attachments.filter(a => a.type === 'image' || a.type === 'file');
+    if (usable.length === 0) { return null; }
+
+    // Prefer the workspace so a sandboxed CLI can reach it; os.tmpdir() is
+    // outside the sandbox's write root but still readable.
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const dir = wsRoot ? nodePath.join(wsRoot, '.mysti', 'tmp') : os.tmpdir();
+    await fs.promises.mkdir(dir, { recursive: true });
+
+    const written: string[] = [];
+    for (const att of usable) {
+      // Already on disk (attach button) — nothing to write.
+      if (att.filePath && !att.base64Data) { continue; }
+      if (!att.base64Data) { continue; }
+      const ext = att.fileName?.split('.').pop()
+        || (att.type === 'image' ? (att.mimeType?.split('/')[1] || 'png') : 'bin');
+      const target = nodePath.join(dir, `mysti-attachment-${att.id}.${ext}`);
+      await fs.promises.writeFile(target, Buffer.from(att.base64Data, 'base64'));
+      att.filePath = target;
+      written.push(target);
+    }
+    if (written.length === 0) { return null; }
+
+    console.log(`[Mysti] ${this.displayName}: wrote ${written.length} attachment(s) to ${dir}`);
+    return async () => {
+      for (const f of written) {
+        try { await fs.promises.unlink(f); } catch { /* best effort */ }
+      }
+    };
   }
 
   protected formatContext(context: ContextItem[]): string {
