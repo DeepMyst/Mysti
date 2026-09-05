@@ -2608,6 +2608,7 @@
       var setupSkipBtn = document.getElementById('setup-skip-btn');
       if (setupSkipBtn) {
         setupSkipBtn.addEventListener('click', function() {
+          if (state.setup) { state.setup.dismissedByUser = true; }
           postMessageWithPanelId({ type: 'skipSetup' });
         });
       }
@@ -4041,6 +4042,7 @@
             // full-screen wall with no controls at all. Clicking a button that
             // no longer exists is exactly the D-1 failure this handler exists
             // to prevent, so fall back to the message that button would post.
+            if (state.setup) { state.setup.dismissedByUser = true; }
             postMessageWithPanelId({ type: 'skipSetup' });
             hideSetupOverlay();
           }
@@ -5583,6 +5585,11 @@
 
           case 'showAutonomousConfirm':
             {
+              // The cancel button reverts to `previousAutonomyLevel`, and this
+              // path — `mysti.toggleAutonomous`, Ctrl+Shift+A — never recorded
+              // it. A semi-auto user who opened the modal from the keybinding
+              // and then cancelled was reverted to whatever was stale in there.
+              state.previousAutonomyLevel = state.autonomyLevel;
               var overlay = document.getElementById('autonomous-confirm-overlay');
               var goalInput = document.getElementById('autonomous-goal-input');
               if (overlay) overlay.classList.remove('hidden');
@@ -6281,6 +6288,12 @@
       }
 
       function showSetupOverlay() {
+        // `skipSetup` does not cancel the extension's auth poll, so a later
+        // `setupFailed` used to re-raise this overlay after the user had
+        // explicitly left it — and by then `showAuthPromptUI` has replaced
+        // `.setup-content`, so what came back was a full-screen wall with no
+        // controls at all. A dismissal the user made by hand stands.
+        if (state.setup && state.setup.dismissedByUser) { return; }
         var overlay = document.getElementById('setup-overlay');
         if (overlay) {
           overlay.classList.remove('hidden');
@@ -6298,6 +6311,12 @@
       function updateSetupOverlay() {
         var overlay = document.getElementById('setup-overlay');
         if (!overlay) return;
+        // Every path that can re-raise this full-screen overlay has to respect
+        // an explicit dismissal, not just `showSetupOverlay`. `skipSetup` does
+        // not cancel the extension's auth poll, so a `setupFailed` arrives
+        // afterwards and used to bring the wall back — by then with its
+        // buttons replaced by `showAuthPromptUI`.
+        if (state.setup && state.setup.dismissedByUser) { return; }
 
         overlay.classList.remove('hidden');
 
@@ -9390,8 +9409,15 @@
             // backend is correctly quiet" — disable the stall card for the rest
             // of the session. A leak that was cosmetic became load-bearing the
             // moment something else started reading the same state.
+            // Both branches key off `requestId`; for a question the extension
+            // puts the TOOL-CALL id in that same field (see the sibling handler
+            // below, which already assumes it). The first version of this fix
+            // read `p.toolCallId`, which is never sent — so the condition was
+            // always false and an auto-answered QUESTION still leaked, still
+            // disarming the stall watcher. Only the permission half worked, and
+            // only the permission half was tested.
             if (p.targetType === 'permission' && p.requestId) { runDrop('perm:' + p.requestId); }
-            if (p.targetType === 'question' && p.toolCallId) { runDrop('auq:' + p.toolCallId); }
+            if (p.targetType === 'question' && p.requestId) { runDrop('auq:' + p.requestId); }
             break;
           case 'permissionDismissed':
             // {requestIds: [...]} — superseded gates, dropped in bulk.
@@ -9793,7 +9819,16 @@
       function enqueueMessage(text) {
         var content = (text || '').trim();
         if (!content) return false;
-        state.queue.push({ id: 'q' + (++state.queueSeq), text: content });
+        // Attachments belong to the message they were staged for. Capturing
+        // them here is what lets the drain hand the queued item ITS files and
+        // give the composer back whatever was staged for the draft.
+        state.queue.push({
+          id: 'q' + (++state.queueSeq),
+          text: content,
+          attachments: state.attachments.slice()
+        });
+        state.attachments = [];
+        renderAttachmentPreviews();
         inputEl.value = '';
         inputEl.style.height = 'auto';
         clearAutocomplete();
@@ -9841,7 +9876,7 @@
         // sent with the queued message and then cleared.
         var draftAttachments = state.attachments.slice();
         inputEl.value = next.text;
-        state.attachments = [];
+        state.attachments = next.attachments || [];
         sendMessage();
         state.attachments = draftAttachments;
         renderAttachmentPreviews();

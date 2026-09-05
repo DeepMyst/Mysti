@@ -1051,20 +1051,37 @@ describe('review round two: the fixes did not introduce their own bugs', () => {
     expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
   }, 20000);
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('draining keeps the draft AND what was staged for it', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('attachments belong to the message they were staged for', async () => {
+    // The first version of this test sent the wrong payload shape, staged
+    // nothing, and asserted 0 === 0 — it passed with the fix reverted. The
+    // handler wants `{ attachments: [...] }`.
+    const stage = (name: string) => send({ type: 'fileAttachmentSelected',
+      payload: { attachments: [{ name, type: 'image', dataUrl: 'data:,' }] } });
+
     await send({ type: 'responseStarted' });
+    await stage('for-the-queued-one.png');
     await page!.fill('#message-input', 'queued');
     await page!.keyboard.press('Tab');
+    // Queueing takes the staged file WITH the queued message.
+    expect(await page!.$$eval('.attachment-preview-item', (e) => e.length)).toBe(0);
+
     await page!.fill('#message-input', 'draft');
-    // Stage a file against the draft, the way the panel does — via a message it
-    // handles — so this stays a black-box test.
-    await send({ type: 'fileAttachmentSelected',
-      payload: { name: 'a.png', type: 'image', dataUrl: 'data:,' } });
-    const before = await page!.$$eval('.attachment-preview-item', (e) => e.length);
+    await stage('for-the-draft.png');
+    expect(await page!.$$eval('.attachment-preview-item', (e) => e.length)).toBe(1);
+
+    await clearPosted();
     await send({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'ok' } } });
-    const after = await page!.$$eval('.attachment-preview-item', (e) => e.length);
+
+    // The queued message went out carrying ITS file...
+    const sends = (await posted()).filter((m) => m.type === 'sendMessage');
+    expect(sends.length).toBe(1);
+    const sent = sends[0].payload as { content: string; attachments?: Array<{ name: string }> };
+    expect(sent.content).toBe('queued');
+    expect((sent.attachments ?? []).map((a) => a.name)).toEqual(['for-the-queued-one.png']);
+
+    // ...and the draft kept its own text and its own file.
     expect(await page!.$eval('#message-input', (e) => (e as HTMLTextAreaElement).value)).toBe('draft');
-    expect(after, 'attachments staged for the draft must survive the drain').toBe(before);
+    expect(await page!.$$eval('.attachment-preview-item', (e) => e.length)).toBe(1);
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('cancelling autonomous activation tells the extension the level reverted', async () => {
@@ -1082,6 +1099,58 @@ describe('review round two: the fixes did not introduce their own bugs', () => {
     await send({ type: 'sessionChanges', payload: { available: true, files: [
       { path: 'gone.ts', added: 0, removed: 3, status: 'D' } ] } });
     expect(await page!.$eval('.change-row.not-openable', (e) => getComputedStyle(e).cursor)).toBe('default');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  }, 20000);
+});
+
+describe('review round three', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('an auto-answered QUESTION clears too, not just a permission', async () => {
+    await send({ type: 'askUserQuestion', payload: {
+      toolCallId: 'q_r3', questions: [{ question: 'Which one?' }] } });
+    expect(await page!.$eval('#runs-badge', (e) => e.classList.contains('hidden'))).toBe(false);
+    // The extension puts the TOOL-CALL id in `requestId` for a question. The
+    // first fix read `toolCallId`, which is never sent, so this branch was dead
+    // and only the permission half was covered.
+    await send({ type: 'semiAutonomousDecision', payload: {
+      requestId: 'q_r3', targetType: 'question', approved: true } });
+    expect(await page!.$eval('#runs-badge', (e) => e.classList.contains('hidden'))).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the confirm modal records the level it was opened from', async () => {
+    // Reach semi-autonomous, then open the modal the way Ctrl+Shift+A does.
+    await page!.evaluate(() => {
+      const sel = document.getElementById('popup-autonomy-select') as HTMLSelectElement;
+      sel.disabled = false;
+      sel.value = 'semi-autonomous';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await send({ type: 'showAutonomousConfirm', payload: {} });
+    await clearPosted();
+    await page!.evaluate(() => document.getElementById('autonomous-cancel-btn')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    const levels = (await posted()).filter((m) => m.type === 'autonomyLevelChanged')
+      .map((m) => (m.payload as { level: string }).level);
+    // Cancelling must put the backend back where it actually was, not wherever
+    // `previousAutonomyLevel` happened to be left by an earlier flow.
+    expect(levels).toEqual(['semi-autonomous']);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a hand-made dismissal is not undone by a later setup failure', async () => {
+    await page!.evaluate(() => {
+      const o = document.getElementById('setup-overlay')!;
+      o.classList.remove('hidden');
+      const c = o.querySelector('.setup-content');
+      if (c) { c.innerHTML = '<div>Waiting for authentication…</div>'; }
+    });
+    await page!.keyboard.press('Escape');
+    expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
+    // skipSetup does not cancel the extension's auth poll, so this arrives
+    // anyway — and by now the overlay has no buttons left in it.
+    await send({ type: 'setupFailed', payload: { providerId: 'claude-code', error: 'timed out' } });
+    expect(await page!.$eval('#setup-overlay', (e) => e.classList.contains('hidden'))).toBe(true);
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
