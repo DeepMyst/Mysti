@@ -55,6 +55,32 @@ export class GeminiProvider extends BaseCliProvider {
     // GOOGLE_API_KEY is present. Verified 2026-06.
     models: [
       {
+        id: 'gemini-3.8-flash',
+        name: 'Gemini 3.8 Flash',
+        description: 'Most intelligent Flash — long-horizon software engineering and autonomous agents',
+        contextWindow: 1048576,
+        releasedAt: '2026-09-02'
+      },
+      {
+        id: 'gemini-3.7-flash',
+        name: 'Gemini 3.7 Flash',
+        description: 'Strong coding and agent workflows, refinement of 3.6 Flash',
+        contextWindow: 1048576,
+        releasedAt: '2026-08-13'
+      },
+      {
+        id: 'gemini-3.6-flash',
+        name: 'Gemini 3.6 Flash',
+        description: 'Improved token efficiency and agentic planning',
+        contextWindow: 1048576
+      },
+      {
+        id: 'gemini-3.5-flash-lite',
+        name: 'Gemini 3.5 Flash-Lite',
+        description: 'Low-latency, cost-effective option for high-volume automation',
+        contextWindow: 1048576
+      },
+      {
         id: 'gemini-3.1-pro-preview',
         name: 'Gemini 3.1 Pro (Preview)',
         description: 'Most intelligent, best for complex agentic and coding tasks',
@@ -97,7 +123,7 @@ export class GeminiProvider extends BaseCliProvider {
         contextWindow: 1048576
       }
     ],
-    defaultModel: 'gemini-2.5-flash'
+    defaultModel: 'gemini-3.8-flash'
   };
 
   readonly capabilities: ProviderCapabilities = {

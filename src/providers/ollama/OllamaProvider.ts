@@ -80,16 +80,22 @@ export class OllamaProvider extends BaseCliProvider {
     displayName: 'Ollama',
     models: [
       {
+        id: 'qwen3-coder',
+        name: 'Qwen3 Coder',
+        description: 'Strongest local coding model most machines can run (30B MoE at Q4)',
+        contextWindow: 262144
+      },
+      {
+        id: 'deepseek-r1',
+        name: 'DeepSeek R1',
+        description: 'Open reasoning model',
+        contextWindow: 128000
+      },
+      {
         id: 'llama3.2',
         name: 'Llama 3.2',
         description: 'Meta open-source model, good general purpose',
         contextWindow: 128000
-      },
-      {
-        id: 'codellama',
-        name: 'Code Llama',
-        description: 'Meta code-specialized model',
-        contextWindow: 16384
       },
       {
         id: 'deepseek-coder-v2',
@@ -110,7 +116,7 @@ export class OllamaProvider extends BaseCliProvider {
         contextWindow: 32768
       }
     ],
-    defaultModel: 'llama3.2'
+    defaultModel: 'qwen3-coder'
   };
 
   readonly capabilities: ProviderCapabilities = {

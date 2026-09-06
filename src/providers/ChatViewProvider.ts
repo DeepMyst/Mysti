@@ -135,6 +135,7 @@ import { DeskPairingFlow } from '../managers/DeskPairingFlow';
 import type { WebviewMessage, Settings, AgentSelection, ContextItem, Attachment, QuickActionSuggestion, Message, MessageSegment, MessageThinking, MessageThinkingStyle, ToolCall, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualTestStreamChunk, VisualObservation, VisualTestInteraction } from '../types';
 import { AUTONOMOUS_CONTINUATION_DELAY_MS, DEFAULT_AGENT, DEFAULT_PROVIDER, DEFAULT_FALLBACK_MODEL, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S, SUBAGENT_MAX_RETRIES, isPseudoAgentId } from '../constants';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
+import { NATIVE_COMMAND_PREFIX } from './base/NativeCommands';
 import {
   buildProviderManifestPayload,
   getCustomModelSettingKey,
@@ -1076,10 +1077,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let selectedProvider: ProviderType = activeProviderId as ProviderType;
     const configuredProviderStatus = wizardStatus.providers.find(p => p.providerId === selectedProvider);
 
+    let demotedFrom: string | undefined;
     if (!configuredProviderStatus?.installed) {
       // Current provider is not available, find first installed one
       const firstInstalled = wizardStatus.providers.find(p => p.installed);
       if (firstInstalled) {
+        demotedFrom = selectedProvider;
         selectedProvider = firstInstalled.providerId as ProviderType;
         console.log(`[Mysti] Auto-selected provider: ${selectedProvider} (configured provider not available)`);
       }
@@ -1093,6 +1096,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const agentForWebview: AgentSelection = isPseudoAgentId(selectedAgent)
       ? selectedAgent
       : selectedProvider;
+
+    // A demotion is not a preference. It used to happen in silence — the panel
+    // simply came back on a different agent than the one that was chosen, on
+    // every open, with nothing said. Say it, and name both ends so the reason
+    // is actionable rather than mysterious.
+    if (demotedFrom && demotedFrom !== selectedProvider) {
+      const fromName = this._providerManager.getProvider(demotedFrom)?.displayName ?? demotedFrom;
+      const toName = this._providerManager.getProvider(selectedProvider)?.displayName ?? selectedProvider;
+      setTimeout(() => {
+        this._postToPanel(panelId, {
+          type: 'systemNotice',
+          payload: {
+            message: `${fromName} isn't installed or signed in, so this panel is using ${toName}. `
+              + `Your saved choice is unchanged — install ${fromName} and reopen to go back to it.`
+          }
+        });
+      }, 0);
+    }
 
     const settings: Settings = {
       mode: config.get('defaultMode', 'ask-before-edit'),
@@ -1667,6 +1688,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             type: 'slashCommandMenu',
             payload: menuData
           });
+          // The user's own commands (.claude/commands, skills, .cursor/commands,
+          // …) are read from a cache so the menu above never waits on disk.
+          // Rescan behind it, and re-post ONLY if the set actually changed —
+          // otherwise every keystroke in the menu would redraw it.
+          void this._slashCommandManager.refreshNativeCommands(activeProvider)
+            .then((changed) => {
+              if (!changed) { return; }
+              this._postToPanel(reqPanelId, {
+                type: 'slashCommandMenu',
+                payload: this._slashCommandManager.getCommands(
+                  reqPanelId, activeProvider, callbacks, reqPayload.query
+                )
+              });
+            })
+            .catch(() => { /* discovery is best-effort */ });
         }
         break;
       }
@@ -3741,7 +3777,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // pseudo-agent like brainstorm) OR by an `@mysti`/`/mysti` prefix.
       const mystiSelected = (settings.provider as string) === 'mysti';
       const mystiMatch = content.match(/^\s*[@/]mysti\b[:\s]*/i);
-      if ((mystiSelected || mystiMatch) && conversationId && !this._cancelledPanels.has(panelId)) {
+
+      // An explicit @mention of ANOTHER agent outranks the coordinator.
+      //
+      // This branch takes the whole message as a brief and returns, and the
+      // @-mention router lives below it — so with Mysti selected, "@claude fix
+      // this" was handed to the coordinator as prose and the mention never
+      // routed. Tagging an agent simply did nothing. Naming an agent is an
+      // instruction about WHO should do the work, and the coordinator deciding
+      // to do it itself is not an answer to that.
+      //
+      // `@mysti` written explicitly still wins: that names the coordinator.
+      const namesAnotherAgent = (mentions || []).some(
+        m => m.type === 'agent' && (m.value as string) !== 'mysti'
+      );
+      const mentionOutranksCoordinator = namesAnotherAgent && !mystiMatch;
+
+      if (mentionOutranksCoordinator && mystiSelected) {
+        // Everything downstream may fall through to the "main agent" (a single
+        // execute task short-circuits, but two or more do not), and `mysti` is
+        // a pseudo-agent with no spawnable backend. Point the remainder at a
+        // real one.
+        settings = { ...settings, provider: this._getPanelProvider(panelId) as ProviderType };
+      }
+
+      if ((mystiSelected || mystiMatch) && !mentionOutranksCoordinator &&
+          conversationId && !this._cancelledPanels.has(panelId)) {
         const brief = mystiMatch ? (content.slice(mystiMatch[0].length).trim() || content.trim()) : content.trim();
 
         // Background execution: `bg:`/`background:` runs the task detached — the
@@ -3891,8 +3952,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
               // Handle switch task type inline
               if (chunk.taskDescription === 'switch provider' && chunk.agentId) {
-                const config = vscode.workspace.getConfiguration('mysti');
-                await config.update('defaultProvider', chunk.agentId, vscode.ConfigurationTarget.Global);
+                // Per-panel, NOT global. This used to write `defaultProvider`
+                // to the user's GLOBAL settings from a chat message — so one
+                // "use @qwen" silently and permanently changed the default for
+                // every window and every workspace, and the user was never told
+                // it had happened. A switch asked for in a conversation belongs
+                // to that conversation's panel.
+                const switchPanelState = this._panelStates.get(panelId);
+                if (switchPanelState) {
+                  if (!switchPanelState.settingsOverrides) { switchPanelState.settingsOverrides = {}; }
+                  switchPanelState.settingsOverrides.provider = chunk.agentId as ProviderType;
+                  switchPanelState.settingsOverrides.agent = chunk.agentId as AgentSelection;
+                }
                 this._postToPanel(panelId, {
                   type: 'providerSwitched',
                   payload: { provider: chunk.agentId }
@@ -5862,17 +5933,87 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const commandId = payload.commandId || this._slashCommandManager.mapLegacyCommand(payload.command || '');
     const callbacks = this._getSlashCommandCallbacks();
 
+    const p = payload as { command?: string; commandId?: string; args?: string; settings?: Settings; context?: ContextItem[] };
+    const activeProvider = this._getPanelProvider(panelId) as ProviderType;
+    const args = payload.args || '';
+
+    // A provider-native command — either picked from the backend's own section
+    // of the menu, or typed by name. Both routes land here so that a `/name`
+    // behaves identically however it was invoked; before this, a menu pick
+    // could not pass through at all because the webview sent no settings.
+    //
+    // A TYPED name only reaches the native catalog once Mysti has declined it.
+    // Several names exist on both sides — `/compact` above all — and Mysti's
+    // version is the provider-neutral one (it picks native-CLI vs client-side
+    // summarization from the backend's capabilities), so it must keep winning
+    // the bare name. A menu pick is unambiguous: the id says which it is.
+    const typedIsMystiCommand = !!p.command
+      && this._slashCommandManager.isKnownCommand(commandId, panelId, activeProvider, callbacks);
+    const nativeId = p.commandId?.startsWith(NATIVE_COMMAND_PREFIX)
+      ? p.commandId
+      : (p.command && !typedIsMystiCommand
+        ? this._slashCommandManager.findNativeCommandId(p.command, panelId, activeProvider)
+        : null);
+
+    if (nativeId) {
+      const resolved = this._slashCommandManager.resolveNativeCommand(
+        nativeId, panelId, activeProvider, args
+      );
+      if (resolved?.kind === 'prefill') {
+        // Takes arguments and none were given: hand it back to the composer
+        // rather than burning a turn on an incomplete command.
+        this._postToPanel(panelId, { type: 'setInputValue', payload: { value: resolved.text } });
+        return;
+      }
+      if (resolved?.kind === 'prompt') {
+        if (!p.settings) {
+          // No settings means no send context; say so instead of dropping it.
+          this._postToPanel(panelId, {
+            type: 'slashCommandResult',
+            payload: { command: nativeId, result: 'Could not run that command — no active panel settings.' }
+          });
+          return;
+        }
+        await this._handleSendMessage(
+          { content: resolved.text, context: p.context || [], settings: p.settings },
+          panelId,
+        );
+        return;
+      }
+      if (resolved?.kind === 'mysti') {
+        // The backend's command has a Mysti equivalent that works across every
+        // provider; run that rather than the one-backend version.
+        const mapped = await this._slashCommandManager.executeCommand(
+          resolved.commandId, args, panelId, callbacks
+        );
+        if (mapped) {
+          this._postToPanel(panelId, {
+            type: 'slashCommandResult',
+            payload: { command: resolved.commandId, result: mapped }
+          });
+        }
+        return;
+      }
+      // resolved === null: the command was listed but cannot be run now — its
+      // file was deleted or emptied since the menu was built, or the panel
+      // switched backends mid-click. Say that; falling through would reach
+      // `executeCommand` and answer "Unknown command: native:…", which reads
+      // like the entry never existed rather than like it just went stale.
+      this._postToPanel(panelId, {
+        type: 'slashCommandResult',
+        payload: {
+          command: nativeId,
+          result: `/${p.command ?? nativeId} is no longer available for this agent.`,
+        }
+      });
+      return;
+    }
+
     // Native command pass-through (Plan 16 / Phase B): a `/command` that Mysti
     // does NOT own is forwarded verbatim to the active backend as a normal
     // message, so Claude Code's native /deep-research, /skill-name, and saved
     // workflows run natively instead of erroring with "Unknown command".
-    const p = payload as { command?: string; commandId?: string; args?: string; settings?: Settings; context?: ContextItem[] };
-    const activeProvider = this._getPanelProvider(panelId) as ProviderType;
-    if (
-      p.command &&
-      p.settings &&
-      !this._slashCommandManager.isKnownCommand(commandId, panelId, activeProvider, callbacks)
-    ) {
+    if (p.command && p.settings && !typedIsMystiCommand) {
       const raw = `/${p.command}${p.args ? ' ' + p.args : ''}`;
       await this._handleSendMessage(
         { content: raw, context: p.context || [], settings: p.settings },
@@ -5882,7 +6023,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     const result = await this._slashCommandManager.executeCommand(
-      commandId, payload.args || '', panelId, callbacks
+      commandId, args, panelId, callbacks
     );
     if (result) {
       this._postToPanel(panelId, {

@@ -1336,3 +1336,54 @@ describe('the setup overlay, on a pristine page each time', () => {
     expect(errs).toEqual([]);
   }, 30000);
 });
+
+describe('an availability blip cannot rewrite the saved agent', () => {
+  /*
+   * "The chat keeps switching back." The webview's availability fallback used
+   * to post `updateSettings { provider }`, which the extension persists to the
+   * GLOBAL `mysti.defaultAgent`. So a CLI probe that had not finished, or a
+   * backend briefly unreachable, quietly overwrote the agent the user chose —
+   * and the panel then came back on the substitute for good.
+   */
+  it.skipIf(CHROMIUM_UNAVAILABLE)('switches the panel for the session but persists nothing', async () => {
+    const pg = await newPanelPage();
+    try {
+      await pg.evaluate(() => {
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'initialState', payload: {
+          settings: { provider: 'openai-codex', model: '', mode: 'ask-before-edit', thinkingLevel: 'none',
+            effortLevel: 'high', accessLevel: 'ask-permission', contextMode: 'auto', autonomousMode: false },
+          messages: [], context: [], conversations: [],
+          providerManifest: { schemaVersion: 1, providers: [
+            { id: 'claude-code', shortId: 'claude', displayName: 'Claude Code', color: '#d97757', capabilities: {} },
+            { id: 'openai-codex', shortId: 'codex', displayName: 'Codex', color: '#a1a1a1', capabilities: {} },
+          ] },
+        } } }));
+      });
+      expect(await pg.$eval('#agent-name', (e) => e.textContent)).toContain('Codex');
+
+      await pg.evaluate(() => { (window as unknown as { __posted: unknown[] }).__posted.length = 0; });
+      // Codex momentarily reports unavailable; Claude is installed.
+      await pg.evaluate(() => {
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'providerAvailability', payload: {
+          providerAvailability: {
+            'openai-codex': { available: false },
+            'claude-code': { available: true },
+          },
+        } } }));
+      });
+
+      // The panel becomes usable...
+      expect(await pg.$eval('#agent-name', (e) => e.textContent)).toContain('Claude');
+      // ...but nothing was saved. Persisting here is what made the switch stick.
+      const posted = await pg.evaluate(() =>
+        (window as unknown as { __posted: Array<{ type: string; payload?: { provider?: string } }> }).__posted);
+      const persisted = posted.filter((m) => m.type === 'updateSettings' && m.payload && 'provider' in m.payload);
+      expect(persisted, `an availability blip must not persist an agent: ${JSON.stringify(persisted)}`)
+        .toEqual([]);
+    } finally {
+      const ctx = pg.context();
+      await pg.close();
+      await ctx.close();
+    }
+  }, 30000);
+});

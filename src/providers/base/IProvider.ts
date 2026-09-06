@@ -12,6 +12,7 @@
  */
 
 import type * as vscode from 'vscode';
+import type { NativeCommandSpec } from './NativeCommands';
 import type {
   ContextItem,
   Attachment,
@@ -514,6 +515,14 @@ export interface ICliProvider {
 
   // Slash command menu: provider-specific commands
   getSlashCommands?(panelId?: string): SlashCommandDefinition[];
+
+  /**
+   * Provider-native commands this backend reports at RUNTIME rather than from
+   * Mysti's curated catalog. ACP backends receive their command list in
+   * `session/update -> available_commands_update`, so for them the agent —
+   * not a table in this repo — is the authority on what `/name` exists.
+   */
+  getDynamicNativeCommands?(panelId?: string): NativeCommandSpec[];
 
   // Persistent process management
   preSpawnPersistentProcess?(panelId: string, settings: Settings): Promise<void>;

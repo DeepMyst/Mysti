@@ -268,7 +268,7 @@ export interface SlashCommand {
 // Slash Command Menu System
 // ============================================================================
 
-export type SlashCommandSection = 'context' | 'model' | 'customize' | 'commands' | 'settings' | 'support';
+export type SlashCommandSection = 'context' | 'model' | 'customize' | 'commands' | 'native' | 'settings' | 'support';
 export type SlashCommandAction = 'execute' | 'submenu' | 'external';
 
 export interface SlashCommandDefinition {
@@ -298,7 +298,31 @@ export interface SlashCommandDefinition {
   isCliPassthrough?: boolean;
   /** Search keywords for fuzzy matching beyond label/description */
   keywords?: string[];
+  /**
+   * For entries in the provider-native section: the bare command name the
+   * BACKEND knows it by (`compact`, `design`, `frontend:audit`) — without the
+   * leading slash. `id` stays Mysti-scoped (`native:claude-code:compact`) so
+   * two providers can both own a `/compact` without colliding.
+   */
+  nativeName?: string;
+  /**
+   * Hint for a command that takes arguments, e.g. `<pr-number>`. When present
+   * the menu PREFILLS the composer with `/name ` instead of dispatching, so a
+   * command is never sent half-finished.
+   */
+  argumentHint?: string;
+  /** Where the entry came from — drives the "Project"/"User" badge in the menu. */
+  origin?: NativeCommandOrigin;
 }
+
+/**
+ * Where a provider-native command was found.
+ *   'builtin'   — shipped by the CLI itself (Mysti's curated catalog)
+ *   'user'      — the user's home-directory command/prompt/skill directory
+ *   'project'   — the workspace's command directory (checked into the repo)
+ *   'agent'     — pushed live by the agent over ACP (`available_commands_update`)
+ */
+export type NativeCommandOrigin = 'builtin' | 'user' | 'project' | 'agent';
 
 export interface SlashCommandSectionInfo {
   id: SlashCommandSection;

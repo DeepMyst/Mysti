@@ -27,6 +27,13 @@ import type {
   WebviewMessage,
   ModelInfo
 } from '../types';
+import {
+  NATIVE_COMMANDS,
+  nativeCommandId,
+  parseNativeCommandId,
+  type NativeCommandSpec,
+} from '../providers/base/NativeCommands';
+import type { NativeCommandDiscovery } from '../services/NativeCommandDiscovery';
 
 interface SlashCommandManagerDeps {
   providerManager: ProviderManager;
@@ -35,7 +42,27 @@ interface SlashCommandManagerDeps {
   compactionManager: CompactionManager;
   memoryManager: MemoryManager;
   brainstormManager: BrainstormManager;
+  /**
+   * Source of the user's own commands for each backend (`.claude/commands`,
+   * `.gemini/commands`, `.cursor/commands`, …). Optional so existing tests can
+   * construct the manager without a filesystem; the native section then holds
+   * the curated catalog alone.
+   */
+  nativeCommandDiscovery?: NativeCommandDiscovery;
 }
+
+/**
+ * What a provider-native command turns into when it is run. The manager
+ * resolves; ChatViewProvider dispatches, because sending a turn needs the
+ * panel's settings and context, which only the webview's send payload carries.
+ */
+export type ResolvedNativeCommand =
+  /** Run Mysti's own equivalent instead of the backend's version. */
+  | { kind: 'mysti'; commandId: string }
+  /** Send this text to the backend as the turn's prompt. */
+  | { kind: 'prompt'; text: string }
+  /** Put this in the composer and let the user finish typing the arguments. */
+  | { kind: 'prefill'; text: string };
 
 /**
  * Callbacks provided by ChatViewProvider for executing side-effects
@@ -60,6 +87,17 @@ export interface SlashCommandCallbacks {
 }
 
 /**
+ * True when a command cannot run without arguments.
+ *
+ * `<condition>` is required, `[instructions]` is optional — the convention the
+ * catalog and the CLIs' own help text both use. Getting this backwards makes a
+ * perfectly valid bare `/compact` impossible to run from the menu.
+ */
+function requiresArguments(hint: string | undefined): boolean {
+  return !!hint && hint.trim().startsWith('<');
+}
+
+/**
  * Central registry for slash commands. Merges universal commands with
  * provider-specific commands, resolves dynamic values, and dispatches
  * command execution to the appropriate managers.
@@ -71,14 +109,19 @@ export class SlashCommandManager {
   private _compactionManager: CompactionManager;
   private _memoryManager: MemoryManager;
   private _brainstormManager: BrainstormManager;
+  private _nativeCommandDiscovery?: NativeCommandDiscovery;
 
   private static readonly _sections: SlashCommandSectionInfo[] = [
     { id: 'context',   label: 'Context',   order: 1 },
     { id: 'model',     label: 'Model',     order: 2 },
     { id: 'customize', label: 'Customize', order: 3 },
     { id: 'commands',  label: 'Commands',  order: 4 },
-    { id: 'settings',  label: 'Settings',  order: 5 },
-    { id: 'support',   label: 'Support',   order: 6 },
+    // Label is replaced per-provider in getCommands() — this section holds the
+    // ACTIVE backend's own vocabulary, so it is titled after that backend
+    // ("Claude commands") rather than with a generic heading.
+    { id: 'native',    label: 'CLI Commands', order: 5 },
+    { id: 'settings',  label: 'Settings',  order: 6 },
+    { id: 'support',   label: 'Support',   order: 7 },
   ];
 
   /** Maps legacy command names to new IDs */
@@ -113,6 +156,7 @@ export class SlashCommandManager {
     this._compactionManager = deps.compactionManager;
     this._memoryManager = deps.memoryManager;
     this._brainstormManager = deps.brainstormManager;
+    this._nativeCommandDiscovery = deps.nativeCommandDiscovery;
   }
 
   /**
@@ -135,6 +179,15 @@ export class SlashCommandManager {
     callbacks: SlashCommandCallbacks,
   ): boolean {
     if (commandId.endsWith(':terminal')) {
+      return true;
+    }
+    // A name Mysti explicitly claims is OWNED even when it has no menu row.
+    // `cmd:compact` is the case that matters: it is provider-neutral (it picks
+    // native-CLI vs client-side summarization from the backend's capabilities)
+    // and is reachable only by typing, so judging ownership by menu membership
+    // alone would forward `/compact` to the backend and quietly bypass
+    // CompactionManager.
+    if (Object.values(SlashCommandManager._legacyCommandMap).includes(commandId)) {
       return true;
     }
     try {
@@ -171,19 +224,213 @@ export class SlashCommandManager {
       // Provider not available, skip its commands
     }
 
-    // 3. Merge and filter to active provider
-    const allCmds = [...universalCmds, ...providerCmds].filter(cmd =>
+    // 3. The active backend's OWN commands — curated catalog, plus whatever the
+    //    user has authored on disk, plus anything an ACP agent reported live.
+    const nativeCmds = this._getNativeCommands(panelId, activeProvider);
+
+    // 4. Merge and filter to active provider
+    const allCmds = [...universalCmds, ...providerCmds, ...nativeCmds].filter(cmd =>
       cmd.provider === 'all' || cmd.provider === activeProvider
     );
 
-    // 4. Resolve dynamic values
+    // 5. Resolve dynamic values
     this._resolveDynamicValues(allCmds, panelId, activeProvider, callbacks);
 
-    // 5. Only include sections that have commands
+    // 6. Only include sections that have commands, and title the native section
+    //    after the backend whose commands it holds.
     const usedSections = new Set<SlashCommandSection>(allCmds.map(c => c.section));
-    const sections = SlashCommandManager._sections.filter(s => usedSections.has(s.id));
+    const sections = SlashCommandManager._sections
+      .filter(s => usedSections.has(s.id))
+      .map(s => s.id === 'native'
+        ? { ...s, label: `${this._getProviderDisplayName(activeProvider)} commands` }
+        : s);
 
     return { sections, commands: allCmds };
+  }
+
+  /**
+   * Build the provider-native section for one panel.
+   *
+   * Three sources, in precedence order — a name found earlier wins, so a repo
+   * cannot shadow a curated built-in with a file of the same name:
+   *   1. NATIVE_COMMANDS   — the CLI's own built-ins Mysti can actually run
+   *   2. the provider      — live list from an ACP agent, when it sends one
+   *   3. discovery         — `.claude/commands`, `.gemini/commands`, skills, …
+   */
+  private _getNativeCommands(
+    panelId: string,
+    activeProvider: ProviderType
+  ): SlashCommandDefinition[] {
+    const out: SlashCommandDefinition[] = [];
+    const claimed = new Set<string>();
+
+    const add = (
+      spec: NativeCommandSpec,
+      origin: SlashCommandDefinition['origin']
+    ): void => {
+      if (claimed.has(spec.name)) { return; }
+      claimed.add(spec.name);
+      out.push({
+        id: nativeCommandId(activeProvider, spec.name),
+        label: `/${spec.name}`,
+        description: spec.description,
+        section: 'native',
+        icon: spec.icon ?? 'terminal',
+        provider: activeProvider,
+        action: 'execute',
+        // Only the entries actually handed to the CLI are pass-through; the
+        // ones mapped onto a Mysti command are not, and the webview must not
+        // treat them as text to send.
+        isCliPassthrough: spec.execution.kind !== 'mysti',
+        nativeName: spec.name,
+        argumentHint: spec.argumentHint,
+        origin,
+        keywords: spec.keywords,
+      });
+    };
+
+    for (const spec of NATIVE_COMMANDS[activeProvider] ?? []) {
+      add(spec, 'builtin');
+    }
+
+    // ACP backends (Hermes, Kimi) are told their command list by the agent at
+    // session start; it is the only accurate source for them.
+    for (const spec of this._getDynamicNativeCommands(panelId, activeProvider)) {
+      add(spec, 'agent');
+    }
+
+    for (const found of this._nativeCommandDiscovery?.getCached(activeProvider) ?? []) {
+      add(
+        {
+          name: found.name,
+          description: found.description,
+          icon: found.origin === 'project' ? 'repo' : 'account',
+          execution: found.execution,
+        },
+        found.origin
+      );
+    }
+
+    return out;
+  }
+
+  /**
+   * Rescan the active backend's command directories if the cache has gone
+   * stale. Resolves to `true` only when the visible set actually changed, so
+   * the caller re-posts a menu only when it would look different.
+   */
+  public async refreshNativeCommands(providerId: string): Promise<boolean> {
+    if (!this._nativeCommandDiscovery) { return false; }
+    try {
+      return await this._nativeCommandDiscovery.refreshIfStale(providerId);
+    } catch {
+      // Discovery is a convenience; the curated catalog stands without it.
+      return false;
+    }
+  }
+
+  /**
+   * Map a BARE command name the user typed (`design`, `frontend:audit`) onto a
+   * native command id for the active provider, or null if the backend has no
+   * such command.
+   *
+   * Without this, a typed `/name` and the same entry picked from the menu would
+   * behave differently: the menu resolves `expand` commands by reading the
+   * user's template, while a typed one would be forwarded verbatim to a CLI
+   * whose headless mode cannot expand it.
+   */
+  public findNativeCommandId(
+    name: string,
+    panelId: string,
+    activeProvider: ProviderType
+  ): string | null {
+    if (!name) { return null; }
+    const known =
+      (NATIVE_COMMANDS[activeProvider] ?? []).some(c => c.name === name) ||
+      (this._nativeCommandDiscovery?.getCached(activeProvider) ?? []).some(c => c.name === name) ||
+      this._getDynamicNativeCommands(panelId, activeProvider).some(c => c.name === name);
+    return known ? nativeCommandId(activeProvider, name) : null;
+  }
+
+  /** Live command list from an ACP backend; never throws. */
+  private _getDynamicNativeCommands(
+    panelId: string,
+    activeProvider: ProviderType
+  ): NativeCommandSpec[] {
+    try {
+      const instance = this._providerManager.getProviderInstance(activeProvider);
+      return instance?.getDynamicNativeCommands?.(panelId) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Turn a `native:<provider>:<name>` id into something runnable, or null when
+   * the id names no command this provider has.
+   */
+  public resolveNativeCommand(
+    commandId: string,
+    panelId: string,
+    activeProvider: ProviderType,
+    args: string
+  ): ResolvedNativeCommand | null {
+    const parsed = parseNativeCommandId(commandId);
+    if (!parsed || parsed.provider !== activeProvider) { return null; }
+
+    const trimmedArgs = args.trim();
+
+    const builtin = (NATIVE_COMMANDS[activeProvider] ?? [])
+      .find(c => c.name === parsed.name);
+    if (builtin) {
+      if (builtin.execution.kind === 'mysti') {
+        return { kind: 'mysti', commandId: builtin.execution.commandId };
+      }
+      // A command that REQUIRES arguments is prefilled rather than sent: firing
+      // `/goal` with no condition wastes a turn, and the user cannot see what
+      // was sent to correct it. An optional argument still runs bare.
+      if (requiresArguments(builtin.argumentHint) && !trimmedArgs) {
+        return { kind: 'prefill', text: `/${builtin.name} ` };
+      }
+      return {
+        kind: 'prompt',
+        text: trimmedArgs ? `/${builtin.name} ${trimmedArgs}` : `/${builtin.name}`,
+      };
+    }
+
+    // Live ACP command — the agent owns the vocabulary, so it is passed
+    // through verbatim.
+    const live = this._getDynamicNativeCommands(panelId, activeProvider)
+      .find(c => c.name === parsed.name);
+    if (live) {
+      if (requiresArguments(live.argumentHint) && !trimmedArgs) {
+        return { kind: 'prefill', text: `/${live.name} ` };
+      }
+      return {
+        kind: 'prompt',
+        text: trimmedArgs ? `/${live.name} ${trimmedArgs}` : `/${live.name}`,
+      };
+    }
+
+    const found = (this._nativeCommandDiscovery?.getCached(activeProvider) ?? [])
+      .find(c => c.name === parsed.name);
+    if (!found) { return null; }
+
+    if (found.execution.kind === 'mysti') {
+      return { kind: 'mysti', commandId: found.execution.commandId };
+    }
+    if (found.execution.kind === 'passthrough') {
+      return {
+        kind: 'prompt',
+        text: trimmedArgs ? `/${found.name} ${trimmedArgs}` : `/${found.name}`,
+      };
+    }
+
+    // `expand`: this backend's headless mode cannot resolve a slash command, so
+    // Mysti sends the template the user wrote. If it cannot be read, say so
+    // rather than sending a bare `/name` the CLI will treat as prose.
+    const expanded = this._nativeCommandDiscovery?.expandTemplate(found.filePath, trimmedArgs);
+    return expanded ? { kind: 'prompt', text: expanded } : null;
   }
 
   /**
@@ -482,13 +729,13 @@ export class SlashCommandManager {
       }
 
       // ---- Provider-specific: Claude ----
-      case 'claude:compact':
-        callbacks.postToPanel(panelId, {
-          type: 'sendCliPassthrough',
-          payload: { command: '/compact' }
-        });
-        return 'Compacting conversation...';
-
+      // `claude:compact` used to live here. It posted `sendCliPassthrough`,
+      // which NOTHING in chat.js has ever handled, so selecting it did nothing
+      // at all — the same class of dead entry Plan 27 Phase 4 cleaned out of
+      // the universal section, missed because that test only scans `cmd:` ids.
+      // Claude's real `/compact` is now a pass-through entry in the native
+      // section (it is one of the built-ins that survives headless mode), and
+      // provider-neutral compaction stays on `cmd:compact`.
       case 'claude:thinking': {
         if (trimmedArgs) {
           const levels = ['none', 'low', 'medium', 'high'];

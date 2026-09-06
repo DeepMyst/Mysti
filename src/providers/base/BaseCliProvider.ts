@@ -39,6 +39,7 @@ import type {
   DeveloperPersona,
   Skill
 } from '../../types';
+import type { NativeCommandSpec } from './NativeCommands';
 import type { AgentContextManager } from '../../managers/AgentContextManager';
 import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TIMEOUT_MS, STREAM_INACTIVITY_TIMEOUT_MS } from '../../constants';
 import { getCommonSearchPaths, validateCliPath, checkCommandExists, getEnrichedEnv, filterInstallMethodsForOS } from '../../utils/platform';
@@ -312,6 +313,18 @@ export abstract class BaseCliProvider implements ICliProvider {
       session.persistentReady = false;
     }
     this._panelSessions.clear();
+  }
+
+  /**
+   * Provider-native commands this backend reports at RUNTIME.
+   *
+   * Empty for every CLI whose command vocabulary is fixed — those are declared
+   * once in NATIVE_COMMANDS. Only backends that are TOLD their commands by the
+   * agent they drive (the ACP providers, via `available_commands_update`)
+   * override this, because for them no static table can be correct.
+   */
+  public getDynamicNativeCommands(_panelId?: string): NativeCommandSpec[] {
+    return [];
   }
 
   /**

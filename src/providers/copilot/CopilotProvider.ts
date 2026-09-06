@@ -61,95 +61,83 @@ export class CopilotProvider extends BaseCliProvider {
     name: 'github-copilot',
     displayName: 'GitHub Copilot',
     models: [
-      // Anthropic Models
       {
-        id: 'claude-sonnet-4.5',
-        name: 'Claude Sonnet 4.5',
+        id: 'gpt-6-astra',
+        name: 'GPT-6 Astra',
+        description: 'OpenAI flagship — Copilot Pro+, Max, Business and Enterprise',
+        contextWindow: 1050000,
+        releasedAt: '2026-09-04'
+      },
+      {
+        id: 'claude-sonnet-5',
+        name: 'Claude Sonnet 5',
         description: 'Best balance of speed and intelligence',
-        contextWindow: 200000
+        contextWindow: 1000000
       },
       {
-        id: 'claude-opus-4.5',
-        name: 'Claude Opus 4.5',
-        description: 'Flagship Anthropic model for complex tasks',
-        contextWindow: 200000
+        id: 'claude-opus-5',
+        name: 'Claude Opus 5',
+        description: 'Anthropic flagship for complex agentic and coding work',
+        contextWindow: 1000000
       },
       {
-        id: 'claude-sonnet-4',
-        name: 'Claude Sonnet 4',
-        description: 'Previous Claude Sonnet model',
-        contextWindow: 200000
+        id: 'claude-fable-5.1',
+        name: 'Claude Fable 5.1',
+        description: "Anthropic's most capable model",
+        contextWindow: 1000000,
+        releasedAt: '2026-09-01'
+      },
+      {
+        id: 'claude-fable-5',
+        name: 'Claude Fable 5',
+        description: 'Previous Fable flagship',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-opus-4.8',
+        name: 'Claude Opus 4.8',
+        description: 'Previous-generation Opus flagship',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-opus-4.7',
+        name: 'Claude Opus 4.7',
+        description: 'Autonomous long-horizon Opus',
+        contextWindow: 1000000
       },
       {
         id: 'claude-haiku-4.5',
         name: 'Claude Haiku 4.5',
-        description: 'Fast and lightweight for quick tasks',
+        description: 'Fast and efficient for simpler tasks',
         contextWindow: 200000
       },
-      // OpenAI Models
       {
-        id: 'gpt-5.4',
-        name: 'GPT-5.4',
-        description: 'OpenAI latest flagship model',
-        contextWindow: 128000
+        id: 'gemini-3.8-flash',
+        name: 'Gemini 3.8 Flash',
+        description: "Google's most intelligent Flash model",
+        contextWindow: 1048576,
+        releasedAt: '2026-09-02'
       },
       {
-        id: 'gpt-5.2',
-        name: 'GPT-5.2',
-        description: 'OpenAI general purpose model',
-        contextWindow: 128000
-      },
-      {
-        id: 'gpt-5.1-codex-max',
-        name: 'GPT-5.1 Codex Max',
-        description: 'OpenAI flagship coding model',
-        contextWindow: 128000
-      },
-      {
-        id: 'gpt-5.1-codex',
-        name: 'GPT-5.1 Codex',
-        description: 'OpenAI optimized for code generation',
-        contextWindow: 128000
-      },
-      {
-        id: 'gpt-5.1-codex-mini',
-        name: 'GPT-5.1 Codex Mini',
-        description: 'Lightweight OpenAI coding model',
-        contextWindow: 128000
+        id: 'gemini-3.7-flash',
+        name: 'Gemini 3.7 Flash',
+        description: 'Strong coding and agent workflows',
+        contextWindow: 1048576
       },
       {
         id: 'gpt-5.1',
         name: 'GPT-5.1',
-        description: 'OpenAI general purpose model',
-        contextWindow: 128000
-      },
-      {
-        id: 'gpt-5',
-        name: 'GPT-5',
-        description: 'OpenAI GPT-5 model',
-        contextWindow: 128000
-      },
-      {
-        id: 'gpt-5-mini',
-        name: 'GPT-5 Mini',
-        description: 'Lightweight OpenAI model',
-        contextWindow: 128000
+        description: 'Previous-generation OpenAI model',
+        contextWindow: 400000
       },
       {
         id: 'gpt-4.1',
         name: 'GPT-4.1',
-        description: 'OpenAI GPT-4.1 model',
+        description: 'Legacy model, included in all paid plans',
         contextWindow: 128000
-      },
-      // Google Models
-      {
-        id: 'gemini-3-pro-preview',
-        name: 'Gemini 3 Pro Preview',
-        description: 'Google advanced reasoning model',
-        contextWindow: 1000000
       }
     ],
-    defaultModel: 'claude-sonnet-4.5'
+    defaultModel: 'claude-sonnet-5'
   };
 
   readonly capabilities: ProviderCapabilities = {

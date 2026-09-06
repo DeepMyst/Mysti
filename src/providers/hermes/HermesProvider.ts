@@ -33,6 +33,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { parseAcpAvailableCommands, type NativeCommandSpec } from '../base/NativeCommands';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -95,6 +96,12 @@ export interface HermesSessionState extends PanelSessionState {
   fallbackDiagnostics: boolean;
   /** One diagnostic error per fallback run, not one per output line. */
   fallbackErrorEmitted: boolean;
+  /**
+   * Commands the agent reported over ACP for this session. The list is the
+   * agent's own, arrives after the handshake, and can be re-sent mid-session,
+   * so it is session state rather than anything Mysti can hard-code.
+   */
+  availableCommands: NativeCommandSpec[];
   activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
 }
@@ -168,9 +175,23 @@ export class HermesProvider extends BaseCliProvider {
       acpMode: 'default',
       fallbackDiagnostics: false,
       fallbackErrorEmitted: false,
+      availableCommands: [],
       activeToolCalls: new Map(),
       lastUsageStats: null,
     };
+  }
+
+  /**
+   * The command list Hermes reported for this panel's session.
+   *
+   * ACP agents publish their own `/commands`, so unlike every CLI-backed
+   * provider there is nothing useful to hard-code here — the list is whatever
+   * arrived in the last `available_commands_update` for this panel.
+   */
+  public override getDynamicNativeCommands(panelId?: string): NativeCommandSpec[] {
+    if (!panelId) { return []; }
+    const session = this._panelSessions.get(panelId) as HermesSessionState | undefined;
+    return session?.availableCommands ?? [];
   }
 
   async discoverCli(): Promise<CliDiscoveryResult> {
@@ -615,13 +636,18 @@ export class HermesProvider extends BaseCliProvider {
         };
       }
 
-      // Context-window telemetry, plan entries, command lists, echoes —
-      // no Mysti rendering yet
+      // The agent's own `/command` vocabulary. Stored (not rendered) so the
+      // slash menu can offer exactly what THIS session supports; previously
+      // this arrived and was dropped on the floor.
+      case 'available_commands_update':
+        hermes.availableCommands = parseAcpAvailableCommands(update);
+        return null;
+
+      // Context-window telemetry, plan entries, echoes — no Mysti rendering yet
       case 'usage_update':
       case 'plan':
       case 'user_message_chunk':
       case 'session_info_update':
-      case 'available_commands_update':
         return null;
 
       default:

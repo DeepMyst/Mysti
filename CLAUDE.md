@@ -160,6 +160,45 @@ agent, which fixes what it saw with its own already-gated tools.
   anything spawns.
 - `look` survives read-only/plan mode (it is a read); `act` does not.
 
+## Provider-native commands
+
+Each backend's own `/command` vocabulary appears in a provider-titled section of
+the slash menu ("Claude Code commands"). Three sources feed it, first match wins:
+
+1. `NATIVE_COMMANDS` in `src/providers/base/NativeCommands.ts` — curated built-ins
+2. `ICliProvider.getDynamicNativeCommands()` — ACP backends (Hermes, Kimi) are
+   TOLD their commands in `session/update -> available_commands_update`
+3. `NativeCommandDiscovery` (`src/services/`) — the user's own files, read from
+   the directories in `NATIVE_COMMAND_SOURCES` (`.claude/commands` + skills,
+   `.gemini`/`.qwen/commands/*.toml`, `~/.codex/prompts`, `.cursor/commands`,
+   `.clinerules/workflows`, `.opencode/command`). Cached; reads are sync, refresh
+   is background, and the menu is re-posted only when the set changes.
+
+**The rule that matters:** a CLI's *interactive* commands and its *headless*
+commands are different sets, and Mysti only ever runs the headless entry point.
+Each entry therefore declares `execution`:
+
+- `passthrough` — send `/name` to the CLI. Only where verified: Claude Code
+  built-ins carrying `supportsNonInteractive` plus all `prompt`-type commands
+  (skills/plugins/`.claude/commands` — this is how `/design` works); Gemini and
+  Qwen only where the command yields `submit_prompt`, which is `/init` and their
+  custom TOML commands (anything else throws `FatalInputError` and kills the turn).
+- `expand` — Mysti reads the user's own template and sends its body. For CLIs
+  whose headless mode has no slash parser at all: `codex exec`, `cursor-agent -p`,
+  `cline`, `opencode run`.
+- `mysti` — run Mysti's cross-provider equivalent (`cmd:clear`, `cmd:compact`,
+  `model:switch`). Must name an id `SlashCommandManager.executeCommand` handles;
+  `tests/providers/nativeCommands.test.ts` fails otherwise.
+
+Commands that are TUI-only with no Mysti equivalent are deliberately absent — do
+not add them back from a CLI's `/help` output. Ollama/LocalAI/OpenRouter are HTTP
+APIs with no CLI, so `[]` is correct for them.
+
+A name Mysti claims wins over a backend's when TYPED (`/compact` stays
+provider-neutral); the menu row is unambiguous either way. Untrusted names — from
+an ACP agent or from a filename — are validated by `isValidNativeCommandName` and
+dropped, never repaired.
+
 ## Key Types (src/types.ts)
 
 - `StreamChunk` - Events from provider CLI (text, thinking, tool_use, tool_result, error, done, session_active, ask_user_question, compaction)
@@ -227,7 +266,7 @@ Libraries loaded from `resources/` folder: Marked.js (markdown), Prism.js (synta
    - Declare `capabilities.supportsPromptEnhancement` truthfully: `true` only if the provider implements the optional `enhancePrompt()`. The webview enables/disables the "Enhance prompt" button off this flag, and `tests/providers/promptEnhancement.test.ts` fails if the flag and the method ever disagree.
 4. Register in `src/providers/ProviderRegistry.ts` (add to `_registerBuiltInProviders()`)
 5. Add to `ProviderType` AND `AgentType` unions in `src/types.ts`
-6. Add entries to the two TS-enforced maps in `src/providers/base/ProviderManifest.ts` (`PROVIDER_DISPLAY_META`, `PROVIDER_CUSTOM_MODEL_SETTING_KEYS`) and the two in `BrainstormManager.ts` (`AGENT_BRAINSTORM_ICONS`, `agentKeyMap`) — these fail `tsc` if missed
+6. Add entries to the two TS-enforced maps in `src/providers/base/ProviderManifest.ts` (`PROVIDER_DISPLAY_META`, `PROVIDER_CUSTOM_MODEL_SETTING_KEYS`), the two in `BrainstormManager.ts` (`AGENT_BRAINSTORM_ICONS`, `agentKeyMap`), and the two in `src/providers/base/NativeCommands.ts` (`NATIVE_COMMANDS`, `NATIVE_COMMAND_SOURCES`) — these fail `tsc` if missed. For the last two, `[]` is a valid and often correct answer (see **Provider-native commands** below)
 7. Add configuration options in `package.json`: `defaultProvider` enum + enumDescription, `<provider>Path`, `<provider>Model`, `brainstorm.synthesisAgent` + `brainstorm.agents` enums, `agents.<key>Persona` + `agents.<key>CustomPrompt`
 8. Webview: logo asset in `resources/icons/`, boot URI in `src/webview/webviewContent.ts`, `LOGO_BY_ICON_PATH` in `media/chat/chat.js`, agent-menu item + wizard provider-card in `media/chat/index.html` (inside the provider-literals allowlist markers)
 9. Add the id to `scripts/check-provider-literals.js` `PROVIDER_IDS` (lint guard) and `_getProviderDisplayName` in `SlashCommandManager.ts`

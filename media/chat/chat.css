@@ -3018,6 +3018,21 @@
       white-space: nowrap;
     }
 
+    /* Source badge for a provider-native command: "project", "user", "agent".
+       Built-in commands carry no badge — the absence is the "ships with the
+       CLI" case, which is the common one. */
+    .slash-menu-item-origin {
+      flex-shrink: 0;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-badge-background);
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 10px;
+      letter-spacing: 0.02em;
+      opacity: 0.85;
+      white-space: nowrap;
+    }
+
     .slash-menu-item-toggle {
       flex-shrink: 0;
       width: 28px;
@@ -3693,7 +3708,18 @@
       border-radius: 8px;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
       z-index: 100;
-      overflow: hidden;
+      /* The menu is anchored to its BOTTOM and grows upward, so every agent
+         added pushes the top edge further up. With 15 backends plus Mysti and
+         Brainstorm it now overruns the panel, and `overflow: hidden` clipped
+         the first rows away with no way to reach them.
+         #app is position:static, so this box resolves against the viewport:
+         `bottom: 80px` is 80px off the window bottom, and subtracting that plus
+         16px of breathing room keeps the top edge on screen at any panel height.
+         Matches .slash-menu / .mention-menu, which already scroll. */
+      max-height: calc(100vh - 96px);
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
     }
 
     .agent-menu.hidden {
@@ -3706,6 +3732,11 @@
       text-transform: uppercase;
       color: var(--vscode-descriptionForeground);
       border-bottom: 1px solid var(--vscode-panel-border);
+      /* Pinned so "Select Agent" survives scrolling the now-scrollable list. */
+      position: sticky;
+      top: 0;
+      background: var(--vscode-quickInput-background);
+      z-index: 1;
     }
 
     .agent-menu-item {

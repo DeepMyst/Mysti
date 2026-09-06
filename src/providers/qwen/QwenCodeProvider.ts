@@ -72,6 +72,12 @@ export class QwenCodeProvider extends BaseCliProvider {
         name: 'Qwen3 Coder Plus',
         description: 'Enhanced Qwen coding model',
         contextWindow: 131072
+      },
+      {
+        id: 'qwen3-coder-next',
+        name: 'Qwen3 Coder Next',
+        description: 'Hybrid-attention MoE tuned for coding agents and local development',
+        contextWindow: 262144
       }
     ],
     defaultModel: 'qwen3-coder'

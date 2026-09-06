@@ -58,25 +58,25 @@ export class OpenClawProvider extends BaseCliProvider {
     displayName: 'OpenClaw',
     models: [
       {
-        id: 'claude-opus-4-6',
-        name: 'Claude Opus 4.6',
-        description: 'Latest flagship model via OpenClaw',
-        contextWindow: 200000,
+        id: 'claude-opus-5',
+        name: 'Claude Opus 5',
+        description: 'Flagship Anthropic model via OpenClaw',
+        contextWindow: 1000000,
       },
       {
-        id: 'claude-sonnet-4-5',
-        name: 'Claude Sonnet 4.5',
+        id: 'claude-sonnet-5',
+        name: 'Claude Sonnet 5',
         description: 'Fast and capable via OpenClaw',
-        contextWindow: 200000,
+        contextWindow: 1000000,
       },
       {
-        id: 'gpt-5',
-        name: 'GPT-5',
-        description: 'OpenAI GPT-5 via OpenClaw',
-        contextWindow: 128000,
+        id: 'gpt-6-astra',
+        name: 'GPT-6 Astra',
+        description: 'OpenAI flagship via OpenClaw',
+        contextWindow: 1050000,
       },
     ],
-    defaultModel: 'claude-opus-4-6',
+    defaultModel: 'claude-opus-5',
   };
 
   readonly capabilities: ProviderCapabilities = {

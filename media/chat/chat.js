@@ -4676,6 +4676,27 @@
        * - Auto-selects first available provider if current is unavailable
        * - Handles brainstorm availability (requires 2+ providers)
        */
+      /**
+       * Switch the panel onto an agent for THIS SESSION only.
+       *
+       * This used to post `updateSettings { provider }`, which the extension
+       * persists to the GLOBAL `mysti.defaultAgent`. So an availability blip —
+       * a CLI probe that had not finished, a backend briefly unreachable —
+       * quietly overwrote the agent the user had chosen, and the panel then
+       * came back on the substitute for good. That is the ratchet behind
+       * "it keeps switching back": nothing the user did changed the setting.
+       *
+       * The extension does its own rescue when it resolves a panel's backend,
+       * so nothing needs to be persisted here for the panel to work.
+       */
+      function switchAgentForSession(agentId) {
+        state.settings.provider = agentId;
+        state.activeAgent = agentId;
+        if (providerSelect) { providerSelect.value = agentId; }
+        updateAgentMenuSelection();
+        updateModelsForProvider(agentId);
+      }
+
       function updateProviderAvailability() {
         if (!state.providerAvailability) return;
         updateEnhanceAffordance();
@@ -4797,25 +4818,15 @@
         if (currentProvider && currentProvider !== 'brainstorm' && currentProvider !== 'mysti') {
           if (availability[currentProvider] && !availability[currentProvider].available) {
             if (firstAvailable) {
-              console.log('[Mysti Webview] Current provider unavailable, switching to:', firstAvailable);
-              state.settings.provider = firstAvailable;
-              state.activeAgent = firstAvailable;
-              if (providerSelect) providerSelect.value = firstAvailable;
-              updateAgentMenuSelection();
-              updateModelsForProvider(firstAvailable);
-              postMessageWithPanelId({ type: 'updateSettings', payload: { provider: firstAvailable } });
+              console.log('[Mysti Webview] Current provider unavailable, showing:', firstAvailable);
+              switchAgentForSession(firstAvailable);
             }
           }
         } else if (currentProvider === 'brainstorm' && availableCount < 2) {
           // Brainstorm selected but not enough providers
           if (firstAvailable) {
-            console.log('[Mysti Webview] Brainstorm unavailable (need 2+ providers), switching to:', firstAvailable);
-            state.settings.provider = firstAvailable;
-            state.activeAgent = firstAvailable;
-            if (providerSelect) providerSelect.value = firstAvailable;
-            updateAgentMenuSelection();
-            updateModelsForProvider(firstAvailable);
-            postMessageWithPanelId({ type: 'updateSettings', payload: { provider: firstAvailable } });
+            console.log('[Mysti Webview] Brainstorm unavailable (need 2+ providers), showing:', firstAvailable);
+            switchAgentForSession(firstAvailable);
           }
         }
 
@@ -13177,6 +13188,11 @@
               rightHtml = '<span class="slash-menu-item-toggle' + (cmd.toggleState ? ' active' : '') + '"></span>';
             } else if (cmd.currentValue) {
               rightHtml = '<span class="slash-menu-item-value">' + escapeHtml(cmd.currentValue) + '</span>';
+            } else if (cmd.origin && cmd.origin !== 'builtin') {
+              // Where a provider-native command came from. A command out of the
+              // repo and one the CLI ships behave differently and are worth
+              // telling apart at a glance.
+              rightHtml = '<span class="slash-menu-item-origin">' + escapeHtml(ORIGIN_LABELS[cmd.origin] || cmd.origin) + '</span>';
             }
 
             html += '<div class="slash-menu-item' + selectedClass
@@ -13226,6 +13242,9 @@
         };
       }
 
+      /** Badge text for a provider-native command's source. */
+      var ORIGIN_LABELS = { project: 'project', user: 'user', agent: 'agent' };
+
       function executeSlashMenuItem(cmd) {
         hideSlashMenu();
         var inputEl = document.getElementById('message-input');
@@ -13239,12 +13258,22 @@
           return;
         }
 
-        // Execute command via extension
+        // Execute command via extension.
+        //
+        // `settings` and `context` are ALWAYS sent, not just for typed commands.
+        // A provider-native command runs as a turn against the backend, and the
+        // extension refuses to send one without the panel's settings — so a menu
+        // pick used to be silently undeliverable while typing the same name
+        // worked. `nativeName` lets the extension resolve it as that backend's
+        // command rather than guessing from the label.
         postMessageWithPanelId({
           type: 'executeSlashCommand',
           payload: {
             commandId: cmd.id,
-            args: ''
+            command: cmd.nativeName || undefined,
+            args: '',
+            settings: state.settings,
+            context: state.context
           }
         });
       }

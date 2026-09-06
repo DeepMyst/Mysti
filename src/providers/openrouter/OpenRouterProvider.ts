@@ -68,8 +68,9 @@ export class OpenRouterProvider extends BaseCliProvider {
       // `mysti.openrouterModel` (MODEL_NAME_PATTERN accepts `owner/model:free`).
       { id: 'openrouter/free', name: 'Free (auto-routed)', description: 'Auto-routes to an available free model', contextWindow: 200000 },
       { id: 'openai/gpt-oss-120b:free', name: 'GPT-OSS 120B (free)', description: 'Open-weight MoE, tool-capable', contextWindow: 131000 },
-      { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5 (paid)', description: 'Anthropic, via OpenRouter credits', contextWindow: 200000 },
-      { id: 'openai/gpt-5', name: 'GPT-5 (paid)', description: 'OpenAI, via OpenRouter credits', contextWindow: 400000 },
+      { id: 'anthropic/claude-sonnet-5', name: 'Claude Sonnet 5 (paid)', description: 'Anthropic, via OpenRouter credits', contextWindow: 1000000 },
+      { id: 'openai/gpt-6-astra', name: 'GPT-6 Astra (paid)', description: 'OpenAI flagship, via OpenRouter credits', contextWindow: 1050000 },
+      { id: 'moonshotai/kimi-k3', name: 'Kimi K3 (paid)', description: 'Moonshot open-weight 2.8T MoE', contextWindow: 1048576 },
     ],
     // Free by default (the meta-router routes to an available free model).
     defaultModel: OPENROUTER_FREE_ROUTER,

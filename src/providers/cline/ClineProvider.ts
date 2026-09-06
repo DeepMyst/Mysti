@@ -154,20 +154,11 @@ export class ClineProvider extends BaseCliProvider {
 	// ============================================================================
 
 	public override getSlashCommands(_panelId?: string): SlashCommandDefinition[] {
-		const base = super.getSlashCommands(_panelId);
-		return [
-			...base,
-			{
-				id: "cline:plan-act",
-				label: "Toggle plan/act mode",
-				description: "Switch between plan and act modes",
-				section: "customize",
-				icon: "map",
-				provider: "cline",
-				action: "execute",
-				keywords: ["plan", "act", "mode", "cline"],
-			},
-		];
+		// Plan/act used to be declared here as well as in the provider-native
+		// catalog, which put two differently-labelled rows in the menu doing the
+		// same thing. NATIVE_COMMANDS['cline'] owns `/plan-act` and routes it to
+		// the `cline:plan-act` handler this file's toggle always used.
+		return super.getSlashCommands(_panelId);
 	}
 
 	/**

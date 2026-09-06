@@ -33,6 +33,7 @@ import { OpenRouterClient } from './services/OpenRouterClient';
 import { CoordinatorModelClient, MYSTI_DEFAULT_FREE_MODELS } from './services/CoordinatorModelClient';
 import { AgentLifecycleManager } from './managers/AgentLifecycleManager';
 import { SlashCommandManager } from './managers/SlashCommandManager';
+import { NativeCommandDiscovery } from './services/NativeCommandDiscovery';
 import { ActiveModeManager } from './managers/ActiveModeManager';
 import { EngagementManager } from './managers/EngagementManager';
 import { CommitSignatureManager } from './managers/CommitSignatureManager';
@@ -371,6 +372,14 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   // Initialize slash command manager
+  // The user's own commands for each backend (.claude/commands, .gemini
+  // commands, .cursor/commands, Claude skills, …). Reads are cached and
+  // synchronous so opening the slash menu never waits on disk; the first
+  // workspace folder is resolved lazily so a folder opened later still counts.
+  const nativeCommandDiscovery = new NativeCommandDiscovery({
+    getWorkspaceRoot: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+  });
+
   const slashCommandManager = new SlashCommandManager({
     providerManager,
     contextManager,
@@ -378,6 +387,7 @@ export async function activate(context: vscode.ExtensionContext) {
     compactionManager,
     memoryManager,
     brainstormManager,
+    nativeCommandDiscovery,
   });
 
 

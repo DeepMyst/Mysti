@@ -27,6 +27,12 @@
  *
  * This test asserts the property, not the fix: EVERY menu entry that posts a
  * message must have a receiver. A ninth dead entry fails here.
+ *
+ * There WAS a ninth, and this file could not see it: the scan only ever looked
+ * at `cmd:` ids inside SlashCommandManager, so Claude's `/compact` — declared
+ * in ClaudeCodeProvider, posting a `sendCliPassthrough` no webview handler has
+ * ever received — stayed dead through the whole cleanup. The provider-declared
+ * entries are now scanned too.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'fs';
@@ -34,12 +40,29 @@ import * as path from 'path';
 
 const ROOT = path.join(__dirname, '..', '..');
 const SLASH = path.join(ROOT, 'src', 'managers', 'SlashCommandManager.ts');
+const PROVIDERS_DIR = path.join(ROOT, 'src', 'providers');
 const CHAT_JS = path.join(ROOT, 'media', 'chat', 'chat.js');
 const PROVIDER = path.join(ROOT, 'src', 'providers', 'ChatViewProvider.ts');
 
 let slash: string;
 let js: string;
 let provider: string;
+
+/** Every provider source file that declares its own menu entries. */
+function providerSources(): Array<{ file: string; src: string }> {
+  const out: Array<{ file: string; src: string }> = [];
+  for (const dir of fs.readdirSync(PROVIDERS_DIR, { withFileTypes: true })) {
+    if (!dir.isDirectory()) { continue; }
+    const sub = path.join(PROVIDERS_DIR, dir.name);
+    for (const entry of fs.readdirSync(sub)) {
+      if (!entry.endsWith('.ts')) { continue; }
+      const file = path.join(sub, entry);
+      const src = fs.readFileSync(file, 'utf8');
+      if (src.includes('getSlashCommands')) { out.push({ file, src }); }
+    }
+  }
+  return out;
+}
 
 /** Menu entries: `id: 'cmd:x', label: '…'`. */
 function menuEntries(src: string): Array<{ id: string; label: string }> {
@@ -77,6 +100,64 @@ describe('every slash-menu entry does something', () => {
       + 'so selecting them does nothing at all. Either handle the message, or invoke the capability '
       + 'directly (vscode.commands.executeCommand), or remove the entry from the menu.',
     ).toEqual([]);
+  });
+});
+
+describe('provider-declared menu entries are alive too', () => {
+  it('the provider scan still finds files (guards against a vacuous pass)', () => {
+    expect(providerSources().length).toBeGreaterThanOrEqual(3);
+  });
+
+  /**
+   * The gap that let Claude's `/compact` ship dead. A provider entry is not
+   * covered by the `cmd:`-only scan above, so its posted message type is
+   * checked here against the same receiver requirement.
+   */
+  it('no provider entry posts a message nothing receives', () => {
+    const dead: string[] = [];
+    for (const { file, src } of providerSources()) {
+      for (const m of src.matchAll(/id:\s*['"]([a-z-]+:[a-z-]+)['"]/g)) {
+        const id = m[1];
+        // Terminal launch is handled generically by SlashCommandManager.
+        if (id.endsWith(':terminal')) { continue; }
+        const posted = postedType(slash, id);
+        if (posted && !js.includes(`case '${posted}'`)) {
+          dead.push(`${path.basename(file)} ${id} -> '${posted}'`);
+        }
+      }
+    }
+    expect(
+      dead,
+      'A provider declares a menu entry whose handler posts a message the webview never receives, '
+      + 'so selecting it does nothing. Handle the message, invoke the capability directly, or drop the entry.',
+    ).toEqual([]);
+  });
+
+  /**
+   * `sendCliPassthrough` was the dead message type; nothing may POST it again.
+   * The name is still allowed to appear in prose — the comment explaining why
+   * the entry was removed is the reason anyone would know not to re-add it.
+   */
+  it('nothing posts sendCliPassthrough — it has never had a receiver', () => {
+    const posts = /type:\s*'sendCliPassthrough'/;
+    expect(js.includes("case 'sendCliPassthrough'")).toBe(false);
+    expect(posts.test(slash)).toBe(false);
+    for (const { file, src } of providerSources()) {
+      expect(posts.test(src), `${path.basename(file)} posts it`).toBe(false);
+    }
+  });
+
+  /**
+   * A native command runs as a TURN against the backend, and the extension
+   * refuses to send one without the panel's settings. A menu pick that omits
+   * them is undeliverable — which is exactly what used to happen.
+   */
+  it('picking a menu item sends the same context typing one does', () => {
+    const idx = js.indexOf('function executeSlashMenuItem');
+    expect(idx).toBeGreaterThan(-1);
+    const body = js.slice(idx, idx + 1600);
+    expect(body).toContain('settings: state.settings');
+    expect(body).toContain('context: state.context');
   });
 });
 

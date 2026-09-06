@@ -77,16 +77,35 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     // across model releases without an extension update. Verified 2026-06.
     models: [
       {
+        id: 'claude-fable-5-1',
+        name: 'Claude Fable 5.1',
+        description: "Anthropic's most capable model — demanding reasoning, long-horizon agents, coding",
+        contextWindow: 1000000,
+        releasedAt: '2026-09-01'
+      },
+      {
         id: 'claude-fable-5',
         name: 'Claude Fable 5',
-        description: "Anthropic's most capable model for the most demanding reasoning and agentic work",
+        description: 'Previous Fable flagship for the most demanding reasoning and agentic work',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-opus-5',
+        name: 'Claude Opus 5',
+        description: 'Flagship Opus — adaptive thinking on by default, best for complex coding',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-sonnet-5',
+        name: 'Claude Sonnet 5',
+        description: 'Best balance of speed, intelligence and cost — the default',
         contextWindow: 1000000
       },
       {
         id: 'claude-opus-4-8',
         name: 'Claude Opus 4.8',
-        description: 'Latest flagship Opus — most capable for complex agentic and coding tasks',
-        contextWindow: 200000
+        description: 'Previous flagship Opus for complex agentic and coding tasks',
+        contextWindow: 1000000
       },
       {
         // Claude Code CLI's bracket-suffix notation for the 1M-context variant (issue #32).
@@ -101,19 +120,19 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         id: 'claude-opus-4-7',
         name: 'Claude Opus 4.7',
         description: 'Previous-generation Opus, highly autonomous for long-horizon work',
-        contextWindow: 200000
+        contextWindow: 1000000
       },
       {
         id: 'claude-sonnet-4-6',
         name: 'Claude Sonnet 4.6',
-        description: 'Best balance of speed and intelligence',
-        contextWindow: 200000
+        description: 'Previous-generation Sonnet',
+        contextWindow: 1000000
       },
       {
         id: 'claude-opus-4-6',
         name: 'Claude Opus 4.6',
         description: 'Older Opus flagship, advanced reasoning and analysis',
-        contextWindow: 200000
+        contextWindow: 1000000
       },
       {
         id: 'claude-opus-4-6[1m]',
@@ -161,7 +180,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         contextWindow: 200000
       }
     ],
-    defaultModel: 'claude-sonnet-4-6'
+    defaultModel: 'claude-sonnet-5'
   };
 
   readonly capabilities: ProviderCapabilities = {
@@ -290,17 +309,10 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     const base = super.getSlashCommands(_panelId);
     return [
       ...base,
-      {
-        id: 'claude:compact',
-        label: '/compact',
-        description: 'Compact conversation context',
-        section: 'commands',
-        icon: 'fold',
-        provider: 'claude-code',
-        action: 'execute',
-        isCliPassthrough: true,
-        keywords: ['compact', 'compress', 'context', 'tokens'],
-      },
+      // `/compact` used to be declared here and was DEAD: it posted
+      // `sendCliPassthrough`, a message no webview handler receives. Claude's
+      // real `/compact` now lives in the provider-native section
+      // (NATIVE_COMMANDS['claude-code']) as a verified pass-through.
       {
         id: 'claude:thinking',
         label: 'Thinking level',

@@ -84,67 +84,39 @@ export class CodexProvider extends BaseCliProvider {
         releasedAt: '2026-09-03'
       },
       {
-        id: 'gpt-5.4-codex',
-        name: 'GPT-5.4 Codex',
-        description: 'Latest coding model, best for code generation',
-        contextWindow: 400000
+        id: 'gpt-5.6-sol',
+        name: 'GPT-5.6 Sol',
+        description: 'Flagship for complex coding, computer use, research and cybersecurity',
+        contextWindow: 1100000
       },
       {
-        id: 'gpt-5.3-codex',
-        name: 'GPT-5.3 Codex',
-        description: 'Previous gen coding model',
-        contextWindow: 400000
+        id: 'gpt-5.6-terra',
+        name: 'GPT-5.6 Terra',
+        description: 'Balanced everyday work — the successor to GPT-5.4',
+        contextWindow: 1100000
       },
       {
-        id: 'gpt-5.2-codex',
-        name: 'GPT-5.2 Codex',
-        description: 'Stable coding model, excellent for code tasks',
-        contextWindow: 400000
+        id: 'gpt-5.6-luna',
+        name: 'GPT-5.6 Luna',
+        description: 'Fastest and most affordable — the successor to GPT-5.4 mini',
+        contextWindow: 1100000
+      },
+      // The two below have no published context window. Leaving it undefined
+      // falls back to 200k, which only makes compaction fire EARLIER than
+      // needed — the safe direction. Overstating a window instead overflows the
+      // model and hard-fails the turn, so never guess upward here.
+      {
+        id: 'gpt-5.5',
+        name: 'GPT-5.5',
+        description: 'Previous-generation flagship'
       },
       {
-        id: 'gpt-5.2',
-        name: 'GPT-5.2',
-        description: 'General purpose model for professional tasks',
-        contextWindow: 1000000
-      },
-      {
-        id: 'gpt-5.2-thinking',
-        name: 'GPT-5.2 Thinking',
-        description: 'Better at coding and planning',
-        contextWindow: 1000000
-      },
-      {
-        id: 'gpt-5.2-instant',
-        name: 'GPT-5.2 Instant',
-        description: 'Faster for writing and information seeking',
-        contextWindow: 1000000
-      },
-      {
-        id: 'gpt-5.1-codex-max',
-        name: 'GPT-5.1 Codex Max',
-        description: 'Previous gen flagship, supports context compaction',
-        contextWindow: 1000000
-      },
-      {
-        id: 'gpt-5.1-codex',
-        name: 'GPT-5.1 Codex',
-        description: 'Previous generation coding model',
-        contextWindow: 1000000
-      },
-      {
-        id: 'o3',
-        name: 'o3',
-        description: 'Advanced reasoning model',
-        contextWindow: 200000
-      },
-      {
-        id: 'o4-mini',
-        name: 'o4-mini',
-        description: 'Fast and efficient for simpler tasks',
-        contextWindow: 200000
+        id: 'gpt-5.3-codex-spark',
+        name: 'GPT-5.3 Codex Spark',
+        description: 'Text-only research preview tuned for real-time coding'
       }
     ],
-    defaultModel: 'gpt-5.4-codex'
+    defaultModel: 'gpt-5.6-sol'
   };
 
   readonly capabilities: ProviderCapabilities = {

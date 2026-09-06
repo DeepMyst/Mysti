@@ -40,18 +40,39 @@ export const CACHE_WRITE_MULT_1H = 2.0;
  * Order matters — the first match wins, so put more specific patterns first.
  */
 const FAMILY_RATES: Array<{ match: RegExp; rate: ModelRate }> = [
+  // ---- Anthropic ----
+  // Fable / Mythos matched no pattern at all before, so every Fable turn was
+  // billed as "unknown" (i.e. not billed) despite being the priciest tier.
+  { match: /fable|mythos/i, rate: { inputPerMTok: 10, outputPerMTok: 50 } },
+  // Sonnet 5 is CHEAPER than Sonnet 4.6 ($2/$10 vs $3/$15) — it must be matched
+  // before the generic /sonnet/ rule or it over-bills by 50%. "sonnet-5" cannot
+  // collide with "claude-sonnet-4-5" or "claude-sonnet-4.5": both carry the
+  // minor version between "sonnet-" and the 5.
+  { match: /sonnet-5/i, rate: { inputPerMTok: 2, outputPerMTok: 10 } },
   { match: /opus/i, rate: { inputPerMTok: 5, outputPerMTok: 25 } },
   { match: /sonnet/i, rate: { inputPerMTok: 3, outputPerMTok: 15 } },
   { match: /haiku/i, rate: { inputPerMTok: 1, outputPerMTok: 5 } },
+  // ---- OpenAI ----
   { match: /4o-mini|gpt-4o-mini|o4-mini/i, rate: { inputPerMTok: 0.15, outputPerMTok: 0.6 } },
+  // ---- Google ----
+  // Gemini 3.5+ Flash is ~7.5x the old Flash rate, so the generic /flash/ rule
+  // understated it badly. Introductory pricing through 2026-12-31; the standard
+  // rate doubles on 2027-01-01.
+  { match: /gemini-3\.[5-9]/i, rate: { inputPerMTok: 0.75, outputPerMTok: 3.75 } },
   { match: /flash/i, rate: { inputPerMTok: 0.1, outputPerMTok: 0.4 } },
   { match: /gemini/i, rate: { inputPerMTok: 1.25, outputPerMTok: 5 } },
+  // ---- OpenAI (continued) ----
   // GPT-6 Astra (2026-09-03). Standard rate, which applies at or below 272K
   // input tokens; above that the whole request repriced to $20/$75. We bill the
   // standard rate here — the ledger has no per-request input size at match time,
   // and under-reporting a long-context request is the safer of the two errors
   // versus inflating every ordinary one by 2x.
   { match: /gpt-6/i, rate: { inputPerMTok: 10, outputPerMTok: 50 } },
+  // GPT-5.6 tiers differ by an order of magnitude, so each is matched before the
+  // generic gpt-5 rule (luna and terra first — "gpt-5.6" alone means Sol).
+  { match: /gpt-5\.6-luna/i, rate: { inputPerMTok: 0.2, outputPerMTok: 1.2 } },
+  { match: /gpt-5\.6-terra/i, rate: { inputPerMTok: 2, outputPerMTok: 12 } },
+  { match: /gpt-5\.6/i, rate: { inputPerMTok: 4, outputPerMTok: 20 } },
   { match: /gpt-5|gpt-4\.1|gpt-4o|gpt-4/i, rate: { inputPerMTok: 2.5, outputPerMTok: 10 } },
 ];
 
