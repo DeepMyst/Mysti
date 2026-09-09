@@ -33,21 +33,11 @@ const flag = (src: string, name: string): boolean | null => {
 };
 
 describe('the attachment mechanism is shared', () => {
-  it('the base class writes temp files and returns a cleanup', () => {
-    const base = read('base/BaseCliProvider.ts');
-    const i = base.indexOf('protected async prepareAttachments(');
-    expect(i).toBeGreaterThan(-1);
-    const body = base.slice(i, i + 2600);
-    expect(body).toContain('writeFile');
-    expect(body).toContain('att.filePath = target');
-    expect(body).toContain('unlink');            // cleanup, or temp files accumulate
-    expect(body).toContain("'.mysti', 'tmp'");   // reachable by a sandboxed CLI
-  });
-
-  it('a provider with no attachments does no filesystem work', () => {
-    const base = read('base/BaseCliProvider.ts');
-    const i = base.indexOf('protected async prepareAttachments(');
-    expect(base.slice(i, i + 2600)).toContain('if (!attachments || attachments.length === 0) { return null; }');
+  it('Claude uses the shared base attachment writer', async () => {
+    const { BaseCliProvider } = await import('../../src/providers/base/BaseCliProvider');
+    const { ClaudeCodeProvider } = await import('../../src/providers/claude/ClaudeCodeProvider');
+    expect((ClaudeCodeProvider.prototype as any).prepareAttachments)
+      .toBe((BaseCliProvider.prototype as any).prepareAttachments);
   });
 });
 

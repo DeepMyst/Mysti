@@ -453,6 +453,131 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
   beforeEach(() => { clearMockConfig(); h = createHarness(); });
   afterEach(() => { h.dispose(); });
 
+  function coordinator(stream: () => AsyncGenerator<unknown>) {
+    const provider = h.provider as any;
+    provider._panelStates.get('sidebar').currentConversationId = 'conv-1';
+    provider._conversationManager.getConversation = () => ({ id: 'conv-1', messages: [] });
+    provider._availableMystiBackends = () => [];
+    const resolveCoordinatorModel = vi.fn(async () => 'coordinator-model');
+    provider._mystiCoordinator = {
+      status: () => ({ ready: true }),
+      credentialState: () => ({ hasDeepMystKey: true, usingOpenRouter: false }),
+      resolveCoordinatorModel,
+      stream,
+    };
+    return {
+      provider,
+      resolveCoordinatorModel,
+      run: () => provider._handleSendMessage(
+        { content: 'help', context: [], settings: { ...SETTINGS, provider: 'mysti' } }, 'sidebar',
+      ),
+    };
+  }
+
+  it.each(['event', 'throw'] as const)('turns a credential %s into an action card and preserves the incomplete answer', async transport => {
+    const c = coordinator(async function* () {
+      yield { text: 'Partial answer.' };
+      if (transport === 'throw') { throw new Error('HTTP 401 Unauthorized'); }
+      yield { error: 'HTTP 401 Unauthorized' };
+    });
+    await c.run();
+    const actions = h.sidebarMessages.filter(message => message.type === 'mystiActionRequired');
+    expect(actions).toHaveLength(1);
+    expect(actions[0].payload).toMatchObject({ reason: 'auth-rejected', actions: expect.arrayContaining(['signInAgain']) });
+    expect(h.sidebarMessages.some(message => message.type === 'responseComplete')).toBe(false);
+    expect(getAssistantPersistCall(h)[2]).toContain('Partial answer.');
+    expect(getAssistantPersistCall(h)[2]).toContain('stopped on an error');
+  });
+
+  it('reuses the model resolved for this run when the stream lacks attribution', async () => {
+    const c = coordinator(async function* () { yield { text: 'Done.' }; });
+    await c.run();
+    // Do not add another asynchronous model lookup after releasing run ownership:
+    // a later turn can start during that await and receive the old completion.
+    expect(c.resolveCoordinatorModel).toHaveBeenCalledTimes(1);
+    expect(getAssistantPersistCall(h)[6].model).toBe('coordinator-model');
+  });
+
+  it.each(['matching', 'foreign'] as const)('announces a blocked coordinator capability only for a %s nonce', async nonceKind => {
+    let runNonce = '';
+    let streamedText = '';
+    const c = coordinator(async function* (...args: unknown[]) {
+      const messages = args[0] as Array<{ content: string }>;
+      runNonce = messages.map(message => message.content).join('\n')
+        .match(/<delegate:([A-Za-z0-9]{6,})\s+agent/)?.[1] ?? '';
+      expect(runNonce).not.toBe('');
+      const directive = `<write:${nonceKind === 'matching' ? runNonce : 'foreignnonce'} path="src/a.ts">contents</write>`;
+      streamedText = `Preparing the change. ${directive}`;
+      yield { text: 'Preparing the change. ' };
+      yield { text: directive };
+    });
+    vi.spyOn(c.provider, '_mystiLocalExecEnabled').mockReturnValue(false);
+    const announce = vi.spyOn(c.provider, '_announceRefusedCapability');
+    await c.run();
+    expect(announce).toHaveBeenCalledOnce();
+    expect(announce).toHaveBeenCalledWith('sidebar', streamedText, runNonce, expect.arrayContaining(['read']));
+    expect(announce.mock.calls[0][3]).not.toContain('write');
+    const actions = h.sidebarMessages.filter(message => message.type === 'mystiActionRequired');
+    if (nonceKind === 'matching') {
+      expect(actions).toHaveLength(1);
+      expect(actions[0].payload).toMatchObject({
+        reason: 'capability-off', settingKey: 'mysti.mysti.localExecution', actions: ['openCapabilitySetting'],
+      });
+    } else {
+      expect(actions).toEqual([]);
+    }
+    expect(h.sidebarMessages.some(message => message.type === 'toolUse')).toBe(false);
+  });
+
+  it.each(['superseded', 'stopped'] as const)('does not reclaim panel state after preflight is %s', async outcome => {
+    const stream = vi.fn(async function* () { yield { text: 'Replacement answer.' }; });
+    const c = coordinator(stream);
+    let signalWaiting!: () => void;
+    const waiting = new Promise<void>(resolve => { signalWaiting = resolve; });
+    let resolveModel!: (model: string) => void;
+    const model = new Promise<string>(resolve => { resolveModel = resolve; });
+    c.resolveCoordinatorModel.mockImplementationOnce(() => { signalWaiting(); return model; });
+    const close = vi.fn(async () => undefined);
+    vi.spyOn(c.provider, '_mystiMcpToolset')
+      .mockResolvedValue(null)
+      .mockResolvedValueOnce({ tools: [], client: { close } });
+    const oldRun = c.run();
+    await waiting;
+    if (outcome === 'superseded') {
+      await c.run();
+    } else {
+      c.provider._cancelledPanels.add('sidebar');
+    }
+    const assistantCalls = h.persistedCalls.filter(call => call[1] === 'assistant').length;
+    const completionCount = h.sidebarMessages.filter(message => message.type === 'responseComplete').length;
+    expect(c.provider._runningPanels.has('sidebar')).toBe(false);
+    const reclaimRunning = vi.spyOn(c.provider._runningPanels, 'add');
+    resolveModel('obsolete-model');
+    await oldRun;
+    expect(c.provider._runningPanels.has('sidebar')).toBe(false);
+    expect(reclaimRunning).not.toHaveBeenCalled();
+    expect(c.provider._mystiAbortControllers.has('sidebar')).toBe(false);
+    expect(close).toHaveBeenCalledOnce();
+    expect(stream).toHaveBeenCalledTimes(outcome === 'superseded' ? 1 : 0);
+    expect(h.persistedCalls.filter(call => call[1] === 'assistant')).toHaveLength(assistantCalls);
+    expect(h.sidebarMessages.filter(message => message.type === 'responseComplete')).toHaveLength(completionCount);
+  });
+
+  it('persists partial text after Stop and never publishes a clean completion', async () => {
+    const c = coordinator(async function* () {
+      yield { text: 'Work before Stop.' };
+      c.provider._cancelledPanels.add('sidebar');
+      yield { text: 'This must not appear.' };
+    });
+    await c.run();
+    const message = getAssistantPersistCall(h)[2];
+    expect(message).toContain('Work before Stop.');
+    expect(message).toContain('Stopped');
+    expect(message).not.toContain('This must not appear.');
+    expect(h.sidebarMessages.some(message => message.type === 'responseComplete')).toBe(false);
+    expect(h.sidebarMessages.some(message => message.type === 'requestCancelled')).toBe(true);
+  });
+
   it('routes a delegate directive, fences the result UNTRUSTED, counts it, and persists the card', async () => {
     const streamCalls: any[][] = [];
     // Extract the per-run nonce from the coordinator system prompt so the stub

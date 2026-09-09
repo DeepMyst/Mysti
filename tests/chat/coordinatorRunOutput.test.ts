@@ -117,4 +117,34 @@ describe('coordinator run output', () => {
     output.observe({ costUsd: 0.25 });
     expect(output.receipt(0)).toMatchObject({ costUsd: 0.25 });
   });
+
+  it('marks an unmeasured final stream partial without reusing an earlier context size', () => {
+    const { output } = harness();
+    output.beginTurn();
+    output.observe({ usage: { input_tokens: 500, output_tokens: 10 } });
+    output.beginTurn();
+    output.observe({ text: 'Final response without usage.' });
+    expect(output.measurements()).toMatchObject({ contextTokens: undefined, outputTokens: 10, estimated: true });
+    expect(output.receipt(0)).toMatchObject({ output_tokens: 10, tokensPartial: true });
+    expect(output.receipt(0)).not.toHaveProperty('contextTokens');
+  });
+
+  it('retains the partial flag when a measured turn follows an unmeasured one', () => {
+    const { output } = harness();
+    output.beginTurn();
+    output.observe({ text: 'No usage supplied.' });
+    output.beginTurn();
+    output.observe({ usage: { input_tokens: 100, output_tokens: 20 } });
+    expect(output.measurements()).toMatchObject({ contextTokens: 100, outputTokens: 20, estimated: true });
+    expect(output.receipt(0)).toMatchObject({ contextTokens: 100, tokensPartial: true });
+  });
+
+  it('does not present cost-only or delegation-only receipts as measured zero tokens', () => {
+    const { output } = harness();
+    expect(output.receipt(1)).toMatchObject({ delegations: 1, tokensPartial: true });
+    output.beginTurn();
+    output.observe({ costUsd: 0.1 });
+    expect(output.receipt(0)).toMatchObject({ costUsd: 0.1, tokensPartial: true });
+    expect(output.measurements()).toMatchObject({ outputTokens: undefined, estimated: true });
+  });
 });

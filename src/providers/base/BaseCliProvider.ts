@@ -40,6 +40,7 @@ import type {
   Skill
 } from '../../types';
 import type { NativeCommandSpec } from './NativeCommands';
+import { prepareCliAttachments } from './prepareCliAttachments';
 import type { AgentContextManager } from '../../managers/AgentContextManager';
 import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TIMEOUT_MS, STREAM_INACTIVITY_TIMEOUT_MS } from '../../constants';
 import { getCommonSearchPaths, getPriorityCliPaths, resolveCommandOnPath, probeCliVersion, validateCliPath, checkCommandExists, getEnrichedEnv, filterInstallMethodsForOS } from '../../utils/platform';
@@ -1359,6 +1360,8 @@ export abstract class BaseCliProvider implements ICliProvider {
   /**
    * Send a message to the AI provider.
    * Tries persistent process mode first (if supported), falls back to single-shot spawn.
+   * A caller abandoning a pending next() must cancelCurrentRequest first;
+   * async-generator return() alone queues behind an outstanding transport read.
    */
   async *sendMessage(
     content: string,
@@ -1372,6 +1375,9 @@ export abstract class BaseCliProvider implements ICliProvider {
     attachments?: Attachment[]
   ): AsyncGenerator<StreamChunk> {
     const startTime = Date.now();
+    // Attachment preparation mutates filePath. Each turn owns its records even
+    // when a caller reuses the same attachment array in concurrent panels.
+    attachments = attachments?.map(attachment => ({ ...attachment }));
     const session = this._getSession(panelId);
     if (this._requests.has(session)) { this._cancelSessionRequest(session); }
     session.autonomousMode = settings.autonomousMode === true;
@@ -1479,85 +1485,85 @@ export abstract class BaseCliProvider implements ICliProvider {
     attachments: Attachment[] | undefined,
     startTime: number,
   ): AsyncGenerator<StreamChunk> {
-    const cliPath = this.getCliPath();
-    const args = this.buildCliArgs(settings, session);
-
-    // Prepare attachments (subclasses can override to write temp files, add CLI flags, etc.)
-    const attachmentCleanup = await this.prepareAttachments(attachments, args);
-
-    // Get workspace folder for CWD
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
-
-    // Build environment with enriched PATH, thinking tokens, and permission port
-    const thinkingTokens = this.getThinkingTokens(settings.thinkingLevel);
-    const spawnExtraEnv: Record<string, string> = { ...this.getExtraSpawnEnv(settings) };
-    if (thinkingTokens && thinkingTokens > 0) {
-      spawnExtraEnv.MAX_THINKING_TOKENS = String(thinkingTokens);
-    }
-    const env = getEnrichedEnv(Object.keys(spawnExtraEnv).length > 0 ? spawnExtraEnv : undefined);
-    console.log(`[Mysti] ${this.displayName}: Spawning CLI process for panel ${panelId || 'default'}...`);
-    console.log(`[Mysti] ${this.displayName}: CLI args: ${args.map(a => a.length > 100 ? a.slice(0, 100) + '...[' + a.length + ' chars]' : a).join(' ')}`);
-    // Check if we should use shell for spawning (auto-enable on Windows for .cmd wrapper support)
-    const useShell = process.platform === 'win32' || vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
-    const spawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
-    let spawnArgs = args;
-    if (useShell) {
-      spawnOpts.shell = true;
-      for (const arg of args) {
-        // Refuse genuine shell-injection vectors. Square brackets are NOT
-        // refused: some model ids use them (e.g. claude-opus-4-6[1m]); they are
-        // glob characters, not injection vectors (no command substitution or
-        // separators). On POSIX shells they would still glob-expand if a
-        // matching filename exists in cwd, so _quoteShellArgsForBrackets below
-        // single-quotes any bracketed arg to force literal interpretation.
-        // Win32 filesystem paths are exempted by shape (see _isUnsafeShellArg)
-        // and double-quoted below — otherwise `--mcp-config C:\...` threw.
-        if (this._isUnsafeShellArg(arg)) {
-          console.error(`[Mysti] Rejecting unsafe CLI argument in shell mode`);
-          throw new Error('Invalid argument detected in shell mode');
-        }
-      }
-      // Glob-safety (Plan 01 R1): when Node spawns with shell:true and an args
-      // array, it joins args into a command string WITHOUT quoting. On POSIX
-      // shells, [ and ] are glob characters and could expand against the cwd
-      // (e.g. claude-opus-4-6[1m] matching a stray file). Single-quote bracketed
-      // args so the model id reaches the CLI verbatim. Windows cmd.exe does not
-      // glob [ ], so we leave win32 args untouched (quoting there would break the
-      // .cmd shim invocation).
-      spawnArgs = this._quoteShellArgsForBrackets(args);
-    }
-
-    session.process = spawn(cliPath, spawnArgs, spawnOpts);
-
-    // Attach early error handler to catch async spawn errors (e.g., ENOENT/EINVAL on Windows)
-    let earlySpawnError: Error | null = null;
-    session.process.on('error', (err) => {
-      earlySpawnError = err;
-      console.error(`[Mysti] ${this.displayName}: Spawn error:`, err);
-    });
-
-    const spawnTime = Date.now() - startTime;
-    console.log(`[Mysti] ${this.displayName}: CLI spawned in ${spawnTime}ms, building prompt...`);
-
-    // Register process with ProviderManager for per-panel cancellation
-    if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-      (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
-    }
-
-    // Set up stderr handler early to capture initialization errors
+    const signal = this._requests.get(session)?.controller.signal;
+    let proc: ChildProcess | null = null;
+    let attachmentCleanup: (() => Promise<void>) | null = null;
     const stderrRef = { output: '' };
     const stderrHandler = (data: Buffer) => {
       const text = data.toString();
       stderrRef.output += text;
       console.log(`[Mysti] ${this.displayName} stderr:`, text);
     };
-
-    if (session.process.stderr) {
-      session.process.stderr.on('data', stderrHandler);
-    }
-
     try {
+      const cliPath = this.getCliPath();
+      const args = this.buildCliArgs(settings, session);
+
+      // Prepare attachments (subclasses can override to write temp files, add CLI flags, etc.)
+      attachmentCleanup = await this.prepareAttachments(attachments, args);
+      if (signal?.aborted || session.cancelled) { return; }
+
+      // Get workspace folder for CWD
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
+
+      // Build environment with enriched PATH, thinking tokens, and permission port
+      const thinkingTokens = this.getThinkingTokens(settings.thinkingLevel);
+      const spawnExtraEnv: Record<string, string> = { ...this.getExtraSpawnEnv(settings) };
+      if (thinkingTokens && thinkingTokens > 0) {
+        spawnExtraEnv.MAX_THINKING_TOKENS = String(thinkingTokens);
+      }
+      const env = getEnrichedEnv(Object.keys(spawnExtraEnv).length > 0 ? spawnExtraEnv : undefined);
+      console.log(`[Mysti] ${this.displayName}: Spawning CLI process for panel ${panelId || 'default'}...`);
+      console.log(`[Mysti] ${this.displayName}: CLI args: ${args.map(a => a.length > 100 ? a.slice(0, 100) + '...[' + a.length + ' chars]' : a).join(' ')}`);
+      // Check if we should use shell for spawning (auto-enable on Windows for .cmd wrapper support)
+      const useShell = process.platform === 'win32' || vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
+      const spawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
+      let spawnArgs = args;
+      if (useShell) {
+        spawnOpts.shell = true;
+        for (const arg of args) {
+          // Refuse genuine shell-injection vectors. Square brackets are NOT
+          // refused: some model ids use them (e.g. claude-opus-4-6[1m]); they are
+          // glob characters, not injection vectors (no command substitution or
+          // separators). On POSIX shells they would still glob-expand if a
+          // matching filename exists in cwd, so _quoteShellArgsForBrackets below
+          // single-quotes any bracketed arg to force literal interpretation.
+          // Win32 filesystem paths are exempted by shape (see _isUnsafeShellArg)
+          // and double-quoted below — otherwise `--mcp-config C:\...` threw.
+          if (this._isUnsafeShellArg(arg)) {
+            console.error(`[Mysti] Rejecting unsafe CLI argument in shell mode`);
+            throw new Error('Invalid argument detected in shell mode');
+          }
+        }
+        // Glob-safety (Plan 01 R1): when Node spawns with shell:true and an args
+        // array, it joins args into a command string WITHOUT quoting. On POSIX
+        // shells, [ and ] are glob characters and could expand against the cwd
+        // (e.g. claude-opus-4-6[1m] matching a stray file). Single-quote bracketed
+        // args so the model id reaches the CLI verbatim. Windows cmd.exe does not
+        // glob [ ], so we leave win32 args untouched (quoting there would break the
+        // .cmd shim invocation).
+        spawnArgs = this._quoteShellArgsForBrackets(args);
+      }
+
+      proc = spawn(cliPath, spawnArgs, spawnOpts);
+      session.process = proc;
+
+      // Attach early error handler to catch async spawn errors (e.g., ENOENT/EINVAL on Windows)
+      let earlySpawnError: Error | null = null;
+      proc.on('error', (err) => {
+        earlySpawnError = err;
+        console.error(`[Mysti] ${this.displayName}: Spawn error:`, err);
+      });
+
+      const spawnTime = Date.now() - startTime;
+      console.log(`[Mysti] ${this.displayName}: CLI spawned in ${spawnTime}ms, building prompt...`);
+
+      // Register process with ProviderManager for per-panel cancellation
+      if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
+        (providerManager as ProcessTracker).registerProcess(panelId, proc, this.id);
+      }
+
+      proc.stderr?.on('data', stderrHandler);
       // Build prompt AFTER spawning (parallelizes CLI startup with prompt building)
       // When the CLI itself resumes the session it already has the full
       // conversation context — don't re-send history in the prompt (avoids
@@ -1565,6 +1571,8 @@ export abstract class BaseCliProvider implements ICliProvider {
       // sessionId alone is NOT that condition.
       const effectiveConversation = this._conversationForPrompt(session, conversation);
       const fullPrompt = await this.buildPromptAsync(content, context, effectiveConversation, settings, persona, agentConfig, attachments, session.channelSystemContext);
+
+      if (signal?.aborted || session.process !== proc) { return; }
 
       // Check if spawn failed during prompt building (async error on Windows)
       if (earlySpawnError) {
@@ -1575,7 +1583,8 @@ export abstract class BaseCliProvider implements ICliProvider {
       console.log(`[Mysti] ${this.displayName}: Prompt built in ${promptTime}ms (total: ${Date.now() - startTime}ms)`);
 
       // Hand the prompt to the CLI (stdin by default — see _deliverPrompt).
-      await this._deliverPrompt(session.process, fullPrompt, session);
+      await this._deliverPrompt(proc, fullPrompt, session);
+      if (signal?.aborted || session.process !== proc) { return; }
       const promptSentTime = Date.now() - startTime;
       console.log(`[Mysti] ${this.displayName}: Prompt delivered in ${promptSentTime}ms`);
 
@@ -1588,7 +1597,11 @@ export abstract class BaseCliProvider implements ICliProvider {
       console.log(`  - Waiting for first response...`);
 
       // Process stream output
-      yield* this.processStream(stderrRef, session);
+      for await (const chunk of this.processStream(stderrRef, session)) {
+        if (signal?.aborted || session.process !== proc) { return; }
+        yield chunk;
+      }
+      if (signal?.aborted || session.process !== proc) { return; }
 
       // Yield final done with any stored usage from stream parsing
       const totalTime = Date.now() - startTime;
@@ -1604,6 +1617,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       const storedUsage = this.getStoredUsage(panelId);
       yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
     } catch (error) {
+      if (signal?.aborted) { return; }
       // A spawn-time refusal (EACCES/EPERM on a Gatekeeper-blocked binary)
       // lands here rather than in processStream, so it gets the same upgrade
       // from an opaque errno to an actionable explanation.
@@ -1616,38 +1630,25 @@ export abstract class BaseCliProvider implements ICliProvider {
           hasOutput: false
         });
       }
-      yield chunk;
+      if (!signal?.aborted) { yield chunk; }
     } finally {
-      // Liveness-gated cleanup (not `.killed`): a SIGTERM'd-but-alive CLI must
-      // still be escalated to SIGKILL, which the old `!killed` guard skipped.
-      if (isProcessLive(session.process)) {
-        try {
-          if (session.process!.stderr) {
-            session.process!.stderr.removeListener('data', stderrHandler);
-          }
-
-          // Suspended (SIGSTOP) processes get SIGKILL directly so we don't open a
-          // tool-execution window by resuming them; others get SIGTERM→SIGKILL.
-          void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, {
-            label: this.displayName,
-            initialSignal: session.suspended ? 'SIGKILL' : 'SIGTERM',
-          });
-          session.suspended = false;
-        } catch (e) {
-          console.error(`[Mysti] ${this.displayName}: Error cleaning up process:`, e);
-        }
+      // This turn owns the captured handle even if the panel has already moved
+      // on. Its cleanup must never signal or unregister a replacement process.
+      proc?.stderr?.removeListener('data', stderrHandler);
+      if (isProcessLive(proc)) {
+        void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, {
+          label: this.displayName,
+          initialSignal: session.process === proc && session.suspended ? 'SIGKILL' : 'SIGTERM',
+        });
       }
-
-      session.process = null;
-      session.suspended = false;
-
-      if (attachmentCleanup) {
-        await attachmentCleanup();
+      if (session.process === proc) {
+        session.process = null;
+        session.suspended = false;
       }
-
-      if (panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
-        (providerManager as ProcessTracker).clearProcess(panelId);
+      if (proc && panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
+        (providerManager as ProcessTracker).clearProcess(panelId, proc);
       }
+      if (attachmentCleanup) { await attachmentCleanup(); }
     }
   }
 
@@ -1655,6 +1656,9 @@ export abstract class BaseCliProvider implements ICliProvider {
    * Process the CLI output stream
    */
   protected async *processStream(stderrRef: { output: string }, session: PanelSessionState): AsyncGenerator<StreamChunk> {
+    const proc = session.process;
+    const signal = this._requests.get(session)?.controller.signal;
+    const isCurrent = () => !signal?.aborted && session.process === proc;
     let buffer = '';
     let hasYieldedContent = false;
     let firstChunkTime: number | null = null;
@@ -1673,16 +1677,26 @@ export abstract class BaseCliProvider implements ICliProvider {
     const inactivityMs = session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : STREAM_INACTIVITY_TIMEOUT_MS;
     let lastStderrLen = stderrRef.output.length;
     let timedOut = false;
-    if (session.process?.stdout) {
-      const stdoutIt = session.process.stdout[Symbol.asyncIterator]();
+    if (proc?.stdout) {
+      const stdoutIt = proc.stdout[Symbol.asyncIterator]();
+      let onAbort: () => void = () => {};
+      const aborted = new Promise<'aborted'>(resolve => { onAbort = () => resolve('aborted'); });
+      signal?.addEventListener('abort', onAbort, { once: true });
+      let pendingRead = stdoutIt.next();
       try {
         while (true) {
+          if (!isCurrent()) { return; }
           let timer: ReturnType<typeof setTimeout> | undefined;
           const timeoutP = new Promise<'timeout'>(resolve => {
             timer = setTimeout(() => resolve('timeout'), inactivityMs);
           });
-          const result = await Promise.race([stdoutIt.next(), timeoutP]);
-          clearTimeout(timer);
+          let result: Awaited<ReturnType<typeof stdoutIt.next>> | 'timeout' | 'aborted';
+          try {
+            result = await Promise.race([pendingRead, timeoutP, aborted]);
+          } finally {
+            clearTimeout(timer);
+          }
+          if (!isCurrent() || result === 'aborted') { return; }
           if (result === 'timeout') {
             // stderr progress counts as liveness (many CLIs log there
             // between tool events) — re-arm instead of killing.
@@ -1692,7 +1706,7 @@ export abstract class BaseCliProvider implements ICliProvider {
             }
             timedOut = true;
             console.error(`[Mysti] ${this.displayName}: No stdout/stderr activity for ${Math.round(inactivityMs / 60000)}min — killing wedged process`);
-            void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, {
+            void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, {
               label: `${this.displayName} inactivity-timeout`,
             });
             break;
@@ -1713,6 +1727,7 @@ export abstract class BaseCliProvider implements ICliProvider {
           buffer = lines.pop() || '';
 
           for (const line of lines) {
+            if (!isCurrent()) { return; }
             if (line.trim()) {
               const parsed = this.parseStreamLine(line, session);
               if (parsed) {
@@ -1725,12 +1740,16 @@ export abstract class BaseCliProvider implements ICliProvider {
               }
             }
           }
+          pendingRead = stdoutIt.next();
         }
       } finally {
+        signal?.removeEventListener('abort', onAbort);
         // Consumer abandonment must release the stdout reader.
-        try { void stdoutIt.return?.(undefined); } catch { /* best-effort */ }
+        try { void Promise.resolve(stdoutIt.return?.(undefined)).catch(() => {}); } catch { /* best-effort */ }
       }
     }
+
+    if (!isCurrent()) { return; }
 
     if (timedOut) {
       yield {
@@ -1749,12 +1768,13 @@ export abstract class BaseCliProvider implements ICliProvider {
     }
 
     console.log(`[Mysti] ${this.displayName}: Stream ended (hasYieldedContent=${hasYieldedContent}, firstChunkTime=${firstChunkTime}), waiting for process to exit...`);
-    const exitCode = await this.waitForProcess(session);
+    const exitCode = await this.waitForProcess(session, proc);
+    if (!isCurrent()) { return; }
     console.log(`[Mysti] ${this.displayName}: Process exited with code:`, exitCode);
 
     // Node clears `session.process` in the caller's finally block, so capture
     // the signal alongside the code while the handle is still around.
-    const exitSignal = session.process?.signalCode ?? null;
+    const exitSignal = proc?.signalCode ?? null;
 
     if (exitCode !== 0 && exitCode !== null) {
       const rawStderr = stderrRef.output;
@@ -1845,40 +1865,36 @@ export abstract class BaseCliProvider implements ICliProvider {
   /**
    * Wait for a process to complete with timeout protection
    */
-  protected async waitForProcess(session: PanelSessionState): Promise<number | null> {
+  protected async waitForProcess(
+    session: PanelSessionState,
+    proc: ChildProcess | null = session.process,
+  ): Promise<number | null> {
+    const signal = this._requests.get(session)?.controller.signal;
+    if (!proc || signal?.aborted) { return null; }
+    if (proc.exitCode !== null || (proc.signalCode !== null && proc.signalCode !== undefined)) { return proc.exitCode; }
+
     return new Promise<number | null>((resolve, reject) => {
-      if (!session.process) {
-        resolve(null);
-        return;
-      }
-
-      if (session.process.exitCode !== null) {
-        resolve(session.process.exitCode);
-        return;
-      }
-
+      const cleanup = () => {
+        clearTimeout(timeout);
+        proc.removeListener('close', onClose);
+        proc.removeListener('error', onError);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onClose = (code: number | null) => { cleanup(); resolve(code); };
+      const onError = (error: Error) => { cleanup(); reject(error); };
+      const onAbort = () => { cleanup(); resolve(null); };
       const timeoutMs = session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : PROCESS_TIMEOUT_MS;
       const timeout = setTimeout(() => {
+        cleanup();
         console.error(`[Mysti] ${this.displayName}: Process timeout after ${timeoutMs / 1000}s`);
-        // Liveness-gated SIGTERM→SIGKILL (the old `!killed` guard skipped the
-        // escalation, so a CLI ignoring SIGTERM leaked past the timeout).
-        if (isProcessLive(session.process)) {
-          void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
+        if (isProcessLive(proc)) {
+          void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
         }
         reject(new Error('Process timeout'));
       }, timeoutMs);
-
-      session.process.on('close', (code) => {
-        clearTimeout(timeout);
-        console.log(`[Mysti] ${this.displayName}: Process closed with code:`, code);
-        resolve(code);
-      });
-
-      session.process.on('error', (err) => {
-        clearTimeout(timeout);
-        console.error(`[Mysti] ${this.displayName}: Process error:`, err);
-        reject(err);
-      });
+      proc.on('close', onClose);
+      proc.on('error', onError);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 
@@ -2082,49 +2098,9 @@ export abstract class BaseCliProvider implements ICliProvider {
     attachments: Attachment[] | undefined,
     _args: string[]
   ): Promise<(() => Promise<void>) | null> {
-    // Plan 27 Phase 5 — images reached ONE provider of fifteen.
-    //
-    // This was a no-op base with a single override in ClaudeCodeProvider, so
-    // `supportsImages` was true for Claude Code and false everywhere else and
-    // the attach button was dead on fourteen backends.
-    //
-    // The mechanism generalises exactly as Claude's did: write the bytes to a
-    // temp file and put its PATH in the prompt. Every CLI backend here has
-    // file-read tools, so "look at .mysti/tmp/x.png" is a request it can
-    // actually satisfy. This is deliberately NOT enabled for the HTTP
-    // providers (ollama, localai, openrouter): they have no filesystem tools,
-    // so a path would be a capability flag that lies — they need base64 in the
-    // request payload, which is separate work.
-    if (!attachments || attachments.length === 0) { return null; }
-    const usable = attachments.filter(a => a.type === 'image' || a.type === 'file');
-    if (usable.length === 0) { return null; }
-
-    // Prefer the workspace so a sandboxed CLI can reach it; os.tmpdir() is
-    // outside the sandbox's write root but still readable.
-    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const dir = wsRoot ? nodePath.join(wsRoot, '.mysti', 'tmp') : os.tmpdir();
-    await fs.promises.mkdir(dir, { recursive: true });
-
-    const written: string[] = [];
-    for (const att of usable) {
-      // Already on disk (attach button) — nothing to write.
-      if (att.filePath && !att.base64Data) { continue; }
-      if (!att.base64Data) { continue; }
-      const ext = att.fileName?.split('.').pop()
-        || (att.type === 'image' ? (att.mimeType?.split('/')[1] || 'png') : 'bin');
-      const target = nodePath.join(dir, `mysti-attachment-${att.id}.${ext}`);
-      await fs.promises.writeFile(target, Buffer.from(att.base64Data, 'base64'));
-      att.filePath = target;
-      written.push(target);
-    }
-    if (written.length === 0) { return null; }
-
-    console.log(`[Mysti] ${this.displayName}: wrote ${written.length} attachment(s) to ${dir}`);
-    return async () => {
-      for (const f of written) {
-        try { await fs.promises.unlink(f); } catch { /* best effort */ }
-      }
-    };
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const directory = workspaceRoot ? nodePath.join(workspaceRoot, '.mysti', 'tmp') : os.tmpdir();
+    return prepareCliAttachments(attachments, directory);
   }
 
   protected formatContext(context: ContextItem[]): string {

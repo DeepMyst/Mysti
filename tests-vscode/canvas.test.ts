@@ -34,6 +34,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createRequire } from 'module';
 import * as vscode from 'vscode';
 import { chromium, type Browser, type Frame, type Page } from 'playwright';
 
@@ -80,6 +81,20 @@ describe('Mysti Canvas — real VS Code host', function () {
   before(async () => {
     const ext = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(ext, `extension ${EXTENSION_ID} not found — is package.json's publisher/name unchanged?`);
+    console.log(`[Mysti test] VS Code ${vscode.version}, Node ${process.versions.node}, extension ${ext.extensionPath}`);
+    if (process.env.MYSTI_TEST_VSIX_PATH) {
+      assert.notStrictEqual(
+        fs.realpathSync(ext.extensionPath), fs.realpathSync(path.resolve(__dirname, '..')),
+        'the archive test loaded the source checkout instead of the installed VSIX',
+      );
+      const requireFromPackage = createRequire(path.join(ext.extensionPath, 'package.json'));
+      const shippedModules = fs.realpathSync(path.join(ext.extensionPath, 'node_modules')) + path.sep;
+      assert.ok(
+        fs.realpathSync(requireFromPackage.resolve('playwright')).startsWith(shippedModules),
+        'Playwright resolved outside the installed VSIX',
+      );
+      assert.strictEqual(typeof requireFromPackage('playwright').chromium.connectOverCDP, 'function');
+    }
     await ext.activate();
     assert.ok(ext.isActive, 'extension failed to activate');
 
@@ -241,9 +256,14 @@ describe('Mysti Canvas — real VS Code host', function () {
     assert.strictEqual(await artboard.getAttribute('sandbox'), 'allow-scripts');
     const design = artboard.contentFrame();
     await design.getByRole('heading', { name: 'Welcome back', exact: true }).waitFor({ state: 'visible' });
-    const email = design.locator('input[type="email"]');
+    const email = design.getByRole('textbox', { name: 'Email', exact: true });
     await email.fill('canvas-test@example.invalid');
     assert.strictEqual(await email.inputValue(), 'canvas-test@example.invalid');
+    if (process.env.MYSTI_TEST_VSIX_PATH) {
+      const screenshot = path.join(process.env.MYSTI_TEST_USER_DATA_DIR!, 'canvas-success.png');
+      await page.screenshot({ path: screenshot });
+      console.log(`[Mysti test] Packaged Canvas screenshot: ${screenshot}`);
+    }
   });
 
   /**

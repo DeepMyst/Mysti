@@ -1,0 +1,9 @@
+{
+  "name": "mysti-integration-driver",
+  "displayName": "Mysti integration test driver",
+  "publisher": "DeepMyst",
+  "version": "0.0.0",
+  "engines": {
+    "vscode": "^1.86.0"
+  }
+}

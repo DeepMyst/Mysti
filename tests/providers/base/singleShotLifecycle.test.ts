@@ -10,8 +10,9 @@ import { TestableCodexProvider } from '../../helpers/providerFactory';
 import { clearMockConfig } from '../../helpers/mockVscode';
 import { ProviderManager } from '../../../src/managers/ProviderManager';
 import { killProcessTree } from '../../../src/utils/processKill';
-import type { Settings, StreamChunk } from '../../../src/types';
+import type { Attachment, Settings, StreamChunk } from '../../../src/types';
 import type { PanelSessionState } from '../../../src/providers/base/BaseCliProvider';
+import { PROCESS_TIMEOUT_MS, STREAM_INACTIVITY_TIMEOUT_MS } from '../../../src/constants';
 
 vi.mock('child_process', async importOriginal => ({
   ...await importOriginal<typeof import('child_process')>(), spawn: vi.fn(),
@@ -57,7 +58,9 @@ function harness() {
       ProviderManager.prototype.clearProcess.call(state as unknown as ProviderManager, panelId, proc);
     }),
   };
-  const send = () => provider.sendMessage('hello', [], {} as Settings, null, undefined, 'panel', tracker);
+  const send = (attachments?: Attachment[], panelId = 'panel') => provider.sendMessage(
+    'hello', [], {} as Settings, null, undefined, panelId, tracker, undefined, attachments,
+  );
   const session = (): PanelSessionState => (provider as any)._getSession('panel');
   return { provider, cleanup, prepare, prompt, deliver, tracker, state, send, session };
 }
@@ -70,7 +73,7 @@ async function collect(gen: AsyncGenerator<StreamChunk>) {
 
 describe('single-shot process ownership', () => {
   beforeEach(() => { clearMockConfig(); vi.clearAllMocks(); });
-  afterEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
   it('cancelled prompt preparation cannot write to or clean up its replacement', async () => {
     const { provider, prompt, deliver, cleanup, state, send, session } = harness();
@@ -122,7 +125,7 @@ describe('single-shot process ownership', () => {
     provider.cancelCurrentRequest('panel');
     prepared.resolve(cleanup);
     await completion;
-    expect(spawn).not.toHaveBeenCalled();
+    expect(vi.mocked(spawn).mock.calls.length).toBe(0);
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
@@ -134,5 +137,106 @@ describe('single-shot process ownership', () => {
     expect(cleanup).toHaveBeenCalledOnce();
     expect(tracker.registerProcess).not.toHaveBeenCalled();
     expect(tracker.clearProcess).not.toHaveBeenCalled();
+  });
+
+  it('Stop settles a silent stdout read without waiting for process close', async () => {
+    vi.useFakeTimers();
+    const { provider, cleanup, send } = harness();
+    vi.mocked((provider as any).processStream).mockRestore();
+    const child = fakeProcess();
+    const reading = deferred<void>();
+    const returned = vi.fn(async () => ({ done: true, value: undefined }));
+    Object.assign(child.stdout!, {
+      [Symbol.asyncIterator]: () => ({
+        next: () => { reading.resolve(); return new Promise(() => {}); },
+        return: returned,
+      }),
+    });
+    vi.mocked(spawn).mockReturnValue(child);
+    const stream = send();
+    const completion = collect(stream);
+    await reading.promise;
+    // return() queues behind the pending read; cancellation is the operation
+    // that wakes it, as required by the provider iterator contract.
+    const returning = stream.return(undefined);
+    provider.cancelCurrentRequest('panel');
+    const settled = vi.fn();
+    void completion.then(settled);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toHaveBeenCalledWith([]);
+    expect(returned).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    expect((await returning).done).toBe(true);
+  });
+
+  it('concurrent sends own attachment records and never mutate caller-owned paths', async () => {
+    const { prepare, prompt, send } = harness();
+    const attachment: Attachment = {
+      id: 'shared', type: 'image', fileName: 'image.png', mimeType: 'image/png', size: 3, base64Data: 'YWJj',
+    };
+    const prepared: Attachment[] = [];
+    const promptPaths: string[] = [];
+    prepare.mockImplementation(async (attachments: Attachment[]) => {
+      const record = attachments[0];
+      prepared.push(record);
+      record.filePath = `/temporary/request-${prepared.length}`;
+      return async () => { record.filePath = undefined; };
+    });
+    prompt.mockImplementation(async (...args: unknown[]) => {
+      promptPaths.push((args[6] as Attachment[])[0].filePath!);
+      return 'prompt';
+    });
+    vi.mocked(spawn).mockReturnValueOnce(fakeProcess()).mockReturnValueOnce(fakeProcess());
+    const first = send([attachment], 'first');
+    const second = send([attachment], 'second');
+    await Promise.all([first.next(), second.next()]);
+    expect(prepared[0]).not.toBe(prepared[1]);
+    expect(prepared).not.toContain(attachment);
+    expect(promptPaths.sort()).toEqual(['/temporary/request-1', '/temporary/request-2']);
+    expect(attachment.filePath).toBeUndefined();
+    await first.return(undefined);
+    expect(prepared[1].filePath).toBe('/temporary/request-2');
+    await second.return(undefined);
+    expect(attachment.filePath).toBeUndefined();
+  });
+
+  it('stderr activity extends the deadline without discarding the pending stdout read', async () => {
+    vi.useFakeTimers();
+    const { provider, session } = harness();
+    vi.mocked((provider as any).processStream).mockRestore();
+    const child = fakeProcess();
+    const output = deferred<{ done: boolean; value: Buffer }>();
+    const next = vi.fn(() => output.promise);
+    Object.assign(child.stdout!, {
+      [Symbol.asyncIterator]: () => ({ next, return: async () => ({ done: true, value: undefined }) }),
+    });
+    session().process = child;
+    const stderr = { output: '' };
+    const gen = (provider as any).processStream(stderr, session());
+    const first = gen.next();
+    stderr.output = 'tool progress';
+    await vi.advanceTimersByTimeAsync(STREAM_INACTIVITY_TIMEOUT_MS);
+    expect(next).toHaveBeenCalledOnce();
+    output.resolve({ done: false, value: Buffer.from('{"type":"item.completed","item":{"type":"agent_message","text":"answer"}}\n') });
+    expect((await first).value).toMatchObject({ type: 'text', content: 'answer' });
+    await gen.return(undefined);
+  });
+
+  it('a process-exit deadline only kills its captured process and releases listeners', async () => {
+    vi.useFakeTimers();
+    const { provider, session } = harness();
+    const old = fakeProcess();
+    const replacement = fakeProcess();
+    session().process = old;
+    const waiting = (provider as any).waitForProcess(session());
+    const rejected = expect(waiting).rejects.toThrow('Process timeout');
+    session().process = replacement;
+    await vi.advanceTimersByTimeAsync(PROCESS_TIMEOUT_MS);
+    await rejected;
+    expect(vi.mocked(killProcessTree).mock.calls.map(call => call[0])).toEqual([old]);
+    expect(old.listenerCount('close')).toBe(0);
+    expect(old.listenerCount('error')).toBe(0);
+    expect(session().process).toBe(replacement);
   });
 });

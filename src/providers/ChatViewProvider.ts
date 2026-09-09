@@ -9837,6 +9837,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
     ];
 
+    // Setup can outlive Stop or a complete replacement turn. A superseded run
+    // must not reclaim the panel lock that its ownership-gated finally cannot
+    // release. It still owns the external client acquired during preflight.
+    if (!bg && isCancelled()) {
+      if (mcpToolset) {
+        try { await mcpToolset.client.close(); } catch { /* best-effort cleanup */ }
+      }
+      return;
+    }
+
     // Foreground: register the panel so a second send cancels this run (the
     // re-entrancy guard). Background jobs are concurrent — they don't lock.
     if (!bg) { this._runningPanels.add(panelId); }
@@ -10689,9 +10699,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (bg) { this._postToPanel(panelId, { type: 'jobProgress', payload: { jobId, kind: 'text', content: `\n\n_${notice}_` } }); }
       else { this._postToPanel(panelId, { type: 'systemNotice', payload: { message: notice } }); }
     }
-    // Prefer the model the stream reported it actually ran on; only fall back to
-    // resolving chain[0] if the stream never surfaced one (older gateway).
-    const coordinatorModel = runOutput.model || await this._mystiCoordinator.resolveCoordinatorModel().catch(() => 'mysti');
+    // Prefer actual stream attribution, then the model resolved for this run.
+    // Do not await another lookup after releasing the run: a replacement turn
+    // could start during that await and receive this run's stale completion.
+    const coordinatorModel = runOutput.model || coordModelId || 'mysti';
     const snapshot = runOutput.snapshot(coordinatorModel);
     const answer = snapshot.content;
     const assistantMessage = this._conversationManager.addMessageToConversation(

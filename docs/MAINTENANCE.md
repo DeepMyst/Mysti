@@ -38,6 +38,29 @@ not use write mode to make an unexplained integrity failure disappear.
 | Vendored asset verification | Committed Mermaid assets match the recorded build configuration, dependency versions and artifact hashes. |
 | VSIX package-shape gate | Runtime dependencies and promised walkthrough assets ship; source maps/declarations and unintended large assets do not. |
 | Real VS Code integration | The extension-host environment, including webview/CSP behavior, works in the editor rather than only in mocks. |
+| Installed VSIX on Linux, minimum and stable VS Code | The archive produced by the package gate activates, resolves its shipped Playwright dependency and mounts an interactive Canvas frame. |
+
+`npm run test:vscode` builds the release bundles and opens a fresh editor profile.
+The Canvas test inspects the editor's actual nested webview through a loopback
+debugging connection. It uses Zoom In to reach interactive scale before checking
+visible content and editing an input inside the sandboxed artboard; a narrow
+editor can legitimately fit a page below the live-frame zoom threshold. The
+persistence test closes the Canvas tab and waits for disposal before reopening
+the saved design. Profiles use fresh OS temporary directories to avoid Unix
+socket path limits in deep checkouts; the runner prints their paths, and failure
+screenshots remain with the profile for diagnosis.
+
+Set `MYSTI_TEST_VSIX_PATH` to a built archive to run the same suite against its
+installed extension. An inert driver starts the editor's test runner while Mysti
+loads from the VSIX; the suite checks that Playwright resolves inside the
+installed package before activating it. Keep the archive's identity with the
+result. This exercises packaged startup and Canvas, not authenticated providers.
+
+CI's `packaged VS Code (1.86.0)` and `packaged VS Code (stable)` jobs download the
+same verified archive from `package shape`; neither job packages or rebuilds
+the extension. Both fail the workflow on a test failure. Keep both status checks
+required in branch protection alongside the existing source integration matrix.
+The packaged jobs also upload Canvas screenshots for review.
 
 Tests must assert behavior rather than elapsed speed on shared CI machines. Use
 fake clocks for deadlines, cancellation and delayed callbacks. Preserve exhaustive
@@ -63,6 +86,21 @@ minimum embeds Node 18.15, which lacks that API. Keep the VS Code type declarati
 pinned to the declared minimum and exercise that host in CI; neither bundled
 syntax nor a newer local editor proves all older runtime APIs exist.
 
+Local limitation recorded on 2026-09-09: the VS Code 1.86.0 arm64 GUI exited with
+SIGTRAP on macOS 15.6 before its integration runner started. The failure also
+occurred in a standalone launch with extensions disabled and a fresh profile,
+including after removing inherited `VSCODE_*` environment variables. Running
+the executable as Node reported Node 18.17.1 and Electron 27.2.3; that confirms
+runtime identity, not a successful editor integration run. The minimum-host
+Linux CI gate remains required. A current-editor pass does not resolve this
+local crash or establish minimum-host compatibility.
+
+As a narrower check on that runtime, a production-webpack-config bundle of the
+PageCompiler ran under Node 18.17.1: all five shipped scaffolds and five partial
+scaffolds compiled, and an unsupported `process.env` expression was rejected.
+This covers the exercised bundled parser subset despite its upstream package's
+newer Node engine declaration; it does not replace full minimum-host validation.
+
 For an update:
 
 1. Read the upstream release/migration notes and inspect the manifest/lock diff.
@@ -77,6 +115,55 @@ For an update:
 
 Do not publish as part of a dependency bot update. Publishing requires the release
 review below.
+
+### Dependency audit evidence and exceptions (2026-09-09)
+
+The reviewed lock installs cleanly with Node 22.20.0 and npm 10.9.3. The full
+audit decreased from 24 entries, including one critical, to four development
+entries: `@vscode/test-cli`, `mocha`, `diff` and `serialize-javascript` (two low,
+one moderate, one high). `npm audit --omit=dev` reports zero. Re-run both audits
+when updating the graph; these counts are dated evidence, not a permanent claim.
+
+Vitest 4.1.11 fixes the [UI/API access advisory](https://github.com/vitest-dev/vitest/security/advisories/GHSA-5xrq-8626-4rwp)
+and [mock redirect traversal](https://github.com/vitest-dev/vitest/security/advisories/GHSA-82fw-gwwq-j7x9).
+The explicit Vite 7.3.6 dependency retains a patched supported peer major.
+Webpack remains on major 5; its Terser plugin resolves to 5.6.1, which no longer
+depends on the vulnerable serializer. The upstream [5.3.17 release](https://github.com/webpack/minimizer-webpack-plugin/releases/tag/v5.3.17)
+removed that dependency from the release-build path. The update also changes
+MCP's resolved AJV from 8.18.0 to 8.20.0 and hoists its existing ajv-formats 3.0.1;
+runtime direct versions are unchanged, but the resolved runtime graph changes.
+
+The scoped `@typescript-eslint/typescript-estree` override replaces its exact
+minimatch 9.0.3 pin with 9.0.9, retaining the major-9 API while fixing
+[globstar](https://github.com/isaacs/minimatch/security/advisories/GHSA-7r86-cg39-jmmj)
+and [extglob backtracking](https://github.com/isaacs/minimatch/security/advisories/GHSA-23c5-xmqv-rm74).
+A real TypeScript parser fixture passed glob-based project discovery and typed
+program creation with this resolved version. Dependency maintainers own the
+override; remove it when the supported parser dependency resolves a patched
+minimatch without it, and repeat typed-project discovery plus the lint checks.
+
+The editor-test toolchain maintainers own these remaining exceptions:
+
+- Mocha 11.8.0 retains serialize-javascript 6.0.2, affected by
+  [RegExp/Date output injection](https://github.com/yahoo/serialize-javascript/security/advisories/GHSA-5c6j-r48x-rmvq)
+  and [array-like CPU exhaustion](https://github.com/yahoo/serialize-javascript/security/advisories/GHSA-qj8w-gfj5-8c6v).
+  Mocha uses it for parallel-worker options in
+  `lib/nodejs/buffered-worker-pool.js`; `.vscode-test.mjs` does not enable parallel
+  execution. The affected path is therefore not exercised by the current test
+  configuration. Reassess before enabling parallel tests. Remove the exception
+  when supported Mocha and test-cli versions adopt serializer 7.0.5 or later,
+  with the real editor suite passing.
+- Mocha's diff 7.0.0 has a [patch-parser denial of service](https://github.com/kpdecker/jsdiff/security/advisories/GHSA-73rr-hh4g-fpgx).
+  The advisory affects `parsePatch` and `applyPatch(string)`; Mocha's reporter
+  uses `createPatch` and display-diff methods. The affected parser is not used
+  by this reporter. Remove the exception when supported Mocha/test-cli versions
+  adopt a fixed diff release (for example 8.0.3 or later), with reporter and
+  editor tests passing. Reassess before introducing patch parsing.
+
+Neither remaining package is a production dependency. Mocha and test-cli audit
+entries inherit these findings; they do not represent additional vulnerable
+implementations. Do not force a major transitive override or downgrade test-cli
+merely to remove audit entries; validate the affected toolchain first.
 
 ### Vendored browser assets
 

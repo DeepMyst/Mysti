@@ -478,43 +478,15 @@ describe('Plan 25 — agent selection vs backend provider', () => {
   //
   // The first pass of this work converted the `ev.error` event path and missed
   // the `catch` path right below it, so a credential failure that arrived as a
-  // THROW still rendered the old dead-end string. This scans the shipped source
-  // of `_runMystiAgentic` so that gap cannot silently reopen.
+  // THROW still rendered the old dead-end string. The executable transport
+  // regression lives in chatViewMessagePersistence.test.ts; this only keeps
+  // the obsolete user-facing wording out of the source.
   // =========================================================================
   describe('no failure path left as a bare error string', () => {
     const source = fs.readFileSync(
       path.join(__dirname, '..', '..', 'src', 'providers', 'ChatViewProvider.ts'),
       'utf8',
     );
-
-    /**
-     * Source of one method: from its signature to the next class member at the
-     * same indent. Brace matching is NOT usable here — the coordinator's system
-     * prompt embeds tag/JSON examples full of unbalanced braces inside strings.
-     */
-    function methodBody(name: string): string {
-      const start = source.indexOf(`private async ${name}(`);
-      expect(start).toBeGreaterThan(-1);
-      const rest = source.slice(start);
-      const next = rest.slice(1).search(/\n  (?:private|public|protected|\/\*\*)/);
-      expect(next).toBeGreaterThan(-1);
-      return rest.slice(0, next + 1);
-    }
-
-    it('routes every coordinator failure in _runMystiAgentic through the card helper', () => {
-      const body = methodBody('_runMystiAgentic');
-
-      // Both exits — the streamed `ev.error` event and a thrown rejection —
-      // hand the raw error to the card helper. Distance-based matching is not
-      // used: the comments explaining WHY sit between the catch and the call.
-      expect(body).toMatch(/if \(ev\.error\)[^\n]*_postMystiFailure\(panelId, ev\.error\)/);
-      expect(body).toMatch(/errorMsg = bg \? this\._friendlyMystiError\(raw\) : this\._postMystiFailure\(panelId, raw\)/);
-      expect(body.match(/_postMystiFailure\(/g) ?? []).toHaveLength(2);
-
-      // And nothing posts a bare `type: 'error'` from inside the run any more:
-      // that is precisely what rendered as red text with nothing to click.
-      expect(body).not.toMatch(/type: 'error'/);
-    });
 
     it('keeps the old dead-end wording out of the tree entirely', () => {
       // The exact string from the bug report. Its only correct form now names

@@ -102,3 +102,47 @@ jobs:
           name: mysti-vsix
           path: mysti-ci.vsix
           if-no-files-found: error
+
+  packaged-vscode:
+    name: packaged VS Code (${{ matrix.version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [package-shape]
+    strategy:
+      fail-fast: false
+      matrix:
+        # The installed archive must work on the minimum supported editor as
+        # well as stable. Neither host failure is advisory or retried.
+        version: ['1.86.0', stable]
+    env:
+      MYSTI_TEST_VSCODE_VERSION: ${{ matrix.version }}
+      MYSTI_TEST_VSIX_PATH: ${{ github.workspace }}/mysti-ci.vsix
+      TMPDIR: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install test tooling
+        run: npm ci
+      - name: Download the verified archive
+        uses: actions/download-artifact@v4
+        with:
+          name: mysti-vsix
+          path: ${{ github.workspace }}
+      # Only compile the integration driver; packaging already built the exact
+      # extension under test. Do not rebuild it from this checkout.
+      - name: Prepare editor tests
+        run: |
+          npm exec --no -- tsc -p tsconfig.vscode-test.json
+          node scripts/prepare-vscode-fixture.js
+      - name: Test installed extension
+        run: xvfb-run -a npm exec --no -- vscode-test
+      - name: Upload Canvas screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-canvas-${{ matrix.version }}
+          path: ${{ runner.temp }}/mysti-vscode-*/canvas-*.png
+          if-no-files-found: ignore

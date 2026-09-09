@@ -44,10 +44,12 @@ flowchart TD
 | Chat host adapter | `src/providers/ChatViewProvider.ts` | Connect UI events to application services and stream updates back to a panel. This remains a large legacy controller; extract cohesive behavior as it changes. |
 | Chat interactions | `src/chat/` | Host-independent panel identity binding, sub-agent answer ownership, pending plans and delayed channel turns. These modules do not import VS Code or the host controller. |
 | Markdown and diagrams | `media/chat/markdownRenderer.js` | A private Marked parser, HTML sanitization, code/diff formatting and lazy Mermaid rendering. The chat shell supplies local libraries/resource URI and disposes the renderer; stale or detached renders cannot replace current content. |
+| Sub-agent cards | `media/chat/subAgentCards.js` | Per-attempt card state, text, tools, questions and timers. Full agent IDs route events; opaque DOM IDs and direct element references prevent selector and display-name collisions. |
 | Coordinator output | `src/chat/CoordinatorRunOutput.ts` | One run's foreground/background delivery, ordered replay record, actual model attribution and usage receipt. It receives a message sink and clock rather than a webview or manager. |
 | Provider contract | `src/providers/base/IProvider.ts`, `ProviderManifest.ts`, `src/providers/ProviderRegistry.ts` | Transport contract, capability declarations, display/model metadata and registration. |
-| CLI transport | `src/providers/base/BaseCliProvider.ts`, `src/utils/platform.ts`, `processKill.ts` | Discovery, per-panel process state, streaming, cancellation and cleanup. |
-| Coordinator | `CoordinatorModelClient`, `coordinatorTools`, `MystiTagScanner` | Model turns, native tools or nonce-fenced directives and tool-result framing. The host currently owns much of the coordinator loop. |
+| CLI transport | `src/providers/base/BaseCliProvider.ts`, `prepareCliAttachments.ts`, `src/utils/platform.ts`, `processKill.ts` | Discovery, per-request cancellation, process identity, streaming and temporary attachment ownership. Cleanup acts only on its captured process and files. |
+| Coordinator streams | `src/coordinator/CoordinatorTurnRunner.ts` | Model round-trip limits, scanner continuity across length continuations, stream cancellation and a single final answer attempt without tools. The caller provides transport and output ports; the runner has no VS Code dependency. |
+| Coordinator tools | `CoordinatorModelClient`, `coordinatorTools`, `MystiTagScanner`, `ChatViewProvider._runMystiAgentic` | Model selection, native tools or nonce-fenced directives, gated tool execution and tool-result framing. Tool budgets and dispatch remain in the host controller. |
 | Collaboration | `BrainstormManager`, `SessionManager`, `MentionRouter`, `CollaborationManager`, `MystiOrchestratorManager`, `CollaboratorPool` | Separate collaboration shapes, routing and bounded child execution. They are different workflows, not interchangeable names. |
 | Context and history | `ContextManager`, `ConversationManager`, `CompactionManager`, `SmartCompactor`, `TokenAccounting` | Context collection, schema-versioned persistence, compaction and normalized context/spend measurements. |
 | Canvas document | `src/canvas/doc/`, `CanvasHistory`, `CanvasBridge`, `CanvasOpExecutor`, `ArtifactStore` | Typed document changes, conflict handling, undo, synchronization and persistence. |
@@ -115,6 +117,9 @@ directive cannot discard usage delivered in the same event. Interrupted turns
 estimate output only when no measured usage arrived; the receipt distinguishes
 those estimates from measurements. Persistence uses detached snapshots, so an
 incomplete-run marker cannot mutate output still owned by the run.
+Each new model stream invalidates the previous context-size measurement. A run
+with any unmeasured stream reports partial usage even if another stream supplies
+measurements; an earlier prompt size must not be presented as the current fill.
 
 Follow the provider checklist in [CONTRIBUTING.md](../CONTRIBUTING.md). A normal
 adapter change needs fixture-based parsing, arguments, permissions, cancellation

@@ -11,20 +11,26 @@
  * can see them.
  */
 import { defineConfig } from '@vscode/test-cli';
-import { fileURLToPath } from 'node:url';
-import { mkdirSync, mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 const version = process.env.MYSTI_TEST_VSCODE_VERSION || 'stable';
-const profiles = fileURLToPath(new URL('./.vscode-test/profiles/', import.meta.url));
-mkdirSync(profiles, { recursive: true });
-// Each run gets fresh editor state and a fresh DevToolsActivePort file. Keep
-// the profile's logs under the ignored test directory for failure diagnosis.
-const userDataDir = mkdtempSync(join(profiles, `${version}-`));
+const vsixPath = process.env.MYSTI_TEST_VSIX_PATH && resolve(process.env.MYSTI_TEST_VSIX_PATH);
+// Each run gets fresh editor state and a fresh DevToolsActivePort file. A
+// profile under a deep checkout can exceed Unix socket path limits before
+// the editor opens, so use a short temporary path and print it for diagnosis.
+const userDataDir = mkdtempSync(join(tmpdir(), 'mysti-vscode-'));
+console.log(`[Mysti test] VS Code profile: ${userDataDir}`);
 
 export default defineConfig({
   files: 'out-vscode-test/**/*.test.js',
   version,
+  // VS Code needs a development extension to start its test runner. For an
+  // archive test, that is a separate inert driver: Mysti must load from the
+  // installed VSIX, never silently from the checkout beside these tests.
+  extensionDevelopmentPath: vsixPath ? './tests-vscode/driver' : '.',
+  ...(vsixPath ? { installExtensions: [vsixPath] } : {}),
   // Inspect the actual nested webview through the test editor's loopback CDP
   // endpoint. Port 0 lets Electron allocate a free port without a bind race.
   launchArgs: [
@@ -32,7 +38,7 @@ export default defineConfig({
     '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=0',
   ],
-  env: { MYSTI_TEST_USER_DATA_DIR: userDataDir },
+  env: { MYSTI_TEST_USER_DATA_DIR: userDataDir, MYSTI_TEST_VSIX_PATH: vsixPath },
   // A scratch folder so the canvas has a real workspace to write `.mysti/canvas`
   // into; created by the test's own setup.
   workspaceFolder: './out-vscode-test/fixture-workspace',

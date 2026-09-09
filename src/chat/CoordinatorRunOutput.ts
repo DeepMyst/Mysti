@@ -19,6 +19,7 @@ export class CoordinatorRunOutput {
   private _usage: UsageStats = { input_tokens: 0, output_tokens: 0 };
   private _lastTurnUsage?: UsageStats;
   private _sawUsage = false;
+  private _turnStarted = false;
   private _turnHasUsage = false;
   private _partial = false;
   private _cost = 0;
@@ -34,7 +35,13 @@ export class CoordinatorRunOutput {
   public get model(): string | undefined { return this._model; }
   public get hasContent(): boolean { return this._tools.length > 0 || !!this._text.trim(); }
 
-  public beginTurn(): void { this._turnHasUsage = false; }
+  public beginTurn(): void {
+    if (this._turnStarted && !this._turnHasUsage) { this._partial = true; }
+    this._turnStarted = true;
+    this._turnHasUsage = false;
+    // The previous prompt size is not a measurement of this round-trip.
+    this._lastTurnUsage = undefined;
+  }
 
   /** Consume metadata before scanning text: a directive may end the same event. */
   public observe(event: CoordinatorStreamEvent): void {
@@ -134,7 +141,7 @@ export class CoordinatorRunOutput {
       outputTokens: this._sawUsage ? this._usage.output_tokens : undefined,
       cacheReadTokens: this._usage.cache_read_input_tokens || undefined,
       cacheCreationTokens: this._usage.cache_creation_input_tokens || undefined,
-      estimated: this._partial || !this._sawUsage,
+      estimated: this._usageIsPartial(),
     };
   }
 
@@ -145,7 +152,11 @@ export class CoordinatorRunOutput {
       ...(this._lastTurnUsage ? { contextTokens: contextFillTokens(this._lastTurnUsage) } : {}),
       ...(this._sawCost && this._cost > 0 ? { costUsd: this._cost } : {}),
       ...(delegations > 0 ? { delegations } : {}),
-      ...(this._partial ? { tokensPartial: true } : {}),
+      ...(this._usageIsPartial() ? { tokensPartial: true } : {}),
     };
+  }
+
+  private _usageIsPartial(): boolean {
+    return this._partial || !this._sawUsage || (this._turnStarted && !this._turnHasUsage);
   }
 }

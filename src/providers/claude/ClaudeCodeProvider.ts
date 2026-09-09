@@ -1021,68 +1021,6 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   /**
-   * Prepare attachments (images and files) for Claude Code CLI.
-   * Writes base64 data to temp files and sets filePath on each attachment
-   * so buildPromptAsync can reference them in the prompt text.
-   */
-  protected async prepareAttachments(
-    attachments: Attachment[] | undefined,
-    _args: string[]
-  ): Promise<(() => Promise<void>) | null> {
-    if (!attachments || attachments.length === 0) {
-      return null;
-    }
-
-    const allAttachments = attachments.filter(a => a.type === 'image' || a.type === 'file');
-    if (allAttachments.length === 0) {
-      return null;
-    }
-
-    // Write attachments to workspace .mysti/tmp/ so Claude Code CLI has guaranteed filesystem access
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    const wsRoot = workspaceFolders?.[0]?.uri.fsPath;
-    const attachmentDir = wsRoot
-      ? path.join(wsRoot, '.mysti', 'tmp')
-      : os.tmpdir();
-
-    await fs.promises.mkdir(attachmentDir, { recursive: true });
-
-    const tempFiles: string[] = [];
-
-    for (const att of allAttachments) {
-      if (att.filePath && !att.base64Data) {
-        // File from disk via attach button — already has path
-        console.log(`[Mysti] Claude: Attachment from disk: ${att.fileName} -> ${att.filePath}`);
-      } else if (att.base64Data) {
-        // Clipboard/dropped file — write to workspace temp dir
-        const ext = att.fileName.split('.').pop() || (att.type === 'image' ? (att.mimeType.split('/')[1] || 'png') : 'bin');
-        const tempPath = path.join(attachmentDir, `mysti-attachment-${att.id}.${ext}`);
-        const buffer = Buffer.from(att.base64Data, 'base64');
-        await fs.promises.writeFile(tempPath, buffer);
-        tempFiles.push(tempPath);
-        att.filePath = tempPath;
-        console.log(`[Mysti] Claude: Wrote ${att.type} attachment to workspace: ${att.fileName} -> ${tempPath}`);
-      }
-    }
-
-    // Return cleanup function if we created any temp files
-    if (tempFiles.length > 0) {
-      return async () => {
-        for (const tempFile of tempFiles) {
-          try {
-            await fs.promises.unlink(tempFile);
-            console.log(`[Mysti] Claude: Cleaned up temp attachment: ${tempFile}`);
-          } catch {
-            // Ignore cleanup errors
-          }
-        }
-      };
-    }
-
-    return null;
-  }
-
-  /**
    * Override buildPromptAsync to append attachment file path references.
    * Claude Code CLI can read and analyze files when given file paths in the prompt.
    */

@@ -35,9 +35,8 @@ beforeAll(() => {
 });
 
 describe('a blocked capability names itself', () => {
-  it('the announcer runs on the coordinator turn', () => {
-    expect(provider).toContain('this._announceRefusedCapability(panelId, turnText, delegateNonce, scanKinds)');
-  });
+  // Coordinator invocation and real action-card behavior are exercised by the
+  // shared execution harness in chatViewMessagePersistence.test.ts.
 
   it('it fires only when the model ACTUALLY tried — and only for THIS run', () => {
     const idx = provider.indexOf('private _announceRefusedCapability');
