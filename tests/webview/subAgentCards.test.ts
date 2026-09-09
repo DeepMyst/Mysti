@@ -103,6 +103,45 @@ describe('sub-agent cards own each attempt and its rendering', () => {
     expect(h.card(2).querySelector('.subagent-text-output')?.textContent).toBe('another panel continues');
   });
 
+  it.each([false, true])('completion settles missing tool results without overwriting explicit outcomes (error=%s)', hasError => {
+    const h = harness();
+    h.cards.started({ agentId: 'agent' });
+    for (const id of ['missing', 'succeeded', 'failed']) {
+      h.cards.toolUse({ agentId: 'agent', toolCall: { id, name: 'Read' } });
+    }
+    h.cards.toolResult({ agentId: 'agent', toolCall: { id: 'succeeded', status: 'completed' } });
+    h.cards.toolResult({ agentId: 'agent', toolCall: { id: 'failed', status: 'failed' } });
+    h.cards.complete({ agentId: 'agent', hasError });
+    const tools = h.card().querySelectorAll('.subagent-tool-call');
+    expect(tools[0].classList.contains(hasError ? 'failed' : 'completed')).toBe(true);
+    expect(tools[1].classList.contains('completed')).toBe(true);
+    expect(tools[2].classList.contains('failed')).toBe(true);
+    expect(h.card().querySelector('.subagent-tool-call.running, .subagent-tool-spinner')).toBeNull();
+    expect(h.card().querySelectorAll('.subagent-tool-icon')).toHaveLength(3);
+  });
+
+  it('a repeated start settles the abandoned card without changing explicit outcomes or the new attempt', () => {
+    const h = harness();
+    h.cards.started({ agentId: 'agent' });
+    for (const id of ['missing', 'succeeded', 'failed']) {
+      h.cards.toolUse({ agentId: 'agent', toolCall: { id, name: 'Read' } });
+    }
+    h.cards.toolResult({ agentId: 'agent', toolCall: { id: 'succeeded', status: 'completed' } });
+    h.cards.toolResult({ agentId: 'agent', toolCall: { id: 'failed', status: 'failed' } });
+    h.cards.started({ agentId: 'agent' });
+    h.cards.toolUse({ agentId: 'agent', toolCall: { id: 'missing', name: 'Read' } });
+    const oldTools = h.card().querySelectorAll('.subagent-tool-call');
+    expect(h.card().querySelector('.subagent-status')?.textContent).toBe('Stopped');
+    expect(oldTools[0].classList.contains('failed')).toBe(true);
+    expect(oldTools[1].classList.contains('completed')).toBe(true);
+    expect(oldTools[2].classList.contains('failed')).toBe(true);
+    expect(h.card().querySelector('.subagent-tool-call.running, .subagent-tool-spinner')).toBeNull();
+    expect(h.card(1).querySelector('.subagent-tool-call.running .subagent-tool-spinner')).not.toBeNull();
+    h.cards.complete({ agentId: 'agent' });
+    expect(h.card(1).querySelector('.subagent-tool-call.completed .subagent-tool-icon')).not.toBeNull();
+    expect(oldTools[0].classList.contains('failed')).toBe(true);
+  });
+
   it('retry drops old text and invalidates even a render callback already dequeued by the browser', () => {
     const h = harness();
     h.cards.started({ agentId: 'agent' });

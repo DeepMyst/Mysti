@@ -97,7 +97,7 @@ function createHarness(): Harness {
     getCurrentConversation: () => null,
   } as any;
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProvider: () => undefined,
     getProviderInstance: () => undefined,
     // Reachable only since D-1: _sendInitialState no longer returns at the

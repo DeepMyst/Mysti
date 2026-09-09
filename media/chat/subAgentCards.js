@@ -85,7 +85,11 @@
       if (!messages) { return; }
       const previous = records.get(payload.agentId);
       if (previous) {
-        if (isWorking(previous)) { render(previous, true); badge(previous, 'Stopped', 'error'); }
+        if (isWorking(previous)) {
+          render(previous, true);
+          badge(previous, 'Stopped', 'error');
+          settleTools(previous, 'failed');
+        }
         invalidate(previous);
         previous.rawText = '';
         previous.tools.clear();
@@ -156,6 +160,17 @@
       scroll();
     }
 
+    function settleTools(record, status) {
+      for (const tool of record.tools.values()) {
+        if (!tool.classList.contains('running')) { continue; }
+        tool.classList.replace('running', status);
+        const spinner = tool.querySelector('.subagent-tool-spinner');
+        if (spinner) {
+          spinner.replaceWith(element('span', 'subagent-tool-icon ' + status, status === 'failed' ? '✕' : '✓'));
+        }
+      }
+    }
+
     function complete(payload) {
       const record = find(payload);
       if (!record) { return; }
@@ -163,6 +178,9 @@
       render(record, true);
       record.terminal = true;
       record.rawText = '';
+      // Some backends emit tool_use without a matching tool_result. Completion
+      // settles those indicators while preserving every explicit tool outcome.
+      settleTools(record, payload.hasError ? 'failed' : 'completed');
       badge(record, payload.hasError ? 'Partial' : 'Done', payload.hasError ? 'error' : 'complete');
       if (record.content.scrollHeight > 400 && !record.content.querySelector('.subagent-expand-btn')) {
         const button = element('button', 'subagent-expand-btn', 'Show full output');
@@ -328,13 +346,7 @@
         if (isWorking(record)) {
           render(record, true);
           badge(record, 'Stopped', 'error');
-          for (const tool of record.tools.values()) {
-            if (tool.classList.contains('running')) {
-              tool.classList.replace('running', 'failed');
-              const spinner = tool.querySelector('.subagent-tool-spinner');
-              if (spinner) { spinner.replaceWith(element('span', 'subagent-tool-icon failed', '✕')); }
-            }
-          }
+          settleTools(record, 'failed');
         }
         invalidate(record);
         record.terminal = true;

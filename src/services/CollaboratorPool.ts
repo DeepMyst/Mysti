@@ -13,6 +13,7 @@
 
 import { classifyToolAction, shouldGateToolUse } from '../utils/permissionClassifier';
 import { SUBAGENT_TIMEOUT_MS, SUBAGENT_MAX_RETRIES, SUBAGENT_QUESTION_TIMEOUT_MS } from '../constants';
+import type { NativeApprovalHandler, NativeApprovalRequest } from '../providers/base/IProvider';
 import type {
   ContextItem,
   Settings,
@@ -58,6 +59,14 @@ export interface PoolProviderManager {
     installCommand?: string;
   } | null>;
   getProviderDefaultModel(providerId: string): string;
+  getProviderInstance?(providerId: string): { capabilities: { supportsNativeApproval?: boolean } } | undefined;
+  setNativeApprovalHandlerForPanel?(panelId: string, handler: NativeApprovalHandler): { dispose(): void };
+}
+
+interface NativeChildApprovalScope {
+  denied: { toolCall: NonNullable<StreamChunk['toolCall']>; reason: string }[];
+  cancelled: boolean;
+  dispose(): void;
 }
 
 /**
@@ -172,12 +181,11 @@ export class CollaboratorPool {
     const base = `-collab-${runId}-${collaboratorId}`;
     let cancelled = 0;
     for (const childPanelId of [...panels]) {
-      // `<panel>-collab-<runId>-<collaboratorId>` optionally followed by
-      // `-retryN`. Endswith-or-retry, so `c1` never matches `c10`.
+      // Match retry and question-follow-up children without matching c10 for c1.
       const at = childPanelId.indexOf(base);
       if (at === -1) { continue; }
       const tail = childPanelId.slice(at + base.length);
-      if (tail !== '' && !/^-retry\d+$/.test(tail)) { continue; }
+      if (!/^(?:-retry\d+)?(?:-followup)?$/.test(tail)) { continue; }
       try {
         this._providerManager.cancelRequest(childPanelId);
         cancelled++;
@@ -452,6 +460,7 @@ export class CollaboratorPool {
     let hasError = false;
     let failure: CollaboratorFailure | undefined;
     let timedOut = false;
+    let nativeApprovals: NativeChildApprovalScope | undefined;
 
     const timeoutMs = spec.timeoutMs ?? SUBAGENT_TIMEOUT_MS;
     const onTimeout = () => {
@@ -460,6 +469,7 @@ export class CollaboratorPool {
     };
 
     try {
+      nativeApprovals = this._registerNativeApprovals(spec, options, childPanelId);
       const stream = this._providerManager.sendMessageToProvider(
         spec.agentId,
         spec.prompt,
@@ -474,13 +484,16 @@ export class CollaboratorPool {
       // still terminates the attempt (the legacy MentionRouter loop only checks
       // a flag at the top of each iteration and hangs on such a provider).
       for await (const chunk of this._withDeadline(stream, timeoutMs, onTimeout)) {
+        if (nativeApprovals?.denied.length || nativeApprovals?.cancelled) { break; }
         if (chunk.type === 'text' && chunk.content) {
           responseText += chunk.content;
           yield { ...base, type: 'collab_text', content: chunk.content };
         } else if (chunk.type === 'thinking' && chunk.content) {
           yield { ...base, type: 'collab_thinking', content: chunk.content };
         } else if (chunk.type === 'tool_use' && chunk.toolCall) {
-          const allowed = yield* this._gateToolUse(spec, options, base, childPanelId, chunk.toolCall);
+          // Native providers have already awaited the registered pre-execution
+          // gate. Their subsequent tool notification must not ask a second time.
+          const allowed = nativeApprovals ? true : yield* this._gateToolUse(spec, options, base, childPanelId, chunk.toolCall);
           if (!allowed) {
             hasError = true;
             failure = 'denied';
@@ -490,6 +503,7 @@ export class CollaboratorPool {
         } else if (chunk.type === 'tool_result' && chunk.toolCall) {
           yield { ...base, type: 'collab_tool_result', toolCall: chunk.toolCall };
         } else if (chunk.type === 'ask_user_question' && chunk.askUserQuestion) {
+          nativeApprovals?.dispose();
           const followUp = yield* this._relayQuestion(spec, options, base, childPanelId, childSettings, chunk, responseText);
           responseText = followUp.responseText;
           if (followUp.hasError) {
@@ -517,6 +531,20 @@ export class CollaboratorPool {
       hasError = true;
       failure = timedOut ? 'timeout' : 'crashed';
       yield { ...base, type: 'collab_error', failure, content: err instanceof Error ? err.message : 'Unknown error', hasError: true };
+    } finally {
+      nativeApprovals?.dispose();
+    }
+
+    if (nativeApprovals?.denied.length) {
+      hasError = true;
+      failure = 'denied';
+      for (const denied of nativeApprovals.denied) {
+        yield { ...base, type: 'collab_tool_denied', toolCall: denied.toolCall, content: denied.reason };
+      }
+      this._providerManager.cancelRequest(childPanelId);
+    } else if (nativeApprovals?.cancelled && !timedOut) {
+      hasError = true;
+      failure = 'cancelled';
     }
 
     // The deadline wrapper returns (rather than throws) on timeout — surface it.
@@ -600,6 +628,101 @@ export class CollaboratorPool {
     }
   }
 
+  /** Native requests already block the issuing backend; no process signals are needed. */
+  private _registerNativeApprovals(
+    spec: CollaboratorSpec,
+    options: CollaboratorDispatchOptions,
+    childPanelId: string,
+  ): NativeChildApprovalScope | undefined {
+    if (!this._providerManager.getProviderInstance?.(spec.agentId)?.capabilities.supportsNativeApproval) { return undefined; }
+    const register = this._providerManager.setNativeApprovalHandlerForPanel;
+    if (!register) { throw new Error(`Native approval routing is unavailable for ${spec.agentId}`); }
+    let active = true;
+    const scope: NativeChildApprovalScope = { denied: [], cancelled: false, dispose: () => {} };
+    const registration = register.call(this._providerManager, childPanelId, async request => {
+      const current = () => active && !request.signal.aborted && !this._closedRuns.has(options.runId)
+        && !!this._activeChildPanels.get(options.runId)?.has(childPanelId);
+      if (!current()) { scope.cancelled = true; return 'cancelled'; }
+      if (request.panelId !== childPanelId || request.providerId !== spec.agentId) { return false; }
+      const deny = (reason: string) => { scope.denied.push({ toolCall: request.toolCall, reason }); return false; };
+      // A transport hard denial is never widened by the host's permission UI.
+      if (request.defaultDecision === 'deny') { return deny('The provider denied this tool.'); }
+      const policy = this._toolPolicy(spec, options, request.toolCall);
+      if (policy.decision === 'deny') { return deny(policy.reason); }
+
+      let approved: boolean | 'cancelled' = policy.decision === 'allow' && request.defaultDecision === 'allow';
+      if (!approved) {
+        approved = await this._awaitNativeGate(spec, options, request);
+      }
+      if (approved === 'cancelled' || !current()) { scope.cancelled = true; return 'cancelled'; }
+      if (!approved) { return deny('Permission denied.'); }
+      // Native approval is a real pre-execution decision. Once a non-read
+      // action may have run, a later transport failure cannot retry the prompt.
+      if (policy.mayHaveSideEffects) {
+        this._approvedWriteChildren.add(childPanelId.replace(/-followup$/, ''));
+      }
+      return true;
+    });
+    scope.dispose = () => {
+      if (!active) { return; }
+      active = false;
+      registration.dispose();
+    };
+    return scope;
+  }
+
+  /**
+   * One role policy for native requests and legacy notifications. Delegation
+   * tools can run hidden writes despite classifying as reads. Sealed tasks have
+   * off-machine prompts, so their web requests cannot use the research carve-out.
+   */
+  private _toolPolicy(
+    spec: CollaboratorSpec,
+    options: CollaboratorDispatchOptions,
+    toolCall: NonNullable<StreamChunk['toolCall']>,
+  ): { decision: 'allow' | 'ask'; mayHaveSideEffects: boolean } | { decision: 'deny'; reason: string } {
+    const action = classifyToolAction(toolCall.name);
+    const delegation = /^(task|agent|dispatch_agent|tool_search|toolsearch)$/i.test(toolCall.name);
+    if (!delegation && action === 'file-read') { return { decision: 'allow', mayHaveSideEffects: false }; }
+    if (spec.access === 'sealed') {
+      return { decision: 'deny', reason: `Sealed role '${spec.role || 'sealed'}' may only read — ${toolCall.name} denied.` };
+    }
+    if (!delegation && action === 'web-request' && options.settings.accessLevel !== 'read-only'
+      && !shouldGateToolUse(options.settings, toolCall.name)) {
+      return { decision: 'allow', mayHaveSideEffects: true };
+    }
+    if (spec.access === 'read-only' && action !== 'web-request') {
+      return { decision: 'deny', reason: `Advisory role '${spec.role || 'read-only'}' attempted a non-read tool (${toolCall.name}) — denied.` };
+    }
+    return { decision: 'ask', mayHaveSideEffects: true };
+  }
+
+  private _awaitNativeGate(
+    spec: CollaboratorSpec,
+    options: CollaboratorDispatchOptions,
+    request: NativeApprovalRequest,
+  ): Promise<boolean | 'cancelled'> {
+    if (request.signal.aborted) { return Promise.resolve('cancelled'); }
+    if (!options.onGate) { return Promise.resolve(false); }
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = (decision: boolean | 'cancelled') => {
+        if (settled) { return; }
+        settled = true;
+        request.signal.removeEventListener('abort', onAbort);
+        resolve(decision);
+      };
+      const onAbort = () => finish('cancelled');
+      request.signal.addEventListener('abort', onAbort, { once: true });
+      try {
+        void Promise.resolve(options.onGate!(spec, request.toolCall, { id: request.id, signal: request.signal })).then(
+          approved => finish(approved === true),
+          () => finish(false),
+        );
+      } catch { finish(false); }
+    });
+  }
+
   /**
    * Permission gate for a collaborator tool_use. Returns whether to re-emit the
    * tool_use (i.e. let it proceed). Read operations always pass. For read-only
@@ -614,71 +737,12 @@ export class CollaboratorPool {
     childPanelId: string,
     toolCall: NonNullable<StreamChunk['toolCall']>
   ): AsyncGenerator<CollaboratorChunk, boolean> {
+    const policy = this._toolPolicy(spec, options, toolCall);
+    if (policy.decision === 'allow') { return true; }
     const action = classifyToolAction(toolCall.name);
-    // Delegation tools (task/agent/…) classify as file-read but run their inner
-    // Write/Bash calls INSIDE the child CLI, invisible to this gate — so they
-    // must NOT take the read fast-path, or a collaborator could write via a
-    // sub-agent unapproved. They fall through to hard-deny (read-only) or the
-    // gate (gated-write). (Mirrors the Plan 10 security-floor concern.)
-    const isDelegation = /^(task|agent|dispatch_agent|tool_search|toolsearch)$/i.test(toolCall.name);
-    // File reads pass without a prompt.
-    if (!isDelegation && action === 'file-read') {
-      return true;
-    }
-
-    // Plan 21 Phase 0 — `sealed`: reads and nothing else, decided HERE so that
-    // no later branch can widen it. Deliberately self-contained (its own
-    // suspend + deny) rather than another `&& spec.access !== 'sealed'` bolted
-    // onto the three separate web-request carve-outs below: this branch is
-    // verifiable in isolation, and a future carve-out cannot reach past it.
-    //
-    // Why web reads are denied here when a read-only advisor may make them:
-    // that carve-out exists because an advisor doing research is the point, and
-    // the prompt steering it came from the local user. A sealed collaborator's
-    // prompt is authored OFF-MACHINE, which turns the same fetch into a
-    // zero-prompt exfiltration channel — the request body is attacker-chosen.
-    if (spec.access === 'sealed') {
-      this._providerManager.suspendRequest(childPanelId);
-      yield {
-        ...base,
-        type: 'collab_tool_denied',
-        toolCall,
-        content: `Sealed role '${spec.role || 'sealed'}' may only read — ${toolCall.name} denied.`,
-      };
-      this._forgetChild(options.runId, childPanelId);
-      this._providerManager.cancelRequest(childPanelId);
-      return false;
-    }
-    // Plan 18 (F5): web reads defer to the user's OWN gate policy instead of a
-    // hardcoded pass — under modes where direct chat would prompt for a
-    // WebFetch, a delegated child prompts too (a repo-steered fetch is an
-    // exfiltration primitive). Where policy is genuinely permissive it passes
-    // as before, so an advisor doing research is not killed. One carve-out:
-    // under accessLevel `read-only` the bare policy fn returns false for
-    // EVERYTHING (enforcement is delegated to CLI flags), which would leave
-    // the exfil primitive ungated under the STRICTEST setting — read-only
-    // users' web requests always prompt instead.
-    if (!isDelegation && action === 'web-request'
-        && options.settings.accessLevel !== 'read-only'
-        && !shouldGateToolUse(options.settings, toolCall.name)) {
-      return true;
-    }
-
-    // Freeze the child BEFORE the tool runs so the gate is a real pre-execution
-    // block, not after-the-fact (the legacy MentionRouter gate's weakness).
     const suspended = this._providerManager.suspendRequest(childPanelId);
-
-    // Read-only collaborators never write: hard local deny, no prompt.
-    // Web reads are NOT writes — a policy-gated web-request from a read-only
-    // advisor goes to the user prompt below (direct-chat parity) rather than
-    // the write hard-deny.
-    if (spec.access === 'read-only' && action !== 'web-request') {
-      yield {
-        ...base,
-        type: 'collab_tool_denied',
-        toolCall,
-        content: `Advisory role '${spec.role || 'read-only'}' attempted a non-read tool (${toolCall.name}) — denied.`,
-      };
+    if (policy.decision === 'deny') {
+      yield { ...base, type: 'collab_tool_denied', toolCall, content: policy.reason };
       this._forgetChild(options.runId, childPanelId);
       this._providerManager.cancelRequest(childPanelId);
       return false;
@@ -798,7 +862,10 @@ export class CollaboratorPool {
 
     let hasError = false;
     let failure: CollaboratorFailure | undefined;
+    let nativeApprovals: NativeChildApprovalScope | undefined;
+    let followUpTimedOut = false;
     try {
+      nativeApprovals = this._registerNativeApprovals(spec, options, followUpPanelId);
       const followUpStream = this._providerManager.sendMessageToProvider(
         spec.agentId,
         followUpPrompt,
@@ -811,18 +878,18 @@ export class CollaboratorPool {
       // Plan 18 (1.3/M4a): same deadline discipline as the primary stream — a
       // hung follow-up otherwise parks the collaborator until run teardown.
       const followUpDeadlineMs = spec.timeoutMs ?? SUBAGENT_TIMEOUT_MS;
-      let followUpTimedOut = false;
       for await (const chunk of this._withDeadline(followUpStream, followUpDeadlineMs, () => {
         followUpTimedOut = true;
         this._providerManager.cancelRequest(followUpPanelId);
       })) {
+        if (nativeApprovals?.denied.length || nativeApprovals?.cancelled) { break; }
         if (chunk.type === 'text' && chunk.content) {
           responseText += chunk.content;
           yield { ...base, type: 'collab_text', content: chunk.content };
         } else if (chunk.type === 'thinking' && chunk.content) {
           yield { ...base, type: 'collab_thinking', content: chunk.content };
         } else if (chunk.type === 'tool_use' && chunk.toolCall) {
-          const allowed = yield* this._gateToolUse(spec, options, base, followUpPanelId, chunk.toolCall);
+          const allowed = nativeApprovals ? true : yield* this._gateToolUse(spec, options, base, followUpPanelId, chunk.toolCall);
           if (!allowed) { hasError = true; failure = 'denied'; break; }
           yield { ...base, type: 'collab_tool_use', toolCall: chunk.toolCall };
         } else if (chunk.type === 'tool_result' && chunk.toolCall) {
@@ -841,7 +908,20 @@ export class CollaboratorPool {
       hasError = true; failure = 'crashed';
       yield { ...base, type: 'collab_error', failure, content: err instanceof Error ? err.message : 'Unknown error', hasError: true };
     } finally {
+      nativeApprovals?.dispose();
       this._forgetChild(options.runId, followUpPanelId);
+    }
+
+    if (nativeApprovals?.denied.length) {
+      hasError = true;
+      failure = 'denied';
+      for (const denied of nativeApprovals.denied) {
+        yield { ...base, type: 'collab_tool_denied', toolCall: denied.toolCall, content: denied.reason };
+      }
+      this._providerManager.cancelRequest(followUpPanelId);
+    } else if (nativeApprovals?.cancelled && !followUpTimedOut) {
+      hasError = true;
+      failure = 'cancelled';
     }
 
     return { responseText, hasError, failure };

@@ -33,7 +33,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
-import { allowsAcpToolWithoutPrompt } from '../base/NativeApprovalPolicy';
+import { respondToAcpApproval } from '../base/AcpApproval';
 import {
   parseAcpAvailableCommands,
   type NativeCommandSpec,
@@ -111,11 +111,7 @@ export interface HermesSessionState extends PanelSessionState {
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
 }
 
-interface AcpPermissionOption {
-  optionId?: string;
-  option_id?: string;
-  kind?: string;
-}
+
 
 export class HermesProvider extends BaseCliProvider {
   readonly id = 'hermes';
@@ -139,6 +135,7 @@ export class HermesProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: false,     // hermes acp does not emit thought chunks today; handled if it starts to
     supportsToolUse: true,
+    supportsNativeApproval: true,
     supportsSessions: true,
     supportsPersistentProcess: true,
     // Plan 27 Phase 5: attachments are written to a temp file and referenced
@@ -668,74 +665,15 @@ export class HermesProvider extends BaseCliProvider {
     }
   }
 
-  /**
-   * Answer Hermes's blocking `session/request_permission` request.
-   *
-   * ACP is a blocking permission protocol — Hermes waits for allow/deny
-   * before executing a tool — and this response is written SYNCHRONOUSLY,
-   * before the corresponding tool_use chunk can reach Mysti's async
-   * stream-level gate. So the gate cannot enforce for Hermes; THIS is the
-   * enforcement point, and it FAILS CLOSED: it auto-allows only when the
-   * user's settings mean "don't ask me" (the same predicate Mysti uses to
-   * decide whether to gate). In any mode that would otherwise prompt, and
-   * whenever the decision is uncertain, it DENIES — never silently
-   * auto-approves a dangerous tool a prompt-injected agent requested.
-   * (Interactive per-tool approval would need an async ACP↔card bridge; a
-   * denial here is recoverable — the user switches to Full access for
-   * autonomous runs.)
-   */
+  /** Route the native blocking request through its process/turn-owned approval scope. */
   private _respondToPermissionRequest(id: number | string, params: Record<string, unknown> | undefined, hermes: HermesSessionState): void {
-    const options = (params?.options ?? []) as AcpPermissionOption[];
-    const optionIdOf = (o: AcpPermissionOption) => String(o.optionId ?? o.option_id ?? '');
-
-    // Prefer the kind carried on the permission request; fall back to the
-    // tracked tool call; default to the most dangerous class (fail closed).
-    const toolCall = (params?.toolCall ?? params?.tool_call) as Record<string, unknown> | undefined;
-    const kind = String(toolCall?.kind ?? '').toLowerCase();
-    const allow = this._acpPermissionAllows(kind, hermes);
-
-    const ALLOW_IDS = ['allow_once', 'allow_session', 'allow_always'];
-    const DENY_IDS = ['deny', 'deny_always', 'reject_once', 'reject_always'];
-    const pick = (wanted: string[]): string | null => {
-      for (const w of wanted) {
-        const match = options.find(o => optionIdOf(o) === w || o.kind === w);
-        if (match) { return optionIdOf(match); }
-      }
-      return null;
-    };
-
-    let chosen: string | null;
-    if (allow) {
-      // If we mean to allow but find no allow option, fail closed (deny).
-      chosen = pick(ALLOW_IDS) ?? pick(DENY_IDS);
-    } else {
-      // Denying: ONLY ever select a real deny option. If none is offered, leave
-      // chosen=null so the `cancelled` outcome fires — never fall back to an
-      // arbitrary option (a last/only option could be an allow ⇒ fail open).
-      chosen = pick(DENY_IDS);
-    }
-
-    this._writeToAcp(hermes, {
-      jsonrpc: '2.0',
-      id,
-      result: chosen
-        ? { outcome: { outcome: 'selected', optionId: chosen } }
-        : { outcome: { outcome: 'cancelled' } }
+    respondToAcpApproval({
+      id, params,
+      settings: { mode: hermes.acpMode, accessLevel: hermes.acpAccessLevel },
+      process: hermes.persistentProcess, sessionId: hermes.acpSessionId,
+      trackedTools: hermes.activeToolCalls,
+      requests: this._nativeApprovalRequests(hermes),
     });
-  }
-
-  /**
-   * Whether an ACP tool of the given semantic `kind` may auto-run under the
-   * snapshotted settings. Mirrors Mysti's shouldGateToolUse predicate (but
-   * inverted — "wouldn't gate" ⇒ allow): read-only kinds always run; the
-   * autonomous Full-access tier runs everything; the accept-edits tier runs
-   * edits/moves only; every "ask" mode denies (we can't prompt synchronously).
-   * Unknown kinds require command authority.
-   */
-  private _acpPermissionAllows(kind: string, hermes: HermesSessionState): boolean {
-    return allowsAcpToolWithoutPrompt({
-      mode: hermes.acpMode, accessLevel: hermes.acpAccessLevel,
-    }, kind);
   }
 
   /** Extract text from an ACP content block (or block array). */

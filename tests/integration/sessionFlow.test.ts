@@ -62,7 +62,7 @@ function createHarness(): Harness {
   const configs = PROVIDER_IDS.map(name => ({ name, models: [], defaultModel: `${name}-default` }));
 
   const providerManager: any = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProviders: vi.fn(() => configs),
     getProvider: vi.fn((n: string) => configs.find(c => c.name === n)),
     getProviderInstance: () => undefined,

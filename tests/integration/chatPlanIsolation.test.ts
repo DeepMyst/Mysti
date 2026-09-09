@@ -49,6 +49,8 @@ function createHarness() {
     _pendingPlans: new PendingPlanStore(),
     _delayedChannelTurns: new DelayedChannelTurns(),
     _subAgentQuestions: questions,
+    _nativeApprovalRegistration: { dispose: vi.fn() },
+    _nativeApprovalCards: { dispose: vi.fn() },
     _pendingPlanSelections: new Set<string>(),
     _panelStates: panels,
     _lastUserMessage: new Map(),

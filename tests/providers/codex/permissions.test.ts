@@ -44,19 +44,22 @@ describe('Codex permission flag mapping', () => {
     expect(args).not.toContain('--sandbox');
   });
 
-  it('should use --full-auto for default + full-access', () => {
+  it('uses workspace-write for default + full-access', () => {
     const args = provider.buildCliArgs(s({ accessLevel: 'full-access' }), createCodexSession());
-    expect(args).toContain('--full-auto');
+    expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'workspace-write']);
+    expect(args).not.toContain('--full-auto');
     expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
-  it('should use --full-auto for default + ask-permission (bypass for stream gate)', () => {
+  it('uses workspace-write for default + ask-permission', () => {
     const args = provider.buildCliArgs(s(), createCodexSession());
-    expect(args).toContain('--full-auto');
+    expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'workspace-write']);
+    expect(args).not.toContain('--full-auto');
   });
 
-  it('should use --full-auto for ask-before-edit + ask-permission (fallback bypass)', () => {
+  it('uses workspace-write for ask-before-edit + ask-permission', () => {
     const args = provider.buildCliArgs(s({ mode: 'ask-before-edit' }), createCodexSession());
-    expect(args).toContain('--full-auto');
+    expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'workspace-write']);
+    expect(args).not.toContain('--full-auto');
   });
 });

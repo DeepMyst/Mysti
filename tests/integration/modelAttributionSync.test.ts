@@ -88,7 +88,7 @@ function createHarness(): Harness {
   }));
 
   const providerManager: any = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProviders: vi.fn(() => providerConfigs),
     getProvider: vi.fn((name: string) => providerConfigs.find(p => p.name === name)),
     getProviderInstance: vi.fn((name: string) =>

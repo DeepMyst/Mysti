@@ -21,6 +21,8 @@ import type {
   CliDiscoveryResult,
   AuthConfig,
   ProviderCapabilities,
+  NativeApprovalHandler,
+  NativeApprovalHost,
   PersonaConfig,
   PersonaType
 } from './IProvider';
@@ -45,6 +47,7 @@ import type { AgentContextManager } from '../../managers/AgentContextManager';
 import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TIMEOUT_MS, STREAM_INACTIVITY_TIMEOUT_MS } from '../../constants';
 import { getCommonSearchPaths, getPriorityCliPaths, resolveCommandOnPath, probeCliVersion, validateCliPath, checkCommandExists, getEnrichedEnv, filterInstallMethodsForOS } from '../../utils/platform';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
+import { NativeApprovalRequests } from './NativeApprovalRequests';
 
 /**
  * How much of a persistent process's stderr to keep for crash reporting.
@@ -175,7 +178,18 @@ export abstract class BaseCliProvider implements ICliProvider {
   private readonly _requests = new WeakMap<PanelSessionState, {
     controller: AbortController;
     submitted: boolean;
+    nativeHandler?: NativeApprovalHandler;
+    nativeApprovals?: NativeApprovalRequests;
   }>();
+  private _nativeApprovalHost?: NativeApprovalHost;
+
+  public setNativeApprovalHost(host: NativeApprovalHost | undefined): void {
+    this._nativeApprovalHost = host;
+  }
+
+  protected _nativeApprovalRequests(session: PanelSessionState): NativeApprovalRequests | undefined {
+    return this._requests.get(session)?.nativeApprovals;
+  }
   protected _agentContextManager: AgentContextManager | null = null;
   protected _cachedCliPath: string | null = null;
   /**
@@ -451,7 +465,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     // re-send the prompt via the single-shot fallback (bug B4).
     session.cancelled = true;
     this._requests.get(session)?.controller.abort();
-    // A SIGSTOP-suspended process (frozen at the pre-execution permission gate)
+    // A SIGSTOP-suspended process (paused by the legacy stream gate)
     // must be SIGKILLed, NOT interrupted: writing \x03 to a stopped process's
     // stdin is never read, so a persistent process denied at the gate would stay
     // alive-but-frozen and hang the NEXT delegation that reuses its panel/session
@@ -494,8 +508,8 @@ export abstract class BaseCliProvider implements ICliProvider {
 
   /**
    * Suspend (freeze) the CLI process for a panel using SIGSTOP.
-   * This prevents the process from executing any further instructions,
-   * including tool execution that was about to begin.
+   * Only the owned process is paused; its tool children may already be running.
+   * Native approval is enforced through the request/response callback instead.
    * Returns false on Windows where SIGSTOP is not supported.
    */
   public suspendProcess(panelId?: string): boolean {
@@ -618,6 +632,8 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     const chunks: StreamChunk[] = [];
     let waitResolve: (() => void) | null = null;
+    const nativeApprovals = this._nativeApprovalRequests(session);
+    const releaseApprovalListener = nativeApprovals?.onPendingChanged(() => { waitResolve?.(); });
     let done = false;
     let firstChunkTime: number | null = null;
     let firstContentTime: number | null = null;
@@ -718,6 +734,13 @@ export abstract class BaseCliProvider implements ICliProvider {
         const parkInactivityMs = session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : STREAM_INACTIVITY_TIMEOUT_MS;
         let parkTimer: ReturnType<typeof setTimeout> | undefined;
         const parked = new Promise<void>(r => { waitResolve = r; });
+        // A native permission request is intentionally waiting for its owner.
+        // Resume the inactivity clock only after it resolves or is cancelled.
+        if (nativeApprovals?.hasPending) {
+          await parked;
+          waitResolve = null;
+          continue;
+        }
         const parkTimeout = new Promise<'timeout'>(resolve => {
           parkTimer = setTimeout(() => resolve('timeout'), parkInactivityMs);
         });
@@ -778,6 +801,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       proc.removeListener('close', onClose);
       proc.removeListener('error', onError);
       signal?.removeEventListener('abort', onAbort);
+      releaseApprovalListener?.();
     }
   }
 
@@ -979,6 +1003,12 @@ export abstract class BaseCliProvider implements ICliProvider {
     let attachmentCleanup: (() => Promise<void>) | null = null;
     const isCurrent = () => !request?.controller.signal.aborted
       && !session.cancelled && session.process === proc && session.persistentProcess === proc;
+    if (request && this.capabilities.supportsNativeApproval) {
+      request.nativeApprovals = new NativeApprovalRequests({
+        providerId: this.id, panelId: session.panelId, process: proc,
+        signal: request.controller.signal, handler: request.nativeHandler, isCurrent,
+      });
+    }
     try {
       attachmentCleanup = await this.prepareAttachments(attachments, []);
       if (!isCurrent()) { return; }
@@ -1002,6 +1032,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       console.log(`[Mysti] ${this.displayName}: ⏱️ Prompt written to stdin, waiting for response...`);
       yield* this._readUntilBoundary(proc, session, request?.controller.signal);
     } finally {
+      request?.nativeApprovals?.dispose();
       // Only a response boundary releases session.process without ending the
       // persistent child. A consumer break or setup failure must stop that turn.
       if (session.process === proc) {
@@ -1031,6 +1062,7 @@ export abstract class BaseCliProvider implements ICliProvider {
   disposePersistentProcess(panelId?: string): void {
     const key = panelId || 'default';
     const session = this._panelSessions.get(key);
+    if (session) { this._requests.get(session)?.nativeApprovals?.dispose(); }
     if (session && isProcessLive(session.persistentProcess)) {
       console.log(`[Mysti] ${this.displayName}: Disposing persistent process for panel: ${key}`);
       // SIGTERM with reliable SIGKILL escalation (liveness-gated, timer cleared on exit).
@@ -1382,7 +1414,11 @@ export abstract class BaseCliProvider implements ICliProvider {
     if (this._requests.has(session)) { this._cancelSessionRequest(session); }
     session.autonomousMode = settings.autonomousMode === true;
     session.cancelled = false;
-    const request = { controller: new AbortController(), submitted: false };
+    const controller = new AbortController();
+    const request = {
+      controller, submitted: false,
+      nativeHandler: this._nativeApprovalHost?.handlerForPanel(session.panelId, controller.signal),
+    };
     this._requests.set(session, request);
 
     try {
@@ -1423,6 +1459,7 @@ export abstract class BaseCliProvider implements ICliProvider {
         providerManager, persona, agentConfig, attachments, startTime,
       );
     } finally {
+      request.controller.abort();
       if (this._requests.get(session) === request) { this._requests.delete(session); }
     }
   }
@@ -1485,8 +1522,11 @@ export abstract class BaseCliProvider implements ICliProvider {
     attachments: Attachment[] | undefined,
     startTime: number,
   ): AsyncGenerator<StreamChunk> {
-    const signal = this._requests.get(session)?.controller.signal;
+    const request = this._requests.get(session);
+    if (!request || request.controller.signal.aborted) { return; }
     let proc: ChildProcess | null = null;
+    const isCurrent = () => !request.controller.signal.aborted && this._requests.get(session) === request
+      && (proc === null || session.process === proc);
     let attachmentCleanup: (() => Promise<void>) | null = null;
     const stderrRef = { output: '' };
     const stderrHandler = (data: Buffer) => {
@@ -1494,13 +1534,14 @@ export abstract class BaseCliProvider implements ICliProvider {
       stderrRef.output += text;
       console.log(`[Mysti] ${this.displayName} stderr:`, text);
     };
+
     try {
       const cliPath = this.getCliPath();
       const args = this.buildCliArgs(settings, session);
 
       // Prepare attachments (subclasses can override to write temp files, add CLI flags, etc.)
       attachmentCleanup = await this.prepareAttachments(attachments, args);
-      if (signal?.aborted || session.cancelled) { return; }
+      if (!isCurrent()) { return; }
 
       // Get workspace folder for CWD
       const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -1563,7 +1604,9 @@ export abstract class BaseCliProvider implements ICliProvider {
         (providerManager as ProcessTracker).registerProcess(panelId, proc, this.id);
       }
 
+      // Set up stderr handler early to capture initialization errors.
       proc.stderr?.on('data', stderrHandler);
+
       // Build prompt AFTER spawning (parallelizes CLI startup with prompt building)
       // When the CLI itself resumes the session it already has the full
       // conversation context — don't re-send history in the prompt (avoids
@@ -1572,7 +1615,8 @@ export abstract class BaseCliProvider implements ICliProvider {
       const effectiveConversation = this._conversationForPrompt(session, conversation);
       const fullPrompt = await this.buildPromptAsync(content, context, effectiveConversation, settings, persona, agentConfig, attachments, session.channelSystemContext);
 
-      if (signal?.aborted || session.process !== proc) { return; }
+      // Async preparation may finish after Stop or a replacement turn.
+      if (!isCurrent()) { return; }
 
       // Check if spawn failed during prompt building (async error on Windows)
       if (earlySpawnError) {
@@ -1584,7 +1628,7 @@ export abstract class BaseCliProvider implements ICliProvider {
 
       // Hand the prompt to the CLI (stdin by default — see _deliverPrompt).
       await this._deliverPrompt(proc, fullPrompt, session);
-      if (signal?.aborted || session.process !== proc) { return; }
+      if (!isCurrent()) { return; }
       const promptSentTime = Date.now() - startTime;
       console.log(`[Mysti] ${this.displayName}: Prompt delivered in ${promptSentTime}ms`);
 
@@ -1598,10 +1642,11 @@ export abstract class BaseCliProvider implements ICliProvider {
 
       // Process stream output
       for await (const chunk of this.processStream(stderrRef, session)) {
-        if (signal?.aborted || session.process !== proc) { return; }
+        if (!isCurrent()) { return; }
         yield chunk;
+        if (!isCurrent()) { return; }
       }
-      if (signal?.aborted || session.process !== proc) { return; }
+      if (!isCurrent()) { return; }
 
       // Yield final done with any stored usage from stream parsing
       const totalTime = Date.now() - startTime;
@@ -1617,7 +1662,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       const storedUsage = this.getStoredUsage(panelId);
       yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
     } catch (error) {
-      if (signal?.aborted) { return; }
+      if (!isCurrent()) { return; }
       // A spawn-time refusal (EACCES/EPERM on a Gatekeeper-blocked binary)
       // lands here rather than in processStream, so it gets the same upgrade
       // from an opaque errno to an actionable explanation.
@@ -1630,17 +1675,23 @@ export abstract class BaseCliProvider implements ICliProvider {
           hasOutput: false
         });
       }
-      if (!signal?.aborted) { yield chunk; }
+      if (isCurrent()) { yield chunk; }
     } finally {
-      // This turn owns the captured handle even if the panel has already moved
-      // on. Its cleanup must never signal or unregister a replacement process.
+      // A late completion owns only its captured process, never a replacement.
       proc?.stderr?.removeListener('data', stderrHandler);
       if (isProcessLive(proc)) {
-        void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, {
-          label: this.displayName,
-          initialSignal: session.process === proc && session.suspended ? 'SIGKILL' : 'SIGTERM',
-        });
+        try {
+          // Suspended processes get SIGKILL without opening a tool-execution
+          // window. Otherwise retain graceful SIGTERM followed by SIGKILL.
+          void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, {
+            label: this.displayName,
+            initialSignal: session.process === proc && session.suspended ? 'SIGKILL' : 'SIGTERM',
+          });
+        } catch (e) {
+          console.error(`[Mysti] ${this.displayName}: Error cleaning up process:`, e);
+        }
       }
+
       if (session.process === proc) {
         session.process = null;
         session.suspended = false;
@@ -1648,7 +1699,9 @@ export abstract class BaseCliProvider implements ICliProvider {
       if (proc && panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
         (providerManager as ProcessTracker).clearProcess(panelId, proc);
       }
-      if (attachmentCleanup) { await attachmentCleanup(); }
+      if (attachmentCleanup) {
+        await attachmentCleanup();
+      }
     }
   }
 

@@ -45,16 +45,18 @@ describe('CodexProvider.buildCliArgs', () => {
     expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
-  it('should use full-auto for default + full-access', () => {
+  it('uses workspace-write for default + full-access', () => {
     const args = provider.buildCliArgs(defaultSettings({
       accessLevel: 'full-access',
     }), createCodexSession());
-    expect(args).toContain('--full-auto');
+    expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'workspace-write']);
+    expect(args).not.toContain('--full-auto');
   });
 
-  it('should use full-auto as fallback for ask-permission', () => {
+  it('uses workspace-write for ask-permission', () => {
     const args = provider.buildCliArgs(defaultSettings(), createCodexSession());
-    expect(args).toContain('--full-auto');
+    expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'workspace-write']);
+    expect(args).not.toContain('--full-auto');
   });
 
   it('should map effort to -c model_reasoning_effort', () => {

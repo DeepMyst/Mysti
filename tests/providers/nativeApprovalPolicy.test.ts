@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChildProcess } from 'child_process';
+import { Writable } from 'node:stream';
 import type { Settings } from '../../src/types';
 import { shouldGateToolUse } from '../../src/utils/permissionClassifier';
 import {
@@ -26,7 +27,7 @@ describe.each([
     session.acpAccessLevel = 'full-access';
     const written: string[] = [];
     session.persistentProcess = {
-      stdin: { writable: true, write: (line: string) => { written.push(line); return true; } },
+      stdin: new Writable({ write(chunk, _encoding, callback) { written.push(String(chunk)); callback(); } }),
     } as unknown as ChildProcess;
 
     expect(shouldGateToolUse(settings('ask-before-edit', 'full-access'), 'Bash')).toBe(true);
@@ -56,7 +57,7 @@ describe.each([
     session.acpAccessLevel = 'ask-permission';
     const written: string[] = [];
     session.persistentProcess = {
-      stdin: { writable: true, write: (line: string) => { written.push(line); return true; } },
+      stdin: new Writable({ write(chunk, _encoding, callback) { written.push(String(chunk)); callback(); } }),
     } as unknown as ChildProcess;
     provider.parseStreamLine(JSON.stringify({
       jsonrpc: '2.0', id: 32, method: 'session/request_permission',

@@ -118,7 +118,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     getConversation: () => null,
   } as any;
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     // Only REGISTERED ids resolve — this is what makes 'mysti' unspawnable.
     getProvider: (id: string) =>
       REGISTERED.includes(id) ? ({ name: id, displayName: id, defaultModel: 'm1' } as any) : undefined,
@@ -474,13 +474,8 @@ describe('Plan 25 — agent selection vs backend provider', () => {
   });
 
   // =========================================================================
-  // Every failure EXIT of the coordinator run must reach the card.
-  //
-  // The first pass of this work converted the `ev.error` event path and missed
-  // the `catch` path right below it, so a credential failure that arrived as a
-  // THROW still rendered the old dead-end string. The executable transport
-  // regression lives in chatViewMessagePersistence.test.ts; this only keeps
-  // the obsolete user-facing wording out of the source.
+  // Failure routing is exercised with real streamed and thrown failures in
+  // chatViewMessagePersistence.test.ts; keep the old wording regression here.
   // =========================================================================
   describe('no failure path left as a bare error string', () => {
     const source = fs.readFileSync(

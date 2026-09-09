@@ -34,6 +34,26 @@ import type {
   SlashCommandDefinition
 } from '../../types';
 
+/** A native tool request whose issuing process is waiting for this decision. */
+export interface NativeApprovalRequest {
+  /** Unique host key, independent of native IDs reused by other processes or turns. */
+  id: string;
+  nativeRequestId: string | number;
+  providerId: string;
+  panelId: string;
+  toolCall: NonNullable<StreamChunk['toolCall']>;
+  defaultDecision: 'allow' | 'ask' | 'deny';
+  /** Aborted when this request settles or its turn/process/handler is disposed. */
+  signal: AbortSignal;
+}
+
+export type NativeApprovalHandler = (request: NativeApprovalRequest) => Promise<boolean | 'cancelled'>;
+
+/** Resolve once per turn so later registrations cannot acquire an old request. */
+export interface NativeApprovalHost {
+  handlerForPanel(panelId: string, turnSignal?: AbortSignal): NativeApprovalHandler | undefined;
+}
+
 /**
  * Result of CLI discovery attempt
  */
@@ -92,6 +112,8 @@ export interface ProviderCapabilities {
   supportsStreaming: boolean;
   supportsThinking: boolean;
   supportsToolUse: boolean;
+  /** Native request/response approval is implemented; tool notifications are display-only. */
+  supportsNativeApproval?: boolean;
   supportsSessions: boolean;
   supportsNativeCompact?: boolean;
   supportsPersistentProcess?: boolean;
@@ -459,6 +481,7 @@ export interface ICliProvider {
   // Lifecycle
   initialize(): Promise<void>;
   dispose(): void;
+  setNativeApprovalHost?(host: NativeApprovalHost | undefined): void;
 
   // CLI Discovery
   discoverCli(): Promise<CliDiscoveryResult>;
@@ -512,7 +535,7 @@ export interface ICliProvider {
   hasSession(panelId?: string): boolean;
   getSessionId(panelId?: string): string | null;
 
-  // Process suspension (SIGSTOP/SIGCONT for pre-execution permission enforcement)
+  // Best-effort process pause/resume for legacy notification streams.
   suspendProcess(panelId?: string): boolean;
   resumeProcess(panelId?: string): boolean;
   getStoredUsage?(panelId?: string): { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null;

@@ -119,7 +119,7 @@ function createHarness(): Harness {
   } as any;
 
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProvider: () => undefined,
     getProviderInstance: () => (capabilities ? { capabilities } : undefined),
     getModelContextWindow: () => 200000,
@@ -475,7 +475,9 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
   }
 
   it.each(['event', 'throw'] as const)('turns a credential %s into an action card and preserves the incomplete answer', async transport => {
-    const c = coordinator(async function* () {
+    const signals: AbortSignal[] = [];
+    const c = coordinator(async function* (...args: unknown[]) {
+      signals.push((args[1] as { signal: AbortSignal }).signal);
       yield { text: 'Partial answer.' };
       if (transport === 'throw') { throw new Error('HTTP 401 Unauthorized'); }
       yield { error: 'HTTP 401 Unauthorized' };
@@ -487,6 +489,11 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
     expect(h.sidebarMessages.some(message => message.type === 'responseComplete')).toBe(false);
     expect(getAssistantPersistCall(h)[2]).toContain('Partial answer.');
     expect(getAssistantPersistCall(h)[2]).toContain('stopped on an error');
+    expect(h.sidebarMessages.some(message => message.type === 'error')).toBe(false);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(true);
+    expect(c.provider._runningPanels.has('sidebar')).toBe(false);
+    expect(c.provider._mystiAbortControllers.has('sidebar')).toBe(false);
   });
 
   it('reuses the model resolved for this run when the stream lacks attribution', async () => {
@@ -576,6 +583,36 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
     expect(message).not.toContain('This must not appear.');
     expect(h.sidebarMessages.some(message => message.type === 'responseComplete')).toBe(false);
     expect(h.sidebarMessages.some(message => message.type === 'requestCancelled')).toBe(true);
+  });
+
+  it('does not dispatch a directive when a newer send takes ownership during iterator handoff', async () => {
+    const provider = h.provider as any;
+    provider._panelStates.get('sidebar').currentConversationId = 'conv-1';
+    provider._conversationManager.getConversation = () => ({ id: 'conv-1', messages: [] });
+    provider._availableMystiBackends = () => ['claude-code'];
+    provider._mystiCoordinator = {
+      status: () => ({ ready: true }),
+      resolveCoordinatorModel: async () => 'coordinator-model',
+      stream: async function* (messages: { content: string }[]) {
+        const nonce = messages.map(message => message.content).join('\n').match(/<delegate:([A-Za-z0-9]{6,})\s+agent/)?.[1];
+        yield { text: `<delegate:${nonce} agent="claude-code">obsolete task</delegate>` };
+      },
+    };
+    // A send arriving after the final synchronous observer check but before
+    // for-await resumes in the host must invalidate the pending directive.
+    provider._announceRefusedCapability = () => queueMicrotask(() => {
+      provider._mystiRunGen.set('sidebar', (provider._mystiRunGen.get('sidebar') ?? 0) + 1);
+    });
+    provider._runMystiDelegation = vi.fn(async () => ({ text: '', hasError: false, wrote: false }));
+
+    await provider._handleSendMessage(
+      { content: 'implement the thing', context: [], settings: { ...SETTINGS, provider: 'mysti' } },
+      'sidebar',
+    );
+
+    expect(provider._runMystiDelegation).not.toHaveBeenCalled();
+    expect(h.sidebarMessages.some(message => message.type === 'toolUse')).toBe(false);
+    expect(h.persistedCalls.some(call => call[1] === 'assistant')).toBe(false);
   });
 
   it('routes a delegate directive, fences the result UNTRUSTED, counts it, and persists the card', async () => {

@@ -225,11 +225,11 @@ them in reviewable feature increments with these acceptance criteria:
 
 | Increment | Completion criteria |
 | --- | --- |
-| Extract coordinator run orchestration | A run owns its abort signal, budget and delegates; it executes without constructing the UI provider; Stop/timeout/consumer-abandonment tests prove cleanup. |
+| Extract coordinator run orchestration | Model stream orchestration now lives in `CoordinatorTurnRunner` with explicit ports and abandonment tests; permission/tool dispatch and whole-run budgets still need a separate run service. |
 | Extract Canvas host integration | Canvas session ownership, tool dispatch and view lifecycle have narrow ports; all browser and real-editor Canvas tests continue to pass. |
-| Split the chat renderer | Feature modules share an explicit message/state contract; existing UI behavior and CSP remain covered by browser tests. |
-| Consolidate remaining interaction state | Questions, permissions and continuation timers have explicit panel/run owners; closing one panel cannot settle or cancel another panel's work. |
-| Validate native provider contracts | Versioned fixtures and live smoke results cover every advertised capability, especially approval timing and process termination. |
+| Split the chat renderer | Markdown/diagrams and sub-agent cards are extracted behind explicit ports with browser/CSP coverage. Continue with cohesive message/timeline features while preserving the existing state contract. |
+| Consolidate remaining interaction state | Questions, native approval cards, pending plans and queued continuations have explicit owners. Move remaining host-owned interaction lifecycles into independently testable services as they change. |
+| Validate native provider contracts | Hermes/Kimi have blocking ACP approval paths with transport and host tests. Remaining adapters need equivalent native enforcement and recorded live smoke results for approval timing and process termination. |
 | Strengthen persistence evolution | Migration fixtures cover supported old schemas, partial/corrupt writes and downgrade preservation; backups can actually be restored. |
 
 Keep these criteria current as work lands. Avoid broad rewrites that change

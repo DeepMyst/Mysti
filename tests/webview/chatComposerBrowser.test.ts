@@ -230,6 +230,42 @@ afterAll(async () => {
 });
 
 describe('chat webview boots', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows the actual timeout denial when a forced card overrides auto-accept', async () => {
+    const pg = await newPanelPage();
+    try {
+      await pg.evaluate(() => {
+        const receive = (type: string, payload: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        receive('permissionRequest', {
+          id: 'native-timeout', actionType: 'file-edit', title: 'Write', description: 'Write a file',
+          details: {}, expiresAt: Date.now() + 30000, forceInteractive: true,
+        });
+        receive('permissionExpired', { requestId: 'native-timeout', behavior: 'auto-accept', approved: false });
+      });
+      expect(await pg.locator('.permission-card[data-id="native-timeout"] .permission-footer').textContent()).toContain('Auto-denied (timeout)');
+    } finally { await pg.context().close(); }
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a forced native permission supports approve or deny without a hidden session-grant shortcut', async () => {
+    const pg = await newPanelPage();
+    try {
+      await pg.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: {
+        type: 'permissionRequest', payload: {
+          id: 'native-card', actionType: 'file-edit', title: 'Write', description: 'Write a file',
+          details: {}, expiresAt: 0, forceInteractive: true,
+        },
+      } })));
+      const card = pg.locator('.permission-card[data-id="native-card"]');
+      expect(await card.locator('[data-action="always-allow"]').count()).toBe(0);
+      await card.focus();
+      await pg.keyboard.press('2');
+      const replies = () => pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string; payload?: unknown }> }).__posted
+        .filter(message => message.type === 'permissionResponse'));
+      expect(await replies()).toEqual([]);
+      await pg.keyboard.press('3');
+      expect(await replies()).toMatchObject([{ payload: { requestId: 'native-card', decision: 'deny', scope: 'this-action' } }]);
+    } finally { await pg.context().close(); }
+  });
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('loads chat.js with no uncaught exception', async () => {
     // Phase 1 removed three elements whose listeners were bound unguarded.
     // This is the assertion that would have caught shipping that half-done.

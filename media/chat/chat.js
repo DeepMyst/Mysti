@@ -10691,10 +10691,10 @@
               '<span class="option-number">1</span>' +
               '<span>Yes</span>' +
             '</button>' +
-            '<button class="permission-option" data-action="always-allow">' +
+            (request.forceInteractive || request.remoteOrigin ? '' : '<button class="permission-option" data-action="always-allow">' +
               '<span class="option-number">2</span>' +
               '<span>' + escapeHtml(alwaysAllowLabel(request)) + '</span>' +
-            '</button>' +
+            '</button>') +
             '<button class="permission-option" data-action="deny">' +
               '<span class="option-number">3</span>' +
               '<span>No</span>' +
@@ -11024,6 +11024,8 @@
       }
 
       function handlePermissionAction(requestId, action) {
+        var request = state.pendingPermissions.get(requestId);
+        if (action === 'always-allow' && request && (request.forceInteractive || request.remoteOrigin)) return;
         var card = document.querySelector('.permission-card[data-id="' + requestId + '"]');
         if (!card) return;
 
@@ -11060,6 +11062,7 @@
       }
 
       function handlePermissionExpired(payload) {
+        var approved = payload.approved === true;
         var card = document.querySelector('.permission-card[data-id="' + payload.requestId + '"]');
         if (!card) return;
 
@@ -11069,7 +11072,7 @@
         // Update UI to show expired state
         var timerEl = card.querySelector('.permission-timer');
         if (timerEl) {
-          timerEl.textContent = payload.behavior === 'auto-accept' ? 'Auto-approved' : 'Expired';
+          timerEl.textContent = approved ? 'Auto-approved' : 'Expired';
         }
 
         // Hide options and custom input, show status in footer
@@ -11080,14 +11083,14 @@
         var footerEl = card.querySelector('.permission-footer');
         if (footerEl) {
           footerEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">' +
-            (payload.behavior === 'auto-accept' ? 'Auto-approved' : 'Auto-denied') +
+            (approved ? 'Auto-approved' : 'Auto-denied') +
             ' (timeout)</span>';
         }
         // Legacy fallback
         var actionsEl = card.querySelector('.permission-actions');
         if (actionsEl) {
           actionsEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">Action was ' +
-            (payload.behavior === 'auto-accept' ? 'automatically approved' : 'automatically denied') +
+            (approved ? 'automatically approved' : 'automatically denied') +
             ' due to timeout.</span>';
         }
 
@@ -11254,6 +11257,7 @@
             handlePermissionAction(requestId, 'approve');
             return true;
           case '2':
+            if (!focusedCard.querySelector('[data-action="always-allow"]')) return false;
             e.preventDefault();
             handlePermissionAction(requestId, 'always-allow');
             return true;

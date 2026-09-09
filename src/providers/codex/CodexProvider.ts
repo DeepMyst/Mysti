@@ -357,7 +357,6 @@ export class CodexProvider extends BaseCliProvider {
    *
    * Key flags from codex exec --help:
    * - --sandbox, -s: read-only | workspace-write | danger-full-access
-   * - --full-auto: workspace-write sandbox with auto-approve on request
    * - --dangerously-bypass-approvals-and-sandbox: skip all confirmations (DANGEROUS)
    * - --json: output JSONL events to stdout
    * - --model, -m: override configured model
@@ -438,17 +437,12 @@ export class CodexProvider extends BaseCliProvider {
       return;
     }
 
-    // default mode + full-access = full-auto (no explicit edit restriction)
-    if (mode === 'default' && accessLevel === 'full-access') {
-      args.push('--full-auto');
-      console.log('[Mysti] Codex: Using full-auto mode (default + full-access)');
-      return;
-    }
-
-    // All other combinations: bypass CLI permissions to prevent stdin hang.
-    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-    args.push('--full-auto');
-    console.log(`[Mysti] Codex: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
+    // Codex 0.153.4 rejects the former exec --full-auto alias. Its sandbox
+    // expansion was workspace-write; spell that policy directly, as the
+    // non-interactive CLI documentation recommends. Stream notifications still
+    // do not provide a native approval handshake (see docs/NATIVE_APPROVAL.md).
+    args.push('--sandbox', 'workspace-write');
+    console.log(`[Mysti] Codex: Using workspace-write sandbox [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**

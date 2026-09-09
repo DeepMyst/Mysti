@@ -80,7 +80,7 @@ function makeProvider(): any {
   const extensionContext = createMockExtensionContext();
   const noop = {} as any;
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProvider: vi.fn(() => ({ name: 'claude-code', models: [], defaultModel: 'm' })),
     getProviderInstance: () => undefined,
     getAllProviders: () => [],

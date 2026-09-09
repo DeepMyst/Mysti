@@ -131,7 +131,7 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
   } as any;
 
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProvider: () => undefined,
     getProviderInstance: () => ({ capabilities: { thinkingStyle: 'streamed' } }),
     getModelContextWindow: () => 200000,

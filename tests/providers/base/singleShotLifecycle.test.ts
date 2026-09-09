@@ -239,4 +239,69 @@ describe('single-shot process ownership', () => {
     expect(old.listenerCount('error')).toBe(0);
     expect(session().process).toBe(replacement);
   });
+
+  it('cancelled prompt delivery cannot consume its replacement stream', async () => {
+    const { provider, deliver, state, send, session } = harness();
+    const old = fakeProcess();
+    const replacement = fakeProcess();
+    vi.mocked(spawn).mockReturnValueOnce(old).mockReturnValueOnce(replacement);
+    const delivering = deferred<void>();
+    const delivered = deferred<void>();
+    deliver.mockImplementationOnce(() => { delivering.resolve(); return delivered.promise; });
+    const oldCompletion = collect(send());
+    await delivering.promise;
+    provider.cancelCurrentRequest('panel');
+    const replacementGen = send();
+    expect((await replacementGen.next()).value).toMatchObject({ type: 'text' });
+    delivered.resolve();
+    expect(await oldCompletion).toEqual([]);
+    expect((provider as any).processStream).toHaveBeenCalledOnce();
+    expect(session().process).toBe(replacement);
+    expect(state._activePanelProcesses.get('panel')).toBe(replacement);
+    await replacementGen.return(undefined);
+  });
+
+  it('an already exited process still releases its stderr listener', async () => {
+    const { send, cleanup, state } = harness();
+    const proc = fakeProcess();
+    vi.mocked(spawn).mockReturnValue(proc);
+    const gen = send();
+    await gen.next();
+    Object.defineProperty(proc, 'exitCode', { value: 0 });
+    await gen.return(undefined);
+    expect(proc.stderr?.listenerCount('data')).toBe(0);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(state._activePanelProcesses.has('panel')).toBe(false);
+  });
+
+  it('attachment cleanup releases only its own native host turn scope', async () => {
+    const { provider, prepare, cleanup, state, send } = harness();
+    const signals: AbortSignal[] = [];
+    provider.setNativeApprovalHost({ handlerForPanel: (_panelId, signal) => {
+      signals.push(signal!);
+      return async () => false;
+    } });
+    const cleaning = deferred<void>();
+    const cleaned = deferred<void>();
+    prepare.mockResolvedValueOnce(async () => { cleaning.resolve(); await cleaned.promise; });
+    const old = fakeProcess();
+    const replacement = fakeProcess();
+    vi.mocked(spawn).mockReturnValueOnce(old).mockReturnValueOnce(replacement);
+    const oldCompletion = collect(send());
+    await cleaning.promise;
+
+    const current = send();
+    expect((await current.next()).value).toMatchObject({ type: 'text' });
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[1].aborted).toBe(false);
+    cleaned.resolve();
+    await oldCompletion;
+    expect(signals[1].aborted).toBe(false);
+    expect(state._activePanelProcesses.get('panel')).toBe(replacement);
+
+    await collect(current);
+    expect(signals[1].aborted).toBe(true);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(state._activePanelProcesses.has('panel')).toBe(false);
+  });
 });

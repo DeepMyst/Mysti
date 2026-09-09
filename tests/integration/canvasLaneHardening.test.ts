@@ -88,7 +88,7 @@ function createHarness(): Harness {
   const cancelRequest = vi.fn();
 
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProvider: vi.fn(() => ({ name: 'claude-code', models: [], defaultModel: 'm' })),
     getProviderInstance: () => undefined,
     getAllProviders: () => [],

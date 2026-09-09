@@ -25,6 +25,11 @@ export function allowsAcpToolWithoutPrompt(settings: ApprovalSettings, kind: str
   return !shouldGateToolUse(settings, toolName);
 }
 
+export function acpApprovalDecision(settings: ApprovalSettings, kind: string): 'allow' | 'ask' | 'deny' {
+  if (allowsAcpToolWithoutPrompt(settings, kind)) { return 'allow'; }
+  return isReadOnly(settings) ? 'deny' : 'ask';
+}
+
 /** Whether a noninteractive CLI may receive an unrestricted auto-approve flag. */
 export function allowsUnrestrictedNativeTools(settings: ApprovalSettings): boolean {
   if (isReadOnly(settings)) { return false; }

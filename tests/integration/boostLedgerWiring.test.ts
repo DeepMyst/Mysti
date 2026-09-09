@@ -97,7 +97,7 @@ function createHarness(): Harness {
   } as any;
 
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProvider: () => undefined,
     getProviderInstance: () => ({ capabilities: { supportsImages: true, thinkingStyle: 'streamed' } }),
     getModelContextWindow: () => 200000,
