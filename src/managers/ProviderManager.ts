@@ -14,7 +14,7 @@
 import * as vscode from 'vscode';
 import { ChildProcess } from 'child_process';
 import { ProviderRegistry } from '../providers/ProviderRegistry';
-import type { ICliProvider, PersonaConfig } from '../providers/base/IProvider';
+import type { ICliProvider, PersonaConfig, NativeApprovalHandler, NativeApprovalHost } from '../providers/base/IProvider';
 import type { BaseCliProvider } from '../providers/base/BaseCliProvider';
 import type { AgentContextManager } from './AgentContextManager';
 import type {
@@ -31,6 +31,12 @@ import type {
 } from '../types';
 import { DEFAULT_PROVIDER, DEFAULT_FALLBACK_MODEL, PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
 import { killProcessTree } from '../utils/processKill';
+import { createAbortScope } from '../utils/abortScope';
+
+interface NativeApprovalRegistration {
+  handler: NativeApprovalHandler | NativeApprovalHost;
+  controller: AbortController;
+}
 
 /**
  * Minimal structural view of ModelRegistryService (Plan 01). ProviderManager
@@ -83,6 +89,12 @@ export class ProviderManager {
   // to the provider that actually owns the panel's request, not the global
   // default. Recorded when a send starts; cleared when the process clears.
   private _panelProviders: Map<string, string> = new Map();
+  private _nativeApprovalRegistration?: NativeApprovalRegistration;
+  private readonly _nativeApprovalPanels = new Map<string, NativeApprovalRegistration>();
+  private readonly _nativeApprovalTurns = new Map<string, AbortController>();
+  private readonly _nativeApprovalHost: NativeApprovalHost = {
+    handlerForPanel: (panelId, signal) => this._nativeHandlerForPanel(panelId, signal),
+  };
 
   // Optional lifecycle sink (B16): wired post-construction so registerProcess
   // can report child PIDs for idle/child-protection tracking.
@@ -97,6 +109,83 @@ export class ProviderManager {
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
     this._registry = new ProviderRegistry(context);
+    for (const provider of this._registry.getAll()) { provider.setNativeApprovalHost?.(this._nativeApprovalHost); }
+  }
+
+  /** Default native approval destination; replacing or disposing it cancels its own cards. */
+  public setNativeApprovalHandler(handler: NativeApprovalHandler | NativeApprovalHost): vscode.Disposable {
+    this._nativeApprovalRegistration?.controller.abort();
+    const registration = { handler, controller: new AbortController() };
+    this._nativeApprovalRegistration = registration;
+    return new vscode.Disposable(() => {
+      registration.controller.abort();
+      if (this._nativeApprovalRegistration === registration) { this._nativeApprovalRegistration = undefined; }
+    });
+  }
+
+  /** A child run's registration outranks the global chat destination. */
+  public setNativeApprovalHandlerForPanel(panelId: string, handler: NativeApprovalHandler): vscode.Disposable {
+    this._nativeApprovalPanels.get(panelId)?.controller.abort();
+    const registration = { handler, controller: new AbortController() };
+    this._nativeApprovalPanels.set(panelId, registration);
+    return new vscode.Disposable(() => {
+      registration.controller.abort();
+      if (this._nativeApprovalPanels.get(panelId) === registration) { this._nativeApprovalPanels.delete(panelId); }
+    });
+  }
+
+  private _nativeHandlerForPanel(panelId: string, turnSignal?: AbortSignal): NativeApprovalHandler | undefined {
+    if (!this._nativeApprovalPanels.has(panelId) && !this._nativeApprovalRegistration) { return undefined; }
+    this._nativeApprovalTurns.get(panelId)?.abort();
+    const controller = new AbortController();
+    this._nativeApprovalTurns.set(panelId, controller);
+    const onTurnAbort = () => controller.abort();
+    controller.signal.addEventListener('abort', () => {
+      turnSignal?.removeEventListener('abort', onTurnAbort);
+      if (this._nativeApprovalTurns.get(panelId) === controller) { this._nativeApprovalTurns.delete(panelId); }
+    }, { once: true });
+    turnSignal?.addEventListener('abort', onTurnAbort, { once: true });
+    if (turnSignal?.aborted) { controller.abort(); }
+    return this.captureNativeApprovalHandler(panelId, controller.signal);
+  }
+
+  /** Snapshot an explicit parent destination without starting or replacing its turn. */
+  public captureNativeApprovalHandler(panelId: string, signal?: AbortSignal): NativeApprovalHandler | undefined {
+    const registration = this._nativeApprovalPanels.get(panelId) ?? this._nativeApprovalRegistration;
+    if (!registration) { return undefined; }
+    let handler: NativeApprovalHandler | undefined;
+    try {
+      handler = typeof registration.handler === 'function'
+        ? registration.handler : registration.handler.handlerForPanel(panelId, signal);
+    } catch { /* an unavailable host cannot approve a native request */ }
+    return async request => {
+      const completion = new AbortController();
+      const scope = createAbortScope([request.signal, registration.controller.signal, signal, completion.signal]);
+      try {
+        if (scope.signal.aborted) { return 'cancelled'; }
+        if (!handler) { return false; }
+        return await new Promise<boolean | 'cancelled'>(resolve => {
+          let settled = false;
+          const finish = (result: boolean | 'cancelled') => {
+            if (settled) { return; }
+            settled = true;
+            scope.signal.removeEventListener('abort', onAbort);
+            resolve(result);
+          };
+          const onAbort = () => finish('cancelled');
+          scope.signal.addEventListener('abort', onAbort, { once: true });
+          try {
+            void Promise.resolve(handler({ ...request, signal: scope.signal })).then(
+              result => finish(scope.signal.aborted ? 'cancelled' : result),
+              () => finish(false),
+            );
+          } catch { finish(false); }
+        });
+      } finally {
+        completion.abort();
+        scope.dispose();
+      }
+    };
   }
 
   /**
@@ -345,6 +434,11 @@ export class ProviderManager {
     attachments?: Attachment[]
   ): AsyncGenerator<StreamChunk> {
     const provider = this._getActiveProvider(settings.provider);
+    provider.setNativeApprovalHost?.(this._nativeApprovalHost);
+    const previous = panelId ? this._panelProviders.get(panelId) : undefined;
+    if (panelId && previous && previous !== provider.id) {
+      this._registry.get(previous)?.cancelCurrentRequest(panelId);
+    }
     if (panelId && settings.provider) {
       this._panelProviders.set(panelId, settings.provider);
     }
@@ -365,6 +459,11 @@ export class ProviderManager {
     panelId?: string
   ): AsyncGenerator<StreamChunk> {
     const provider = this._getActiveProvider(providerId);
+    provider.setNativeApprovalHost?.(this._nativeApprovalHost);
+    const previous = panelId ? this._panelProviders.get(panelId) : undefined;
+    if (panelId && previous && previous !== provider.id) {
+      this._registry.get(previous)?.cancelCurrentRequest(panelId);
+    }
     if (panelId && providerId) {
       this._panelProviders.set(panelId, providerId);
     }
@@ -397,6 +496,7 @@ export class ProviderManager {
    * Cancel request for a specific panel only with graceful shutdown
    */
   public cancelRequest(panelId: string): void {
+    this._nativeApprovalTurns.get(panelId)?.abort();
     // Delegate to the panel's OWNING provider first (B12) — it handles SIGKILL
     // for suspended processes (avoids SIGCONT+SIGTERM which would give the CLI a
     // window to execute tools).
@@ -417,7 +517,7 @@ export class ProviderManager {
   }
 
   /**
-   * Suspend (SIGSTOP) the CLI process for a panel to prevent tool execution.
+   * Suspend (SIGSTOP) the CLI process for legacy notification consumers.
    * Returns false on Windows or if no active process.
    */
   public suspendRequest(panelId: string): boolean {
@@ -456,6 +556,8 @@ export class ProviderManager {
    * Cancel the current request on all providers (legacy - still needed for global cancel)
    */
   public cancelCurrentRequest(): void {
+    for (const controller of this._nativeApprovalTurns.values()) { controller.abort(); }
+    this._nativeApprovalTurns.clear();
     for (const provider of this._registry.getAll()) {
       provider.cancelCurrentRequest();
     }
@@ -629,6 +731,12 @@ export class ProviderManager {
    * Dispose the provider manager and all providers
    */
   public dispose(): void {
+    for (const controller of this._nativeApprovalTurns.values()) { controller.abort(); }
+    this._nativeApprovalTurns.clear();
+    this._nativeApprovalRegistration?.controller.abort();
+    this._nativeApprovalRegistration = undefined;
+    for (const registration of this._nativeApprovalPanels.values()) { registration.controller.abort(); }
+    this._nativeApprovalPanels.clear();
     this._registry.dispose();
   }
 }

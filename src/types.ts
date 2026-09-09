@@ -1144,14 +1144,15 @@ export interface CollaboratorChunk {
 
 /**
  * Optional gate hook: for `gated-write` collaborators the pool calls this
- * before re-emitting a write/exec tool_use, having already SIGSTOPped the
- * child process. Returns whether the tool is approved. The pool resumes on
- * approval and cancels the child on rejection — enforcement targets the
- * child's own derived panel (unlike the legacy MentionRouter gate).
+ * before allowing a write/exec tool. Native providers hold execution until
+ * this callback resolves and supply an abortable request identity. Legacy
+ * providers use a best-effort process pause after the tool notification.
+ * Rejection cancels the child's own derived panel.
  */
 export type CollaboratorGateCallback = (
   spec: CollaboratorSpec,
-  toolCall: ToolCall
+  toolCall: ToolCall,
+  nativeRequest?: { id: string; signal: AbortSignal }
 ) => Promise<boolean>;
 
 /**

@@ -85,7 +85,7 @@ function createHarness(): Harness {
     extensionContext,
     contextManager: { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
     conversationManager: { getCurrentConversation: () => null } as any,
-    providerManager: { setAgentContextManager: () => undefined, getProvider: () => undefined, getProviderInstance: () => undefined } as any,
+    providerManager: { setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined, getProvider: () => undefined, getProviderInstance: () => undefined } as any,
     suggestionManager: noop,
     brainstormManager: noop,
     permissionManager,

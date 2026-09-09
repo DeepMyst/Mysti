@@ -86,6 +86,7 @@ export function bashGrantToken(command: string | undefined): string | null {
 }
 
 export class PermissionManager {
+  private _disposed = false;
   private _pendingRequests: Map<string, PermissionRequest> = new Map();
   private _resolvers: Map<string, (approved: boolean) => void> = new Map();
   private _timeoutHandles: Map<string, NodeJS.Timeout> = new Map();
@@ -204,6 +205,7 @@ export class PermissionManager {
     forceInteractive = false,
     remoteOrigin = false
   ): Promise<boolean> {
+    if (this._disposed) { return false; }
     // Plan 21 Phase 0 (I14): a run whose root input contains bytes authored off
     // this machine can never be auto-approved. Folded into forceInteractive so
     // it defeats the session upgrade, the autonomous branch, the
@@ -232,8 +234,8 @@ export class PermissionManager {
       }
     }
 
-    // Read-only operations are always allowed
-    if (actionType === 'file-read') {
+    // Ordinary reads need no card; an explicit native approval still does.
+    if (actionType === 'file-read' && !forceInteractive) {
       return true;
     }
 
@@ -273,16 +275,8 @@ export class PermissionManager {
 
     this._pendingRequests.set(request.id, request);
 
-    // Send to webview
-    postToWebview({
-      type: 'permissionRequest',
-      payload: request
-    });
-
-    console.log('[Mysti] PermissionManager: Permission requested:', request.id, title,
-      isSemiAutonomous ? '(semi-autonomous)' : '');
-
-    // Return promise that resolves when user responds or timeout occurs
+    // Install settlement and cleanup before publishing. Delivery can
+    // synchronously answer, cancel, or dispose this request.
     return new Promise((resolve) => {
       this._resolvers.set(request.id, resolve);
 
@@ -299,6 +293,14 @@ export class PermissionManager {
           }
         }, effectiveTimeout * 1000);
         this._timeoutHandles.set(request.id, timeoutHandle);
+      }
+
+      try {
+        postToWebview({ type: 'permissionRequest', payload: request });
+        console.log('[Mysti] PermissionManager: Permission requested:', request.id, title,
+          isSemiAutonomous ? '(semi-autonomous)' : '');
+      } catch {
+        this.cancelRequest(request.id);
       }
     });
   }
@@ -328,7 +330,7 @@ export class PermissionManager {
     // A remote-origin request can never reach here as an always-allow that
     // matters (it was forced interactive), but the guard is explicit so the
     // property does not depend on that reasoning holding elsewhere.
-    if (response.decision === 'always-allow' && !request.remoteOrigin) {
+    if (response.decision === 'always-allow' && !request.remoteOrigin && !request.forceInteractive) {
       const scope = this._scopeKey(request.ownerKey);
       const type = request.actionType;
 
@@ -390,16 +392,6 @@ export class PermissionManager {
     // tool call / non-safe bash can only run on an explicit user click.
     const approved = !request.forceInteractive && this._config.timeoutBehavior === 'auto-accept';
 
-    // Notify webview
-    postToWebview({
-      type: 'permissionExpired',
-      payload: {
-        requestId,
-        behavior: this._config.timeoutBehavior,
-        approved
-      }
-    });
-
     // Resolve the promise
     const resolver = this._resolvers.get(requestId);
     if (resolver) {
@@ -413,6 +405,14 @@ export class PermissionManager {
         approved ? 'auto-approved' : 'auto-rejected',
         request.forceInteractive ? '(forced card — denied regardless of timeoutBehavior)' : '');
     }
+
+    // Settlement is independent of a webview surviving until the deadline.
+    try {
+      postToWebview({
+        type: 'permissionExpired',
+        payload: { requestId, behavior: this._config.timeoutBehavior, approved },
+      });
+    } catch { /* The owning panel may have closed. */ }
   }
 
   /**
@@ -596,6 +596,8 @@ export class PermissionManager {
    * Critical: Prevents pending timeouts from firing after deactivation
    */
   dispose(): void {
+    if (this._disposed) { return; }
+    this._disposed = true;
     console.log('[Mysti] PermissionManager: Disposing and cleaning up resources');
 
     // Clear all timeout handles
@@ -610,6 +612,8 @@ export class PermissionManager {
     }
     this._resolvers.clear();
     this._pendingRequests.clear();
+    this._sessionGrants.clear();
+    this._onSemiAutonomousTimeout = null;
   }
 
   private _generateId(): string {

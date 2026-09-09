@@ -135,4 +135,38 @@ describe('single-shot process ownership', () => {
     expect(tracker.registerProcess).not.toHaveBeenCalled();
     expect(tracker.clearProcess).not.toHaveBeenCalled();
   });
+
+  it('cancelled prompt delivery cannot consume its replacement stream', async () => {
+    const { provider, deliver, state, send, session } = harness();
+    const old = fakeProcess();
+    const replacement = fakeProcess();
+    vi.mocked(spawn).mockReturnValueOnce(old).mockReturnValueOnce(replacement);
+    const delivering = deferred<void>();
+    const delivered = deferred<void>();
+    deliver.mockImplementationOnce(() => { delivering.resolve(); return delivered.promise; });
+    const oldCompletion = collect(send());
+    await delivering.promise;
+    provider.cancelCurrentRequest('panel');
+    const replacementGen = send();
+    expect((await replacementGen.next()).value).toMatchObject({ type: 'text' });
+    delivered.resolve();
+    expect(await oldCompletion).toEqual([]);
+    expect((provider as any).processStream).toHaveBeenCalledOnce();
+    expect(session().process).toBe(replacement);
+    expect(state._activePanelProcesses.get('panel')).toBe(replacement);
+    await replacementGen.return(undefined);
+  });
+
+  it('an already exited process still releases its stderr listener', async () => {
+    const { send, cleanup, state } = harness();
+    const proc = fakeProcess();
+    vi.mocked(spawn).mockReturnValue(proc);
+    const gen = send();
+    await gen.next();
+    Object.defineProperty(proc, 'exitCode', { value: 0 });
+    await gen.return(undefined);
+    expect(proc.stderr?.listenerCount('data')).toBe(0);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(state._activePanelProcesses.has('panel')).toBe(false);
+  });
 });

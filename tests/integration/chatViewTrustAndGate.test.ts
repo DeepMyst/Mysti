@@ -41,6 +41,7 @@ vi.mock('../../src/managers/PlanOptionManager', () => ({
 
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { PermissionManager } from '../../src/managers/PermissionManager';
+import type { NativeApprovalHandler, NativeApprovalHost, NativeApprovalRequest } from '../../src/providers/base/IProvider';
 import { clearMockConfig, setMockConfig, Uri, window as mockWindow, workspace as mockWorkspace } from '../helpers/mockVscode';
 import { MystiLocalExec } from '../../src/services/MystiLocalExec';
 import { MystiLocalTools } from '../../src/services/MystiLocalTools';
@@ -68,6 +69,9 @@ interface Harness {
   setStream(chunks: StreamChunk[]): void;
   setProjectFiles(files: { mystiMd?: string; rules?: string; memory?: string }): void;
   setSuspendResult(value: boolean): void;
+  setNativeApprovalSupported(value: boolean): void;
+  nativeHandler(panelId: string): NativeApprovalHandler | undefined;
+  setAutoApprove(value: boolean): void;
   suspendCalls(): number;
   /** The ContextManager stub's `clearPanelContext` — K-3 asserts the dispose paths reach it. */
   clearPanelContext: ReturnType<typeof vi.fn>;
@@ -99,6 +103,9 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
   let projectFiles: { mystiMd?: string; rules?: string; memory?: string } = {};
   let suspendResult = true;
   let suspendCallCount = 0;
+  let nativeApprovalSupported = false;
+  let nativeHost: NativeApprovalHost | undefined;
+  let autoApprove = true;
   const systemContexts: string[] = [];
   const cancelled: string[] = [];
 
@@ -113,9 +120,13 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
   } as any;
 
   const providerManager = {
+    setNativeApprovalHandler: (host: NativeApprovalHost) => {
+      nativeHost = host;
+      return { dispose() { nativeHost = undefined; } };
+    },
     setAgentContextManager: () => undefined,
     getProvider: () => undefined,
-    getProviderInstance: () => ({ capabilities: { thinkingStyle: 'streamed' } }),
+    getProviderInstance: () => ({ capabilities: { thinkingStyle: 'streamed', supportsNativeApproval: nativeApprovalSupported } }),
     getModelContextWindow: () => 200000,
     setChannelSystemContext: (_panelId: string, context: string) => { systemContexts.push(context); },
     cancelRequest: (panelId: string) => { cancelled.push(panelId); },
@@ -230,7 +241,7 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
         // (prompting over an unfrozen process) completes instead of hanging on
         // the 30s permission timeout.
         const m = message as any;
-        if (m?.type === 'permissionRequest' && m.payload?.id) {
+        if (autoApprove && m?.type === 'permissionRequest' && m.payload?.id) {
           setTimeout(() => {
             (provider as any)._handlePermissionResponse({ requestId: m.payload.id, decision: 'approve' }, 'sidebar');
           }, 0);
@@ -251,9 +262,13 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
     setStream(chunks) { streamChunks = chunks; },
     setProjectFiles(files) { projectFiles = files; },
     setSuspendResult(value) { suspendResult = value; },
+    setNativeApprovalSupported(value) { nativeApprovalSupported = value; },
+    nativeHandler(panelId) { return nativeHost?.handlerForPanel(panelId); },
+    setAutoApprove(value) { autoApprove = value; },
     suspendCalls() { return suspendCallCount; },
     clearPanelContext,
     dispose() {
+      (provider as any)._nativeApprovalCards.dispose();
       (provider as any)._channelBridge?.dispose?.();
       permissionManager.dispose();
     },
@@ -266,6 +281,67 @@ async function send(h: Harness, settings: Partial<Settings> = {}): Promise<void>
     'sidebar'
   );
 }
+
+describe('native approval chat integration', () => {
+  let h: Harness;
+  beforeEach(() => { clearMockConfig(); h = createHarness(); h.setAutoApprove(false); });
+  afterEach(() => { h.dispose(); });
+
+  function request(overrides: Partial<NativeApprovalRequest> = {}): NativeApprovalRequest {
+    return {
+      id: 'native-1', nativeRequestId: 7, providerId: 'hermes', panelId: 'sidebar',
+      toolCall: { id: 'native-tool', name: 'Write', input: {}, status: 'running' },
+      defaultDecision: 'ask', signal: new AbortController().signal, ...overrides,
+    };
+  }
+
+  it.each(['Write', 'Read'])('requires an explicit decision for a native %s request with empty arguments', async name => {
+    const native = request({ toolCall: { id: 'tool', name, input: {}, status: 'running' } });
+    const result = h.nativeHandler('sidebar')!(native);
+    const card = h.provider.permissionManager.getPendingRequests()[0];
+    expect(card).toMatchObject({ toolCallId: native.id, ownerKey: 'sidebar', forceInteractive: true });
+    expect(card.details).toMatchObject({ toolName: name, toolInput: {} });
+    expect(h.suspendCalls()).toBe(0);
+    h.provider.permissionManager.handleResponse({ requestId: card.id, decision: 'deny' });
+    expect(await result).toBe(false);
+  });
+
+  it('cancels only the aborted native card and ignores its late answer', async () => {
+    const controller = new AbortController();
+    const handler = h.nativeHandler('sidebar')!;
+    const first = handler(request({ signal: controller.signal }));
+    const second = handler(request({ id: 'native-2' }));
+    const [a, b] = h.provider.permissionManager.getPendingRequests();
+    controller.abort();
+    expect(await first).toBe('cancelled');
+    expect(h.provider.permissionManager.getPendingRequests().map(card => card.id)).toEqual([b.id]);
+    expect(h.sidebarMessages).toContainEqual({ type: 'permissionDismissed', payload: { requestIds: [a.id] } });
+    h.provider.permissionManager.handleResponse({ requestId: a.id, decision: 'approve' });
+    h.provider.permissionManager.handleResponse({ requestId: b.id, decision: 'approve' });
+    expect(await second).toBe(true);
+  });
+
+  it('denies unowned panels and rejects requests from a superseded turn before creating a card', async () => {
+    expect(h.nativeHandler('unknown-child')).toBeUndefined();
+    const stale = h.nativeHandler('sidebar')!;
+    (h.provider as any)._pendingPlans.clearPanel('sidebar');
+    expect(await stale(request())).toBe('cancelled');
+    expect(h.provider.permissionManager.getPendingCount()).toBe(0);
+  });
+
+  it.each(['allow', 'deny'] as const)('preserves the provider default %s without a redundant card', async defaultDecision => {
+    expect(await h.nativeHandler('sidebar')!(request({ defaultDecision }))).toBe(defaultDecision === 'allow');
+    expect(h.provider.permissionManager.getPendingCount()).toBe(0);
+  });
+
+  it('does not pause or duplicate a native provider tool notification', async () => {
+    h.setNativeApprovalSupported(true);
+    h.setStream([{ type: 'tool_use', toolCall: { id: 'tool', name: 'Write', input: { content: 'x' }, status: 'running' } }, { type: 'done' }]);
+    await send(h, { mode: 'ask-before-edit', accessLevel: 'ask-permission', provider: 'hermes' });
+    expect(h.suspendCalls()).toBe(0);
+    expect(h.sidebarMessages.some(message => message.type === 'permissionRequest')).toBe(false);
+  });
+});
 
 // ===========================================================================
 // D-7 — repository-authored instruction files must be fenced

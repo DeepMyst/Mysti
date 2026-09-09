@@ -21,6 +21,8 @@ import type {
   CliDiscoveryResult,
   AuthConfig,
   ProviderCapabilities,
+  NativeApprovalHandler,
+  NativeApprovalHost,
   PersonaConfig,
   PersonaType
 } from './IProvider';
@@ -44,6 +46,7 @@ import type { AgentContextManager } from '../../managers/AgentContextManager';
 import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TIMEOUT_MS, STREAM_INACTIVITY_TIMEOUT_MS } from '../../constants';
 import { getCommonSearchPaths, getPriorityCliPaths, resolveCommandOnPath, probeCliVersion, validateCliPath, checkCommandExists, getEnrichedEnv, filterInstallMethodsForOS } from '../../utils/platform';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
+import { NativeApprovalRequests } from './NativeApprovalRequests';
 
 /**
  * How much of a persistent process's stderr to keep for crash reporting.
@@ -174,7 +177,18 @@ export abstract class BaseCliProvider implements ICliProvider {
   private readonly _requests = new WeakMap<PanelSessionState, {
     controller: AbortController;
     submitted: boolean;
+    nativeHandler?: NativeApprovalHandler;
+    nativeApprovals?: NativeApprovalRequests;
   }>();
+  private _nativeApprovalHost?: NativeApprovalHost;
+
+  public setNativeApprovalHost(host: NativeApprovalHost | undefined): void {
+    this._nativeApprovalHost = host;
+  }
+
+  protected _nativeApprovalRequests(session: PanelSessionState): NativeApprovalRequests | undefined {
+    return this._requests.get(session)?.nativeApprovals;
+  }
   protected _agentContextManager: AgentContextManager | null = null;
   protected _cachedCliPath: string | null = null;
   /**
@@ -450,7 +464,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     // re-send the prompt via the single-shot fallback (bug B4).
     session.cancelled = true;
     this._requests.get(session)?.controller.abort();
-    // A SIGSTOP-suspended process (frozen at the pre-execution permission gate)
+    // A SIGSTOP-suspended process (paused by the legacy stream gate)
     // must be SIGKILLed, NOT interrupted: writing \x03 to a stopped process's
     // stdin is never read, so a persistent process denied at the gate would stay
     // alive-but-frozen and hang the NEXT delegation that reuses its panel/session
@@ -493,8 +507,8 @@ export abstract class BaseCliProvider implements ICliProvider {
 
   /**
    * Suspend (freeze) the CLI process for a panel using SIGSTOP.
-   * This prevents the process from executing any further instructions,
-   * including tool execution that was about to begin.
+   * Only the owned process is paused; its tool children may already be running.
+   * Native approval is enforced through the request/response callback instead.
    * Returns false on Windows where SIGSTOP is not supported.
    */
   public suspendProcess(panelId?: string): boolean {
@@ -617,6 +631,8 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     const chunks: StreamChunk[] = [];
     let waitResolve: (() => void) | null = null;
+    const nativeApprovals = this._nativeApprovalRequests(session);
+    const releaseApprovalListener = nativeApprovals?.onPendingChanged(() => { waitResolve?.(); });
     let done = false;
     let firstChunkTime: number | null = null;
     let firstContentTime: number | null = null;
@@ -717,6 +733,13 @@ export abstract class BaseCliProvider implements ICliProvider {
         const parkInactivityMs = session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : STREAM_INACTIVITY_TIMEOUT_MS;
         let parkTimer: ReturnType<typeof setTimeout> | undefined;
         const parked = new Promise<void>(r => { waitResolve = r; });
+        // A native permission request is intentionally waiting for its owner.
+        // Resume the inactivity clock only after it resolves or is cancelled.
+        if (nativeApprovals?.hasPending) {
+          await parked;
+          waitResolve = null;
+          continue;
+        }
         const parkTimeout = new Promise<'timeout'>(resolve => {
           parkTimer = setTimeout(() => resolve('timeout'), parkInactivityMs);
         });
@@ -777,6 +800,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       proc.removeListener('close', onClose);
       proc.removeListener('error', onError);
       signal?.removeEventListener('abort', onAbort);
+      releaseApprovalListener?.();
     }
   }
 
@@ -978,6 +1002,12 @@ export abstract class BaseCliProvider implements ICliProvider {
     let attachmentCleanup: (() => Promise<void>) | null = null;
     const isCurrent = () => !request?.controller.signal.aborted
       && !session.cancelled && session.process === proc && session.persistentProcess === proc;
+    if (request && this.capabilities.supportsNativeApproval) {
+      request.nativeApprovals = new NativeApprovalRequests({
+        providerId: this.id, panelId: session.panelId, process: proc,
+        signal: request.controller.signal, handler: request.nativeHandler, isCurrent,
+      });
+    }
     try {
       attachmentCleanup = await this.prepareAttachments(attachments, []);
       if (!isCurrent()) { return; }
@@ -1001,6 +1031,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       console.log(`[Mysti] ${this.displayName}: ⏱️ Prompt written to stdin, waiting for response...`);
       yield* this._readUntilBoundary(proc, session, request?.controller.signal);
     } finally {
+      request?.nativeApprovals?.dispose();
       // Only a response boundary releases session.process without ending the
       // persistent child. A consumer break or setup failure must stop that turn.
       if (session.process === proc) {
@@ -1030,6 +1061,7 @@ export abstract class BaseCliProvider implements ICliProvider {
   disposePersistentProcess(panelId?: string): void {
     const key = panelId || 'default';
     const session = this._panelSessions.get(key);
+    if (session) { this._requests.get(session)?.nativeApprovals?.dispose(); }
     if (session && isProcessLive(session.persistentProcess)) {
       console.log(`[Mysti] ${this.displayName}: Disposing persistent process for panel: ${key}`);
       // SIGTERM with reliable SIGKILL escalation (liveness-gated, timer cleared on exit).
@@ -1376,7 +1408,11 @@ export abstract class BaseCliProvider implements ICliProvider {
     if (this._requests.has(session)) { this._cancelSessionRequest(session); }
     session.autonomousMode = settings.autonomousMode === true;
     session.cancelled = false;
-    const request = { controller: new AbortController(), submitted: false };
+    const controller = new AbortController();
+    const request = {
+      controller, submitted: false,
+      nativeHandler: this._nativeApprovalHost?.handlerForPanel(session.panelId, controller.signal),
+    };
     this._requests.set(session, request);
 
     try {
@@ -1417,6 +1453,7 @@ export abstract class BaseCliProvider implements ICliProvider {
         providerManager, persona, agentConfig, attachments, startTime,
       );
     } finally {
+      request.controller.abort();
       if (this._requests.get(session) === request) { this._requests.delete(session); }
     }
   }
@@ -1479,73 +1516,11 @@ export abstract class BaseCliProvider implements ICliProvider {
     attachments: Attachment[] | undefined,
     startTime: number,
   ): AsyncGenerator<StreamChunk> {
-    const cliPath = this.getCliPath();
-    const args = this.buildCliArgs(settings, session);
-
-    // Prepare attachments (subclasses can override to write temp files, add CLI flags, etc.)
-    const attachmentCleanup = await this.prepareAttachments(attachments, args);
-
-    // Get workspace folder for CWD
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
-
-    // Build environment with enriched PATH, thinking tokens, and permission port
-    const thinkingTokens = this.getThinkingTokens(settings.thinkingLevel);
-    const spawnExtraEnv: Record<string, string> = { ...this.getExtraSpawnEnv(settings) };
-    if (thinkingTokens && thinkingTokens > 0) {
-      spawnExtraEnv.MAX_THINKING_TOKENS = String(thinkingTokens);
-    }
-    const env = getEnrichedEnv(Object.keys(spawnExtraEnv).length > 0 ? spawnExtraEnv : undefined);
-    console.log(`[Mysti] ${this.displayName}: Spawning CLI process for panel ${panelId || 'default'}...`);
-    console.log(`[Mysti] ${this.displayName}: CLI args: ${args.map(a => a.length > 100 ? a.slice(0, 100) + '...[' + a.length + ' chars]' : a).join(' ')}`);
-    // Check if we should use shell for spawning (auto-enable on Windows for .cmd wrapper support)
-    const useShell = process.platform === 'win32' || vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
-    const spawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
-    let spawnArgs = args;
-    if (useShell) {
-      spawnOpts.shell = true;
-      for (const arg of args) {
-        // Refuse genuine shell-injection vectors. Square brackets are NOT
-        // refused: some model ids use them (e.g. claude-opus-4-6[1m]); they are
-        // glob characters, not injection vectors (no command substitution or
-        // separators). On POSIX shells they would still glob-expand if a
-        // matching filename exists in cwd, so _quoteShellArgsForBrackets below
-        // single-quotes any bracketed arg to force literal interpretation.
-        // Win32 filesystem paths are exempted by shape (see _isUnsafeShellArg)
-        // and double-quoted below — otherwise `--mcp-config C:\...` threw.
-        if (this._isUnsafeShellArg(arg)) {
-          console.error(`[Mysti] Rejecting unsafe CLI argument in shell mode`);
-          throw new Error('Invalid argument detected in shell mode');
-        }
-      }
-      // Glob-safety (Plan 01 R1): when Node spawns with shell:true and an args
-      // array, it joins args into a command string WITHOUT quoting. On POSIX
-      // shells, [ and ] are glob characters and could expand against the cwd
-      // (e.g. claude-opus-4-6[1m] matching a stray file). Single-quote bracketed
-      // args so the model id reaches the CLI verbatim. Windows cmd.exe does not
-      // glob [ ], so we leave win32 args untouched (quoting there would break the
-      // .cmd shim invocation).
-      spawnArgs = this._quoteShellArgsForBrackets(args);
-    }
-
-    session.process = spawn(cliPath, spawnArgs, spawnOpts);
-
-    // Attach early error handler to catch async spawn errors (e.g., ENOENT/EINVAL on Windows)
-    let earlySpawnError: Error | null = null;
-    session.process.on('error', (err) => {
-      earlySpawnError = err;
-      console.error(`[Mysti] ${this.displayName}: Spawn error:`, err);
-    });
-
-    const spawnTime = Date.now() - startTime;
-    console.log(`[Mysti] ${this.displayName}: CLI spawned in ${spawnTime}ms, building prompt...`);
-
-    // Register process with ProviderManager for per-panel cancellation
-    if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-      (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
-    }
-
-    // Set up stderr handler early to capture initialization errors
+    const request = this._requests.get(session);
+    if (!request || request.controller.signal.aborted) { return; }
+    const isCurrent = () => !request.controller.signal.aborted && this._requests.get(session) === request;
+    let proc: ChildProcess | undefined;
+    let attachmentCleanup: (() => Promise<void>) | null = null;
     const stderrRef = { output: '' };
     const stderrHandler = (data: Buffer) => {
       const text = data.toString();
@@ -1553,11 +1528,78 @@ export abstract class BaseCliProvider implements ICliProvider {
       console.log(`[Mysti] ${this.displayName} stderr:`, text);
     };
 
-    if (session.process.stderr) {
-      session.process.stderr.on('data', stderrHandler);
-    }
-
     try {
+      const cliPath = this.getCliPath();
+      const args = this.buildCliArgs(settings, session);
+
+      // Prepare attachments (subclasses can override to write temp files, add CLI flags, etc.)
+      attachmentCleanup = await this.prepareAttachments(attachments, args);
+      if (!isCurrent()) { return; }
+
+      // Get workspace folder for CWD
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
+
+      // Build environment with enriched PATH, thinking tokens, and permission port
+      const thinkingTokens = this.getThinkingTokens(settings.thinkingLevel);
+      const spawnExtraEnv: Record<string, string> = { ...this.getExtraSpawnEnv(settings) };
+      if (thinkingTokens && thinkingTokens > 0) {
+        spawnExtraEnv.MAX_THINKING_TOKENS = String(thinkingTokens);
+      }
+      const env = getEnrichedEnv(Object.keys(spawnExtraEnv).length > 0 ? spawnExtraEnv : undefined);
+      console.log(`[Mysti] ${this.displayName}: Spawning CLI process for panel ${panelId || 'default'}...`);
+      console.log(`[Mysti] ${this.displayName}: CLI args: ${args.map(a => a.length > 100 ? a.slice(0, 100) + '...[' + a.length + ' chars]' : a).join(' ')}`);
+      // Check if we should use shell for spawning (auto-enable on Windows for .cmd wrapper support)
+      const useShell = process.platform === 'win32' || vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
+      const spawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
+      let spawnArgs = args;
+      if (useShell) {
+        spawnOpts.shell = true;
+        for (const arg of args) {
+          // Refuse genuine shell-injection vectors. Square brackets are NOT
+          // refused: some model ids use them (e.g. claude-opus-4-6[1m]); they are
+          // glob characters, not injection vectors (no command substitution or
+          // separators). On POSIX shells they would still glob-expand if a
+          // matching filename exists in cwd, so _quoteShellArgsForBrackets below
+          // single-quotes any bracketed arg to force literal interpretation.
+          // Win32 filesystem paths are exempted by shape (see _isUnsafeShellArg)
+          // and double-quoted below — otherwise `--mcp-config C:\...` threw.
+          if (this._isUnsafeShellArg(arg)) {
+            console.error(`[Mysti] Rejecting unsafe CLI argument in shell mode`);
+            throw new Error('Invalid argument detected in shell mode');
+          }
+        }
+        // Glob-safety (Plan 01 R1): when Node spawns with shell:true and an args
+        // array, it joins args into a command string WITHOUT quoting. On POSIX
+        // shells, [ and ] are glob characters and could expand against the cwd
+        // (e.g. claude-opus-4-6[1m] matching a stray file). Single-quote bracketed
+        // args so the model id reaches the CLI verbatim. Windows cmd.exe does not
+        // glob [ ], so we leave win32 args untouched (quoting there would break the
+        // .cmd shim invocation).
+        spawnArgs = this._quoteShellArgsForBrackets(args);
+      }
+
+      proc = spawn(cliPath, spawnArgs, spawnOpts);
+      session.process = proc;
+
+      // Attach early error handler to catch async spawn errors (e.g., ENOENT/EINVAL on Windows)
+      let earlySpawnError: Error | null = null;
+      proc.on('error', (err) => {
+        earlySpawnError = err;
+        console.error(`[Mysti] ${this.displayName}: Spawn error:`, err);
+      });
+
+      const spawnTime = Date.now() - startTime;
+      console.log(`[Mysti] ${this.displayName}: CLI spawned in ${spawnTime}ms, building prompt...`);
+
+      // Register process with ProviderManager for per-panel cancellation
+      if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
+        (providerManager as ProcessTracker).registerProcess(panelId, proc, this.id);
+      }
+
+      // Set up stderr handler early to capture initialization errors.
+      proc.stderr?.on('data', stderrHandler);
+
       // Build prompt AFTER spawning (parallelizes CLI startup with prompt building)
       // When the CLI itself resumes the session it already has the full
       // conversation context — don't re-send history in the prompt (avoids
@@ -1565,6 +1607,9 @@ export abstract class BaseCliProvider implements ICliProvider {
       // sessionId alone is NOT that condition.
       const effectiveConversation = this._conversationForPrompt(session, conversation);
       const fullPrompt = await this.buildPromptAsync(content, context, effectiveConversation, settings, persona, agentConfig, attachments, session.channelSystemContext);
+
+      // Async preparation may finish after Stop or a replacement turn.
+      if (!isCurrent()) { return; }
 
       // Check if spawn failed during prompt building (async error on Windows)
       if (earlySpawnError) {
@@ -1575,7 +1620,8 @@ export abstract class BaseCliProvider implements ICliProvider {
       console.log(`[Mysti] ${this.displayName}: Prompt built in ${promptTime}ms (total: ${Date.now() - startTime}ms)`);
 
       // Hand the prompt to the CLI (stdin by default — see _deliverPrompt).
-      await this._deliverPrompt(session.process, fullPrompt, session);
+      await this._deliverPrompt(proc, fullPrompt, session);
+      if (!isCurrent()) { return; }
       const promptSentTime = Date.now() - startTime;
       console.log(`[Mysti] ${this.displayName}: Prompt delivered in ${promptSentTime}ms`);
 
@@ -1588,7 +1634,12 @@ export abstract class BaseCliProvider implements ICliProvider {
       console.log(`  - Waiting for first response...`);
 
       // Process stream output
-      yield* this.processStream(stderrRef, session);
+      for await (const chunk of this.processStream(stderrRef, session)) {
+        if (!isCurrent()) { return; }
+        yield chunk;
+        if (!isCurrent()) { return; }
+      }
+      if (!isCurrent()) { return; }
 
       // Yield final done with any stored usage from stream parsing
       const totalTime = Date.now() - startTime;
@@ -1604,6 +1655,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       const storedUsage = this.getStoredUsage(panelId);
       yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
     } catch (error) {
+      if (!isCurrent()) { return; }
       // A spawn-time refusal (EACCES/EPERM on a Gatekeeper-blocked binary)
       // lands here rather than in processStream, so it gets the same upgrade
       // from an opaque errno to an actionable explanation.
@@ -1616,37 +1668,32 @@ export abstract class BaseCliProvider implements ICliProvider {
           hasOutput: false
         });
       }
-      yield chunk;
+      if (isCurrent()) { yield chunk; }
     } finally {
-      // Liveness-gated cleanup (not `.killed`): a SIGTERM'd-but-alive CLI must
-      // still be escalated to SIGKILL, which the old `!killed` guard skipped.
-      if (isProcessLive(session.process)) {
+      // A late completion owns only its captured process, never a replacement.
+      proc?.stderr?.removeListener('data', stderrHandler);
+      if (isProcessLive(proc)) {
         try {
-          if (session.process!.stderr) {
-            session.process!.stderr.removeListener('data', stderrHandler);
-          }
-
-          // Suspended (SIGSTOP) processes get SIGKILL directly so we don't open a
-          // tool-execution window by resuming them; others get SIGTERM→SIGKILL.
-          void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, {
+          // Suspended processes get SIGKILL without opening a tool-execution
+          // window. Otherwise retain graceful SIGTERM followed by SIGKILL.
+          void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, {
             label: this.displayName,
-            initialSignal: session.suspended ? 'SIGKILL' : 'SIGTERM',
+            initialSignal: session.process === proc && session.suspended ? 'SIGKILL' : 'SIGTERM',
           });
-          session.suspended = false;
         } catch (e) {
           console.error(`[Mysti] ${this.displayName}: Error cleaning up process:`, e);
         }
       }
 
-      session.process = null;
-      session.suspended = false;
-
+      if (session.process === proc) {
+        session.process = null;
+        session.suspended = false;
+      }
+      if (proc && panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
+        (providerManager as ProcessTracker).clearProcess(panelId, proc);
+      }
       if (attachmentCleanup) {
         await attachmentCleanup();
-      }
-
-      if (panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
-        (providerManager as ProcessTracker).clearProcess(panelId);
       }
     }
   }

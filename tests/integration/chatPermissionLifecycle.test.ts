@@ -102,6 +102,41 @@ describe('chat permission ownership and cancellation', () => {
   });
   afterEach(() => { h.permissions.dispose(); h.provider._delayedChannelTurns.dispose(); clearMockConfig(); });
 
+  it.each(['false', 'reject', 'throw', 'replace'] as const)('denies an undelivered card when posting returns %s', async failure => {
+    // Exercise the actual transport wrapper rather than the message collector.
+    const prototype = ChatViewProvider.prototype as unknown as { _postToPanel: unknown };
+    Object.assign(h.provider, { _postToPanel: prototype._postToPanel });
+    let deliver!: (sent: boolean) => void;
+    const delivery = new Promise<boolean>(resolve => { deliver = resolve; });
+    const state = Object.assign(h.panels.get('a')!, {
+      webview: { postMessage: () => {
+        if (failure === 'throw') { throw new Error('disposed webview'); }
+        if (failure === 'reject') { return Promise.reject(new Error('delivery failed')); }
+        return failure === 'replace' ? delivery : Promise.resolve(false);
+      } },
+    });
+    const gate = h.request('a');
+    if (failure === 'replace') {
+      state.webview = { postMessage: () => Promise.resolve(true) };
+      deliver(true);
+    }
+    expect(await gate.result).toBe(false);
+    expect(h.permissions.getPendingCount()).toBe(0);
+  });
+
+  it('aborting a native collaborator gate removes only its card, even during synchronous delivery', async () => {
+    const unrelated = h.request('a', 'job-a');
+    const controller = new AbortController();
+    Object.assign(h.provider, { _postToPanel: () => { controller.abort(); } });
+    const result = h.provider.requestPermissionInline(
+      'file-edit', 'Write', 'Collaborator wants to write', {}, 'a', 'native-child', 'a', true, false, controller.signal,
+    );
+    expect(await result).toBe(false);
+    expect(h.permissions.getPendingRequests().map(card => card.id)).toEqual([unrelated.id]);
+    await h.reply('a', unrelated.id, 'deny');
+    expect(await unrelated.result).toBe(false);
+  });
+
   it.each(['approve', 'deny', 'always-allow'] as const)('rejects another panel\'s %s response', async decision => {
     const gate = h.request('b');
     await h.reply('a', gate.id, decision);

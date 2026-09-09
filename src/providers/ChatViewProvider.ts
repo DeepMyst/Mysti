@@ -62,6 +62,7 @@ import { MentionRouter } from '../managers/MentionRouter';
 import { PermissionManager } from '../managers/PermissionManager';
 import { PlanOptionManager } from '../managers/PlanOptionManager';
 import { PendingPlanStore } from '../chat/PendingPlanStore';
+import { NativeApprovalCards } from '../chat/NativeApprovalCards';
 import { DelayedChannelTurns, formatQueuedChannelTurn } from '../chat/DelayedChannelTurns';
 import { SetupManager, type WizardStatusResult } from '../managers/SetupManager';
 import { TelemetryManager } from '../managers/TelemetryManager';
@@ -438,6 +439,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // Track panels with pending plan option selections (to block autonomous continuation)
   private _pendingPlanSelections: Set<string> = new Set();
   private readonly _pendingPlans = new PendingPlanStore();
+  private readonly _nativeApprovalCards: NativeApprovalCards;
+  private readonly _nativeApprovalRegistration: vscode.Disposable;
   private readonly _delayedChannelTurns = new DelayedChannelTurns();
   // Track per-panel autonomy level (source of truth for semi-auto checks)
   private _panelAutonomyLevel: Map<string, string> = new Map();
@@ -499,6 +502,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._channelBridge = new ChannelBridge(activeModeManager);
     this._planOptionManager = new PlanOptionManager();
     this._mentionRouter = new MentionRouter(this._providerManager);
+    this._nativeApprovalCards = new NativeApprovalCards({
+      hasPanel: panelId => this._panelStates.has(panelId),
+      captureScope: panelId => this._pendingPlans.capture(panelId),
+      request: request => {
+        const action = this._classifyToolAction(request.toolCall.name);
+        return this.requestPermissionInline(
+          action, request.toolCall.name, `${request.providerId} wants to: ${request.toolCall.name}`,
+          {
+            command: JSON.stringify(request.toolCall.input).slice(0, 500),
+            riskLevel: PermissionManager.classifyRisk(action),
+            ...this._permissionToolDetails(request.toolCall),
+          },
+          request.panelId, request.id, request.panelId, true,
+        );
+      },
+      cancelCard: requestId => this._cancelPermissionForTool(requestId),
+    });
+    this._nativeApprovalRegistration = this._providerManager.setNativeApprovalHandler(this._nativeApprovalCards);
 
     // P1.5: attach durable job storage + rehydrate. Stale 'running' records
     // become 'interrupted'; results that finished while Mysti was closed are
@@ -3595,19 +3616,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // the collaborator never sees a dangling, unroutable @-token as its request.
     const brief = this._mentionRouter.stripMentions(content, allMentions);
     const onQuestion = this._createSubAgentQuestionCallback(panelId);
-    const onGate: CollaboratorGateCallback = async (spec, toolCall) => {
-      const action = this._classifyToolAction(toolCall.name);
-      const preview = JSON.stringify(toolCall.input || {}, null, 2).slice(0, 500);
-      const riskLevel = PermissionManager.classifyRisk(action);
-      return this.requestPermissionInline(
-        action,
-        toolCall.name,
-        `${spec.label || spec.agentId} wants to: ${toolCall.name}`,
-        { command: preview, riskLevel, ...this._permissionToolDetails(toolCall) },
-        panelId,
-        toolCall.id
-      );
-    };
+    const onGate: CollaboratorGateCallback = (spec, toolCall, nativeRequest) =>
+      this._requestCollaboratorPermission(spec, toolCall, panelId, panelId, nativeRequest);
 
     this._postToPanel(panelId, {
       type: 'collaborationStarted',
@@ -3740,6 +3750,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     settings: Settings,
     panelId: string
   ): Promise<boolean> {
+    if (chunk.agentId && this._providerManager.getProviderInstance(chunk.agentId)?.capabilities.supportsNativeApproval) {
+      return true;
+    }
     if (!chunk.toolCall || !this._shouldGateToolUse(settings, chunk.toolCall.name)) {
       return true;
     }
@@ -3891,21 +3904,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         context: payload.context,
         conversation,
         onQuestion: this._createSubAgentQuestionCallback(panelId),
-        onGate: async (spec, toolCall) => {
-          const action = this._classifyToolAction(toolCall.name);
-          return this.requestPermissionInline(
-            action,
-            toolCall.name,
-            `${spec.label || spec.agentId} wants to: ${toolCall.name}`,
-            {
-              command: JSON.stringify(toolCall.input || {}, null, 2).slice(0, 500),
-              riskLevel: PermissionManager.classifyRisk(action),
-              ...this._permissionToolDetails(toolCall),
-            },
-            panelId,
-            toolCall.id,
-          );
-        },
+        onGate: (spec, toolCall, nativeRequest) =>
+          this._requestCollaboratorPermission(spec, toolCall, panelId, panelId, nativeRequest),
       });
 
       for await (const event of stream) {
@@ -4949,14 +4949,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
 
           case 'tool_use': {
-            // Permission gate: block write operations when mode/access requires approval.
-            // Uses SIGSTOP to freeze the CLI process BEFORE tool execution, ensuring
-            // the tool cannot run until the user explicitly approves.
+            // Native requests already held execution for approval. Legacy
+            // notifications can only support a best-effort process pause.
             // NOTE: Claude emits two tool_use chunks per tool (content_block_start with empty input,
             // then content_block_stop with full input). We skip gating for chunks with empty input
             // to avoid double-gating and to show meaningful input preview in the permission card.
             const hasInput = chunk.toolCall?.input && Object.keys(chunk.toolCall.input).length > 0;
-            if (chunk.toolCall && hasInput && this._shouldGateToolUse(effectiveSettings, chunk.toolCall.name)) {
+            if (!this._providerManager.getProviderInstance(effectiveSettings.provider)?.capabilities.supportsNativeApproval
+              && chunk.toolCall && hasInput && this._shouldGateToolUse(effectiveSettings, chunk.toolCall.name)) {
               const gateActionType = this._classifyToolAction(chunk.toolCall.name);
               if (gateActionType !== 'file-read') {
                 // Freeze the CLI process immediately to prevent tool execution.
@@ -6897,7 +6897,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     toolCallId?: string,
     ownerKey?: string,
     forceInteractive = false,
-    remoteOrigin = false
+    remoteOrigin = false,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     // Plan 21 Phase 0 (I14): fold remote origin into forceInteractive at the
     // FIRST gate, before the autonomous branch below can auto-decide. Folding
@@ -6910,7 +6911,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // 'safe'-classified auto-APPROVE would otherwise write to disk with its
     // decision card posted to a dead webview — an invisible, unauditable write.
     // A gone panel can show nothing, so default-DENY regardless of autonomy.
-    if (!this._panelStates.has(panelId)) {
+    if (signal?.aborted || !this._panelStates.has(panelId)) {
       console.log('[Mysti] Permission auto-denied: owning panel gone', panelId, ownerKey ?? '');
       return false;
     }
@@ -6943,20 +6944,66 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Fall through to normal permission flow for caution/require-user
     }
 
-    return this._permissionManager.requestPermission(
-      actionType,
-      title,
-      description,
-      details,
-      (message) => this._postToPanel(panelId, message as WebviewMessage),
-      toolCallId,
-      // Default owner is the panel (foreground turn); Mysti delegations pass a
-      // cancelKey (jobId for background) so a Stop scopes to just that run.
-      // This is ALSO the session-upgrade scope key (Plan 21 Phase 0), so an
-      // "always allow" in one panel no longer authorises another.
-      ownerKey ?? panelId,
-      forceInteractive,
-      remoteOrigin
+    const onAbort = () => { if (toolCallId) { this._cancelPermissionForTool(toolCallId); } };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const approved = await this._permissionManager.requestPermission(
+        actionType,
+        title,
+        description,
+        details,
+        (message) => {
+          const receivingWebview = this._panelStates.get(panelId)?.webview;
+          const sent = this._postToPanel(panelId, message as WebviewMessage);
+          void Promise.resolve(sent).then(delivered => {
+            if ((delivered === false || this._panelStates.get(panelId)?.webview !== receivingWebview)
+              && isRecord(message) && message.type === 'permissionRequest'
+              && isRecord(message.payload) && typeof message.payload.id === 'string') {
+              this._permissionManager.cancelRequest(message.payload.id);
+            }
+          });
+        },
+        toolCallId,
+        // Foreground cards belong to the panel; background cards use a job ID.
+        // This also scopes session grants, so one panel cannot authorize another.
+        ownerKey ?? panelId,
+        forceInteractive,
+        remoteOrigin
+      );
+      return !signal?.aborted && approved;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /** Dismiss only the card created for this unique native request. */
+  private _cancelPermissionForTool(toolCallId: string): void {
+    for (const request of this._permissionManager.getPendingRequests()) {
+      if (request.toolCallId !== toolCallId) { continue; }
+      this._permissionManager.cancelRequest(request.id);
+      const panelId = request.ownerKey && (this._backgroundJobManager.get(request.ownerKey)?.panelId ?? request.ownerKey);
+      if (panelId) {
+        this._postToPanel(panelId, { type: 'permissionDismissed', payload: { requestIds: [request.id] } });
+      }
+    }
+  }
+
+  private _requestCollaboratorPermission(
+    spec: CollaboratorSpec,
+    toolCall: ToolCall,
+    panelId: string,
+    ownerKey: string,
+    nativeRequest?: Parameters<CollaboratorGateCallback>[2],
+  ): Promise<boolean> {
+    const action = this._classifyToolAction(toolCall.name);
+    return this.requestPermissionInline(
+      action, toolCall.name, `${spec.label || spec.agentId} wants to: ${toolCall.name}`,
+      {
+        command: JSON.stringify(toolCall.input || {}, null, 2).slice(0, 500),
+        riskLevel: PermissionManager.classifyRisk(action),
+        ...this._permissionToolDetails(toolCall),
+      },
+      panelId, nativeRequest?.id ?? toolCall.id, ownerKey, !!nativeRequest, false, nativeRequest?.signal,
     );
   }
 
@@ -9952,6 +9999,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Canvas steering belongs to this run for its entire tool/model loop.
       this._canvasSteeringRuns.add(runId);
       for await (const turn of turnRunner.turns(messages)) {
+        // Iterator handoff is asynchronous: ownership may change after the
+        // runner's last event check and before the host dispatches this turn.
+        if (isCancelled()) { break; }
         if (turn.kind === 'error') {
           errored = true;
           rawErrorMsg = turn.message;
@@ -11128,21 +11178,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     effortOverride?: Settings['effortLevel'],
   ): Promise<{ text: string; hasError: boolean; failure?: CollaboratorFailure; errorDetail?: string; wrote?: boolean }> {
     const onQuestion = this._createSubAgentQuestionCallback(panelId);
-    const onGate: CollaboratorGateCallback = async (spec, toolCall) => {
+    const onGate: CollaboratorGateCallback = async (spec, toolCall, nativeRequest) => {
       // P0.2c: honor the access the user already granted for DIRECT use of this
       // backend — a full-access user must not get an every-write-prompt (with a
       // 30s auto-reject) just because the same work runs via a delegation. This
       // grants no new authority: the same _shouldGateToolUse decides direct chat.
-      if (!this._shouldGateToolUse(settings, toolCall.name)) {
+      if (!nativeRequest && !this._shouldGateToolUse(settings, toolCall.name)) {
         return true;
       }
-      const action = this._classifyToolAction(toolCall.name);
-      const preview = JSON.stringify(toolCall.input || {}, null, 2).slice(0, 500);
-      const riskLevel = PermissionManager.classifyRisk(action);
-      return this.requestPermissionInline(
-        action, toolCall.name, `${spec.label || spec.agentId} wants to: ${toolCall.name}`,
-        { command: preview, riskLevel, ...this._permissionToolDetails(toolCall) }, panelId, toolCall.id, cancelKey,
-      );
+      return this._requestCollaboratorPermission(spec, toolCall, panelId, cancelKey, nativeRequest);
     };
 
     // P0.2a: forward the user's attached files to the sub-agent (capped). The
@@ -11739,19 +11783,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     const onQuestion = this._createSubAgentQuestionCallback(panelId);
-    const onGate: CollaboratorGateCallback = async (spec, toolCall) => {
-      const action = this._classifyToolAction(toolCall.name);
-      const preview = JSON.stringify(toolCall.input || {}, null, 2).slice(0, 500);
-      const riskLevel = PermissionManager.classifyRisk(action);
-      return this.requestPermissionInline(
-        action,
-        toolCall.name,
-        `${spec.label || spec.agentId} wants to: ${toolCall.name}`,
-        { command: preview, riskLevel, ...this._permissionToolDetails(toolCall) },
-        panelId,
-        toolCall.id,
-      );
-    };
+    const onGate: CollaboratorGateCallback = (spec, toolCall, nativeRequest) =>
+      this._requestCollaboratorPermission(spec, toolCall, panelId, panelId, nativeRequest);
 
     this._postToPanel(panelId, { type: 'mystiStarted', payload: { brief } });
     let synthesis = '';
@@ -13170,7 +13203,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private _postToPanel(panelId: string, message: WebviewMessage) {
     const state = this._panelStates.get(panelId);
-    state?.webview.postMessage(message);
+    try {
+      return state ? Promise.resolve(state.webview.postMessage(message)).catch(() => false) : Promise.resolve(false);
+    } catch {
+      return Promise.resolve(false);
+    }
   }
 
   /**
@@ -14284,6 +14321,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   public dispose(): void {
     console.log('[Mysti] ChatViewProvider: Disposing and cleaning up resources');
+    this._nativeApprovalRegistration.dispose();
+    this._nativeApprovalCards.dispose();
     this._subAgentQuestions.dispose();
     this._delayedChannelTurns.dispose();
 

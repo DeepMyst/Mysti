@@ -119,7 +119,7 @@ function createHarness(): Harness {
   } as any;
 
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProvider: () => undefined,
     getProviderInstance: () => (capabilities ? { capabilities } : undefined),
     getModelContextWindow: () => 200000,
@@ -452,6 +452,69 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
   let h: Harness;
   beforeEach(() => { clearMockConfig(); h = createHarness(); });
   afterEach(() => { h.dispose(); });
+
+  it.each(['event', 'throw'] as const)('routes a coordinator %s failure to the same actionable credential card', async mode => {
+    const provider = h.provider as any;
+    provider._panelStates.get('sidebar').currentConversationId = 'conv-1';
+    provider._conversationManager.getConversation = () => ({ id: 'conv-1', messages: [] });
+    provider._availableMystiBackends = () => ['claude-code'];
+    const signals: AbortSignal[] = [];
+    provider._mystiCoordinator = {
+      status: () => ({ ready: true }),
+      credentialState: () => ({ hasDeepMystKey: true, usingOpenRouter: false }),
+      resolveCoordinatorModel: async () => 'coordinator-model',
+      stream: async function* (_messages: unknown[], options: { signal: AbortSignal }) {
+        signals.push(options.signal);
+        if (mode === 'throw') { throw new Error('401 unauthorized'); }
+        yield { error: '401 unauthorized' };
+      },
+    };
+
+    await provider._handleSendMessage(
+      { content: 'implement the thing', context: [], settings: { ...SETTINGS, provider: 'mysti' } },
+      'sidebar',
+    );
+
+    const cards = h.sidebarMessages.filter(message => message.type === 'mystiActionRequired');
+    expect(cards).toHaveLength(1);
+    expect(cards[0].payload).toMatchObject({ reason: 'auth-rejected' });
+    expect(cards[0].payload.actions.length).toBeGreaterThan(0);
+    expect(h.sidebarMessages.some(message => message.type === 'error')).toBe(false);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(true);
+    expect(provider._runningPanels.has('sidebar')).toBe(false);
+    expect(provider._mystiAbortControllers.has('sidebar')).toBe(false);
+  });
+
+  it('does not dispatch a directive when a newer send takes ownership during iterator handoff', async () => {
+    const provider = h.provider as any;
+    provider._panelStates.get('sidebar').currentConversationId = 'conv-1';
+    provider._conversationManager.getConversation = () => ({ id: 'conv-1', messages: [] });
+    provider._availableMystiBackends = () => ['claude-code'];
+    provider._mystiCoordinator = {
+      status: () => ({ ready: true }),
+      resolveCoordinatorModel: async () => 'coordinator-model',
+      stream: async function* (messages: { content: string }[]) {
+        const nonce = messages.map(message => message.content).join('\n').match(/<delegate:([A-Za-z0-9]{6,})\s+agent/)?.[1];
+        yield { text: `<delegate:${nonce} agent="claude-code">obsolete task</delegate>` };
+      },
+    };
+    // A send arriving after the final synchronous observer check but before
+    // for-await resumes in the host must invalidate the pending directive.
+    provider._announceRefusedCapability = () => queueMicrotask(() => {
+      provider._mystiRunGen.set('sidebar', (provider._mystiRunGen.get('sidebar') ?? 0) + 1);
+    });
+    provider._runMystiDelegation = vi.fn(async () => ({ text: '', hasError: false, wrote: false }));
+
+    await provider._handleSendMessage(
+      { content: 'implement the thing', context: [], settings: { ...SETTINGS, provider: 'mysti' } },
+      'sidebar',
+    );
+
+    expect(provider._runMystiDelegation).not.toHaveBeenCalled();
+    expect(h.sidebarMessages.some(message => message.type === 'toolUse')).toBe(false);
+    expect(h.persistedCalls.some(call => call[1] === 'assistant')).toBe(false);
+  });
 
   it('routes a delegate directive, fences the result UNTRUSTED, counts it, and persists the card', async () => {
     const streamCalls: any[][] = [];

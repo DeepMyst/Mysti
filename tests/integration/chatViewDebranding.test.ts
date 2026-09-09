@@ -117,7 +117,7 @@ function createHarness(): Harness {
     getConversation: vi.fn(() => null),
   } as any;
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     // Known ids resolve to a minimal config so per-panel provider overrides
     // survive _getPanelProvider's registry validation.
     getProvider: vi.fn((name: string) =>

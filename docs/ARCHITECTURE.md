@@ -42,12 +42,14 @@ flowchart TD
 | --- | --- | --- |
 | Composition | `src/extension.ts`, `ChatViewDependencies` | Construct named dependencies and register commands, webviews and disposables. Chat services are passed by name so additions cannot transpose positional arguments. |
 | Chat host adapter | `src/providers/ChatViewProvider.ts` | Connect UI events to application services and stream updates back to a panel. This remains a large legacy controller; extract cohesive behavior as it changes. |
-| Chat interactions | `src/chat/` | Host-independent panel identity binding, sub-agent answer ownership, pending plans and delayed channel turns. These modules do not import VS Code or the host controller. |
+| Chat interactions | `src/chat/` | Host-independent panel identity binding, sub-agent answer ownership, native approval cards, pending plans and delayed channel turns. These modules do not import VS Code or the host controller. |
 | Markdown and diagrams | `media/chat/markdownRenderer.js` | A private Marked parser, HTML sanitization, code/diff formatting and lazy Mermaid rendering. The chat shell supplies local libraries/resource URI and disposes the renderer; stale or detached renders cannot replace current content. |
+| Sub-agent cards | `media/chat/subAgentCards.js` | Streaming child cards, tool indicators, delegated questions and terminal cleanup. The chat shell supplies rendering and message ports. |
 | Coordinator output | `src/chat/CoordinatorRunOutput.ts` | One run's foreground/background delivery, ordered replay record, actual model attribution and usage receipt. It receives a message sink and clock rather than a webview or manager. |
 | Provider contract | `src/providers/base/IProvider.ts`, `ProviderManifest.ts`, `src/providers/ProviderRegistry.ts` | Transport contract, capability declarations, display/model metadata and registration. |
 | CLI transport | `src/providers/base/BaseCliProvider.ts`, `src/utils/platform.ts`, `processKill.ts` | Discovery, per-panel process state, streaming, cancellation and cleanup. |
-| Coordinator | `CoordinatorModelClient`, `coordinatorTools`, `MystiTagScanner` | Model turns, native tools or nonce-fenced directives and tool-result framing. The host currently owns much of the coordinator loop. |
+| Coordinator turns | `src/coordinator/CoordinatorTurnRunner.ts`, `CoordinatorModelClient`, `MystiTagScanner` | Bounded model streams, continuation across split nonce directives, native-tool precedence, finalization and abort cleanup through explicit ports. Permission checks and tool dispatch remain in the host. |
+| Native approvals | `NativeApprovalRequests`, `AcpApproval`, `NativeApprovalPolicy`, `ProviderManager` | Blocking provider requests, authoritative policy, turn-scoped host registrations and exactly one reply to the issuing transport. Native approval capability is explicit; a streamed tool event does not imply support. |
 | Collaboration | `BrainstormManager`, `SessionManager`, `MentionRouter`, `CollaborationManager`, `MystiOrchestratorManager`, `CollaboratorPool` | Separate collaboration shapes, routing and bounded child execution. They are different workflows, not interchangeable names. |
 | Context and history | `ContextManager`, `ConversationManager`, `CompactionManager`, `SmartCompactor`, `TokenAccounting` | Context collection, schema-versioned persistence, compaction and normalized context/spend measurements. |
 | Canvas document | `src/canvas/doc/`, `CanvasHistory`, `CanvasBridge`, `CanvasOpExecutor`, `ArtifactStore` | Typed document changes, conflict handling, undo, synchronization and persistence. |
@@ -81,7 +83,12 @@ publishing or executing anything after an await.
 
 Permission replies must match the host-bound panel that owns the request. A
 decision that settles after a conversation change cannot resume or cancel the
-replacement process. Queued channel input forms one ordered turn containing each
+replacement process. Native approvals use unique host IDs rather than reusable
+backend request IDs. Card resolvers are installed before delivery; an aborted
+request or failed webview delivery denies only that card. Explicit native asks
+remain interactive even when a tool name is classified as a read.
+
+Queued channel input forms one ordered turn containing each
 message and its source; arrivals during the short delay join that batch. Stop,
 manual replacement and conversation changes clear only that panel's queued input.
 Automatic follow-ups yield to queued input and cannot restart cancelled work.
@@ -103,6 +110,13 @@ those differences in provider metadata and consume that metadata in the UI.
 Do not infer support from a provider name or assume interactive CLI commands
 also work through the headless entry point. Parse external responses as
 `unknown`, narrow fields, and preserve missing measurements as unknown.
+
+Hermes and Kimi implement blocking ACP permission requests. They wait for a
+decision before returning a native response and skip the legacy notification
+pause gate. A native denial cannot be widened by a host card. Cancellation,
+process replacement and registration disposal invalidate the issuing request;
+a later turn cannot acquire its answer. Other transports need equivalent native
+enforcement before their permission cards can carry the same timing guarantee.
 
 `TokenAccounting` is the shared accounting boundary. Current context occupancy
 and cumulative spend are different values; cache conventions differ by backend.

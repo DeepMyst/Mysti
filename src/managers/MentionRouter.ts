@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ProviderManager } from './ProviderManager';
+import type { NativeApprovalHandler } from '../providers/base/IProvider';
 import { getProviderDisplayName } from '../providers/base/ProviderManifest';
 import { SUBAGENT_TIMEOUT_MS, SUBAGENT_MAX_RETRIES, SUBAGENT_QUESTION_TIMEOUT_MS } from '../constants';
 import type {
@@ -39,6 +40,13 @@ import type {
  */
 const STATE_SUMMARY_CAP = 8_000;
 
+interface MentionRun {
+  panelId: string;
+  controller: AbortController;
+  parentApproval: NativeApprovalHandler | undefined;
+  children: Map<string, () => void>;
+}
+
 // Agent display names come from the Provider Manifest (Plan 02 Phase 1) via
 // getProviderDisplayName() — the local 7-entry map (which silently missed
 // opencode/ollama/localai/qwen-code) is gone.
@@ -55,6 +63,7 @@ const STATE_SUMMARY_CAP = 8_000;
  */
 export class MentionRouter {
   private _providerManager: ProviderManager;
+  private readonly _activeRuns = new Map<string, MentionRun>();
 
   constructor(providerManager: ProviderManager) {
     this._providerManager = providerManager;
@@ -72,9 +81,38 @@ export class MentionRouter {
     panelId: string,
     onSubAgentQuestion?: SubAgentQuestionCallback
   ): AsyncGenerator<MentionStreamChunk> {
+    const previous = this._activeRuns.get(panelId);
+    if (previous) { this._cancelRun(previous); }
+    const controller = new AbortController();
+    const run: MentionRun = {
+      panelId, controller, children: new Map(),
+      parentApproval: this._providerManager.captureNativeApprovalHandler(panelId, controller.signal),
+    };
+    this._activeRuns.set(panelId, run);
+    try {
+      yield* this._processMentions(content, mentions, context, settings, conversation, panelId, run, onSubAgentQuestion);
+    } catch (error) {
+      if (!controller.signal.aborted) { throw error; }
+    } finally {
+      this._cancelRun(run);
+      if (this._activeRuns.get(panelId) === run) { this._activeRuns.delete(panelId); }
+    }
+  }
+
+  private async *_processMentions(
+    content: string,
+    mentions: Mention[],
+    context: ContextItem[],
+    settings: Settings,
+    conversation: Conversation | null,
+    panelId: string,
+    run: MentionRun,
+    onSubAgentQuestion?: SubAgentQuestionCallback
+  ): AsyncGenerator<MentionStreamChunk> {
     // 1. Resolve file mentions into transient ContextItems
     const fileMentions = mentions.filter(m => m.type === 'file');
     const { items: resolvedFiles, failedFiles } = await this._resolveFileMentions(fileMentions);
+    run.controller.signal.throwIfAborted();
 
     if (resolvedFiles.length > 0) {
       yield { type: 'files_resolved', resolvedFiles };
@@ -92,6 +130,7 @@ export class MentionRouter {
     // resolve to a generated summary, not a file: they are read-only views of
     // state the user can already see in the editor, and nothing writes back.
     const stateItems = await this._resolveStateMentions(mentions);
+    run.controller.signal.throwIfAborted();
     if (stateItems.length > 0) {
       yield { type: 'files_resolved', resolvedFiles: stateItems };
     }
@@ -106,8 +145,9 @@ export class MentionRouter {
     let taskList = this._generateTaskListHeuristic(content, agentMentions, settings);
     if (!taskList || taskList.confidence < 0.7) {
       console.log('[Mysti] MentionRouter: Heuristic uncertain, falling back to AI task list generation');
-      taskList = await this._generateTaskListWithAI(content, agentMentions, settings, panelId);
+      taskList = await this._generateTaskListWithAI(content, agentMentions, settings, panelId, run);
     }
+    run.controller.signal.throwIfAborted();
 
     console.log(`[Mysti] MentionRouter: Generated ${taskList.tasks.length} task(s) (confidence: ${taskList.confidence})`);
     for (const task of taskList.tasks) {
@@ -132,6 +172,7 @@ export class MentionRouter {
     const completedResponses = new Map<string, string>();
 
     for (const task of subAgentTasks.sort((a, b) => a.order - b.order)) {
+      run.controller.signal.throwIfAborted();
       yield {
         type: 'task_started',
         taskIndex: task.order,
@@ -155,9 +196,11 @@ export class MentionRouter {
           conversation,
           panelId,
           completedResponses,
+          run,
           onSubAgentQuestion
         );
       } catch (error) {
+        if (run.controller.signal.aborted) { throw error; }
         yield {
           type: 'subagent_error',
           agentId: task.agent,
@@ -248,6 +291,8 @@ export class MentionRouter {
    * Cancel any running sub-agent processes for a panel
    */
   public cancelSubAgents(panelId: string, agentIds: AgentType[]): void {
+    const run = this._activeRuns.get(panelId);
+    if (run) { this._cancelRun(run); }
     for (const agentId of agentIds) {
       const base = `${panelId}-subagent-${agentId}`;
       // Plan 18 (1.3): a sub-agent may be live under a retry or question-
@@ -260,6 +305,42 @@ export class MentionRouter {
         this._providerManager.cancelRequest(id);
       }
     }
+  }
+
+  private _cancelRun(run: MentionRun): void {
+    const childIds = [...run.children.keys()];
+    run.controller.abort();
+    for (const childId of childIds) { this._providerManager.cancelRequest(childId); }
+  }
+
+  private async *_sendChildMessage(
+    run: MentionRun,
+    providerId: AgentType,
+    prompt: string,
+    context: ContextItem[],
+    settings: Settings,
+    childPanelId: string
+  ): AsyncGenerator<import('../types').StreamChunk> {
+    run.controller.signal.throwIfAborted();
+    let active = true;
+    const registration = this._providerManager.setNativeApprovalHandlerForPanel(childPanelId, async request => {
+      if (!active || run.controller.signal.aborted || request.signal.aborted) { return 'cancelled'; }
+      if (request.panelId !== childPanelId || request.defaultDecision === 'deny' || !run.parentApproval) { return false; }
+      const approved = await run.parentApproval({ ...request, panelId: run.panelId });
+      return active && !run.controller.signal.aborted && !request.signal.aborted ? approved : 'cancelled';
+    });
+    const retire = () => {
+      active = false;
+      registration.dispose();
+      run.controller.signal.removeEventListener('abort', retire);
+      if (run.children.get(childPanelId) === retire) { run.children.delete(childPanelId); }
+    };
+    run.children.set(childPanelId, retire);
+    run.controller.signal.addEventListener('abort', retire, { once: true });
+    try {
+      run.controller.signal.throwIfAborted();
+      yield* this._providerManager.sendMessageToProvider(providerId, prompt, context, settings, null, undefined, childPanelId);
+    } finally { retire(); }
   }
 
   // ===========================================================================
@@ -341,7 +422,8 @@ export class MentionRouter {
     content: string,
     agentMentions: Mention[],
     settings: Settings,
-    panelId: string
+    panelId: string,
+    run: MentionRun
   ): Promise<MentionTaskList> {
     const mentionedAgents = agentMentions.map(m => {
       const displayName = getProviderDisplayName(m.value);
@@ -378,10 +460,11 @@ export class MentionRouter {
     let rawOutput = '';
 
     try {
-      const stream = this._providerManager.sendMessageToProvider(
-        settings.provider, prompt, [], settings, null, undefined, taskGenPanelId
+      const stream = this._sendChildMessage(
+        run, settings.provider, prompt, [], { ...settings, accessLevel: 'read-only' }, taskGenPanelId
       );
       for await (const chunk of stream) {
+        run.controller.signal.throwIfAborted();
         if (chunk.type === 'text' && chunk.content) { rawOutput += chunk.content; }
         if (chunk.type === 'error') { break; }
       }
@@ -446,8 +529,10 @@ export class MentionRouter {
     conversation: Conversation | null,
     panelId: string,
     priorResponses: Map<string, string>,
+    run: MentionRun,
     onSubAgentQuestion?: SubAgentQuestionCallback
   ): AsyncGenerator<MentionStreamChunk> {
+    run.controller.signal.throwIfAborted();
     const agentId = task.agent;
 
     yield { type: 'subagent_started', agentId };
@@ -479,7 +564,7 @@ export class MentionRouter {
 
     // Dispatch with auto-retry and timeout
     const { responseText, hasError } = yield* this._dispatchWithRetry(
-      agentId, fullPrompt, context, settings, panelId, onSubAgentQuestion
+      agentId, fullPrompt, context, settings, panelId, run, onSubAgentQuestion
     );
 
     if (responseText) {
@@ -500,12 +585,14 @@ export class MentionRouter {
     context: ContextItem[],
     settings: Settings,
     panelId: string,
+    run: MentionRun,
     onSubAgentQuestion?: SubAgentQuestionCallback
   ): AsyncGenerator<MentionStreamChunk, { responseText: string; hasError: boolean }> {
     let attempt = 0;
     let lastError: string | undefined;
 
     while (attempt <= SUBAGENT_MAX_RETRIES) {
+      run.controller.signal.throwIfAborted();
       let hasError = false;
       let responseText = '';
 
@@ -525,15 +612,7 @@ export class MentionRouter {
       };
 
       try {
-        const stream = this._providerManager.sendMessageToProvider(
-          agentId,
-          prompt,
-          context,
-          subAgentSettings,
-          null,
-          undefined,
-          subAgentPanelId
-        );
+        const stream = this._sendChildMessage(run, agentId, prompt, context, subAgentSettings, subAgentPanelId);
 
         // Set up timeout
         let timedOut = false;
@@ -544,6 +623,7 @@ export class MentionRouter {
 
         try {
           for await (const chunk of stream) {
+            run.controller.signal.throwIfAborted();
             if (timedOut) {
               hasError = true;
               lastError = `Sub-agent timed out after ${SUBAGENT_TIMEOUT_MS / 1000}s`;
@@ -571,19 +651,15 @@ export class MentionRouter {
 
                 // Cancel the current process (CLI uses single-shot stdin, can't send answer back)
                 clearTimeout(timeoutHandle);
+                run.children.get(subAgentPanelId)?.();
                 this._providerManager.cancelRequest(subAgentPanelId);
 
                 // M1: Wait for user's answer with timeout
                 console.log(`[Mysti] MentionRouter: Sub-agent ${agentId} asked a question, waiting for user answer (${Math.round(SUBAGENT_QUESTION_TIMEOUT_MS / 1000)}s timeout)`);
-                const userResponse = await Promise.race([
-                  onSubAgentQuestion(agentId, chunk.askUserQuestion),
-                  new Promise<null>(resolve =>
-                    setTimeout(() => {
-                      console.log(`[Mysti] MentionRouter: Sub-agent question timed out for ${agentId}`);
-                      resolve(null);
-                    }, SUBAGENT_QUESTION_TIMEOUT_MS)
-                  )
-                ]);
+                const userResponse = await this._waitForQuestion(
+                  () => onSubAgentQuestion(agentId, chunk.askUserQuestion!), run.controller.signal
+                );
+                run.controller.signal.throwIfAborted();
 
                 if (userResponse) {
                   // Format the answer and spawn a NEW sub-agent process with original task + answer
@@ -592,12 +668,11 @@ export class MentionRouter {
                   const followUpPanelId = `${subAgentPanelId}-followup`;
 
                   console.log(`[Mysti] MentionRouter: Resuming sub-agent ${agentId} with user's answers`);
-                  const followUpStream = this._providerManager.sendMessageToProvider(
-                    agentId, followUpPrompt, context, subAgentSettings, null, undefined, followUpPanelId
-                  );
+                  const followUpStream = this._sendChildMessage(run, agentId, followUpPrompt, context, subAgentSettings, followUpPanelId);
 
                   // Stream follow-up response
                   for await (const fChunk of followUpStream) {
+                    run.controller.signal.throwIfAborted();
                     if (fChunk.type === 'text' && fChunk.content) {
                       responseText += fChunk.content;
                       yield { type: 'subagent_text', agentId, content: fChunk.content };
@@ -649,6 +724,7 @@ export class MentionRouter {
           return { responseText, hasError: false };
         }
       } catch (error) {
+        if (run.controller.signal.aborted) { throw error; }
         hasError = true;
         lastError = error instanceof Error ? error.message : 'Unknown error';
         yield { type: 'subagent_error', agentId, content: lastError };
@@ -664,6 +740,26 @@ export class MentionRouter {
   // ===========================================================================
   // Context Building
   // ===========================================================================
+
+  private async _waitForQuestion(
+    ask: () => ReturnType<SubAgentQuestionCallback>,
+    signal: AbortSignal
+  ): Promise<Awaited<ReturnType<SubAgentQuestionCallback>>> {
+    let onAbort!: () => void;
+    let timeout!: ReturnType<typeof setTimeout>;
+    const stopped = new Promise<null>(resolve => {
+      onAbort = () => resolve(null);
+      signal.addEventListener('abort', onAbort, { once: true });
+      timeout = setTimeout(onAbort, SUBAGENT_QUESTION_TIMEOUT_MS);
+    });
+    try {
+      signal.throwIfAborted();
+      return await Promise.race([ask(), stopped]);
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', onAbort);
+    }
+  }
 
   /**
    * Format user answers from a sub-agent question into readable text

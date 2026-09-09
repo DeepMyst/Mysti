@@ -14,7 +14,7 @@
 import * as vscode from 'vscode';
 import { randomUUID as uuidv4 } from 'crypto';
 import { ProviderManager } from './ProviderManager';
-import type { PersonaConfig } from '../providers/base/IProvider';
+import type { NativeApprovalHandler, PersonaConfig } from '../providers/base/IProvider';
 import { getProviderDisplayMeta } from '../providers/base/ProviderManifest';
 import type {
   ContextItem,
@@ -66,6 +66,7 @@ export class BrainstormManager {
   // Per-panel session tracking for isolated brainstorm sessions
   private _panelSessions: Map<string, BrainstormSession> = new Map();
   private _activeRuns = new Map<string, AbortController>();
+  private readonly _nativeApprovals = new Map<AbortController, NativeApprovalHandler | undefined>();
 
   constructor(context: vscode.ExtensionContext, providerManager: ProviderManager) {
     this._extensionContext = context;
@@ -220,6 +221,7 @@ export class BrainstormManager {
     }
     const controller = new AbortController();
     this._activeRuns.set(sessionId, controller);
+    this._nativeApprovals.set(controller, this._providerManager.captureNativeApprovalHandler(sessionId, controller.signal));
     let completed = false;
     try {
       // The outer iterator also listens for Stop while provider discovery or
@@ -245,6 +247,8 @@ export class BrainstormManager {
         }
         this._activeRuns.delete(sessionId);
       }
+      controller.abort();
+      this._nativeApprovals.delete(controller);
     }
   }
 
@@ -977,6 +981,42 @@ export class BrainstormManager {
     return childPanelId;
   }
 
+  /** Every strategy/phase uses the same explicit parent approval destination. */
+  private async *_sendChildMessage(
+    sessionId: string,
+    agentId: AgentType,
+    prompt: string,
+    context: ContextItem[],
+    settings: Settings,
+    persona?: PersonaConfig
+  ): AsyncGenerator<import('../types').StreamChunk> {
+    const controller = this._activeRuns.get(sessionId);
+    controller?.signal.throwIfAborted();
+    const parent = controller ? this._nativeApprovals.get(controller) : undefined;
+    const childPanelId = this._registerChild(sessionId, agentId);
+    let active = true;
+    const registration = this._providerManager.setNativeApprovalHandlerForPanel(childPanelId, async request => {
+      if (!active || controller?.signal.aborted || request.signal.aborted) { return 'cancelled'; }
+      if (request.panelId !== childPanelId || request.defaultDecision === 'deny' || !parent) { return false; }
+      const approved = await parent({ ...request, panelId: sessionId });
+      return active && !controller?.signal.aborted && !request.signal.aborted ? approved : 'cancelled';
+    });
+    const retire = () => {
+      active = false;
+      registration.dispose();
+      controller?.signal.removeEventListener('abort', retire);
+    };
+    controller?.signal.addEventListener('abort', retire, { once: true });
+    try {
+      controller?.signal.throwIfAborted();
+      yield* this._providerManager.sendMessageToProvider(
+        agentId, prompt, context, this._childSettings(settings, agentId), null, persona, childPanelId
+      );
+    } finally {
+      retire();
+    }
+  }
+
   /**
    * Stream response from a single agent
    */
@@ -993,15 +1033,7 @@ export class BrainstormManager {
     agentResponse.status = 'streaming';
 
     try {
-      const stream = this._providerManager.sendMessageToProvider(
-        agent.id,
-        query,
-        context,
-        this._childSettings(settings, agent.id),
-        null,
-        agent.persona,
-        this._registerChild(sessionId, agent.id)
-      );
+      const stream = this._sendChildMessage(sessionId, agent.id, query, context, settings, agent.persona);
 
       let agentUsage: import('../types').UsageStats | undefined;
       // Providers emit tool_use twice per tool (start/stop pair) — surface
@@ -1077,15 +1109,7 @@ export class BrainstormManager {
   ): AsyncGenerator<BrainstormStreamChunk> {
     const signal = this._activeRuns.get(sessionId)?.signal;
     try {
-      const stream = this._providerManager.sendMessageToProvider(
-        agent.id,
-        prompt,
-        context,
-        this._childSettings(settings, agent.id),
-        null,
-        agent.persona,
-        this._registerChild(sessionId, agent.id)
-      );
+      const stream = this._sendChildMessage(sessionId, agent.id, prompt, context, settings, agent.persona);
 
       // B1: Wrap with silence-based timeout
       for await (const chunk of this._iterateWithSilenceTimeout(stream, BRAINSTORM_SILENCE_TIMEOUT_MS, signal)) {
@@ -1131,15 +1155,7 @@ export class BrainstormManager {
     console.log(`[Mysti] Brainstorm: Synthesis by ${synthesisAgentId}`);
 
     try {
-      const stream = this._providerManager.sendMessageToProvider(
-        synthesisAgentId,
-        synthesisPrompt,
-        context,
-        this._childSettings(settings, synthesisAgentId),
-        null,
-        undefined,
-        this._registerChild(sessionId, synthesisAgentId)
-      );
+      const stream = this._sendChildMessage(sessionId, synthesisAgentId, synthesisPrompt, context, settings);
 
       let synthesis = '';
       // 5.1: wrap in the silence timeout like every other brainstorm stream
@@ -1179,15 +1195,7 @@ export class BrainstormManager {
           content: `Primary synthesis agent (${synthesisAgentId}) failed. Retrying with ${fallbackAgent.displayName}...`
         };
         try {
-          const fallbackStream = this._providerManager.sendMessageToProvider(
-            fallbackAgent.id,
-            synthesisPrompt,
-            context,
-            this._childSettings(settings, fallbackAgent.id),
-            null,
-            undefined,
-            this._registerChild(sessionId, fallbackAgent.id)
-          );
+          const fallbackStream = this._sendChildMessage(sessionId, fallbackAgent.id, synthesisPrompt, context, settings);
 
           let synthesis = '';
           // 5.1: same hardening as the primary loop — silence timeout, error
