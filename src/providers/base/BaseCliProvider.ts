@@ -48,6 +48,7 @@ import { PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, AUTONOMOUS_PROCESS_TI
 import { getCommonSearchPaths, getPriorityCliPaths, resolveCommandOnPath, probeCliVersion, validateCliPath, checkCommandExists, getEnrichedEnv, filterInstallMethodsForOS } from '../../utils/platform';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import { NativeApprovalRequests } from './NativeApprovalRequests';
+import { CliStreamInactivityError, readCliStdout } from './readCliStdout';
 
 /**
  * How much of a persistent process's stderr to keep for crash reporting.
@@ -1344,6 +1345,18 @@ export abstract class BaseCliProvider implements ICliProvider {
     }
   }
 
+  /** File-based CLIs prepare their prompt before the child can try to read it. */
+  protected _preparePromptBeforeSpawn?(
+    fullPrompt: string,
+    args: string[],
+    session: PanelSessionState,
+    attachments?: Attachment[],
+  ): Promise<() => Promise<void>>;
+
+  protected _requestSignal(session: PanelSessionState): AbortSignal | undefined {
+    return this._requests.get(session)?.controller.signal;
+  }
+
   protected _getCliPathCommon(): string {
     if (this._cachedCliPath) {
       return this._cachedCliPath;
@@ -1528,6 +1541,8 @@ export abstract class BaseCliProvider implements ICliProvider {
     const isCurrent = () => !request.controller.signal.aborted && this._requests.get(session) === request
       && (proc === null || session.process === proc);
     let attachmentCleanup: (() => Promise<void>) | null = null;
+    let promptCleanup: (() => Promise<void>) | null = null;
+    let preparedPrompt: string | undefined;
     const stderrRef = { output: '' };
     const stderrHandler = (data: Buffer) => {
       const text = data.toString();
@@ -1542,6 +1557,15 @@ export abstract class BaseCliProvider implements ICliProvider {
       // Prepare attachments (subclasses can override to write temp files, add CLI flags, etc.)
       attachmentCleanup = await this.prepareAttachments(attachments, args);
       if (!isCurrent()) { return; }
+      if (this._preparePromptBeforeSpawn) {
+        preparedPrompt = await this.buildPromptAsync(
+          content, context, this._conversationForPrompt(session, conversation), settings,
+          persona, agentConfig, attachments, session.channelSystemContext,
+        );
+        if (!isCurrent()) { return; }
+        promptCleanup = await this._preparePromptBeforeSpawn(preparedPrompt, args, session, attachments);
+        if (!isCurrent()) { return; }
+      }
 
       // Get workspace folder for CWD
       const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -1613,7 +1637,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       // doubling input tokens). See _conversationForPrompt for why a truthy
       // sessionId alone is NOT that condition.
       const effectiveConversation = this._conversationForPrompt(session, conversation);
-      const fullPrompt = await this.buildPromptAsync(content, context, effectiveConversation, settings, persona, agentConfig, attachments, session.channelSystemContext);
+      const fullPrompt = preparedPrompt ?? await this.buildPromptAsync(content, context, effectiveConversation, settings, persona, agentConfig, attachments, session.channelSystemContext);
 
       // Async preparation may finish after Stop or a replacement turn.
       if (!isCurrent()) { return; }
@@ -1699,8 +1723,10 @@ export abstract class BaseCliProvider implements ICliProvider {
       if (proc && panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
         (providerManager as ProcessTracker).clearProcess(panelId, proc);
       }
-      if (attachmentCleanup) {
-        await attachmentCleanup();
+      try {
+        if (promptCleanup) { await promptCleanup(); }
+      } finally {
+        if (attachmentCleanup) { await attachmentCleanup(); }
       }
     }
   }
@@ -1718,99 +1744,39 @@ export abstract class BaseCliProvider implements ICliProvider {
     let firstContentTime: number | null = null;
     const streamStartTime = Date.now();
 
-    // Plan 18 (4.2): inactivity watchdog. The process timeout previously only
-    // bounded the "stdout closed but process not exited" window inside
-    // waitForProcess — a CLI that wedged with stdout OPEN and no data spun
-    // forever. Each stdout read races a resettable timer. W4 review: the
-    // bound is deliberately GENEROUS (30 min; 4h autonomous) and resets on
-    // STDERR activity too — stream-json CLIs are legitimately silent for the
-    // whole duration of a long tool run, and killing an approved build/test
-    // mid-execution is worse than a slow wedge detection. SIGTERM-first so
-    // the CLI can clean up; killProcessTree escalates to SIGKILL itself.
-    const inactivityMs = session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : STREAM_INACTIVITY_TIMEOUT_MS;
-    let lastStderrLen = stderrRef.output.length;
-    let timedOut = false;
-    if (proc?.stdout) {
-      const stdoutIt = proc.stdout[Symbol.asyncIterator]();
-      let onAbort: () => void = () => {};
-      const aborted = new Promise<'aborted'>(resolve => { onAbort = () => resolve('aborted'); });
-      signal?.addEventListener('abort', onAbort, { once: true });
-      let pendingRead = stdoutIt.next();
-      try {
-        while (true) {
-          if (!isCurrent()) { return; }
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          const timeoutP = new Promise<'timeout'>(resolve => {
-            timer = setTimeout(() => resolve('timeout'), inactivityMs);
-          });
-          let result: Awaited<ReturnType<typeof stdoutIt.next>> | 'timeout' | 'aborted';
-          try {
-            result = await Promise.race([pendingRead, timeoutP, aborted]);
-          } finally {
-            clearTimeout(timer);
-          }
-          if (!isCurrent() || result === 'aborted') { return; }
-          if (result === 'timeout') {
-            // stderr progress counts as liveness (many CLIs log there
-            // between tool events) — re-arm instead of killing.
-            if (stderrRef.output.length > lastStderrLen) {
-              lastStderrLen = stderrRef.output.length;
-              continue;
-            }
-            timedOut = true;
-            console.error(`[Mysti] ${this.displayName}: No stdout/stderr activity for ${Math.round(inactivityMs / 60000)}min — killing wedged process`);
-            void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, {
-              label: `${this.displayName} inactivity-timeout`,
-            });
-            break;
-          }
-          if (result.done) {
-            break;
-          }
-          const chunk = result.value;
-          if (firstChunkTime === null) {
-            firstChunkTime = Date.now();
-            console.log(`[Mysti] ${this.displayName}: First stdout data received in ${firstChunkTime - streamStartTime}ms`);
-          }
-
-          const chunkStr = chunk.toString();
-          buffer += chunkStr;
-
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (!isCurrent()) { return; }
-            if (line.trim()) {
-              const parsed = this.parseStreamLine(line, session);
-              if (parsed) {
-                if (firstContentTime === null && (parsed.type === 'text' || parsed.type === 'thinking')) {
-                  firstContentTime = Date.now();
-                  console.log(`[Mysti] ${this.displayName}: First content chunk in ${firstContentTime - streamStartTime}ms (type: ${parsed.type})`);
-                }
-                hasYieldedContent = true;
-                yield parsed;
-              }
-            }
-          }
-          pendingRead = stdoutIt.next();
+    try {
+      for await (const chunk of readCliStdout(proc, {
+        signal, isCurrent, stderr: stderrRef, label: this.displayName,
+        inactivityMs: session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : STREAM_INACTIVITY_TIMEOUT_MS,
+      })) {
+        if (firstChunkTime === null) {
+          firstChunkTime = Date.now();
+          console.log(`[Mysti] ${this.displayName}: First stdout data received in ${firstChunkTime - streamStartTime}ms`);
         }
-      } finally {
-        signal?.removeEventListener('abort', onAbort);
-        // Consumer abandonment must release the stdout reader.
-        try { void Promise.resolve(stdoutIt.return?.(undefined)).catch(() => {}); } catch { /* best-effort */ }
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!isCurrent()) { return; }
+          if (!line.trim()) { continue; }
+          const parsed = this.parseStreamLine(line, session);
+          if (parsed) {
+            if (firstContentTime === null && (parsed.type === 'text' || parsed.type === 'thinking')) {
+              firstContentTime = Date.now();
+              console.log(`[Mysti] ${this.displayName}: First content chunk in ${firstContentTime - streamStartTime}ms (type: ${parsed.type})`);
+            }
+            hasYieldedContent = true;
+            yield parsed;
+          }
+        }
       }
-    }
-
-    if (!isCurrent()) { return; }
-
-    if (timedOut) {
-      yield {
-        type: 'error',
-        content: `${this.displayName} produced no output for ${Math.round(inactivityMs / 60000)} minutes — the request timed out and the process was terminated.`,
-      };
+    } catch (error) {
+      if (!isCurrent()) { return; }
+      if (!(error instanceof CliStreamInactivityError)) { throw error; }
+      yield { type: 'error', content: error.message };
       return;
     }
+    if (!isCurrent()) { return; }
 
     if (buffer.trim()) {
       const parsed = this.parseStreamLine(buffer, session);

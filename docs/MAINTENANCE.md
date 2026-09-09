@@ -71,6 +71,10 @@ Warnings remain useful debt signals. Do not suppress lint errors, make a failing
 job advisory, or add retries to get a green result. Fix the cause or document an
 explicitly bounded follow-up with evidence.
 
+The OpenClaw adapter has a separate [transport contract](OPENCLAW_TRANSPORT.md)
+covering run identity, cancellation, CLI prompt delivery and remaining approval
+limitations. Its local transport fixtures do not replace live provider checks.
+
 ## Dependency updates
 
 Dependabot groups routine npm and Actions updates. Review each group against the

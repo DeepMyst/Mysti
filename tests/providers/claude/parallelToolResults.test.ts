@@ -13,6 +13,7 @@ import type { ClaudeSessionState } from '../../../src/providers/claude/ClaudeCod
 import type { StreamChunk } from '../../../src/types';
 import type { PanelSessionState } from '../../../src/providers/base/BaseCliProvider';
 import type { ChildProcess } from 'child_process';
+import { EventEmitter } from 'node:events';
 
 /** Expose the protected processStream override for end-to-end drain tests. */
 class StreamingClaudeProvider extends TestableClaudeProvider {
@@ -27,13 +28,12 @@ class StreamingClaudeProvider extends TestableClaudeProvider {
 
 /** Minimal fake ChildProcess whose stdout replays the given NDJSON lines. */
 function fakeProcess(lines: string[]): ChildProcess {
-  return {
+  return Object.assign(new EventEmitter(), {
     stdout: (async function* () {
       yield Buffer.from(lines.join('\n') + '\n');
     })(),
     exitCode: 0,
-    on: () => { /* no-op — exitCode is already settled */ },
-  } as unknown as ChildProcess;
+  }) as unknown as ChildProcess;
 }
 
 function toolResultLine(results: Array<{ id: string; content: string; isError?: boolean }>): string {

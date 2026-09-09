@@ -50,18 +50,21 @@ beforeEach(() => {
   provider = new TestableOpenClawProvider();
 });
 
-afterEach(() => {
-  for (const p of ['panel-1', 'panel-2']) {
-    try { fs.unlinkSync(path.join(os.tmpdir(), `mysti-openclaw-${p}.txt`)); } catch { /* fine */ }
-  }
-});
+afterEach(() => { provider.dispose(); });
+
+async function prepare(panelId = 'panel-1', prompt = 'test prompt') {
+  const session = createOpenClawSession(panelId);
+  const args = provider.buildCliArgs(settings(), session);
+  const cleanup = await (provider as any)._preparePromptBeforeSpawn(prompt, args, session);
+  return { session, args, cleanup, file: args[args.indexOf('--message-file') + 1] };
+}
 
 describe('OpenClaw prompt delivery', () => {
-  it('names a message file instead of relying on stdin', () => {
-    const args = provider.buildCliArgs(settings(), createOpenClawSession('panel-1'));
+  it('names a message file instead of relying on stdin', async () => {
+    const { args } = await prepare();
     const idx = args.indexOf('--message-file');
     expect(idx).toBeGreaterThan(-1);
-    expect(args[idx + 1]).toContain('mysti-openclaw-panel-1');
+    expect(args[idx + 1]).toContain('mysti-openclaw-');
   });
 
   /** Without one the CLI refuses the turn outright. */
@@ -72,18 +75,17 @@ describe('OpenClaw prompt delivery', () => {
     expect(args[idx + 1]).toBe('mysti-panel-1');
   });
 
-  it('gives each panel its own session and its own file', () => {
-    const a = provider.buildCliArgs(settings(), createOpenClawSession('panel-1'));
-    const b = provider.buildCliArgs(settings(), createOpenClawSession('panel-2'));
+  it('gives each panel its own session and its own file', async () => {
+    const { args: a } = await prepare('panel-1');
+    const { args: b } = await prepare('panel-2');
     expect(a[a.indexOf('--session-key') + 1]).not.toBe(b[b.indexOf('--session-key') + 1]);
     expect(a[a.indexOf('--message-file') + 1]).not.toBe(b[b.indexOf('--message-file') + 1]);
   });
 
   /** A panel id reaches a filesystem path, so it must not be able to escape. */
-  it('cannot be steered out of the temp directory by a panel id', () => {
-    const args = provider.buildCliArgs(settings(), createOpenClawSession('../../etc/passwd'));
-    const file = args[args.indexOf('--message-file') + 1];
-    expect(path.dirname(file)).toBe(os.tmpdir());
+  it('cannot be steered out of the temp directory by a panel id', async () => {
+    const { file } = await prepare('../../etc/passwd');
+    expect(path.dirname(path.dirname(file))).toBe(os.tmpdir());
     expect(file).not.toContain('..');
   });
 
@@ -95,43 +97,35 @@ describe('OpenClaw prompt delivery', () => {
   });
 });
 
-describe('OpenClaw _deliverPrompt', () => {
-  /** The base writes to stdin; OpenClaw has to write the file it named. */
-  it('writes the prompt to the file the args point at, and closes stdin', async () => {
-    const session = createOpenClawSession('panel-1');
-    const args = provider.buildCliArgs(settings(), session);
-    const file = args[args.indexOf('--message-file') + 1];
-
-    let stdinEnded = false;
-    const fakeProc = { stdin: { end: () => { stdinEnded = true; }, write: () => { throw new Error('must not write to stdin'); } } };
-
-    await provider.deliverPrompt(fakeProc as never, 'Explain the diff', session);
-
+describe('OpenClaw message-file ownership', () => {
+  it('writes the prompt before delivery and only closes stdin on the spawned child', async () => {
+    const { session, file } = await prepare('panel-1', 'Explain the diff');
     expect(fs.readFileSync(file, 'utf8')).toBe('Explain the diff');
-    // Nothing reads stdin, but an open pipe would hold the process forever.
+    let stdinEnded = false;
+    const proc = { stdin: {
+      end: () => { stdinEnded = true; },
+      write: () => { throw new Error('must not write to stdin'); },
+    } };
+    await provider.deliverPrompt(proc as never, 'Explain the diff', session);
     expect(stdinEnded).toBe(true);
   });
 
-  /** The file is the user's prompt sitting in a shared temp directory. */
-  it('writes it readable only by the owner', async () => {
-    const session = createOpenClawSession('panel-1');
-    const file = provider.buildCliArgs(settings(), session)[
-      provider.buildCliArgs(settings(), session).indexOf('--message-file') + 1
-    ];
-    await provider.deliverPrompt({ stdin: { end: () => undefined } } as never, 'secret', session);
+  it('writes a private directory and owner-readable file', async () => {
+    const { file } = await prepare('panel-1', 'secret');
     if (process.platform !== 'win32') {
       expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(path.dirname(file)).mode & 0o777).toBe(0o700);
     }
   });
 
-  it('overwrites the previous turn rather than appending to it', async () => {
-    const session = createOpenClawSession('panel-1');
-    const file = provider.buildCliArgs(settings(), session)[
-      provider.buildCliArgs(settings(), session).indexOf('--message-file') + 1
-    ];
-    const proc = { stdin: { end: () => undefined } } as never;
-    await provider.deliverPrompt(proc, 'first turn', session);
-    await provider.deliverPrompt(proc, 'second', session);
-    expect(fs.readFileSync(file, 'utf8')).toBe('second');
+  it('overlapping turns have distinct files and old cleanup preserves the replacement', async () => {
+    const first = await prepare('panel-1', 'first');
+    const second = await prepare('panel-1', 'second');
+    expect(first.file).not.toBe(second.file);
+    await first.cleanup();
+    expect(fs.existsSync(first.file)).toBe(false);
+    expect(fs.readFileSync(second.file, 'utf8')).toBe('second');
+    await second.cleanup();
+    expect(fs.existsSync(second.file)).toBe(false);
   });
 });
