@@ -11,12 +11,22 @@ function defaultSettings(overrides?: Partial<Settings>): Settings {
   };
 }
 
-describe('ClineProvider.buildCliArgs', () => {
+/**
+ * Cline 1.x flags. Cline 2.0 renamed all of them, so these assertions only hold
+ * when the installed CLI really is 1.x — pinned explicitly here. The 2.x+ shape
+ * (and the "version unknown" default) lives in modernCliCompat.test.ts.
+ */
+function pinLegacyVersion(provider: TestableClineProvider) {
+  (provider as unknown as { _cachedCliVersion: string | null })._cachedCliVersion = '1.0.8';
+}
+
+describe('ClineProvider.buildCliArgs (Cline 1.x)', () => {
   let provider: TestableClineProvider;
 
   beforeEach(() => {
     clearMockConfig();
     provider = new TestableClineProvider();
+    pinLegacyVersion(provider);
   });
 
   it('should include --output-format json', () => {

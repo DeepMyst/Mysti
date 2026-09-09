@@ -204,32 +204,29 @@ function createHarness(): Harness {
 
   const noop = {} as any;
 
-  const provider = new ChatViewProvider(
+  const provider = new ChatViewProvider({
     extensionUri,
     extensionContext,
     contextManager,
     conversationManager,
     providerManager,
     suggestionManager,
-    noop,                  // brainstormManager
+    brainstormManager: noop,
     permissionManager,
     setupManager,
-    noop,                  // telemetryManager
+    telemetryManager: noop,
     autonomousManager,
     memoryManager,
     compactionManager,
     lifecycleManager,
-    noop,                  // slashCommandManager
+    slashCommandManager: noop,
     activeModeManager,
     engagementManager,
     projectContextManager,
-    noop,                  // visualTestManager
-    noop,                  // canvasManager
-    createModelRegistryStub() as any, // modelRegistry (Plan 01)
-    // checkpointManager — snapshot returns null so _captureCheckpoint no-ops
-    // (these tests assert message persistence, not code checkpoints).
-    { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any
-  );
+    visualTestManager: noop,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any
+  });
 
   const sidebarMessages: Array<{ type: string; payload?: any }> = [];
   (provider as any)._panelStates.set('sidebar', {
@@ -480,10 +477,22 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
         streamCalls.push(messages);
         const N = nonceFrom(messages);
         if (turn++ === 0) {
-          yield { text: `<delegate:${N} agent="claude-code">implement the thing</delegate>` };
+          // Some transports deliver the final text and usage together. The
+          // directive abort must preserve that measured frame rather than
+          // replacing it with an estimate or counting it twice.
+          yield {
+            text: `<delegate:${N} agent="claude-code">implement the thing</delegate>`,
+            usage: { input_tokens: 100, output_tokens: 20 },
+            costUsd: 0.1,
+          };
           yield { done: true };
         } else {
-          yield { text: 'All done — the change is in place.' };
+          yield {
+            text: 'All done — the change is in place.',
+            usage: { input_tokens: 150, output_tokens: 30 },
+            costUsd: 0.2,
+            model: 'actual-coordinator-model',
+          };
           yield { done: true };
         }
       },
@@ -517,6 +526,11 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
     expect(Array.isArray(extras.toolCalls)).toBe(true);
     expect(extras.toolCalls.some((tc: any) => tc.name === 'delegate' && tc.input?.agent === 'claude-code')).toBe(true);
     expect(extras.provider).toBe('mysti');
+    expect(extras.model).toBe('actual-coordinator-model');
+    const receipt = h.sidebarMessages.find(m => m.type === 'responseComplete')?.payload?.usage;
+    expect(receipt).toMatchObject({ input_tokens: 250, output_tokens: 50, contextTokens: 150, delegations: 1 });
+    expect(receipt.costUsd).toBeCloseTo(0.3);
+    expect(receipt).not.toHaveProperty('tokensPartial');
   });
 });
 

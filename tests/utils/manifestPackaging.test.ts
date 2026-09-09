@@ -199,23 +199,19 @@ describe('packaging scripts must collect dependencies', () => {
     expect(isIgnored('node_modules/some-other-package/index.js')).toBe(true);
   });
 
-  it('every package script pins an exact vsce version, and vsce never ships', () => {
-    // vsce is fetched per-invocation with a pinned version rather than declared
-    // as a devDependency. A devDependency has to be mirrored into
-    // package-lock.json; when it was added without one, `npm ci` failed with
-    // EUSAGE and took EVERY CI job down at its Install step — including the two
-    // blocking ones. Pinning in the script keeps the version reproducible and
-    // removes the lock-drift class entirely. This must stay in step with
-    // .github/workflows/ci.yml, which pins the same version.
+  it('uses a lockfile-pinned local vsce that never ships', () => {
+    const lock = JSON.parse(fs.readFileSync(path.join(ROOT, 'package-lock.json'), 'utf8'));
+    const version = pkg.devDependencies?.['@vscode/vsce'];
+    expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(lock.packages[''].devDependencies['@vscode/vsce']).toBe(version);
+    expect(lock.packages['node_modules/@vscode/vsce'].version).toBe(version);
+    expect(lock.packages['node_modules/@vscode/vsce'].dev).toBe(true);
     for (const [name, body] of packageScripts) {
-      expect(body, `"${name}" must pin an exact vsce version, not a range`)
-        .toMatch(/@vscode\/vsce@\d+\.\d+\.\d+/);
+      expect(body, `"${name}" must use the installed packaging tool`)
+        .toMatch(/^vsce package\b/);
     }
     expect(pkg.dependencies?.['@vscode/vsce'],
       'The packaging tool must never ship inside the extension.').toBeUndefined();
-    expect(pkg.devDependencies?.['@vscode/vsce'],
-      'A vsce devDependency must be mirrored in package-lock.json or `npm ci` dies; the scripts pin it instead.')
-      .toBeUndefined();
   });
 });
 

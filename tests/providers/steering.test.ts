@@ -87,14 +87,52 @@ describe('Plan 28 Phase 2 — steering capability', () => {
   });
 
   it('the single-shot send path still closes stdin, which is why', () => {
-    // The structural reason, asserted rather than described. If this line ever
-    // goes away, mid-turn input becomes possible on the one-shot path and this
-    // whole file should be revisited.
+    // The structural reason, asserted rather than described. If stdin ever stops
+    // being closed, mid-turn input becomes possible on the one-shot path and
+    // this whole file should be revisited.
+    //
+    // The close moved out of the send path and into `_deliverPrompt`, the hook
+    // OpenClaw overrides because `openclaw agent` reads its prompt from
+    // --message-file and ignores the pipe entirely. It still ends the pipe.
     const fs = require('fs') as typeof import('fs');
     const path = require('path') as typeof import('path');
     const src = fs.readFileSync(
       path.resolve(__dirname, '../../src/providers/base/BaseCliProvider.ts'), 'utf8');
-    expect(src).toContain('session.process.stdin.end()');
+
+    const hook = src.slice(src.indexOf('protected async _deliverPrompt'));
+    expect(hook, 'the _deliverPrompt hook is gone — where does the prompt go now?')
+      .toContain('proc.stdin.end()');
+
+    // …and the send path still routes through it rather than writing its own.
+    expect(src).toContain('await this._deliverPrompt(session.process, fullPrompt, session)');
+  });
+
+  /**
+   * A provider that overrides prompt delivery must still close stdin: an open
+   * pipe holds the child forever, and a half-open one would quietly reintroduce
+   * the mid-turn input path this file exists to rule out.
+   */
+  it('every _deliverPrompt override ends stdin too', () => {
+    const fs = require('fs') as typeof import('fs');
+    const path = require('path') as typeof import('path');
+    const dir = path.resolve(__dirname, '../../src/providers');
+
+    const offenders: string[] = [];
+    for (const sub of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!sub.isDirectory()) { continue; }
+      for (const file of fs.readdirSync(path.join(dir, sub.name))) {
+        if (!file.endsWith('.ts')) { continue; }
+        const full = path.join(dir, sub.name, file);
+        const src = fs.readFileSync(full, 'utf8');
+        const at = src.indexOf('_deliverPrompt(');
+        if (at === -1 || !src.includes('override async _deliverPrompt')) { continue; }
+        const body = src.slice(at, at + 1400);
+        if (!/stdin\?\.end\(\)|stdin\.end\(\)/.test(body)) {
+          offenders.push(`${sub.name}/${file}`);
+        }
+      }
+    }
+    expect(offenders, 'these override prompt delivery without closing stdin').toEqual([]);
   });
 });
 

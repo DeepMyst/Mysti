@@ -31,11 +31,18 @@ import type {
 	Conversation,
 	SlashCommandDefinition,
 	AgentConfiguration,
+	ToolCall,
 } from "../../types";
 import { PROCESS_KILL_GRACE_PERIOD_MS } from "../../constants";
 import { killProcessTree, isProcessLive } from "../../utils/processKill";
 import { getEnrichedEnv } from "../../utils/platform";
 import { toolKind } from "../../utils/toolNames";
+import { isRecord } from "../../utils/valueGuards";
+
+function toolStatus(value: unknown, fallback: ToolCall['status']): ToolCall['status'] {
+	return value === "pending" || value === "running" || value === "completed" || value === "failed"
+		? value : fallback;
+}
 
 /**
  * Extended per-panel session state for Cline-specific fields.
@@ -146,6 +153,7 @@ export class ClineProvider extends BaseCliProvider {
 		sessionKind: 'prompt-history',     // no actual resume — history replayed into the prompt
 		emitsToolResults: true,
 		emitsUsage: true,
+		usageConvention: 'auto',   // Cline fronts whichever vendor the user configured and passes that vendor's own numbers straight through.
 		modelSelection: 'none',            // model configured via cline CLI config; dropdown is a no-op (F18)
 	};
 
@@ -314,7 +322,23 @@ export class ClineProvider extends BaseCliProvider {
 	}
 
 	protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
-		const args: string[] = ["--output-format", "json"];
+		// Cline 2.0 renamed every flag Mysti used. On 3.0.61 the old invocation
+		// dies immediately with `error: unknown option '--output-format'`, so the
+		// provider was completely non-functional against a current CLI:
+		//
+		//   1.x                      2.x+
+		//   --output-format json     --json
+		//   --mode plan | --mode act -p/--plan   (act is the default)
+		//   --yolo                   --auto-approve <boolean>
+		//
+		// The major version comes from the `--version` probe discovery now runs.
+		// When it is unknown, assume the CURRENT CLI — an unknown version is far
+		// more likely to be a new release this table has not seen than a 1.x from
+		// before the rename.
+		const major = this._getCliMajorVersion();
+		const legacy = major !== null && major < 2;
+
+		const args: string[] = legacy ? ["--output-format", "json"] : ["--json"];
 
 		// Do NOT connect to the VSCode Cline extension's Core instance.
 		// Its auth config is separate from CLI auth (configured via "cline auth").
@@ -327,33 +351,41 @@ export class ClineProvider extends BaseCliProvider {
 			args.push("--verbose");
 		}
 
-		// Map Mysti modes to Cline modes
-		// Cline uses 'plan' (read-only) or 'act' (can make changes)
+		// Map Mysti modes to Cline modes.
+		// Cline uses 'plan' (read-only) or 'act' (can make changes).
 		const { mode, accessLevel } = settings;
-
-		// Determine if we should use act or plan mode
-		if (
+		const planMode =
 			mode === "quick-plan" ||
 			mode === "detailed-plan" ||
-			accessLevel === "read-only"
-		) {
-			args.push("--mode", "plan");
+			accessLevel === "read-only";
+
+		if (planMode) {
+			args.push(...(legacy ? ["--mode", "plan"] : ["--plan"]));
 			console.log("[Mysti] Cline: Using plan mode (read-only)");
-		} else {
+		} else if (legacy) {
+			// 2.x+ has no act flag — act IS the default.
 			args.push("--mode", "act");
 			console.log("[Mysti] Cline: Using act mode");
 		}
 
-		// Always add --yolo in act mode to prevent CLI stdin hang.
-		// The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-		if (args.includes("--mode") && args[args.indexOf("--mode") + 1] === "act") {
-			args.push("--yolo");
-			console.log(`[Mysti] Cline: Using yolo mode (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
+		// Auto-approve tools so the CLI never blocks on its own stdin prompt; the
+		// stream-level tool-use gate in ChatViewProvider is what actually asks the
+		// user. In act mode only — plan mode changes nothing to approve.
+		if (!planMode) {
+			args.push(...(legacy ? ["--yolo"] : ["--auto-approve", "true"]));
+			console.log(
+				`[Mysti] Cline: auto-approving tools (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`,
+			);
 		}
 
-		// Note: Cline CLI has no per-request model flag.
-		// -m is the short form for --mode (plan|act), not model selection.
-		// The model is configured globally via "cline auth" or "cline config".
+		// 2.x+ gained a real per-session model flag; 1.x had none (-m was the short
+		// form of --mode), so the model stayed a global `cline auth` setting there.
+		if (!legacy) {
+			const effectiveModel = this._getEffectiveModel(settings);
+			if (effectiveModel) {
+				args.push("--model", effectiveModel);
+			}
+		}
 
 		return args;
 	}
@@ -486,16 +518,127 @@ export class ClineProvider extends BaseCliProvider {
 	}
 
 	/**
-	 * Handle a fully parsed JSON message from Cline CLI
+	 * Cline 2.x+ stream events.
+	 *
+	 * Captured from 3.0.61:
+	 *   {"type":"hook_event","hookEventName":"agent_start",...}
+	 *   {"type":"agent_event","event":{"type":"content_start","contentType":"text",
+	 *                                  "text":"Hi","accumulated":"Hi"}}
+	 *   {"type":"agent_event","event":{"type":"usage","inputTokens":…}}
+	 *   {"type":"agent_event","event":{"type":"done","reason":"completed",…}}
+	 *   {"type":"run_result","finishReason":"completed","usage":{…},"text":"…"}
+	 *
+	 * `text` is the DELTA and `accumulated` is the running total; emitting both
+	 * would double every character.
 	 */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	private _handleParsedMessage(data: Record<string, any>, session: ClineSessionState): StreamChunk | null {
+	private _handleModernEvent(data: Record<string, unknown>, session: ClineSessionState): StreamChunk | null {
+		if (data.type === "run_result") {
+			if (isRecord(data.usage)) {
+				session.lastUsageStats = this._parseUsage(data.usage);
+			}
+			const finishReason = data.finishReason;
+			if (finishReason && finishReason !== "completed") {
+				return { type: "error", content: `Cline stopped: ${String(finishReason)}` };
+			}
+			return null;
+		}
+
+		// Lifecycle only — nothing to render.
+		if (data.type === "hook_event") {
+			return null;
+		}
+
+		const event = isRecord(data.event) ? data.event : {};
+		switch (event.type) {
+			case "content_start":
+			case "content_delta": {
+				// The delta, never `accumulated` — see the note above.
+				const text = typeof event.text === "string" ? event.text : "";
+				if (!text) {
+					return null;
+				}
+				return event.contentType === "thinking"
+					? { type: "thinking", content: text }
+					: { type: "text", content: text };
+			}
+
+			case "usage": {
+				session.lastUsageStats = this._parseUsage(event);
+				return null;
+			}
+
+			case "tool_call":
+			case "tool_start": {
+				const id = String(event.toolCallId ?? event.id ?? `cline-${Date.now()}`);
+				const name = String(event.toolName ?? event.name ?? "tool");
+				const rawInput = event.input ?? event.args;
+				const input = isRecord(rawInput) ? rawInput : {};
+				session.activeToolCalls.set(id, { id, name, inputJson: JSON.stringify(input) });
+				return { type: "tool_use", toolCall: { id, name, input, status: "running" } };
+			}
+
+			case "tool_result":
+			case "tool_end": {
+				const id = String(event.toolCallId ?? event.id ?? "");
+				const active = session.activeToolCalls.get(id);
+				session.activeToolCalls.delete(id);
+				const output = typeof event.output === "string" ? event.output : JSON.stringify(event.output ?? "");
+				let input: Record<string, unknown> = {};
+				try {
+					input = active ? JSON.parse(active.inputJson) as Record<string, unknown> : {};
+				} catch {
+					input = {};
+				}
+				return {
+					type: "tool_result",
+					toolCall: {
+						id,
+						name: active?.name ?? "tool",
+						input,
+						output,
+						status: event.isError || event.error ? "failed" : "completed",
+					},
+				};
+			}
+
+			case "error": {
+				const message = String(event.message ?? event.text ?? "Cline reported an error");
+				return { type: "error", content: message };
+			}
+
+			// `done` carries the full accumulated text, which has already been
+			// streamed delta by delta; re-emitting it would duplicate the answer.
+			case "done":
+			case "iteration_start":
+			case "iteration_end":
+			case "content_end":
+				return null;
+
+			default:
+				return null;
+		}
+	}
+
+	private _handleParsedMessage(data: unknown, session: ClineSessionState): StreamChunk | null {
+		if (!isRecord(data)) { return null; }
 		console.log("[Mysti] Cline: Parsed JSON type:", data.type, "say:", data.say);
+
+		// Cline 2.0 replaced the whole event vocabulary. Both shapes are handled
+		// because the format is self-describing — `type:"say"` is 1.x, the
+		// envelope below is 2.x+ — so a user on either CLI works without Mysti
+		// having to get a version check right at parse time.
+		if (
+			data.type === "agent_event" ||
+			data.type === "run_result" ||
+			data.type === "hook_event"
+		) {
+			return this._handleModernEvent(data, session);
+		}
 
 		// Handle Cline's "say" message format
 		if (data.type === "say") {
 			// Handle thinking/reasoning messages
-			if (data.say === "reasoning" && data.reasoning) {
+			if (data.say === "reasoning" && typeof data.reasoning === "string" && data.reasoning) {
 				console.log(
 					"[Mysti] Cline: Found thinking:",
 					data.reasoning.substring(0, 50),
@@ -506,7 +649,7 @@ export class ClineProvider extends BaseCliProvider {
 			// Handle text messages -- Cline streams the model's reasoning as say:"text"
 			// events. The actual user-facing answer arrives as say:"completion_result".
 			// Show reasoning as thinking so Mysti only displays the clean answer.
-			if (data.say === "text" && data.text) {
+			if (data.say === "text" && typeof data.text === "string" && data.text) {
 				// Filter out echoed user input
 				if (data.text.trim() === session.lastUserInput) {
 					return null;
@@ -515,26 +658,26 @@ export class ClineProvider extends BaseCliProvider {
 			}
 
 			// Handle completion_result (Cline's final clean answer)
-			if (data.say === "completion_result" && data.text) {
+			if (data.say === "completion_result" && typeof data.text === "string" && data.text) {
 				console.log("[Mysti] Cline: Got completion_result:", data.text.substring(0, 100));
 				return { type: "text", content: data.text };
 			}
 
 			// Surface error messages from Cline
-			if (data.say === "error" && data.text) {
+			if (data.say === "error" && typeof data.text === "string" && data.text) {
 				console.log("[Mysti] Cline: Error from say message:", data.text.substring(0, 100));
 				return { type: "error", content: data.text };
 			}
 
 			// Detect streaming failures embedded in api_req_started events
-			if (data.say === "api_req_started" && data.text) {
+			if (data.say === "api_req_started" && typeof data.text === "string" && data.text) {
 				try {
-					const reqData = JSON.parse(data.text);
-					if (reqData.streamingFailedMessage) {
-						const failData = typeof reqData.streamingFailedMessage === 'string'
+					const reqData: unknown = JSON.parse(data.text);
+					if (isRecord(reqData) && reqData.streamingFailedMessage) {
+						const failData: unknown = typeof reqData.streamingFailedMessage === 'string'
 							? JSON.parse(reqData.streamingFailedMessage)
 							: reqData.streamingFailedMessage;
-						if (failData.message) {
+						if (isRecord(failData) && typeof failData.message === "string" && failData.message) {
 							const modelInfo = failData.modelId ? ` (model: ${failData.modelId})` : '';
 							console.log("[Mysti] Cline: Streaming failed:", failData.message);
 							return { type: "error", content: failData.message + modelInfo };
@@ -556,19 +699,20 @@ export class ClineProvider extends BaseCliProvider {
 		}
 
 		// Handle ask type (followup questions, API errors)
-		if (data.type === "ask" && data.text) {
+		if (data.type === "ask" && typeof data.text === "string" && data.text) {
 			try {
-				const askData = JSON.parse(data.text);
+				const askData: unknown = JSON.parse(data.text);
+				if (!isRecord(askData)) { return null; }
 
 				// Handle API request failures (e.g. missing API key, model errors)
-				if (data.ask === "api_req_failed" && askData.message) {
+				if (data.ask === "api_req_failed" && typeof askData.message === "string" && askData.message) {
 					const modelInfo = askData.modelId ? ` (model: ${askData.modelId})` : '';
 					console.log("[Mysti] Cline: API request failed:", askData.message);
 					session.askReceived = true;
 					return { type: "error", content: askData.message + modelInfo };
 				}
 
-				if (askData.question) {
+				if (typeof askData.question === "string" && askData.question) {
 					// Filter out echoed user input
 					if (askData.question.trim() === session.lastUserInput) {
 						return null;
@@ -585,10 +729,12 @@ export class ClineProvider extends BaseCliProvider {
 							questions: [{
 								question: String(askData.question),
 								header: 'Question',
-								options: Array.isArray(askData.options) ? askData.options.map((o: Record<string, unknown>) => ({
-									label: String(o.label || o),
-									description: String(o.description || '')
-								})) : [
+								options: Array.isArray(askData.options) ? askData.options
+									.filter((o: unknown) => typeof o === "string" || (isRecord(o) && typeof o.label === "string"))
+									.map((o: unknown) => ({
+										label: typeof o === "string" ? o : String(isRecord(o) ? o.label : ''),
+										description: isRecord(o) && typeof o.description === "string" ? o.description : '',
+									})) : [
 									{ label: 'Yes', description: 'Accept' },
 									{ label: 'No', description: 'Decline' }
 								],
@@ -608,7 +754,7 @@ export class ClineProvider extends BaseCliProvider {
 		}
 
 		// Handle direct text content
-		if (data.type === "text" && data.content) {
+		if (data.type === "text" && typeof data.content === "string" && data.content) {
 			if (data.content.trim() === session.lastUserInput) {
 				return null;
 			}
@@ -616,36 +762,38 @@ export class ClineProvider extends BaseCliProvider {
 		}
 
 		// Handle thinking
-		if (data.type === "thinking" && data.content) {
+		if (data.type === "thinking" && typeof data.content === "string" && data.content) {
 			return { type: "thinking", content: data.content };
 		}
 
 		// Handle tool use (with deduplication)
-		if (data.type === "tool_use" && data.toolCall) {
-			const toolId = data.toolCall.id || "";
+		if (data.type === "tool_use" && isRecord(data.toolCall)) {
+			const toolId = typeof data.toolCall.id === "string" ? data.toolCall.id : "";
+			const name = typeof data.toolCall.name === "string" ? data.toolCall.name : "";
+			const input = isRecord(data.toolCall.input) ? data.toolCall.input : {};
 			if (session.completedToolCalls.has(toolId)) {
 				return null;
 			}
 			session.activeToolCalls.set(toolId, {
 				id: toolId,
-				name: data.toolCall.name || "",
-				inputJson: JSON.stringify(data.toolCall.input || {}),
+				name,
+				inputJson: JSON.stringify(input),
 			});
 			return {
 				type: "tool_use",
 				toolCall: {
 					id: toolId,
-					name: data.toolCall.name || "",
-					input: data.toolCall.input || {},
-					status: data.toolCall.status || "running",
-					kind: toolKind(data.toolCall.name || ""),
+					name,
+					input,
+					status: toolStatus(data.toolCall.status, "running"),
+					kind: toolKind(name),
 				},
 			};
 		}
 
 		// Handle tool result (with deduplication)
-		if (data.type === "tool_result" && data.toolCall) {
-			const toolId = data.toolCall.id || "";
+		if (data.type === "tool_result" && isRecord(data.toolCall)) {
+			const toolId = typeof data.toolCall.id === "string" ? data.toolCall.id : "";
 			if (session.completedToolCalls.has(toolId)) {
 				return null;
 			}
@@ -655,10 +803,10 @@ export class ClineProvider extends BaseCliProvider {
 				type: "tool_result",
 				toolCall: {
 					id: toolId,
-					name: data.toolCall.name || "",
+					name: typeof data.toolCall.name === "string" ? data.toolCall.name : "",
 					input: {},
-					output: data.toolCall.output || "",
-					status: data.toolCall.status || "completed",
+					output: typeof data.toolCall.output === "string" ? data.toolCall.output : "",
+					status: toolStatus(data.toolCall.status, "completed"),
 				},
 			};
 		}
@@ -667,38 +815,40 @@ export class ClineProvider extends BaseCliProvider {
 		if (data.type === "error") {
 			return {
 				type: "error",
-				content: data.error || data.message || "Unknown error",
+				content: typeof data.error === "string" && data.error ? data.error
+					: typeof data.message === "string" && data.message ? data.message : "Unknown error",
 			};
 		}
 
 		// Handle done - store usage data but don't yield done
 		// (sendMessage will emit the single authoritative done event)
 		if (data.type === "done" || data.type === "complete") {
-			if (data.usage || data.tokens) {
-				const usage = data.usage || data.tokens;
-				session.lastUsageStats = {
-					input_tokens: usage.input_tokens || usage.inputTokens || 0,
-					output_tokens: usage.output_tokens || usage.outputTokens || 0,
-					cache_creation_input_tokens: usage.cache_creation_input_tokens || usage.cacheCreationInputTokens,
-					cache_read_input_tokens: usage.cache_read_input_tokens || usage.cacheReadInputTokens,
-				};
+			const usage = data.usage || data.tokens;
+			if (isRecord(usage)) {
+				session.lastUsageStats = this._parseUsage(usage);
 			}
 			return null;
 		}
 
 		// Handle explicit usage messages
-		if (data.type === "usage" && data.tokens) {
-			session.lastUsageStats = {
-				input_tokens: data.tokens.input_tokens || data.tokens.inputTokens || 0,
-				output_tokens: data.tokens.output_tokens || data.tokens.outputTokens || 0,
-				cache_creation_input_tokens: data.tokens.cache_creation_input_tokens || data.tokens.cacheCreationInputTokens,
-				cache_read_input_tokens: data.tokens.cache_read_input_tokens || data.tokens.cacheReadInputTokens,
-			};
+		if (data.type === "usage" && isRecord(data.tokens)) {
+			session.lastUsageStats = this._parseUsage(data.tokens);
 			return null;
 		}
 
 		// Skip all other JSON state messages
 		return null;
+	}
+
+	private _parseUsage(usage: Record<string, unknown>): NonNullable<ClineSessionState['lastUsageStats']> {
+		const number = (value: unknown): number | undefined =>
+			typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+		return {
+			input_tokens: number(usage.input_tokens) ?? number(usage.inputTokens) ?? 0,
+			output_tokens: number(usage.output_tokens) ?? number(usage.outputTokens) ?? 0,
+			cache_creation_input_tokens: number(usage.cache_creation_input_tokens) ?? number(usage.cacheCreationInputTokens),
+			cache_read_input_tokens: number(usage.cache_read_input_tokens) ?? number(usage.cacheReadInputTokens),
+		};
 	}
 
 	/**
@@ -779,11 +929,30 @@ export class ClineProvider extends BaseCliProvider {
 
 		// Pass prompt as CLI argument unless it exceeds OS limits (~256KB on macOS)
 		const MAX_ARG_LENGTH = 200_000;
-		const useStdin = fullPrompt.length > MAX_ARG_LENGTH;
+		// Cline 2.x+ has NO working stdin path. It advertises one — the error says
+		// "requires a prompt argument or piped stdin" — but 3.0.61 rejects a pipe
+		// AND a file redirect, and the `-` sentinel 1.x used is now parsed as a
+		// command ("Unknown command or unquoted prompt: -"). The positional
+		// argument is the only route that works, so long prompts cannot fall back
+		// to stdin the way they could on 1.x.
+		const legacyCli = (this._getCliMajorVersion() ?? 2) < 2;
+		const useStdin = legacyCli && fullPrompt.length > MAX_ARG_LENGTH;
 		const args = useStdin ? [...baseArgs, "-"] : [...baseArgs, fullPrompt];
 
 		if (useStdin) {
 			console.log(`[Mysti] Cline: Prompt too long for CLI arg (${fullPrompt.length} chars), using stdin`);
+		} else if (fullPrompt.length > MAX_ARG_LENGTH) {
+			// Beyond this the spawn fails with E2BIG, which surfaces as an opaque
+			// "process exited" — say what actually happened instead.
+			console.warn(`[Mysti] Cline: Prompt is ${fullPrompt.length} chars and this CLI has no stdin path`);
+			yield {
+				type: "error",
+				content:
+					`This request is too large for the Cline CLI (${Math.round(fullPrompt.length / 1000)}k characters). `
+					+ `Cline 2.0 and later accept a prompt only as a command-line argument, with no stdin fallback. `
+					+ `Start a new conversation or reduce the attached context.`,
+			};
+			return;
 		}
 
 		// Declare outside try so finally block can access for cleanup

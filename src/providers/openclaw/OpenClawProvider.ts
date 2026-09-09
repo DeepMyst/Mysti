@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { ChildProcess } from 'child_process';
 import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from '../base/BaseCliProvider';
 import { OpenClawGateway } from './OpenClawGateway';
 import type {
@@ -93,6 +94,7 @@ export class OpenClawProvider extends BaseCliProvider {
     sessionKind: 'cli-resume',      // gateway sessionKey continuity (key is locally generated — Plan 02 Phase 5 caveat)
     emitsToolResults: true,
     emitsUsage: false,              // done.usage never supplied — footer "n/a", compaction disabled
+    usageConvention: 'none',   // No cache accounting on either the CLI or the Gateway path.
     modelSelection: 'none',         // model configured via openclaw config; dropdown is a no-op (F18)
     supportsChannels: true,         // gateway channel delegation (C4)
   };
@@ -146,7 +148,18 @@ export class OpenClawProvider extends BaseCliProvider {
    */
   dispose(): void {
     this._gateway.disconnect();
+    // Prompt files are the user's text sitting in a shared temp dir; do not
+    // leave them behind when the window closes.
+    for (const panelId of this._panelSessions.keys()) {
+      this._cleanupMessageFile(panelId);
+    }
     super.dispose();
+  }
+
+  /** Also clear the prompt file when a panel's session is reset. */
+  override disposeSession(panelId: string): void {
+    this._cleanupMessageFile(panelId);
+    super.disposeSession(panelId);
   }
 
   // --- CLI Discovery ---
@@ -299,10 +312,69 @@ export class OpenClawProvider extends BaseCliProvider {
     ];
   }
 
+  /**
+   * Per-panel temp file holding the turn's prompt.
+   *
+   * Deterministic per panel so buildCliArgs can name it before the prompt
+   * exists — the base builds args, spawns, THEN builds the prompt, so the path
+   * has to be known first.
+   */
+  private _messageFilePath(panelId: string): string {
+    const safe = panelId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+    return path.join(os.tmpdir(), `mysti-openclaw-${safe}.txt`);
+  }
+
+  /**
+   * OpenClaw reads the prompt from the file named in --message-file, not stdin.
+   *
+   * Written 0600: it is the user's prompt, in a world-readable temp directory.
+   */
+  protected override async _deliverPrompt(
+    proc: ChildProcess,
+    fullPrompt: string,
+    session: PanelSessionState
+  ): Promise<void> {
+    const file = this._messageFilePath(session.panelId);
+    await fs.promises.writeFile(file, fullPrompt, { encoding: 'utf8', mode: 0o600 });
+    // Nothing reads stdin, but leaving it open would hold the pipe forever.
+    proc.stdin?.end();
+  }
+
+  /** Test seam: `_deliverPrompt` is protected, and the override is the point. */
+  protected _deliverPromptForTest(
+    proc: ChildProcess,
+    fullPrompt: string,
+    session: PanelSessionState
+  ): Promise<void> {
+    return this._deliverPrompt(proc, fullPrompt, session);
+  }
+
+  /** Best-effort removal of a panel's prompt file. */
+  private _cleanupMessageFile(panelId: string): void {
+    try {
+      fs.unlinkSync(this._messageFilePath(panelId));
+    } catch {
+      // Already gone, or never written — nothing to do.
+    }
+  }
+
   // --- CLI Args (for fallback mode) ---
 
   protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
     const args: string[] = ['agent', '--json'];
+
+    // `openclaw agent` takes the prompt from --message/--message-file and IGNORES
+    // stdin: piping into it answers "Missing message. Use openclaw agent
+    // --message ...". A temp file is used rather than --message so a long prompt
+    // cannot hit ARG_MAX, and it is what OpenClaw's own docs use for multiline
+    // input. _deliverPrompt writes it; _cleanupMessageFile removes it.
+    args.push('--message-file', this._messageFilePath(_session.panelId));
+
+    // It also requires a session selector — "Pass --to <E.164>, --session-key,
+    // --session-id, or --agent to choose a session". The panel id IS Mysti's
+    // session boundary, so it maps onto --session-key directly and each panel
+    // keeps its own OpenClaw session.
+    args.push('--session-key', `mysti-${_session.panelId}`);
 
     // Map thinking levels: Mysti none/low/medium/high -> OpenClaw off/low/medium/high
     const thinkingMap: Record<string, string> = {

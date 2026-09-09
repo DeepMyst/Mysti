@@ -53,6 +53,8 @@ import {
   cacheReadCostUsd,
   cacheWriteCostUsd,
 } from '../services/ModelPricing';
+import { contextFillTokens, reportsCacheTokens } from '../services/TokenAccounting';
+import type { UsageConvention } from '../services/TokenAccounting';
 import type { DeepMystAuthManager } from './DeepMystAuthManager';
 import type { DeepMystGatewayClient } from '../services/DeepMystGatewayClient';
 import type { SavingsLedger } from './SavingsLedger';
@@ -65,6 +67,14 @@ const RETRIEVAL_COOLDOWN_MS = 20_000;
 interface CacheState {
   lastTurnAt: number;
   lastCacheRead: number;
+  /**
+   * Whether the backend that produced this turn can report cache tokens AT ALL.
+   * Without it, `getWarmth` conflated two very different states: "the cache
+   * window expired" and "this backend has never been able to tell us". Both
+   * answered 'cold', and 'cold' is what the decision reads as "ideal moment to
+   * compact" — so 11 of the 15 backends were permanently green-lit.
+   */
+  cacheObservable: boolean;
 }
 
 export interface HistoryAppend {
@@ -337,10 +347,11 @@ export class SmartCompactor {
   // ── Cache-warmth tracking ────────────────────────────────────────────────────
 
   /** Record a completed turn's cache signal for warmth reasoning. */
-  recordTurn(panelId: string, usage: UsageStats): void {
+  recordTurn(panelId: string, usage: UsageStats, convention: UsageConvention = 'anthropic'): void {
     this._cacheState.set(panelId, {
       lastTurnAt: Date.now(),
       lastCacheRead: usage.cache_read_input_tokens || 0,
+      cacheObservable: reportsCacheTokens(convention),
     });
     // Count turns in the current epoch (since the last compaction) so we can
     // measure how many turns actually amortize a compaction — see _noteEpoch.
@@ -377,12 +388,16 @@ export class SmartCompactor {
 
   /**
    * Cache warmth for a panel. WARM iff the last turn was within the TTL AND it
-   * actually read from cache (so caching is live). Otherwise COLD (covers both
-   * an expired window and providers that never cache). UNKNOWN before any turn.
+   * actually read from cache (so caching is live). COLD only when the backend
+   * COULD have told us and didn't — an expired window or a genuine miss.
+   * UNKNOWN before any turn, and for backends that cannot report cache at all:
+   * their silence is not evidence of a cold cache, and treating it as such told
+   * the decision below that compacting was free.
    */
   getWarmth(panelId: string): CacheWarmth {
     const st = this._cacheState.get(panelId);
     if (!st) { return 'unknown'; }
+    if (!st.cacheObservable) { return 'unknown'; }
     const fresh = Date.now() - st.lastTurnAt < PROMPT_CACHE_TTL_MS;
     return fresh && st.lastCacheRead > 0 ? 'warm' : 'cold';
   }
@@ -435,7 +450,8 @@ export class SmartCompactor {
 
   evaluate(p: EvaluateParams): CompactionDecision {
     const warmth = this.getWarmth(p.panelId);
-    const currentFill = (p.usage.input_tokens || 0) + (p.usage.cache_read_input_tokens || 0);
+    // Normalized, disjoint buckets — cache-creation included (see TokenAccounting).
+    const currentFill = contextFillTokens(p.usage);
     const fillPercent = p.contextWindow > 0 ? (currentFill / p.contextWindow) * 100 : 0;
 
     const below = (reason: string): CompactionDecision =>
@@ -464,7 +480,11 @@ export class SmartCompactor {
       // The smart path reseeds a fresh (cold) session with [summary, ...preserved],
       // so re-priming the cache writes the summary AND the preserved tail — not
       // just the summary. Count both so the break-even isn't optimistic.
-      const reprime = cacheWriteCostUsd(P + Math.max(0, p.preserveTokens || 0), rate, '5m');
+      // 1-hour TTL (2x input), matching PROMPT_CACHE_TTL_MS and what Claude Code
+      // actually writes. Pricing the reprime at the 5-minute rate understated it
+      // by 60%, which made compaction look cheaper than it is and pulled the
+      // break-even N* down — the error biased every close call toward compacting.
+      const reprime = cacheWriteCostUsd(P + Math.max(0, p.preserveTokens || 0), rate, '1h');
       // Conservative incremental summarizer cost: read ~C on the cheap model, write ~P.
       const summarizeCost = tokensCostUsd(C, cheapRate.inputPerMTok) + tokensCostUsd(P, cheapRate.outputPerMTok);
       if (savingsPerTurn > 0) {

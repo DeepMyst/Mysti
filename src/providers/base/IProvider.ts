@@ -13,6 +13,7 @@
 
 import type * as vscode from 'vscode';
 import type { NativeCommandSpec } from './NativeCommands';
+import type { UsageConvention } from '../../services/TokenAccounting';
 import type {
   ContextItem,
   Attachment,
@@ -155,6 +156,15 @@ export interface ProviderCapabilities {
   emitsToolResults: boolean;
   /** False where done.usage is never supplied (OpenClaw) — footer shows "n/a", context bar resets */
   emitsUsage: boolean;
+  /**
+   * How this backend splits prompt tokens between cached and uncached buckets.
+   * NOT cosmetic: `anthropic` buckets are disjoint (prompt = input + creation +
+   * read) while `openai` reports cached tokens as a SUBSET of input, so a single
+   * shared formula is wrong for one of them in whichever direction it is written.
+   * `auto` means the backend fronts other vendors' models and the convention is
+   * resolved per-turn from the model id. See src/services/TokenAccounting.ts.
+   */
+  usageConvention: UsageConvention;
   /** Model-dropdown semantics (kills silent no-op dropdowns, F18) */
   modelSelection: ModelSelectionMode;
   /** OpenClaw gateway channel delegation (C4) */
@@ -510,6 +520,22 @@ export interface ICliProvider {
   // Utility
   enhancePrompt?(prompt: string): Promise<string>;
 
+  /**
+   * The model this provider would actually run for `settings` — i.e. what its
+   * own resolution settles on, including a per-provider custom-model override
+   * (`mysti.codexModel` and friends) that outranks the picker, and any
+   * cross-provider guard the provider applies to `settings.model`.
+   *
+   * `undefined` means "no --model flag; the CLI picks", which for display
+   * purposes is the provider's default model.
+   *
+   * Exists so message attribution can name the model that RAN. Stamping
+   * `settings.model` instead was how a panel on Codex with
+   * `mysti.codexModel: gpt-6-astra` labelled every reply with the picker's
+   * value — a model the turn never touched.
+   */
+  getEffectiveModelForSettings(settings: Settings): string | undefined;
+
   // Optional: alternative install methods for non-npm providers
   getInstallMethods?(): InstallMethod[];
 
@@ -523,6 +549,12 @@ export interface ICliProvider {
    * not a table in this repo — is the authority on what `/name` exists.
    */
   getDynamicNativeCommands?(panelId?: string): NativeCommandSpec[];
+
+  /**
+   * True once the backend has reported its command list for this panel, making
+   * that report authoritative over Mysti's curated catalog.
+   */
+  hasReportedNativeCommands?(panelId?: string): boolean;
 
   // Persistent process management
   preSpawnPersistentProcess?(panelId: string, settings: Settings): Promise<void>;

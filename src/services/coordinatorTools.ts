@@ -22,6 +22,7 @@
  */
 
 import type { MystiDirective } from '../utils/mystiDelegateParser';
+import { replaceAsciiControlCharacters } from '../utils/controlCharacters';
 import { CANVAS_TOOLS } from '../managers/CanvasToolDispatch';
 import { CANVAS_FORMATS } from '../managers/CanvasFormats';
 import type { CanvasArtifact } from '../types';
@@ -424,7 +425,7 @@ export function sanitizeMcpInputSchema(raw: unknown, depth = 0): Record<string, 
 
     if (key === 'description') {
       const text = typeof value === 'string'
-        ? value.replace(/[\r\n\t\f\v\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, SCHEMA_MAX_DESC)
+        ? replaceAsciiControlCharacters(value, ' ').replace(/\s+/g, ' ').trim().slice(0, SCHEMA_MAX_DESC)
         : '';
       if (text) { out.description = text; }
       continue;

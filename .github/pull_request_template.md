@@ -4,18 +4,15 @@
 
 ## Gates
 
-Run these locally before requesting review. CI runs the same four, but a red CI
-run costs everyone twenty minutes.
+Run these locally before requesting review. Report any unavailable environment
+or skipped browser tests; fix failures rather than retrying until green.
 
-- [ ] `npx tsc --noEmit` — clean (exit 0)
-- [ ] `npm test` — green. If a wall-clock test failed, re-run before assuming it
-      is you: the suite has known load-sensitive timing assertions and roughly
-      one run in three goes red on an unchanged tree. If it fails twice in the
-      same place, it is yours.
-- [ ] `npm run lint` — no NEW errors. The count is 89 today and non-blocking;
-      the direction it moves is what matters.
+- [ ] `npm run typecheck` — clean (exit 0)
+- [ ] `npm test` — green, with Chromium installed for browser coverage
+- [ ] `npm run lint` — zero errors
+- [ ] `npm run compile:release` — both production bundles build
 - [ ] `npm run package && node scripts/check-package-shape.js <the .vsix>` —
-      no NEW failing assertions (some fail today; they are named in the output).
+      all assertions pass (for changes affecting the packaged extension)
 - [ ] `node scripts/generate-core-agent-manifest.js --check` — passes, and I did
       not get there by re-running the generator in write mode. If you changed a
       file under `resources/agents/core/`, re-signing is correct and expected;

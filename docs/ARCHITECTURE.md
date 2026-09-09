@@ -1,568 +1,170 @@
-# Mysti Architecture
+# Mysti architecture
 
-Technical documentation for contributors and developers.
+This document describes the source checkout. Historical release notes and design
+proposals under `plans/` are not evidence that a feature is shipped or fully wired.
+See [maintenance](MAINTENANCE.md) for verification and release work.
 
-## Table of Contents
+## Runtime boundaries
 
-- [Project Structure](#project-structure)
-- [Core Components](#core-components)
-- [Data Flow](#data-flow)
-- [Type System](#type-system)
-- [Extension Points](#extension-points)
+Mysti is a VS Code extension with three distinct execution environments:
 
----
+| Environment | Entry | Responsibilities |
+| --- | --- | --- |
+| Extension host | `src/extension.ts` → `dist/extension.js` | VS Code integration, provider processes, storage, permission decisions and network clients. |
+| Chat webview | `src/webview/webviewContent.ts` + `media/chat/` | Rendering and user interaction. Messages cross the host boundary; browser state does not own authority. |
+| Canvas webview | `src/webview/canvas/index.ts` → `dist/canvasWebview.js` | Document rendering, selection, inspector and live frames. Compiled for the browser, without Node or VS Code externals. |
 
-## Project Structure
+The host bundle externalizes VS Code and Playwright. Playwright's JavaScript
+runtime must ship in the VSIX; browser executables are installed separately.
+The Canvas bundle uses ESM internally so webpack can remove unused host paths.
+Do not import a host service into browser code merely to reuse one helper.
 
-```
-Mysti/
-├── src/
-│   ├── extension.ts               # Extension entry point
-│   ├── types.ts                   # Shared type definitions
-│   ├── constants.ts               # Configuration constants
-│   ├── managers/                  # Business logic managers
-│   │   ├── ContextManager.ts
-│   │   ├── ConversationManager.ts
-│   │   ├── ProviderManager.ts
-│   │   ├── BrainstormManager.ts
-│   │   ├── PermissionManager.ts
-│   │   ├── ResponseClassifier.ts
-│   │   ├── PlanOptionManager.ts
-│   │   ├── SuggestionManager.ts
-│   │   ├── AutocompleteManager.ts
-│   │   ├── AgentLoader.ts            # Three-tier agent loading from markdown
-│   │   ├── AgentContextManager.ts     # Agent recommendations & prompt building
-│   │   ├── AgentLifecycleManager.ts   # Session lifecycle & idle timeout
-│   │   ├── SetupManager.ts           # CLI auto-setup & authentication
-│   │   ├── TelemetryManager.ts       # Anonymous usage analytics
-│   │   ├── AutonomousManager.ts      # Autonomous mode orchestration
-│   │   ├── MemoryManager.ts          # Long-term preference learning
-│   │   ├── SafetyClassifier.ts       # Operation safety classification
-│   │   ├── CompactionManager.ts      # Context window compaction
-│   │   ├── MentionRouter.ts          # @-mention parsing & routing
-│   │   └── SlashCommandManager.ts    # Centralized slash command registry
-│   ├── providers/                 # AI provider implementations
-│   │   ├── ChatViewProvider.ts    # Main UI coordinator
-│   │   ├── ProviderRegistry.ts    # Provider registration & discovery
-│   │   ├── base/
-│   │   │   ├── IProvider.ts       # Interfaces + persona definitions
-│   │   │   └── BaseCliProvider.ts # Abstract CLI provider base
-│   │   ├── claude/
-│   │   │   └── ClaudeCodeProvider.ts
-│   │   ├── codex/
-│   │   │   └── CodexProvider.ts
-│   │   ├── gemini/
-│   │   │   └── GeminiProvider.ts
-│   │   ├── cline/
-│   │   │   └── ClineProvider.ts
-│   │   ├── copilot/
-│   │   │   └── CopilotProvider.ts
-│   │   ├── cursor/
-│   │   │   └── CursorProvider.ts
-│   │   ├── openclaw/
-│   │   │   └── OpenClawProvider.ts
-│   │   ├── opencode/
-│   │   │   └── OpenCodeProvider.ts
-│   │   ├── qwen/
-│   │   │   └── QwenCodeProvider.ts
-│   │   ├── ollama/
-│   │   │   └── OllamaProvider.ts
-│   │   ├── localai/
-│   │   │   └── LocalAIProvider.ts
-│   │   └── manus/
-│   │       └── ManusProvider.ts   # Experimental HTTP API provider
-│   ├── mcp/
-│   │   └── permissionServer.ts    # MCP permission intermediary
-│   ├── utils/
-│   │   ├── validation.ts          # Model name validation
-│   │   ├── processTree.ts         # Cross-platform child process scanning
-│   │   └── platform.ts            # Platform-specific helpers
-│   └── webview/
-│       └── webviewContent.ts      # HTML/CSS/JS for UI
-├── resources/
-│   ├── Mysti-Logo.png
-│   ├── icon.svg
-│   ├── icons/                     # UI icons
-│   ├── agents/                    # Agent definitions (markdown)
-│   │   ├── core/                  # Bundled agents
-│   │   └── plugins/               # Synced community agents
-│   ├── marked.min.js
-│   ├── prism-bundle.js
-│   └── mermaid.min.js
-├── package.json
-├── tsconfig.json
-├── webpack.config.js
-└── docs/
-    ├── ARCHITECTURE.md
-    ├── FEATURES.md
-    ├── PROVIDERS.md
-    ├── BRAINSTORM.md
-    ├── PERSONAS-AND-SKILLS.md
-    ├── AUTONOMOUS-MODE.md
-    ├── MENTIONS.md
-    ├── COMPACTION.md
-    └── screenshots/
+```mermaid
+flowchart TD
+  UI[Chat webview] -->|host-bound message| Chat[ChatViewProvider]
+  Chat --> Interactions[src/chat interaction state]
+  Chat --> Context[Context and conversation managers]
+  Chat --> Routing[Provider / session / collaboration routing]
+  Routing --> Backends[Registered provider adapters]
+  Routing --> Coordinator[Mysti coordinator]
+  Coordinator --> Pool[CollaboratorPool]
+  Coordinator --> Gates[Local and external tool gates]
+  Backends -->|normalized StreamChunk| Chat
+  Chat -->|postMessage| UI
+  CanvasUI[Canvas webview] <-->|validated protocol| Bridge[CanvasBridge]
+  Chat --> Bridge
+  Bridge --> Document[Document operations and artifact store]
 ```
 
----
-
-## Core Components
-
-### Entry Point: extension.ts
-
-The extension entry point wires everything together:
-- Instantiates all managers
-- Creates ChatViewProvider with all dependencies
-- Registers commands and keybindings
-- Sets up view providers and context subscriptions
-
-### Managers
-
-#### ContextManager
-
-Manages code context for AI conversations with per-panel isolation.
-
-**Key Design:**
-- `_panelContexts: Map<string, ContextItem[]>` for per-panel context isolation
-- Auto-context tracks active editor
-- Language detection for 30+ languages
-
-**Key Methods:**
-```typescript
-addFile(uri: vscode.Uri, panelId?: string): void
-addSelection(editor: vscode.TextEditor, panelId?: string): void
-clearPanelContext(panelId: string): void
-getContextForPrompt(panelId?: string): ContextItem[]
-```
-
-#### ConversationManager
-
-Persistent conversation storage using VSCode's globalState.
-
-**Key Methods:**
-```typescript
-createConversation(settings: Settings): Conversation
-addMessage(id: string, message: Message): void
-updateAgentConfig(id: string, config: AgentConfiguration): boolean
-```
-
-#### ProviderManager
-
-Facade over the ProviderRegistry for provider management.
-
-**Key Methods:**
-```typescript
-sendMessage(content, context, settings, ...): AsyncGenerator<StreamChunk>
-sendMessageToProvider(providerId, ...): AsyncGenerator<StreamChunk>
-cancelRequest(panelId?: string): void
-```
-
-#### BrainstormManager
-
-Orchestrates multi-agent team collaboration using structured reasoning frameworks.
-
-**Key Design:**
-- Per-panel sessions via `_panelSessions: Map<string, BrainstormSession>`
-- 5 collaboration strategies: quick, debate, red-team, perspectives, delphi
-- Parallel discussion via `_interleaveGenerators()`
-- Convergence detection via agreement/disagreement keyword tracking
-
-**Brainstorm Flow:**
-```
-1. User submits query
-2. Individual Phase: Each agent analyzes independently (parallel)
-3. Discussion Phase: Strategy-specific role-based discussion
-   - Debate: Critic vs Defender
-   - Red-Team: Proposer vs Challenger
-   - Perspectives: Risk Analyst vs Innovator
-   - Delphi: Facilitator vs Refiner
-4. Convergence Check: Track agreement, optionally exit early
-5. Synthesis Phase: Designated agent creates unified solution
-```
-
-**Key Methods:**
-```typescript
-startBrainstorm(query, context, config, panelId): AsyncGenerator<BrainstormStreamChunk>
-cancelBrainstorm(panelId?: string): void
-```
-
-#### AutonomousManager
-
-Enables AI to work independently with configurable safety controls.
-
-**Key Design:**
-- Integrates SafetyClassifier for operation classification
-- Integrates MemoryManager for learned preference queries
-- Continuation modes: goal-based and task-queue
-- Audit logging of all autonomous decisions
-
-**Key Methods:**
-```typescript
-activate(config: AutonomousConfig): void
-deactivate(): void
-handlePermission(request: PermissionRequest): AutonomousDecision
-handleQuestion(question: AskUserQuestionData): AutonomousDecision
-```
-
-#### SafetyClassifier
-
-Classifies operations into safety levels for autonomous mode.
-
-**Safety Levels:**
-- `safe`: Auto-approve (read-only, tests, version checks)
-- `caution`: Mode-dependent (file create/edit, unknown commands)
-- `blocked`: Always deny (deletion, force push, sudo, chmod 777)
-
-**Safety Modes:** conservative, balanced, aggressive
-
-#### MemoryManager
-
-Long-term memory for learning user preferences.
-
-**Key Design:**
-- Dual-layer storage: VSCode globalState (fast) + `~/.mysti/memory/preferences.json` (persistent)
-- Confidence decay (0.95/day) ensures recent decisions are weighted more
-- Auto-pruning when over capacity (default 500 entries)
-
-**Categories:** permission-preference, question-preference, project-context
-
-#### CompactionManager
-
-Prevents context window overflow via smart conversation compaction.
-
-**Key Design:**
-- Per-panel cumulative token tracking (input, output, cache read, cache creation)
-- Threshold-based triggering (default 75%)
-- Two strategies: native-cli (`/compact`) and client-summarize
-- Brainstorm agents tracked independently via `panelId-brainstorm-agentId` keys
-
-#### MentionRouter
-
-Handles `@agent` and `@file` mentions in user messages.
-
-**Key Design:**
-- File mentions resolve to transient ContextItems
-- Agent mentions generate task lists (heuristic-based, AI fallback)
-- Sequential execution with dependency tracking
-- Auto-retry failed sub-agent tasks
-
-#### SlashCommandManager
-
-Centralized registry for slash commands.
-
-**Key Design:**
-- Organized by sections: Context, Model, Customize, Commands, Settings, Support
-- Provider-specific commands: `/compact` (Claude), `/thinking` (Claude), `/profile` (Codex), `/plan-act` (Cline)
-- QuickPick dialogs for model, provider, mode selection
-
-#### AgentLifecycleManager
-
-Manages agent session lifecycle.
-
-**Key Design:**
-- Per-panel session tracking (active/busy/idle/shutting-down)
-- Configurable idle timeout (default 1 hour)
-- Cross-platform process tree tracking via `pgrep`/`wmic`
-- Child process protection — blocks shutdown if active builds detected
-
-#### PermissionManager
-
-Handles permission requests for file operations.
-
-**Key Methods:**
-```typescript
-createRequest(type, details): PermissionRequest
-resolveRequest(id, decision): void
-checkPermission(type, path): boolean
-```
-
-#### Other Managers
-
-- **ResponseClassifier**: AI-powered response analysis using Claude Haiku
-- **SuggestionManager**: Context-aware quick action suggestions
-- **AgentLoader**: Three-tier progressive loading for agent definitions
-- **AgentContextManager**: Builds agent context for prompt injection with token budgets
-- **SetupManager**: CLI auto-setup and authentication
-- **TelemetryManager**: Anonymous usage analytics via Application Insights
-
-### Providers
-
-#### Per-Panel Session Isolation
-
-Provider instances are singletons, but mutable state is per-panel:
-
-```typescript
-// Each provider tracks sessions per panel
-private _panelSessions: Map<string, PanelSessionState> = new Map();
-
-// Base session state
-interface PanelSessionState {
-  panelId: string;
-  process: ChildProcess | null;
-  sessionId: string | null;
-  autonomousMode: boolean;
-}
-```
-
-Each provider subclass extends with its own session type (e.g., `ClaudeSessionState`, `CodexSessionState`).
-
-#### BaseCliProvider
-
-Abstract base class implementing common CLI functionality.
-
-**Key Methods:**
-```typescript
-// Build prompt with context, persona, skills
-protected buildPrompt(content, context, conversation, settings, persona?, agentConfig?): string
-
-// Build CLI arguments — takes session (not boolean)
-protected abstract buildCliArgs(settings: Settings, session: PanelSessionState): string[]
-
-// Parse provider-specific output — takes session for per-panel parse state
-protected abstract parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null
-
-// Process CLI output stream
-protected *processStream(stderrCollector): AsyncGenerator<StreamChunk>
-```
-
-#### Provider Implementations
-
-| Provider | Type | Key Differences |
-|----------|------|-----------------|
-| **ClaudeCodeProvider** | CLI | Thinking mode, native `/compact`, MCP permission server |
-| **CodexProvider** | CLI | Profile switching |
-| **GeminiProvider** | CLI | Thinking support, Google ecosystem |
-| **ClineProvider** | CLI | Plan/Act mode |
-| **CopilotProvider** | CLI | 14+ models via GitHub subscription |
-| **CursorProvider** | CLI | Auto model selection, cumulative streaming dedup |
-| **OpenClawProvider** | CLI + WebSocket | Dual-transport: WebSocket gateway + CLI fallback |
-| **ManusProvider** | HTTP API | Async polling workflow (experimental) |
-
-#### MCP Permission Server
-
-Intermediary between Claude Code CLI and VSCode for fine-grained permission control.
-
-**Flow:**
-```
-Claude CLI --stdin/stdout--> MCP Server --HTTP--> VSCode Extension --postMessage--> Webview UI
-```
-
-### ChatViewProvider
-
-Main UI coordinator and webview provider.
-
-**Responsibilities:**
-- Webview creation and management
-- Per-panel state (conversations, processes)
-- Message routing between webview and all managers
-- Threads `panelId` to all context/session/cancel calls
-
-**Constructor (dependency injection):**
-```typescript
-constructor(
-  extensionUri, extensionContext,
-  contextManager, conversationManager, providerManager,
-  suggestionManager, brainstormManager, permissionManager,
-  setupManager, telemetryManager, autonomousManager,
-  memoryManager, compactionManager
-)
-```
-
----
-
-## Data Flow
-
-### Message Flow
-
-```
-User Input (Webview)
-       ↓
-ChatViewProvider.handleMessage()
-       ↓
-MentionRouter.parse()  ← Check for @-mentions
-       ↓
-[If @-mentions: Generate task list → Execute sub-agents sequentially]
-       ↓
-ProviderManager.sendMessage()
-       ↓
-BaseCliProvider.sendMessage()
-       ↓
-[Spawn CLI Process]
-       ↓
-BaseCliProvider.processStream()
-       ↓
-[Parse JSON chunks per panel session]
-       ↓
-StreamChunk events → CompactionManager.trackUsage()
-       ↓
-ChatViewProvider → Webview
-       ↓
-UI Update
-```
-
-### Brainstorm Flow
-
-```
-User Query
-       ↓
-BrainstormManager.startBrainstorm()
-       ↓
-┌──────────────────────────────────────────────┐
-│ Individual Phase (Parallel)                  │
-│ ┌──────────┐ ┌──────────┐                   │
-│ │ Agent 1  │ │ Agent 2  │                   │
-│ │ (stream) │ │ (stream) │                   │
-│ └──────────┘ └──────────┘                   │
-└──────────────────────────────────────────────┘
-       ↓
-┌──────────────────────────────────────────────┐
-│ Discussion Phase (strategy-dependent)        │
-│ Parallel via _interleaveGenerators()         │
-│ Roles assigned by strategy:                  │
-│   Debate: Critic vs Defender                 │
-│   Red-Team: Proposer vs Challenger           │
-│   Perspectives: Risk Analyst vs Innovator    │
-│   Delphi: Facilitator vs Refiner             │
-│                                              │
-│ Convergence tracked per round                │
-│ Auto-exit if agents converge                 │
-└──────────────────────────────────────────────┘
-       ↓
-┌──────────────────────────────────────────────┐
-│ Synthesis Phase                              │
-│ ┌──────────────────────────────────────────┐ │
-│ │ Synthesis Agent combines all perspectives│ │
-│ │ Fallback: other agent → raw concat       │ │
-│ └──────────────────────────────────────────┘ │
-└──────────────────────────────────────────────┘
-       ↓
-Unified Solution
-```
-
-### @-Mention Flow
-
-```
-User: "@claude Write tests, then @gemini review them"
-       ↓
-MentionRouter.parse()
-       ↓
-Generate Task List (heuristic or AI)
-  Task 1: { agent: claude, type: execute, task: "Write tests" }
-  Task 2: { agent: gemini, type: execute, task: "Review tests" }
-       ↓
-Execute Task 1 → Stream Claude response
-       ↓
-Build context from Task 1 response
-       ↓
-Execute Task 2 → Stream Gemini response (with Task 1 context)
-       ↓
-Return combined results
-```
-
-### Autonomous Flow
-
-```
-Permission/Question from CLI
-       ↓
-AutonomousManager.handlePermission() / handleQuestion()
-       ↓
-SafetyClassifier.classify(operation)
-       ↓
-[If safe]: Auto-approve → audit log
-[If caution]: Check safety mode → approve/deny/ask user
-[If blocked]: Auto-deny → audit log
-       ↓
-MemoryManager.query() → Check learned preferences
-       ↓
-Decision → audit log → notify ChatViewProvider
-```
-
----
-
-## Type System
-
-### Core Types
-
-```typescript
-// Provider types (7 providers + manus experimental)
-type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' |
-                    'cline' | 'github-copilot' | 'cursor' | 'openclaw';
-type AgentType = ProviderType;
-
-// Streaming
-interface StreamChunk {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'done' | 'session_active';
-  content?: string;
-  toolCall?: ToolCall;
-  sessionId?: string;
-  usage?: UsageStats;
-}
-
-// Brainstorm
-type CollaborationStrategy = 'quick' | 'debate' | 'red-team' | 'perspectives' | 'delphi';
-type DiscussionRole = 'critic' | 'defender' | 'proposer' | 'challenger' |
-                      'risk-analyst' | 'innovator' | 'facilitator' | 'refiner';
-
-// Autonomous
-type SafetyLevel = 'safe' | 'caution' | 'blocked';
-type AutonomousContinuationMode = 'goal' | 'task-queue';
-
-// @-Mentions
-interface MentionTask {
-  type: 'execute' | 'switch';
-  agent: AgentType;
-  task: string;
-  order: number;
-}
-
-// Compaction
-type CompactionStrategy = 'native-cli' | 'client-summarize';
-type CompactionStatus = 'idle' | 'evaluating' | 'compacting' | 'complete' | 'error';
-```
-
----
-
-## Extension Points
-
-### Adding a New Provider
-
-1. **Create provider class** extending `BaseCliProvider` in `src/providers/newprovider/`
-2. **Implement abstract methods**: `discoverCli()`, `getCliPath()`, `buildCliArgs()`, `parseStreamLine()`, `getAuthConfig()`, `checkAuthentication()`, `getAuthCommand()`, `getInstallCommand()`
-3. **Register** in `src/providers/ProviderRegistry.ts` (`_registerBuiltInProviders()`)
-4. **Add type** to `ProviderType` union in `src/types.ts`
-5. **Add agent style** in `BrainstormManager.ts` `AGENT_STYLES` record
-6. **Add settings** in `package.json` (`mysti.*` settings)
-
-### Adding a New Persona/Skill (Markdown)
-
-Create a markdown file with YAML frontmatter in one of the agent directories:
-
-| Location | Scope | Priority |
-|----------|-------|----------|
-| `.mysti/agents/personas/` (or `skills/`) | Workspace | Highest |
-| `~/.mysti/agents/personas/` | User | Medium |
-| `resources/agents/core/personas/` | Core | Lowest |
-
-See [Personas & Skills documentation](PERSONAS-AND-SKILLS.md) for the full format.
-
----
-
-## Build & Development
-
-### Commands
-
-```bash
-npm install                # Install dependencies
-npm run watch              # Development build with watch
-npm run compile            # Production build
-npm run lint               # ESLint check
-npm run sync-agents        # Sync community agents
-npx vsce package           # Package extension
-```
-
-### Debugging
-
-1. Open project in VSCode
-2. Press `F5` to launch Extension Development Host
-3. Set breakpoints in TypeScript files
-4. Filter Debug Console with `[Mysti]` prefix
+## Module map
+
+| Area | Main modules | Ownership |
+| --- | --- | --- |
+| Composition | `src/extension.ts`, `ChatViewDependencies` | Construct named dependencies and register commands, webviews and disposables. Chat services are passed by name so additions cannot transpose positional arguments. |
+| Chat host adapter | `src/providers/ChatViewProvider.ts` | Connect UI events to application services and stream updates back to a panel. This remains a large legacy controller; extract cohesive behavior as it changes. |
+| Chat interactions | `src/chat/` | Host-independent panel identity binding, sub-agent answer ownership, pending plans and delayed channel turns. These modules do not import VS Code or the host controller. |
+| Markdown and diagrams | `media/chat/markdownRenderer.js` | A private Marked parser, HTML sanitization, code/diff formatting and lazy Mermaid rendering. The chat shell supplies local libraries/resource URI and disposes the renderer; stale or detached renders cannot replace current content. |
+| Coordinator output | `src/chat/CoordinatorRunOutput.ts` | One run's foreground/background delivery, ordered replay record, actual model attribution and usage receipt. It receives a message sink and clock rather than a webview or manager. |
+| Provider contract | `src/providers/base/IProvider.ts`, `ProviderManifest.ts`, `src/providers/ProviderRegistry.ts` | Transport contract, capability declarations, display/model metadata and registration. |
+| CLI transport | `src/providers/base/BaseCliProvider.ts`, `src/utils/platform.ts`, `processKill.ts` | Discovery, per-panel process state, streaming, cancellation and cleanup. |
+| Coordinator | `CoordinatorModelClient`, `coordinatorTools`, `MystiTagScanner` | Model turns, native tools or nonce-fenced directives and tool-result framing. The host currently owns much of the coordinator loop. |
+| Collaboration | `BrainstormManager`, `SessionManager`, `MentionRouter`, `CollaborationManager`, `MystiOrchestratorManager`, `CollaboratorPool` | Separate collaboration shapes, routing and bounded child execution. They are different workflows, not interchangeable names. |
+| Context and history | `ContextManager`, `ConversationManager`, `CompactionManager`, `SmartCompactor`, `TokenAccounting` | Context collection, schema-versioned persistence, compaction and normalized context/spend measurements. |
+| Canvas document | `src/canvas/doc/`, `CanvasHistory`, `CanvasBridge`, `CanvasOpExecutor`, `ArtifactStore` | Typed document changes, conflict handling, undo, synchronization and persistence. |
+| Visual observation | `visualTestPolicy`, `VisualSessionManager`, `BrowserManager` | Resolve allowed origins and dev-server policy, then inspect the running application. |
+| External connections | `DeepMystAuthManager`, `DeepMystClient`, `McpClient`, `McpConfigManager` | Secret storage, account connection, brokered tools and optional per-user CLI configuration. |
+| Desk | `src/services/desk/`, `DeskPairingFlow`, `DeskPeerBook` | Peer identity, pairing and grants. Additional transport/dispatch modules exist; source presence alone does not establish end-to-end task execution. |
+
+## A chat turn
+
+1. The host binds an incoming message to the webview that sent it. A browser's
+   `panelId` cannot redirect the message to another panel. Each action still
+   validates its own payload at the runtime boundary.
+2. The controller resolves the panel's provider/model, clamps workspace settings
+   against user policy, and normalizes authority values.
+3. Context, conversation history and a checkpoint are prepared. Provider choice
+   and agent selection are distinct: `mysti` is a coordinator selection, not a
+   concrete CLI provider.
+4. Routing selects a backend, Mysti, a session shape, mentions or collaboration.
+   Provider adapters emit normalized `StreamChunk` events.
+5. The host handles tools, questions, usage and terminal events, forwards UI
+   updates, and persists the response in that panel's conversation.
+
+Provider instances may be shared. Mutable conversation/process state belongs to
+the panel or run, never to a singleton field reused across panels. Sub-agent
+question identity is the tuple `(panelId, agentId, deliveryId)`, not a concatenated
+string or a backend tool ID alone. Each UI delivery gets a fresh ID; cancelled
+turns invalidate their callbacks so an old card cannot answer a newer question.
+Cancelling or closing a panel settles its pending questions and plans without
+affecting another panel. Async plan detection checks its captured scope before
+publishing or executing anything after an await.
+
+Permission replies must match the host-bound panel that owns the request. A
+decision that settles after a conversation change cannot resume or cancel the
+replacement process. Queued channel input forms one ordered turn containing each
+message and its source; arrivals during the short delay join that batch. Stop,
+manual replacement and conversation changes clear only that panel's queued input.
+Automatic follow-ups yield to queued input and cannot restart cancelled work.
+
+Foreground runs own their children and abort signals. Cancellation is terminal:
+a strategy must not start synthesis or fallback after Stop, and an abandoned
+stream must release its children. Durable background jobs have a separate
+lifetime and may survive closing a tab; pending permission cards in that tab must
+still be denied so they cannot leave a job blocked forever.
+
+## Provider integration
+
+The registry currently contains Claude Code, Codex, Gemini, Cline, Copilot,
+Cursor, OpenClaw, OpenCode, Qwen Code, Ollama, LocalAI, Hermes, Continue,
+OpenRouter and Kimi Code. `ManusProvider.ts` is legacy and unregistered.
+
+CLI, persistent ACP and HTTP transports expose different capabilities. Declare
+those differences in provider metadata and consume that metadata in the UI.
+Do not infer support from a provider name or assume interactive CLI commands
+also work through the headless entry point. Parse external responses as
+`unknown`, narrow fields, and preserve missing measurements as unknown.
+
+`TokenAccounting` is the shared accounting boundary. Current context occupancy
+and cumulative spend are different values; cache conventions differ by backend.
+Use the shared normalization functions instead of reconstructing token math in
+the renderer or another adapter.
+
+`CoordinatorRunOutput` owns the coordinator's accumulated prose, reasoning and
+tool records. The coordinator loop feeds metadata before scanning text so a tool
+directive cannot discard usage delivered in the same event. Interrupted turns
+estimate output only when no measured usage arrived; the receipt distinguishes
+those estimates from measurements. Persistence uses detached snapshots, so an
+incomplete-run marker cannot mutate output still owned by the run.
+
+Follow the provider checklist in [CONTRIBUTING.md](../CONTRIBUTING.md). A normal
+adapter change needs fixture-based parsing, arguments, permissions, cancellation
+and capability tests; record the CLI version used for live verification.
+
+## Authority and persistence
+
+- Workspace configuration may lower user authority. It must not raise it.
+- The host authorizes operations. A tool event or permission card is not proof
+  that a backend waited for approval before acting; validate the native transport
+  before making that guarantee.
+- Model directives and external results pass through existing nonce validation,
+  redaction and untrusted-result framing. New dispatch paths must use those same
+  boundaries.
+- Coordinator local execution, visual interaction and external tools each have
+  their own settings and policy gates. The coordinator does have optional local
+  write/shell tools; describing it as universally read-only is incorrect.
+- Canvas client messages pass through the typed protocol and a per-view token.
+  Authors are assigned host-side. Filesystem access and exported assets remain
+  subject to the Canvas policy boundary.
+- DeepMyst credentials use SecretStorage and restricted destination hosts.
+  Enabling CLI MCP integration also writes credentials into per-user CLI config;
+  those paths must not be logged or included in exports.
+- Conversation and artifact formats are versioned. Preserve unreadable and
+  future-version data rather than overwriting it during a downgrade. Test
+  migration with stored fixtures and failure cases before changing a schema.
+  Conversation recovery must acknowledge a successful backup before saving over
+  the live key. A failed backup disables saves; restored entries are detached
+  from the protected original. Duplicate keys preserve the complete original
+  input for recovery instead of silently discarding a transcript.
+
+## Keeping modules maintainable
+
+Keep new application behavior outside `ChatViewProvider` and `media/chat/chat.js`
+when it can have a coherent API and independent tests. Extract state together
+with the operations that own it; moving helpers while leaving shared mutable
+maps in the controller does not establish a boundary.
+
+Prefer narrow constructor dependencies or callbacks for VS Code, clocks, storage
+and transport. Pure logic should be importable without constructing the extension.
+The `src/chat/` modules demonstrate this approach for interaction ownership.
+Do not introduce a framework or a new dependency merely to hold a small interface.
+
+The old `CanvasManager`/direct `StitchService` startup pair has no consumers in
+the active Canvas surface and is no longer constructed at activation. Their
+legacy source and tests remain; active Canvas uses the typed bridge, artifact
+store and capability broker described above. Do not reintroduce an unused
+singleton to make an old dependency list look complete.
+
+During extraction, preserve public messages, saved formats and lifecycle
+behavior. Add tests for cross-panel isolation, aborts, malformed inputs and
+resource cleanup at the seam. Source-text assertions can check registration or
+packaging, but application behavior should be tested by executing it.

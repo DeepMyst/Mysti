@@ -16,6 +16,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { SubAgentQuestionBroker, parseSubAgentResponse } from '../chat/SubAgentQuestionBroker';
+import { bindIncomingMessage } from '../chat/incomingMessage';
+import { CoordinatorRunOutput } from '../chat/CoordinatorRunOutput';
+import { settleWithin } from '../utils/settleWithin';
 import { clampEffort } from '../utils/effort';
 import { MystiTagScanner, type MystiDirective, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_SKILL_KINDS, MYSTI_CAPABILITY_KINDS, MYSTI_CONNECT_KINDS, MYSTI_VISUAL_KINDS, MYSTI_VISUAL_ACT_KINDS, MYSTI_CANVAS_KINDS } from '../utils/mystiDelegateParser';
 import { resolveCanvasApproval } from '../canvas/resolveCanvasApproval';
@@ -39,7 +43,8 @@ import { MystiSandbox } from '../services/MystiSandbox';
 import { validateCapabilityManifest, undeclaredNetworkUse } from '../services/CapabilityManifest';
 import { isSafeAgentId } from '../managers/agentMarkdown';
 import { SKILL_STAGING_DIR } from '../services/MystiLocalTools';
-import { parseToolArgs, type AccumulatedToolCall } from '../utils/toolCallAccumulator';
+import { parseToolArgs } from '../utils/toolCallAccumulator';
+import { CoordinatorTurnRunner } from '../coordinator/CoordinatorTurnRunner';
 import { runBounded } from '../utils/boundedConcurrency';
 import { selectToolBatch } from '../utils/toolBatching';
 import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
@@ -56,12 +61,16 @@ import { BrainstormManager } from '../managers/BrainstormManager';
 import { MentionRouter } from '../managers/MentionRouter';
 import { PermissionManager } from '../managers/PermissionManager';
 import { PlanOptionManager } from '../managers/PlanOptionManager';
+import { PendingPlanStore } from '../chat/PendingPlanStore';
+import { DelayedChannelTurns, formatQueuedChannelTurn } from '../chat/DelayedChannelTurns';
 import { SetupManager, type WizardStatusResult } from '../managers/SetupManager';
 import { TelemetryManager } from '../managers/TelemetryManager';
 import { AgentLoader, type AgentMetadata } from '../managers/AgentLoader';
 import { AgentContextManager } from '../managers/AgentContextManager';
 import { CollaboratorPool } from '../services/CollaboratorPool';
 import { CollaborationManager } from '../managers/CollaborationManager';
+import { SessionManager } from '../managers/SessionManager';
+import { getSessionShape } from '../managers/sessionShapes';
 import { MystiOrchestratorManager } from '../managers/MystiOrchestratorManager';
 import { BackgroundJobManager, type BackgroundJob } from '../managers/BackgroundJobManager';
 import type { CoordinatorModelClient } from '../services/CoordinatorModelClient';
@@ -117,7 +126,6 @@ import { CanvasMediaService } from '../services/CanvasMediaService';
 import type { GeneratedMedia, GenerateMediaRequest, MediaKind } from '../services/CanvasMediaService';
 import { McpClient } from '../services/McpClient';
 import type { CanvasArtifact } from '../types';
-import { CanvasManager } from '../managers/CanvasManager';
 import { CheckpointManager } from '../managers/CheckpointManager';
 import { ImageGenerationService } from '../services/ImageGenerationService';
 import { VideoGenerationService } from '../services/VideoGenerationService';
@@ -142,13 +150,17 @@ import {
   getManifestAffectingSettingKeys,
   getProviderDisplayName
 } from './base/ProviderManifest';
-import type { ProviderManifestPayload, StitchScreenRef, ModelsUpdatedPayload, PromptEnhanceUnavailablePayload } from '../types';
+import type { ProviderManifestPayload, ModelsUpdatedPayload, PromptEnhanceUnavailablePayload } from '../types';
 import type { AnnouncedModelPayload, CliUpdatePayload } from '../types';
+import { normalizeUsage, resolveUsageConvention, hasUsageSignal, contextFillTokens } from '../services/TokenAccounting';
+import type { UsageConvention } from '../services/TokenAccounting';
 import type { CollaboratorGateCallback, CollaboratorSpec, CollaboratorFailure } from '../types';
 import { validateModelName, validateProfileName } from '../utils/validation';
 import { filterInstallMethodsForOS } from '../utils/platform';
 import { classifyToolAction, shouldGateToolUse, isNeverGatedAction } from '../utils/permissionClassifier';
 import { PerfTracker } from '../utils/PerfTracker';
+import { replaceAsciiControlCharacters } from '../utils/controlCharacters';
+import { isRecord } from '../utils/valueGuards';
 
 /**
  * Extended message type that includes the panelId field sent by the webview
@@ -188,14 +200,8 @@ interface PanelState {
 
 
 /**
- * Everything the Desk rail needs, passed as ONE object.
- *
- * Plan 21 §6 Phase 2 is explicit that this must not become positional argument
- * 23. The constructor is already at 22 positional parameters — known debt, and
- * the way it got there was exactly this: one more dependency at a time, each
- * individually reasonable. Converting all 22 unattended is a large mechanical
- * diff that silently mis-maps if one argument is transposed, so the existing
- * list is left alone and the growth stops here instead.
+ * The Desk rail's optional dependency group. Keep its policy callback live so
+ * a configuration change takes effect without reconstructing the chat host.
  */
 export interface DeskDependencies {
   identity: DeskIdentity;
@@ -204,6 +210,32 @@ export interface DeskDependencies {
   flow: DeskPairingFlow;
   /** Machine-scoped `mysti.desk.enabled`, read fresh so a toggle takes effect. */
   enabled(): boolean;
+}
+
+/** Named composition dependencies prevent positional service wiring mistakes. */
+export interface ChatViewDependencies {
+  extensionUri: vscode.Uri;
+  extensionContext: vscode.ExtensionContext;
+  contextManager: ContextManager;
+  conversationManager: ConversationManager;
+  providerManager: ProviderManager;
+  suggestionManager: SuggestionManager;
+  brainstormManager: BrainstormManager;
+  permissionManager: PermissionManager;
+  setupManager: SetupManager;
+  telemetryManager: TelemetryManager;
+  autonomousManager: AutonomousManager;
+  memoryManager: MemoryManager;
+  compactionManager: CompactionManager;
+  lifecycleManager: AgentLifecycleManager;
+  slashCommandManager: SlashCommandManager;
+  activeModeManager: ActiveModeManager;
+  engagementManager: EngagementManager;
+  projectContextManager: ProjectContextManager;
+  visualTestManager: VisualTestManager;
+  modelRegistry: ModelRegistryService;
+  checkpointManager: CheckpointManager;
+  desk?: DeskDependencies;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -230,6 +262,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Panels already told about a blocked capability — once per panel, not per turn. */
   private _refusalAnnounced = new Set<string>();
   private _collaborationManager: CollaborationManager;
+  private _sessionManager: SessionManager;
   private _mystiOrchestrator?: MystiOrchestratorManager;
   private _mystiCoordinator?: CoordinatorModelClient;
   /** Read-only local tools for the Mysti coordinator (Plan 17 P0.1). */
@@ -266,7 +299,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _visualTestManager: VisualTestManager;
   private _channelBridge: ChannelBridge;
   // Canvas tracking
-  private _canvasManager: CanvasManager;
   // Plan 01: model registry — single authority for per-provider model lists +
   // context windows. Threaded in here for the consumer agent (Phase 4) to drive
   // the dynamic dropdown / modelsUpdated / requestModels wiring.
@@ -284,10 +316,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _checkpointManager: CheckpointManager;
   private _imageGenService: ImageGenerationService;
   private _videoGenService: VideoGenerationService;
-  private _codeGenService: any; // Lazy-loaded CodeGenerationService
   // F-11: SecretStorage-backed canvas API keys. Injected from extension.ts so
   // a single instance (constructed once at activation, after migrate()) is
-  // shared with the generation services and StitchService.
+  // shared with the active generation services.
   private _canvasSecrets: CanvasSecrets | null = null;
   private _canvasBrowserManager: BrowserManager = new BrowserManager();
   private _canvasScreenshotService: ScreenshotService = new ScreenshotService();
@@ -403,16 +434,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _deskSession: string | null = null;
   // Semi-autonomous question timeout handles (toolCallId -> timeout)
   private _semiAutoQuestionTimeouts: Map<string, NodeJS.Timeout> = new Map();
-  // Pending sub-agent questions awaiting user answers (key: panelId-toolCallId -> resolver)
-  private _pendingSubAgentQuestions: Map<string, {
-    resolve: (value: { answers: Record<string, string | string[]> } | null) => void;
-  }> = new Map();
+  private readonly _subAgentQuestions = new SubAgentQuestionBroker();
   // Track panels with pending plan option selections (to block autonomous continuation)
   private _pendingPlanSelections: Set<string> = new Set();
-  // Store pending plan data for semi-auto timeout (syntheticPlanId -> plan data)
-  private _pendingPlanData: Map<string, { options: PlanOption[]; messageId: string; originalQuery: string }> = new Map();
-  // Semi-autonomous plan selection timeout handles (syntheticPlanId -> timeout)
-  private _semiAutoPlanTimeouts: Map<string, NodeJS.Timeout> = new Map();
+  private readonly _pendingPlans = new PendingPlanStore();
+  private readonly _delayedChannelTurns = new DelayedChannelTurns();
   // Track per-panel autonomy level (source of truth for semi-auto checks)
   private _panelAutonomyLevel: Map<string, string> = new Map();
   // Track files touched per panel for auto-memory learning
@@ -421,30 +447,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // M6: Debounced workspace file cache refresh
   private _fileCacheRefreshTimer: NodeJS.Timeout | null = null;
 
-  constructor(
-    extensionUri: vscode.Uri,
-    extensionContext: vscode.ExtensionContext,
-    contextManager: ContextManager,
-    conversationManager: ConversationManager,
-    providerManager: ProviderManager,
-    suggestionManager: SuggestionManager,
-    brainstormManager: BrainstormManager,
-    permissionManager: PermissionManager,
-    setupManager: SetupManager,
-    telemetryManager: TelemetryManager,
-    autonomousManager: AutonomousManager,
-    memoryManager: MemoryManager,
-    compactionManager: CompactionManager,
-    lifecycleManager: AgentLifecycleManager,
-    slashCommandManager: SlashCommandManager,
-    activeModeManager: ActiveModeManager,
-    engagementManager: EngagementManager,
-    projectContextManager: ProjectContextManager,
-    visualTestManager: VisualTestManager,
-    canvasManager: CanvasManager,
-    modelRegistry: ModelRegistryService,
-    checkpointManager: CheckpointManager,
-    desk?: DeskDependencies
+  constructor({
+    extensionUri,
+    extensionContext,
+    contextManager,
+    conversationManager,
+    providerManager,
+    suggestionManager,
+    brainstormManager,
+    permissionManager,
+    setupManager,
+    telemetryManager,
+    autonomousManager,
+    memoryManager,
+    compactionManager,
+    lifecycleManager,
+    slashCommandManager,
+    activeModeManager,
+    engagementManager,
+    projectContextManager,
+    visualTestManager,
+    modelRegistry,
+    checkpointManager,
+    desk,
+  }: ChatViewDependencies
   ) {
     this._desk = desk;
     this._extensionUri = extensionUri;
@@ -466,7 +492,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._engagementManager = engagementManager;
     this._projectContextManager = projectContextManager;
     this._visualTestManager = visualTestManager;
-    this._canvasManager = canvasManager;
     this._modelRegistry = modelRegistry;
     this._checkpointManager = checkpointManager;
     this._imageGenService = new ImageGenerationService();
@@ -527,6 +552,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Plan 14: collaboration — the shared bounded pool + the role-aware manager.
     this._collaboratorPool = new CollaboratorPool(this._providerManager);
     this._collaborationManager = new CollaborationManager(this._collaboratorPool, this._agentContextManager);
+    // Plan 29: sessions ride the same pool — the shape is all that differs.
+    this._sessionManager = new SessionManager(this._collaboratorPool);
 
     // Connect agent context manager to provider manager
     this._providerManager.setAgentContextManager(this._agentContextManager);
@@ -635,13 +662,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
       },
       cancelPanelRequest: (panelId: string) => {
-        this._cancelledPanels.add(panelId);
-        this._providerManager.cancelRequest(panelId);
-        this._brainstormManager.cancelSession(panelId);
-        // Plan 18 (1.3): also reach -collab-/orchestrate children directly.
-        this._collaborationManager.cancelPanel(panelId);
-        this._mystiOrchestrator?.cancelPanel(panelId);
-        this._postToPanel(panelId, { type: 'requestCancelled' });
+        void this._handleMessage({ type: 'cancelRequest', panelId } as WebviewMessageWithPanel).catch(error => {
+          console.error('[Mysti] Channel cancellation failed:', error instanceof Error ? error.name : 'Unknown error');
+        });
       },
       injectChannelMessage: (panelId: string, channelName: string, content: string, sender?: string) => {
         // Post inbound card to webview
@@ -670,7 +693,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           panelId
         );
       },
-      isRunning: (panelId: string) => this._runningPanels.has(panelId),
+      isRunning: (panelId: string) => this._runningPanels.has(panelId) || this._delayedChannelTurns.has(panelId),
       getActivePanelId: () => this._lastActivePanelId || this._sidebarId,
     });
 
@@ -931,6 +954,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * The id of a registered provider that lists `model` as one of its own, other
+   * than `exceptProvider` — or undefined when no provider claims it (a genuinely
+   * hand-typed / unlisted model, which `_getPanelModel` keeps).
+   *
+   * Ollama and LocalAI are skipped: their catalogs are whatever the user has
+   * pulled locally and routinely carry another vendor's id verbatim
+   * (`qwen3-coder`, `deepseek-r1`), so letting them claim ownership would make
+   * every such id un-typeable in the provider that actually ships it.
+   *
+   * Deliberately reads each provider's CURATED `config.models` rather than
+   * `providerManager.getModels()`: that call revalidates a stale registry entry
+   * as a side effect, and this loop touches every provider — through
+   * `_getPanelModel` it would fire the whole discovery burst on each panel
+   * paint, which is the same thing `_sendInitialState` passes `revalidate:false`
+   * to avoid. Curated is also the right set: a leaked id got here by being
+   * selectable somewhere, and a discovered/custom id for THIS provider is
+   * already accepted by the checks above.
+   */
+  private _modelOwner(model: string, exceptProvider: string): string | undefined {
+    const LOCAL_MIRROR_PROVIDERS = new Set(['ollama', 'localai']);
+    for (const candidate of this._providerManager.getProviders()) {
+      if (candidate.name === exceptProvider || LOCAL_MIRROR_PROVIDERS.has(candidate.name)) { continue; }
+      if (candidate.models?.some(m => m.id === model)) {
+        return candidate.name;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Get the effective model for a panel (per-panel override or global default)
    */
   private _getPanelModel(panelId: string): string {
@@ -938,12 +991,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const config = vscode.workspace.getConfiguration('mysti');
     const model = panelState?.settingsOverrides?.model
       || config.get<string>('defaultModel', DEFAULT_FALLBACK_MODEL);
+    return this._resolveModelForProvider(model, this._getPanelProvider(panelId));
+  }
+
+  /**
+   * The model to record against a turn: what the provider itself resolves for
+   * these settings, falling back to its default when it resolves to "no --model
+   * flag, let the CLI choose", and to the raw setting when the provider is not
+   * a registered backend.
+   *
+   * Attribution used to record `settings.model` — the picker's value — which is
+   * NOT what runs whenever a per-provider custom-model override is set. The
+   * model chip named it, and so did the Boost ledger, which prices turns by
+   * model.
+   */
+  private _attributionModel(settings: Settings): string {
+    const providerId = settings.provider as unknown as string;
+    const instance = this._providerManager.getProviderInstance(providerId);
+    if (!instance) { return settings.model; }
+    try {
+      const resolved = instance.getEffectiveModelForSettings(settings);
+      if (resolved) { return resolved; }
+    } catch (err) {
+      // Attribution is a label; never let it break a completed turn.
+      console.warn(`[Mysti] Could not resolve the effective model for ${providerId}:`, err);
+      return settings.model;
+    }
+    return this._providerManager.getProvider(providerId)?.defaultModel || settings.model;
+  }
+
+  /**
+   * `settings` with `model` settled against `settings.provider`. A no-op for a
+   * pseudo-agent (no backend of its own) and when nothing needs changing, so
+   * the common path keeps the caller's object identity.
+   */
+  private _withResolvedModel(settings: Settings): Settings {
+    const provider = settings.provider as unknown as string;
+    if (!provider || isPseudoAgentId(provider) || !settings.model) { return settings; }
+    const resolved = this._resolveModelForProvider(settings.model, provider);
+    return resolved === settings.model ? settings : { ...settings, model: resolved };
+  }
+
+  /**
+   * Settle a raw model id against the provider that will actually run it.
+   *
+   * Extracted from `_getPanelModel` so the SEND path can apply the same rules:
+   * the webview holds its own copy of `settings.model` and posts it back with
+   * every message, so seeding a good value at panel paint was never enough —
+   * one stale copy in a long-lived panel re-sent a foreign model on every turn.
+   */
+  private _resolveModelForProvider(model: string, provider: string): string {
+    const config = vscode.workspace.getConfiguration('mysti');
     // #39 precedence (Plan 01 §4): keep the user's model unless it is genuinely
     // unusable. Only fall back to the provider default when the model is neither
     // a known model for this provider, a user-declared custom model, nor even a
     // syntactically valid id. A valid hand-typed / custom / unlisted model is
     // KEPT (previously any non-built-in model was silently reset — issue #39).
-    const provider = this._getPanelProvider(panelId);
     const providerConfig = this._providerManager.getProvider(provider);
     if (providerConfig) {
       if (this._providerManager.getModels(provider).some(m => m.id === model)) {
@@ -952,6 +1055,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const customModels = config.get<Record<string, string[]>>('customModels', {});
       if (Array.isArray(customModels?.[provider]) && customModels[provider].includes(model)) {
         return model;
+      }
+      // A model that BELONGS TO ANOTHER registered provider is not "custom" —
+      // it is a leftover from the agent this panel used to be on, and keeping it
+      // hands the CLI a flag it cannot honour. Only Gemini and Codex had their
+      // own cross-provider guard, so `mysti.defaultModel: 'qwen3-coder'` rode
+      // all the way into `claude --model qwen3-coder` for everyone else; and
+      // even where a provider dropped it, the webview still showed it as the
+      // active model, so the picker named a model no turn had ever used.
+      // Ids that collide across providers are already returned above (the
+      // known-model check runs first), so this only fires for a genuine leak.
+      const owner = this._modelOwner(model, provider);
+      if (owner) {
+        console.warn(`[Mysti] Model '${model}' belongs to '${owner}', not '${provider}' — using '${providerConfig.defaultModel}'.`);
+        return providerConfig.defaultModel;
       }
       if (validateModelName(model).valid) {
         console.warn(`[Mysti] Model '${model}' is not in '${provider}' built-in list but is valid — keeping it (custom/unlisted).`);
@@ -993,8 +1110,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     // Handle messages from the webview
-    webviewView.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
-      await this._handleMessage(message);
+    webviewView.webview.onDidReceiveMessage(async (message: unknown) => {
+      await this._receivePanelMessage(message, this._sidebarId, webviewView.webview);
     });
 
     // review[25]: the sidebar WebviewView can be disposed (dragged to another
@@ -1007,6 +1124,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.onDidDispose(() => {
       if (this._panelStates.get(this._sidebarId)?.webview === webviewView.webview) {
         this._panelStates.delete(this._sidebarId);
+        this._cancelQueuedChannelTurn(this._sidebarId);
+        this._providerManager.cancelRequest(this._sidebarId);
+        this._abortMystiDirect(this._sidebarId);
+        for (const job of this._backgroundJobManager.listRunning(this._sidebarId)) {
+          this._permissionManager.cancelRequestsByOwner(job.id);
+        }
+        this._cancelPendingSubAgentQuestions(this._sidebarId);
+        this._pendingPlans.clearPanel(this._sidebarId);
+        this._pendingPlanSelections.delete(this._sidebarId);
       }
     });
 
@@ -1263,10 +1389,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * probes on the initial-render path so a hung CLI can't stall the webview.
    */
   private _withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
-    return Promise.race([
-      p.catch(() => null),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
-    ]);
+    return settleWithin(p, ms);
   }
 
   /**
@@ -1316,8 +1439,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  private async _receivePanelMessage(message: unknown, panelId: string, sender: vscode.Webview): Promise<void> {
+    const state = this._panelStates.get(panelId);
+    if (!state || state.webview !== sender) { return; }
+    const bound = bindIncomingMessage(message, panelId);
+    if (!bound) { return; }
+    try {
+      await this._handleMessage(bound as unknown as WebviewMessage);
+    } catch (error) {
+      // VS Code event emitters do not await async listeners. Contain rejected
+      // handlers here without logging the untrusted payload or its credentials.
+      console.error('[Mysti] Chat action failed:', bound.type, error instanceof Error ? error.name : 'Unknown error');
+      if (this._panelStates.get(panelId)?.webview === sender) {
+        try {
+          await sender.postMessage({ type: 'error', payload: 'Mysti could not complete that action. Please try again.' });
+        } catch { /* The webview may have closed while the handler was running. */ }
+      }
+    }
+  }
+
   private async _handleMessage(message: WebviewMessage) {
-    // Cast once: the webview always sends panelId alongside every message
+    // External messages carry the host-bound panel ID; internal calls may omit it.
     const msg = message as WebviewMessageWithPanel;
     // B2: a webview that never received initialState (e.g. the setup wizard
     // shown before any provider is ready) posts messages with panelId=null.
@@ -1338,6 +1480,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           msg.panelId
         );
         break;
+
+      // Plan 29 — run a session (several agents, one problem).
+      case 'startSession':
+        await this._handleStartSession(
+          msg.payload as {
+            shape: string;
+            agentIds: string[];
+            brief: string;
+            settings: Settings;
+            context?: ContextItem[];
+          },
+          msg.panelId
+        );
+        break;
+
+      // Plan 29 — stop ONE lane, leaving the rest of the session running.
+      case 'stopSessionLane': {
+        const lanePayload = msg.payload as { runId: string; collaboratorId: string };
+        if (lanePayload?.runId && lanePayload?.collaboratorId) {
+          this._sessionManager.cancelLane(lanePayload.runId, lanePayload.collaboratorId);
+        }
+        break;
+      }
 
       case 'quickActionWithConfig':
         {
@@ -1386,6 +1551,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const panelId = msg.panelId;
           if (panelId) {
             // Add to cancelled panels set for per-panel tracking
+            this._cancelQueuedChannelTurn(panelId);
             this._cancelledPanels.add(panelId);
             // Cancel only this panel's request
             this._providerManager.cancelRequest(panelId);
@@ -1396,12 +1562,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // the flag between chunks, so a mid-operation -collab- child ran
             // to its 1h deadline.
             this._collaborationManager.cancelPanel(panelId);
+            this._sessionManager.cancelPanel(panelId);
             this._mystiOrchestrator?.cancelPanel(panelId);
             // Cancel any running sub-agent processes from @-mentions
             // (C2: derive ids from the registry, never a hard-coded list)
             this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
             // Resolve any pending sub-agent questions with null (skip)
             this._cancelPendingSubAgentQuestions(panelId);
+            this._pendingPlans.clearPanel(panelId);
+            this._pendingPlanSelections.delete(panelId);
             // Notify webview to reset UI state
             this._postToPanel(panelId, { type: 'requestCancelled' });
           }
@@ -1881,8 +2050,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const panelState = this._panelStates.get(panelId);
 
           // Cancel any running request on this panel before starting fresh
+          this._cancelQueuedChannelTurn(panelId);
           this._cancelledPanels.add(panelId);
           this._providerManager.cancelRequest(panelId);
+          this._abortMystiDirect(panelId);
           this._brainstormManager.cancelSession(panelId);
           // S1/S4: drop the brainstorm record AND its child provider sessions
           // (composite `-brainstorm-` panels) so the new conversation can't
@@ -1890,10 +2061,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._brainstormManager.clearSession(panelId);
           // Plan 18 (1.3): stop any live collab/orchestrate children too.
           this._collaborationManager.cancelPanel(panelId);
+          this._sessionManager.cancelPanel(panelId);
           this._mystiOrchestrator?.cancelPanel(panelId);
           // C2: derive ids from the registry, never a hard-coded list
           this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
           this._cancelPendingSubAgentQuestions(panelId);
+          this._pendingPlans.clearPanel(panelId);
+          this._pendingPlanSelections.delete(panelId);
           // Plan 21 Phase 0: consent does not survive the conversation it was
           // given in. An "always allow" click was previously permanent and
           // process-wide, so a fresh conversation silently inherited it.
@@ -1926,9 +2100,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         {
           const panelId = msg.panelId;
           if (panelId) {
+            this._cancelQueuedChannelTurn(panelId);
+            this._cancelPendingSubAgentQuestions(panelId);
+            this._pendingPlans.clearPanel(panelId);
+            this._pendingPlanSelections.delete(panelId);
             // Cancel any running request before clearing the session
             this._cancelledPanels.add(panelId);
             this._providerManager.cancelRequest(panelId);
+            this._abortMystiDirect(panelId);
             this._brainstormManager.cancelSession(panelId);
           }
           this._providerManager.clearSession(panelId);
@@ -1982,7 +2161,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'permissionResponse':
         this._handlePermissionResponse(
-          msg.payload as PermissionResponse
+          msg.payload,
+          msg.panelId
         );
         break;
 
@@ -2255,10 +2435,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const panelState = this._panelStates.get(panelId);
 
           if (panelState) {
-            // Update only this panel's conversation
-            panelState.currentConversationId = switchId;
             const conversation = this._conversationManager.getConversation(switchId);
             if (conversation) {
+              if (panelState.currentConversationId !== switchId) {
+                this._cancelQueuedChannelTurn(panelId);
+                this._providerManager.cancelRequest(panelId);
+                this._abortMystiDirect(panelId);
+                this._pendingPlans.clearPanel(panelId);
+                this._pendingPlanSelections.delete(panelId);
+                this._cancelPendingSubAgentQuestions(panelId);
+              }
+              // Validate the target before changing the active view.
+              panelState.currentConversationId = switchId;
               this._postToPanel(panelId, {
                 type: 'conversationChanged',
                 payload: conversation
@@ -2308,6 +2496,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // If this panel was viewing the deleted conversation, create a new one
           if (panelState?.currentConversationId === deleteId) {
             const newConv = this._conversationManager.createNewConversation();
+            this._cancelQueuedChannelTurn(panelId);
+            this._providerManager.cancelRequest(panelId);
+            this._abortMystiDirect(panelId);
+            this._pendingPlans.clearPanel(panelId);
+            this._pendingPlanSelections.delete(panelId);
+            this._cancelPendingSubAgentQuestions(panelId);
             panelState.currentConversationId = newConv.id;
             this._postToPanel(panelId, {
               type: 'conversationChanged',
@@ -2456,25 +2650,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'subAgentQuestionResponse':
-        {
-          const saqPayload = msg.payload as { toolCallId: string; agentId: string; answers: Record<string, string | string[]> };
-          const saqKey = `${msg.panelId}-${saqPayload.toolCallId}`;
-          const pendingSaq = this._pendingSubAgentQuestions.get(saqKey);
-          if (pendingSaq) {
-            pendingSaq.resolve({ answers: saqPayload.answers });
-            this._pendingSubAgentQuestions.delete(saqKey);
-          }
-        }
-        break;
-
       case 'subAgentQuestionSkipped':
         {
-          const saqSkipPayload = msg.payload as { toolCallId: string; agentId: string };
-          const saqSkipKey = `${msg.panelId}-${saqSkipPayload.toolCallId}`;
-          const pendingSaqSkip = this._pendingSubAgentQuestions.get(saqSkipKey);
-          if (pendingSaqSkip) {
-            pendingSaqSkip.resolve(null);
-            this._pendingSubAgentQuestions.delete(saqSkipKey);
+          const response = parseSubAgentResponse(msg.payload, msg.type === 'subAgentQuestionSkipped');
+          if (response) {
+            this._subAgentQuestions.answer(msg.panelId, response.agentId, response.toolCallId, response.answer);
           }
         }
         break;
@@ -2483,13 +2663,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         {
           const skipPlanPayload = msg.payload as { syntheticPlanId: string };
           const skipPlanPanelId = msg.panelId;
-          const planTimer = this._semiAutoPlanTimeouts.get(skipPlanPayload.syntheticPlanId);
-          if (planTimer) {
-            clearTimeout(planTimer);
-            this._semiAutoPlanTimeouts.delete(skipPlanPayload.syntheticPlanId);
+          if (this._pendingPlans.take(skipPlanPanelId, skipPlanPayload.syntheticPlanId)) {
+            this._pendingPlanSelections.delete(skipPlanPanelId);
           }
-          this._pendingPlanData.delete(skipPlanPayload.syntheticPlanId);
-          this._pendingPlanSelections.delete(skipPlanPanelId);
         }
         break;
 
@@ -2830,7 +3006,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Also cancel via dashboard if running
           if (this._vtDashboardPanelId) {
             this._visualTestManager.cancelTest(this._vtDashboardPanelId);
-            this._postToPanel(this._vtDashboardPanelId, { type: 'visualTestDashboardCancelled' } as any);
+            this._postToPanel(this._vtDashboardPanelId, { type: 'visualTestDashboardCancelled' });
           }
         }
         break;
@@ -3362,17 +3538,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * and returns a Promise that resolves when the user answers (or skips).
    */
   private _createSubAgentQuestionCallback(panelId: string): SubAgentQuestionCallback {
+    const isCurrent = this._subAgentQuestions.captureScope(panelId);
     return (agentId: AgentType, questionData: AskUserQuestionData) => {
-      return new Promise((resolve) => {
-        const key = `${panelId}-${questionData.toolCallId}`;
-        this._pendingSubAgentQuestions.set(key, { resolve });
-
-        // Post question UI to webview (rendered inside the sub-agent card)
-        this._postToPanel(panelId, {
+      if (!isCurrent() || !this._panelStates.has(panelId) || this._cancelledPanels.has(panelId)) {
+        return Promise.resolve(null);
+      }
+      // The UI sees a delivery ID, so a stale card can never answer a later
+      // question even if a backend restarts and reuses its own tool-call ID.
+      const deliveryId = crypto.randomUUID();
+      const answer = this._subAgentQuestions.wait(panelId, agentId, deliveryId);
+      const skip = () => this._subAgentQuestions.answer(panelId, agentId, deliveryId, null);
+      try {
+        const state = this._panelStates.get(panelId)!;
+        const delivery = state.webview.postMessage({
           type: 'subAgentAskUserQuestion',
-          payload: { agentId, questionData }
+          payload: { agentId, questionData: { ...questionData, toolCallId: deliveryId } }
         });
-      });
+        void Promise.resolve(delivery).then(delivered => { if (!delivered) { skip(); } }, skip);
+      } catch {
+        skip();
+      }
+      return answer;
     };
   }
 
@@ -3381,12 +3567,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Called when the user cancels the request.
    */
   private _cancelPendingSubAgentQuestions(panelId: string): void {
-    for (const [key, pending] of this._pendingSubAgentQuestions) {
-      if (key.startsWith(`${panelId}-`)) {
-        pending.resolve(null);
-        this._pendingSubAgentQuestions.delete(key);
-      }
-    }
+    this._subAgentQuestions.cancelPanel(panelId);
   }
 
   /**
@@ -3620,6 +3801,150 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return false;
   }
 
+  /**
+   * Plan 29 — run a session: several agents on one problem, started from the
+   * slash menu's agent picker.
+   *
+   * The turn is shaped like any other: the brief is added as the user message,
+   * the panel goes busy, and exactly ONE assistant message lands at the end —
+   * carrying the shape as its provider and the agents as its model, so the
+   * header names the session rather than borrowing the panel's agent (the
+   * mislabel that the single-task mention path still has).
+   */
+  private async _handleStartSession(
+    payload: {
+      shape: string;
+      agentIds: string[];
+      brief: string;
+      settings: Settings;
+      context?: ContextItem[];
+    },
+    panelId?: string,
+  ): Promise<void> {
+    if (!panelId || !this._panelStates.has(panelId)) { return; }
+
+    const shape = getSessionShape(payload?.shape ?? '');
+    if (!shape) {
+      this._postToPanel(panelId, {
+        type: 'sessionError',
+        payload: { message: 'That session no longer exists.' },
+      });
+      this._postToPanel(panelId, { type: 'responseComplete', payload: {} });
+      return;
+    }
+
+    // The ids come from the webview: validate every one against the registry
+    // before anything spawns. An id nothing registers must be a visible refusal,
+    // never a silent substitution of the default provider.
+    const registered = new Set<string>(this._providerManager.getAllProviderIds());
+    const agentIds = (payload.agentIds || []).filter(id => registered.has(id)) as AgentType[];
+    if (agentIds.length < shape.minAgents) {
+      this._postToPanel(panelId, {
+        type: 'sessionError',
+        payload: {
+          message: `${shape.command} needs at least ${shape.minAgents} installed agents — ${agentIds.length} available.`,
+        },
+      });
+      this._postToPanel(panelId, { type: 'responseComplete', payload: {} });
+      return;
+    }
+
+    this._cancelQueuedChannelTurn(panelId);
+    this._providerManager.cancelRequest(panelId);
+    this._abortMystiDirect(panelId);
+    this._pendingPlans.clearPanel(panelId);
+    this._pendingPlanSelections.delete(panelId);
+    this._cancelPendingSubAgentQuestions(panelId);
+    this._cancelledPanels.delete(panelId);
+
+    const panelState = this._panelStates.get(panelId);
+    const conversationId = panelState?.currentConversationId;
+    const conversation = conversationId
+      ? this._conversationManager.getConversation(conversationId)
+      : null;
+
+    const brief = (payload.brief || '').trim();
+    const userText = brief || `${shape.command} (${agentIds.length} agents)`;
+    const userMessage = this._conversationManager.addMessageToConversation(
+      conversationId, 'user', userText, payload.context,
+    );
+    this._postToPanel(panelId, { type: 'messageAdded', payload: userMessage });
+
+    this._lifecycleManager.touchSession(panelId);
+    this._lifecycleManager.markBusy(panelId);
+    this._postToPanel(panelId, {
+      type: 'responseStarted',
+      payload: { provider: shape.id, model: agentIds.map(a => getProviderDisplayName(a)).join(', ') },
+    });
+
+    const runId = crypto.randomUUID();
+    let markdown = '';
+
+    try {
+      const stream = this._sessionManager.run({
+        shape: shape.id,
+        agentIds,
+        brief: brief || 'Use the conversation so far as the brief.',
+        settings: payload.settings,
+        panelId,
+        runId,
+        context: payload.context,
+        conversation,
+        onQuestion: this._createSubAgentQuestionCallback(panelId),
+        onGate: async (spec, toolCall) => {
+          const action = this._classifyToolAction(toolCall.name);
+          return this.requestPermissionInline(
+            action,
+            toolCall.name,
+            `${spec.label || spec.agentId} wants to: ${toolCall.name}`,
+            {
+              command: JSON.stringify(toolCall.input || {}, null, 2).slice(0, 500),
+              riskLevel: PermissionManager.classifyRisk(action),
+              ...this._permissionToolDetails(toolCall),
+            },
+            panelId,
+            toolCall.id,
+          );
+        },
+      });
+
+      for await (const event of stream) {
+        if (this._cancelledPanels.has(panelId)) { break; }
+        if (event.type === 'session_complete') { markdown = event.markdown; }
+        this._postToPanel(panelId, { type: 'sessionEvent', payload: { runId, ...event } });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'The session failed.';
+      this._postToPanel(panelId, { type: 'sessionError', payload: { message } });
+    } finally {
+      this._lifecycleManager.markIdle(panelId);
+    }
+
+    if (this._cancelledPanels.has(panelId)) {
+      this._postToPanel(panelId, { type: 'requestCancelled' });
+      return;
+    }
+
+    // One message, attributed to the session. `provider` is the shape and
+    // `model` the agents that ran, so the header says "Review · Claude, Codex"
+    // instead of borrowing whatever the panel happens to be set to.
+    const assistantMessage = this._conversationManager.addMessageToConversation(
+      conversationId, 'assistant',
+      markdown || 'The session produced no result.',
+      undefined, undefined, undefined,
+      {
+        provider: shape.id as unknown as ProviderType,
+        model: agentIds.map(a => getProviderDisplayName(a)).join(', '),
+      },
+    );
+    this._postToPanel(panelId, { type: 'responseComplete', payload: { message: assistantMessage } });
+  }
+
+  private _cancelQueuedChannelTurn(panelId: string): void {
+    this._delayedChannelTurns.cancelPanel(panelId);
+    this._channelBridge.clearQueuedMessages(panelId);
+  }
+
   private async _handleSendMessage(
     payload: {
       content: string;
@@ -3630,10 +3955,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     },
     panelId: string
   ) {
+    this._cancelQueuedChannelTurn(panelId);
+    // The timer-to-send handoff must remain busy while setup awaits context.
+    // A later inbound message belongs in the queue, not a competing send.
+    const finishPreparation = this._delayedChannelTurns.reservePreparation(panelId);
+    try {
+      await this._handleSendMessageForTurn(payload, panelId, finishPreparation);
+    } finally {
+      // Early exits release only this preparation, never its replacement.
+      finishPreparation();
+    }
+  }
+
+  private async _handleSendMessageForTurn(
+    payload: {
+      content: string;
+      context: ContextItem[];
+      settings: Settings;
+      mentions?: Mention[];
+      attachments?: Attachment[];
+    },
+    panelId: string,
+    finishPreparation: () => void
+  ) {
+    const isChannelCurrent = this._delayedChannelTurns.capture(panelId);
     // Bump the panel's send generation FIRST (review [4]/[11]): any Mysti run
     // still in flight for this panel is now superseded and self-terminates at
     // its next checkpoint, regardless of the 50ms cancel-flag window below.
     this._mystiRunGen.set(panelId, (this._mystiRunGen.get(panelId) ?? 0) + 1);
+    // Invalidate old classification before any await in the new send. A late
+    // result must not offer or auto-select plans for a superseded turn.
+    this._pendingPlanSelections.delete(panelId);
+    this._pendingPlans.clearPanel(panelId);
+    const isPlanCurrent = this._pendingPlans.capture(panelId);
 
     // P0.7b (Plan 10 step 4): a repo's .vscode/settings.json must not silently
     // RAISE Mysti's authority (access level / auto-edit mode). Clamp the runtime
@@ -3673,6 +4027,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Cancel any running/suspended request on this panel before starting a new one.
     // This handles the case where the user sends a new message while a permission
     // card is pending (e.g., typing "yes" in chat instead of clicking the permission button).
+    this._cancelPendingSubAgentQuestions(panelId);
     if (this._runningPanels.has(panelId)) {
       console.log(`[Mysti] New message while panel ${panelId} is running — cancelling previous request`);
       this._cancelledPanels.add(panelId);
@@ -3707,11 +4062,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._cancelledPanels.delete(panelId);
 
     // Clear any pending interactive states — a new message implicitly dismisses them
-    this._pendingPlanSelections.delete(panelId);
     this._pendingAskUserQuestions.delete(panelId);
 
     const { content, context, mentions, attachments } = payload;
     let { settings } = payload;
+
+    // The webview keeps its OWN copy of `settings.model` and posts it back with
+    // every message, so a copy that went stale — the panel was on Qwen when it
+    // was seeded, the agent moved to Codex since — was re-sent on every turn and
+    // reached the CLI verbatim. Only Gemini and Codex guarded against that
+    // themselves; `claude --model qwen3-coder` is a hard failure. Settle the id
+    // against the provider that is actually about to run it, here, once, for
+    // every backend. Pseudo-agents are skipped: `mysti` runs its own
+    // coordinator model and `brainstorm` resolves per participant.
+    settings = this._withResolvedModel(settings);
 
     // Track the user's message for plan selection follow-up
     this._lastUserMessage.set(panelId, content);
@@ -3766,8 +4130,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Stream response from provider
     try {
-      this._postToPanel(panelId, { type: 'responseStarted' });
-
       // Plan 16: the Mysti agent. By DEFAULT it answers like a normal streaming
       // agent — its own model, streamed token-by-token (fixes the "hi → whole
       // plan/execute/synthesize ceremony" problem). The multi-step orchestrator
@@ -3799,7 +4161,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // a pseudo-agent with no spawnable backend. Point the remainder at a
         // real one.
         settings = { ...settings, provider: this._getPanelProvider(panelId) as ProviderType };
+        // The model was settled for the coordinator (i.e. left alone), so
+        // re-settle it against the backend this now points at.
+        settings = this._withResolvedModel(settings);
       }
+
+      // Name the agent and the model this turn will actually run on, so the
+      // live header matches the stamp `updateMessageAttributionChip` writes at
+      // finalize instead of naming the picker's values until then. Posted
+      // AFTER the routing decision above: an @mention that outranks the
+      // coordinator changes who answers, and announcing `mysti` first would
+      // put the wrong name on the turn for its whole duration. A pseudo-agent
+      // sends no model — `mysti` only learns its coordinator model from inside
+      // the stream, and claiming the picker's would be a guess.
+      this._postToPanel(panelId, {
+        type: 'responseStarted',
+        payload: isPseudoAgentId(settings.provider as unknown as string)
+          ? { provider: settings.provider }
+          : { provider: settings.provider, model: this._attributionModel(settings) }
+      });
 
       if ((mystiSelected || mystiMatch) && !mentionOutranksCoordinator &&
           conversationId && !this._cancelledPanels.has(panelId)) {
@@ -3968,7 +4348,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   type: 'providerSwitched',
                   payload: { provider: chunk.agentId }
                 });
-                settings = { ...settings, provider: chunk.agentId as ProviderType };
+                // Settled, not carried over: the model still on `settings`
+                // belongs to the provider being switched AWAY from, and this
+                // rest of this turn runs on the new one.
+                settings = this._withResolvedModel({ ...settings, provider: chunk.agentId as ProviderType });
                 enrichedContent = this._mentionRouter.stripMentions(content, mentions || []);
               }
               break;
@@ -4345,6 +4728,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       PerfTracker.measure('send.contextBuilt', _sendStartMark);
+      // Stop, closing the panel or a replacement send can happen during any
+      // asynchronous preparation above. Never start that obsolete request.
+      if (!isChannelCurrent() || !this._panelStates.has(panelId)) { return; }
       const stream = this._providerManager.sendMessage(
         enrichedContent,
         enrichedContext,
@@ -4373,7 +4759,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // liveness job. Opened here and closed at BOTH exits of the stream loop,
       // so a job can never outlive the turn that owns it.
       this._canvasTurnPanels.add(panelId);
-      let lastUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; estimated?: boolean } | undefined;
+      // Normalized (see _normalizeTurnUsage). `null` means the backend could not
+      // measure this turn's CONTEXT FILL — never treat it as a measured zero.
+      let lastUsage: UsageStats | null = null;
+      // The same turn's record in normalized shape whenever a usage chunk arrived
+      // AT ALL, measurable or not. The Boost ledger books turns and output tokens
+      // (which are real even when the prompt side is unknown), so it must not be
+      // gated on the fill being known — that would drop the turn from the count.
+      let lastUsageRaw: UsageStats | null = null;
 
       // Plan 02 Phase 3: accumulate render-relevant structure extension-side
       // so the persisted assistant message (done handler) can be replayed by
@@ -4396,15 +4789,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // routed into the plan-selection flow from the done handler.
       let pendingExitPlan: { planFilePath: string | null } | null = null;
 
-      // Send context window info when starting
+      // Send context window info when starting, together with whether THIS
+      // backend can measure fill at all. Without the second field the pie kept
+      // showing the previous provider's number against the new provider's
+      // window after a switch — two different sessions' arithmetic in one badge.
       this._postToPanel(panelId, {
         type: 'contextWindowInfo',
         payload: {
-          contextWindow: this._providerManager.getModelContextWindow(settings.provider, settings.model)
+          contextWindow: this._providerManager.getModelContextWindow(settings.provider, settings.model),
+          usageAvailable: this._providerManager
+            .getProviderInstance(effectiveSettings.provider)?.capabilities?.emitsUsage !== false,
         }
       });
 
       this._runningPanels.add(panelId);
+      finishPreparation();
       let _firstChunkSeen = false;
       let _firstTextChunkSent = false;
       for await (const chunk of stream) {
@@ -4605,6 +5004,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   panelId,
                   chunk.toolCall.id
                 );
+                // This gate may have settled as a replacement conversation or
+                // turn started. Its decision cannot control the new process.
+                if (!isPlanCurrent()) { return; }
                 if (gateApproved) {
                   // Resume the frozen CLI process so tool execution proceeds
                   if (wasSuspended) {
@@ -4791,10 +5193,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           case 'done': {
             // Capture usage stats if present in this chunk
+            // Normalize at the boundary (see src/services/TokenAccounting.ts):
+            // Anthropic buckets are disjoint, OpenAI's cached count is a SUBSET
+            // of input, and a backend that reports nothing measurable is UNKNOWN
+            // rather than zero. Everything downstream reads the normalized record.
             if (chunk.usage) {
-              lastUsage = chunk.usage;
-              console.log('[Mysti] Done chunk has usage:', chunk.usage);
+              const attributionModel = this._attributionModel(effectiveSettings);
+              lastUsageRaw = normalizeUsage(
+                chunk.usage,
+                this._usageConventionFor(effectiveSettings.provider, attributionModel),
+              );
+              lastUsage = this._normalizeTurnUsage(
+                effectiveSettings.provider,
+                attributionModel,
+                chunk.usage,
+              );
+              console.log('[Mysti] Done chunk usage (normalized):', lastUsageRaw, 'measurable fill:', !!lastUsage);
             } else {
+              lastUsage = null;
+              lastUsageRaw = null;
               console.log('[Mysti] Done chunk has NO usage');
             }
             // Plan 02 Phase 3: persist render-relevant structure with the
@@ -4825,7 +5242,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               persistedThinking,
               {
                 provider: effectiveSettings.provider,
-                model: effectiveSettings.model,
+                model: this._attributionModel(effectiveSettings),
                 toolCalls: persistedToolCalls.length > 0 ? persistedToolCalls : undefined,
                 segments: responseSegments.length > 0 ? responseSegments : undefined
               }
@@ -4837,11 +5254,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this._compactionManager.appendHistory(panelId, { role: 'assistant', kind: 'text', content: persistedContent, ts: Date.now(), msgId: assistantMessage?.id });
 
             console.log('[Mysti] Sending responseComplete with usage:', lastUsage);
+            // `contextTokens` is computed HERE, where the provider's convention is
+            // known. The webview used to re-derive it as input + cache_read, which
+            // is wrong for both conventions; it now renders what it is given.
+            // `usageUnavailable` distinguishes "this backend cannot measure" from
+            // "0 tokens", so the pie can read n/a instead of holding a stale value
+            // left behind by whichever provider ran before it.
+            const usageEmitted = this._providerManager
+              .getProviderInstance(effectiveSettings.provider)?.capabilities?.emitsUsage !== false;
             this._postToPanel(panelId, {
               type: 'responseComplete',
               payload: {
                 message: assistantMessage,
                 usage: lastUsage
+                  ? { ...lastUsage, contextTokens: contextFillTokens(lastUsage) }
+                  : undefined,
+                ...(usageEmitted ? {} : { usageUnavailable: true }),
               }
             });
 
@@ -4858,42 +5286,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
 
             // Mark panel as no longer running and drain queued channel messages
-            this._runningPanels.delete(panelId);
-            {
+            if (isChannelCurrent()) {
+              this._runningPanels.delete(panelId);
               const queued = this._channelBridge.drainQueuedMessages(panelId);
               if (queued.length > 0) {
-                for (const qMsg of queued) {
-                  const qSenderLabel = qMsg.sender ? ` from ${qMsg.sender}` : '';
-                  this._postToPanel(panelId, {
-                    type: 'channelAction',
-                    payload: { action: 'inbound', channel: qMsg.channelName, sender: qMsg.sender, content: qMsg.content.substring(0, 100) }
+                // One turn preserves all queued input. Independent timers used
+                // to start simultaneous sends that cancelled one another.
+                this._delayedChannelTurns.schedule(panelId, () => {
+                  if (!isChannelCurrent() || !this._panelStates.has(panelId) || this._cancelledPanels.has(panelId)) { return; }
+                  // The bridge treats this delay as busy, so later arrivals join
+                  // the same batch instead of superseding its first messages.
+                  const batch = [...queued, ...this._channelBridge.drainQueuedMessages(panelId)];
+                  for (const incoming of batch) {
+                    this._postToPanel(panelId, {
+                      type: 'channelAction',
+                      payload: { action: 'inbound', channel: incoming.channelName, sender: incoming.sender, content: incoming.content.substring(0, 100) },
+                    });
+                  }
+                  const config = vscode.workspace.getConfiguration('mysti');
+                  const qSettings: Settings = {
+                    mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
+                    thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
+                    effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+                    accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
+                    contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
+                    model: this._getPanelModel(panelId),
+                    provider: this._getPanelProvider(panelId) as Settings['provider'],
+                  };
+                  void this._handleSendMessage({
+                    content: formatQueuedChannelTurn(batch),
+                    context: this._contextManager.getContext(panelId),
+                    settings: qSettings,
+                  }, panelId).catch(error => {
+                    console.error('[Mysti] Queued channel turn failed:', error instanceof Error ? error.name : 'Unknown error');
                   });
-                  // Inject as new user message after a short delay
-                  setTimeout(() => {
-                    const config = vscode.workspace.getConfiguration('mysti');
-                    const qSettings: Settings = {
-                      mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
-                      thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
-                      effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
-                      accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
-                      contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
-                      model: this._getPanelModel(panelId),
-                      provider: this._getPanelProvider(panelId) as Settings['provider']
-                    };
-                    this._handleSendMessage(
-                      {
-                        content: `[Via ${qMsg.channelName}${qSenderLabel}]: ${qMsg.content}`,
-                        context: this._contextManager.getContext(panelId),
-                        settings: qSettings
-                      },
-                      panelId
-                    );
-                  }, 500);
-                }
+                }, 500);
               }
             }
 
-            // Evaluate compaction threshold
+            // Evaluate compaction threshold. Gated on the MEASURED record: a
+            // turn whose fill we can't read must not be thresholded, because a
+            // missing measurement reads as 0% and quietly disables compaction.
             if (lastUsage) {
               const contextWindow = this._providerManager.getModelContextWindow(settings.provider, settings.model);
               const updatedConversation = conversationId
@@ -4903,6 +5336,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
               const compactionEval = this._compactionManager.evaluateCompaction(
                 panelId, lastUsage, contextWindow, messageCount, settings, updatedConversation,
+                this._usageConventionFor(effectiveSettings.provider, this._attributionModel(effectiveSettings)),
               );
               if (compactionEval.act) {
                 // Run compaction asynchronously (don't block the response flow)
@@ -4910,32 +5344,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               } else {
                 this._compactionManager.recordUsage(panelId, lastUsage, contextWindow);
               }
+            }
 
-              // Plan 24 Phase 1: sensor-only Boost ledger record. Uses
-              // effectiveSettings so attribution is right in autonomous mode.
-              // contextTokens = input + cache-read (the CompactionManager fill
-              // convention). Never gates; tolerates whatever is missing.
-              // Several backends DEFAULT a missing field to 0 rather than
-              // omitting usage (cursor/hermes/kimi/ollama), so a zero context
-              // means "the provider told us nothing", not "this turn used no
-              // context" — no real turn has zero input AND zero cache-read.
-              // Book it as unknown rather than as a measured zero.
-              const cacheRead = lastUsage.cache_read_input_tokens || 0;
-              const contextKnown = lastUsage.input_tokens > 0 || cacheRead > 0;
+            // Plan 24 Phase 1: sensor-only Boost ledger record. Uses
+            // effectiveSettings so attribution is right in autonomous mode.
+            // Keyed on the RAW record, not the measured one: several backends
+            // DEFAULT a missing field to 0 rather than omitting usage
+            // (cursor/hermes/kimi/ollama), so a zero prompt means "the provider
+            // told us nothing", not "this turn used no context". The turn and
+            // its output tokens are still real, so the record is still booked —
+            // with contextTokens left UNDEFINED so an unknown never averages in
+            // as a measured zero. Never gates; tolerates whatever is missing.
+            if (lastUsageRaw) {
+              const contextWindow = this._providerManager.getModelContextWindow(settings.provider, settings.model);
+              const fillTokens = contextFillTokens(lastUsageRaw);
+              const contextKnown = fillTokens > 0;
               this._boostManager?.recordTurn({
                 kind: 'cli',
                 panelId,
                 provider: effectiveSettings.provider,
-                model: effectiveSettings.model,
+                model: this._attributionModel(effectiveSettings),
                 ...(coldResumeIntercepted ? { coldResumeIntercepted: true } : {}),
-                contextTokens: contextKnown ? lastUsage.input_tokens + cacheRead : undefined,
-                outputTokens: lastUsage.output_tokens,
-                cacheReadTokens: lastUsage.cache_read_input_tokens,
-                cacheCreationTokens: lastUsage.cache_creation_input_tokens,
+                contextTokens: contextKnown ? fillTokens : undefined,
+                outputTokens: lastUsageRaw.output_tokens,
+                cacheReadTokens: lastUsageRaw.cache_read_input_tokens,
+                cacheCreationTokens: lastUsageRaw.cache_creation_input_tokens,
                 contextWindow,
                 roundTrips: 1,
                 // Honor a provider that flagged its own figures as synthesized.
-                estimated: lastUsage.estimated === true || !contextKnown,
+                estimated: lastUsageRaw.estimated === true || !contextKnown,
               });
             }
 
@@ -4944,20 +5381,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // _pendingPlanSelections, which suppresses the AI plan-detection
             // and suggestion pass below and blocks autonomous continuation
             // until the user (or autonomous auto-select) picks.
-            if (pendingExitPlan) {
-              await this._handleExitPlanMode(pendingExitPlan.planFilePath, assistantMessage, panelId);
+            if (pendingExitPlan && !this._delayedChannelTurns.has(panelId)) {
+              await this._handleExitPlanMode(pendingExitPlan.planFilePath, assistantMessage, panelId, isPlanCurrent);
               pendingExitPlan = null;
             }
 
             // Skip plan options and suggestions if there's a pending AskUserQuestion or plan selection
-            if (!this._pendingAskUserQuestions.has(panelId) && !this._pendingPlanSelections.has(panelId)) {
+            if (!this._pendingAskUserQuestions.has(panelId) && !this._pendingPlanSelections.has(panelId)
+              && !this._delayedChannelTurns.has(panelId)) {
               // Run classification and suggestions fully async (non-blocking) for faster perceived response
               this._generateSuggestionsAsync(assistantMessage, panelId);
 
               const mystiConfig = vscode.workspace.getConfiguration('mysti');
               const planDetectionEnabled = mystiConfig.get('planDetection.enabled', true);
               if (planDetectionEnabled) {
-                this._detectAndSendPlanOptions(assistantMessage, panelId).then(hasInteractiveElements => {
+                this._detectAndSendPlanOptions(assistantMessage, panelId, isPlanCurrent).then(hasInteractiveElements => {
                   if (hasInteractiveElements) {
                     this.postMessage({ type: 'clearSuggestions' } as WebviewMessage, panelId);
                   }
@@ -4967,7 +5405,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             // Autonomous mode: check if we should auto-continue
             // Only continue if no pending questions or plan selections
-            if (this._autonomousManager.isActive() && !this._pendingAskUserQuestions.has(panelId) && !this._pendingPlanSelections.has(panelId)) {
+            if (this._autonomousManager.isActive() && !this._pendingAskUserQuestions.has(panelId) && !this._pendingPlanSelections.has(panelId)
+              && !this._delayedChannelTurns.has(panelId)) {
               const followUp = this._autonomousManager.shouldContinue(assistantContent);
               if (followUp) {
                 const autoConfig = vscode.workspace.getConfiguration('mysti');
@@ -4988,14 +5427,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   autonomousMode: true,
                 };
                 setTimeout(() => {
-                  this._handleSendMessage(
+                  if (!isPlanCurrent() || !this._panelStates.has(panelId)
+                    || this._cancelledPanels.has(panelId) || !this._autonomousManager.isActive()) {
+                    return;
+                  }
+                  void this._handleSendMessage(
                     {
                       content: followUp,
                       context: this._contextManager.getContext(panelId),
                       settings: autoSettings
                     },
                     panelId
-                  );
+                  ).catch(error => {
+                    console.error('[Mysti] Autonomous continuation failed:', error instanceof Error ? error.name : 'Unknown error');
+                  });
                 }, AUTONOMOUS_CONTINUATION_DELAY_MS);
               } else {
                 // Goal complete or no more tasks — deactivate
@@ -5081,14 +5526,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       provider,
     };
 
-    // Build usage from CompactionManager's tracked data
-    const tracked = this._compactionManager.getUsage(panelId);
-    const usage: UsageStats = {
-      input_tokens: tracked?.totalInputTokens || 0,
-      output_tokens: tracked?.totalOutputTokens || 0,
-      cache_read_input_tokens: tracked?.totalCacheReadTokens || 0,
-      cache_creation_input_tokens: tracked?.totalCacheCreationTokens || 0,
-    };
+    // The panel's LAST measured fill — not the cumulative totals, which sum
+    // every turn of the session and so answer "how many tokens has this panel
+    // ever sent", a number several times larger than the context window. Shown
+    // to the user as "before" and fed to the economics, it made a small context
+    // look critical and inflated every projected saving.
+    const usage: UsageStats = this._compactionManager.getLastFill(panelId)
+      ?? { input_tokens: 0, output_tokens: 0 };
 
     console.log(`[Mysti] Manual compaction requested for panel ${panelId}`);
     await this._executeCompaction(panelId, settings, conversation, usage, contextWindow);
@@ -5102,7 +5546,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     contextWindow: number,
   ): Promise<void> {
     const strategy = this._compactionManager.getStrategy(settings.provider, this._providerManager);
-    const beforeTokens = usage.input_tokens + (usage.cache_read_input_tokens || 0);
+    // Every prompt bucket, cache-creation included (see TokenAccounting) —
+    // otherwise the "before" figure the user is shown omits exactly the tokens
+    // that a cold turn puts the whole context into.
+    const beforeTokens = contextFillTokens(usage);
 
     // Notify webview that compaction is starting
     this._postToPanel(panelId, {
@@ -5167,7 +5614,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             summaryParts.push(chunk.content);
           }
           if (chunk.type === 'done' && chunk.usage) {
-            const tokens = chunk.usage.input_tokens + (chunk.usage.cache_read_input_tokens || 0);
+            const normalized = this._normalizeTurnUsage(settings.provider, settings.model, chunk.usage);
+            const tokens = contextFillTokens(normalized);
             if (tokens > 0) {
               afterTokens = tokens;
             }
@@ -5320,6 +5768,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const fork = this._conversationManager.forkConversation(sourceId, messageId);
     if (!fork) { return null; }
 
+    this._cancelQueuedChannelTurn(panelId);
+    this._providerManager.cancelRequest(panelId);
+    this._abortMystiDirect(panelId);
+    this._pendingPlans.clearPanel(panelId);
+    this._pendingPlanSelections.delete(panelId);
+    this._cancelPendingSubAgentQuestions(panelId);
     panelState.currentConversationId = fork.id;
     this._postToPanel(panelId, { type: 'conversationChanged', payload: fork });
     this._postToPanel(panelId, {
@@ -5471,10 +5925,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Record per-agent usage for compaction tracking
             if (chunk.usage && chunk.agentId) {
               const agentPanelId = `${panelId}-brainstorm-${chunk.agentId}`;
-              const agentContextWindow = this._providerManager.getModelContextWindow(
-                chunk.agentId, this._providerManager.getProviderDefaultModel(chunk.agentId)
-              );
-              this._compactionManager.recordUsage(agentPanelId, chunk.usage, agentContextWindow);
+              const agentModel = this._providerManager.getProviderDefaultModel(chunk.agentId);
+              const agentContextWindow = this._providerManager.getModelContextWindow(chunk.agentId, agentModel);
+              // Each brainstorm agent is its own backend with its own convention —
+              // normalizing against the PANEL's provider would mis-bucket it.
+              const agentUsage = this._normalizeTurnUsage(chunk.agentId as ProviderType, agentModel, chunk.usage);
+              if (agentUsage) {
+                this._compactionManager.recordUsage(agentPanelId, agentUsage, agentContextWindow);
+              }
             }
             this._postToPanel(panelId, {
               type: 'brainstormAgentComplete',
@@ -5649,45 +6107,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // auto-switch below is skipped for a pseudo-agent on its own, because
       // `getProvider('mysti')` is undefined and the block is guarded on it.
 
-      // Auto-switch to a compatible model for the new provider — but only when
-      // the current model is a stale OLD-provider built-in (#39/Plan 01 §4.2):
-      // a model the user hand-typed or declared as custom is preserved across
-      // the switch instead of being clobbered with the new provider's default.
+      // Auto-switch to a compatible model for the new provider. This used to
+      // carry its own copy of the precedence rules (#39/Plan 01 §4.2) and only
+      // fired when the stale model was a built-in of the provider being left —
+      // so a model inherited from a THIRD provider (the global `defaultModel`,
+      // typically) survived every switch untouched. `_resolveModelForProvider`
+      // is now the single place those rules live: it keeps a hand-typed or
+      // user-declared custom model exactly as before, and replaces one that
+      // demonstrably belongs to another backend.
       const newProviderConfig = this._providerManager.getProvider(settings.provider);
       if (newProviderConfig) {
-        const currentModel = panelId ? this._getPanelModel(panelId) : config.get<string>('defaultModel', '');
-        const validModels = this._providerManager.getModels(settings.provider).map(m => m.id);
-        const customModels = config.get<Record<string, string[]>>('customModels', {});
-        const isCustomForNew = Array.isArray(customModels?.[settings.provider]) && customModels[settings.provider].includes(currentModel);
-        const wasOldProviderBuiltin = this._providerManager.getModels(previousProvider).some(m => m.id === currentModel);
-        const needsSwitch = !validModels.includes(currentModel) && !isCustomForNew && wasOldProviderBuiltin;
-
-        // If current model is a stale old-provider built-in, switch to the new provider's default
-        if (needsSwitch) {
-          const newModel = newProviderConfig.defaultModel;
+        const storedModel = panelId
+          ? (this._panelStates.get(panelId)?.settingsOverrides?.model || config.get<string>('defaultModel', ''))
+          : config.get<string>('defaultModel', '');
+        const resolvedModel = storedModel ? this._resolveModelForProvider(storedModel, settings.provider) : '';
+        if (resolvedModel && resolvedModel !== storedModel) {
           if (panelId) {
             const panelState = this._panelStates.get(panelId);
             if (panelState) {
               if (!panelState.settingsOverrides) { panelState.settingsOverrides = {}; }
-              panelState.settingsOverrides.model = newModel;
+              panelState.settingsOverrides.model = resolvedModel;
             }
           } else {
-            await config.update('defaultModel', newModel, vscode.ConfigurationTarget.Global);
+            await config.update('defaultModel', resolvedModel, vscode.ConfigurationTarget.Global);
           }
-          console.log(`[Mysti] Auto-switched model to ${newModel} for ${settings.provider}`);
-
-          // Notify only the originating panel of the model change
-          if (panelId) {
-            this._postToPanel(panelId, {
-              type: 'modelChanged',
-              payload: { model: newModel, provider: settings.provider }
-            });
-          } else {
-            this.postMessage({
-              type: 'modelChanged',
-              payload: { model: newModel, provider: settings.provider }
-            });
-          }
+          console.log(`[Mysti] Auto-switched model to ${resolvedModel} for ${settings.provider} (was ${storedModel}, from ${previousProvider})`);
         }
       }
     }
@@ -5790,6 +6234,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._permissionManager.refreshConfig();
         console.log(`[Mysti] Updated semi-autonomous timeout to: ${timeout}s`);
       }
+    }
+
+    // Tell the webview what the model actually IS whenever this call could have
+    // moved it. It keeps its own `state.settings.model` and posts that back with
+    // every message, and until now only the provider-switch auto-correction ever
+    // sent it an update — so `/model` (SlashCommandManager `model:switch`) wrote
+    // the panel override, said "Model changed to: …", and then the webview
+    // re-sent the OLD id on the next turn and overwrote it. The picker named one
+    // model, the CLI ran another, and nothing in between said so.
+    //
+    // Posted after both branches above so provider and model are already
+    // settled — the value sent is the one a send would use. Safe to echo
+    // unconditionally: the webview's handler assigns and repaints, and never
+    // posts back, so there is no loop.
+    if (settings.model !== undefined || settings.provider !== undefined) {
+      const pid = panelId;
+      const activeProvider = pid
+        ? this._getPanelProvider(pid)
+        : config.get<string>('defaultProvider', DEFAULT_PROVIDER);
+      const effectiveModel = pid
+        ? this._getPanelModel(pid)
+        : this._resolveModelForProvider(config.get<string>('defaultModel', ''), activeProvider);
+      // The per-provider custom model (`mysti.codexModel` and friends) OUTRANKS
+      // the picker inside the provider, so a switch onto a backend that has one
+      // has to say so — otherwise the picker names a stock model while the CLI
+      // runs the override, which is the same lie in a different place. Read
+      // through a fresh configuration handle: `config` was captured before the
+      // custom-model write above and would answer with the pre-update value.
+      const customModelKey = getCustomModelSettingKey(activeProvider);
+      const customModel = customModelKey
+        ? vscode.workspace.getConfiguration('mysti').get<string>(customModelKey, '')
+        : '';
+      const message: WebviewMessage = {
+        type: 'modelChanged',
+        payload: { model: effectiveModel, provider: activeProvider, customModel }
+      };
+      if (pid) { this._postToPanel(pid, message); } else { this.postMessage(message); }
     }
 
     // Pre-spawn persistent process when provider, model, or spawn-affecting settings change
@@ -6208,12 +6689,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle permission response from the webview
    * This is called when user responds to an inline permission card
    */
-  private _handlePermissionResponse(response: PermissionResponse): void {
+  private _handlePermissionResponse(payload: unknown, panelId: string): void {
+    if (!isRecord(payload) || typeof payload.requestId !== 'string'
+      || (payload.decision !== 'approve' && payload.decision !== 'deny' && payload.decision !== 'always-allow')) {
+      return;
+    }
+    const response: PermissionResponse = {
+      requestId: payload.requestId,
+      decision: payload.decision,
+      ...(payload.scope === 'this-action' || payload.scope === 'session' ? { scope: payload.scope } : {}),
+    };
     console.log('[Mysti] Permission response received:', response);
     // B15: read the pending request BEFORE handleResponse() — it deletes the
     // request from the pending map, so reading afterwards always returned
     // undefined and permission-decision learning never ran.
     const request = this._permissionManager.getPendingRequest(response.requestId);
+    if (!request?.ownerKey) { return; }
+    // Background gates use the job as their cancellation owner, while their
+    // cards still belong to the originating panel. The sender is host-bound.
+    const ownerPanelId = this._backgroundJobManager.get(request.ownerKey)?.panelId ?? request.ownerKey;
+    if (ownerPanelId !== panelId) { return; }
 
     this._permissionManager.handleResponse(response);
 
@@ -6341,8 +6836,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    this._semiAutoPlanTimeouts.delete(syntheticPlanId);
-    const planData = this._pendingPlanData.get(syntheticPlanId);
+    const planData = this._pendingPlans.take(panelId, syntheticPlanId);
     if (!planData) {
       return;
     }
@@ -6364,7 +6858,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     // Clean up pending state
-    this._pendingPlanData.delete(syntheticPlanId);
     this._pendingPlanSelections.delete(panelId);
 
     // Execute the auto-selected plan
@@ -6708,8 +7201,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     originalQuery: string,
     metaQuestions: ClarifyingQuestion[] | undefined,
     panelId: string,
-    origin?: { source: 'exit-plan-mode'; planFilePath: string | null }
+    origin?: { source: 'exit-plan-mode'; planFilePath: string | null },
+    isCurrent: () => boolean = this._pendingPlans.capture(panelId)
   ): Promise<void> {
+    if (!isCurrent() || !this._panelStates.has(panelId)) { return; }
     const syntheticPlanId = `plan-${messageId}-${Date.now()}`;
 
     // Autonomous mode: try to auto-select a plan
@@ -6744,7 +7239,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Track pending plan selection (blocks autonomous continuation)
     this._pendingPlanSelections.add(panelId);
-    this._pendingPlanData.set(syntheticPlanId, { options, messageId, originalQuery });
+    this._pendingPlans.clearPanel(panelId);
+    this._pendingPlans.set(panelId, syntheticPlanId, { options, messageId, originalQuery });
 
     // Send plan options to webview (existing rendering). Native exit-plan
     // routing (Plan 02 Phase 3.5) reuses this exact message shape, adding
@@ -6770,10 +7266,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: { syntheticPlanId, timeout, expiresAt }
       });
 
-      const timeoutHandle = setTimeout(() => {
-        this._handleSemiAutonomousPlanTimeout(panelId, syntheticPlanId);
-      }, timeout * 1000);
-      this._semiAutoPlanTimeouts.set(syntheticPlanId, timeoutHandle);
+      this._pendingPlans.schedule(panelId, syntheticPlanId, timeout * 1000, () => {
+        void this._handleSemiAutonomousPlanTimeout(panelId, syntheticPlanId).catch(error => {
+          console.error('[Mysti] Semi-autonomous plan selection failed', error);
+        });
+      });
     }
   }
 
@@ -6787,6 +7284,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const instance = this._providerManager.getProviderInstance(provider);
     const style = instance?.capabilities?.thinkingStyle;
     return (style === 'streamed' || style === 'complete-blocks') ? style : undefined;
+  }
+
+  /**
+   * The token-accounting convention the given backend speaks, resolved against
+   * the model in use (backends that front other vendors declare `auto`).
+   */
+  private _usageConventionFor(provider: ProviderType, model?: string): UsageConvention {
+    const declared = this._providerManager.getProviderInstance(provider)?.capabilities?.usageConvention;
+    return resolveUsageConvention(declared ?? 'none', model);
+  }
+
+  /**
+   * Normalize a backend's raw usage into the canonical disjoint shape at the
+   * stream boundary, so every downstream consumer (compaction threshold, smart
+   * economics, Boost ledger, webview pie) shares ONE fill formula instead of
+   * each re-deriving one that is wrong for half the backends.
+   *
+   * Returns null when the backend cannot report usage at all (`emitsUsage`
+   * false) or reported nothing measurable — UNKNOWN, which callers must not
+   * confuse with a measured zero.
+   */
+  private _normalizeTurnUsage(
+    provider: ProviderType,
+    model: string | undefined,
+    usage: UsageStats | undefined,
+  ): UsageStats | null {
+    if (!usage) { return null; }
+    const instance = this._providerManager.getProviderInstance(provider);
+    if (instance && instance.capabilities?.emitsUsage === false) { return null; }
+    const normalized = normalizeUsage(usage, this._usageConventionFor(provider, model));
+    return hasUsageSignal(normalized) ? normalized : null;
   }
 
   /**
@@ -6804,8 +7332,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _handleExitPlanMode(
     planFilePath: string | null,
     assistantMessage: Message,
-    panelId: string
+    panelId: string,
+    isCurrent: () => boolean = this._pendingPlans.capture(panelId)
   ): Promise<void> {
+    if (!isCurrent() || !this._panelStates.has(panelId)) { return; }
     try {
       let planContent = '';
       if (planFilePath) {
@@ -6858,7 +7388,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         originalQuery,
         undefined,
         panelId,
-        { source: 'exit-plan-mode', planFilePath }
+        { source: 'exit-plan-mode', planFilePath },
+        isCurrent
       );
     } catch (error) {
       console.error('[Mysti] exit_plan_mode handling failed:', error);
@@ -6869,11 +7400,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Detect plan options and clarifying questions in an assistant message using AI classification
    * Returns true if interactive elements (questions or plans) were detected and sent
    */
-  private async _detectAndSendPlanOptions(message: Message, panelId: string): Promise<boolean> {
+  private async _detectAndSendPlanOptions(
+    message: Message,
+    panelId: string,
+    isCurrent: () => boolean = this._pendingPlans.capture(panelId)
+  ): Promise<boolean> {
     try {
+      if (!isCurrent() || !this._panelStates.has(panelId)) { return false; }
       // Use AI-powered classification to distinguish questions from plan options
       const classifyStart = Date.now();
       const result = await this._planOptionManager.classifyResponse(message.content);
+      if (!isCurrent() || !this._panelStates.has(panelId)) { return false; }
       console.log(`[Mysti] Classification completed in ${Date.now() - classifyStart}ms — questions: ${result.questions.length}, plans: ${result.planOptions.length}`);
       const originalQuery = this._lastUserMessage.get(panelId) || '';
 
@@ -6909,7 +7446,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           message.id,
           originalQuery,
           metaQuestions.length > 0 ? metaQuestions : undefined,
-          panelId
+          panelId,
+          undefined,
+          isCurrent
         );
         hasInteractiveElements = true;
       } else if (result.planOptions.length >= 1 && clarifyingQuestions.length > 0) {
@@ -6930,17 +7469,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     payload: PlanSelectionResult,
     panelId: string
   ): Promise<void> {
+    if (!this._panelStates.has(panelId)) { return; }
     const { selectedPlan, originalQuery, executionMode, customInstructions } = payload;
     console.log('[Mysti] Plan option selected:', selectedPlan.title, 'with mode:', executionMode);
 
     // Clear pending plan tracking
     this._pendingPlanSelections.delete(panelId);
     // Cancel any semi-auto timer for this panel's plans
-    for (const [planId, timer] of this._semiAutoPlanTimeouts.entries()) {
-      clearTimeout(timer);
-      this._semiAutoPlanTimeouts.delete(planId);
-      this._pendingPlanData.delete(planId);
-    }
+    this._pendingPlans.clearPanel(panelId);
+    const isCurrent = this._pendingPlans.capture(panelId);
+    if (!isCurrent()) { return; }
 
     // Check if currently in plan mode
     const config = vscode.workspace.getConfiguration('mysti');
@@ -6978,6 +7516,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // For execution modes: switch mode and auto-execute
     // 1. Switch to the selected execution mode
     await this._handleUpdateSettings({ mode: executionMode });
+    if (!isCurrent() || !this._panelStates.has(panelId)) { return; }
 
     // 2. Notify webview of mode change
     this._postToPanel(panelId, {
@@ -7305,7 +7844,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Wire messages
     panel.webview.onDidReceiveMessage(
-      async (msg: any) => this._handleDashboardMessage(msg, panelId)
+      async (msg: unknown) => this._handleDashboardMessage(msg, panelId)
     );
 
     // Cleanup on dispose
@@ -7331,14 +7870,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Handle messages from the Visual Test Dashboard webview.
    */
-  private async _handleDashboardMessage(msg: any, dashboardPanelId: string): Promise<void> {
+  private async _handleDashboardMessage(msg: unknown, dashboardPanelId: string): Promise<void> {
+    if (!msg || typeof msg !== 'object' || !('type' in msg)) { return; }
     switch (msg.type) {
       case 'dashboardStartVisualTest': {
         // The dashboard is now an OBSERVER, not a private orchestrator: Run
         // takes one look at the app and renders it. Anything that needs fixing
         // is the chat agent's job, through its own gated tools — that is what
         // removed the second, ungated agent this feature used to spawn.
-        const req = (msg.payload?.config || {}) as Partial<VisualTestConfig> & { path?: string };
+        const payload = 'payload' in msg ? msg.payload : undefined;
+        const raw = payload && typeof payload === 'object' && 'config' in payload ? payload.config : undefined;
+        const config = raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? raw as Record<string, unknown> : {};
+        const req: Partial<VisualTestConfig> & { path?: string } = {
+          url: typeof config.url === 'string' ? config.url : undefined,
+          path: typeof config.path === 'string' ? config.path : undefined,
+          devServerCommand: typeof config.devServerCommand === 'string' ? config.devServerCommand : undefined,
+          elementSelector: typeof config.elementSelector === 'string' ? config.elementSelector : undefined,
+          screenshotMode: config.screenshotMode === 'viewport' || config.screenshotMode === 'full-page' || config.screenshotMode === 'element'
+            ? config.screenshotMode : undefined,
+          waitForSelector: typeof config.waitForSelector === 'string' ? config.waitForSelector : undefined,
+          requirements: typeof config.requirements === 'string' ? config.requirements : undefined,
+          interactionsEnabled: typeof config.interactionsEnabled === 'boolean' ? config.interactionsEnabled : undefined,
+        };
         const originPanel = this._vtDashboardChatOrigin || this._sidebarId;
         const settings = this._getSettingsForPanel(originPanel);
         await this._runDashboardLook(dashboardPanelId, originPanel, settings, req);
@@ -7346,7 +7900,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'dashboardCancelVisualTest':
         this._visualTestManager.cancelTest(dashboardPanelId);
-        this._postToPanel(dashboardPanelId, { type: 'visualTestDashboardCancelled' } as any);
+        this._postToPanel(dashboardPanelId, { type: 'visualTestDashboardCancelled' });
         break;
       case 'dashboardStopServer':
         await this._visualTestManager.stopDevServer(dashboardPanelId);
@@ -7634,13 +8188,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const settings: Settings = {
       // The BACKEND, not the agent selection: every consumer of these settings
       // (visual look, canvas approval) acts through a real provider (Plan 25).
-      provider: this._getPanelProvider(panelId) as any,
+      provider: this._getPanelProvider(panelId) as Settings['provider'],
       model: config.get('defaultModel', ''),
-      mode: config.get('defaultMode', 'default') as any,
-      thinkingLevel: config.get('defaultThinkingLevel', 'none') as any,
-      effortLevel: config.get('defaultEffortLevel', 'high') as any,
-      accessLevel: config.get('accessLevel', 'ask-permission') as any,
-      contextMode: 'auto' as any,
+      mode: config.get<Settings['mode']>('defaultMode', 'default'),
+      thinkingLevel: config.get<Settings['thinkingLevel']>('defaultThinkingLevel', 'none'),
+      effortLevel: config.get<Settings['effortLevel']>('defaultEffortLevel', 'high'),
+      accessLevel: config.get<Settings['accessLevel']>('accessLevel', 'ask-permission'),
+      contextMode: 'auto',
       // Autonomy is a per-panel RUNTIME toggle (`mysti.toggleAutonomous` ->
       // AutonomousManager.activate), never a setting: this used to read
       // `mysti.autonomous.enabled`, which package.json does not declare, so it
@@ -7657,8 +8211,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Panel overrides carry provider/model only (see PanelState).
       const o = state.settingsOverrides;
       if (o.provider) { settings.provider = o.provider; }
-      if (o.model) { settings.model = o.model; }
     }
+    // Through `_getPanelModel`, so this snapshot carries the same settled model
+    // a send would use — applying `settingsOverrides.model` raw here would hand
+    // a visual-look or canvas turn a model left over from another backend.
+    settings.model = this._getPanelModel(panelId);
     try {
       const clamp = clampSettingsToUserPolicy(
         settings,
@@ -7831,7 +8388,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Wire messages
     panel.webview.onDidReceiveMessage(
-      async (msg: any) => this._handleCanvasMessage(msg, panelId)
+      async (msg: unknown) => this._handleCanvasMessage(msg, panelId)
     );
 
     // Cleanup on dispose
@@ -7986,16 +8543,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       controller.abort();
       this._mystiAbortControllers.delete(panelId);
     }
+    // Every foreground lane can wait on a gate, including a plain CLI turn
+    // and the coordinator's own tools. Release these even without a delegation.
+    const dismissed = this._permissionManager.cancelRequestsByOwner(panelId);
+    if (dismissed.length > 0) {
+      this._postToPanel(panelId, { type: 'permissionDismissed', payload: { requestIds: dismissed } });
+    }
     // A delegation may be SIGSTOPped awaiting a permission decision — resolve the
     // gate (reject) and tear the child run down so the pool for-await unblocks.
     // Scoped to this panel's foreground gates (ownerKey === panelId) so a
     // concurrent background job's pending gate is left alone.
     const delegationRun = this._mystiActiveDelegationRuns.get(panelId);
     if (delegationRun) {
-      const dismissed = this._permissionManager.cancelRequestsByOwner(panelId);
-      if (dismissed.length > 0) {
-        this._postToPanel(panelId, { type: 'permissionDismissed', payload: { requestIds: dismissed } });
-      }
       this._collaboratorPool.cancelRun(delegationRun);
       this._mystiActiveDelegationRuns.delete(panelId);
     }
@@ -8228,7 +8787,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const t of tools) {
       const name = String(t.name || '');
       if (!/^[A-Za-z0-9_.-]{1,80}$/.test(name)) { continue; } // unsafe/malformed → drop
-      const desc = t.description ? String(t.description).replace(/[\r\n\t\f\v\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200) : undefined;
+      const desc = t.description ? replaceAsciiControlCharacters(String(t.description), ' ').replace(/\s+/g, ' ').trim().slice(0, 200) : undefined;
       // Plan 20 Phase 5: keep the server's inputSchema (bounded + key-filtered)
       // instead of discarding it — this is what stopped the model guessing
       // argument names for every connected tool.
@@ -9282,17 +9841,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // re-entrancy guard). Background jobs are concurrent — they don't lock.
     if (!bg) { this._runningPanels.add(panelId); }
 
-    let finalText = '';
-    let firstText = false;
+    const runOutput = new CoordinatorRunOutput(message => this._postToPanel(panelId, message), jobId);
     let errored = false;
     let errorMsg = '';
     /** Plan 25: the UNMAPPED error, so a background job card can classify it too. */
     let rawErrorMsg = '';
-    // The concrete model that actually produced the answer (the model behind a
-    // router id, or a later chain entry that took over on rate-limit). Used for
-    // attribution instead of re-deriving chain[0], which would be wrong on a
-    // fall-through and is a raw router string on the happy path.
-    let resolvedModel: string | undefined;
     let delegations = 0;
     let delegId = 0;
     // Agents whose continuing session already received the attached-file fold
@@ -9326,71 +9879,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       try { sig = `${kind}:${JSON.stringify(input)}`; } catch { return; }
       if (seenToolSigs.has(sig)) { redundantToolCalls++; } else { seenToolSigs.add(sig); }
     };
-    const usageTotal = { input_tokens: 0, output_tokens: 0 };
-    let sawUsage = false;
-    // P0.8: real billed coordinator cost (X-DeepMyst-Cost-USD), summed across turns.
-    let costTotal = 0;
-    let sawCost = false;
-    // [10]: a directive aborts its turn before the trailing usage frame, so that
-    // turn's tokens are unobtainable — estimate them and flag the total partial.
-    let usagePartial = false;
-    // Ordered render record so a reload replays the interleaved prose + inline
-    // delegation cards (mirrors the normal turn's segments + toolCalls).
-    const mystiSegments: MessageSegment[] = [];
-    const mystiToolCalls: ToolCall[] = [];
-    const recordDelegationCard = (id: string, agent: string, task: string, output: string, failed: boolean, tier?: string) => {
-      // review[33]: persist the SAME input shape the live card was posted with
-      // (incl. the requested tier) so reload replay reconstructs it identically.
-      mystiToolCalls.push({ id, name: 'delegate', input: { agent, task, ...(tier ? { tier } : {}) }, output, status: failed ? 'failed' : 'completed' });
-      mystiSegments.push({ type: 'tool', toolCallId: id });
-    };
-    // review[22]/[33]: cross-vendor review cards were persisted as 'delegate'
-    // cards (wrong name/input) so replay rendered a delegate card instead of a
-    // review card — record them with the live 'review' name/input {reviewer,of}.
-    const recordReviewCard = (id: string, reviewer: string, of: string, output: string, failed: boolean) => {
-      mystiToolCalls.push({ id, name: 'review', input: { reviewer, of }, output, status: failed ? 'failed' : 'completed' });
-      mystiSegments.push({ type: 'tool', toolCallId: id });
-    };
-    // Local read-only tool cards (read/ls/grep/diag) — same persistence contract.
-    const recordLocalCard = (id: string, kind: string, input: Record<string, unknown>, output: string, failed: boolean) => {
-      mystiToolCalls.push({ id, name: kind, input, output, status: failed ? 'failed' : 'completed' });
-      mystiSegments.push({ type: 'tool', toolCallId: id });
-    };
-
-    // Output routing: foreground → live chat; background → job card.
-    const postText = (t: string) => {
-      if (bg) { this._postToPanel(panelId, { type: 'jobProgress', payload: { jobId, kind: 'text', content: t } }); return; }
-      const payload: { type: string; content: string; perfSentAt?: number } = { type: 'text', content: t };
-      if (!firstText) { firstText = true; payload.perfSentAt = Date.now(); }
-      this._postToPanel(panelId, { type: 'responseChunk', payload });
-    };
-    let coordThinking = '';
-    const postThinking = (t: string) => {
-      coordThinking += t;
-      this._postToPanel(panelId, bg
-        ? { type: 'jobProgress', payload: { jobId, kind: 'thinking', content: t } }
-        : { type: 'responseChunk', payload: { type: 'thinking', content: t } });
-    };
-    const postToolUse = (tc: { id: string; name: string; input: Record<string, unknown> }) => {
-      this._postToPanel(panelId, bg
-        ? { type: 'jobToolUse', payload: { jobId, toolCall: tc } }
-        : { type: 'toolUse', payload: tc });
-    };
-    const postToolResult = (tc: { id: string; name: string; output: string; status: string }) => {
-      this._postToPanel(panelId, bg
-        ? { type: 'jobToolResult', payload: { jobId, toolCall: tc } }
-        : { type: 'toolResult', payload: tc });
-    };
-
-    const emit = (t: string) => {
-      if (!t) { return; }
-      finalText += t;
-      const last = mystiSegments[mystiSegments.length - 1];
-      if (last && last.type === 'text') { last.content = (last.content || '') + t; }
-      else { mystiSegments.push({ type: 'text', content: t }); }
-      postText(t);
-    };
-
     let naturalEnd = false;
     let exhausted = false;
     // Plan 20 Phase 1 telemetry: did the model consult the catalog, and did that
@@ -9399,11 +9887,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Declared out here so the `finally` can still see them.
     let skillSearches = 0;
     const skillViewed: string[] = [];
-    // Plan 24 Phase 1: the coordinator's real model round-trip count. Declared
-    // out here (like naturalEnd/exhausted above) so the post-run Boost ledger
-    // record can see it — otherwise every multi-turn run books as 1 round-trip,
-    // undercounting the exact metric the sensor exists to measure.
-    let streams = 0;
+    // Plan 19: EXECUTION kinds (write/edit/bash/patch) are added to the scanner
+    // only when local execution is enabled; the MCP tool kind only when a live
+    // toolset handshake succeeded; the connect kind only when DeepMyst is wired.
+    // When a group is off its tag isn't even recognized (it degrades to visible
+    // text) — the capability simply does not exist rather than existing-but-erroring.
+    const scanKinds = [
+      ...ALL_MYSTI_KINDS,
+      ...(execEnabled ? MYSTI_EXEC_KINDS : []),
+      ...(mcpToolset ? MYSTI_MCP_KINDS : []),
+      ...(skillsEnabled ? MYSTI_SKILL_KINDS : []),
+      ...(capabilitiesEnabled ? MYSTI_CAPABILITY_KINDS : []),
+      ...(connectEnabled ? MYSTI_CONNECT_KINDS : []),
+      ...(visualCaps.look ? MYSTI_VISUAL_KINDS : []),
+      ...(visualCaps.look && visualCaps.act ? MYSTI_VISUAL_ACT_KINDS : []),
+      // Plan 22 Phase 1: the canvas kinds are ALWAYS recognized, unlike every
+      // other gated group. `canvas_open` has to be reachable from a cold chat
+      // with no canvas open — that is the whole point of closing the silo
+      // (today every opener is a human gesture, so "design me a login screen"
+      // produces prose). The individual tools still fail closed: dispatch
+      // resolves a binding via CanvasWorkspace and refuses when unbound.
+      ...MYSTI_CANVAS_KINDS,
+    ];
+    let prevWasLoneRead = false;
+    const turnRunner = new CoordinatorTurnRunner({
+      nonce: delegateNonce, scanKinds, maxTurns: gov.maxTurns,
+      reasoningEffort: effort, tools: coordTools,
+    }, {
+      stream: (turnMessages, options) => this._mystiCoordinator!.stream(turnMessages, options),
+      isCancelled,
+      registerAbort: controller => {
+        if (bg) { this._jobAbortControllers.set(jobId!, controller); }
+        else { this._registerMystiAbort(panelId, controller); }
+      },
+      // Whole canvas pages need the larger text-directive allowance.
+      getMaxTokens: () => this._canvasBoundTo(panelId) ? 8192 : 4096,
+      output: runOutput,
+      onTurnText: text => this._announceRefusedCapability(panelId, text, delegateNonce, scanKinds),
+      beforeTurn: () => {
+        prevWasLoneRead = prevTurnWasLoneRead;
+        prevTurnWasLoneRead = false;
+        // Human steering remains host-fenced data, drained before each stream.
+        const steering = this._drainCanvasSteering(runId);
+        if (steering) {
+          messages.push({ role: 'user', content: this._fenceLocalToolResult('canvas-steering', steering, nonce, delegateNonce) });
+        }
+      },
+    });
     try {
       // Loop shape (Plan 17 P0.1/P0.5): every iteration is one coordinator
       // stream. Local read-only tools and delegations have SEPARATE sub-budgets
@@ -9419,160 +9949,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // a six-artboard design would otherwise starve the coding loop. The cap
       // exists only to bound a runaway edit loop.
       let canvasCalls = 0;
-      let lengthContinues = 0;
-      // Plan 19: EXECUTION kinds (write/edit/bash/patch) are added to the scanner
-      // only when local execution is enabled; the MCP tool kind only when a live
-      // toolset handshake succeeded; the connect kind only when DeepMyst is wired.
-      // When a group is off its tag isn't even recognized (it degrades to visible
-      // text) — the capability simply does not exist rather than existing-but-erroring.
-      const scanKinds = [
-        ...ALL_MYSTI_KINDS,
-        ...(execEnabled ? MYSTI_EXEC_KINDS : []),
-        ...(mcpToolset ? MYSTI_MCP_KINDS : []),
-        ...(skillsEnabled ? MYSTI_SKILL_KINDS : []),
-        ...(capabilitiesEnabled ? MYSTI_CAPABILITY_KINDS : []),
-        ...(connectEnabled ? MYSTI_CONNECT_KINDS : []),
-        ...(visualCaps.look ? MYSTI_VISUAL_KINDS : []),
-        ...(visualCaps.look && visualCaps.act ? MYSTI_VISUAL_ACT_KINDS : []),
-        // Plan 22 Phase 1: the canvas kinds are ALWAYS recognized, unlike every
-        // other gated group. `canvas_open` has to be reachable from a cold chat
-        // with no canvas open — that is the whole point of closing the silo
-        // (today every opener is a human gesture, so "design me a login screen"
-        // produces prose). The individual tools still fail closed: dispatch
-        // resolves a binding via CanvasWorkspace and refuses when unbound.
-        ...MYSTI_CANVAS_KINDS,
-      ];
-      // The scanner is hoisted so a length-continuation can REUSE it (review
-      // [9]/[17]): a max_tokens cut mid-directive-tag leaves a partial tag held
-      // in its buffer; a fresh scanner would never reassemble the split marker,
-      // leaking raw tags (incl. the nonce) into the answer. carryScanner keeps
-      // the same instance across the continuation so the tag completes normally.
-      let scanner = new MystiTagScanner(delegateNonce, scanKinds);
-      let carryScanner = false;
-      // Plan 22 §3.5 — the per-run steering inbox. Registered for the whole run
-      // so `canvas/comment` / accept-reject outcomes queue against THIS run
-      // rather than the pending slot.
+      // Canvas steering belongs to this run for its entire tool/model loop.
       this._canvasSteeringRuns.add(runId);
-      while (streams < gov.maxTurns) {
-        streams++;
-        // Phase 3 detector: default this turn to "not a lone read" so every
-        // path (delegate, exec, batch, plain answer) resets it implicitly and
-        // only the single read-only tool path below re-arms it.
-        const prevWasLoneRead = prevTurnWasLoneRead;
-        prevTurnWasLoneRead = false;
-        if (isCancelled()) { break; }
-        if (!carryScanner) { scanner = new MystiTagScanner(delegateNonce, scanKinds); }
-        carryScanner = false;
-
-        // Drain canvas steering at the TOP of the iteration, before `stream()`
-        // starts — never mid-stream, or it races the abort-on-directive logic
-        // below. Comments are human text arriving through a webview, so the
-        // body re-enters the model as UNTRUSTED fenced DATA, exactly like a
-        // file read or a delegate result, and never as an instruction.
-        const steering = this._drainCanvasSteering(runId);
-        if (steering) {
-          messages.push({ role: 'user', content: this._fenceLocalToolResult('canvas-steering', steering, nonce, delegateNonce) });
+      for await (const turn of turnRunner.turns(messages)) {
+        if (turn.kind === 'error') {
+          errored = true;
+          rawErrorMsg = turn.message;
+          if ('cause' in turn) { console.error('[Mysti] agentic turn failed:', turn.cause); }
+          // Both transport throws and streamed failures use the same action card.
+          errorMsg = bg ? this._friendlyMystiError(turn.message) : this._postMystiFailure(panelId, turn.message);
+          break;
         }
-
-        const controller = new AbortController();
-        if (bg) { this._jobAbortControllers.set(jobId!, controller); }
-        else { this._registerMystiAbort(panelId, controller); }
-        let turnText = '';
-        let directive: MystiDirective | undefined;
-        let turnToolCalls: AccumulatedToolCall[] | undefined;
-        let abortedForDirective = false;
-        let finishReason: string | undefined;
-
-        try {
-          // Plan 22 §3.3: a bound canvas raises the cap. A whole artboard rides
-          // the `<canvaspage:…>` TEXT directive precisely because a native tool
-          // call cannot carry one at 4096 — and both length-continuation
-          // branches below are excluded on tool-call turns, so a truncated
-          // artboard would burn the turn budget re-truncating.
-          const canvasBound = this._canvasBoundTo(panelId);
-          for await (const ev of this._mystiCoordinator.stream(messages, { maxTokens: canvasBound ? 8192 : 4096, reasoningEffort: effort, signal: controller.signal, tools: coordTools })) {
-            if (isCancelled()) { break; }
-            // Plan 25: a recoverable failure (auth / credits) becomes an action
-            // card with buttons; anything else stays a plain error. A background
-            // job gets the same actions attached to its job card below.
-            if (ev.error) { errored = true; rawErrorMsg = ev.error; errorMsg = bg ? this._friendlyMystiError(ev.error) : this._postMystiFailure(panelId, ev.error); break; }
-            if (ev.model) { resolvedModel = ev.model; }
-            if (ev.reasoning) { postThinking(ev.reasoning); }
-            if (ev.toolCalls && ev.toolCalls.length) { turnToolCalls = ev.toolCalls; }
-            if (ev.finishReason) { finishReason = ev.finishReason; }
-            if (ev.costUsd !== undefined) { costTotal += ev.costUsd; sawCost = true; }
-            if (ev.text) {
-              turnText += ev.text;
-              const r = scanner.feed(ev.text);
-              if (r.text) { emit(r.text); }
-              if (r.directive) {
-                directive = r.directive;
-                abortedForDirective = true;
-                // [10]: aborting skips the trailing usage frame — estimate this
-                // turn's output tokens (~4 chars/token) so the receipt isn't
-                // undercounted by most of a delegation-heavy run.
-                usageTotal.output_tokens += Math.ceil(turnText.length / 4);
-                usagePartial = true;
-                controller.abort();
-                break;
-              }
-            }
-            if (ev.usage) { usageTotal.input_tokens += ev.usage.input_tokens; usageTotal.output_tokens += ev.usage.output_tokens; sawUsage = true; }
-          }
-        } catch (error) {
-          // An abort we triggered to end the turn on a directive is expected.
-          if (!abortedForDirective && !isCancelled()) {
-            errored = true;
-            const raw = error instanceof Error ? error.message : 'Mysti failed';
-            console.error('[Mysti] agentic turn failed:', error);
-            // Plan 25: a credential failure can arrive as a THROW as well as an
-            // `ev.error` event (the gateway client rejects rather than yielding
-            // on some transports). Both have to reach the action card, or the
-            // user gets a dead-end string on one path and buttons on the other.
-            rawErrorMsg = raw;
-            errorMsg = bg ? this._friendlyMystiError(raw) : this._postMystiFailure(panelId, raw);
-          }
-        }
-
-        if (errored || isCancelled()) { break; }
-
-        // Plan 27 Gate 4 / D-11 — REFUSAL MUST SPEAK.
-        //
-        // A gated group's tags are not added to `scanKinds`, so when the gate is
-        // off the tag "degrades to visible text": the model announces it is
-        // writing a file and the user sees the raw `<write:NONCE …>` markup, or
-        // nothing, and no explanation. The default agent cannot edit a file out
-        // of the box, and until now nothing said so.
-        //
-        // This does NOT change what is allowed — it only names the gate that
-        // already blocked, once per turn, with a button that opens the setting.
-        this._announceRefusedCapability(panelId, turnText, delegateNonce, scanKinds);
-
-        // P0.5: max_tokens cut the turn mid-answer (finish_reason 'length') with
-        // no directive closed — auto-continue instead of presenting a truncated
-        // reply as complete. Checked BEFORE flush and carrying the scanner, so a
-        // tag split by the cut is completed by the continuation (review [9]/[17]).
-        if (!directive && !(turnToolCalls && turnToolCalls.length) && finishReason === 'length' && turnText.trim() && lengthContinues < 2) {
-          lengthContinues++;
-          carryScanner = true; // keep the same scanner (held partial tag)
-          messages.push({ role: 'assistant', content: turnText });
-          messages.push({ role: 'user', content: 'Your answer was cut off by the length limit. Continue EXACTLY where it stopped — do not repeat anything.' });
-          continue;
-        }
-
-        // [12]: a REASONING model can spend its whole token budget "thinking"
-        // and finish with finish_reason 'length' and ZERO visible text — that is
-        // not a final answer. Nudge it to answer briefly (bounded) instead of
-        // falling through to naturalEnd → the "did not produce a result"
-        // placeholder. Append to the last user turn to avoid user/user adjacency.
-        if (!directive && !(turnToolCalls && turnToolCalls.length) && finishReason === 'length' && !turnText.trim() && lengthContinues < 2) {
-          lengthContinues++;
-          const nudge = 'You used your token budget without emitting a visible answer. Answer the user now, briefly and directly — do not think at length first.';
-          const lastMsg = messages[messages.length - 1];
-          if (lastMsg && lastMsg.role === 'user') { lastMsg.content += `\n\n${nudge}`; }
-          else { messages.push({ role: 'user', content: nudge }); }
-          continue;
-        }
+        const turnText = turn.text;
+        let directive = turn.directive;
+        const turnToolCalls = turn.toolCalls;
 
         // ── Native tool-calling (Plan 19 P4): a capable model may drive the
         // SAME op set through OpenAI-style function calls instead of text tags.
@@ -9584,14 +9974,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // per turn: a model that emitted several has the extras dropped and
         // re-issues them next turn (tools are offered every turn).
         if (!directive && turnToolCalls && turnToolCalls.length) {
-          // Emit any visible prose streamed alongside the call(s), and don't let
-          // the flush below re-consume the scanner (directive is set by then).
-          const held = scanner.flush();
-          if (held.text) { emit(held.text); }
-          // Native tool turns usually carry no visible text — keep the assistant
-          // history entry non-empty so every downstream push is a well-formed
-          // request (some endpoints reject an empty assistant content).
-          if (!turnText.trim()) { turnText = `(tool: ${turnToolCalls.map(c => c.name).join(', ')})`; }
           // Convert every call up front so we can choose batch vs single.
           const convs = turnToolCalls.map(c => ({ name: c.name, conv: toolCallToDirective(c.name, parseToolArgs(c.arguments)) }));
 
@@ -9633,7 +10015,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const jobs = runList.map(d => {
               const toolId = `mysti-local-${runId}-${delegId++}`;
               const input = this._localToolCardInput(d);
-              postToolUse({ id: toolId, name: d.kind, input });
+              runOutput.postToolUse({ id: toolId, name: d.kind, input });
               return { d, toolId, input };
             });
             // Honor Stop per-tool (matching the serial path): once cancelled, the
@@ -9645,8 +10027,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 : { j, res: await this._runMystiLocalTool(j.d) });
             const fenced: string[] = [];
             for (const { j, res } of outcomes) {
-              postToolResult({ id: j.toolId, name: j.d.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
-              recordLocalCard(j.toolId, j.d.kind, j.input, res.output, !res.ok);
+              runOutput.postToolResult({ id: j.toolId, name: j.d.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
+              runOutput.recordTool(j.toolId, j.d.kind, j.input, res.output, !res.ok);
               noteToolSig(j.d.kind, j.input);
               fenced.push(this._fenceLocalToolResult(j.d.kind, res.output, nonce, delegateNonce));
             }
@@ -9680,24 +10062,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           directive = first.conv;
         }
 
-        // Not continuing → flush now (fail-open) to finalize any held text and a
-        // last complete directive.
-        if (!directive) {
-          const f = scanner.flush();
-          if (f.text) { emit(f.text); }
-          directive = f.directive;
-        }
-
         // ── Remember (P2.5): persist a durable cross-backend project fact. No
         // CLI, no model round-trip beyond the ack; bounded per run so it can't
         // be spammed. The fact is UNTRUSTED model output — stored as source
         // 'model' and only ever re-injected inside a nonce fence.
         if (directive && directive.kind === 'remember') {
           const toolId = `mysti-mem-${runId}-${delegId++}`;
-          postToolUse({ id: toolId, name: 'remember', input: { fact: directive.fact } });
+          runOutput.postToolUse({ id: toolId, name: 'remember', input: { fact: directive.fact } });
           if (rememberCount >= 8) {
-            postToolResult({ id: toolId, name: 'remember', output: '(memory budget reached this run)', status: 'failed' });
-            recordLocalCard(toolId, 'remember', { fact: directive.fact }, '(memory budget reached this run)', true);
+            runOutput.postToolResult({ id: toolId, name: 'remember', output: '(memory budget reached this run)', status: 'failed' });
+            runOutput.recordTool(toolId, 'remember', { fact: directive.fact }, '(memory budget reached this run)', true);
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: 'Memory budget reached this run — continue with the request.' });
             continue;
@@ -9705,8 +10079,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           rememberCount++;
           this._memory().remember(directive.fact, 'model');
           const out = `Remembered: ${directive.fact.slice(0, 140)}`;
-          postToolResult({ id: toolId, name: 'remember', output: out, status: 'completed' });
-          recordLocalCard(toolId, 'remember', { fact: directive.fact }, out, false);
+          runOutput.postToolResult({ id: toolId, name: 'remember', output: out, status: 'completed' });
+          runOutput.recordTool(toolId, 'remember', { fact: directive.fact }, out, false);
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: 'Noted for future sessions. Continue with the user\'s request.' });
           continue;
@@ -9723,13 +10097,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             continue;
           }
           localTools++;
-          postToolUse({ id: toolId, name: directive.kind, input });
+          runOutput.postToolUse({ id: toolId, name: directive.kind, input });
           const res = await this._runMystiLocalTool(directive);
           // Resolve the card either way — Stop must not leave an eternal spinner
           // (review [5]); the result already exists, so showing it is strictly
           // better than a stuck 'running' card that vanishes on reload.
-          postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
-          recordLocalCard(toolId, directive.kind, input, res.output, !res.ok);
+          runOutput.postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
+          runOutput.recordTool(toolId, directive.kind, input, res.output, !res.ok);
           noteToolSig(directive.kind, input);
           // Exactly one read-only call this turn: if the PREVIOUS turn was the
           // same shape, those two round-trips could have been one.
@@ -9761,10 +10135,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             continue;
           }
           localExec++;
-          postToolUse({ id: toolId, name: directive.kind, input });
+          runOutput.postToolUse({ id: toolId, name: directive.kind, input });
           const res = await this._runMystiLocalExec(directive, settings, panelId, toolId, cancelKey);
-          postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
-          recordLocalCard(toolId, directive.kind, input, res.output, !res.ok);
+          runOutput.postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
+          runOutput.recordTool(toolId, directive.kind, input, res.output, !res.ok);
           if (isCancelled()) { break; }
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: this._fenceLocalToolResult(directive.kind, res.output, nonce, delegateNonce) });
@@ -9792,10 +10166,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // model can call every turn. Runs the ladder, then TWO forced cards.
         if (directive && directive.kind === 'publish') {
           const toolId = `mysti-publish-${runId}-${delegId++}`;
-          postToolUse({ id: toolId, name: 'publish', input: { id: directive.id } });
+          runOutput.postToolUse({ id: toolId, name: 'publish', input: { id: directive.id } });
           const res = await this._runMystiPublish(directive.id, panelId);
-          postToolResult({ id: toolId, name: 'publish', output: res.output, status: res.ok ? 'completed' : 'failed' });
-          recordLocalCard(toolId, 'publish', { id: directive.id }, res.output, !res.ok);
+          runOutput.postToolResult({ id: toolId, name: 'publish', output: res.output, status: res.ok ? 'completed' : 'failed' });
+          runOutput.recordTool(toolId, 'publish', { id: directive.id }, res.output, !res.ok);
           if (isCancelled()) { break; }
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: this._fenceLocalToolResult('publish', res.output, nonce, delegateNonce) });
@@ -9806,19 +10180,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // bash: host-owned command shape, schema-validated args passed by file.
         if (directive && directive.kind === 'skillrun') {
           const toolId = `mysti-skillrun-${runId}-${delegId++}`;
-          postToolUse({ id: toolId, name: 'skillrun', input: { tool: directive.tool, args: directive.args } });
+          runOutput.postToolUse({ id: toolId, name: 'skillrun', input: { tool: directive.tool, args: directive.args } });
           if (localExec >= gov.maxLocalExec) {
             const msg = `Capability budget reached (${gov.maxLocalExec} per run).`;
-            postToolResult({ id: toolId, name: 'skillrun', output: msg, status: 'failed' });
-            recordLocalCard(toolId, 'skillrun', { tool: directive.tool }, msg, true);
+            runOutput.postToolResult({ id: toolId, name: 'skillrun', output: msg, status: 'failed' });
+            runOutput.recordTool(toolId, 'skillrun', { tool: directive.tool }, msg, true);
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: `${msg} Finish with what you have.` });
             continue;
           }
           localExec++;
           const res = await this._runMystiSkillRun(directive, settings, panelId);
-          postToolResult({ id: toolId, name: 'skillrun', output: res.output, status: res.ok ? 'completed' : 'failed' });
-          recordLocalCard(toolId, 'skillrun', { tool: directive.tool }, res.output, !res.ok);
+          runOutput.postToolResult({ id: toolId, name: 'skillrun', output: res.output, status: res.ok ? 'completed' : 'failed' });
+          runOutput.recordTool(toolId, 'skillrun', { tool: directive.tool }, res.output, !res.ok);
           if (isCancelled()) { break; }
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: this._fenceLocalToolResult(`skillrun:${directive.tool.replace(/[^A-Za-z0-9_]/g, '').slice(0, 48)}`, res.output, nonce, delegateNonce) });
@@ -9833,11 +10207,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // bundled content is ever treated otherwise (Phase 0, invariant I1).
         if (directive && directive.kind === 'skill') {
           const toolId = `mysti-skill-${runId}-${delegId++}`;
-          postToolUse({ id: toolId, name: 'skill', input: directive.id ? { id: directive.id, part: directive.part } : { query: directive.query } });
+          runOutput.postToolUse({ id: toolId, name: 'skill', input: directive.id ? { id: directive.id, part: directive.part } : { query: directive.query } });
           if (localTools >= gov.maxLocalTools) {
             const msg = `Local tool budget exhausted (${gov.maxLocalTools} calls).`;
-            postToolResult({ id: toolId, name: 'skill', output: msg, status: 'failed' });
-            recordLocalCard(toolId, 'skill', {}, msg, true);
+            runOutput.postToolResult({ id: toolId, name: 'skill', output: msg, status: 'failed' });
+            runOutput.recordTool(toolId, 'skill', {}, msg, true);
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: `${msg} Answer with what you have.` });
             continue;
@@ -9845,8 +10219,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           localTools++;
           if (directive.id) { skillViewed.push(directive.id); } else { skillSearches++; }
           const res = await this._runMystiSkillLookup(directive);
-          postToolResult({ id: toolId, name: 'skill', output: res.output, status: res.ok ? 'completed' : 'failed' });
-          recordLocalCard(toolId, 'skill', directive.id ? { id: directive.id } : { query: directive.query }, res.output, !res.ok);
+          runOutput.postToolResult({ id: toolId, name: 'skill', output: res.output, status: res.ok ? 'completed' : 'failed' });
+          runOutput.recordTool(toolId, 'skill', directive.id ? { id: directive.id } : { query: directive.query }, res.output, !res.ok);
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: this._fenceLocalToolResult('skill', res.output, nonce, delegateNonce) });
           continue;
@@ -9860,7 +10234,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // which costs the user an approval card per wrong guess.
         if (directive && directive.kind === 'findtool') {
           const toolId = `mysti-findtool-${runId}-${delegId++}`;
-          postToolUse({ id: toolId, name: 'findtool', input: { query: directive.query } });
+          runOutput.postToolUse({ id: toolId, name: 'findtool', input: { query: directive.query } });
           const matches = mcpToolset ? searchMcpTools(mcpToolset.tools, directive.query) : [];
           const output = !mcpToolset
             ? 'External tools are not enabled.'
@@ -9872,8 +10246,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   ? `arguments: ${JSON.stringify(t.inputSchema)}`
                   : 'arguments: (this server published no schema — infer from the description)',
               ].join('\n')).join('\n\n');
-          postToolResult({ id: toolId, name: 'findtool', output, status: 'completed' });
-          recordLocalCard(toolId, 'findtool', { query: directive.query }, output, false);
+          runOutput.postToolResult({ id: toolId, name: 'findtool', output, status: 'completed' });
+          runOutput.recordTool(toolId, 'findtool', { query: directive.query }, output, false);
           messages.push({ role: 'assistant', content: turnText });
           // Schemas come from third-party servers, so they re-enter fenced like
           // any other untrusted result — a description is not an instruction.
@@ -9887,17 +10261,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // re-enters the model UNTRUSTED + nonce-fenced. Serial only (NOT batched).
         if (directive && directive.kind === 'mcptool') {
           const toolId = `mysti-mcp-${runId}-${delegId++}`;
-          postToolUse({ id: toolId, name: 'mcptool', input: { tool: directive.tool, args: directive.args } });
+          runOutput.postToolUse({ id: toolId, name: 'mcptool', input: { tool: directive.tool, args: directive.args } });
           if (!mcpToolset) {
-            postToolResult({ id: toolId, name: 'mcptool', output: 'External tools are not enabled.', status: 'failed' });
-            recordLocalCard(toolId, 'mcptool', { tool: directive.tool }, 'External tools are not enabled.', true);
+            runOutput.postToolResult({ id: toolId, name: 'mcptool', output: 'External tools are not enabled.', status: 'failed' });
+            runOutput.recordTool(toolId, 'mcptool', { tool: directive.tool }, 'External tools are not enabled.', true);
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: 'External tools are not available. Answer without them or delegate.' });
             continue;
           }
           if (mcpCalls >= gov.maxMcpCalls) {
-            postToolResult({ id: toolId, name: 'mcptool', output: `External tool budget reached (${gov.maxMcpCalls} calls).`, status: 'failed' });
-            recordLocalCard(toolId, 'mcptool', { tool: directive.tool }, `External tool budget reached (${gov.maxMcpCalls} calls).`, true);
+            runOutput.postToolResult({ id: toolId, name: 'mcptool', output: `External tool budget reached (${gov.maxMcpCalls} calls).`, status: 'failed' });
+            runOutput.recordTool(toolId, 'mcptool', { tool: directive.tool }, `External tool budget reached (${gov.maxMcpCalls} calls).`, true);
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: `External tool budget reached (${gov.maxMcpCalls} calls this run). Finish with what you have.` });
             continue;
@@ -9905,8 +10279,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Reject a model-invented tool name BEFORE any call — only the
           // discovered, connected tools are callable.
           if (!mcpToolset.tools.some(t => t.name === directive.tool)) {
-            postToolResult({ id: toolId, name: 'mcptool', output: `No such tool "${directive.tool}".`, status: 'failed' });
-            recordLocalCard(toolId, 'mcptool', { tool: directive.tool }, `No such tool "${directive.tool}".`, true);
+            runOutput.postToolResult({ id: toolId, name: 'mcptool', output: `No such tool "${directive.tool}".`, status: 'failed' });
+            runOutput.recordTool(toolId, 'mcptool', { tool: directive.tool }, `No such tool "${directive.tool}".`, true);
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: `No connected tool "${directive.tool}". Available: ${mcpToolset.tools.map(t => t.name).slice(0, 40).join(', ')} — or answer without it.` });
             continue;
@@ -9917,8 +10291,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             mcpToolset.tools.find(t => t.name === directive.tool)?.description,
           );
           if (res.ok) { this._bumpMcpUsage(directive.tool); }
-          postToolResult({ id: toolId, name: 'mcptool', output: res.output, status: res.ok ? 'completed' : 'failed' });
-          recordLocalCard(toolId, 'mcptool', { tool: directive.tool }, res.output, !res.ok);
+          runOutput.postToolResult({ id: toolId, name: 'mcptool', output: res.output, status: res.ok ? 'completed' : 'failed' });
+          runOutput.recordTool(toolId, 'mcptool', { tool: directive.tool }, res.output, !res.ok);
           if (isCancelled()) { break; }
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: this._fenceLocalToolResult(`mcptool:${String(directive.tool).replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 48)}`, res.output, nonce, delegateNonce) });
@@ -9939,19 +10313,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             ? { path: directive.path || '(current page)', ...(directive.selector ? { selector: directive.selector } : {}) }
             : { actions: directive.actions.length };
           if (visualLooks >= gov.maxVisualLooks) {
-            postToolUse({ id: toolId, name: directive.kind, input });
+            runOutput.postToolUse({ id: toolId, name: directive.kind, input });
             const msg = `Visual budget reached (${gov.maxVisualLooks} looks this run).`;
-            postToolResult({ id: toolId, name: directive.kind, output: msg, status: 'failed' });
-            recordLocalCard(toolId, directive.kind, input, msg, true);
+            runOutput.postToolResult({ id: toolId, name: directive.kind, output: msg, status: 'failed' });
+            runOutput.recordTool(toolId, directive.kind, input, msg, true);
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: `${msg} Finish with what you have.` });
             continue;
           }
           visualLooks++;
-          postToolUse({ id: toolId, name: directive.kind, input });
+          runOutput.postToolUse({ id: toolId, name: directive.kind, input });
           const res = await this._runMystiVisual(directive, settings, panelId, toolId, cancelKey);
-          postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
-          recordLocalCard(toolId, directive.kind, input, res.output, !res.ok);
+          runOutput.postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
+          runOutput.recordTool(toolId, directive.kind, input, res.output, !res.ok);
           // Mirror progress into the chat panel's mini status bar.
           this._postToPanel(panelId, {
             type: 'visualTestMiniStatus',
@@ -9983,19 +10357,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const input: Record<string, unknown> = directive.kind === 'canvas'
             ? { tool: directive.tool, args: directive.args }
             : { page: directive.pageId, title: directive.title, bytes: directive.source.length };
-          postToolUse({ id: toolId, name: 'canvas', input });
+          runOutput.postToolUse({ id: toolId, name: 'canvas', input });
           if (canvasCalls >= ChatViewProvider._MYSTI_MAX_CANVAS_CALLS) {
             const out = `Canvas edit budget reached (${ChatViewProvider._MYSTI_MAX_CANVAS_CALLS} edits this run).`;
-            postToolResult({ id: toolId, name: 'canvas', output: out, status: 'failed' });
-            recordLocalCard(toolId, 'canvas', input, out, true);
+            runOutput.postToolResult({ id: toolId, name: 'canvas', output: out, status: 'failed' });
+            runOutput.recordTool(toolId, 'canvas', input, out, true);
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: `${out} Summarize what you built and stop editing.` });
             continue;
           }
           canvasCalls++;
           const res = await this._runMystiCanvasTool(directive, panelId, runId, toolId);
-          postToolResult({ id: toolId, name: 'canvas', output: res.output, status: res.ok ? 'completed' : 'failed' });
-          recordLocalCard(toolId, 'canvas', input, res.output, !res.ok);
+          runOutput.postToolResult({ id: toolId, name: 'canvas', output: res.output, status: res.ok ? 'completed' : 'failed' });
+          runOutput.recordTool(toolId, 'canvas', input, res.output, !res.ok);
           if (isCancelled()) { break; }
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: this._fenceLocalToolResult(label, res.output, nonce, delegateNonce) });
@@ -10021,9 +10395,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // — tell the model so it retries with a valid one (bounded by maxTurns).
           if (!agentId) {
             const out = `No such agent "${directive.agent}".`;
-            postToolUse({ id: toolId, name: 'delegate', input: { agent: directive.agent, task: directive.task } });
-            postToolResult({ id: toolId, name: 'delegate', output: out, status: 'failed' });
-            recordDelegationCard(toolId, directive.agent, directive.task, out, true);
+            runOutput.postToolUse({ id: toolId, name: 'delegate', input: { agent: directive.agent, task: directive.task } });
+            runOutput.postToolResult({ id: toolId, name: 'delegate', output: out, status: 'failed' });
+            runOutput.recordDelegation(toolId, directive.agent, directive.task, out, true);
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: `There is no usable agent "${directive.agent}". Choose one of: ${liveBackends.join(', ') || '(none available)'} — or answer without delegating.` });
             continue;
@@ -10057,7 +10431,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // there would be a lie (review [9]).
             const tierApplied = !!(effectiveTier && tierModel && this._providerManager.getProviderInstance(agent)?.capabilities.modelSelection !== 'none');
             lastTierApplied = tierApplied;
-            postToolUse({ id: cardId, name: 'delegate', input: { agent, task: directive!.task, ...(tierApplied ? { tier: effectiveTier } : {}) } });
+            runOutput.postToolUse({ id: cardId, name: 'delegate', input: { agent, task: directive!.task, ...(tierApplied ? { tier: effectiveTier } : {}) } });
             const trace = bg ? undefined : (chunk: { type: string; toolCall?: unknown; content?: string }) => {
               this._postToPanel(panelId, { type: 'mystiDelegateTrace', payload: { parentId: cardId, chunk } });
             };
@@ -10095,11 +10469,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const alt = pickCrossVendorReviewer(writer, liveBackends) ?? liveBackends.find(b => b !== writer) ?? null;
             if (alt) {
               const note = `(failed: ${result.failure}${result.errorDetail ? ` — ${result.errorDetail}` : ''}) — rerouting to ${alt}`;
-              postToolResult({ id: toolId, name: 'delegate', output: note, status: 'failed' });
+              runOutput.postToolResult({ id: toolId, name: 'delegate', output: note, status: 'failed' });
               // self-review: persist the SAME tier the live first card showed so
               // reload doesn't drop the badge (lastTierApplied is still the first
               // writer's here — the reroute dispatchTo hasn't run yet).
-              recordDelegationCard(toolId, writer, directive.task, note, true, lastTierApplied ? effectiveTier : undefined);
+              runOutput.recordDelegation(toolId, writer, directive.task, note, true, lastTierApplied ? effectiveTier : undefined);
               // review[3]: no operational-memory write here — the outage note had
               // no consumer, crowded the 40-entry memory cap, and polluted the
               // injected project brain. Rerouting itself is the resilience action.
@@ -10112,16 +10486,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Stop pressed during the delegation: resolve the card ('Stopped') so
           // it doesn't spin forever (review [5]), then end the run.
           if (isCancelled()) {
-            postToolResult({ id: toolId, name: 'delegate', output: 'Stopped by user', status: 'failed' });
-            recordDelegationCard(toolId, writer, directive.task, 'Stopped by user', true, lastTierApplied ? effectiveTier : undefined);
+            runOutput.postToolResult({ id: toolId, name: 'delegate', output: 'Stopped by user', status: 'failed' });
+            runOutput.recordDelegation(toolId, writer, directive.task, 'Stopped by user', true, lastTierApplied ? effectiveTier : undefined);
             break;
           }
 
           const failLabel = `(failed: ${result.failure || 'error'}${result.errorDetail ? ` — ${result.errorDetail}` : ''})`;
           const output = result.text.trim()
             || (result.hasError ? failLabel : '(no output)');
-          postToolResult({ id: toolId, name: 'delegate', output, status: result.hasError ? 'failed' : 'completed' });
-          recordDelegationCard(toolId, writer, directive.task, output, result.hasError, lastTierApplied ? effectiveTier : undefined);
+          runOutput.postToolResult({ id: toolId, name: 'delegate', output, status: result.hasError ? 'failed' : 'completed' });
+          runOutput.recordDelegation(toolId, writer, directive.task, output, result.hasError, lastTierApplied ? effectiveTier : undefined);
 
           // P1.2 verification loop: after a delegation that MODIFIED the
           // workspace, run a free read-only diagnostics check (VSCode ground
@@ -10169,19 +10543,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               crossReviewRuns++;
               const reviewId = `mysti-review-${runId}-${delegId++}`;
               const reviewTask = `You are REVIEWING a change another AI ("${writer}") just made for this task:\n"${directive.task}"\n\nRead the affected files yourself and report bugs, security issues, missed edge cases, regressions, and correctness problems. Be specific (file:line). Do NOT edit anything — findings only. If the change looks correct, say so briefly.`;
-              postToolUse({ id: reviewId, name: 'review', input: { reviewer, of: writer } });
+              runOutput.postToolUse({ id: reviewId, name: 'review', input: { reviewer, of: writer } });
               const reviewTrace = bg ? undefined : (chunk: { type: string; toolCall?: unknown; content?: string }) => {
                 this._postToPanel(panelId, { type: 'mystiDelegateTrace', payload: { parentId: reviewId, chunk } });
               };
               const review = await this._runMystiDelegation(reviewer, reviewTask, settings, conversation, panelId, runId, cancelKey, isCancelled, reviewTrace, undefined, false, true);
               if (isCancelled()) {
-                postToolResult({ id: reviewId, name: 'review', output: 'Stopped by user', status: 'failed' });
-                recordReviewCard(reviewId, reviewer, writer, 'Stopped by user', true);
+                runOutput.postToolResult({ id: reviewId, name: 'review', output: 'Stopped by user', status: 'failed' });
+                runOutput.recordReview(reviewId, reviewer, writer, 'Stopped by user', true);
                 break;
               }
               const reviewOut = review.text.trim() || (review.hasError ? `(review failed: ${review.failure || 'error'})` : '(no findings)');
-              postToolResult({ id: reviewId, name: 'review', output: reviewOut, status: review.hasError ? 'failed' : 'completed' });
-              recordReviewCard(reviewId, reviewer, writer, reviewOut, review.hasError);
+              runOutput.postToolResult({ id: reviewId, name: 'review', output: reviewOut, status: review.hasError ? 'failed' : 'completed' });
+              runOutput.recordReview(reviewId, reviewer, writer, reviewOut, review.hasError);
               if (!review.hasError && review.text.trim()) {
                 // review[1]: APPEND to the delegate-result user message (pushed
                 // just above) rather than pushing a SECOND consecutive 'user'
@@ -10201,51 +10575,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         naturalEnd = true;
         break; // no directive → the streamed prose is the final answer
       }
-      // [2]/[12]: the loop ended (turn budget exhausted, or a reasoning-only
-      // turn) with NO visible answer. The sub-budgets (local tools + delegations)
-      // can exactly equal maxTurns, so a full-budget run would otherwise persist
-      // the "did not produce a result" placeholder despite completed work. Spend
-      // ONE final no-tools stream to force a real answer from everything
-      // gathered. Directives here are ignored (fed through a scanner so a stray
-      // nonce tag is redacted, never leaked as prose).
-      if (!finalText.trim() && !errored && !isCancelled()) {
-        const finalizeController = new AbortController();
-        if (bg) { this._jobAbortControllers.set(jobId!, finalizeController); }
-        else { this._registerMystiAbort(panelId, finalizeController); }
-        try {
-          // In the scenario this runs (a delegation-heavy run that hit maxTurns,
-          // or a reasoning-only exhaustion) `messages` ALWAYS ends in a user turn,
-          // so pushing another user message would create user/user adjacency —
-          // the very thing that 400s strict-alternation coordinator backends and
-          // would burn the whole failover chain, defeating this rescue. APPEND to
-          // the last user turn instead (same pattern as the verify/review paths).
-          const finalizeNudge = 'You have used your tool budget for this task. Do NOT emit any tool directives now. Using everything gathered above, give your best, complete final answer to the user\'s request — briefly and directly.';
-          const finalizeMessages: GatewayChatMessage[] = messages.map(m => ({ ...m }));
-          const lastFinalize = finalizeMessages[finalizeMessages.length - 1];
-          if (lastFinalize && lastFinalize.role === 'user') { lastFinalize.content += `\n\n${finalizeNudge}`; }
-          else { finalizeMessages.push({ role: 'user', content: finalizeNudge }); }
-          // Use the SAME kinds as the main loop (incl. exec kinds when enabled),
-          // else a `<write:NONCE …>`/`<bash:…>` tag emitted at finalize is not
-          // recognized → its raw text + the live nonce leak into the answer
-          // (review round-5 #7). The finalize loop ignores rf.directive, so
-          // recognizing the tag only redacts it — nothing is dispatched.
-          const fScanner = new MystiTagScanner(delegateNonce, scanKinds);
-          // Plan 24 Phase 1: the finalize pass is a real model round-trip and
-          // books its own usage below, so it must be counted — otherwise a run
-          // that ends here under-reports round-trips by exactly one.
-          streams++;
-          for await (const ev of this._mystiCoordinator.stream(finalizeMessages, { maxTokens: 4096, reasoningEffort: effort, signal: finalizeController.signal })) {
-            if (isCancelled()) { break; }
-            if (ev.error) { break; } // keep whatever we have; don't flip to errored
-            if (ev.model) { resolvedModel = ev.model; }
-            if (ev.reasoning) { postThinking(ev.reasoning); }
-            if (ev.costUsd !== undefined) { costTotal += ev.costUsd; sawCost = true; }
-            if (ev.text) { const r = fScanner.feed(ev.text); if (r.text) { emit(r.text); } }
-            if (ev.usage) { usageTotal.input_tokens += ev.usage.input_tokens; usageTotal.output_tokens += ev.usage.output_tokens; sawUsage = true; }
-          }
-          const rf = fScanner.flush(); if (rf.text) { emit(rf.text); }
-          if (finalText.trim()) { naturalEnd = true; }
-        } catch { /* keep whatever partial text we produced */ }
+      // Preserve the existing single no-tools rescue when tool/continuation
+      // turns produced no visible answer. The runner counts and redacts it.
+      if (!runOutput.text.trim() && !errored && !isCancelled()) {
+        await turnRunner.finalize(messages);
+        if (runOutput.text.trim()) { naturalEnd = true; }
       }
       // Hit the turn cap without a natural final answer (review [7]): the answer
       // is likely mid-thought — flag it rather than persisting a truncated reply
@@ -10289,18 +10623,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // when nothing at all was produced. Callers gate on ownership so a superseded
     // zombie never inserts an out-of-order message into the successor's history.
     const persistIncompleteRun = (marker: string) => {
-      if (mystiToolCalls.length === 0 && !finalText.trim()) { return; }
-      mystiSegments.push({ type: 'text', content: `\n\n${marker}` });
-      const body = (finalText.trim() ? finalText.trim() + '\n\n' : '') + marker;
+      if (!runOutput.hasContent) { return; }
+      const snapshot = runOutput.snapshot(runOutput.model || 'mysti', marker);
       this._conversationManager.addMessageToConversation(
-        conversationId, 'assistant', body, undefined, undefined,
-        coordThinking.trim() || undefined,
-        {
-          provider: 'mysti' as ProviderType,
-          model: resolvedModel || 'mysti',
-          toolCalls: mystiToolCalls.length > 0 ? mystiToolCalls : undefined,
-          segments: mystiSegments.length > 0 ? mystiSegments : undefined,
-        },
+        conversationId, 'assistant', snapshot.content, undefined, undefined,
+        snapshot.thinking, { provider: 'mysti' as ProviderType, ...snapshot.extras },
       );
     };
 
@@ -10355,7 +10682,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const answer = finalText.trim() || 'The Mysti agent did not produce a result.';
     // Turn cap reached without a natural finish (review [7]): tell the user the
     // answer may be incomplete instead of presenting it as a clean completion.
     if (exhausted) {
@@ -10365,16 +10691,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     // Prefer the model the stream reported it actually ran on; only fall back to
     // resolving chain[0] if the stream never surfaced one (older gateway).
-    const coordinatorModel = resolvedModel || await this._mystiCoordinator.resolveCoordinatorModel().catch(() => 'mysti');
+    const coordinatorModel = runOutput.model || await this._mystiCoordinator.resolveCoordinatorModel().catch(() => 'mysti');
+    const snapshot = runOutput.snapshot(coordinatorModel);
+    const answer = snapshot.content;
     const assistantMessage = this._conversationManager.addMessageToConversation(
       conversationId, 'assistant', answer, undefined, undefined,
-      coordThinking.trim() || undefined, // P0.3: reasoning survives reload
-      {
-        provider: 'mysti' as ProviderType,
-        model: coordinatorModel,
-        toolCalls: mystiToolCalls.length > 0 ? mystiToolCalls : undefined,
-        segments: mystiSegments.length > 0 ? mystiSegments : undefined,
-      },
+      snapshot.thinking, { provider: 'mysti' as ProviderType, ...snapshot.extras },
     );
     // Plan 24 Phase 1: Boost ledger record for the coordinator path — hoisted
     // above the bg split so background job runs are recorded too. The totals
@@ -10385,17 +10707,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       kind: 'coordinator',
       provider: settings.provider,
       model: coordinatorModel,
-      // Unknown usage stays UNKNOWN: a gateway stream that never sent a usage
-      // frame must not book a measured zero (the UI footer suppresses usage in
-      // exactly that case), so the fields go undefined and the record is flagged.
-      contextTokens: sawUsage ? usageTotal.input_tokens : undefined,
-      outputTokens: sawUsage ? usageTotal.output_tokens : undefined,
-      roundTrips: streams,
+      ...runOutput.measurements(),
+      roundTrips: turnRunner.roundTrips,
       delegations,
       // Plan 24 Phase 3, record-only: what the round-trip reducer could have saved.
       redundantToolCalls,
       mergeableRoundTrips,
-      estimated: usagePartial === true || !sawUsage,
     });
     if (bg) {
       const job = this._backgroundJobManager.markDone(jobId!, answer, Date.now());
@@ -10406,14 +10723,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // P0.8: footer shows tokens + estimated coordinator cost + a delegations
       // pill — the agent's work has a visible receipt. `tokensPartial` flags a
       // delegation-heavy run whose per-directive turns were estimated ([10]).
-      const usagePayload = (sawUsage || sawCost || delegations > 0)
-        ? {
-            ...usageTotal,
-            ...(sawCost && costTotal > 0 ? { costUsd: costTotal } : {}),
-            ...(delegations > 0 ? { delegations } : {}),
-            ...(usagePartial ? { tokensPartial: true } : {}),
-          }
-        : undefined;
+      const usagePayload = runOutput.receipt(delegations);
       this._postToPanel(panelId, { type: 'responseComplete', payload: { message: assistantMessage, usage: usagePayload } });
     }
   }
@@ -11778,27 +12088,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._videoGenService.setKeys({ openai, gemini });
   }
 
-  /**
-   * F-3: derive a {@link StitchScreenRef} from a webview snapshot when the
-   * prompt bar did not send an explicit `stitchScreenRef`. Mirrors the
-   * `canvasReimagine` fallback: read the first selected object's metadata and,
-   * if it is a Stitch-generated screen, reconstruct the ref from its
-   * `stitchProjectId` / `stitchScreenId`. Returns `undefined` when the
-   * selection is not a Stitch screen so callers can surface a clear error.
-   */
-  private _stitchRefFromSnapshot(snapshot: any): StitchScreenRef | undefined {
-    const meta = snapshot?.selectedRegion?.objects?.[0]?.metadata;
-    if (meta?.engine === 'stitch' && meta.stitchProjectId && meta.stitchScreenId) {
-      return {
-        projectId: meta.stitchProjectId,
-        screenId: meta.stitchScreenId,
-        htmlContent: meta.stitchHtmlContent || undefined,
-        imageBase64: meta.stitchImageBase64 || undefined,
-      };
-    }
-    return undefined;
-  }
-
   // ──────────────────────────────────────────────────────────────────────
   // Plan 05 — chat→canvas bridge (fenced `canvas-op` path)
   // ──────────────────────────────────────────────────────────────────────
@@ -12795,14 +13084,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Handle messages from detached panel
     panel.webview.onDidReceiveMessage(
-      async (message: WebviewMessage) => {
-        await this._handleMessage(message);
+      async (message: unknown) => {
+        await this._receivePanelMessage(message, panelId, panel.webview);
       }
     );
 
     // Cleanup on dispose
     panel.onDidDispose(() => {
       this._panelStates.delete(panelId);
+      this._cancelQueuedChannelTurn(panelId);
+      this._cancelPendingSubAgentQuestions(panelId);
       this._lastUserMessage.delete(panelId);
       this._lastMentionContext.delete(panelId);
       this._cancelledPanels.delete(panelId);
@@ -12859,11 +13150,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       // Clean up pending plan selections
       this._pendingPlanSelections.delete(panelId);
-      for (const [planId, timer] of this._semiAutoPlanTimeouts.entries()) {
-        clearTimeout(timer);
-        this._semiAutoPlanTimeouts.delete(planId);
-        this._pendingPlanData.delete(planId);
-      }
+      this._pendingPlans.clearPanel(panelId);
       // Clean up autonomy level tracking
       this._panelAutonomyLevel.delete(panelId);
       // Mysti run tracking (re-review low — per-panelId maps were never evicted).
@@ -13997,6 +14284,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   public dispose(): void {
     console.log('[Mysti] ChatViewProvider: Disposing and cleaning up resources');
+    this._subAgentQuestions.dispose();
+    this._delayedChannelTurns.dispose();
 
     // Clean up all panel states
     for (const [, state] of this._panelStates) {
@@ -14010,6 +14299,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._lastUserMessage.clear();
     this._lastMentionContext.clear();
     this._cancelledPanels.clear();
+    this._pendingPlans.dispose();
+    this._pendingPlanSelections.clear();
 
     // Dispose managers that may have resources
     this._providerManager.dispose();

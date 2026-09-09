@@ -227,6 +227,9 @@
   --insp-show-display: none;
   --label-display: inline;
   --chips-display: flex;
+  --present-display: inline-flex;
+  --export-display: inline-flex;
+  --page-chip-display: inline-flex;
   --i-size: 14px;
 }
 
@@ -689,8 +692,20 @@ body.vscode-high-contrast-light .pane-scrim {
     --rail-scrim-display: block;
   }
 }
+/*
+ * The shed order, stated once. The top bar is a fixed 40px single row, so at
+ * every width something has to give and the ONLY question is what goes first.
+ * Labels are cheapest (the icon still names the control, and the `title` and
+ * `aria-label` are untouched); then Present, which has a full-screen entry
+ * point of its own; then Export and the artboard chip. History, the agent and
+ * the two pane switches are the last things standing, because they are the
+ * three things you cannot do anywhere else.
+ */
+@container canvas-shell (max-width: 639.98px) {
+  .app { --label-display: none; --present-display: none; }
+}
 @container canvas-shell (max-width: 479.98px) {
-  .app { --label-display: none; --chips-display: none; }
+  .app { --export-display: none; --page-chip-display: none; }
 }
 
 /* Fallback for engines without container queries. VS Code ^1.85 ships
@@ -715,41 +730,63 @@ body.vscode-high-contrast-light .pane-scrim {
       --rail-show-display: inline-flex; --rail-scrim-display: block;
     }
   }
-  @media (max-width: 479.98px) { .app { --label-display: none; --chips-display: none; } }
+  @media (max-width: 639.98px) { .app { --label-display: none; --present-display: none; } }
+  @media (max-width: 479.98px) { .app { --export-display: none; --page-chip-display: none; } }
 }
 
-/* ══ §6 TOP BAR ═════════════════════════════════════════════════════════════ */
+/* ══ §6 TOP BAR ═════════════════════════════════════════════════════════════
+ *
+ * ONE row, three zones, a fixed 40px. It used to be `flex-wrap: wrap` with two
+ * `.topbar-row` children, which meant that below ~1100px the tools wrapped to a
+ * second row and the board — the only surface this panel exists to show — paid
+ * for it out of its own height. The zones are held apart by two `.topbar-gap`
+ * spacers rather than `margin-left: auto`, so the agent's status sits in the
+ * OPTICAL centre and stays there as either side grows.
+ */
 .topbar {
   flex: 0 0 auto;
-  display: flex; flex-wrap: wrap; align-items: center;
-  gap: var(--sp-1) var(--sp-3);
-  padding: var(--sp-1) var(--sp-2);
+  display: flex; align-items: center; flex-wrap: nowrap;
+  gap: var(--sp-2);
+  height: 40px; padding: 0 var(--sp-2);
   /* `--bg-panel` (sideBar.background), NOT titleBar.activeBackground: this bar's
    * text is `--fg` (= `foreground`), and VS Code guarantees `foreground` against
    * sideBar/editor backgrounds — never against the title bar's, which a theme is
    * free to give its own identity (accent-coloured or inverted). Pairing one
    * component's background with another's foreground is how the whole top strip
-   * — name, selects, undo/redo, Present/Export and the agent status pill —
-   * drops to ~1.5:1 in any theme that decouples them. It is also the surface the
-   * rail and the inspector already use, so the chrome reads as one system. */
+   * dropped to ~1.5:1 in any theme that decouples them. It is also the surface
+   * the rail and the inspector already use, so the chrome reads as one system. */
   background: var(--bg-panel);
   border-bottom: 1px solid var(--line);
 }
-.topbar-row { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
-.topbar-title { flex: 1 1 260px; }
-.topbar-tools { flex: 0 1 auto; margin-left: auto; justify-content: flex-end; flex-wrap: wrap; row-gap: var(--sp-1); }
-.topbar-sep { width: 1px; align-self: stretch; margin: var(--sp-1) var(--sp-0); background: var(--line-soft); }
+/* Equal-weight spacers: two of them centre the middle zone between the other
+ * two, which `margin-left: auto` on the right zone cannot do. */
+.topbar-gap { flex: 1 1 0; min-width: var(--sp-2); }
 
 .brand { display: inline-flex; align-items: center; gap: var(--sp-1); color: var(--fg); font-weight: 600; white-space: nowrap; }
 .brand-text, .btn-text { display: var(--label-display, inline); }
 .artifact-name {
-  color: var(--fg-dim); min-width: 3ch;
+  color: var(--fg-dim); min-width: 0; flex: 0 1 auto;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* WHICH artboard the tools act on. Empty until the board has a focus, and an
+ * empty chip is no chip — never an outline around nothing. */
+.page-chip {
+  display: var(--page-chip-display, inline-flex); align-items: center; flex: none;
+  max-width: 18ch; padding: 0 var(--sp-2);
+  font-size: var(--fz-100); line-height: 1.7;
+  border: 1px solid var(--line-soft); border-radius: var(--r-pill); color: var(--fg-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.page-chip:empty { display: none; }
+
+.btn-present { display: var(--present-display, inline-flex); }
+.btn-export { display: var(--export-display, inline-flex); }
 
 /* The agent's status. It is a live region that always exists (so an update is
- * announced) but carries no chrome until it has something to say. */
-.agent-status { display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+ * announced) but carries no chrome until it has something to say. This is the
+ * GLANCE — is it working, for how long, how do I stop it. Everything else about
+ * the agent lives in exactly one place, the Activity tab (§10). */
+.agent-status { display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; flex: 0 1 auto; }
 .agent-status:has(> .agent-activity:not([hidden])) {
   padding: var(--sp-0) var(--sp-2);
   border: 1px solid var(--line-soft); border-radius: var(--r-pill);
@@ -771,21 +808,31 @@ body.vscode-high-contrast-light .pane-scrim {
   font: inherit; font-size: var(--fz-100); line-height: 1.4;
   padding: 0 var(--sp-2); border-radius: var(--r-pill);
   border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer;
+  white-space: nowrap;
 }
 .agent-cancel:hover { background: var(--bg-hover); border-color: var(--danger-line); color: var(--danger); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
-.history-toolbar { display: flex; align-items: center; gap: var(--sp-0); }
+/* History is ONE object with one border, not three buttons that look exactly
+ * like Present and Export — a confirm, three history steps and two exits all
+ * reading as peers is what made the old bar unscannable. */
+.history-toolbar {
+  display: flex; align-items: center; gap: 0; flex: none;
+  border: 1px solid var(--line); border-radius: var(--r-2);
+  background: var(--bg-raised); overflow: hidden;
+}
 .history-toolbar:empty { display: none; }
 .history-btn {
   font: inherit; font-size: var(--fz-200); line-height: var(--lh-tight);
-  min-height: 24px; padding: var(--sp-1) var(--sp-2);
-  border: 1px solid transparent; border-radius: var(--r-2);
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  min-height: 22px; padding: var(--sp-0) var(--sp-2);
+  border: none; border-radius: 0;
   background: transparent; color: var(--fg); cursor: pointer;
 }
+.history-btn + .history-btn { border-left: 1px solid var(--line); }
 .history-btn:hover { background: var(--bg-hover); }
 .history-btn[disabled], .history-btn[aria-disabled="true"] { opacity: .4; cursor: default; }
-.history-btn.save { border-color: var(--line); color: var(--fg-dim); }
+.history-btn.save { color: var(--fg-dim); }
 .history-btn.save:hover { color: var(--fg); }
 
 /* ══ §7 RAIL ════════════════════════════════════════════════════════════════ */
@@ -812,7 +859,17 @@ body.vscode-high-contrast-light .pane-scrim {
 }
 .thumb:hover { border-color: var(--line); background: var(--bg-hover); }
 .thumb.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.thumb-preview, .thumb-frame { aspect-ratio: 16 / 10; background: var(--canvas-paper); position: relative; overflow: hidden; }
+/* The fixed part of a rail row. `rail.ts` sizes it and fits the artboard's own
+ * shape inside — so the rows align while a phone still reads as a phone. */
+.thumb-slot {
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; border-radius: var(--r-2); background: var(--bg-board);
+}
+/* No `aspect-ratio` here. It used to declare 16/10 and was dead the whole time
+ * — `rail.ts` writes an explicit width AND height, which wins — so the rule
+ * described a shape the rail never drew. A lie in the stylesheet is worse than
+ * no rule: the next person reads it and believes it. */
+.thumb-preview, .thumb-frame { background: var(--canvas-paper); position: relative; overflow: hidden; }
 .thumb-preview iframe, .thumb-frame iframe {
   border: 0; position: absolute; top: 0; left: 0; transform-origin: top left; pointer-events: none;
 }
@@ -876,11 +933,22 @@ body.vscode-high-contrast-light .pane-scrim {
 
 .artboard { position: absolute; }
 .artboard-label {
-  position: absolute; top: -20px; left: 0; right: 0;
+  position: absolute; top: -20px; left: 0; right: auto; max-width: 62%;
   font-size: var(--fz-200); color: var(--fg-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
   /* Deliberately not counter-scaled: the label belongs to the world, so it
      shrinks with it. A constant-size label would collide at low zoom. */
+}
+/* The size, at the other end of the same strip. Right-aligned rather than
+ * trailing the name, so the two can never overlap at any name length: the
+ * label is capped at 62% and ellipsises, this takes the rest. Same treatment
+ * as the label otherwise — it belongs to the world and shrinks with it. */
+.artboard-format {
+  position: absolute; top: -20px; right: 0; left: auto; max-width: 36%;
+  text-align: right;
+  font-size: var(--fz-100); color: var(--fg-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none; font-variant-numeric: tabular-nums;
 }
 .artboard-surface {
   position: relative; overflow: hidden;
@@ -1091,17 +1159,71 @@ body.vscode-high-contrast-light .pane-scrim {
 .sr-error { font-size: var(--fz-100); color: var(--danger); }
 .sr-actions { display: flex; gap: var(--sp-1); }
 
-/* ══ §10 INSPECTOR ══════════════════════════════════════════════════════════ */
-.insp-tabs { display: flex; border-bottom: 1px solid var(--line); }
+/* ══ §10 THE DOCK — INSPECTOR | ACTIVITY ════════════════════════════════════
+ *
+ * Two tabs, ONE scroll region each. Before this the pane stacked four things
+ * that all wanted the same 300px column: the body, the steering composer, the
+ * version timeline (capped at 40% of the height, so it took its space from the
+ * properties you were reading) — and the staged review queue, which was not
+ * even here, it was inside the pages rail, shoving the navigation whenever the
+ * agent produced work.
+ *
+ * Inspector = the selection. Activity = the agent, all of it. The badge on the
+ * Activity tab is what interrupts, so nothing has to push a panel open over
+ * what the human was doing.
+ */
+.insp-tabs { display: flex; flex: 0 0 auto; border-bottom: 1px solid var(--line); }
 .insp-tab {
-  flex: 1; font: inherit; font-size: var(--fz-200); padding: var(--sp-2) 0;
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-1);
+  font: inherit; font-size: var(--fz-200); padding: var(--sp-2) 0;
   border: none; border-bottom: 2px solid transparent;
   background: transparent; color: var(--fg-dim); cursor: pointer;
 }
 .insp-tab:hover { color: var(--fg); }
 .insp-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+/* The count of staged changes waiting on a human. Hidden at zero by the module
+ * that owns it — a badge reading "0" is an interruption that says nothing. */
+.tab-badge {
+  min-width: 15px; padding: 0 var(--sp-1); border-radius: var(--r-pill);
+  font-size: var(--fz-100); line-height: 1.5; text-align: center;
+  background: var(--accent); color: var(--btn-primary-fg);
+  font-variant-numeric: tabular-nums;
+}
 
 .insp-body { flex: 1 1 auto; overflow-y: auto; padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-4); }
+/* The Inspector tab is a column: a fixed artboard strip, then the scrolling
+ * body. Only the body scrolls, so the artboard's format never scrolls away. */
+.insp-panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.insp-panel[hidden] { display: none; }
+.artboard-props {
+  flex: 0 0 auto; display: flex; flex-direction: column; gap: var(--sp-2);
+  padding: var(--sp-3); border-bottom: 1px solid var(--line);
+}
+.artboard-props-title {
+  font-size: var(--fz-100); color: var(--fg-dim);
+  text-transform: uppercase; letter-spacing: var(--tracking-caps);
+}
+/* Label above, control below: the dock is 240px at its floor and a side-by-side
+ * label/control pair does not survive that (the same rule as `.ctl`, §10). */
+.artboard-props .field { display: flex; flex-direction: column; align-items: stretch; gap: var(--sp-1); }
+.artboard-props .field-label { display: block; }
+.artboard-props .select { max-width: none; width: 100%; }
+/* The agent's one home. Same scroll rules as the inspector body — they are
+ * alternates, never both on screen, so neither can steal the other's height. */
+.activity-body {
+  flex: 1 1 auto; overflow-y: auto; padding: var(--sp-3);
+  display: flex; flex-direction: column; gap: var(--sp-4);
+}
+.activity-body[hidden] { display: none; }
+/* Inside the dock these are ordinary blocks in one scroll, not three panes
+ * fighting for height: the 40%-of-the-pane cap and the top border that made
+ * the timeline look like a separate region are gone. */
+.activity-body .staged-rail,
+.activity-body .version-timeline {
+  flex: 0 0 auto; max-height: none; overflow: visible;
+  padding: 0; border-top: none;
+}
+.activity-body .agent-comment { flex: 0 0 auto; }
 .insp-empty { font-size: var(--fz-200); color: var(--fg-dim); text-wrap: pretty; }
 .insp-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); }
 .insp-title { font-size: var(--fz-400); font-weight: 600; color: var(--fg); line-height: var(--lh-tight); }

@@ -484,6 +484,8 @@ interface Artboard {
    * state: {@link BoardController._layout} rewrites it on every rename.
    */
   label: DomElement;
+  /** The artboard's size, beside the name. Rewritten on every reformat. */
+  formatTag: DomElement;
   surface: DomElement;
   previewHost: DomElement;
   frame: DomIframe | null;
@@ -976,6 +978,12 @@ export class BoardController {
     label.className = 'artboard-label';
     label.textContent = artboardTitle(page);
     root.appendChild(label);
+    // The size, beside the name, above the artboard it describes. A separate
+    // element rather than a second text node inside the label: `.artboard-label`
+    // is read as a whole elsewhere, and the name is what that means.
+    const formatTag = doc.createElement('div');
+    formatTag.className = 'artboard-format';
+    root.appendChild(formatTag);
 
     const surface = doc.createElement('div');
     surface.className = 'artboard-surface';
@@ -987,7 +995,7 @@ export class BoardController {
 
     return {
       pageId: page.id,
-      root, label, surface, previewHost,
+      root, label, formatTag, surface, previewHost,
       frame: null, port: null,
       mode: 'preview', intersecting: false,
       editMids: [], builds: 0, lastSeen: 0,
@@ -1008,6 +1016,13 @@ export class BoardController {
     const title = artboardTitle(page);
     if (board.label.textContent !== title) { board.label.textContent = title; }
     board.frame?.setAttribute('title', title);
+    // Same reason the title is rewritten here rather than at creation: a format
+    // change is a `page.setMeta` and plans `structure`, so this is the one path
+    // that runs on every reformat.
+    if (board.formatTag) {
+      const dims = `${Math.round(format.width)} × ${Math.round(format.height)}`;
+      if (board.formatTag.textContent !== dims) { board.formatTag.textContent = dims; }
+    }
     board.root.style.setProperty('position', 'absolute');
     board.root.style.setProperty('left', `${page.boardPos.x}px`);
     board.root.style.setProperty('top', `${page.boardPos.y}px`);

@@ -94,13 +94,14 @@ function assertAllProducersSpread(text: string): string[] {
 const EXPECTED_PRODUCERS = [
   '_runMentionCollaboration',  // @agent:role collaboration gate (onGate)
   '_gateSubAgentToolUse',      // legacy @agent sub-agent gate
-  '_handleSendMessage',        // CLI stream gate (covered elsewhere too)
+  '_handleSendMessageForTurn', // CLI stream gate (covered elsewhere too)
   '_runMystiDelegation',       // Mysti coordinator delegation (onGate)
   '_runMystiOrchestration',    // Mysti orchestration (onGate)
+  '_handleStartSession',       // Plan 29 session lane gate (onGate)
 ];
 
 describe('tool-use permission producers all send toolInput (static over ChatViewProvider.ts)', () => {
-  it('finds the five known producers, each spreading _permissionToolDetails over its own toolCall', () => {
+  it('finds the known producers, each spreading _permissionToolDetails over its own toolCall', () => {
     const producers = assertAllProducersSpread(SRC);
     for (const name of EXPECTED_PRODUCERS) {
       expect(producers, `producer ${name} not found as a "wants to:" card`).toContain(name);

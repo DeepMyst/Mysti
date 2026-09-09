@@ -126,6 +126,14 @@ export class TestableOpenClawProvider extends OpenClawProvider {
   public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
     return super.buildCliArgs(settings, session);
   }
+  /** `openclaw agent` reads the prompt from a file, not stdin — see _deliverPrompt. */
+  public deliverPrompt(
+    proc: Parameters<OpenClawProvider['_deliverPromptForTest']>[0],
+    prompt: string,
+    session: PanelSessionState
+  ): Promise<void> {
+    return this._deliverPromptForTest(proc, prompt, session);
+  }
 }
 
 export class TestableOpenCodeProvider extends OpenCodeProvider {

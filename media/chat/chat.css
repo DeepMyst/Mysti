@@ -2977,6 +2977,96 @@
       background: var(--vscode-list-hoverBackground);
     }
 
+    /* Plan 29 — the session agent picker, rendered INSIDE the slash menu.
+       Rows reuse .slash-menu-item wholesale; only the icon column changes, so
+       nothing here redefines padding, hover or type. */
+    .session-picker-sub {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .session-picker-hint {
+      font-weight: 400;
+      text-transform: none;
+      letter-spacing: normal;
+      opacity: 0.8;
+    }
+    .session-agent-row.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .session-agent-box {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      border-radius: 3px;
+      border: 1px solid var(--vscode-checkbox-border, var(--vscode-input-border));
+      background: var(--vscode-checkbox-background, transparent);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--vscode-button-foreground);
+    }
+    .session-agent-box.checked {
+      background: var(--vscode-button-background);
+      border-color: var(--vscode-button-background);
+    }
+    .session-agent-logo {
+      width: 16px;
+      height: 16px;
+      border-radius: 3px;
+      object-fit: contain;
+      flex-shrink: 0;
+    }
+    .session-picker-run {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-top: 1px solid var(--vscode-panel-border);
+      margin-top: 4px;
+    }
+    .session-run-btn {
+      flex-shrink: 0;
+      font-family: inherit;
+      font-size: 12px;
+      padding: 5px 14px;
+      border: none;
+      border-radius: 4px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      cursor: pointer;
+    }
+    .session-run-btn:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground);
+    }
+    .session-run-btn:disabled {
+      background: var(--mysti-surface-2);
+      color: var(--mysti-dim);
+      cursor: not-allowed;
+    }
+    .session-run-note {
+      flex: 1;
+      font-size: 11px;
+      color: var(--mysti-dim);
+      line-height: 1.4;
+    }
+    .session-cancel-btn {
+      flex-shrink: 0;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 4px 10px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--mysti-dim);
+      cursor: pointer;
+    }
+    .session-cancel-btn:hover {
+      color: var(--mysti-fg);
+      background: var(--mysti-surface-2);
+    }
+
     .slash-menu-item-icon {
       width: 16px;
       text-align: center;
@@ -4089,6 +4179,81 @@
       flex-direction: column;
       gap: 16px;
       padding: 0;
+    }
+
+    /* Plan 29 — the live session card. Scaffolding for the turn, removed when
+       the single result message lands; built from the same bubble anatomy. */
+    .session-card {
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      animation: fadeIn 0.2s ease;
+    }
+    .session-card-header {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .session-card-shape {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--mysti-fg);
+    }
+    .session-card-progress {
+      font-size: 10px;
+      color: var(--mysti-dim);
+    }
+    .session-card-lanes {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .session-lane {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      border-left: 3px solid var(--vscode-panel-border);
+      background: var(--mysti-surface-2);
+      font-size: 12px;
+    }
+    .session-lane-name { color: var(--mysti-fg); }
+    .session-lane-note {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--mysti-dim);
+      font-variant-numeric: tabular-nums;
+    }
+    .session-lane-note-bad { color: var(--mysti-err); }
+    .session-lane-running { border-left-color: var(--mysti-warn); }
+    .session-lane-done { border-left-color: var(--mysti-ok); }
+    .session-lane-error,
+    .session-lane-skipped { border-left-color: var(--mysti-err); opacity: 0.75; }
+    .session-lane-stop {
+      margin-left: auto;
+      font-family: inherit;
+      font-size: 10px;
+      padding: 1px 8px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--mysti-dim);
+      cursor: pointer;
+    }
+    .session-lane-stop:hover {
+      color: var(--mysti-err);
+      border-color: var(--mysti-err);
+    }
+    .session-card-findings {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--mysti-dim);
     }
 
     .brainstorm-agent-message {

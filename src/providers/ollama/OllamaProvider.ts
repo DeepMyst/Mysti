@@ -138,6 +138,7 @@ export class OllamaProvider extends BaseCliProvider {
     sessionKind: 'none',           // stateless HTTP requests
     emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
     emitsUsage: true,
+    usageConvention: 'none',   // prompt_eval_count/eval_count are flat counts.
     modelSelection: 'custom-only'  // models live on the user's Ollama server
   };
 

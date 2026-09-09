@@ -29,7 +29,8 @@
  * So the directory that must exist is the headless shell's, derived from the
  * revision in the executable path; where the layout is not the standard cache
  * layout we fall back to checking the executable itself. Missing => the suite
- * is SKIPPED (vitest counts it), never silently green. Present-but-broken =>
+ * is SKIPPED locally (vitest counts it). CI sets MYSTI_REQUIRE_CHROMIUM=1
+ * so missing browsers fail collection. Present-but-broken =>
  * the launch throws in `beforeAll`, a real failure.
  */
 import * as fs from 'fs';
@@ -61,8 +62,17 @@ export function chromiumUnavailableReason(): string | null {
   return `Chromium missing at ${exe} — run: npx playwright install chromium`;
 }
 
+/** CI requires browser coverage; local contributors may run without a browser. */
+export function enforceChromiumRequirement(reason: string | null, required = process.env.MYSTI_REQUIRE_CHROMIUM): void {
+  if (reason && required === '1') {
+    throw new Error(`[Mysti] Chromium is required for this test run: ${reason}`);
+  }
+}
+
 /** Non-null reason when the browser suites must skip; probed once at module load. */
 export const CHROMIUM_UNAVAILABLE: string | null = chromiumUnavailableReason();
+
+enforceChromiumRequirement(CHROMIUM_UNAVAILABLE);
 
 if (CHROMIUM_UNAVAILABLE) {
   console.warn(`[Mysti] browser suites SKIPPED — ${CHROMIUM_UNAVAILABLE}`);

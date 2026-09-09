@@ -134,11 +134,11 @@ export class DesignSpecManager {
   resolveToken(value: string, theme: DesignTheme): string {
     if (!value) { return value; }
     // Direct color token
-    if (theme.colors[value]) { return theme.colors[value]; }
+    if (Object.hasOwn(theme.colors, value) && typeof theme.colors[value] === 'string') { return theme.colors[value]; }
     // Shadow token
-    if (value in theme.shadows) { return (theme.shadows as any)[value]; }
+    if (Object.hasOwn(theme.shadows, value)) { return theme.shadows[value as keyof DesignTheme['shadows']]; }
     // Radius token
-    if (value in theme.radii) { return `${(theme.radii as any)[value]}px`; }
+    if (Object.hasOwn(theme.radii, value)) { return `${theme.radii[value as keyof DesignTheme['radii']]}px`; }
     // Already a literal value
     return value;
   }
@@ -248,7 +248,7 @@ export class DesignSpecManager {
     parentId?: string;
     depth: number;
   }> {
-    const result: Array<any> = [];
+    const result: ReturnType<DesignSpecManager['designNodesToFabricFrames']> = [];
     const walk = (list: DesignNode[], ox: number, oy: number, depth: number) => {
       for (const node of list) {
         result.push({

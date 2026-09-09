@@ -305,6 +305,136 @@ export function checkCommandExists(command: string): Promise<boolean> {
 }
 
 /**
+ * Environment for RESOLVING which binary to run, as opposed to spawning one.
+ *
+ * `getEnrichedEnv()` PREPENDS /usr/local/bin (and Homebrew, and node's dir) so a
+ * `#!/usr/bin/env node` shebang resolves in a GUI-launched host with a stripped
+ * PATH. That is right for spawning and wrong for resolution: prepending inverts
+ * the user's own PATH order, so a stale `npm i -g` copy in /usr/local/bin beats
+ * the current install their shell actually runs. On the machine this was found,
+ * the enriched PATH resolved `claude` to 2.0.71 while the user's PATH resolved
+ * 2.1.263 — silently defeating the whole point of probing PATH first.
+ *
+ * So: the user's PATH order is kept intact, and the enrichment directories are
+ * APPENDED as fallbacks for the thin-PATH case they exist for.
+ */
+export function getResolutionEnv(): Record<string, string | undefined> {
+  const env = getEnrichedEnv();
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const userPath = (process.env.PATH || '').split(sep).filter(Boolean);
+  const enriched = (env.PATH || '').split(sep).filter(Boolean);
+
+  // First occurrence wins, which is what a PATH lookup does anyway — a real
+  // PATH routinely repeats entries and the duplicates only slow the search.
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const dir of [...userPath, ...enriched]) {
+    if (seen.has(dir)) { continue; }
+    seen.add(dir);
+    ordered.push(dir);
+  }
+  env.PATH = ordered.join(sep);
+  return env;
+}
+
+/**
+ * Resolve a command to the absolute path the user's shell would run, or null.
+ *
+ * Uses the ENRICHED env, so a VS Code launched from Finder — which inherits a
+ * minimal PATH and is the reason the hard-coded fallback list exists at all —
+ * still resolves the same binary a terminal would.
+ *
+ * `where` on Windows can return several lines; the first is the winner, exactly
+ * as the shell would pick it.
+ */
+export function resolveCommandOnPath(
+  command: string,
+  /**
+   * Search environment. Defaults to `getResolutionEnv()`, which keeps the
+   * user's PATH order ahead of Mysti's fallback directories; the parameter
+   * exists so a test can pin that ordering.
+   */
+  env: Record<string, string | undefined> = getResolutionEnv(),
+): Promise<string | null> {
+  // A path, not a bare name: there is nothing for PATH to resolve.
+  if (command.includes('/') || command.includes('\\')) {
+    return Promise.resolve(null);
+  }
+  const checkCmd = process.platform === 'win32' ? 'where' : 'which';
+
+  return new Promise((resolve) => {
+    let out = '';
+    const proc = spawn(checkCmd, [command], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env,
+    });
+    proc.stdout?.on('data', (chunk) => { out += String(chunk); });
+    proc.on('close', (code) => {
+      if (code !== 0) { return resolve(null); }
+      const first = out.split(/\r?\n/).map(l => l.trim()).find(Boolean);
+      resolve(first || null);
+    });
+    proc.on('error', () => resolve(null));
+  });
+}
+
+/**
+ * The paths that outrank the user's PATH: an explicitly configured path, and
+ * provider-specific locations a provider declares (e.g. the CLI bundled inside
+ * Codex.app). Everything else in `getCommonSearchPaths` is a GUESS and must
+ * come AFTER whatever the shell actually resolves — see _discoverCliCommon.
+ */
+export function getPriorityCliPaths(config: CliSearchConfig): string[] {
+  const { commandName, configuredPath, additionalPaths } = config;
+  const paths: string[] = [];
+  if (configuredPath && configuredPath !== commandName) {
+    paths.push(configuredPath);
+  }
+  if (additionalPaths) {
+    paths.push(...additionalPaths);
+  }
+  return paths;
+}
+
+/**
+ * Ask a CLI its version. Returns the raw first line, or undefined.
+ *
+ * Shell-free (argv array), time-boxed, and tolerant: a CLI that has no
+ * `--version`, is slow, or prints something unrecognisable simply yields
+ * undefined, which every caller already treats as "unknown".
+ *
+ * The output is DECORATED in practice — "2.1.263 (Claude Code)", "codex-cli
+ * 0.153.4", "v1.2.3" — so callers parse it loosely rather than expecting a bare
+ * semver.
+ */
+export function probeCliVersion(cliPath: string, timeoutMs = 5000): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v?: string) => { if (!settled) { settled = true; resolve(v); } };
+    try {
+      const proc = spawn(cliPath, ['--version'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: getEnrichedEnv(),
+      });
+      let out = '';
+      const timer = setTimeout(() => { try { proc.kill(); } catch { /* already gone */ } done(); }, timeoutMs);
+      proc.stdout?.on('data', (chunk) => {
+        out += String(chunk);
+        // A CLI that keeps talking is not answering a version question.
+        if (out.length > 4096) { try { proc.kill(); } catch { /* already gone */ } }
+      });
+      proc.on('close', () => {
+        clearTimeout(timer);
+        done(out.split(/\r?\n/).map(l => l.trim()).find(Boolean));
+      });
+      proc.on('error', () => { clearTimeout(timer); done(); });
+    } catch {
+      done();
+    }
+  });
+}
+
+/**
  * Validate a CLI path by running it with --version.
  * Useful for providers that need to verify the binary actually works.
  */

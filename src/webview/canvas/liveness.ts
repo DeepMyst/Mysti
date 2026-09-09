@@ -147,17 +147,21 @@ export const RAIL_LIST_ID = 'rail-list';
  *
  * The queue is rendered into `#staged-rail`, a child of the collapsible
  * `<aside id="pages-rail">`. Toggling `_reviewOpen` therefore did nothing
- * observable whenever the rail was collapsed (the human's `[`, or the narrow
- * breakpoint) — the button reported a count, announced `aria-expanded="true"`
- * and revealed a `display:none` subtree. A control must open the thing it
- * names, so the reveal is part of the click.
+ * observable whenever the pane holding it was collapsed (the human's shortcut,
+ * or the narrow breakpoint) — the button reported a count, announced
+ * `aria-expanded="true"` and revealed a `display:none` subtree. A control must
+ * open the thing it names, so the reveal is part of the click.
  *
- * `CanvasApp` owns pane state and should pass {@link LivenessOptions.revealReview};
- * these ids are the fallback for a shell that has not wired it, and they are
- * exactly the two switches a human flips by clicking the shell's own labels.
+ * The queue lives in the INSPECTOR's Activity tab, not the pages rail: a review
+ * action is about the board, and putting it inside navigation meant the agent
+ * shoved the page list every time it produced work. So these are the inspector's
+ * switches. `CanvasApp` owns pane state AND the tab, so it should pass
+ * {@link LivenessOptions.revealReview} — which also selects the tab, something
+ * a switch alone cannot do; these ids are the fallback for a shell that has not
+ * wired it.
  */
-export const RAIL_HIDE_SWITCH_ID = 'rail-hidden';
-export const RAIL_SHOW_SWITCH_ID = 'rail-shown';
+export const REVIEW_HIDE_SWITCH_ID = 'inspector-hidden';
+export const REVIEW_SHOW_SWITCH_ID = 'inspector-shown';
 
 /**
  * The generated stylesheet that gives the rail/artboard activity attributes a
@@ -1465,8 +1469,8 @@ export class LivenessLayer {
         node.dispatchEvent(new Ctor('change', { bubbles: true }));
       }
     };
-    set(RAIL_HIDE_SWITCH_ID, false);
-    set(RAIL_SHOW_SWITCH_ID, true);
+    set(REVIEW_HIDE_SWITCH_ID, false);
+    set(REVIEW_SHOW_SWITCH_ID, true);
   }
 
   /**

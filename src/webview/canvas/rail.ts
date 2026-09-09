@@ -470,8 +470,17 @@ export interface RailOptions {
   measure?: (el: DomElement, pageId: string, index: number) => RailRowGeometry;
 }
 
-/** Rail thumbnails render at this width; the tile scales the artboard down. */
+/** Rail thumbnails render inside a slot this wide; the tile scales to fit. */
 export const RAIL_THUMB_WIDTH = 148;
+/**
+ * …and this tall. The slot is FIXED in both axes and the artboard is fitted
+ * inside it, which is the whole point: scaling on width alone kept the shape
+ * honest but made the row pitch a function of the artboard's aspect, so one
+ * 390×844 phone was a 320px-tall row — three and a half desktop rows — and a
+ * mixed artifact scrolled like a broken accordion. Fitting into a fixed box
+ * keeps the rows aligned AND keeps a phone unmistakably a phone.
+ */
+export const RAIL_SLOT_HEIGHT = 92;
 /** Fallback row pitch when nothing can measure the DOM (headless, or no layout). */
 export const RAIL_FALLBACK_ROW_HEIGHT = 96;
 
@@ -615,7 +624,12 @@ export class RailController {
     // was the design's text at #CCCCCC on #FFFFFF (~1.6:1) with every border
     // collapsed to `none`. The tile carries the design's own theme instead.
     for (const [name, value] of Object.entries(themeVars)) { tile.style.setProperty(name, value); }
-    const scale = this._thumbWidth / Math.max(1, row.format.width);
+    // Fit, never fill: the smaller of the two ratios, so the artboard is whole
+    // inside the slot and its proportions are untouched.
+    const scale = Math.min(
+      this._thumbWidth / Math.max(1, row.format.width),
+      RAIL_SLOT_HEIGHT / Math.max(1, row.format.height),
+    );
     tile.style.setProperty('width', `${row.format.width}px`);
     tile.style.setProperty('height', `${row.format.height}px`);
     tile.style.setProperty('transform', `scale(${scale.toFixed(4)})`);
@@ -629,11 +643,18 @@ export class RailController {
     }
     const frame = doc.createElement('div');
     frame.className = 'thumb-frame';
-    frame.style.setProperty('width', `${this._thumbWidth}px`);
+    frame.style.setProperty('width', `${Math.round(row.format.width * scale)}px`);
     frame.style.setProperty('height', `${Math.round(row.format.height * scale)}px`);
     frame.style.setProperty('overflow', 'hidden');
     frame.appendChild(tile);
-    root.appendChild(frame);
+    // The slot is the fixed part; the frame inside it is the artboard's real
+    // shape. Every row is therefore the same height whatever it contains.
+    const slot = doc.createElement('div');
+    slot.className = 'thumb-slot';
+    slot.style.setProperty('width', `${this._thumbWidth}px`);
+    slot.style.setProperty('height', `${RAIL_SLOT_HEIGHT}px`);
+    slot.appendChild(frame);
+    root.appendChild(slot);
 
     const meta = doc.createElement('div');
     meta.className = 'thumb-meta';

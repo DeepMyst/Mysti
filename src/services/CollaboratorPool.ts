@@ -155,6 +155,41 @@ export class CollaboratorPool {
   }
 
   /**
+   * Cancel ONE collaborator, leaving the rest of the run alive (Plan 29).
+   *
+   * A session runs several lanes at once and each needs its own Stop: with
+   * three processes live, a single run-wide cancel is the only control, which
+   * makes abandoning one slow lane cost you the two that were working. Matches
+   * every panel derived for the collaborator, retries included, since a retry
+   * runs under a `-retryN` suffix and cancelling only the base id orphans it.
+   *
+   * Returns the number of child panels cancelled (0 when the collaborator has
+   * already landed, which is not an error).
+   */
+  public cancelCollaborator(runId: string, collaboratorId: string): number {
+    const panels = this._activeChildPanels.get(runId);
+    if (!panels) { return 0; }
+    const base = `-collab-${runId}-${collaboratorId}`;
+    let cancelled = 0;
+    for (const childPanelId of [...panels]) {
+      // `<panel>-collab-<runId>-<collaboratorId>` optionally followed by
+      // `-retryN`. Endswith-or-retry, so `c1` never matches `c10`.
+      const at = childPanelId.indexOf(base);
+      if (at === -1) { continue; }
+      const tail = childPanelId.slice(at + base.length);
+      if (tail !== '' && !/^-retry\d+$/.test(tail)) { continue; }
+      try {
+        this._providerManager.cancelRequest(childPanelId);
+        cancelled++;
+      } catch (err) {
+        console.warn(`[Mysti] CollaboratorPool: lane cancel failed for ${childPanelId}:`, err);
+      }
+      panels.delete(childPanelId);
+    }
+    return cancelled;
+  }
+
+  /**
    * End-of-run cleanup (review [13]): dispose EVERY delegation child's
    * persistent process for the run and evict its session, so within-run
    * continuity (P0.2e) doesn't leak a live CLI process per turn. Call AFTER the

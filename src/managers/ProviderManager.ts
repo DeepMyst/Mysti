@@ -446,7 +446,8 @@ export class ProviderManager {
   /**
    * Clear process tracking for a panel (called when process completes naturally)
    */
-  public clearProcess(panelId: string): void {
+  public clearProcess(panelId: string, expectedProcess?: ChildProcess): void {
+    if (expectedProcess && this._activePanelProcesses.get(panelId) !== expectedProcess) { return; }
     this._activePanelProcesses.delete(panelId);
     this._panelProviders.delete(panelId);
   }

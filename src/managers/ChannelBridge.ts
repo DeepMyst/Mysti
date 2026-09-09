@@ -434,6 +434,11 @@ RULES:
     return queued;
   }
 
+  /** A stopped or replaced turn must not inject its old inputs into later work. */
+  clearQueuedMessages(panelId: string): void {
+    this._queuedMessages.delete(panelId);
+  }
+
   // --- Lifecycle ---
 
   /**

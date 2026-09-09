@@ -268,7 +268,7 @@ export interface SlashCommand {
 // Slash Command Menu System
 // ============================================================================
 
-export type SlashCommandSection = 'context' | 'model' | 'customize' | 'commands' | 'native' | 'settings' | 'support';
+export type SlashCommandSection = 'sessions' | 'context' | 'model' | 'customize' | 'commands' | 'native' | 'settings' | 'support';
 export type SlashCommandAction = 'execute' | 'submenu' | 'external';
 
 export interface SlashCommandDefinition {
@@ -566,6 +566,15 @@ export interface UsageStats {
    * estimate as measured — see BoostTurnRecord.estimated.
    */
   estimated?: boolean;
+  /**
+   * Set by `normalizeUsage` once the three prompt buckets have been made
+   * DISJOINT. It exists so normalization is genuinely idempotent: the OpenAI
+   * convention subtracts the cached subset out of `input_tokens`, and running
+   * that subtraction a second time would silently shrink the fill. Consumers
+   * should not set this by hand — a record only earns the flag by going through
+   * src/services/TokenAccounting.ts.
+   */
+  normalized?: boolean;
 }
 
 // ============================================================================
@@ -794,6 +803,14 @@ export interface GatewayCompletion {
   costUsd?: number;
   inputTokens?: number;
   outputTokens?: number;
+  /**
+   * Cached prompt tokens the provider reported. A SUBSET of `inputTokens`
+   * (OpenAI convention) — never add the two together; hand them to
+   * `normalizeUsage(…, 'openai')` instead. See src/services/TokenAccounting.ts.
+   */
+  cacheReadTokens?: number;
+  /** Prompt tokens WRITTEN to cache this call, when the provider reports them. */
+  cacheCreationTokens?: number;
   /** True when the gateway call failed and the caller should fall back. */
   failed?: boolean;
   error?: string;
@@ -1154,6 +1171,108 @@ export interface CollaboratorDispatchOptions {
   /** Question relay for a collaborator's ask_user_question. */
   onQuestion?: SubAgentQuestionCallback;
   /** Gate hook for gated-write collaborators. */
+  onGate?: CollaboratorGateCallback;
+}
+
+// ============================================================================
+// Sessions — several agents on one problem (Plan 29)
+// ============================================================================
+
+/**
+ * The five session shapes. Each is a slash command (`/review`), and the shape
+ * IS the command — there is no separate mode to enter first.
+ *
+ * `brainstorm` is the existing 2-agent mode carried forward: its quick / debate
+ * / red-team / perspectives / delphi strategies remain, as presets of this
+ * shape, so a user's saved `mysti.brainstorm.*` settings keep working.
+ */
+export type SessionShapeId = 'review' | 'panel' | 'critique' | 'race' | 'brainstorm';
+
+export interface SessionShapeDef {
+  id: SessionShapeId;
+  /** The slash command that starts it, including the leading slash. */
+  command: string;
+  label: string;
+  /** One line, shown beside the command in the menu. */
+  description: string;
+  /**
+   * Below this the command refuses to run. A panel of two is a debate and a
+   * critique needs a proposer plus at least two attackers — running them
+   * short-handed produces the shape's name over something else's behaviour.
+   */
+  minAgents: number;
+  maxAgents: number;
+  /** Sequential passes; multiplies the cost estimate. */
+  rounds: number;
+  /** Rough USD per agent per round, for the estimate shown BEFORE the run. */
+  costRate: number;
+}
+
+/** One agent's participation in a session. */
+export interface SessionLane {
+  collaboratorId: string;
+  agentId: AgentType;
+  label: string;
+  status: 'pending' | 'running' | 'done' | 'error' | 'skipped';
+  /** Accumulated response text. */
+  text: string;
+  /** Present on error/skipped. */
+  error?: string;
+  /** Present on skipped: the install/auth hint from the availability check. */
+  hint?: string;
+  /** Wall time once the lane lands. */
+  ms?: number;
+  /** Which round produced this lane's text (critique/brainstorm). */
+  round?: number;
+  /** Critique only: how this lane's attack resolved. */
+  verdict?: 'survived' | 'forced-revision';
+}
+
+/**
+ * A review finding after merging. The same defect reported by three agents is
+ * ONE of these carrying three `agents`, not three rows — merging is the whole
+ * reason to pay for three passes.
+ */
+export interface SessionFinding {
+  id: string;
+  title: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  detail?: string;
+  /** `file.ts:120` when the agent gave one. */
+  location?: string;
+  /** Agents that independently raised it. */
+  agents: AgentType[];
+  /**
+   * `confirmed` — more than one agent found it. `unconfirmed` — exactly one did;
+   * a lead, not a verdict. `contested` — agents took opposite positions, which
+   * is a result to surface, never something to average away.
+   */
+  status: 'confirmed' | 'unconfirmed' | 'contested';
+  /** Present on `contested`: each side, by agent. */
+  positions?: Array<{ agentId: AgentType; stance: string }>;
+}
+
+export type SessionEvent =
+  | { type: 'session_started'; shape: SessionShapeId; runId: string; lanes: SessionLane[] }
+  | { type: 'lane_update'; lane: SessionLane }
+  | { type: 'lane_text'; collaboratorId: string; content: string }
+  | { type: 'session_round'; round: number; of: number }
+  | { type: 'session_findings'; findings: SessionFinding[] }
+  | { type: 'session_complete'; markdown: string; lanes: SessionLane[]; findings?: SessionFinding[] }
+  | { type: 'session_error'; message: string };
+
+export interface SessionRunInput {
+  shape: SessionShapeId;
+  /** The backends the user ticked. Validated against the shape's minimum. */
+  agentIds: AgentType[];
+  /** What the user asked, mentions already stripped. */
+  brief: string;
+  settings: Settings;
+  panelId: string;
+  runId: string;
+  context?: ContextItem[];
+  conversation?: Conversation | null;
+  onQuestion?: SubAgentQuestionCallback;
   onGate?: CollaboratorGateCallback;
 }
 

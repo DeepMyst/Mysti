@@ -80,16 +80,16 @@ function createHarness(): Harness {
   const modelRegistry = createModelRegistryStub({ 'claude-code': DISCOVERED });
 
   const noop = {} as any;
-  const provider = new ChatViewProvider(
+  const provider = new ChatViewProvider({
     extensionUri,
     extensionContext,
-    { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
-    { getCurrentConversation: () => null } as any,
-    { setAgentContextManager: () => undefined, getProvider: () => undefined, getProviderInstance: () => undefined } as any,
-    noop,                  // suggestionManager
-    noop,                  // brainstormManager
+    contextManager: { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
+    conversationManager: { getCurrentConversation: () => null } as any,
+    providerManager: { setAgentContextManager: () => undefined, getProvider: () => undefined, getProviderInstance: () => undefined } as any,
+    suggestionManager: noop,
+    brainstormManager: noop,
     permissionManager,
-    {
+    setupManager: {
       getWizardStatus: async () => ({ ...WIZARD_STATUS }),
       getWizardStatusCached: () => ({ ...WIZARD_STATUS, complete: false }),
       ensureProviderStatusFresh: async () => undefined,
@@ -97,13 +97,13 @@ function createHarness(): Harness {
       invalidateProviderStatus: () => undefined,
       onWizardStatusUpdated: () => ({ dispose: () => {} }),
     } as any,
-    noop,                  // telemetryManager
-    noop,                  // autonomousManager
-    { learnFromPermissionDecision: vi.fn() } as any,
-    noop,                  // compactionManager
-    { onLifecycleEvent: () => undefined } as any,
-    noop,                  // slashCommandManager
-    {
+    telemetryManager: noop,
+    autonomousManager: noop,
+    memoryManager: { learnFromPermissionDecision: vi.fn() } as any,
+    compactionManager: noop,
+    lifecycleManager: { onLifecycleEvent: () => undefined } as any,
+    slashCommandManager: noop,
+    activeModeManager: {
       onStatusChanged: () => undefined,
       onChannelChanged: () => undefined,
       onActivity: () => undefined,
@@ -111,11 +111,12 @@ function createHarness(): Harness {
       isConnected: () => false,
       isInstalled: () => false,
     } as any,
-    { trackCustomPersonaCreated: () => undefined, trackCustomSkillCreated: () => undefined } as any,
-    noop,                  // projectContextManager
-    noop,                  // visualTestManager
-    noop,                  // canvasManager
-    modelRegistry as any   // modelRegistry
+    engagementManager: { trackCustomPersonaCreated: () => undefined, trackCustomSkillCreated: () => undefined } as any,
+    projectContextManager: noop,
+    visualTestManager: noop,
+    modelRegistry: modelRegistry as any,
+    checkpointManager: undefined as any
+  }   // modelRegistry
   );
 
   const makePanel = (id: string, isSidebar: boolean): PanelLog => {

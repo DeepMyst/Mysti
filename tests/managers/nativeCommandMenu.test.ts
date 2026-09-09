@@ -67,6 +67,8 @@ interface Harness {
 function makeHarness(options: {
   files?: Record<string, string>;
   dynamic?: NativeCommandSpec[];
+  /** Whether the backend has REPORTED (making `dynamic` authoritative). */
+  reported?: boolean;
 } = {}): Harness {
   const discovery = new NativeCommandDiscovery({
     fs: fakeFs(options.files ?? {}),
@@ -83,6 +85,7 @@ function makeHarness(options: {
         id: 'stub',
         displayName: 'Stub',
         getDynamicNativeCommands: () => options.dynamic ?? [],
+        hasReportedNativeCommands: () => options.reported ?? false,
       }),
     } as any,
     contextManager: {} as any,
@@ -195,8 +198,125 @@ describe('the provider-native menu section', () => {
     expect(compacts[0].origin).toBe('builtin');
   });
 
+  /**
+   * The fix for the whole class of "the catalog went stale" bugs. Claude Code
+   * 2.1.263 dropped `/review`, and `/effort` and `/rename` answer "isn't
+   * available in this environment" in a print session despite carrying the
+   * binary's `supportsNonInteractive` flag. A curated list alone kept offering
+   * them; once the CLI has reported, its list is the truth.
+   */
+  it('drops a curated CLI command the backend did not report', () => {
+    const { manager } = makeHarness({
+      reported: true,
+      dynamic: [
+        { name: 'compact', description: 'x', execution: { kind: 'passthrough' } },
+        { name: 'design', description: 'Skill provided by Claude Code', execution: { kind: 'passthrough' } },
+      ],
+    });
+    const names = nativeRows(manager, 'claude-code').map((c) => c.label);
+    expect(names).toContain('/compact');
+    expect(names).toContain('/design');
+    // Curated but unreported, and CLI-bound: gone.
+    expect(names).not.toContain('/security-review');
+    expect(names).not.toContain('/init');
+  });
+
+  /**
+   * A Mysti-mapped row never reaches the CLI, so the CLI's inventory does not
+   * govern it. `/model` is not in Claude Code's reported list at all, and the
+   * row still has to work — it opens Mysti's cross-provider picker.
+   */
+  it('keeps Mysti-mapped rows even when the backend never reported them', () => {
+    const { manager } = makeHarness({
+      reported: true,
+      dynamic: [{ name: 'compact', description: 'x', execution: { kind: 'passthrough' } }],
+    });
+    const names = nativeRows(manager, 'claude-code').map((c) => c.label);
+    expect(names).toContain('/model');
+    expect(names).toContain('/clear');
+  });
+
+  it('keeps the catalog before the backend has reported anything', () => {
+    const { manager } = makeHarness({ reported: false });
+    const names = nativeRows(manager, 'claude-code').map((c) => c.label);
+    expect(names).toContain('/security-review');
+    expect(names).toContain('/compact');
+  });
+
+  /** A reported name the catalog describes keeps the real description. */
+  it('prefers the catalog description over the report\'s placeholder', () => {
+    const { manager } = makeHarness({
+      reported: true,
+      dynamic: [{ name: 'compact', description: 'Claude Code command', execution: { kind: 'passthrough' } }],
+    });
+    const compact = nativeRows(manager, 'claude-code').find((c) => c.label === '/compact');
+    expect(compact?.description).toBe('Free up context by summarizing the conversation so far');
+    expect(compact?.origin).toBe('builtin');
+  });
+
+  /**
+   * Metadata-only entries describe a reported command; they must never put a
+   * row in the menu on their own, or an older CLI would be offered `/effort`
+   * and answer "isn't available in this environment".
+   */
+  it('never offers a metadata-only entry that was not reported', () => {
+    const { manager } = makeHarness({ reported: false });
+    expect(nativeRows(manager, 'claude-code').map((c) => c.label)).not.toContain('/effort');
+
+    const { manager: m2 } = makeHarness({
+      reported: true,
+      dynamic: [{ name: 'compact', description: 'x', execution: { kind: 'passthrough' } }],
+    });
+    expect(nativeRows(m2, 'claude-code').map((c) => c.label)).not.toContain('/effort');
+  });
+
+  it('uses the real description once the CLI reports that command', () => {
+    const { manager } = makeHarness({
+      reported: true,
+      dynamic: [{ name: 'effort', description: 'Claude Code command', execution: { kind: 'passthrough' } }],
+    });
+    const effort = nativeRows(manager, 'claude-code').find((c) => c.label === '/effort');
+    expect(effort?.description).toBe('Set effort level for model usage');
+    expect(effort?.argumentHint).toBe('<low|medium|high|xhigh|max>');
+  });
+
+  /**
+   * `design` is BOTH a bundled skill ("Create a design canvas") and a local
+   * Claude Design command ("Grant or revoke Claude agent access…"). When the
+   * CLI reports it as a skill, the report's own labelling has to win — a
+   * same-named catalog description would rename the skill to something else.
+   */
+  it('lets a reported skill keep its own identity over a catalog description', () => {
+    const { manager } = makeHarness({
+      reported: true,
+      dynamic: [{
+        name: 'config',
+        description: 'Skill provided by Claude Code',
+        execution: { kind: 'passthrough' },
+        isSkill: true,
+      }],
+    });
+    const row = nativeRows(manager, 'claude-code').find((c) => c.label === '/config');
+    expect(row?.description).toBe('Skill provided by Claude Code');
+    expect(row?.origin).toBe('agent');
+  });
+
+  it('runs a metadata-only command only once it has been reported', () => {
+    const { manager: unreported } = makeHarness({ reported: false });
+    expect(unreported.resolveNativeCommand('native:claude-code:effort', 'panel-1', 'claude-code', 'high'))
+      .toBeNull();
+
+    const { manager } = makeHarness({
+      reported: true,
+      dynamic: [{ name: 'effort', description: 'x', execution: { kind: 'passthrough' } }],
+    });
+    expect(manager.resolveNativeCommand('native:claude-code:effort', 'panel-1', 'claude-code', 'high'))
+      .toEqual({ kind: 'prompt', text: '/effort high' });
+  });
+
   it('includes the commands an ACP agent reported for this session', () => {
     const { manager } = makeHarness({
+      reported: true,
       dynamic: [{
         name: 'web',
         description: 'Search the web',
@@ -232,8 +352,8 @@ describe('running a native command', () => {
       .toEqual({ kind: 'prompt', text: '/goal tests pass' });
 
     // Optional argument: runs bare.
-    expect(manager.resolveNativeCommand('native:claude-code:review', 'panel-1', 'claude-code', ''))
-      .toEqual({ kind: 'prompt', text: '/review' });
+    expect(manager.resolveNativeCommand('native:claude-code:compact', 'panel-1', 'claude-code', ''))
+      .toEqual({ kind: 'prompt', text: '/compact' });
   });
 
   it('routes a mapped command to Mysti rather than to one backend', () => {

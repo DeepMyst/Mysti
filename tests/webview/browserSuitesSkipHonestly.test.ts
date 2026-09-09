@@ -27,7 +27,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { describe, it, expect } from 'vitest';
-import { expectedHeadlessShellDir } from './chromiumAvailability';
+import { expectedHeadlessShellDir, enforceChromiumRequirement } from './chromiumAvailability';
 
 const DIR = __dirname;
 const SUITES = fs.readdirSync(DIR).filter(f => /Browser\.test\.ts$/.test(f)).sort();
@@ -72,11 +72,21 @@ describe('chromiumAvailability probe helpers', () => {
     // chromium headless shell for headless mode." Both live beside each other
     // in the browsers cache as chromium-<rev> / chromium_headless_shell-<rev>.
     const exe = '/Users/x/Library/Caches/ms-playwright/chromium-1208/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
-    expect(expectedHeadlessShellDir(exe)).toBe('/Users/x/Library/Caches/ms-playwright/chromium_headless_shell-1208');
+    expect(expectedHeadlessShellDir(exe)).toBe(path.join('/Users/x/Library/Caches/ms-playwright', 'chromium_headless_shell-1208'));
   });
 
   it('returns null for a layout it does not recognise (falls back to the executable check)', () => {
     expect(expectedHeadlessShellDir('/opt/custom/chrome')).toBeNull();
     expect(expectedHeadlessShellDir('')).toBeNull();
+  });
+
+  it('fails CI instead of silently skipping missing browser coverage', () => {
+    expect(() => enforceChromiumRequirement('headless shell missing', '1'))
+      .toThrow('Chromium is required for this test run: headless shell missing');
+  });
+
+  it('allows installed browsers in CI and optional missing browsers locally', () => {
+    expect(() => enforceChromiumRequirement(null, '1')).not.toThrow();
+    expect(() => enforceChromiumRequirement('headless shell missing', '0')).not.toThrow();
   });
 });

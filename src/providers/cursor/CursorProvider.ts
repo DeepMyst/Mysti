@@ -123,6 +123,7 @@ export class CursorProvider extends BaseCliProvider {
 		sessionKind: 'none',  // stateless: history discarded, fabricated session IDs (F7/B8)
 		emitsToolResults: true,
 		emitsUsage: true,
+		usageConvention: 'none',   // cursor-agent reports flat input/output only.
 		modelSelection: 'full',
 	};
 

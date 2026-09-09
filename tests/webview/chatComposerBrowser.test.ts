@@ -115,6 +115,8 @@ function composeHtml(): string {
   if (!html.includes(bootTag)) { throw new Error('boot script tag not found — harness is out of date with index.html'); }
   html = html.replace(bootTag, () => `${stub}${bootTag}`);
   html = html
+    .replace('<script nonce="n" src="{{markdownRendererJsUri}}"></script>', () => `<script>${read('media/chat/markdownRenderer.js')}</script>`)
+    .replace('<script nonce="n" src="{{subAgentCardsJsUri}}"></script>', () => `<script>${read('media/chat/subAgentCards.js')}</script>`)
     .replace('<script nonce="n" src="{{chatJsUri}}"></script>', () => `<script>${read('media/chat/chat.js')}</script>`)
     .replace('<script nonce="n" src="{{deskJsUri}}"></script>', () => `<script>${read('media/chat/desk.js')}</script>`);
 
@@ -1386,4 +1388,72 @@ describe('an availability blip cannot rewrite the saved agent', () => {
       await ctx.close();
     }
   }, 30000);
+});
+
+describe('sub-agent cards through the shipped chat message boundary', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('retry and conversation change discard old rendering state', async () => {
+    const pg = await newPanelPage();
+    const errors: string[] = [];
+    pg.on('pageerror', error => errors.push(String(error)));
+    try {
+      await pg.evaluate(() => {
+        const receive = (type: string, payload?: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        receive('subAgentStarted', { agentId: 'openai-codex' });
+        receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: 'old attempt' });
+        receive('subAgentRetry', { agentId: 'openai-codex' });
+        receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: '**new attempt**' });
+        receive('subAgentComplete', { agentId: 'openai-codex' });
+      });
+      expect(await pg.locator('.subagent-text-output strong').textContent()).toBe('new attempt');
+      expect(await pg.locator('.subagent-card').textContent()).not.toContain('old attempt');
+      await pg.evaluate(() => {
+        const receive = (type: string, payload?: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        receive('subAgentStarted', { agentId: 'openai-codex' });
+        receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: 'old conversation' });
+        receive('conversationChanged', { messages: [] });
+        receive('subAgentStarted', { agentId: 'openai-codex' });
+        receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: 'new conversation' });
+        receive('subAgentComplete', { agentId: 'openai-codex' });
+      });
+      expect(await pg.locator('.subagent-card').count()).toBe(1);
+      expect((await pg.locator('.subagent-text-output').textContent())?.trim()).toBe('new conversation');
+      expect(errors).toEqual([]);
+    } finally { await pg.context().close(); }
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('simultaneous real question controls keep separate selections and stop invalidates saved callbacks', async () => {
+    const pg = await newPanelPage();
+    const errors: string[] = [];
+    pg.on('pageerror', error => errors.push(String(error)));
+    try {
+      await pg.evaluate(() => {
+        const receive = (type: string, payload?: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        for (const agentId of ['openai-codex', 'claude-code']) {
+          receive('subAgentStarted', { agentId });
+          receive('subAgentAskUserQuestion', { agentId, questionData: {
+            toolCallId: agentId + '-delivery', questions: [{ question: 'Continue?', header: 'Choice', options: [{ label: 'Yes' }, { label: 'No' }] }],
+          } });
+        }
+      });
+      const cards = pg.locator('.subagent-card');
+      await cards.nth(0).locator('input[type="radio"][value="Yes"]').check();
+      await cards.nth(1).locator('input[type="radio"][value="No"]').check();
+      expect(await cards.nth(0).locator('input[type="radio"][value="Yes"]').isChecked()).toBe(true);
+      await cards.nth(0).locator('.auq-submit-btn').click();
+      const replies = await pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string; payload?: unknown }> }).__posted
+        .filter(message => message.type === 'subAgentQuestionResponse'));
+      expect(replies).toEqual([{ type: 'subAgentQuestionResponse', panelId: null, payload: {
+        agentId: 'openai-codex', toolCallId: 'openai-codex-delivery', answers: { Choice: 'Yes' },
+      } }]);
+      await pg.evaluate(() => {
+        const submit = document.querySelector<HTMLButtonElement>('.subagent-card[data-agent-id="claude-code"] .auq-submit-btn')!;
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'requestCancelled' } }));
+        submit.click();
+      });
+      expect(await pg.locator('.ask-user-question-container').count()).toBe(0);
+      expect(await pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string }> }).__posted
+        .filter(message => message.type === 'subAgentQuestionResponse').length)).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await pg.context().close(); }
+  });
 });

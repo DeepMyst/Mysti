@@ -13,7 +13,7 @@
  * The canvas, inside a REAL VS Code.
  *
  * Why this file exists: every production failure of this panel has been a VS
- * Code HOST behaviour, and none of the ~9,000 unit tests could see any of them
+ * Code HOST behaviour, and the unit tests could not see any of them
  * because they mock `vscode`, while the browser suite runs the markup in bare
  * Chromium.
  *
@@ -35,6 +35,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { chromium, type Browser, type Frame, type Page } from 'playwright';
 
 const EXTENSION_ID = 'DeepMyst.mysti';
 
@@ -74,13 +75,52 @@ function workspaceRoot(): string {
 
 describe('Mysti Canvas — real VS Code host', function () {
   this.timeout(120_000);
+  let browser: Browser | undefined;
 
   before(async () => {
     const ext = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(ext, `extension ${EXTENSION_ID} not found — is package.json's publisher/name unchanged?`);
     await ext.activate();
     assert.ok(ext.isActive, 'extension failed to activate');
+
+    const profile = process.env.MYSTI_TEST_USER_DATA_DIR;
+    assert.ok(profile, 'run through .vscode-test.mjs so the actual editor can be inspected');
+    const endpoint = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);
+    assert.match(endpoint[0], /^\d+$/, 'the editor did not publish a CDP port');
+    assert.ok(endpoint[1]?.startsWith('/devtools/browser/'), 'the editor did not publish a CDP endpoint');
+    browser = await chromium.connectOverCDP(`ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`);
+    for (const context of browser.contexts()) {
+      for (const page of context.pages()) {
+        page.on('console', message => {
+          if (/canvas:|Content Security Policy/.test(message.text())) {
+            console.log('[Mysti test] webview console:', message.text());
+          }
+        });
+      }
+    }
   });
+
+  after(async () => {
+    // For connectOverCDP this disconnects our client; the test runner owns the
+    // editor process and must still receive the Mocha result before it exits.
+    await browser?.close();
+  });
+
+  async function canvasFrame(): Promise<{ page: Page; frame: Frame }> {
+    assert.ok(browser, 'the editor inspection connection was not established');
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      for (const context of browser.contexts()) {
+        for (const page of context.pages()) {
+          for (const frame of page.frames()) {
+            if (await frame.locator('#board-scroll').count()) { return { page, frame }; }
+          }
+        }
+      }
+      await sleep(250);
+    }
+    assert.fail('the Canvas document was not found in the actual editor webview frames');
+  }
 
   it('activates and registers the canvas commands', async () => {
     const commands = await vscode.commands.getCommands(true);
@@ -148,15 +188,16 @@ describe('Mysti Canvas — real VS Code host', function () {
   });
 
   /**
-   * The frame-mount path — where the CSP failures lived.
+   * Artboard rendering under the real host CSP.
    *
    * A `srcdoc` artboard inherits the panel CSP, which is how React, the UI
    * primitives and `harness.js` came to be refused in every live artboard while
-   * every test still passed. `liveFrames > 0` is the signal that an artboard
-   * actually mounted a frame in the real host; the earlier tests run with zero
-   * pages and so cannot see this at all.
+   * every test still passed. A host diagnostic can confirm the shell rendered,
+   * but even a nonzero iframe count does not establish that scripts inside the
+   * frame ran. Inspect visible content and interact with an input in the actual
+   * sandboxed frame to prove the shipped runtime and mount handshake completed.
    */
-  it('mounts a LIVE frame for a real artboard (the CSP path)', async () => {
+  it('mounts an interactive artboard under the real host CSP', async () => {
     const diag = await waitFor(d => d.pages > 0, 'an artboard to exist');
     assert.ok(diag.pages > 0, 'no artboard to mount');
 
@@ -169,15 +210,40 @@ describe('Mysti Canvas — real VS Code host', function () {
     assert.ok(live.rendered);
     assert.strictEqual(live.rendered.pages, live.pages, 'painted a different artboard count than the host holds');
 
-    // NOT asserted (yet), deliberately: `liveFrames` is 0 in this harness even
-    // with an artboard present. A frame mounts only when the artboard
-    // intersects the viewport above a zoom threshold, and a panel that is never
-    // brought to the foreground in a headless run may never satisfy that — so 0
-    // here does not yet distinguish "not visible" from "frames never mount".
-    // Until that is resolved this test covers the RENDER path, not the FRAME
-    // path, and saying so is better than an assertion that passes for the wrong
-    // reason or fails for an environmental one.
-    console.log(`[Mysti test] liveFrames=${live.rendered.liveFrames} (observed, not asserted — see comment)`);
+    const { page, frame } = await canvasFrame();
+    await page.bringToFront();
+    await frame.locator('#btn-zoom-fit').click();
+    // A split editor fits a desktop page at 20%, intentionally below the live
+    // frame threshold. Use the same zoom control as a person so this test
+    // reaches interactive mode without overriding virtualization or app state.
+    const zoom = frame.locator('#zoom-level');
+    const zoomDeadline = Date.now() + 30_000;
+    while (Date.now() < zoomDeadline && Number.parseInt(await zoom.innerText(), 10) < 50) {
+      await frame.locator('#btn-zoom-in').click();
+      await sleep(250);
+    }
+    assert.ok(Number.parseInt(await zoom.innerText(), 10) >= 50, 'Zoom In did not reach interactive scale');
+    const artboard = frame.locator('iframe.artboard-frame').first();
+    try {
+      await artboard.waitFor({ state: 'visible', timeout: 30_000 });
+    } catch (error) {
+      console.log('[Mysti test] frame mount state:', JSON.stringify({
+        board: await frame.locator('#board-scroll').boundingBox(),
+        zoom: await frame.locator('#zoom-level').textContent(),
+        notice: await frame.locator('#board-error').textContent(),
+        artboards: await frame.locator('.artboard').count(),
+        frames: await frame.locator('iframe.artboard-frame').count(),
+        world: await frame.locator('#page-stage').getAttribute('style'),
+      }));
+      await page.screenshot({ path: path.join(process.env.MYSTI_TEST_USER_DATA_DIR!, 'canvas-failure.png') });
+      throw error;
+    }
+    assert.strictEqual(await artboard.getAttribute('sandbox'), 'allow-scripts');
+    const design = artboard.contentFrame();
+    await design.getByRole('heading', { name: 'Welcome back', exact: true }).waitFor({ state: 'visible' });
+    const email = design.locator('input[type="email"]');
+    await email.fill('canvas-test@example.invalid');
+    assert.strictEqual(await email.inputValue(), 'canvas-test@example.invalid');
   });
 
   /**
@@ -188,6 +254,11 @@ describe('Mysti Canvas — real VS Code host', function () {
   it('reloads the persisted design on a second open', async () => {
     const first = await waitFor(d => d.pages > 0, 'a saved artboard');
     const artifactId = first.artifactId;
+    const canvasTab = vscode.window.tabGroups.all.flatMap(group => group.tabs)
+      .find(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Mysti Canvas');
+    assert.ok(canvasTab, 'no Canvas editor tab was open');
+    assert.ok(await vscode.window.tabGroups.close(canvasTab), 'the Canvas editor did not close');
+    await waitFor(d => !d.panelOpen && d.artifactId === null, 'the Canvas session to dispose');
     await vscode.commands.executeCommand('mysti.openCanvas');
     const again = await waitFor(d => d.artifactId !== null, 'the canvas to reopen');
     assert.strictEqual(again.artifactId, artifactId, 'reopening produced a DIFFERENT artifact — the saved design was not loaded');

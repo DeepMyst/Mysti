@@ -144,6 +144,7 @@ export class GeminiProvider extends BaseCliProvider {
     sessionKind: 'cli-resume',
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'none',   // Gemini CLI's result stats carry no cache split.
     modelSelection: 'full'
   };
 
@@ -565,8 +566,10 @@ export class GeminiProvider extends BaseCliProvider {
         case 'result':
           if (data.stats) {
             geminiSession.lastUsageStats = {
-              input_tokens: data.stats.input_tokens || data.stats.total_tokens || 0,
-              output_tokens: data.stats.output_tokens || 0
+              // NOT `|| data.stats.total_tokens`: total includes the completion,
+              // so the old fallback booked output tokens as context fill.
+              input_tokens: Number(data.stats.input_tokens ?? 0),
+              output_tokens: Number(data.stats.output_tokens ?? 0)
             };
             console.log('[Mysti] Gemini: Captured usage stats:', geminiSession.lastUsageStats);
           }

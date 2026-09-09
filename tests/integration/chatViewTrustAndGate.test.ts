@@ -191,10 +191,10 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
   } as any;
 
   const clearPanelContext = vi.fn();
-  const provider = new ChatViewProvider(
+  const provider = new ChatViewProvider({
     extensionUri,
     extensionContext,
-    {
+    contextManager: {
       getContext: () => [],
       setAutoContext: () => undefined,
       clearPanelContext,
@@ -202,24 +202,23 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
     } as any,
     conversationManager,
     providerManager,
-    { generateSuggestions: async () => [] } as any,
-    {} as any,                       // brainstormManager
+    suggestionManager: { generateSuggestions: async () => [] } as any,
+    brainstormManager: {} as any,
     permissionManager,
     setupManager,
-    {} as any,                       // telemetryManager
-    { isActive: () => false } as any, // autonomousManager
+    telemetryManager: {} as any,
+    autonomousManager: { isActive: () => false } as any,
     memoryManager,
     compactionManager,
     lifecycleManager,
-    {} as any,                       // slashCommandManager
+    slashCommandManager: {} as any,
     activeModeManager,
     engagementManager,
     projectContextManager,
-    { cancelTest: () => undefined } as any, // visualTestManager (K-3 disposes a dashboard)
-    {} as any,                       // canvasManager
-    createModelRegistryStub() as any,
-    { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any
-  );
+    visualTestManager: { cancelTest: () => undefined } as any,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any
+  });
 
   const sidebarMessages: Array<{ type: string; payload?: any }> = [];
   (provider as any)._panelStates.set('sidebar', {
@@ -233,7 +232,7 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
         const m = message as any;
         if (m?.type === 'permissionRequest' && m.payload?.id) {
           setTimeout(() => {
-            (provider as any)._handlePermissionResponse({ requestId: m.payload.id, decision: 'approve' });
+            (provider as any)._handlePermissionResponse({ requestId: m.payload.id, decision: 'approve' }, 'sidebar');
           }, 0);
         }
         return Promise.resolve(true);
@@ -401,6 +400,28 @@ describe('D-6: permission gate fails closed when the process cannot be paused', 
     expect(h.sidebarMessages.some(m => m.type === 'permissionRequest')).toBe(true);
     expect(h.sidebarMessages.some(
       m => m.type === 'error' && /could not pause/i.test(String(m.payload)))).toBe(false);
+  });
+
+  it.each([true, false])('does not apply a stale gate decision (%s) to a replacement conversation', async approved => {
+    let decide!: (approved: boolean) => void;
+    let opened!: () => void;
+    const gateOpened = new Promise<void>(resolve => { opened = resolve; });
+    const gate = new Promise<boolean>(resolve => { decide = resolve; });
+    const provider = h.provider as any;
+    provider.requestPermissionInline = () => { opened(); return gate; };
+    const resume = vi.spyOn(provider._providerManager, 'resumeRequest');
+    provider._conversationManager.getConversation = () => ({ id: 'replacement', messages: [] });
+    h.setStream([WRITE_CHUNK, { type: 'done' }]);
+    const sending = send(h, GATED);
+    await gateOpened;
+    await provider._handleMessage({ type: 'switchConversation', panelId: 'sidebar', payload: { id: 'replacement' } });
+    expect(h.cancelled).toEqual(['sidebar']);
+    h.cancelled.length = 0;
+    decide(approved);
+    await sending;
+    expect(resume).not.toHaveBeenCalled();
+    expect(h.cancelled).toEqual([]);
+    expect(h.sidebarMessages.some(m => m.type === 'responseComplete')).toBe(false);
   });
 
   it('keeps CollaboratorPool\'s carve-out: a read-ish web fetch still gets the best-effort prompt', async () => {

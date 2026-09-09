@@ -131,7 +131,22 @@ export const COMPACTION_SUMMARY_MAX_TOKENS = 2000; // Target token count for cli
 /**
  * Smart compaction constants (Plan 08, DeepMyst-gated).
  */
-export const PROMPT_CACHE_TTL_MS = 5 * 60 * 1000;          // Anthropic default ephemeral (5-min) cache window
+/**
+ * How long a prompt cache stays live — the staleness bound on "the last turn hit
+ * cache, so caching is working here".
+ *
+ * One hour, not the 5 minutes this used to say. Claude Code writes its prefix
+ * with the 1-hour TTL (which is why a cache WRITE costs 2x input rather than
+ * 1.25x, and why BoostManager's cold-resume trap is keyed to an hour of idle) —
+ * so a 5-minute window declared a still-live cache COLD after five minutes and
+ * handed SmartCompactor a green light to compact it away.
+ *
+ * The two errors are not symmetric, which settles the direction to round in:
+ * too SHORT destroys a warm cache and pays full price to rebuild it, while too
+ * LONG merely defers a compaction that the 90% critical-fill override forces
+ * anyway. Prefer the long side.
+ */
+export const PROMPT_CACHE_TTL_MS = 60 * 60 * 1000;
 export const SMART_CRITICAL_FILL_PERCENT = 90;             // Compact regardless of cache warmth above this fill
 export const SMART_MIN_SUMMARY_TOKENS = 5000;             // Floor so the compacted prefix stays cacheable (Opus/Haiku min 4096)
 export const SMART_DEFAULT_REMAINING_TURNS = 6;           // Default N estimate for the economic gate

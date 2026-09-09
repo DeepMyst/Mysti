@@ -1,0 +1,93 @@
+import { describe, expect, it } from 'vitest';
+import type { ChildProcess } from 'child_process';
+import type { Settings } from '../../src/types';
+import { shouldGateToolUse } from '../../src/utils/permissionClassifier';
+import {
+  TestableContinueProvider, TestableCopilotProvider,
+  TestableHermesProvider, TestableKimiProvider,
+} from '../helpers/providerFactory';
+import {
+  createContinueSession, createCopilotSession,
+  createHermesSession, createKimiSession,
+} from '../helpers/sessionFactory';
+
+const settings = (mode: Settings['mode'], accessLevel: Settings['accessLevel']): Settings => ({
+  mode, accessLevel, thinkingLevel: 'none', contextMode: 'auto', model: '', provider: 'hermes',
+});
+
+describe.each([
+  ['Hermes', () => new TestableHermesProvider(), createHermesSession],
+  ['Kimi', () => new TestableKimiProvider(), createKimiSession],
+] as const)('%s native permission policy', (_name, createProvider, createSession) => {
+  it.each(['edit', 'execute', 'delete', 'fetch'])('denies %s under ask-before-edit even with full access', kind => {
+    const provider = createProvider();
+    const session = createSession();
+    session.acpMode = 'ask-before-edit';
+    session.acpAccessLevel = 'full-access';
+    const written: string[] = [];
+    session.persistentProcess = {
+      stdin: { writable: true, write: (line: string) => { written.push(line); return true; } },
+    } as unknown as ChildProcess;
+
+    expect(shouldGateToolUse(settings('ask-before-edit', 'full-access'), 'Bash')).toBe(true);
+    const chunk = provider.parseStreamLine(JSON.stringify({
+      jsonrpc: '2.0', id: 31, method: 'session/request_permission',
+      params: {
+        toolCall: { kind },
+        options: [
+          { optionId: 'approve', kind: 'allow_once' },
+          { optionId: 'reject', kind: 'reject_once' },
+        ],
+      },
+    }), session);
+
+    expect(chunk).toBeNull();
+    expect(written).toHaveLength(1);
+    expect(JSON.parse(written[0]).result.outcome).toEqual({ outcome: 'selected', optionId: 'reject' });
+  });
+
+  it.each([
+    ['read', true], ['edit', true], ['move', true],
+    ['execute', false], ['delete', false], ['fetch', false], ['unknown', false],
+  ] as const)('auto-edit native response for %s allows=%s', (kind, allowed) => {
+    const provider = createProvider();
+    const session = createSession();
+    session.acpMode = 'edit-automatically';
+    session.acpAccessLevel = 'ask-permission';
+    const written: string[] = [];
+    session.persistentProcess = {
+      stdin: { writable: true, write: (line: string) => { written.push(line); return true; } },
+    } as unknown as ChildProcess;
+    provider.parseStreamLine(JSON.stringify({
+      jsonrpc: '2.0', id: 32, method: 'session/request_permission',
+      params: {
+        toolCall: { kind },
+        options: [
+          { optionId: 'approve', kind: 'allow_once' },
+          { optionId: 'reject', kind: 'reject_once' },
+        ],
+      },
+    }), session);
+    expect(JSON.parse(written[0]).result.outcome.optionId).toBe(allowed ? 'approve' : 'reject');
+  });
+});
+
+describe('CLI transports without permission requests', () => {
+  it('Continue keeps commands disabled in the auto-edit tier', () => {
+    const args = new TestableContinueProvider().buildCliArgs(
+      settings('edit-automatically', 'ask-permission'), createContinueSession(),
+    );
+    expect(args).toContain('--readonly');
+    expect(args).not.toContain('--auto');
+  });
+
+  it('legacy Copilot keeps commands disabled in the auto-edit tier', () => {
+    const provider = new TestableCopilotProvider();
+    (provider as unknown as { _cachedCliVersion: string })._cachedCliVersion = '0.0.372';
+    const args = provider.buildCliArgs(settings('edit-automatically', 'ask-permission'), createCopilotSession());
+    expect(args).toContain('--deny-tool');
+    expect(args).toContain('shell');
+    expect(args).toContain('write');
+    expect(args).not.toContain('--allow-all-tools');
+  });
+});

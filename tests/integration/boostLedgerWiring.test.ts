@@ -134,16 +134,16 @@ function createHarness(): Harness {
   } as any;
 
   const noop = {} as any;
-  const provider = new ChatViewProvider(
+  const provider = new ChatViewProvider({
     extensionUri,
     extensionContext,
-    { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
+    contextManager: { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
     conversationManager,
     providerManager,
-    { generateSuggestions: async () => [] } as any,
-    noop,                                                          // brainstormManager
+    suggestionManager: { generateSuggestions: async () => [] } as any,
+    brainstormManager: noop,
     permissionManager,
-    {
+    setupManager: {
       getWizardStatus: async () => ({ anyReady: true, npmAvailable: true, nodeVersion: 'v20.0.0', providers: [] }),
       getWizardStatusCached: () => ({ anyReady: true, complete: true, npmAvailable: true, nodeVersion: 'v20.0.0', providers: [] }),
       ensureProviderStatusFresh: async () => undefined,
@@ -151,34 +151,33 @@ function createHarness(): Harness {
       invalidateProviderStatus: () => undefined,
       onWizardStatusUpdated: () => ({ dispose: () => {} }),
     } as any,
-    noop,                                                          // telemetryManager
-    { isActive: () => false } as any,
-    {
+    telemetryManager: noop,
+    autonomousManager: { isActive: () => false } as any,
+    memoryManager: {
       learnFromPermissionDecision: () => undefined,
       getProjectMemoryContent: () => '',
       recordProjectLearning: () => undefined,
     } as any,
     compactionManager,
-    {
+    lifecycleManager: {
       onLifecycleEvent: () => undefined, touchSession: () => undefined,
       markBusy: () => undefined, markIdle: () => undefined, registerSession: () => undefined,
     } as any,
-    noop,                                                          // slashCommandManager
-    {
+    slashCommandManager: noop,
+    activeModeManager: {
       onStatusChanged: () => undefined, onChannelChanged: () => undefined, onActivity: () => undefined,
       subscribeToChannelEvents: () => () => undefined, isConnected: () => false,
       isInstalled: () => false, isIntegrationEnabled: () => false,
     } as any,
-    {
+    engagementManager: {
       trackCustomPersonaCreated: () => undefined, trackCustomSkillCreated: () => undefined,
       trackMessageSent: () => [], trackSuccessfulResponse: () => undefined,
     } as any,
-    { readRules: () => '', getMystiMdContent: () => '', getCrossVendorInstructions: () => [] } as any,
-    noop,                                                          // visualTestManager
-    noop,                                                          // canvasManager
-    createModelRegistryStub() as any,                              // modelRegistry
-    { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any,
-  );
+    projectContextManager: { readRules: () => '', getMystiMdContent: () => '', getCrossVendorInstructions: () => [] } as any,
+    visualTestManager: noop,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any
+  });
 
   // Record every ledger call while still exercising the REAL BoostManager, so a
   // signature drift between the call site and the manager fails here.
@@ -220,7 +219,7 @@ describe('Boost ledger wiring on the CLI path (Plan 24 Phase 1)', () => {
   beforeEach(() => { clearMockConfig(); h = createHarness(); });
   afterEach(() => { h.dispose(); });
 
-  it('records exactly one turn per done chunk, with context = input + cache-read', async () => {
+  it('records exactly one turn per done chunk, with context = every prompt bucket', async () => {
     h.setStream([
       { type: 'text', content: 'ok' },
       {
@@ -238,8 +237,12 @@ describe('Boost ledger wiring on the CLI path (Plan 24 Phase 1)', () => {
     expect(r.kind).toBe('cli');
     expect(r.provider).toBe('claude-code');
     expect(r.model).toBe('claude-opus-4-6');
-    // The CompactionManager fill convention — NOT input_tokens alone.
-    expect(r.contextTokens).toBe(100_000);
+    // The CompactionManager fill convention: for an Anthropic-convention backend
+    // the three prompt buckets are DISJOINT, so fill is the sum of all three —
+    // 1_000 uncached + 99_000 cache-read + 4_000 cache-CREATION. This used to
+    // assert 100_000, dropping cache-creation, which is the bug that made a cold
+    // turn (where the whole prefix lands in cache-creation) look nearly empty.
+    expect(r.contextTokens).toBe(104_000);
     expect(r.outputTokens).toBe(250);
     expect(r.cacheReadTokens).toBe(99_000);
     expect(r.cacheCreationTokens).toBe(4_000);

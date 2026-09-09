@@ -94,6 +94,7 @@ export class OpenRouterProvider extends BaseCliProvider {
     sessionKind: 'none',
     emitsToolResults: false,
     emitsUsage: true,
+    usageConvention: 'auto',   // OpenRouter fronts every vendor; Anthropic models there report disjoint buckets.
     modelSelection: 'full',
   };
 

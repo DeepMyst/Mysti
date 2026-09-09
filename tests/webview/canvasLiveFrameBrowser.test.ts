@@ -290,8 +290,18 @@ describe('canvas live artboard frames (real browser)', () => {
     );
     expect(desktop, 'the artboard starts at the desktop page box').toBe('1440px');
 
+    // The format select is a DOCUMENT property now, not a local preview: it
+    // writes `page.setMeta` and the host echoes the committed op back. That is
+    // the whole point of removing Apply — there is no longer an intermediate
+    // state where the board shows something the artboard is not — but it does
+    // mean the round-trip is part of the path under test.
     await page!.selectOption('#device-select', 'mobile');
-    await page!.waitForTimeout(120);
+    await page!.waitForTimeout(60);
+    const mobile = getFormat('mobile')!;
+    await ops([rec('o1', {
+      op: 'page.setMeta', pageId: 'p1',
+      patch: { format: { formatId: mobile.formatId, kind: mobile.kind, width: mobile.width, height: mobile.height } },
+    })], 8);
 
     const after = await frame.evaluate(() => ({
       pageBox: getComputedStyle(document.getElementById('__mysti_page')!).width,

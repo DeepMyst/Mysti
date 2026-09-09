@@ -118,6 +118,7 @@ export class LocalAIProvider extends BaseCliProvider {
     sessionKind: 'none',           // stateless HTTP requests
     emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
     emitsUsage: true,
+    usageConvention: 'auto',   // OpenAI-compatible server fronting arbitrary local models.
     modelSelection: 'custom-only'  // models live on the user's LocalAI server
   };
 

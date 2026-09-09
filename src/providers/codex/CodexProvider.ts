@@ -139,6 +139,7 @@ export class CodexProvider extends BaseCliProvider {
     sessionKind: 'prompt-history',     // no actual resume today (F15) — history replayed into the prompt
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'openai',   // Codex reports cached_input_tokens as a SUBSET of input_tokens (OpenAI convention).
     modelSelection: 'full'
   };
 

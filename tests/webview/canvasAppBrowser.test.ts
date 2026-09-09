@@ -395,6 +395,13 @@ describe('canvas app focus (real browser)', () => {
     });
     await page!.waitForTimeout(20);
 
+    // The chips describe the AGENT, so they sit beside it in the Activity tab
+    // rather than in the top bar, where their only explanation was a `title`
+    // on the container they shared. The cue still has to be DRAWN, which is
+    // what this test is for — so open the tab that holds them.
+    await page!.click('#tab-activity');
+    await page!.waitForTimeout(20);
+
     const chips = await page!.evaluate(() => [...document.querySelectorAll('#capability-chips .chip')]
       .map(chip => {
         const mark = chip.querySelector('.chip-mark') as HTMLElement | null;

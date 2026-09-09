@@ -34,9 +34,9 @@ import {
   CHANGE_FLASH_MAX,
   ACTIVITY_STYLE_ID,
   RAIL_ACTIVITY_ATTRS,
-  RAIL_HIDE_SWITCH_ID,
+  REVIEW_HIDE_SWITCH_ID,
   RAIL_LIST_ID,
-  RAIL_SHOW_SWITCH_ID,
+  REVIEW_SHOW_SWITCH_ID,
   REVIEW_QUEUE_ID,
   STATUS_IDLE_TICKS,
   STATUS_LABEL_ATTR,
@@ -649,11 +649,11 @@ describe('LivenessLayer — the review button opens the queue it names (SYNC-5)'
     expect(reviewButton(h).attrs.get('aria-label')).toContain('Review');
   });
 
-  it('falls back to the shell’s own rail switches when nothing is wired', () => {
+  it('falls back to the shell’s own inspector switches when nothing is wired', () => {
     const h = makeLayer();
-    const hidden = h.doc.seed(RAIL_HIDE_SWITCH_ID) as FakeElement & { checked?: boolean };
-    const shown = h.doc.seed(RAIL_SHOW_SWITCH_ID) as FakeElement & { checked?: boolean };
-    hidden.checked = true;               // the human pressed `[`
+    const hidden = h.doc.seed(REVIEW_HIDE_SWITCH_ID) as FakeElement & { checked?: boolean };
+    const shown = h.doc.seed(REVIEW_SHOW_SWITCH_ID) as FakeElement & { checked?: boolean };
+    hidden.checked = true;               // the human collapsed the dock
     shown.checked = false;
     h.layer.setReviewOpen(false);
     reviewButton(h).fire('click');

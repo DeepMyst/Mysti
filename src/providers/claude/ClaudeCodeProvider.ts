@@ -34,6 +34,11 @@ import type {
   SlashCommandDefinition,
   ModelInfo
 } from '../../types';
+import {
+  parseClaudeInitCommands,
+  type NativeCommandSpec,
+  type ReportedNativeCommands,
+} from '../base/NativeCommands';
 import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
@@ -59,6 +64,16 @@ export interface ClaudeSessionState extends PanelSessionState {
    * Optional so pre-existing session fixtures stay type-valid.
    */
   pendingChunks?: StreamChunk[];
+  /**
+   * The command list the CLI reported for THIS session in its `system`/`init`
+   * event. `null` until that event arrives — an empty array would mean "this
+   * session genuinely has no commands", which is a different claim.
+   *
+   * This is the only accurate source for Claude Code: the set depends on the
+   * installed version, the enabled plugins, the bundled skills (which are
+   * compiled into the binary and cannot be found on disk) and MCP prompts.
+   */
+  reportedCommands?: ReportedNativeCommands;
 }
 
 /**
@@ -203,6 +218,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     sessionKind: 'cli-resume',     // --resume with CLI-issued session IDs
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'anthropic',   // Claude Code emits Anthropic message_delta usage: the three buckets are disjoint.
     modelSelection: 'full'
   };
 
@@ -326,6 +342,25 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     ];
   }
 
+  /**
+   * What the CLI said it has, for this panel.
+   *
+   * `null` before the panel's first turn, so the menu falls back to the curated
+   * catalog rather than showing nothing.
+   */
+  public override getDynamicNativeCommands(panelId?: string): NativeCommandSpec[] {
+    if (!panelId) { return []; }
+    const session = this._panelSessions.get(panelId) as ClaudeSessionState | undefined;
+    return session?.reportedCommands ?? [];
+  }
+
+  /** True once the CLI has reported — the caller then trusts it over the catalog. */
+  public override hasReportedNativeCommands(panelId?: string): boolean {
+    if (!panelId) { return false; }
+    const session = this._panelSessions.get(panelId) as ClaudeSessionState | undefined;
+    return Array.isArray(session?.reportedCommands);
+  }
+
   // ============================================================================
   // Per-panel session creation (override for Claude-specific state)
   // ============================================================================
@@ -345,6 +380,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       hasStreamedText: false,
       awaitingCompactSummary: false,
       pendingChunks: [],
+      reportedCommands: null,
     };
   }
 
@@ -803,6 +839,17 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       // Handle system events (session init, etc.)
       if (data.type === 'system') {
         if (data.subtype === 'init') {
+          // The CLI tells us exactly which `/commands` this session has —
+          // built-ins, bundled skills (`/design` and friends, which live inside
+          // the binary and appear in NO directory), plugin commands and MCP
+          // prompts. Mysti used to read `session_id` off this event and drop
+          // the rest, which is why the slash menu could only ever show a
+          // hard-coded guess that went stale with every CLI release.
+          const reported = parseClaudeInitCommands(data.slash_commands, data.skills);
+          if (reported) {
+            claudeSession.reportedCommands = reported;
+            console.log(`[Mysti] Claude: ${reported.length} native command(s) reported by the CLI`);
+          }
           const sessionId = data.session_id || data.sessionId;
           if (sessionId && !session.sessionId) {
             session.sessionId = sessionId;

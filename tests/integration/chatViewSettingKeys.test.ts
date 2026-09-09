@@ -47,6 +47,7 @@ import { clearMockConfig, setMockConfig, Uri } from '../helpers/mockVscode';
 import type { Settings, StreamChunk, WebviewMessage } from '../../src/types';
 import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 import { AUTONOMOUS_CONTINUATION_DELAY_MS } from '../../src/constants';
+import type { QueuedChannelMessage } from '../../src/managers/ChannelBridge';
 
 const BASE_SETTINGS: Settings = {
   mode: 'edit-automatically',
@@ -71,9 +72,13 @@ const BASE_SETTINGS: Settings = {
 interface Harness {
   provider: ChatViewProvider;
   sentSettings: Settings[];
+  sentMessages: Array<{ content: string; panelId: string }>;
   compactionSettings: Settings[];
   setStream(chunks: StreamChunk[]): void;
   setContinuation(followUp: string | null): void;
+  queueDuringResponse(messages: QueuedChannelMessage[]): void;
+  queueDuringDelay(messages: QueuedChannelMessage[]): void;
+  replaceWithManualMessage(): Promise<void>;
   dispose(): void;
 }
 
@@ -114,9 +119,11 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
   };
 
   let streamChunks: StreamChunk[] = [];
+  let queueOnNextStream: QueuedChannelMessage[] = [];
 
   const conversationManager = {
     getCurrentConversation: () => null,
+    createNewConversation: () => ({ id: 'conv-new', messages: [] }),
     getConversation: () => (options.visibleConversation ? conversation : null),
     getAgentConfig: () => undefined,
     isFirstUserMessage: () => false,
@@ -130,11 +137,17 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
     getModelContextWindow: () => 200000,
     setChannelSystemContext: () => undefined,
     cancelRequest: () => undefined,
+    clearSession: () => undefined,
     suspendRequest: () => true,
     resumeRequest: () => true,
     getProviders: () => [],
+    getAllProviderIds: () => [],
     getRegistry: () => ({ getAll: () => [] }),
     sendMessage: vi.fn(async function* () {
+      if (queueOnNextStream.length > 0) {
+        (provider as any)._channelBridge._queuedMessages.set('sidebar', queueOnNextStream);
+        queueOnNextStream = [];
+      }
       for (const chunk of streamChunks) { yield chunk; }
     }),
   } as any;
@@ -155,6 +168,7 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
     markBusy: () => undefined,
     markIdle: () => undefined,
     registerSession: () => undefined,
+    removeSession: () => undefined,
   } as any;
 
   const activeModeManager = {
@@ -173,6 +187,7 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
     trackCustomSkillCreated: () => undefined,
     trackMessageSent: () => [],
     trackSuccessfulResponse: () => undefined,
+    trackConversationStarted: () => [],
     getUsageStats: () => ({}),
     getAllBadges: () => [],
     getUnlockedCount: () => 0,
@@ -193,12 +208,14 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
     getThreshold: () => 75,
     getStrategy: () => 'client-summarize',
     getUsage: () => undefined,
+    getLastFill: () => null,
+    resetUsage: () => undefined,
   } as any;
 
-  const provider = new ChatViewProvider(
+  const provider = new ChatViewProvider({
     extensionUri,
     extensionContext,
-    {
+    contextManager: {
       getContext: () => [],
       setAutoContext: () => undefined,
       clearPanelContext: () => undefined,
@@ -206,24 +223,23 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
     } as any,
     conversationManager,
     providerManager,
-    { generateSuggestions: async () => [] } as any,
-    {} as any,                        // brainstormManager
+    suggestionManager: { generateSuggestions: async () => [] } as any,
+    brainstormManager: { cancelSession: () => undefined, clearSession: () => undefined } as any,
     permissionManager,
     setupManager,
-    {} as any,                        // telemetryManager
-    { isActive: () => false } as any, // autonomousManager (swapped per-test)
+    telemetryManager: {} as any,
+    autonomousManager: { isActive: () => false } as any,
     memoryManager,
     compactionManager,
     lifecycleManager,
-    {} as any,                        // slashCommandManager
+    slashCommandManager: {} as any,
     activeModeManager,
     engagementManager,
-    { readRules: () => '', getMystiMdContent: () => '', getCrossVendorInstructions: () => [] } as any,
-    {} as any,                        // visualTestManager
-    {} as any,                        // canvasManager
-    createModelRegistryStub() as any,
-    { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any
-  );
+    projectContextManager: { readRules: () => '', getMystiMdContent: () => '', getCrossVendorInstructions: () => [] } as any,
+    visualTestManager: {} as any,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any
+  });
 
   (provider as any)._panelStates.set('sidebar', {
     id: 'sidebar',
@@ -235,6 +251,7 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
   // Capture the Settings every send/compaction is built with, without running
   // the real stream loop.
   const sentSettings: Settings[] = [];
+  const sentMessages: Array<{ content: string; panelId: string }> = [];
   const realSend = (provider as any)._handleSendMessage.bind(provider);
   let sendCalls = 0;
   (provider as any)._handleSendMessage = async (msg: any, panelId: string) => {
@@ -243,6 +260,7 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
       return realSend(msg, panelId);
     }
     sentSettings.push(msg.settings);
+    sentMessages.push({ content: msg.content, panelId });
   };
   (provider as any)._executeCompaction = async (_panelId: string, settings: Settings) => {
     compactionSettings.push(settings);
@@ -251,8 +269,14 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
   return {
     provider,
     sentSettings,
+    sentMessages,
     compactionSettings,
     setStream(chunks) { streamChunks = chunks; },
+    queueDuringResponse(messages) { queueOnNextStream = messages; },
+    queueDuringDelay(messages) { (provider as any)._channelBridge._queuedMessages.set('sidebar', messages); },
+    replaceWithManualMessage() {
+      return realSend({ content: 'manual replacement', context: [], settings: { ...BASE_SETTINGS } }, 'sidebar');
+    },
     setContinuation(followUp: string | null) {
       (provider as any)._autonomousManager = {
         isActive: () => true,
@@ -264,6 +288,7 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
     },
     dispose() {
       (provider as any)._channelBridge?.dispose?.();
+      (provider as any)._delayedChannelTurns.dispose();
       permissionManager.dispose();
     },
   };
@@ -318,8 +343,8 @@ describe('B-1: the configured access level survives every rebuild of Settings', 
 
 describe('B-1: the autonomous continuation carries the configured mode', () => {
   let h: Harness;
-  beforeEach(() => { clearMockConfig(); h = createHarness({ passThroughFirstSend: true }); });
-  afterEach(() => { h.dispose(); clearMockConfig(); });
+  beforeEach(() => { vi.useFakeTimers(); clearMockConfig(); h = createHarness({ passThroughFirstSend: true }); });
+  afterEach(() => { h.dispose(); clearMockConfig(); vi.useRealTimers(); });
 
   it('builds the follow-up turn at mysti.defaultMode, not a hardcoded "default"', async () => {
     setMockConfig('defaultMode', 'detailed-plan');
@@ -333,7 +358,7 @@ describe('B-1: the autonomous continuation carries the configured mode', () => {
     );
 
     // The continuation is scheduled with AUTONOMOUS_CONTINUATION_DELAY_MS.
-    await new Promise(resolve => setTimeout(resolve, AUTONOMOUS_CONTINUATION_DELAY_MS + 250));
+    await vi.advanceTimersByTimeAsync(AUTONOMOUS_CONTINUATION_DELAY_MS);
 
     expect(h.sentSettings.length).toBe(1);
     const followUp = h.sentSettings[0];
@@ -342,7 +367,228 @@ describe('B-1: the autonomous continuation carries the configured mode', () => {
     expect(followUp.mode).toBe('detailed-plan');
     expect(followUp.accessLevel).toBe('read-only');
     expect(followUp.autonomousMode).toBe(true);
-  }, 10000);
+  });
+
+  it('does not resume a stopped panel when its delayed continuation becomes due', async () => {
+    h.setStream([{ type: 'text', content: 'step one done' }, { type: 'done' }]);
+    h.setContinuation('keep going');
+    await (h.provider as any)._handleSendMessage(
+      { content: 'start', context: [], settings: { ...BASE_SETTINGS } }, 'sidebar'
+    );
+    await (h.provider as any)._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
+    await vi.advanceTimersByTimeAsync(AUTONOMOUS_CONTINUATION_DELAY_MS);
+    expect(h.sentSettings).toEqual([]);
+  });
+
+  it('does not resume a panel that closed before its continuation became due', async () => {
+    h.setStream([{ type: 'text', content: 'step one done' }, { type: 'done' }]);
+    h.setContinuation('keep going');
+    await (h.provider as any)._handleSendMessage(
+      { content: 'start', context: [], settings: { ...BASE_SETTINGS } }, 'sidebar'
+    );
+    (h.provider as any)._panelStates.delete('sidebar');
+    await vi.advanceTimersByTimeAsync(AUTONOMOUS_CONTINUATION_DELAY_MS);
+    expect(h.sentSettings).toEqual([]);
+  });
+
+  it('does not send an old continuation into a new conversation', async () => {
+    h.setStream([{ type: 'text', content: 'step one done' }, { type: 'done' }]);
+    h.setContinuation('keep going');
+    await (h.provider as any)._handleSendMessage(
+      { content: 'start', context: [], settings: { ...BASE_SETTINGS } }, 'sidebar'
+    );
+    await (h.provider as any)._handleMessage({ type: 'newConversation', panelId: 'sidebar' });
+    await vi.advanceTimersByTimeAsync(AUTONOMOUS_CONTINUATION_DELAY_MS);
+    expect(h.sentSettings).toEqual([]);
+  });
+
+  it('preserves a continuation when a different panel stops', async () => {
+    h.setStream([{ type: 'text', content: 'step one done' }, { type: 'done' }]);
+    h.setContinuation('keep going');
+    await (h.provider as any)._handleSendMessage(
+      { content: 'start', context: [], settings: { ...BASE_SETTINGS } }, 'sidebar'
+    );
+    await (h.provider as any)._handleMessage({ type: 'cancelRequest', panelId: 'other' });
+    await vi.advanceTimersByTimeAsync(AUTONOMOUS_CONTINUATION_DELAY_MS);
+    expect(h.sentSettings).toHaveLength(1);
+  });
+});
+
+describe('queued channel turns', () => {
+  let h: Harness;
+  const queued: QueuedChannelMessage[] = [
+    { channelId: 'telegram', channelName: 'Telegram', sender: 'Alice', content: `First request\n${'x'.repeat(200)}`, timestamp: 1 },
+    { channelId: 'whatsapp', channelName: 'WhatsApp', sender: 'Bob', content: 'Second request', timestamp: 2 },
+  ];
+  beforeEach(() => {
+    vi.useFakeTimers();
+    clearMockConfig();
+    h = createHarness({ passThroughFirstSend: true });
+    h.setStream([{ type: 'text', content: 'finished original work' }, { type: 'done' }]);
+    h.queueDuringResponse([...queued]);
+  });
+  afterEach(() => { h.dispose(); clearMockConfig(); vi.useRealTimers(); });
+
+  const finishOriginal = () => (h.provider as any)._handleSendMessage(
+    { content: 'start', context: [], settings: { ...BASE_SETTINGS } }, 'sidebar'
+  );
+
+  it('dispatches every attributed message once in one batch, including arrivals during the delay', async () => {
+    // Queued user input wins over an automatic follow-up for the finished turn.
+    h.setContinuation('automatic follow-up');
+    await finishOriginal();
+    const bridge = (h.provider as any)._channelBridge;
+    expect(bridge._delegate.isRunning('sidebar')).toBe(true);
+    h.queueDuringDelay([{ channelId: 'telegram', channelName: 'Telegram', content: 'Third request', timestamp: 3 }]);
+    await vi.advanceTimersByTimeAsync(499);
+    expect(h.sentMessages).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.sentMessages).toEqual([{
+      panelId: 'sidebar',
+      content: `[Via Telegram from Alice]: ${queued[0].content}\n\n---\n\n[Via WhatsApp from Bob]: Second request\n\n---\n\n[Via Telegram]: Third request`,
+    }]);
+    await vi.advanceTimersByTimeAsync(AUTONOMOUS_CONTINUATION_DELAY_MS);
+    expect(h.sentMessages).toHaveLength(1);
+    expect(bridge.drainQueuedMessages('sidebar')).toEqual([]);
+  });
+
+  it('queued input takes precedence over an automatic native plan selection', async () => {
+    const nativePlan = vi.spyOn(h.provider as any, '_handleExitPlanMode');
+    h.setStream([
+      { type: 'text', content: 'plan ready' },
+      { type: 'exit_plan_mode', planFilePath: '/mock/plan.md' },
+      { type: 'done' },
+    ]);
+    await finishOriginal();
+    expect(nativePlan).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.sentMessages).toHaveLength(1);
+    expect(h.sentMessages[0].content).toContain(queued[0].content);
+    expect(h.sentMessages[0].content).toContain(queued[1].content);
+  });
+
+  it.each(['cancelRequest', 'newConversation', 'clearSession'] as const)('%s cancels scheduled and still-undrained inputs', async type => {
+    await finishOriginal();
+    h.queueDuringDelay([{ ...queued[0], content: 'late queued input' }]);
+    await (h.provider as any)._handleMessage({ type, panelId: 'sidebar' });
+    expect((h.provider as any)._delayedChannelTurns.has('sidebar')).toBe(false);
+    expect((h.provider as any)._channelBridge.drainQueuedMessages('sidebar')).toEqual([]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.sentMessages).toEqual([]);
+  });
+
+  it('a manual replacement prevents delayed old input from restarting work', async () => {
+    await finishOriginal();
+    await h.replaceWithManualMessage();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.sentMessages).toEqual([]);
+    expect((h.provider as any)._delayedChannelTurns.has('sidebar')).toBe(false);
+  });
+
+  it('a successful conversation switch cancels the old batch', async () => {
+    await finishOriginal();
+    (h.provider as any)._conversationManager.getConversation = () => ({ id: 'other', messages: [] });
+    await (h.provider as any)._handleMessage({ type: 'switchConversation', panelId: 'sidebar', payload: { id: 'other' } });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.sentMessages).toEqual([]);
+  });
+
+  it('does not send a batch whose panel closed', async () => {
+    await finishOriginal();
+    (h.provider as any)._panelStates.delete('sidebar');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.sentMessages).toEqual([]);
+  });
+
+  it('stopping another panel preserves the entire queued batch', async () => {
+    await finishOriginal();
+    await (h.provider as any)._handleMessage({ type: 'cancelRequest', panelId: 'other' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.sentMessages).toHaveLength(1);
+    expect(h.sentMessages[0].content).toContain(queued[0].content);
+    expect(h.sentMessages[0].content).toContain(queued[1].content);
+  });
+
+  it('a channel-origin Stop uses the same cancellation as the webview', async () => {
+    await finishOriginal();
+    (h.provider as any)._channelBridge._delegate.cancelPanelRequest('sidebar');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.sentMessages).toEqual([]);
+    expect((h.provider as any)._delayedChannelTurns.has('sidebar')).toBe(false);
+  });
+
+  it('keeps the real batch busy during preparation and queues later input for the next turn', async () => {
+    await finishOriginal();
+    const provider = h.provider as any;
+    provider._handleSendMessage = (ChatViewProvider.prototype as any)._handleSendMessage.bind(provider);
+    let release!: (value: string) => void;
+    const preparation = new Promise<string>(resolve => { release = resolve; });
+    provider._compactionManager.retrieveContext = vi.fn()
+      .mockImplementationOnce(() => preparation)
+      .mockResolvedValue('');
+    provider._providerManager.cancelRequest = vi.fn();
+    const bridge = provider._channelBridge;
+    try {
+      await vi.advanceTimersByTimeAsync(500);
+      expect(bridge._delegate.isRunning('sidebar')).toBe(true);
+      bridge._isTrackedConversation = () => true;
+      bridge._handleInboundChannelEvent({
+        eventType: 'message_received', channelId: 'telegram', channelType: 'telegram',
+        sender: 'Alice', content: 'Input received during preparation',
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(provider._compactionManager.retrieveContext).toHaveBeenCalledTimes(1);
+      expect(provider._providerManager.sendMessage).toHaveBeenCalledTimes(1);
+      release('');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(provider._providerManager.sendMessage).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(provider._providerManager.sendMessage).toHaveBeenCalledTimes(3);
+      expect(provider._providerManager.sendMessage.mock.calls[1][0]).toContain(queued[0].content);
+      expect(provider._providerManager.sendMessage.mock.calls[1][0]).toContain(queued[1].content);
+      expect(provider._providerManager.sendMessage.mock.calls[2][0]).toBe('[Via Telegram from Alice]: Input received during preparation');
+      expect(provider._providerManager.cancelRequest).not.toHaveBeenCalled();
+    } finally {
+      release('');
+      await vi.advanceTimersByTimeAsync(0);
+    }
+  });
+
+  it('Stop during real batch preparation releases busy ownership and prevents late dispatch', async () => {
+    await finishOriginal();
+    const provider = h.provider as any;
+    provider._handleSendMessage = (ChatViewProvider.prototype as any)._handleSendMessage.bind(provider);
+    let release!: (value: string) => void;
+    provider._compactionManager.retrieveContext = () => new Promise<string>(resolve => { release = resolve; });
+    await vi.advanceTimersByTimeAsync(500);
+    await provider._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
+    expect(provider._channelBridge._delegate.isRunning('sidebar')).toBe(false);
+    release('');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(provider._providerManager.sendMessage).toHaveBeenCalledTimes(1);
+    expect(provider._delayedChannelTurns.has('sidebar')).toBe(false);
+  });
+
+  it('stale preparation cleanup cannot release a manual replacement reservation', async () => {
+    await finishOriginal();
+    const provider = h.provider as any;
+    provider._handleSendMessage = (ChatViewProvider.prototype as any)._handleSendMessage.bind(provider);
+    const releases: Array<(value: string) => void> = [];
+    provider._compactionManager.retrieveContext = () => new Promise<string>(resolve => { releases.push(resolve); });
+    await vi.advanceTimersByTimeAsync(500);
+    const manual = h.replaceWithManualMessage();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(releases).toHaveLength(2);
+    releases[0]('');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(provider._channelBridge._delegate.isRunning('sidebar')).toBe(true);
+    expect(provider._providerManager.sendMessage).toHaveBeenCalledTimes(1);
+    releases[1]('');
+    await manual;
+    expect(provider._providerManager.sendMessage).toHaveBeenCalledTimes(2);
+    expect(provider._providerManager.sendMessage.mock.calls[1][0]).toBe('manual replacement');
+    expect(provider._delayedChannelTurns.has('sidebar')).toBe(false);
+  });
 });
 
 // ===========================================================================

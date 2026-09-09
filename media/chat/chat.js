@@ -2,49 +2,20 @@
     (function() {
       const vscode = acquireVsCodeApi();
 
-      /**
-       * Render untrusted markdown to HTML (Plan 23 B2).
-       *
-       * Everything rendered here is attacker-influenceable: model output, tool
-       * results, a poisoned repo file quoted back, an MCP response. The webview
-       * CSP already stops the *code-execution* half — `script-src` with a nonce
-       * blocks inline handlers like `onerror`, and `img-src` omits http(s), so
-       * injected markup cannot beacon out either.
-       *
-       * What CSP does NOT stop is UI SPOOFING, and this is the surface where the
-       * user makes trust decisions: a permission card, an approve button, a
-       * "capability registered" line. Injected markup that merely LOOKS like
-       * Mysti's own chrome is the realistic attack, and sanitizing is what
-       * removes it.
-       *
-       * Fails CLOSED: if DOMPurify did not load for any reason, the text is
-       * escaped and shown as plain text rather than rendered as raw HTML.
-       */
-      function renderMarkdownSafe(markdownText) {
-        var raw;
-        try {
-          raw = marked.parse(markdownText);
-        } catch (e) {
-          raw = String(markdownText == null ? '' : markdownText);
-        }
-        if (typeof DOMPurify === 'undefined' || !DOMPurify.sanitize) {
-          console.warn('[Mysti] DOMPurify unavailable — showing text unrendered rather than as raw HTML');
-          var escaped = document.createElement('div');
-          escaped.textContent = String(markdownText == null ? '' : markdownText);
-          return escaped.innerHTML;
-        }
-        return DOMPurify.sanitize(raw, {
-          // `target` is needed because marked emits links; `class`/`data-*` carry
-          // Prism and Mermaid hooks that the renderer sets up afterwards.
-          ADD_ATTR: ['target', 'class', 'data-lang'],
-          // Belt to the CSP's braces: these are the tags that spoof chrome or
-          // reach the network, and none of them has a legitimate use in rendered
-          // model prose.
-          FORBID_TAGS: ['form', 'input', 'button', 'select', 'textarea', 'iframe', 'object', 'embed', 'base', 'link', 'meta', 'style'],
-          FORBID_ATTR: ['formaction', 'action', 'srcdoc', 'ping'],
-        });
-      }
-      const MERMAID_URI = window.__MYSTI_BOOT__.mermaidUri;
+      const markdownRenderer = window.MystiMarkdownRenderer.create({
+        document,
+        marked: window.marked,
+        sanitize: window.DOMPurify && window.DOMPurify.sanitize,
+        mermaidUri: window.__MYSTI_BOOT__.mermaidUri,
+        getMermaid: () => window.mermaid,
+        logger: console,
+      });
+      const renderMarkdownSafe = value => markdownRenderer.renderMarkdown(value);
+      const renderMermaidDiagrams = () => markdownRenderer.renderDiagrams();
+      window.addEventListener('pagehide', event => {
+        if (!event.persisted) { markdownRenderer.dispose(); }
+      });
+
       const LOGO_URI = window.__MYSTI_BOOT__.logoUri;
       const MYSTI_VERSION = window.__MYSTI_BOOT__.version;
       var ICON_URIS = window.__MYSTI_BOOT__.iconUris;
@@ -101,225 +72,6 @@
         'icons/kimi.png': KIMI_LOGO
       };
 
-      // Mermaid lazy loading
-      var mermaidLoaded = false;
-      var mermaidLoadPromise = null;
-
-      function loadMermaid() {
-        if (mermaidLoaded) return Promise.resolve();
-        if (mermaidLoadPromise) return mermaidLoadPromise;
-
-        mermaidLoadPromise = new Promise(function(resolve, reject) {
-          var script = document.createElement('script');
-          script.src = MERMAID_URI;
-          script.onload = function() {
-            mermaid.initialize({
-              startOnLoad: false,
-              theme: 'dark',
-              securityLevel: 'strict'
-            });
-            mermaidLoaded = true;
-            resolve();
-          };
-          script.onerror = reject;
-          document.head.appendChild(script);
-        });
-        return mermaidLoadPromise;
-      }
-
-      function renderMermaidDiagrams() {
-        var mermaidBlocks = document.querySelectorAll('.mermaid-pending');
-        if (mermaidBlocks.length === 0) return;
-
-        loadMermaid().then(function() {
-          mermaidBlocks.forEach(function(block, index) {
-            var code = block.textContent;
-            var id = 'mermaid-' + Date.now() + '-' + index;
-            try {
-              mermaid.render(id, code).then(function(result) {
-                block.innerHTML = result.svg;
-                block.classList.remove('mermaid-pending');
-                block.classList.add('mermaid-rendered');
-              }).catch(function(e) {
-                block.classList.add('mermaid-error');
-                console.error('Mermaid render error:', e);
-              });
-            } catch (e) {
-              block.classList.add('mermaid-error');
-              console.error('Mermaid render error:', e);
-            }
-          });
-        }).catch(function(e) {
-          console.error('Failed to load Mermaid:', e);
-        });
-      }
-
-      // Configure marked if available
-      if (typeof marked !== 'undefined') {
-        var renderer = new marked.Renderer();
-        var originalCode = renderer.code.bind(renderer);
-
-        renderer.code = function(code, lang, escaped) {
-          if (typeof code === 'object') {
-            lang = code.lang;
-            escaped = code.escaped;
-            code = code.text;
-          }
-
-          if (lang === 'mermaid') {
-            return '<div class="mermaid-diagram mermaid-pending">' + escapeHtmlForMarked(code) + '</div>';
-          }
-
-          // Check for diff content - use professional diff component
-          if (lang === 'diff' || lang === 'patch' || isDiffContentMarked(code)) {
-            return formatDiffContentMarked(code);
-          }
-
-          // Return code block for Prism highlighting
-          var langClass = lang ? 'language-' + lang : '';
-          return '<pre><code class="' + langClass + '">' + escapeHtmlForMarked(code) + '</code></pre>';
-        };
-
-        marked.setOptions({
-          gfm: true,
-          breaks: true,
-          renderer: renderer
-        });
-      }
-
-      function escapeHtmlForMarked(text) {
-        if (!text) return '';
-        return text
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-          .replace(/'/g, '&#39;');
-      }
-
-      function isDiffContentMarked(content) {
-        var lines = content.split('\n');
-        var diffMarkers = 0;
-        var checkLines = Math.min(lines.length, 20);
-        for (var i = 0; i < checkLines; i++) {
-          var line = lines[i];
-          // Exclude CSS custom properties (--var) from diff detection
-          if (line.startsWith('+') || (line.startsWith('-') && !line.startsWith('--')) || line.startsWith('@@')) {
-            diffMarkers++;
-          }
-        }
-        return diffMarkers > checkLines * 0.2;
-      }
-
-      function formatDiffContentMarked(content) {
-        var lines = content.split('\n');
-        var additions = 0;
-        var deletions = 0;
-        var fileName = '';
-        var filePath = '';
-        var diffLines = [];
-        var lineNum = 1;
-        var previewLimit = 10;
-        var diffId = 'diff-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-
-        // Parse diff and collect data
-        for (var i = 0; i < lines.length; i++) {
-          var line = lines[i];
-
-          // Extract file path from diff headers
-          if (line.startsWith('+++ b/')) {
-            filePath = line.substring(6);
-          } else if (line.startsWith('+++ ') && !filePath) {
-            filePath = line.substring(4);
-          } else if (line.startsWith('diff --git')) {
-            var gitMatch = line.match(/b\/(.+)$/);
-            if (gitMatch) filePath = gitMatch[1];
-          }
-
-          // Skip header lines for display
-          if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) {
-            continue;
-          }
-
-          // Parse hunk header for line numbers
-          if (line.startsWith('@@')) {
-            var hunkMatch = line.match(/@@ -\d+(?:,\d+)? \+(\d+)/);
-            if (hunkMatch) lineNum = parseInt(hunkMatch[1], 10);
-            continue;
-          }
-
-          var lineClass = 'file-edit-line';
-          var lineNumDisplay = '';
-
-          if (line.startsWith('+')) {
-            lineClass += ' addition';
-            additions++;
-            lineNumDisplay = lineNum++;
-          } else if (line.startsWith('-')) {
-            lineClass += ' deletion';
-            deletions++;
-            lineNumDisplay = '';
-          } else {
-            lineClass += ' context';
-            lineNumDisplay = lineNum++;
-          }
-
-          diffLines.push({
-            cls: lineClass,
-            num: lineNumDisplay,
-            content: line.substring(1) || ' '
-          });
-        }
-
-        // Extract filename from path
-        if (!filePath) filePath = 'changes';
-        var pathParts = filePath.split('/');
-        fileName = pathParts.pop() || filePath;
-        var dirPath = pathParts.length > 0 ? pathParts.join('/') + '/' : '';
-
-        // Build preview (first 10 lines)
-        var hasMore = diffLines.length > previewLimit;
-        var previewLines = hasMore ? diffLines.slice(0, previewLimit) : diffLines;
-        var remainingCount = diffLines.length - previewLimit;
-
-        var previewHtml = '';
-        for (var j = 0; j < previewLines.length; j++) {
-          var dl = previewLines[j];
-          previewHtml += '<div class="' + dl.cls + '">' +
-            '<span class="file-edit-line-num">' + (dl.num !== '' ? dl.num : '') + '</span>' +
-            '<span class="file-edit-line-content">' + escapeHtmlForMarked(dl.content) + '</span>' +
-          '</div>';
-        }
-
-        // Encode full diff data for expansion
-        var fullDiffData = encodeURIComponent(JSON.stringify(diffLines));
-
-        // Chevron SVG
-        var chevronSvg = '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M4 6l4 4 4-4"/></svg>';
-
-        var html = '<div class="file-edit-card" id="' + diffId + '" data-file-path="' + escapeHtmlForMarked(filePath) + '" data-full-diff="' + fullDiffData + '">' +
-          '<div class="file-edit-header">' +
-            '<span class="file-edit-icon">📄</span>' +
-            '<span class="file-edit-filename">' + escapeHtmlForMarked(fileName) + '</span>' +
-            '<span class="file-edit-path">' + escapeHtmlForMarked(dirPath) + '</span>' +
-            '<div class="file-edit-stats">' +
-              (additions > 0 ? '<span class="file-edit-additions">+' + additions + '</span>' : '') +
-              (deletions > 0 ? '<span class="file-edit-deletions">-' + deletions + '</span>' : '') +
-            '</div>' +
-            '<button class="file-edit-collapse-btn" title="Toggle">' + chevronSvg + '</button>' +
-          '</div>' +
-          '<div class="file-edit-diff">' +
-            '<div class="file-edit-diff-content">' + previewHtml + '</div>' +
-            (hasMore ? '<button class="file-edit-show-more">Show more... (' + remainingCount + ' lines)</button>' : '') +
-          '</div>' +
-          '<div class="file-edit-actions">' +
-            '<button class="file-edit-btn file-edit-revert">Revert</button>' +
-            '<button class="file-edit-btn file-edit-review">Review</button>' +
-          '</div>' +
-        '</div>';
-
-        return html;
-      }
 
       let state = {
         panelId: null,  // Unique ID for this panel
@@ -345,13 +97,23 @@
         slashMenuVisible: false,
         slashMenuIndex: 0,
         slashMenuItems: [],
+        // Plan 29 — set while the slash menu is picking agents for a session:
+        // { shape: <SessionMenuEntry>, picked: {providerId: true} }. Null the
+        // rest of the time, which is what keeps the menu a plain command list.
+        sessionPicker: null,
+        sessionCatalog: [],
         slashMenuQuery: '',
         quickActions: [],
         // Context usage tracking
         contextUsage: {
           usedTokens: 0,
           contextWindow: 200000,
-          percentage: 0
+          percentage: 0,
+          // True when the ACTIVE backend cannot report token usage at all
+          // (capabilities.emitsUsage === false). Distinct from "0 tokens": the
+          // pie renders n/a instead of holding whatever the previous provider
+          // left in it, which is what it used to do.
+          unavailable: false
         },
         // Last prompt the user sent (Plan 25 retry affordance; memory only)
         lastSentContent: '',
@@ -1142,449 +904,22 @@
         return mentions;
       }
 
-      // Sub-agent card rendering
-      function handleSubAgentStarted(payload) {
-        var agentId = payload.agentId;
-        var agentInfo = getAgentDisplay(agentId);
-        var logoSrc = agentInfo.logo;
-        var messagesEl = document.getElementById('messages');
-        if (!messagesEl) return;
-
-        var card = document.createElement('div');
-        card.className = 'subagent-card';
-        card.id = 'subagent-' + getAgentShortId(agentId);
-
-        var logoHtml = logoSrc
-          ? '<img src="' + logoSrc + '" alt="" class="subagent-logo" data-agent-logo="' + agentId + '" />'
-          : '<span style="font-size:18px;">' + (agentInfo.shortId ? agentInfo.shortId[0].toUpperCase() : '?') + '</span>';
-
-        card.innerHTML =
-          '<div class="subagent-header">'
-          + logoHtml
-          + '<span class="subagent-name">' + agentInfo.name + ' (sub-agent)</span>'
-          + '<span class="subagent-status streaming">Working...</span>'
-          + '<span class="subagent-collapse-icon">&#9660;</span>'
-          + '</div>'
-          + '<div class="subagent-content" id="subagent-content-' + getAgentShortId(agentId) + '"></div>';
-
-        messagesEl.appendChild(card);
-
-        // Attach click handler via addEventListener (CSP-safe — inline onclick is blocked by nonce-based CSP)
-        var headerEl = card.querySelector('.subagent-header');
-        if (headerEl) {
-          headerEl.addEventListener('click', function() {
-            card.classList.toggle('collapsed');
-          });
-        }
-
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-
-      // handleSubAgentExtracting removed — task descriptions come from the task list now
-
-      // Track raw text per sub-agent for throttled markdown rendering
-      var subagentRawText = {};
-      var subagentRenderTimers = {};
-
-      function handleSubAgentChunk(payload) {
-        var agentId = payload.agentId;
-        var shortId = getAgentShortId(agentId);
-        var contentEl = document.getElementById('subagent-content-' + shortId);
-        if (!contentEl) return;
-
-        // Update status to show streaming is active
-        var card = document.getElementById('subagent-' + shortId);
-        if (card) {
-          var statusEl = card.querySelector('.subagent-status');
-          if (statusEl && statusEl.textContent !== 'Streaming...') {
-            statusEl.textContent = 'Streaming...';
-          }
-        }
-
-        if (payload.chunkType === 'text' && payload.content) {
-          // Accumulate raw text
-          if (!subagentRawText[shortId]) { subagentRawText[shortId] = ''; }
-          subagentRawText[shortId] += payload.content;
-
-          // Get or create the text output area
-          var textEl = contentEl.querySelector('.subagent-text-output');
-          if (!textEl) {
-            textEl = document.createElement('div');
-            textEl.className = 'subagent-text-output';
-            contentEl.appendChild(textEl);
-          }
-
-          // Throttled markdown rendering (every 200ms)
-          if (!subagentRenderTimers[shortId]) {
-            subagentRenderTimers[shortId] = setTimeout(function() {
-              subagentRenderTimers[shortId] = null;
-              var el = contentEl.querySelector('.subagent-text-output');
-              if (el && subagentRawText[shortId] && typeof marked !== 'undefined') {
-                try {
-                  el.innerHTML = renderMarkdownSafe(subagentRawText[shortId]);
-                  el.className = 'subagent-text-output rendered';
-                  setTimeout(function() {
-                    if (typeof Prism !== 'undefined') {
-                      Prism.highlightAllUnder(el);
-                    }
-                  }, 0);
-                } catch (e) {
-                  el.textContent = subagentRawText[shortId];
-                }
-              }
-            }, 200);
-          }
-        } else if (payload.chunkType === 'thinking' && payload.content) {
-          // Get or create the thinking section
-          var thinkingEl = contentEl.querySelector('.subagent-thinking');
-          if (!thinkingEl) {
-            thinkingEl = document.createElement('div');
-            thinkingEl.className = 'subagent-thinking';
-            thinkingEl.innerHTML = '<div class="subagent-thinking-label">Thinking</div><div class="subagent-thinking-text"></div>';
-            contentEl.insertBefore(thinkingEl, contentEl.firstChild);
-          }
-          var thinkingText = thinkingEl.querySelector('.subagent-thinking-text');
-          if (thinkingText) {
-            thinkingText.textContent += payload.content;
-          }
-        }
-
-        // Scroll to bottom
-        var messagesEl = document.getElementById('messages');
-        if (messagesEl) { messagesEl.scrollTop = messagesEl.scrollHeight; }
-      }
-
-      function handleSubAgentComplete(payload) {
-        var agentId = payload.agentId;
-        var shortId = getAgentShortId(agentId);
-        var card = document.getElementById('subagent-' + shortId);
-        if (!card) return;
-
-        var statusEl = card.querySelector('.subagent-status');
-        if (statusEl) {
-          if (payload.hasError) {
-            statusEl.textContent = 'Partial';
-            statusEl.className = 'subagent-status error';
-          } else {
-            statusEl.textContent = 'Done';
-            statusEl.className = 'subagent-status complete';
-          }
-        }
-
-        // Clear any pending render timer
-        if (subagentRenderTimers[shortId]) {
-          clearTimeout(subagentRenderTimers[shortId]);
-          subagentRenderTimers[shortId] = null;
-        }
-
-        // Final markdown render with full syntax highlighting
-        var contentEl = document.getElementById('subagent-content-' + shortId);
-        if (contentEl && typeof marked !== 'undefined') {
-          var textEl = contentEl.querySelector('.subagent-text-output');
-          var rawText = subagentRawText[shortId] || (textEl ? textEl.textContent : '') || '';
-          if (textEl && rawText) {
-            try {
-              textEl.innerHTML = renderMarkdownSafe(rawText);
-              textEl.className = 'subagent-text-output rendered';
-              setTimeout(function() {
-                if (typeof Prism !== 'undefined') {
-                  Prism.highlightAllUnder(textEl);
-                }
-                if (typeof renderMermaidDiagrams === 'function') {
-                  renderMermaidDiagrams();
-                }
-              }, 0);
-            } catch (e) {
-              // Keep plain text on parse error
-            }
-          }
-
-          // Add expand/collapse button if content overflows
-          if (contentEl.scrollHeight > 400) {
-            var existingBtn = contentEl.querySelector('.subagent-expand-btn');
-            if (!existingBtn) {
-              var expandBtn = document.createElement('button');
-              expandBtn.className = 'subagent-expand-btn';
-              expandBtn.textContent = 'Show full output';
-              expandBtn.addEventListener('click', function() {
-                card.classList.toggle('expanded');
-                expandBtn.textContent = card.classList.contains('expanded') ? 'Show less' : 'Show full output';
-              });
-              contentEl.appendChild(expandBtn);
-            }
-          }
-        }
-
-        // Clean up raw text tracking
-        delete subagentRawText[shortId];
-      }
-
-      function handleSubAgentError(payload) {
-        var agentId = payload.agentId;
-        var card = document.getElementById('subagent-' + getAgentShortId(agentId));
-        if (!card) return;
-
-        var statusEl = card.querySelector('.subagent-status');
-        if (statusEl) {
-          statusEl.textContent = 'Error';
-          statusEl.className = 'subagent-status error';
-        }
-
-        var contentEl = document.getElementById('subagent-content-' + getAgentShortId(agentId));
-        if (contentEl) {
-          contentEl.innerHTML =
-            '<div class="subagent-error-content">' +
-              '<span class="subagent-error-text">Error: ' + escapeHtml(payload.error || 'Unknown error') + '</span>' +
-              '<button class="subagent-retry-btn">Retry</button>' +
-            '</div>';
-
-          var retryBtn = contentEl.querySelector('.subagent-retry-btn');
-          if (retryBtn) {
-            retryBtn.addEventListener('click', function() {
-              postMessageWithPanelId({
-                type: 'retrySubAgent',
-                payload: { agentId: agentId }
-              });
-            });
-          }
-        }
-      }
-
-      function handleSubAgentToolUse(payload) {
-        var agentId = payload.agentId;
-        var toolCall = payload.toolCall;
-        if (!toolCall) return;
-        var contentEl = document.getElementById('subagent-content-' + getAgentShortId(agentId));
-        if (!contentEl) return;
-
-        // Update status badge to show tool execution
-        var card = document.getElementById('subagent-' + getAgentShortId(agentId));
-        if (card) {
-          var statusEl = card.querySelector('.subagent-status');
-          if (statusEl) {
-            statusEl.textContent = 'Tool: ' + toolCall.name;
-          }
-        }
-
-        // Create expandable tool call indicator inside the sub-agent card
-        var toolDiv = document.createElement('div');
-        toolDiv.className = 'subagent-tool-call running';
-        toolDiv.dataset.id = toolCall.id;
-
-        // Build a short summary of the tool input
-        var summary = '';
-        if (toolCall.input) {
-          if (toolCall.input.file_path || toolCall.input.path) {
-            summary = (toolCall.input.file_path || toolCall.input.path);
-          } else if (toolCall.input.command) {
-            summary = toolCall.input.command;
-          } else if (toolCall.input.pattern) {
-            summary = toolCall.input.pattern;
-          } else {
-            var keys = Object.keys(toolCall.input);
-            if (keys.length > 0) {
-              var firstVal = String(toolCall.input[keys[0]]);
-              summary = firstVal.length > 60 ? firstVal.substring(0, 60) + '...' : firstVal;
-            }
-          }
-        }
-
-        // Format tool input as syntax-highlighted JSON
-        var inputJson = '';
-        try {
-          inputJson = JSON.stringify(toolCall.input || {}, null, 2);
-        } catch (e) {
-          inputJson = String(toolCall.input || '{}');
-        }
-
-        toolDiv.innerHTML =
-          '<div class="subagent-tool-header">' +
-            '<span class="subagent-tool-spinner"></span>' +
-            '<span class="subagent-tool-name">' + escapeHtml(toolCall.name) + '</span>' +
-            '<span class="subagent-tool-summary">' + escapeHtml(summary) + '</span>' +
-            '<span class="subagent-tool-toggle">&#9656;</span>' +
-          '</div>' +
-          '<div class="subagent-tool-detail">' +
-            '<div class="subagent-tool-detail-section">' +
-              '<span class="subagent-tool-detail-label">Input</span>' +
-              '<pre class="subagent-tool-detail-code"><code class="language-json">' + escapeHtml(inputJson) + '</code></pre>' +
-            '</div>' +
-            '<div class="subagent-tool-detail-section subagent-tool-output" style="display:none;">' +
-              '<span class="subagent-tool-detail-label">Output</span>' +
-              '<pre class="subagent-tool-detail-code"><code class="subagent-tool-output-code"></code></pre>' +
-            '</div>' +
-          '</div>';
-
-        // Click header to toggle detail panel
-        var header = toolDiv.querySelector('.subagent-tool-header');
-        if (header) {
-          header.addEventListener('click', function() {
-            toolDiv.classList.toggle('detail-open');
-            var toggle = toolDiv.querySelector('.subagent-tool-toggle');
-            if (toggle) {
-              toggle.innerHTML = toolDiv.classList.contains('detail-open') ? '&#9662;' : '&#9656;';
-            }
-            // Highlight JSON on first open
-            if (toolDiv.classList.contains('detail-open') && typeof Prism !== 'undefined') {
-              Prism.highlightAllUnder(toolDiv);
-            }
-          });
-        }
-
-        contentEl.appendChild(toolDiv);
-        var messagesEl = document.getElementById('messages');
-        if (messagesEl) { messagesEl.scrollTop = messagesEl.scrollHeight; }
-      }
-
-      function handleSubAgentToolResult(payload) {
-        var agentId = payload.agentId;
-        var toolCall = payload.toolCall;
-        if (!toolCall) return;
-        var contentEl = document.getElementById('subagent-content-' + getAgentShortId(agentId));
-        if (!contentEl) return;
-
-        var toolDiv = contentEl.querySelector('.subagent-tool-call[data-id="' + toolCall.id + '"]');
-        if (toolDiv) {
-          toolDiv.classList.remove('running');
-          var resultStatus = (toolCall.status === 'failed') ? 'failed' : 'completed';
-          toolDiv.classList.add(resultStatus);
-          // Replace spinner with check/x icon
-          var spinner = toolDiv.querySelector('.subagent-tool-spinner');
-          if (spinner) {
-            spinner.outerHTML = resultStatus === 'failed'
-              ? '<span class="subagent-tool-icon failed">&#10005;</span>'
-              : '<span class="subagent-tool-icon completed">&#10003;</span>';
-          }
-
-          // Populate output section if result content available
-          var outputSection = toolDiv.querySelector('.subagent-tool-output');
-          var outputCode = toolDiv.querySelector('.subagent-tool-output-code');
-          if (outputSection && outputCode && toolCall.output) {
-            var outputText = typeof toolCall.output === 'string'
-              ? toolCall.output
-              : JSON.stringify(toolCall.output, null, 2);
-            // Truncate very long outputs
-            if (outputText.length > 2000) {
-              outputText = outputText.substring(0, 2000) + '\n... (truncated)';
-            }
-            outputCode.textContent = outputText;
-            outputSection.style.display = '';
-            // Re-highlight if detail panel is already open
-            if (toolDiv.classList.contains('detail-open') && typeof Prism !== 'undefined') {
-              Prism.highlightAllUnder(toolDiv);
-            }
-          }
-        }
-
-        // Update status back to streaming
-        var card = document.getElementById('subagent-' + getAgentShortId(agentId));
-        if (card) {
-          var statusEl = card.querySelector('.subagent-status');
-          if (statusEl) { statusEl.textContent = 'Streaming...'; }
-        }
-      }
-
-      function handleSubAgentRetry(payload) {
-        var agentId = payload.agentId;
-        var card = document.getElementById('subagent-' + getAgentShortId(agentId));
-        if (!card) return;
-
-        var statusEl = card.querySelector('.subagent-status');
-        if (statusEl) {
-          statusEl.textContent = 'Retrying...';
-          statusEl.className = 'subagent-status retrying';
-        }
-
-        // Clear content for the new attempt
-        var contentEl = document.getElementById('subagent-content-' + getAgentShortId(agentId));
-        if (contentEl) {
-          contentEl.innerHTML = '';
-        }
-      }
-
-      function handleSubAgentAskUserQuestion(payload) {
-        var agentId = payload.agentId;
-        var questionData = payload.questionData;
-        if (!agentId || !questionData) return;
-
-        var shortId = getAgentShortId(agentId);
-        var contentEl = document.getElementById('subagent-content-' + shortId);
-        if (!contentEl) return;
-
-        // Update status to "Waiting for answer..."
-        var card = document.getElementById('subagent-' + shortId);
-        if (card) {
-          var statusEl = card.querySelector('.subagent-status');
-          if (statusEl) {
-            statusEl.textContent = 'Waiting for answer...';
-            statusEl.className = 'subagent-status';
-          }
-        }
-
-        // Render the question UI inside the sub-agent card (reuse existing renderer)
-        var container = renderAskUserQuestionTabs(questionData.toolCallId, questionData.questions);
-        if (!container) return;
-
-        // Override submit handler to send sub-agent-specific message
-        var submitBtn = container.querySelector('.auq-submit-btn');
-        if (submitBtn) {
-          submitBtn.onclick = function() {
-            container.classList.add('submitted');
-            postMessageWithPanelId({
-              type: 'subAgentQuestionResponse',
-              payload: {
-                toolCallId: questionData.toolCallId,
-                agentId: agentId,
-                answers: container._answers
-              }
-            });
-            container.innerHTML = '<div class="auq-submitted"><span class="auq-check">✓</span> Answers submitted</div>';
-            // Update status back to working
-            if (card) {
-              var sEl = card.querySelector('.subagent-status');
-              if (sEl) {
-                sEl.textContent = 'Working...';
-                sEl.className = 'subagent-status streaming';
-              }
-            }
-            setTimeout(function() { container.remove(); }, 1500);
-          };
-        }
-
-        // Override skip handler to send sub-agent-specific skip
-        var skipBtn = container.querySelector('.auq-skip-btn');
-        if (skipBtn) {
-          skipBtn.onclick = function() {
-            postMessageWithPanelId({
-              type: 'subAgentQuestionSkipped',
-              payload: {
-                toolCallId: questionData.toolCallId,
-                agentId: agentId
-              }
-            });
-            container.remove();
-          };
-        }
-
-        contentEl.appendChild(container);
-        var messagesEl = document.getElementById('messages');
-        if (messagesEl) { messagesEl.scrollTop = messagesEl.scrollHeight; }
-      }
-
-      function handleSubAgentStatus(payload) {
-        var agentId = payload.agentId;
-        var status = payload.status;
-        if (!agentId) return;
-
-        var card = document.getElementById('subagent-' + getAgentShortId(agentId));
-        if (!card) return;
-
-        var statusEl = card.querySelector('.subagent-status');
-        if (statusEl) {
-          statusEl.textContent = status || 'Working...';
-          statusEl.className = 'subagent-status' + (status === 'Working...' ? ' streaming' : '');
-        }
-      }
+      // Cards own their render buffers, pending questions and attempt timers.
+      const subAgentCards = window.MystiSubAgentCards.create({
+        document,
+        getMessagesElement: () => document.getElementById('messages'),
+        getAgentDisplay,
+        renderMarkdown: renderMarkdownSafe,
+        renderDiagrams: scope => markdownRenderer.renderDiagrams(scope),
+        highlight: element => {
+          if (typeof Prism !== 'undefined') { Prism.highlightAllUnder(element); }
+        },
+        renderQuestion: renderAskUserQuestionTabs,
+        postMessage: postMessageWithPanelId,
+      });
+      window.addEventListener('pagehide', event => {
+        if (!event.persisted) { subAgentCards.dispose(); }
+      });
 
       function handleMentionTaskListGenerated(payload) {
         var tasks = payload.tasks || [];
@@ -4351,15 +3686,20 @@
           // Append "Custom..." option for custom model override
           modelSelect.innerHTML += '<option value="__custom__">Custom...</option>';
 
-          // Select the provider's default model, or keep current if valid for the new provider
-          if (provider.models.length > 0) {
-            var currentModelExists = provider.models.some(function(m) { return m.id === state.settings.model; });
-            if (!currentModelExists) {
-              state.settings.model = provider.defaultModel || provider.models[0].id;
-              modelSelect.value = state.settings.model;
-              // Notify backend of model change
-              postMessageWithPanelId({ type: 'updateSettings', payload: { model: state.settings.model } });
-            }
+          // The webview no longer PICKS the model on a provider switch. It used
+          // to choose the new provider's default here and post it as a separate
+          // `updateSettings {model}` — sent BEFORE the `updateSettings
+          // {provider}` its caller posts, so the extension settled that model
+          // against the provider the panel was still on and could answer with a
+          // third one. Two messages, resolved against two different providers,
+          // racing to write one field.
+          //
+          // The extension answers every provider change with `modelChanged`
+          // carrying the model a send would actually use, so the selection is
+          // its call to make; this only repaints the options. Until that lands
+          // (same ordered channel, microseconds) the previous selection shows.
+          if (modelSelect.value !== state.settings.model) {
+            selectModelOption(state.settings.model);
           }
 
           // Reset custom model section when switching providers
@@ -4379,6 +3719,57 @@
         // W4: render this provider's declarative settings sections
         renderProviderSettingsSections(providerId);
         syncInlineSelectors();
+      }
+
+      /**
+       * Point the model picker at `modelId`, adding the option when the list
+       * does not carry it.
+       *
+       * A plain `select.value = id` for an id with no matching <option> is a
+       * silent no-op that leaves the control showing something else — which is
+       * how the picker ended up naming a model no turn had ever run. The
+       * extension is allowed to settle on a hand-typed or unlisted model
+       * (issue #39 keeps those), so "not in the list" is a normal outcome, not
+       * an error. Returns true when the picker ended up on the id.
+       */
+      function selectModelOption(modelId) {
+        if (!modelSelect || !modelId) return false;
+        var present = Array.prototype.some.call(modelSelect.options, function(o) {
+          return o.value === modelId;
+        });
+        if (!present) {
+          var opt = document.createElement('option');
+          opt.value = modelId;
+          opt.textContent = modelId;
+          // Before "Custom...", which is always last.
+          var customOpt = modelSelect.querySelector('option[value="__custom__"]');
+          modelSelect.insertBefore(opt, customOpt);
+        }
+        modelSelect.value = modelId;
+        return modelSelect.value === modelId;
+      }
+
+      /**
+       * Show (or clear) a per-provider custom-model override in the picker —
+       * the same restore `initializeState` does, reusable when the extension
+       * reports one mid-session.
+       *
+       * `mysti.<provider>Model` beats `settings.model` inside the provider's own
+       * resolution, so while one is set the picker must read "Custom…": naming a
+       * stock model there would claim something the CLI is not going to run.
+       */
+      function applyCustomModelState(customModel) {
+        if (!state.providerSettings) { state.providerSettings = {}; }
+        state.providerSettings.customModel = customModel || '';
+        if (customModel) {
+          if (modelSelect) modelSelect.value = '__custom__';
+          if (customModelSection) customModelSection.classList.remove('hidden');
+          if (customModelInput) customModelInput.value = customModel;
+          return;
+        }
+        if (customModelSection) customModelSection.classList.add('hidden');
+        if (customModelInput) customModelInput.value = '';
+        selectModelOption(state.settings.model);
       }
 
       /**
@@ -4923,6 +4314,12 @@
             handleRewindComplete(message.payload);
             break;
           case 'responseStarted':
+            subAgentCards.stop();
+            // Who is answering this turn, as the extension resolved it — the
+            // agent it routed to and the model that agent will really run
+            // (a per-provider custom-model override outranks the picker, so
+            // `state.settings.model` is not reliably that model).
+            currentTurnAttribution = message.payload || null;
             // Perf: per-response chunk counter (ring buffer keeps rolling
             // across responses — "last 2000 samples").
             if (perfState.enabled) perfState.chunkCount = 0;
@@ -4984,15 +4381,21 @@
             // handleMystiComplete), which never cleared the per-delegation thinking
             // buffers — over a long session they grew unbounded. Reclaim them here.
             mystiNodeThinkingText = {};
-            // Update context usage from response
-            // Total context = input_tokens + cache_read_input_tokens (cached context being used)
-            if (responsePayload.usage) {
-              var totalContextTokens = (responsePayload.usage.input_tokens || 0) +
-                                       (responsePayload.usage.cache_read_input_tokens || 0);
-              console.log('[Mysti Webview] Context usage - input:', responsePayload.usage.input_tokens,
-                          'cached:', responsePayload.usage.cache_read_input_tokens,
-                          'total:', totalContextTokens);
-              updateContextUsage(totalContextTokens, null);
+            // Update context usage from response.
+            // `contextTokens` is computed extension-side, where the backend's
+            // token-accounting convention is known (Anthropic's buckets are
+            // disjoint; OpenAI's cached count is a SUBSET of input). This used to
+            // re-derive it as input + cache_read, which under-counts Anthropic by
+            // the whole cache-creation bucket and double-counts OpenAI's cache.
+            // Never re-derive it here — render what you were given.
+            // A payload with no `contextTokens` (a coordinator run, whose summed
+            // usage is a COST across round-trips and not a fill) tells us nothing
+            // about fill — leave the pie alone rather than inventing a number.
+            if (responsePayload.usageUnavailable) {
+              setContextUsageUnavailable();
+            } else if (responsePayload.usage && typeof responsePayload.usage.contextTokens === 'number') {
+              console.log('[Mysti Webview] Context usage:', responsePayload.usage.contextTokens);
+              updateContextUsage(responsePayload.usage.contextTokens, null);
             }
             // Plan 28 Phase 2: the turn landed, so send whatever was lined up
             // behind it. `requestCancelled` deliberately does NOT do this.
@@ -5004,9 +4407,20 @@
             requestChanges();
             break;
           case 'contextWindowInfo':
-            // Update context window size for the current model
-            if (message.payload && message.payload.contextWindow) {
-              updateContextUsage(state.contextUsage.usedTokens, message.payload.contextWindow);
+            // Update context window size for the current model. A backend that
+            // cannot report usage flips the pie to n/a straight away rather than
+            // waiting for a turn that will never carry numbers.
+            if (message.payload && message.payload.usageAvailable === false) {
+              setContextUsageUnavailable();
+            } else if (message.payload && message.payload.contextWindow) {
+              if (state.contextUsage.unavailable) {
+                // Coming back from an n/a backend: the carried-over usedTokens
+                // belongs to a different session. Start from zero, not stale.
+                state.contextUsage.contextWindow = message.payload.contextWindow;
+                updateContextUsage(0, message.payload.contextWindow);
+              } else {
+                updateContextUsage(state.contextUsage.usedTokens, message.payload.contextWindow);
+              }
             }
             break;
           case 'compactionStatus':
@@ -5016,6 +4430,7 @@
             updateSavingsChip(message.payload);
             break;
           case 'requestCancelled':
+            subAgentCards.stop();
             hideLoading();
             // Resolve any still-running tool cards in the active streaming
             // message so Stop never leaves an eternal spinner (review [5]).
@@ -5039,7 +4454,7 @@
             break;
           // Sub-agent response events (from @-mentions)
           case 'subAgentStarted':
-            handleSubAgentStarted(message.payload);
+            subAgentCards.started(message.payload);
             break;
           case 'mentionTaskListGenerated':
             handleMentionTaskListGenerated(message.payload);
@@ -5051,28 +4466,28 @@
             handleMentionTaskComplete(message.payload);
             break;
           case 'subAgentChunk':
-            handleSubAgentChunk(message.payload);
+            subAgentCards.chunk(message.payload);
             break;
           case 'subAgentComplete':
-            handleSubAgentComplete(message.payload);
+            subAgentCards.complete(message.payload);
             break;
           case 'subAgentError':
-            handleSubAgentError(message.payload);
+            subAgentCards.error(message.payload);
             break;
           case 'subAgentToolUse':
-            handleSubAgentToolUse(message.payload);
+            subAgentCards.toolUse(message.payload);
             break;
           case 'subAgentToolResult':
-            handleSubAgentToolResult(message.payload);
+            subAgentCards.toolResult(message.payload);
             break;
           case 'subAgentRetry':
-            handleSubAgentRetry(message.payload);
+            subAgentCards.retry(message.payload);
             break;
           case 'subAgentAskUserQuestion':
-            handleSubAgentAskUserQuestion(message.payload);
+            subAgentCards.askUserQuestion(message.payload);
             break;
           case 'subAgentStatus':
-            handleSubAgentStatus(message.payload);
+            subAgentCards.status(message.payload);
             break;
           case 'mentionFilesResolved':
             // File mentions resolved - no special UI needed
@@ -5464,6 +4879,24 @@
           case 'slashCommandMenu':
             renderSlashMenu(message.payload);
             break;
+          case 'openSessionPicker':
+            // The extension's answer to a session command that did not come
+            // from a menu click — a typed `/review the auth diff`, whose args
+            // stop it matching a menu row. The catalog rides along so the
+            // picker works even before any menu has been opened.
+            if (message.payload && message.payload.commandId) {
+              if (message.payload.sessions) { state.sessionCatalog = message.payload.sessions; }
+              openSessionPicker(message.payload.commandId, message.payload.brief);
+            }
+            break;
+          case 'sessionEvent':
+            handleSessionEvent(message.payload);
+            break;
+          case 'sessionError':
+            if (message.payload && message.payload.message) {
+              addSystemMessage(message.payload.message);
+            }
+            break;
           case 'slashCommandResult':
             addSystemMessage(message.payload.result);
             break;
@@ -5584,10 +5017,28 @@
             updateAgentMenuSelection();
             break;
           case 'modelChanged':
-            // Update model dropdown when backend auto-switches model (e.g. provider change)
-            state.settings.model = message.payload.model;
-            if (modelSelect) modelSelect.value = message.payload.model;
-            syncInlineSelectors();
+            // The extension's answer to any settled model change — a provider
+            // switch, `/model`, or a direct settings write. It is authoritative:
+            // this is the model a send would actually use, so state and picker
+            // both move to it. Previously only the provider-switch auto-correct
+            // ever sent this, which is why `/model` changed the extension's
+            // panel override and nothing else — the webview kept posting the old
+            // id back with every message and quietly won.
+            if (message.payload && message.payload.model) {
+              state.settings.model = message.payload.model;
+              if (typeof message.payload.customModel === 'string') {
+                // Authoritative: the per-provider custom model
+                // (mysti.<provider>Model) outranks the picker inside the
+                // provider, so switching onto a backend that has one has to
+                // show "Custom…" rather than name a stock model that will not
+                // run — and switching off one has to clear it.
+                applyCustomModelState(message.payload.customModel);
+              } else if (!modelSelect || modelSelect.value !== '__custom__') {
+                // No opinion sent: don't yank an active override off "Custom…".
+                selectModelOption(message.payload.model);
+              }
+              syncInlineSelectors();
+            }
             break;
           case 'modeChanged':
             // Update mode when plan is executed
@@ -10147,9 +9598,9 @@
         if (msg.role === 'assistant') {
           // Per-message attribution (Plan 02 Phase 3.4): persisted
           // provider/model stamp, NOT the currently selected provider
-          var attributionEntry = getManifestEntry(attribution.provider);
-          var attributionTitle = attributionEntry ? 'Generated by ' + attributionEntry.displayName : '';
-          html += '<span class="message-model-info" title="' + escapeHtml(attributionTitle) + '">' + getModelDisplayName(attribution.model) + '</span>';
+          var attributionName = getAgentDisplayName(attribution.provider);
+          var attributionTitle = attributionName ? 'Generated by ' + attributionName : '';
+          html += '<span class="message-model-info" title="' + escapeHtml(attributionTitle) + '">' + escapeHtml(formatAttributionLabel(attribution)) + '</span>';
         }
         html += '</div>';
         if (msg.role === 'assistant') {
@@ -10279,6 +9730,126 @@
         return body;
       }
 
+      // =====================================================================
+      // Plan 29 — the live session card
+      //
+      // One card per run, replaced in place as lanes land. It is scaffolding
+      // for the turn, not the answer: the answer is the single message
+      // responseComplete leaves behind, which is why this is removed when the
+      // session finishes rather than accumulating beside it.
+      // =====================================================================
+
+      var sessionCardState = null;
+
+      function handleSessionEvent(evt) {
+        if (!evt || !evt.type) return;
+
+        if (evt.type === 'session_started') {
+          sessionCardState = {
+            runId: evt.runId,
+            shape: evt.shape,
+            lanes: (evt.lanes || []).slice(),
+            round: null,
+            findings: null
+          };
+          renderSessionCard();
+          return;
+        }
+        if (!sessionCardState) return;
+
+        if (evt.type === 'lane_update' && evt.lane) {
+          var lanes = sessionCardState.lanes;
+          var replaced = false;
+          for (var i = 0; i < lanes.length; i++) {
+            if (lanes[i].collaboratorId === evt.lane.collaboratorId) { lanes[i] = evt.lane; replaced = true; break; }
+          }
+          if (!replaced) lanes.push(evt.lane);
+          renderSessionCard();
+        } else if (evt.type === 'session_round') {
+          sessionCardState.round = { n: evt.round, of: evt.of };
+          renderSessionCard();
+        } else if (evt.type === 'session_findings') {
+          sessionCardState.findings = evt.findings || [];
+          renderSessionCard();
+        } else if (evt.type === 'session_complete') {
+          // The persisted message is the result; the card has done its job.
+          removeSessionCard();
+        } else if (evt.type === 'session_error') {
+          addSystemMessage(evt.message || 'The session failed.');
+          removeSessionCard();
+        }
+      }
+
+      function removeSessionCard() {
+        var el = document.getElementById('session-card');
+        if (el) el.remove();
+        sessionCardState = null;
+      }
+
+      var SESSION_STATUS_CLASS = {
+        pending: 'session-lane-pending',
+        running: 'session-lane-running',
+        done: 'session-lane-done',
+        error: 'session-lane-error',
+        skipped: 'session-lane-skipped'
+      };
+
+      function renderSessionCard() {
+        if (!sessionCardState) return;
+        var el = document.getElementById('session-card');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'session-card';
+          el.className = 'session-card';
+          messagesEl.appendChild(el);
+        }
+
+        var st = sessionCardState;
+        var landed = st.lanes.filter(function(l) { return l.status !== 'pending' && l.status !== 'running'; }).length;
+
+        var html = '<div class="session-card-header">'
+          + '<span class="session-card-shape">' + escapeHtml('/' + st.shape) + '</span>'
+          + '<span class="session-card-progress">' + escapeHtml(landed + ' of ' + st.lanes.length + ' landed')
+          + (st.round ? escapeHtml(' \u00b7 round ' + st.round.n + ' of ' + st.round.of) : '')
+          + '</span></div>';
+
+        html += '<div class="session-card-lanes">';
+        st.lanes.forEach(function(lane) {
+          var cls = SESSION_STATUS_CLASS[lane.status] || '';
+          var right = '';
+          if (lane.status === 'running') {
+            right = '<button class="session-lane-stop" data-lane="' + escapeHtml(lane.collaboratorId) + '">Stop</button>';
+          } else if (lane.status === 'done') {
+            right = '<span class="session-lane-note">' + escapeHtml(lane.ms ? (lane.ms / 1000).toFixed(0) + 's' : 'done') + '</span>';
+          } else if (lane.error) {
+            right = '<span class="session-lane-note session-lane-note-bad">' + escapeHtml(lane.error) + '</span>';
+          }
+          html += '<div class="session-lane ' + cls + '">'
+            + '<span class="session-lane-name">' + escapeHtml(lane.label || lane.agentId) + '</span>'
+            + right
+            + '</div>';
+        });
+        html += '</div>';
+
+        if (st.findings && st.findings.length) {
+          var confirmed = st.findings.filter(function(f) { return f.status === 'confirmed'; }).length;
+          html += '<div class="session-card-findings">'
+            + escapeHtml(st.findings.length + ' findings, ' + confirmed + ' found by more than one agent')
+            + '</div>';
+        }
+
+        el.innerHTML = html;
+        el.onclick = function(e) {
+          var stop = e.target.closest('.session-lane-stop');
+          if (!stop) return;
+          postMessageWithPanelId({
+            type: 'stopSessionLane',
+            payload: { runId: st.runId, collaboratorId: stop.dataset.lane }
+          });
+        };
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
       function addSystemMessage(content) {
         var div = document.createElement('div');
         div.className = 'message system';
@@ -10290,6 +9861,10 @@
       var currentResponse = '';
       var currentThinking = '';
       var contentSegmentIndex = 0;
+      // { provider, model? } announced by the extension on responseStarted —
+      // who is answering THIS turn, which is not always the panel's selection
+      // (an @-mention routes elsewhere) and not always the picker's model.
+      var currentTurnAttribution = null;
       var pendingToolData = new Map(); // toolId -> { name, input } for edit report cards
       var currentTodos = []; // Track current todo list for sticky progress
       var previousTodoContents = new Set(); // Track previous todo content for completion detection
@@ -10355,7 +9930,22 @@
           streamingEl = document.createElement('div');
           streamingEl.className = 'message assistant streaming';
           // Removed static thinking-block - now created dynamically for each thought
-          streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Mysti</span><span class="message-model-info">' + getModelDisplayName(state.settings.model) + '</span></div></div><div class="message-body"></div>';
+          // The live header names the agent this turn is going to, not just the
+          // model — `updateMessageAttributionChip` swaps in the persisted stamp
+          // at finalize, so it is the same shape either way.
+          //
+          // The extension's announcement is taken WHOLE when present: it knows
+          // where an @-mention routed the turn and what the provider's own model
+          // resolution settled on, and an announcement carrying no model means
+          // the model is not knowable yet (the Mysti coordinator only reports
+          // the one it ran from inside the stream). Filling that gap from the
+          // picker would print a model this turn is not using — the exact
+          // mislabel this is here to end — so the chip shows the agent alone
+          // until the stamp lands.
+          var liveAttribution = currentTurnAttribution
+            ? { provider: currentTurnAttribution.provider, model: currentTurnAttribution.model || '' }
+            : { provider: state.activeAgent, model: state.settings.model };
+          streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Mysti</span><span class="message-model-info">' + escapeHtml(formatAttributionLabel(liveAttribution)) + '</span></div></div><div class="message-body"></div>';
           messagesEl.appendChild(streamingEl);
         }
 
@@ -12318,6 +11908,7 @@
           currentResponse = '';
           currentThinking = '';
           contentSegmentIndex = 0;
+          currentTurnAttribution = null;
         }
       }
 
@@ -12432,6 +12023,32 @@
         };
       }
 
+      /** Display name for an agent id, pseudo-agents included. */
+      function getAgentDisplayName(providerId) {
+        if (providerId === 'mysti') return 'Mysti';
+        if (providerId === 'brainstorm') return 'Brainstorm';
+        var entry = getManifestEntry(providerId);
+        return (entry && entry.displayName) || '';
+      }
+
+      /**
+       * The header label for an assistant message: "Codex · GPT-6 Astra".
+       *
+       * The role label above it is the PRODUCT name and reads "Mysti" on every
+       * assistant message whichever backend answered — so with the model chip
+       * showing a stale id, a panel on Codex presented as "MYSTI / Qwen3 Coder"
+       * and there was nothing on screen that said otherwise. Naming the agent
+       * here is the only per-message statement of who actually answered.
+       */
+      function formatAttributionLabel(attribution) {
+        var model = getModelDisplayName(attribution.model);
+        var agent = getAgentDisplayName(attribution.provider);
+        if (!agent) return model;
+        if (!model) return agent;
+        // Don't repeat an agent whose name IS the model (Ollama-style locals).
+        return agent === model ? agent : agent + ' · ' + model;
+      }
+
       // Update an existing message header's model chip from the message's
       // persisted attribution (live path: called at finalize, when the
       // persisted message — including any @-mention provider switch — is
@@ -12441,9 +12058,9 @@
         var chip = messageEl.querySelector('.message-model-info');
         if (!chip) return;
         var attribution = getMessageAttribution(msg);
-        var entry = getManifestEntry(attribution.provider);
-        chip.textContent = getModelDisplayName(attribution.model);
-        chip.title = entry ? 'Generated by ' + entry.displayName : '';
+        var agentName = getAgentDisplayName(attribution.provider);
+        chip.textContent = formatAttributionLabel(attribution);
+        chip.title = agentName ? 'Generated by ' + agentName : '';
       }
 
       // Tool cards auto-resolve when the provider never streams tool_result
@@ -12683,6 +12300,7 @@
       }
 
       function clearMessages() {
+        subAgentCards.reset();
         messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Mysti" class="welcome-logo" /><h2>Welcome to Mysti</h2><p>Your AI coding team. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div><div class="welcome-spread"><h3>Spread the Word</h3><div class="about-links spread-links"><a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> Star on GitHub</a><a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti&ssr=false#review-details" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.254.008.045-.236 2.101-.574.028.166-.978 4.607z"/><circle cx="8" cy="4.5" r="1"/></svg> Rate on Marketplace</a><a id="share-on-x" href="#" class="spread-link" title="Share on X / Twitter"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Share on X</a></div></div></div>';
         renderWelcomeSuggestions();
         // A rebuilt message list invalidates any open rewind menu's anchor.
@@ -12691,6 +12309,7 @@
         currentResponse = '';
         currentThinking = '';
         contentSegmentIndex = 0;
+        currentTurnAttribution = null;
       }
 
       /** A rough token count for N characters. Rough on purpose: ~4 chars per
@@ -12945,6 +12564,9 @@
         if (contextWindow !== null && contextWindow !== undefined) {
           state.contextUsage.contextWindow = contextWindow;
         }
+        // A real measurement clears the n/a state — a backend switch is the only
+        // thing that sets it, and one measured turn proves it no longer holds.
+        state.contextUsage.unavailable = false;
         state.contextUsage.usedTokens = usedTokens || 0;
 
         var percentage = Math.min(100, Math.round((state.contextUsage.usedTokens / state.contextUsage.contextWindow) * 100));
@@ -13001,6 +12623,26 @@
         state.contextUsage.usedTokens = 0;
         state.contextUsage.percentage = 0;
         updateContextUsage(0, null);
+      }
+
+      /**
+       * The active backend cannot report token usage (capabilities.emitsUsage is
+       * false — OpenClaw, Continue, Copilot). Show n/a rather than a stale pie:
+       * the number left behind belongs to a DIFFERENT provider's context window,
+       * so keeping it on screen is worse than admitting we don't know.
+       */
+      function setContextUsageUnavailable() {
+        state.contextUsage.unavailable = true;
+        state.contextUsage.usedTokens = 0;
+        state.contextUsage.percentage = 0;
+        var pieFill = document.getElementById('context-pie-fill');
+        var usageText = document.getElementById('context-usage-text');
+        var usageContainer = document.getElementById('context-usage');
+        if (!pieFill || !usageText || !usageContainer) { return; }
+        pieFill.setAttribute('d', '');
+        usageText.textContent = 'n/a';
+        usageContainer.classList.remove('warning', 'danger', 'threshold-warning');
+        usageContainer.title = 'This backend does not report token usage, so context fill is unknown. Compaction is threshold-driven and stays off for it — use /compact to compact manually.';
       }
 
       /**
@@ -13132,6 +12774,7 @@
         state.slashMenuQuery = '';
         state.slashMenuIndex = 0;
         state.slashMenuItems = [];
+        state.sessionPicker = null;
       }
 
       function renderSlashMenu(data) {
@@ -13140,6 +12783,17 @@
         var emptyEl = document.getElementById('slash-menu-empty');
         var queryEl = document.getElementById('slash-menu-query');
         if (!menu || !sectionsEl) return;
+
+        // Plan 29: the shape catalog rides with the menu so the picker can gate
+        // Run and price the session without another round trip.
+        if (data && data.sessions) state.sessionCatalog = data.sessions;
+
+        // Picking agents for a session takes over the same menu — the row
+        // anatomy is identical, the icon column just holds a checkbox.
+        if (state.sessionPicker) {
+          renderSessionPicker(menu, sectionsEl, emptyEl, queryEl);
+          return;
+        }
 
         // Update search display
         if (queryEl) queryEl.textContent = state.slashMenuQuery;
@@ -13232,6 +12886,13 @@
 
         // Attach click handlers via event delegation
         sectionsEl.onclick = function(e) {
+          // A click the menu handled is never a click OUTSIDE it. The
+          // document-level dismiss handler tests `slashMenu.contains(e.target)`,
+          // and a handler that re-renders the list DETACHES the clicked node
+          // before that test runs — so the check says "outside" and closes the
+          // menu the click just opened. Stop here instead of leaving the
+          // dismiss handler to reason about a node that no longer exists.
+          e.stopPropagation();
           var item = e.target.closest('.slash-menu-item');
           if (item) {
             var idx = parseInt(item.dataset.index, 10);
@@ -13242,10 +12903,230 @@
         };
       }
 
+      // =====================================================================
+      // Plan 29 — the session agent picker
+      //
+      // Lives INSIDE the slash menu rather than in a panel of its own: the user
+      // is already here, and the rows are the menu's own `.slash-menu-item`
+      // anatomy with a checkbox in the icon column. Picking a shape and picking
+      // who runs it is one gesture, not two screens.
+      // =====================================================================
+
+      /** The catalog entry for a `session:<id>` command id, or null. */
+      function sessionShapeFor(commandId) {
+        var list = state.sessionCatalog || [];
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].commandId === commandId) return list[i];
+        }
+        return null;
+      }
+
+      /**
+       * Backends that could actually take a lane: in the manifest, and not
+       * known-uninstalled. An agent whose CLI is missing is still SHOWN — with
+       * the reason — because silently omitting it looks like a bug to anyone who
+       * expects it to be there.
+       */
+      function sessionAgentChoices() {
+        var availability = state.providerAvailability || {};
+        var entries = (state.providerManifest && state.providerManifest.providers) || [];
+
+        // The manifest is the good source — display name, logo, colour. It can
+        // be ABSENT though: the webview drops one whose schemaVersion it does
+        // not recognise, and it may simply not have arrived yet. Reading it as
+        // the only source rendered a picker with a title, a hint and NO AGENTS,
+        // which looks exactly like a broken menu and says nothing. Fall back to
+        // the availability map, which is a plain id list from a different
+        // message, so the list is never silently empty.
+        var ids = entries.map(function(e) { return e.id; });
+        if (ids.length === 0) { ids = Object.keys(availability); }
+
+        var byId = {};
+        entries.forEach(function(e) { byId[e.id] = e; });
+
+        return ids.map(function(id) {
+          var entry = byId[id];
+          var status = availability[id];
+          var available = !status || status.available !== false;
+          return {
+            id: id,
+            name: entry ? entry.displayName : getAgentDisplay(id).name,
+            logo: entry ? getEntryLogo(entry) : '',
+            available: available,
+            note: available ? '' : 'not installed'
+          };
+        });
+      }
+
+      /**
+       * Open the picker for a session command, pre-ticking a sensible default.
+       *
+       * `brief` is only passed on the typed path, where the composer has already
+       * been cleared by sendMessage — on the click path the text is still in the
+       * input and startPickedSession reads it from there.
+       */
+      function openSessionPicker(commandId, brief) {
+        var shape = sessionShapeFor(commandId);
+        if (!shape) {
+          // No catalog — an older host, or the menu arrived without one. There
+          // is nothing useful to fall back to: the extension has no plain
+          // handler for a `session:` id, so forwarding it would be a silent
+          // dead end. Say so instead.
+          hideSlashMenu();
+          addSystemMessage('Sessions are unavailable in this window. Reload the window (Developer: Reload Window) and try again.');
+          return;
+        }
+
+        var choices = sessionAgentChoices().filter(function(c) { return c.available; });
+        var picked = {};
+        // Pre-tick the shape's minimum, starting with the agent this panel is
+        // already on — the one the user has most reason to trust here.
+        var ordered = choices.slice().sort(function(a, b) {
+          if (a.id === state.activeAgent) return -1;
+          if (b.id === state.activeAgent) return 1;
+          return 0;
+        });
+        for (var i = 0; i < ordered.length && i < shape.minAgents; i++) {
+          picked[ordered[i].id] = true;
+        }
+
+        state.sessionPicker = { shape: shape, picked: picked, brief: brief || '' };
+        state.slashMenuIndex = 0;
+        state.slashMenuVisible = true;
+        renderSlashMenu({ sessions: state.sessionCatalog });
+      }
+
+      function sessionPickedIds() {
+        if (!state.sessionPicker) return [];
+        var picked = state.sessionPicker.picked || {};
+        return Object.keys(picked).filter(function(k) { return picked[k]; });
+      }
+
+      function renderSessionPicker(menu, sectionsEl, emptyEl, queryEl) {
+        var picker = state.sessionPicker;
+        var shape = picker.shape;
+        var choices = sessionAgentChoices();
+        var count = sessionPickedIds().length;
+        var enough = count >= shape.minAgents;
+        var cost = count * shape.costRate * shape.rounds;
+
+        if (queryEl) queryEl.textContent = shape.command.slice(1);
+        if (emptyEl) emptyEl.classList.add('hidden');
+
+        var html = '<div class="slash-menu-section-header">'
+          + escapeHtml(shape.command) + ' &middot; ' + escapeHtml(shape.description)
+          + '</div>';
+
+        html += '<div class="slash-menu-section-header session-picker-sub">Who reads it'
+          + '<span class="session-picker-hint">'
+          + (enough ? escapeHtml(count + ' selected') : escapeHtml(shape.minAgents + ' or more'))
+          + '</span></div>';
+
+        if (choices.length === 0) {
+          // Never render a picker that offers nothing without saying why —
+          // that is indistinguishable from a broken menu.
+          html += '<div class="slash-menu-item session-agent-empty">'
+            + '<span class="slash-menu-item-content">'
+            + '<span class="slash-menu-item-description">'
+            + 'No agents are available yet. If this window just started, give the CLI check a moment.'
+            + '</span></span></div>';
+        }
+
+        choices.forEach(function(choice) {
+          var on = !!picker.picked[choice.id];
+          var disabled = !choice.available;
+          html += '<div class="slash-menu-item session-agent-row' + (disabled ? ' disabled' : '') + '"'
+            + ' data-agent-id="' + escapeHtml(choice.id) + '" role="option"'
+            + ' aria-checked="' + (on ? 'true' : 'false') + '">'
+            + '<span class="session-agent-box' + (on ? ' checked' : '') + '">'
+            + (on ? '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' : '')
+            + '</span>'
+            + (choice.logo ? '<img class="session-agent-logo" src="' + escapeHtml(choice.logo) + '" alt="" />' : '<span class="slash-menu-item-icon"></span>')
+            + '<span class="slash-menu-item-content">'
+            + '<span class="slash-menu-item-label">' + escapeHtml(choice.name) + '</span>'
+            + (choice.note ? '<span class="slash-menu-item-description">' + escapeHtml(choice.note) + '</span>' : '')
+            + '</span>'
+            + '</div>';
+        });
+
+        html += '<div class="session-picker-run">'
+          + '<button class="session-run-btn" ' + (enough ? '' : 'disabled') + '>'
+          + escapeHtml(enough ? ('Run ' + shape.command.slice(1)) : ('Pick ' + shape.minAgents + '+'))
+          + '</button>'
+          + '<span class="session-run-note">'
+          + escapeHtml(enough
+              ? ('~$' + cost.toFixed(2) + ' — you pay for every agent, kept or not')
+              : (shape.command.slice(1) + ' needs at least ' + shape.minAgents + ' agents'))
+          + '</span>'
+          + '<button class="session-cancel-btn">Cancel</button>'
+          + '</div>';
+
+        sectionsEl.innerHTML = html;
+        // Arrow keys drive the command list, not the picker; the checkbox rows
+        // are clicked. Emptying this keeps Enter from re-running a command.
+        state.slashMenuItems = [];
+        menu.classList.remove('hidden');
+
+        sectionsEl.onclick = function(e) {
+          // See renderSlashMenu: ticking a box re-renders these rows, so the
+          // clicked node is detached by the time the document dismiss handler
+          // inspects it.
+          e.stopPropagation();
+          if (e.target.closest('.session-cancel-btn')) { hideSlashMenu(); return; }
+          if (e.target.closest('.session-run-btn')) { startPickedSession(); return; }
+          var row = e.target.closest('.session-agent-row');
+          if (!row || row.classList.contains('disabled')) return;
+          var id = row.dataset.agentId;
+          if (!id) return;
+          if (picker.picked[id]) { delete picker.picked[id]; }
+          else if (sessionPickedIds().length < shape.maxAgents) { picker.picked[id] = true; }
+          renderSlashMenu({ sessions: state.sessionCatalog });
+        };
+      }
+
+      /** Send the picked session; the brief is whatever is in the composer. */
+      function startPickedSession() {
+        var picker = state.sessionPicker;
+        if (!picker) return;
+        var agentIds = sessionPickedIds();
+        if (agentIds.length < picker.shape.minAgents) return;
+
+        var inputEl = document.getElementById('message-input');
+        // A brief handed to the picker (the typed path) wins: on that path the
+        // composer was already cleared before this ran.
+        var brief = picker.brief || (inputEl ? inputEl.value.trim() : '');
+        // The command itself is never part of the brief.
+        brief = brief.replace(/^\/[\w-]+\s*/, '').trim();
+
+        var shapeId = picker.shape.id;
+        hideSlashMenu();
+        if (inputEl) { inputEl.value = ''; inputEl.style.height = 'auto'; }
+
+        postMessageWithPanelId({
+          type: 'startSession',
+          payload: {
+            shape: shapeId,
+            agentIds: agentIds,
+            brief: brief,
+            settings: state.settings,
+            context: state.context
+          }
+        });
+        setProcessing(true);
+      }
+
       /** Badge text for a provider-native command's source. */
       var ORIGIN_LABELS = { project: 'project', user: 'user', agent: 'agent' };
 
       function executeSlashMenuItem(cmd) {
+        // A session command does not run on pick — it asks who should answer.
+        // The menu stays open and becomes the agent list; nothing is dispatched
+        // until Run, because who answers IS the decision the command is for.
+        if (cmd && cmd.id && cmd.id.indexOf('session:') === 0) {
+          openSessionPicker(cmd.id);
+          return;
+        }
+
         hideSlashMenu();
         var inputEl = document.getElementById('message-input');
         if (inputEl) {

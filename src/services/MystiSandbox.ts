@@ -298,7 +298,9 @@ export class MystiSandbox implements SandboxRunner {
     const SECRET_VALUE = /^(dm_[a-z0-9]|sk-[a-zA-Z0-9]|ghp_|gho_|ghu_|ghs_|github_pat_|xox[baprs]-)/;
     const out: NodeJS.ProcessEnv = {};
     for (const [k, v] of Object.entries(base)) {
-      if (SECRET_KEY.test(k) || k === 'SSH_AUTH_SOCK') { continue; }
+      if (SECRET_KEY.test(k) || k === 'SSH_AUTH_SOCK' || k.startsWith('GIT_')) {
+        continue;
+      }
       if (typeof v === 'string' && SECRET_VALUE.test(v)) { continue; }
       out[k] = v;
     }

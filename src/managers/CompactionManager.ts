@@ -34,6 +34,8 @@ import {
   SMART_MIN_SUMMARY_TOKENS,
 } from '../constants';
 import { estimateTokens } from '../services/ModelPricing';
+import { contextFillTokens, hasUsageSignal } from '../services/TokenAccounting';
+import type { UsageConvention } from '../services/TokenAccounting';
 import type { ProviderManager } from './ProviderManager';
 import type { ConversationManager } from './ConversationManager';
 import type { SmartCompactor, HistoryAppend } from './SmartCompactor';
@@ -64,6 +66,11 @@ export class CompactionManager {
   // Per-panel cumulative usage tracking
   // Key: panelId (or panelId-brainstorm-agentId for brainstorm agents)
   private _panelUsage: Map<string, CumulativeUsage> = new Map();
+
+  // The LAST normalized usage record per panel. Kept separately from the
+  // cumulative totals because they answer different questions: the totals are a
+  // session-lifetime spend, this is the current context fill.
+  private _panelLastFill: Map<string, UsageStats> = new Map();
 
   // Cooldown tracking to prevent rapid re-compaction
   private _lastCompactionTime: Map<string, number> = new Map();
@@ -131,9 +138,14 @@ export class CompactionManager {
     existing.lastUpdated = Date.now();
 
     this._panelUsage.set(panelId, existing);
+    this._panelLastFill.set(panelId, usage);
 
-    // The most recent input_tokens represents the current context window fill level
-    const currentFill = usage.input_tokens + (usage.cache_read_input_tokens || 0);
+    // Context fill for the most recent turn. `usage` must ALREADY be normalized
+    // (ChatViewProvider normalizes at the stream boundary) — the fill is the sum
+    // of all three disjoint prompt buckets, cache-creation included. Omitting
+    // cache-creation, as this did, reported a cold 400k-token turn as the couple
+    // of thousand uncached tokens and the threshold never tripped.
+    const currentFill = contextFillTokens(usage);
     const percentage = (currentFill / contextWindow) * 100;
 
     console.log(`[Mysti] CompactionManager: Panel ${panelId} - ${currentFill}/${contextWindow} tokens (${percentage.toFixed(1)}%, threshold: ${this._thresholdPercent}%)`);
@@ -162,9 +174,14 @@ export class CompactionManager {
       return false;
     }
 
-    // Check threshold using most recent input_tokens as context fill level
-    const currentFill = usage.input_tokens + (usage.cache_read_input_tokens || 0);
-    const percentage = (currentFill / contextWindow) * 100;
+    // No measurement at all (a backend that omits usage, or defaults every field
+    // to 0) is UNKNOWN, not 0% — thresholding on it silently disables compaction
+    // for the whole session while looking like a healthy "plenty of room" answer.
+    if (!hasUsageSignal(usage)) {
+      return false;
+    }
+
+    const percentage = (contextFillTokens(usage) / contextWindow) * 100;
 
     return percentage >= this._thresholdPercent;
   }
@@ -309,9 +326,21 @@ export class CompactionManager {
 
   /**
    * Get cumulative usage for a panel.
+   *
+   * These are LIFETIME sums across the session. They answer "what has this panel
+   * spent", never "how full is the context" — use `getLastFill` for that.
    */
   public getUsage(panelId: string): CumulativeUsage | null {
     return this._panelUsage.get(panelId) || null;
+  }
+
+  /**
+   * The most recent measured turn for a panel, in normalized form — the only
+   * record that is comparable to the model's context window. Null before the
+   * panel has completed a measurable turn.
+   */
+  public getLastFill(panelId: string): UsageStats | null {
+    return this._panelLastFill.get(panelId) || null;
   }
 
   /**
@@ -322,12 +351,14 @@ export class CompactionManager {
    */
   public resetUsage(panelId: string): void {
     this._panelUsage.delete(panelId);
+    this._panelLastFill.delete(panelId);
     this._lastCompactionTime.delete(panelId);
     this._smart?.resetPanel(panelId);
     const childPrefix = `${panelId}-brainstorm-`;
     for (const key of Array.from(this._panelUsage.keys())) {
       if (key.startsWith(childPrefix)) {
         this._panelUsage.delete(key);
+        this._panelLastFill.delete(key);
         this._lastCompactionTime.delete(key);
       }
     }
@@ -342,6 +373,11 @@ export class CompactionManager {
     existing.totalCacheReadTokens = 0;
     existing.lastUpdated = Date.now();
     this._panelUsage.set(panelId, existing);
+    // The fill is now the compacted prefix, all of it uncached: compaction
+    // invalidates the prompt cache by construction. Leaving the pre-compaction
+    // record in place would make the very next threshold check re-fire off a
+    // reading that compaction just made obsolete.
+    this._panelLastFill.set(panelId, { input_tokens: afterTokens, output_tokens: 0 });
     console.log(`[Mysti] CompactionManager: Updated usage for ${panelId} to ${afterTokens} tokens post-compaction`);
   }
 
@@ -404,9 +440,21 @@ export class CompactionManager {
     messageCount: number,
     settings: Settings,
     conversation?: Conversation | null,
+    /**
+     * The backend's token-accounting convention, so the smart engine can tell
+     * "cache cold" from "this backend cannot report cache". Defaults to 'none'
+     * (the honest answer for a caller that doesn't know) rather than 'anthropic',
+     * which would claim a cache signal that was never observed.
+     */
+    usageConvention: UsageConvention = 'none',
   ): { act: boolean; smart: boolean; decision?: CompactionDecision } {
     if (this.isSmartActive() && this._smart) {
-      this._smart.recordTurn(panelId, usage);
+      this._smart.recordTurn(panelId, usage, usageConvention);
+      // Same UNKNOWN-vs-zero rule as shouldCompact: an unmeasured turn must not
+      // reach the economic engine, which would read it as 0% fill.
+      if (!hasUsageSignal(usage)) {
+        return { act: false, smart: true };
+      }
       if (!this._enabled || messageCount < COMPACTION_MIN_MESSAGES_BEFORE_COMPACT) {
         return { act: false, smart: true };
       }

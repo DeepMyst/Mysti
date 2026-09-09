@@ -1,0 +1,74 @@
+/**
+ * Mysti - AI Coding Agent
+ * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import type { QueuedChannelMessage } from '../managers/ChannelBridge';
+
+/** Preserve every message and its source when several inputs share a turn. */
+export function formatQueuedChannelTurn(messages: readonly QueuedChannelMessage[]): string {
+  return messages.map(message => {
+    const sender = message.sender ? ` from ${message.sender}` : '';
+    return `[Via ${message.channelName}${sender}]: ${message.content}`;
+  }).join('\n\n---\n\n');
+}
+
+/** Owns delayed channel turns independently for each panel and send generation. */
+export class DelayedChannelTurns {
+  private readonly _timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly _preparations = new Map<string, object>();
+  private readonly _scopes = new Map<string, object>();
+  private _disposed = false;
+
+  public capture(panelId: string): () => boolean {
+    if (this._disposed) { return () => false; }
+    let scope = this._scopes.get(panelId);
+    if (!scope) { scope = {}; this._scopes.set(panelId, scope); }
+    return () => !this._disposed && this._scopes.get(panelId) === scope;
+  }
+
+  public has(panelId: string): boolean {
+    return this._timers.has(panelId) || this._preparations.has(panelId);
+  }
+
+  /** Keep inbound messages queued until the prepared turn becomes an active stream. */
+  public reservePreparation(panelId: string): () => void {
+    if (this._disposed) { return () => {}; }
+    const preparation = {};
+    this._preparations.set(panelId, preparation);
+    return () => {
+      if (this._preparations.get(panelId) === preparation) {
+        this._preparations.delete(panelId);
+      }
+    };
+  }
+
+  public schedule(panelId: string, callback: () => void, delayMs: number): void {
+    if (this._disposed) { return; }
+    const previous = this._timers.get(panelId);
+    if (previous !== undefined) { clearTimeout(previous); }
+    const isCurrent = this.capture(panelId);
+    const timer = setTimeout(() => {
+      if (!isCurrent() || this._timers.get(panelId) !== timer) { return; }
+      this._timers.delete(panelId);
+      callback();
+    }, delayMs);
+    this._timers.set(panelId, timer);
+  }
+
+  public cancelPanel(panelId: string): void {
+    this._scopes.delete(panelId);
+    this._preparations.delete(panelId);
+    const timer = this._timers.get(panelId);
+    if (timer !== undefined) { clearTimeout(timer); }
+    this._timers.delete(panelId);
+  }
+
+  public dispose(): void {
+    this._disposed = true;
+    this._scopes.clear();
+    this._preparations.clear();
+    for (const panelId of this._timers.keys()) { this.cancelPanel(panelId); }
+  }
+}

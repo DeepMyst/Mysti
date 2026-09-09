@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TestableCopilotProvider } from '../../helpers/providerFactory';
 import { createCopilotSession } from '../../helpers/sessionFactory';
+import { clearMockConfig } from '../../helpers/mockVscode';
 
 describe('CopilotProvider.parseStreamLine', () => {
   let provider: TestableCopilotProvider;
@@ -87,5 +88,114 @@ describe('CopilotProvider.parseStreamLine', () => {
       }), session);
       expect(session.lastUsageStats).toEqual({ input_tokens: 300, output_tokens: 100 });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Copilot CLI 1.0 JSONL (2026-09-06)
+//
+// The 0.0.x line emitted plain text with NO tool events, so no tool_use chunk
+// ever reached Mysti's stream-level permission gate — Copilot ran `bash`
+// entirely unobserved, and ask-tier had to deny shell/write outright to stay
+// safe. 1.0's `--output-format json` is what finally makes it gateable.
+//
+// Lines below are captured verbatim from `copilot -p … --output-format json`
+// on 1.0.83.
+// ---------------------------------------------------------------------------
+describe('Copilot 1.0 JSON stream', () => {
+  let p: TestableCopilotProvider;
+
+  beforeEach(() => {
+    clearMockConfig();
+    p = new TestableCopilotProvider();
+  });
+
+  it('streams message deltas and not the repeated whole message', () => {
+    const session = createCopilotSession();
+    const deltas = [
+      '{"type":"assistant.message_delta","data":{"messageId":"m1","deltaContent":"Okay"}}',
+      '{"type":"assistant.message_delta","data":{"messageId":"m1","deltaContent":","}}',
+      '{"type":"assistant.message_delta","data":{"messageId":"m1","deltaContent":" sure"}}',
+    ].map((l) => p.parseStreamLine(l, session));
+    expect(deltas.map((c) => c && c.type === 'text' ? c.content : '').join('')).toBe('Okay, sure');
+
+    // `assistant.message` repeats the full answer after the deltas.
+    expect(p.parseStreamLine(
+      '{"type":"assistant.message","data":{"messageId":"m1","content":"Okay, sure","phase":"final_answer"}}',
+      session,
+    )).toBeNull();
+  });
+
+  /** The event Mysti's permission gate exists to intercept. */
+  it('emits a tool_use for tool.execution_start', () => {
+    const chunk = p.parseStreamLine(
+      '{"type":"tool.execution_start","data":{"toolCallId":"call_1","toolName":"bash","arguments":{"command":"ls","description":"List files"}}}',
+      createCopilotSession(),
+    );
+    expect(chunk).toEqual({
+      type: 'tool_use',
+      toolCall: {
+        id: 'call_1',
+        name: 'bash',
+        input: { command: 'ls', description: 'List files' },
+        status: 'running',
+      },
+    });
+  });
+
+  it('pairs the result back to the call it started', () => {
+    const session = createCopilotSession();
+    p.parseStreamLine(
+      '{"type":"tool.execution_start","data":{"toolCallId":"call_1","toolName":"bash","arguments":{"command":"ls"}}}',
+      session,
+    );
+    const chunk = p.parseStreamLine(
+      '{"type":"tool.execution_complete","data":{"toolCallId":"call_1","success":true,"result":{"content":"README.md"}}}',
+      session,
+    );
+    expect(chunk?.type).toBe('tool_result');
+    expect(chunk?.toolCall).toMatchObject({
+      id: 'call_1',
+      name: 'bash',
+      input: { command: 'ls' },
+      output: 'README.md',
+      status: 'completed',
+    });
+    expect(session.activeToolCalls.size).toBe(0);
+  });
+
+  it('marks a failed tool as failed', () => {
+    const chunk = p.parseStreamLine(
+      '{"type":"tool.execution_complete","data":{"toolCallId":"c2","toolName":"bash","success":false,"result":{"content":"boom"}}}',
+      createCopilotSession(),
+    );
+    expect(chunk?.toolCall?.status).toBe('failed');
+  });
+
+  /**
+   * The argument JSON arrives one fragment at a time and is delivered whole by
+   * tool.execution_start; rendering the fragments would print `{"` at the user.
+   */
+  it('swallows telemetry and partial fragments', () => {
+    const session = createCopilotSession();
+    for (const line of [
+      '{"type":"assistant.tool_call_delta","data":{"toolCallId":"c1","toolName":"bash","inputDelta":"{\\""}}',
+      '{"type":"tool.execution_partial_result","data":{"toolCallId":"c1","partialOutput":"READ"}}',
+      '{"type":"session.usage_checkpoint","data":{"totalNanoAiu":617725000}}',
+      '{"type":"session.mcp_server_status_changed","data":{"serverName":"github-mcp-server","status":"pending"}}',
+      '{"type":"model.call_start","data":{"turnId":"0"}}',
+      '{"type":"assistant.turn_end","data":{"turnId":"0"}}',
+      '{"type":"user.message","data":{"content":"hi"}}',
+    ]) {
+      expect(p.parseStreamLine(line, session), line.slice(0, 40)).toBeNull();
+    }
+  });
+
+  /** An unknown dotted event is telemetry, not prose to show the user. */
+  it('does not print an unrecognised 1.0 event as text', () => {
+    expect(p.parseStreamLine(
+      '{"type":"session.something_new","data":{"x":1}}',
+      createCopilotSession(),
+    )).toBeNull();
   });
 });

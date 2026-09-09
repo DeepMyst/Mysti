@@ -92,6 +92,10 @@ function createHarness(): Harness {
     getProvider: vi.fn(() => ({ name: 'claude-code', models: [], defaultModel: 'm' })),
     getProviderInstance: () => undefined,
     getAllProviders: () => [],
+    // _getPanelModel asks which OTHER provider claims the panel's model id, so
+    // a leftover from a previous agent never reaches a CLI. One provider with
+    // an empty catalog claims nothing, which leaves the model alone.
+    getProviders: vi.fn(() => [{ name: 'claude-code', models: [], defaultModel: 'm' }]),
     getAllProviderIds: vi.fn(() => ['claude-code', 'mysti']),
     getModelContextWindow: vi.fn(() => 200000),
     getModels: vi.fn(() => []),
@@ -108,33 +112,36 @@ function createHarness(): Harness {
     brainstormManager: noop,
   });
 
-  const provider: any = new ChatViewProvider(
-    extensionContext.extensionUri,
+  const provider: any = new ChatViewProvider({
+    extensionUri: extensionContext.extensionUri,
     extensionContext,
-    { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
-    { getCurrentConversation: () => null, getConversation: vi.fn(() => null) } as any,
+    contextManager: { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
+    conversationManager: { getCurrentConversation: () => null, getConversation: vi.fn(() => null) } as any,
     providerManager,
-    noop, noop,
+    suggestionManager: noop,
+    brainstormManager: noop,
     permissionManager,
-    {
+    setupManager: {
       getWizardStatus: async () => ({ anyReady: false, providers: [] }),
       getWizardStatusCached: () => ({ anyReady: false, providers: [], complete: false }),
       ensureProviderStatusFresh: async () => undefined,
       onWizardStatusUpdated: () => ({ dispose: () => {} }),
     } as any,
-    noop, noop,
-    { learnFromPermissionDecision: vi.fn() } as any,
-    {
+    telemetryManager: noop,
+    autonomousManager: noop,
+    memoryManager: { learnFromPermissionDecision: vi.fn() } as any,
+    compactionManager: {
       getStrategy: vi.fn(() => 'client-summarize'),
       getUsage: vi.fn(() => ({ totalInputTokens: 0, totalOutputTokens: 0 })),
+      getLastFill: vi.fn(() => null),
       resetUsage: vi.fn(),
       evaluateCompaction: vi.fn(() => ({ act: false, smart: false })),
       appendHistory: vi.fn(),
       isSmartActive: vi.fn(() => false),
     } as any,
-    { onLifecycleEvent: () => undefined } as any,
+    lifecycleManager: { onLifecycleEvent: () => undefined } as any,
     slashCommandManager,
-    {
+    activeModeManager: {
       onStatusChanged: () => undefined,
       onChannelChanged: () => undefined,
       onActivity: () => undefined,
@@ -142,8 +149,12 @@ function createHarness(): Harness {
       isConnected: () => false,
       isInstalled: () => false,
     } as any,
-    noop, noop, noop, noop, createModelRegistryStub() as any,
-  );
+    engagementManager: noop,
+    projectContextManager: noop,
+    visualTestManager: noop,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: undefined as any
+  });
 
   // A real canvas session, wired the way openCanvas wires one.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-lane-'));

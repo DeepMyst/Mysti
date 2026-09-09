@@ -89,17 +89,31 @@ describe('pane presentation', () => {
 
 describe('the board is the product', () => {
   it('never falls below its floor — swept across every width and pane state', () => {
+    // ~19k combinations. Asserted per-iteration this was two `expect()` calls
+    // apiece — nearly 40,000 of them — which put the whole test within noise of
+    // the 5s default timeout: it passed or failed depending on what else the
+    // machine was doing. A gate that moves with unrelated load is worse than no
+    // gate, so the sweep collects and asserts ONCE. The check is identical; only
+    // the ~40k matcher invocations are gone.
+    const violations: string[] = [];
     for (let width = 240; width <= 2400; width += 1) {
       for (const rail of STATES) {
         for (const inspector of STATES) {
           const layout = resolveShellLayout(width, { rail, inspector });
-          expect(layout.boardPx).toBeGreaterThanOrEqual(boardFloor(width));
+          const floor = boardFloor(width);
+          if (layout.boardPx < floor) {
+            violations.push(`${width}px ${rail}/${inspector}: board ${layout.boardPx} < floor ${floor}`);
+          }
           // And the grid never overflows: tracks + board fit the panel.
-          expect(layout.rail.trackPx + layout.inspector.trackPx + layout.boardPx)
-            .toBeLessThanOrEqual(Math.max(width, boardFloor(width)) + 0.001);
+          const total = layout.rail.trackPx + layout.inspector.trackPx + layout.boardPx;
+          if (total > Math.max(width, floor) + 0.001) {
+            violations.push(`${width}px ${rail}/${inspector}: tracks+board ${total} > panel`);
+          }
         }
       }
     }
+    expect(violations.slice(0, 10)).toEqual([]);
+    expect(violations).toHaveLength(0);
   });
 
   it('gives the whole panel to the board in a narrow split column', () => {

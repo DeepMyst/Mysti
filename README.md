@@ -95,7 +95,8 @@ ext install DeepMyst.mysti
 
 ## Choose Your AI
 
-Mysti works with the AI coding tools you already have. **No extra subscriptions needed.**
+Mysti connects the AI coding tools you already use through one interface.
+Authentication, model availability and usage charges depend on the selected provider.
 
 <p align="center">
   <img src="docs/gifs/agent switching.gif" alt="Agent Switching" width="450">
@@ -338,9 +339,9 @@ Fine-tune every aspect of Mysti including token budgets, access levels, and brai
 
 ## Requirements
 
-**Already paying for Claude, ChatGPT, Gemini, or GitHub Copilot? You're ready to go.**
-
-Mysti works with your existing subscriptions—no additional costs!
+Use a VS Code version supported by `engines.vscode` in [package.json](package.json)
+and configure a supported backend. Check that backend's authentication and usage
+requirements; subscription access and API access may differ.
 
 | CLI Tool | Subscription | Install |
 |----------|--------------|---------|
@@ -356,7 +357,8 @@ Mysti works with your existing subscriptions—no additional costs!
 | **Ollama** | Local (no subscription needed) | [Install from ollama.com](https://ollama.com) |
 | **LocalAI** | Local (no subscription needed) | [Docker / binaries](https://localai.io/basics/getting_started/) |
 
-You only need **one** CLI to get started. Install **any two** to unlock Brainstorm Mode.
+Configure **one** supported backend to get started. Brainstorm uses **two**
+available agents. HTTP providers such as OpenRouter do not require a provider CLI.
 
 ---
 
@@ -545,13 +547,14 @@ Stay in control of what the AI can do:
 
 | Guide | Description |
 |-------|-------------|
-| [Providers](docs/PROVIDERS.md) | All 12 providers — setup, models, features |
+| [Providers](docs/PROVIDERS.md) | Provider setup, models and features |
 | [Brainstorm Mode](docs/BRAINSTORM.md) | 5 strategies, convergence, team selection |
 | [Personas & Skills](docs/PERSONAS-AND-SKILLS.md) | 16 personas, 12 skills, custom agents |
 | [Autonomous Mode](docs/AUTONOMOUS-MODE.md) | Safety system, memory, continuation modes |
 | [@-Mentions](docs/MENTIONS.md) | Agent routing and file context |
 | [Compaction](docs/COMPACTION.md) | Context management and summarization |
 | [Architecture](docs/ARCHITECTURE.md) | Technical internals and extension points |
+| [Maintenance](docs/MAINTENANCE.md) | Development checks, dependency updates and release verification |
 | [Features](docs/FEATURES.md) | Complete feature reference |
 
 ---
@@ -608,7 +611,7 @@ If Mysti has been useful to you, consider giving it a star — it helps others d
 We welcome contributions! Whether it's bug reports, feature requests, or code contributions.
 
 - **Good First Issues**: Look for [`good first issue`](https://github.com/DeepMyst/Mysti/labels/good%20first%20issue) labels
-- **Development**: Press `F5` in VS Code to launch Extension Development Host
+- **Development**: Use Node from `.nvmrc`, run `npm ci` and `npm run watch`, then press `F5` in VS Code
 - **Pull Requests**: Fork, create a feature branch, and submit a PR
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.

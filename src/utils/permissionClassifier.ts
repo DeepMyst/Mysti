@@ -94,7 +94,7 @@ export function classifyToolAction(toolName: string): PermissionActionType {
  * Only tools on the explicit read-only allowlist skip the gate; unknown tools
  * are gated (fail-closed) whenever the mode/access combination requires approval.
  */
-export function shouldGateToolUse(settings: Settings, toolName: string): boolean {
+export function shouldGateToolUse(settings: Pick<Settings, 'mode' | 'accessLevel'>, toolName: string): boolean {
   // Never gate read-only operations (explicit allowlist)
   const actionType = classifyToolAction(toolName);
   if (isNeverGatedAction(actionType)) {

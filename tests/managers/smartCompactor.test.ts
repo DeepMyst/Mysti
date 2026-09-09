@@ -67,6 +67,35 @@ describe('SmartCompactor.getWarmth', () => {
     sc.recordTurn('p', usage(1000, 0));
     expect(sc.getWarmth('p')).toBe('cold');
   });
+
+  it('says UNKNOWN, not cold, for a backend that cannot report cache at all', () => {
+    // 11 of the 15 backends have no cache accounting. Reading their silence as
+    // 'cold' told evaluate() that compacting was free ("cache cold — ideal
+    // moment") for every one of them, permanently.
+    const { sc } = makeCompactor();
+    sc.recordTurn('p', usage(150_000, 0), 'none');
+    expect(sc.getWarmth('p')).toBe('unknown');
+  });
+
+  it('still distinguishes warm from cold for a backend that CAN report it', () => {
+    const { sc } = makeCompactor();
+    sc.recordTurn('p', usage(1_000, 500), 'anthropic');
+    expect(sc.getWarmth('p')).toBe('warm');
+    sc.recordTurn('p', usage(1_000, 0), 'openai');
+    expect(sc.getWarmth('p')).toBe('cold');
+  });
+
+  it('does not blame a warm cache for a decision it never observed', () => {
+    // An unknown-warmth panel must not take the 'warm' branch, which defers the
+    // compaction AND books a cache-timing saving that never happened.
+    const { sc, ledger } = makeCompactor();
+    sc.recordTurn('p', usage(190_000, 0), 'none');
+    const d = sc.evaluate({ panelId: 'p', usage: usage(190_000, 0), contextWindow: 200_000, ...base });
+    expect(d.warmth).toBe('unknown');
+    expect(d.deferred).toBe(false);
+    const booked = (ledger.record as unknown as { mock: { calls: Array<[{ kind: string }]> } }).mock.calls;
+    expect(booked.some(([r]) => r.kind === 'cache-timing')).toBe(false);
+  });
 });
 
 describe('SmartCompactor.evaluate', () => {

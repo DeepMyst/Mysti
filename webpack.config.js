@@ -52,7 +52,16 @@ const extensionConfig = {
     extensions: ['.ts', '.js']
   },
   module: {
-    rules: [tsRule('extension')]
+    rules: [
+      tsRule('extension'),
+      {
+        // TypeScript emits the lazy SDK import as CommonJS. Stitch publishes
+        // only an ESM import export, which webpack can bundle once resolved.
+        // Keep this condition override local to the module loading that SDK.
+        test: /[\\/]StitchService\.ts$/,
+        resolve: { conditionNames: ['import', '...'] },
+      },
+    ]
   }
 };
 

@@ -124,9 +124,18 @@ describe('collaboration slash commands', () => {
 
   it('resolves typed /consult to cmd:consult via the fallback mapping', () => {
     expect(manager.mapLegacyCommand('consult')).toBe('cmd:consult');
-    expect(manager.mapLegacyCommand('review')).toBe('cmd:review');
-    expect(manager.mapLegacyCommand('critique')).toBe('cmd:critique');
-    expect(manager.mapLegacyCommand('panel')).toBe('cmd:panel');
+  });
+
+  // Plan 29: review, critique and panel are SESSIONS now. Each used to compose
+  // an `@agent:role` mention for the user to send; each now dispatches directly
+  // and merges the answers, so a typed /review opens the agent picker rather
+  // than pre-filling the composer. The mention grammar itself is unchanged.
+  it('routes the names that became sessions to their session command', () => {
+    expect(manager.mapLegacyCommand('review')).toBe('session:review');
+    expect(manager.mapLegacyCommand('critique')).toBe('session:critique');
+    expect(manager.mapLegacyCommand('panel')).toBe('session:panel');
+    expect(manager.mapLegacyCommand('race')).toBe('session:race');
+    expect(manager.mapLegacyCommand('brainstorm')).toBe('session:brainstorm');
   });
 });
 

@@ -7,10 +7,8 @@
  *     routes through the helper, that the helper fails closed, and that the CSP
  *     carries the directives that do not fall back to `default-src`.
  *
- *  2. BEHAVIOURAL — real DOMPurify, run against the option object PARSED OUT OF
- *     `chat.js` rather than restated here. A mirrored copy of a sanitizer config
- *     would pass forever while the shipped one was weakened, which is the one
- *     thing a security test must not do.
+ *  2. BEHAVIOURAL — run the standalone renderer with real Marked and DOMPurify.
+ *     Tests exercise the shipped sanitizer options without copying their values.
  *
  * On what is and is not being defended: the webview CSP already blocks the
  * code-execution half (nonce'd `script-src` kills inline `onerror`, and
@@ -21,34 +19,60 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { describe, it, expect } from 'vitest';
+import { afterAll, describe, it, expect, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import createDOMPurify from 'dompurify';
+import * as marked from 'marked';
+import type * as vscode from 'vscode';
+import { loadMarkdownRenderer } from '../helpers/markdownRenderer';
+import { getWebviewContent } from '../../src/webview/webviewContent';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const chatJs = fs.readFileSync(path.join(ROOT, 'media', 'chat', 'chat.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(ROOT, 'media', 'chat', 'index.html'), 'utf8');
 
 describe('structural: every render site is sanitized', () => {
-  it('no direct marked.parse outside the helper', () => {
-    // One occurrence only — the call inside renderMarkdownSafe itself.
-    expect((chatJs.match(/marked\.parse\(/g) || []).length).toBe(1);
-    const helperStart = chatJs.indexOf('function renderMarkdownSafe');
-    expect(helperStart).toBeGreaterThan(-1);
-    expect(chatJs.indexOf('marked.parse(')).toBeGreaterThan(helperStart);
+  it('chat render sites route through the standalone renderer', () => {
+    expect(chatJs).not.toContain('marked.parse(');
+    expect(chatJs).not.toContain('DOMPurify.sanitize(');
+    expect(chatJs).toContain('window.MystiMarkdownRenderer.create(');
+    expect(chatJs).toContain('markdownRenderer.renderMarkdown(value)');
+    expect(chatJs).toContain('renderMarkdownSafe(content)');
+    expect(chatJs).toContain('renderMarkdown: renderMarkdownSafe');
+    expect(indexHtml.indexOf('{{markdownRendererJsUri}}')).toBeLessThan(indexHtml.indexOf('{{chatJsUri}}'));
   });
 
-  it('the render sites call the helper', () => {
-    expect((chatJs.match(/renderMarkdownSafe\(/g) || []).length).toBeGreaterThanOrEqual(4);
+  it('emits the renderer resource before chat with a nonce and a fresh asset URI', () => {
+    const webview = {
+      cspSource: 'vscode-resource://test',
+      asWebviewUri: (uri: vscode.Uri) => ({ toString: () => 'vscode-resource://test' + uri.fsPath }),
+    } as vscode.Webview;
+    const html = getWebviewContent(webview, { fsPath: ROOT, path: ROOT } as vscode.Uri, '1.2.3');
+    const dom = new JSDOM(html);
+    try {
+      const scripts = [...dom.window.document.querySelectorAll('script[src]')];
+      const rendererIndex = scripts.findIndex(script => script.getAttribute('src')?.includes('/markdownRenderer.js?'));
+      const chatIndex = scripts.findIndex(script => script.getAttribute('src')?.includes('/chat.js?'));
+      expect(rendererIndex).toBeGreaterThan(-1);
+      expect(rendererIndex).toBeLessThan(chatIndex);
+      expect(scripts[rendererIndex].getAttribute('nonce')).toHaveLength(32);
+      expect(scripts[rendererIndex].getAttribute('src')).toContain(
+        '?v=' + fs.statSync(path.join(ROOT, 'media/chat/markdownRenderer.js')).mtimeMs,
+      );
+      expect(html).not.toContain('{{markdownRendererJsUri}}');
+    } finally { dom.window.close(); }
   });
 
-  it('the helper fails CLOSED when DOMPurify is absent', () => {
-    // Showing raw HTML because a library failed to load would be the worst
-    // possible fallback, so the helper degrades to plain text instead.
-    const helper = chatJs.slice(chatJs.indexOf('function renderMarkdownSafe'));
-    const body = helper.slice(0, helper.indexOf('\n      }') + 8);
-    expect(body).toContain("typeof DOMPurify === 'undefined'");
-    expect(body).toContain('textContent');
+  it('fails closed when the sanitizer is unavailable', () => {
+    const dom = new JSDOM('', { runScripts: 'outside-only' });
+    try {
+      const renderer = loadMarkdownRenderer(dom.window).create({
+        document: dom.window.document, marked, getMermaid: () => undefined,
+        logger: { warn: vi.fn(), error: vi.fn() },
+      });
+      expect(renderer.renderMarkdown('<img src=x onerror=alert(1)>'))
+        .toBe('&lt;img src=x onerror=alert(1)&gt;');
+    } finally { dom.window.close(); }
   });
 
   it('DOMPurify is loaded before marked, from a local resource', () => {
@@ -89,29 +113,20 @@ describe('structural: CSP covers what default-src does not', () => {
   });
 });
 
-describe('behavioural: real DOMPurify with the SHIPPED options', () => {
-  /**
-   * Parse the option object out of chat.js so this test is bound to what
-   * actually ships. If someone widens FORBID_TAGS or drops the config, these
-   * assertions fail rather than continuing to pass against a stale copy.
-   */
-  function shippedOptions(): Record<string, unknown> {
-    const call = chatJs.slice(chatJs.indexOf('DOMPurify.sanitize(raw, {'));
-    const body = call.slice(call.indexOf('{'), call.indexOf('});') + 1);
-    const list = (key: string): string[] => {
-      const m = new RegExp(`${key}:\\s*\\[([^\\]]*)\\]`).exec(body);
-      return m ? (m[1].match(/'([^']+)'/g) || []).map(s => s.replace(/'/g, '')) : [];
-    };
-    return { ADD_ATTR: list('ADD_ATTR'), FORBID_TAGS: list('FORBID_TAGS'), FORBID_ATTR: list('FORBID_ATTR') };
-  }
+describe('behavioural: shipped renderer with real Marked and DOMPurify', () => {
+  const dom = new JSDOM('', { runScripts: 'outside-only' });
+  const purify = createDOMPurify(dom.window as unknown as Window & typeof globalThis);
+  const renderer = loadMarkdownRenderer(dom.window).create({
+    document: dom.window.document, marked,
+    sanitize: (html, options) => String(purify.sanitize(html, options)),
+    getMermaid: () => undefined,
+  });
+  const clean = (html: string) => renderer.renderMarkdown(html);
+  afterAll(() => { renderer.dispose(); dom.window.close(); });
 
-  const purify = createDOMPurify(new JSDOM('').window as unknown as Window & typeof globalThis);
-  const clean = (html: string): string => String(purify.sanitize(html, shippedOptions()));
-
-  it('parsed the real options rather than a restated copy', () => {
-    const opts = shippedOptions();
-    expect((opts.FORBID_TAGS as string[]).length).toBeGreaterThan(0);
-    expect(opts.FORBID_TAGS).toContain('iframe');
+  it('parses ordinary Markdown through the configured renderer', () => {
+    expect(clean('## Title\n\n**bold**')).toContain('<h2>Title</h2>');
+    expect(clean('## Title\n\n**bold**')).toContain('<strong>bold</strong>');
   });
 
   it('strips inline event handlers', () => {

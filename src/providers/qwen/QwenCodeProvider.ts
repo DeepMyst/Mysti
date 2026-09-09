@@ -103,6 +103,7 @@ export class QwenCodeProvider extends BaseCliProvider {
     sessionKind: 'cli-resume',
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'none',   // Qwen's message_delta usage carries no cache fields.
     modelSelection: 'full'
   };
 

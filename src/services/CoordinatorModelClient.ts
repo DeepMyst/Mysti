@@ -25,6 +25,7 @@
 import type { GatewayChatMessage, DeepMystGatewayClient } from './DeepMystGatewayClient';
 import type { AccumulatedToolCall } from '../utils/toolCallAccumulator';
 import { modelSupportsToolCalls } from './coordinatorTools';
+import { normalizeUsage } from './TokenAccounting';
 import type { OpenRouterClient } from './OpenRouterClient';
 
 export interface CoordinatorConfig {
@@ -80,11 +81,58 @@ export interface CoordinatorCompletion {
   model?: string;
 }
 
+/** Raw usage as the OpenRouter/gateway clients report it. */
+interface ClientUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  /** SUBSET of inputTokens (OpenAI convention) — see PromptCache.readCacheTokens. */
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+}
+
+/**
+ * Convert a client's raw usage into the canonical disjoint shape.
+ *
+ * The clients speak the OpenAI convention, where cached tokens are a SUBSET of
+ * the prompt count; `normalizeUsage` subtracts them out so that
+ * input + cache_creation + cache_read is the round-trip's prompt with nothing
+ * counted twice. Everything downstream (the run's fill, the Boost record, the
+ * savings ledger) assumes that shape.
+ */
+function coordinatorUsage(u: ClientUsage): NonNullable<CoordinatorStreamEvent['usage']> {
+  const normalized = normalizeUsage(
+    {
+      input_tokens: u.inputTokens ?? 0,
+      output_tokens: u.outputTokens ?? 0,
+      ...(u.cacheReadTokens ? { cache_read_input_tokens: u.cacheReadTokens } : {}),
+      ...(u.cacheCreationTokens ? { cache_creation_input_tokens: u.cacheCreationTokens } : {}),
+    },
+    'openai',
+  );
+  return {
+    input_tokens: normalized.input_tokens,
+    output_tokens: normalized.output_tokens,
+    ...(normalized.cache_read_input_tokens ? { cache_read_input_tokens: normalized.cache_read_input_tokens } : {}),
+    ...(normalized.cache_creation_input_tokens ? { cache_creation_input_tokens: normalized.cache_creation_input_tokens } : {}),
+  };
+}
+
 /** One streamed delta from the coordinator model. */
 export interface CoordinatorStreamEvent {
   text?: string;
   reasoning?: string;
-  usage?: { input_tokens: number; output_tokens: number };
+  /**
+   * Prompt/completion tokens for ONE round-trip, in the canonical disjoint shape
+   * (see src/services/TokenAccounting.ts). `cache_read_input_tokens` has already
+   * been split OUT of `input_tokens` here, so the three add up to the round-trip's
+   * prompt — the caller must not re-derive that split.
+   */
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
   done?: boolean;
   error?: string;
   /** The model that actually answered (the concrete model behind a router id, or
@@ -374,7 +422,7 @@ export class CoordinatorModelClient {
           }
           yield { text: ev.text };
         }
-        if (ev.usage) { yield { usage: { input_tokens: ev.usage.inputTokens ?? 0, output_tokens: ev.usage.outputTokens ?? 0 } }; }
+        if (ev.usage) { yield { usage: coordinatorUsage(ev.usage) }; }
         if (ev.toolCalls && ev.toolCalls.length) {
           // A finalized tool_call set means THIS attempt OWNS the turn (mirrors
           // first-text ownership at L297): stamp sticky + surface the held cost,
@@ -417,7 +465,7 @@ export class CoordinatorModelClient {
   }
 
   /** Normalize an OpenRouter/gateway stream into CoordinatorStreamEvents. */
-  private async *_drain(source: AsyncGenerator<{ text?: string; reasoning?: string; usage?: { inputTokens?: number; outputTokens?: number }; done?: boolean; error?: string; finishReason?: string; costUsd?: number; toolCalls?: AccumulatedToolCall[] }>): AsyncGenerator<CoordinatorStreamEvent> {
+  private async *_drain(source: AsyncGenerator<{ text?: string; reasoning?: string; usage?: ClientUsage; done?: boolean; error?: string; finishReason?: string; costUsd?: number; toolCalls?: AccumulatedToolCall[] }>): AsyncGenerator<CoordinatorStreamEvent> {
     let sawText = false;
     let sawToolCalls = false;
     let streamErr: string | undefined;
@@ -425,7 +473,7 @@ export class CoordinatorModelClient {
       if (ev.error) { streamErr = ev.error; break; }
       if (ev.reasoning) { yield { reasoning: ev.reasoning }; }
       if (ev.text) { sawText = true; yield { text: ev.text }; }
-      if (ev.usage) { yield { usage: { input_tokens: ev.usage.inputTokens ?? 0, output_tokens: ev.usage.outputTokens ?? 0 } }; }
+      if (ev.usage) { yield { usage: coordinatorUsage(ev.usage) }; }
       if (ev.toolCalls) { sawToolCalls = true; yield { toolCalls: ev.toolCalls }; }
       // [8]: forward finish_reason so the OpenRouter-key path also auto-continues
       // on a length truncation (was gateway-path-only).

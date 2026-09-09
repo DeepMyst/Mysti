@@ -137,31 +137,29 @@ function createHarness(): Harness {
   } as any;
   const noop = {} as any;
 
-  const provider = new ChatViewProvider(
+  const provider = new ChatViewProvider({
     extensionUri,
     extensionContext,
     contextManager,
     conversationManager,
     providerManager,
-    noop,                  // suggestionManager
-    noop,                  // brainstormManager
+    suggestionManager: noop,
+    brainstormManager: noop,
     permissionManager,
     setupManager,
-    noop,                  // telemetryManager
-    noop,                  // autonomousManager
-    memoryManager as any,  // memoryManager
-    noop,                  // compactionManager
+    telemetryManager: noop,
+    autonomousManager: noop,
+    memoryManager: memoryManager as any,
+    compactionManager: noop,
     lifecycleManager,
-    noop,                  // slashCommandManager
+    slashCommandManager: noop,
     activeModeManager,
     engagementManager,
-    noop,                  // projectContextManager
-    noop,                  // visualTestManager
-    noop,                  // canvasManager
-    createModelRegistryStub() as any, // modelRegistry
-    // Also reachable only since D-1 removed the early return.
-    { isAvailable: async () => false, snapshot: async () => null, rewindTo: async () => null } as any
-  );
+    projectContextManager: noop,
+    visualTestManager: noop,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: { isAvailable: async () => false, snapshot: async () => null, rewindTo: async () => null } as any
+  });
 
   // Register a fake sidebar panel (normally done in resolveWebviewView)
   const sidebarMessages: Array<{ type: string; payload?: any }> = [];
@@ -268,7 +266,9 @@ describe('ChatViewProvider message routing', () => {
         'Edit file',
         'Modify src/example.ts',
         { filePath: 'src/example.ts' },
-        (msg: unknown) => { posted.push(msg); }
+        (msg: unknown) => { posted.push(msg); },
+        undefined,
+        'sidebar'
       );
       const requestId = posted[0].payload.id as string;
       return { requestId, gate };
@@ -277,7 +277,7 @@ describe('ChatViewProvider message routing', () => {
     it('should feed the user decision to MemoryManager (approve)', async () => {
       const { requestId, gate } = startPendingRequest();
 
-      (h.provider as any)._handlePermissionResponse({ requestId, decision: 'approve' });
+      (h.provider as any)._handlePermissionResponse({ requestId, decision: 'approve' }, 'sidebar');
 
       expect(await gate).toBe(true);
       expect(h.memoryManager.learnFromPermissionDecision).toHaveBeenCalledTimes(1);
@@ -290,7 +290,7 @@ describe('ChatViewProvider message routing', () => {
     it('should feed the user decision to MemoryManager (deny)', async () => {
       const { requestId, gate } = startPendingRequest();
 
-      (h.provider as any)._handlePermissionResponse({ requestId, decision: 'deny' });
+      (h.provider as any)._handlePermissionResponse({ requestId, decision: 'deny' }, 'sidebar');
 
       expect(await gate).toBe(false);
       expect(h.memoryManager.learnFromPermissionDecision).toHaveBeenCalledTimes(1);
@@ -310,7 +310,7 @@ describe('ChatViewProvider message routing', () => {
     });
 
     it('should not learn anything for an unknown requestId', () => {
-      (h.provider as any)._handlePermissionResponse({ requestId: 'nope', decision: 'approve' });
+      (h.provider as any)._handlePermissionResponse({ requestId: 'nope', decision: 'approve' }, 'sidebar');
       expect(h.memoryManager.learnFromPermissionDecision).not.toHaveBeenCalled();
     });
   });

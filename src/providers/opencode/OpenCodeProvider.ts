@@ -81,6 +81,7 @@ export class OpenCodeProvider extends BaseCliProvider {
     sessionKind: 'cli-resume',
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'none',   // step-finish tokens are flat input/output.
     modelSelection: 'custom-only'  // provider/model free-form — no meaningful static dropdown
   };
 

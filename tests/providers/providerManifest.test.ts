@@ -90,6 +90,7 @@ describe('buildProviderManifest', () => {
     const planModes = ['native', 'detected', 'none'];
     const sessionKinds = ['cli-resume', 'prompt-history', 'none'];
     const modelSelections = ['full', 'custom-only', 'none'];
+    const usageConventions = ['anthropic', 'openai', 'none', 'auto'];
 
     for (const entry of manifest) {
       const c = entry.capabilities;
@@ -99,8 +100,32 @@ describe('buildProviderManifest', () => {
       expect(sessionKinds, `${entry.id} sessionKind`).toContain(c.sessionKind);
       expect(typeof c.emitsToolResults, `${entry.id} emitsToolResults`).toBe('boolean');
       expect(typeof c.emitsUsage, `${entry.id} emitsUsage`).toBe('boolean');
+      // A backend that cannot report usage has no convention to speak, so it
+      // must declare 'none' — anything else claims a cache signal that will
+      // never arrive, and the compaction economics would act on it.
+      expect(usageConventions, `${entry.id} usageConvention`).toContain(c.usageConvention);
+      if (!c.emitsUsage) {
+        expect(c.usageConvention, `${entry.id} declares emitsUsage:false`).toBe('none');
+      }
       expect(modelSelections, `${entry.id} modelSelection`).toContain(c.modelSelection);
     }
+  });
+
+  it('declares a token-accounting convention per backend, not one shared guess', () => {
+    // Anthropic's prompt buckets are DISJOINT; OpenAI reports cached tokens as a
+    // SUBSET of input. A single shared fill formula is wrong for one of them in
+    // whichever direction it is written, so each backend names its own.
+    // See src/services/TokenAccounting.ts.
+    expect(byId.get('claude-code')!.capabilities.usageConvention).toBe('anthropic');
+    expect(byId.get('openai-codex')!.capabilities.usageConvention).toBe('openai');
+    // Backends that front other vendors resolve per-turn from the model id.
+    expect(byId.get('cline')!.capabilities.usageConvention).toBe('auto');
+    expect(byId.get('openrouter')!.capabilities.usageConvention).toBe('auto');
+    expect(byId.get('localai')!.capabilities.usageConvention).toBe('auto');
+    // No cache accounting on the transport Mysti drives.
+    expect(byId.get('google-gemini')!.capabilities.usageConvention).toBe('none');
+    expect(byId.get('hermes')!.capabilities.usageConvention).toBe('none');
+    expect(byId.get('kimi-code')!.capabilities.usageConvention).toBe('none');
   });
 
   it('matches the verified capability matrix (spot checks)', () => {
@@ -124,10 +149,20 @@ describe('buildProviderManifest', () => {
     expect(cline.sessionKind).toBe('prompt-history');
     expect(cline.modelSelection).toBe('none');
 
-    // Lying flags corrected: Copilot CLI emits plain text — no tool events
+    // Copilot CLI 1.0 added `--output-format json`, whose
+    // tool.execution_start / tool.execution_complete events are what Mysti's
+    // permission gate intercepts. The 0.0.x line emitted plain text with no
+    // tool events at all — these flags were false for exactly that reason, and
+    // ask-tier had to deny shell/write outright to stay safe.
+    // Copilot reports no honest token count on EITHER path: 1.0's JSONL bills in
+    // nano AIU (not tokens) and 0.0.x streams plain text with no usage event.
+    // Declaring true left the context pie holding the PREVIOUS provider's number.
+    const copilotUsage = byId.get('github-copilot')!.capabilities;
+    expect(copilotUsage.emitsUsage).toBe(false);
+
     const copilot = byId.get('github-copilot')!.capabilities;
-    expect(copilot.supportsToolUse).toBe(false);
-    expect(copilot.emitsToolResults).toBe(false);
+    expect(copilot.supportsToolUse).toBe(true);
+    expect(copilot.emitsToolResults).toBe(true);
     expect(copilot.sessionKind).toBe('prompt-history');
 
     const cursor = byId.get('cursor')!.capabilities;

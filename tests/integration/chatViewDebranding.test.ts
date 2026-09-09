@@ -66,6 +66,7 @@ interface Harness {
     getStrategy: ReturnType<typeof vi.fn>;
     getThreshold: ReturnType<typeof vi.fn>;
     getUsage: ReturnType<typeof vi.fn>;
+    getLastFill: ReturnType<typeof vi.fn>;
     executeClientSummarization: ReturnType<typeof vi.fn>;
     updateUsageAfterCompaction: ReturnType<typeof vi.fn>;
   };
@@ -126,6 +127,11 @@ function createHarness(): Harness {
     ),
     getProviderInstance: () => undefined,
     getAllProviders: () => [],
+    // _resolveModelForProvider asks which OTHER provider claims a model id, so
+    // it can tell a leftover from the previous agent apart from a genuinely
+    // hand-typed one. Curated lists are empty here, so nothing is ever claimed
+    // and the keep-validated/custom precedence above stays the path under test.
+    getProviders: vi.fn(() => ALL_PROVIDER_IDS.map(name => ({ name, models: [], defaultModel: 'mock-default-model' }))),
     getAllProviderIds: vi.fn(() => [...ALL_PROVIDER_IDS]),
     getModelContextWindow: vi.fn(() => 200000),
     // Smart-compaction reseed uses BOTH: dispose the persistent process (so a
@@ -148,6 +154,8 @@ function createHarness(): Harness {
       totalCacheReadTokens: 0,
       totalCacheCreationTokens: 0,
     })),
+    // Manual compaction reads the LAST measured fill, not the lifetime totals.
+    getLastFill: vi.fn(() => ({ input_tokens: 1000, output_tokens: 500 })),
     executeClientSummarization: vi.fn(async () => ({
       success: true, beforeTokens: 1000, afterTokens: 200, duration: 5,
     })),
@@ -196,28 +204,29 @@ function createHarness(): Harness {
     brainstormManager: noop,
   });
 
-  const provider = new ChatViewProvider(
-    extensionContext.extensionUri,
+  const provider = new ChatViewProvider({
+    extensionUri: extensionContext.extensionUri,
     extensionContext,
     contextManager,
     conversationManager,
     providerManager,
-    noop,                  // suggestionManager
-    noop,                  // brainstormManager
+    suggestionManager: noop,
+    brainstormManager: noop,
     permissionManager,
     setupManager,
-    noop,                  // telemetryManager
-    noop,                  // autonomousManager
-    { learnFromPermissionDecision: vi.fn() } as any,
+    telemetryManager: noop,
+    autonomousManager: noop,
+    memoryManager: { learnFromPermissionDecision: vi.fn() } as any,
     compactionManager,
     lifecycleManager,
     slashCommandManager,
     activeModeManager,
     engagementManager,
-    noop,                  // projectContextManager
-    noop,                  // visualTestManager
-    noop,                  // canvasManager
-    createModelRegistryStub() as any // modelRegistry (Plan 01) — subscribed to in the constructor
+    projectContextManager: noop,
+    visualTestManager: noop,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: undefined as any
+  } // modelRegistry (Plan 01) — subscribed to in the constructor
   );
 
   // Register a fake sidebar panel (normally done in resolveWebviewView)

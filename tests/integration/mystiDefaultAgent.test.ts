@@ -160,29 +160,29 @@ function createHarness(options: HarnessOptions = {}): Harness {
   } as any;
   const noop = {} as any;
 
-  const provider: any = new ChatViewProvider(
+  const provider: any = new ChatViewProvider({
     extensionUri,
     extensionContext,
     contextManager,
     conversationManager,
     providerManager,
-    noop,
-    noop,
+    suggestionManager: noop,
+    brainstormManager: noop,
     permissionManager,
     setupManager,
-    noop,
-    noop,
-    noop,
-    noop,
+    telemetryManager: noop,
+    autonomousManager: noop,
+    memoryManager: noop,
+    compactionManager: noop,
     lifecycleManager,
-    noop,
+    slashCommandManager: noop,
     activeModeManager,
     engagementManager,
-    noop,
-    noop,
-    noop,
-    createModelRegistryStub() as any,
-  );
+    projectContextManager: noop,
+    visualTestManager: noop,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: undefined as any
+  });
 
   // Checkpoint availability is probed on every panel open (fire-and-forget).
   provider._checkpointManager = { isAvailable: async () => false };

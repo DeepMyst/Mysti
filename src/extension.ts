@@ -43,9 +43,7 @@ import { MystiCodeLensProvider } from './providers/MystiCodeLensProvider';
 import { getProviderDisplayName } from './providers/base/ProviderManifest';
 import { ProjectContextManager } from './managers/ProjectContextManager';
 import { VisualTestManager } from './managers/VisualTestManager';
-import { CanvasManager } from './managers/CanvasManager';
 import { CheckpointManager } from './managers/CheckpointManager';
-import { StitchService } from './services/StitchService';
 import { CanvasSecrets } from './services/CanvasSecrets';
 import { CliDiscoveryService } from './services/CliDiscoveryService';
 import { ModelRegistryService } from './services/ModelRegistryService';
@@ -88,11 +86,9 @@ let teamPresenceManager: TeamPresenceManager;
 let fileDecorationProvider: MystiFileDecorationProvider;
 let projectContextManager: ProjectContextManager;
 let visualTestManager: VisualTestManager;
-let canvasManager: CanvasManager;
 let checkpointManager: CheckpointManager;
 let deepMystAuthManager: DeepMystAuthManager;
 let connectionsPanelManager: ConnectionsPanelManager;
-let stitchService: StitchService;
 
 /**
  * Plan 27 §21.6c #11 (P-3). The `vscode://DeepMyst.mysti/import?data=…` deep
@@ -351,25 +347,9 @@ export async function activate(context: vscode.ExtensionContext) {
   checkpointManager = new CheckpointManager(context);
 
   // F-11: SecretStorage-backed canvas API keys. Construct once and share this
-  // instance with the generation services (via ChatViewProvider) and
-  // StitchService. The one-time settings→secrets migration runs BEFORE any
-  // service reads a key, then primes StitchService with the stored key.
+  // instance with the active generation services via ChatViewProvider. The
+  // one-time settings→secrets migration runs before services read their keys.
   const canvasSecrets = new CanvasSecrets(context.secrets, context.globalState);
-
-  // Initialize canvas manager with Stitch service
-  canvasManager = new CanvasManager(context);
-  stitchService = new StitchService();
-  canvasManager.setStitchService(stitchService);
-  // F-11: persist a Stitch key entered via the ensureAuth input box into
-  // SecretStorage (no plaintext setting target anymore).
-  canvasManager.setStitchKeyPersister(key => canvasSecrets.set('stitch', key));
-
-  // Invalidate canvas project profile cache on workspace folder change
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeWorkspaceFolders(() => {
-      CanvasManager.invalidateProjectProfileCache();
-    })
-  );
 
   // Initialize slash command manager
   // The user's own commands for each backend (.claude/commands, .gemini
@@ -432,9 +412,9 @@ export async function activate(context: vscode.ExtensionContext) {
   });
 
   // Initialize the chat view provider
-  chatViewProvider = new ChatViewProvider(
-    context.extensionUri,
-    context,  // Extension context for AgentLoader
+  chatViewProvider = new ChatViewProvider({
+    extensionUri: context.extensionUri,
+    extensionContext: context,
     contextManager,
     conversationManager,
     providerManager,
@@ -452,32 +432,27 @@ export async function activate(context: vscode.ExtensionContext) {
     engagementManager,
     projectContextManager,
     visualTestManager,
-    canvasManager,
-    modelRegistryService,
+    modelRegistry: modelRegistryService,
     checkpointManager,
-    {
+    desk: {
       identity: deskIdentity,
       pairing: deskPairing,
       peerBook: deskPeerBook,
       flow: deskFlow,
       enabled: () => vscode.workspace.getConfiguration('mysti').get<boolean>('desk.enabled', false),
     }
-  );
+  });
 
-  // Update surfacing is injected post-construction: the ChatViewProvider
-  // constructor already takes 22 positional arguments, and two more would make
-  // a transposition even easier to introduce and harder to see.
+  // Update surfacing is optional and attached after the core chat dependencies.
   chatViewProvider.setUpdateServices(modelAnnouncementService, cliUpdateService);
 
   // F-11: run the one-time settings→secrets migration BEFORE any service reads
-  // a key, then prime StitchService and the image/video generation services
-  // (via ChatViewProvider) with the stored keys.
+  // a key, then prime the image/video generation services via ChatViewProvider.
   canvasSecrets.migrate()
     .then(async migrated => {
       if (migrated.length > 0) {
         console.log(`[Mysti] CanvasSecrets: migrated ${migrated.join(', ')} from settings.`);
       }
-      stitchService.setApiKey(await canvasSecrets.get('stitch'));
       // setCanvasSecrets primes the image/video services via setKeys().
       chatViewProvider.setCanvasSecrets(canvasSecrets);
     })
@@ -944,6 +919,69 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    /**
+     * Update the installed CLI backends.
+     *
+     * Runs in the INTEGRATED TERMINAL rather than from the extension host, and
+     * that is deliberate on two counts: `npm i -g` needs root wherever npm's
+     * prefix is root-owned (the default on macOS), and an extension must not be
+     * the thing that escalates privilege — the terminal lets sudo prompt the
+     * user and shows them the exact command it is prompting for.
+     *
+     * Each provider is updated with its OWN command, one per line, so a package
+     * that refuses to install cannot abort the others. That is not theoretical:
+     * a single `npm i -g a b c` aborted entirely when one package's preinstall
+     * rejected the running Node, and nothing at all was updated.
+     */
+    vscode.commands.registerCommand('mysti.updateClis', async () => {
+      const config = vscode.workspace.getConfiguration('mysti');
+      if (config.get<boolean>('updates.checkCliUpdates', true)) {
+        await cliUpdateService.checkAll({ force: true });
+      }
+
+      const updates = cliUpdateService.getUpdates();
+      if (updates.length === 0) {
+        vscode.window.showInformationMessage('Mysti: every installed CLI is up to date.');
+        return;
+      }
+
+      const picked = await vscode.window.showQuickPick(
+        updates.map((u) => ({
+          label: u.providerId,
+          description: `${u.installed} → ${u.installable}`,
+          // When the newest release is out of reach, say why rather than
+          // quietly offering an older version than the one just advertised.
+          detail: u.blockedByNodeEngine
+            ? `${u.latest} requires Node ${u.requiredNode ?? 'newer'} (this machine runs ${process.versions.node})`
+            : undefined,
+          update: u,
+          picked: true,
+        })),
+        {
+          canPickMany: true,
+          title: 'Update CLI backends',
+          placeHolder: 'These run in a terminal; npm may ask for your password',
+        }
+      );
+      if (!picked || picked.length === 0) { return; }
+
+      const lines = picked
+        .map((p) => cliUpdateService.getUpdateCommand(p.update.providerId))
+        .filter((c): c is string => !!c);
+      if (lines.length === 0) {
+        vscode.window.showWarningMessage('Mysti: no update command is known for the selected backends.');
+        return;
+      }
+
+      const terminal = vscode.window.createTerminal('Mysti: update CLIs');
+      terminal.show();
+      for (const line of lines) {
+        terminal.sendText(line);
+      }
+      // The CLIs are about to change underneath the cached probe results.
+      cliDiscoveryService.invalidate();
+    }),
+
     vscode.commands.registerCommand('mysti.debugSetup', () => {
       chatViewProvider.debugForceSetup();
       vscode.window.showInformationMessage('Debug: Setup flow triggered');
@@ -1303,12 +1341,5 @@ export function deactivate() {
   }
   if (checkpointManager) {
     checkpointManager.dispose();
-  }
-  // F-29: tear down the Stitch SDK client (it was never disposed before).
-  // dispose() is async; return its promise so VSCode awaits the cleanup.
-  if (stitchService) {
-    return stitchService.dispose().catch(err =>
-      console.log('[Mysti] StitchService: dispose error:', err)
-    );
   }
 }

@@ -33,7 +33,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
-import { parseAcpAvailableCommands, type NativeCommandSpec } from '../base/NativeCommands';
+import { allowsAcpToolWithoutPrompt } from '../base/NativeApprovalPolicy';
+import {
+  parseAcpAvailableCommands,
+  type NativeCommandSpec,
+  type ReportedNativeCommands,
+} from '../base/NativeCommands';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -101,7 +106,7 @@ export interface HermesSessionState extends PanelSessionState {
    * agent's own, arrives after the handshake, and can be re-sent mid-session,
    * so it is session state rather than anything Mysti can hard-code.
    */
-  availableCommands: NativeCommandSpec[];
+  availableCommands: ReportedNativeCommands;
   activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
 }
@@ -150,6 +155,7 @@ export class HermesProvider extends BaseCliProvider {
     sessionKind: 'cli-resume',
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'none',   // ACP usage carries flat input/output only.
     // Model selection happens inside Hermes (`/model provider:model`) —
     // neither `hermes acp` nor ACP itself takes a per-prompt model override.
     modelSelection: 'none'
@@ -175,7 +181,7 @@ export class HermesProvider extends BaseCliProvider {
       acpMode: 'default',
       fallbackDiagnostics: false,
       fallbackErrorEmitted: false,
-      availableCommands: [],
+      availableCommands: null,
       activeToolCalls: new Map(),
       lastUsageStats: null,
     };
@@ -192,6 +198,13 @@ export class HermesProvider extends BaseCliProvider {
     if (!panelId) { return []; }
     const session = this._panelSessions.get(panelId) as HermesSessionState | undefined;
     return session?.availableCommands ?? [];
+  }
+
+  /** True once the agent has sent an `available_commands_update` for this panel. */
+  public override hasReportedNativeCommands(panelId?: string): boolean {
+    if (!panelId) { return false; }
+    const session = this._panelSessions.get(panelId) as HermesSessionState | undefined;
+    return Array.isArray(session?.availableCommands);
   }
 
   async discoverCli(): Promise<CliDiscoveryResult> {
@@ -717,26 +730,12 @@ export class HermesProvider extends BaseCliProvider {
    * inverted — "wouldn't gate" ⇒ allow): read-only kinds always run; the
    * autonomous Full-access tier runs everything; the accept-edits tier runs
    * edits/moves only; every "ask" mode denies (we can't prompt synchronously).
-   * Unknown kinds fail closed.
+   * Unknown kinds require command authority.
    */
   private _acpPermissionAllows(kind: string, hermes: HermesSessionState): boolean {
-    if (kind === 'read' || kind === 'search' || kind === 'think') {
-      return true;
-    }
-    const { acpMode: mode, acpAccessLevel: access } = hermes;
-    if (access === 'read-only' || mode === 'quick-plan' || mode === 'detailed-plan') {
-      return false;
-    }
-    // Full access (autonomous) — Mysti would not gate.
-    if (access === 'full-access') {
-      return true;
-    }
-    // Accept-edits tier: edits/moves auto-apply; commands/deletes/fetch ask.
-    if (mode === 'edit-automatically' && access === 'ask-permission') {
-      return kind === 'edit' || kind === 'move';
-    }
-    // ask-before-edit / default ask-permission / unknown kind → deny.
-    return false;
+    return allowsAcpToolWithoutPrompt({
+      mode: hermes.acpMode, accessLevel: hermes.acpAccessLevel,
+    }, kind);
   }
 
   /** Extract text from an ACP content block (or block array). */
