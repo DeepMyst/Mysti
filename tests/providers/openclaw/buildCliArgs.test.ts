@@ -1,40 +1,15 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TestableOpenClawProvider } from '../../helpers/providerFactory';
 import { createOpenClawSession } from '../../helpers/sessionFactory';
-import { clearMockConfig } from '../../helpers/mockVscode';
 import type { Settings } from '../../../src/types';
 
-function defaultSettings(overrides?: Partial<Settings>): Settings {
-  return {
-    mode: 'default', thinkingLevel: 'medium', accessLevel: 'ask-permission',
-    contextMode: 'auto', model: '', provider: 'openclaw', ...overrides,
-  };
-}
-
-describe('OpenClawProvider.buildCliArgs', () => {
+describe('OpenClaw raw agent bypass prevention', () => {
   let provider: TestableOpenClawProvider;
-
-  beforeEach(() => {
-    clearMockConfig();
-    provider = new TestableOpenClawProvider();
-  });
-
-  it('should include agent --json and --local', () => {
-    const args = provider.buildCliArgs(defaultSettings(), createOpenClawSession());
-    expect(args).toContain('agent');
-    expect(args).toContain('--json');
-    expect(args).toContain('--local');
-  });
-
-  it('should map thinking level', () => {
-    const args = provider.buildCliArgs(defaultSettings({ thinkingLevel: 'high' }), createOpenClawSession());
-    expect(args).toContain('--thinking');
-    expect(args).toContain('high');
-  });
-
-  it('should map none thinking level to off', () => {
-    const args = provider.buildCliArgs(defaultSettings({ thinkingLevel: 'none' }), createOpenClawSession());
-    expect(args).toContain('--thinking');
-    expect(args).toContain('off');
+  beforeEach(() => { provider = new TestableOpenClawProvider(); });
+  afterEach(() => provider.dispose());
+  it.each(['none', 'low', 'medium', 'high'] as const)('rejects raw agent arguments at thinking level %s', thinkingLevel => {
+    const settings: Settings = { provider: 'openclaw', mode: 'default', accessLevel: 'full-access',
+      thinkingLevel, contextMode: 'auto', model: '' };
+    expect(() => provider.buildCliArgs(settings, createOpenClawSession())).toThrow('Unguarded CLI fallback is disabled');
   });
 });

@@ -12,10 +12,12 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type { ChildProcess } from 'child_process';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import { OpenClawGateway } from './OpenClawGateway';
+import { OpenClawManagedRuntime, type OpenClawManagedRuntimeHandle } from './OpenClawManagedRuntime';
+import { OpenClawPolicyBroker, type OpenClawBrokerLease } from './OpenClawPolicyBroker';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -32,7 +34,7 @@ import type {
   AgentConfiguration,
   ModelInfo,
 } from '../../types';
-import { getEnrichedEnv, readOpenClawToken } from '../../utils/platform';
+import { readOpenClawToken } from '../../utils/platform';
 import { AUTONOMOUS_PROCESS_TIMEOUT_MS, STREAM_INACTIVITY_TIMEOUT_MS } from '../../constants';
 import { CliStreamInactivityError, readCliStdout } from '../base/readCliStdout';
 import { toolKind } from '../../utils/toolNames';
@@ -44,15 +46,28 @@ export interface OpenClawSessionState extends PanelSessionState {
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
 }
 
+interface OwnedRuntimeConfig {
+  cliPath: string;
+  installedRoot: string;
+  workspaceDir: string;
+  baseConfig: Record<string, unknown>;
+  fingerprint: string;
+}
+interface OwnedRuntime {
+  fingerprint: string;
+  controller: AbortController;
+  broker: OpenClawPolicyBroker;
+  handle?: OpenClawManagedRuntimeHandle;
+  gateway?: OpenClawGateway;
+  ready: boolean;
+  started: Promise<void>;
+}
+
 /**
- * OpenClaw provider implementation with dual transport
- *
- * Primary: Gateway WebSocket at ws://127.0.0.1:18789 for real-time streaming
- * Fallback: CLI spawn via `openclaw agent --message "..." --json --local`
- *
- * Install: npm install -g openclaw@latest && openclaw onboard --install-daemon
- * Auth: openclaw login
- * Config: ~/.openclaw/openclaw.json
+ * Agent turns use a private, version-verified OpenClaw/Pi runtime with native
+ * approval leases. The configured shared gateway is for status and channels.
+ * Supported tools: read, write, edit and foreground exec.
+ * Delegation, other harnesses and unguarded CLI agent execution are unsupported.
  */
 export class OpenClawProvider extends BaseCliProvider {
   readonly id = 'openclaw';
@@ -88,6 +103,7 @@ export class OpenClawProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
+    supportsNativeApproval: true,
     supportsSessions: true,
     supportsAutoInstall: false,
     supportsPromptEnhancement: true,
@@ -95,7 +111,7 @@ export class OpenClawProvider extends BaseCliProvider {
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,  // --thinking flag exists but Mysti's level setting maps 1:1 only via prompt
     planMode: 'detected',
-    sessionKind: 'cli-resume',      // gateway sessionKey continuity (key is locally generated — Plan 02 Phase 5 caveat)
+    sessionKind: 'cli-resume',      // accepted sessionKey continuity inside the owned runtime
     emitsToolResults: true,
     emitsUsage: false,              // done.usage never supplied — footer "n/a", compaction disabled
     usageConvention: 'none',   // No cache accounting on either the CLI or the Gateway path.
@@ -105,6 +121,7 @@ export class OpenClawProvider extends BaseCliProvider {
 
   private _gateway: OpenClawGateway;
   private readonly _transportTurns = new Map<string, AbortController>();
+  private readonly _ownedRuntimes = new Map<string, OwnedRuntime>();
   private readonly _messageFiles = new Map<string, Set<string>>();
 
   constructor(context: vscode.ExtensionContext) {
@@ -142,10 +159,10 @@ export class OpenClawProvider extends BaseCliProvider {
       if (connected) {
         console.log('[Mysti] OpenClaw: Gateway connected at initialization');
       } else {
-        console.log('[Mysti] OpenClaw: Gateway not available, will use CLI fallback');
+        console.log('[Mysti] OpenClaw: Shared gateway unavailable; agent turns use the owned approval runtime');
       }
     } else {
-      console.log('[Mysti] OpenClaw: Gateway disabled by setting, using CLI only');
+      console.log('[Mysti] OpenClaw: Shared gateway disabled; agent turns use the owned approval runtime');
     }
   }
 
@@ -156,6 +173,7 @@ export class OpenClawProvider extends BaseCliProvider {
     for (const turn of this._transportTurns.values()) { turn.abort(); }
     this._transportTurns.clear();
     this._gateway.disconnect();
+    for (const [panelId, runtime] of this._ownedRuntimes) { this._retireRuntime(panelId, runtime); }
     // Prompt files are the user's text sitting in a shared temp dir; do not
     // leave them behind when the window closes.
     for (const panelId of this._messageFiles.keys()) {
@@ -166,6 +184,9 @@ export class OpenClawProvider extends BaseCliProvider {
 
   /** Also clear the prompt file when a panel's session is reset. */
   override disposeSession(panelId: string): void {
+    this.cancelCurrentRequest(panelId);
+    const runtime = this._ownedRuntimes.get(panelId);
+    if (runtime) { this._retireRuntime(panelId, runtime); }
     this._cleanupMessageFile(panelId);
     super.disposeSession(panelId);
   }
@@ -173,10 +194,13 @@ export class OpenClawProvider extends BaseCliProvider {
   override clearSession(panelId?: string): void {
     this.cancelCurrentRequest(panelId);
     super.clearSession(panelId);
+    for (const [owner, runtime] of this._ownedRuntimes) {
+      if (!panelId || panelId === owner) { this._retireRuntime(owner, runtime); }
+    }
     for (const session of this._panelSessions.values()) {
       if (panelId && session.panelId !== panelId) { continue; }
       const state = session as OpenClawSessionState;
-      state.openClawSessionKey = `mysti-${randomUUID()}`;
+      state.openClawSessionKey = `agent:main:mysti-${randomUUID()}`;
       state.lastUsageStats = null;
       state.activeToolCalls.clear();
     }
@@ -184,7 +208,7 @@ export class OpenClawProvider extends BaseCliProvider {
 
   protected _openClawSessionKey(session: PanelSessionState): string {
     const state = session as OpenClawSessionState;
-    return state.openClawSessionKey ??= `mysti-${session.panelId}`;
+    return state.openClawSessionKey ??= `agent:main:mysti-${randomUUID()}`;
   }
 
   // --- CLI Discovery ---
@@ -315,7 +339,7 @@ export class OpenClawProvider extends BaseCliProvider {
   }
 
   getInstallCommand(): string {
-    return 'npm install -g openclaw@latest && openclaw onboard --install-daemon';
+    return 'npm install -g openclaw@2026.6.34 && openclaw onboard --install-daemon';
   }
 
   getInstallMethods(): import('../../types').InstallMethod[] {
@@ -323,14 +347,14 @@ export class OpenClawProvider extends BaseCliProvider {
       {
         id: 'npm',
         label: 'npm (recommended)',
-        command: 'npm install -g openclaw@latest',
+        command: 'npm install -g openclaw@2026.6.34',
         platform: 'all',
         priority: 1
       },
       {
         id: 'onboard',
         label: 'Full setup with daemon',
-        command: 'npm install -g openclaw@latest && openclaw onboard --install-daemon',
+        command: 'npm install -g openclaw@2026.6.34 && openclaw onboard --install-daemon',
         platform: 'all',
         priority: 2
       }
@@ -399,71 +423,9 @@ export class OpenClawProvider extends BaseCliProvider {
     this._messageFiles.delete(panelId);
   }
 
-  // --- CLI Args (for fallback mode) ---
-
-  protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
-    const args: string[] = ['agent', '--json'];
-
-    // _preparePromptBeforeSpawn adds --message-file after writing a private,
-    // request-owned file. The child can read it immediately on startup.
-
-    // It also requires a session selector — "Pass --to <E.164>, --session-key,
-    // --session-id, or --agent to choose a session". The panel id IS Mysti's
-    // session boundary, so it maps onto --session-key directly and each panel
-    // keeps its own OpenClaw session.
-    args.push('--session-key', this._openClawSessionKey(_session));
-
-    // Map thinking levels: Mysti none/low/medium/high -> OpenClaw off/low/medium/high
-    const thinkingMap: Record<string, string> = {
-      'none': 'off',
-      'low': 'low',
-      'medium': 'medium',
-      'high': 'high',
-    };
-    const thinkingLevel = thinkingMap[settings.thinkingLevel] || 'medium';
-    args.push('--thinking', thinkingLevel);
-
-    // Local mode (no gateway needed for CLI fallback)
-    args.push('--local');
-
-    // Add permission flags based on mode and access level
-    this._addPermissionFlags(args, settings);
-
-    return args;
-  }
-
-  /**
-   * Add permission flags based on mode and access level
-   * Maps Mysti settings to OpenClaw CLI permission modes
-   */
-  private _addPermissionFlags(args: string[], settings: Settings): void {
-    const { mode, accessLevel } = settings;
-
-    // Plan modes or read-only → sandbox mode
-    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--sandbox');
-      console.log('[Mysti] OpenClaw: Using sandbox mode (read-only)');
-      return;
-    }
-
-    // More-restrictive-wins: only auto-approve when BOTH mode and access allow it
-    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
-      args.push('--yolo');
-      console.log('[Mysti] OpenClaw: Using yolo mode (edit-automatically + full-access)');
-      return;
-    }
-
-    // default mode + full-access = yolo (no explicit edit restriction)
-    if (mode === 'default' && accessLevel === 'full-access') {
-      args.push('--yolo');
-      console.log('[Mysti] OpenClaw: Using yolo mode (default + full-access)');
-      return;
-    }
-
-    // All other combinations: bypass CLI permissions to prevent stdin hang.
-    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-    args.push('--yolo');
-    console.log(`[Mysti] OpenClaw: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
+  /** The installed agent CLI has no supported per-turn native approval bridge. */
+  protected buildCliArgs(_settings: Settings, _session: PanelSessionState): string[] {
+    throw new Error('OpenClaw agent execution requires the owned native approval runtime (OpenClaw 2026.6.34, embedded Pi). Unguarded CLI fallback is disabled.');
   }
 
   /**
@@ -772,124 +734,177 @@ export class OpenClawProvider extends BaseCliProvider {
     }
   }
 
-  // --- Message Sending (dual transport) ---
+  // --- Owned native runtime and turn lifecycle ---
 
-  async *sendMessage(
-    content: string,
-    context: ContextItem[],
-    settings: Settings,
-    conversation: Conversation | null,
-    persona?: import('../base/IProvider').PersonaConfig,
-    panelId?: string,
-    providerManager?: unknown,
-    agentConfig?: AgentConfiguration,
-    attachments?: Attachment[],
+  /** Resolve host settings deliberately; never copy auth profiles or modify the host config. */
+  private async _readOwnedRuntimeConfig(signal: AbortSignal): Promise<OwnedRuntimeConfig> {
+    const discovery = await this.discoverCli();
+    if (signal.aborted) { throw new Error('OpenClaw setup cancelled.'); }
+    if (!discovery.found) { throw new Error('Install OpenClaw 2026.6.34 to use the owned native approval runtime.'); }
+    let cliPath: string;
+    try { cliPath = await fs.promises.realpath(discovery.path); }
+    catch { throw new Error('Set the OpenClaw CLI path to the installed OpenClaw 2026.6.34 openclaw.mjs entry point.'); }
+    const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceDir || !path.isAbsolute(workspaceDir)) {
+      throw new Error('Open a local workspace before starting the OpenClaw native approval runtime.');
+    }
+    const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(os.homedir(), '.openclaw');
+    const configPath = process.env.OPENCLAW_CONFIG_PATH?.trim() || path.join(stateDir, 'openclaw.json');
+    let raw: string;
+    try { raw = await fs.promises.readFile(configPath, { encoding: 'utf8', signal }); }
+    catch { throw new Error('Cannot read OpenClaw configuration. Set OPENCLAW_CONFIG_PATH to a readable JSON config with agents.defaults.model set to provider/model and inline or environment credentials.'); }
+    let baseConfig: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { throw new Error(); }
+      baseConfig = parsed as Record<string, unknown>;
+    } catch { throw new Error('OpenClaw native approval runtime requires a JSON object configuration; JSON5 and config includes are unsupported. Set OPENCLAW_CONFIG_PATH to an explicit JSON config.'); }
+    // Hash secrets without storing or logging them in the cache identity. Environment
+    // changes also require a fresh child, which captures credentials at startup.
+    const fingerprint = createHash('sha256').update(JSON.stringify([cliPath, workspaceDir, raw, process.env])).digest('hex');
+    return { cliPath, installedRoot: path.dirname(cliPath), workspaceDir, baseConfig, fingerprint };
+  }
+
+  private _retireRuntime(panelId: string, runtime: OwnedRuntime): void {
+    if (this._ownedRuntimes.get(panelId) === runtime) { this._ownedRuntimes.delete(panelId); }
+    runtime.controller.abort();
+    runtime.broker.dispose();
+    runtime.gateway?.disconnect();
+    void runtime.handle?.dispose().catch(() => { /* disposal already revoked all execution leases */ });
+  }
+
+  private async _runtimeForTurn(session: PanelSessionState, signal: AbortSignal): Promise<OwnedRuntime> {
+    const config = await this._readOwnedRuntimeConfig(signal);
+    if (signal.aborted) { throw new Error('OpenClaw setup cancelled.'); }
+    const cached = this._ownedRuntimes.get(session.panelId);
+    if (cached?.ready && !cached.controller.signal.aborted && cached.gateway?.isConnected()
+      && cached.fingerprint === config.fingerprint) { return cached; }
+    if (cached) { this._retireRuntime(session.panelId, cached); }
+    // A fresh private state directory has no native transcript, even if the host
+    // has a persisted session marker. Reinject conversation history on this turn.
+    session.sessionId = null;
+    (session as OpenClawSessionState).openClawSessionKey = `agent:main:mysti-${randomUUID()}`;
+    const runtime: OwnedRuntime = {
+      fingerprint: config.fingerprint, controller: new AbortController(), ready: false,
+      broker: new OpenClawPolicyBroker({ version: '2026.6.34',
+        targetHash: '2f8ba157e5660c32b85826eb3269a59b8add55062e31ed3d6d1528dd1017ad4b' }),
+      started: Promise.resolve(),
+    };
+    this._ownedRuntimes.set(session.panelId, runtime);
+    const abortStartup = () => { if (!runtime.ready) { this._retireRuntime(session.panelId, runtime); } };
+    signal.addEventListener('abort', abortStartup, { once: true });
+    runtime.started = (async () => {
+      try {
+        const broker = await runtime.broker.listen();
+        if (runtime.controller.signal.aborted) { throw new Error('OpenClaw setup cancelled.'); }
+        const handle = await OpenClawManagedRuntime.start({
+          ...config, storageDir: path.join(this._extensionContext.globalStorageUri.fsPath, 'openclaw-runtimes'),
+          pluginPath: path.join(this._extensionContext.extensionPath, 'resources', 'openclaw-policy'),
+          preloadPath: path.join(this._extensionContext.extensionPath, 'resources', 'openclaw-policy', 'runtime-preload.mjs'),
+          broker, signal: runtime.controller.signal,
+        });
+        runtime.handle = handle;
+        if (runtime.controller.signal.aborted) { throw new Error('OpenClaw setup cancelled.'); }
+        runtime.gateway = new OpenClawGateway(handle.gatewayUrl, handle.token, { ownedRuntime: true });
+        if (!await runtime.gateway.connect()) { throw new Error('Cannot connect to the owned OpenClaw gateway.'); }
+        await runtime.broker.waitUntilReady(runtime.controller.signal);
+        if (signal.aborted || this._ownedRuntimes.get(session.panelId) !== runtime) { throw new Error('OpenClaw setup cancelled.'); }
+        runtime.ready = true;
+      } catch (error) {
+        this._retireRuntime(session.panelId, runtime);
+        throw error;
+      } finally { signal.removeEventListener('abort', abortStartup); }
+    })();
+    await runtime.started;
+    return runtime;
+  }
+
+  sendMessage(
+    content: string, context: ContextItem[], settings: Settings, conversation: Conversation | null,
+    persona?: import('../base/IProvider').PersonaConfig, panelId?: string, providerManager?: unknown,
+    agentConfig?: AgentConfiguration, attachments?: Attachment[],
   ): AsyncGenerator<StreamChunk> {
+    const turn = new AbortController();
+    const stream = this._sendOwnedMessage(turn, content, context, { ...settings }, conversation,
+      persona, panelId, providerManager, agentConfig, attachments?.map(attachment => ({ ...attachment })));
+    // AsyncGenerator.return queues behind a pending next; abort first to wake
+    // setup, a native card, or a silent gateway reader immediately.
+    return {
+      next: value => stream.next(value),
+      return: value => { turn.abort(); return stream.return(value); },
+      throw: error => { turn.abort(); return stream.throw(error); },
+      [Symbol.asyncIterator]() { return this; },
+    };
+  }
+
+  private async *_sendOwnedMessage(
+    turn: AbortController, content: string, context: ContextItem[], settings: Settings,
+    conversation: Conversation | null, persona?: import('../base/IProvider').PersonaConfig,
+    panelId?: string, _providerManager?: unknown, agentConfig?: AgentConfiguration, attachments?: Attachment[],
+  ): AsyncGenerator<StreamChunk> {
+    if (turn.signal.aborted) { return; }
     const session = this._getSession(panelId);
     if (this._transportTurns.has(session.panelId)) { this.cancelCurrentRequest(session.panelId); }
-    const turn = new AbortController();
     this._transportTurns.set(session.panelId, turn);
     session.cancelled = false;
-    attachments = attachments?.map(attachment => ({ ...attachment }));
+    const isCurrent = () => !turn.signal.aborted && this._transportTurns.get(session.panelId) === turn;
+    let runtime: OwnedRuntime | undefined;
+    let lease: OpenClawBrokerLease | undefined;
     let doneChunk: StreamChunk | undefined;
+    let errorChunk: StreamChunk | undefined;
+    let completed = false;
     try {
-      const useGateway = vscode.workspace.getConfiguration('mysti').get<boolean>('openclawUseGateway', true);
-      const connected = useGateway && (this._gateway.isConnected() ||
-        await waitForSetup(this._gateway.connect(), turn.signal));
-      if (turn.signal.aborted) { return; }
-      const stream = connected
-        ? this._sendViaGateway(content, context, settings, persona, panelId, agentConfig,
-          turn.signal, conversation, attachments)
-        : this._sendViaCli(content, context, settings, persona, panelId, providerManager, agentConfig,
-          conversation, attachments);
-      for await (const chunk of stream) {
-        if (turn.signal.aborted) { break; }
-        if (chunk.type === 'done') {
-          doneChunk ??= chunk;
-          continue;
-        }
-        yield chunk;
+      const handler = this._captureNativeApprovalHandler(session.panelId, turn.signal);
+      runtime = await waitForSetup(this._runtimeForTurn(session, turn.signal), turn.signal);
+      if (!runtime || !isCurrent()) { return; }
+      const prepared = await waitForSetup(Promise.all([
+        this.buildPromptAsync(content, context, this._conversationForPrompt(session, conversation),
+          settings, persona, agentConfig, attachments, session.channelSystemContext),
+        Promise.all((attachments ?? []).map(async attachment => {
+          const data = attachment.base64Data ?? (attachment.filePath
+            ? (await fs.promises.readFile(attachment.filePath, { signal: turn.signal })).toString('base64') : undefined);
+          if (data === undefined) { throw new Error(`Cannot read attachment: ${attachment.fileName}`); }
+          if (data.length === 0) { throw new Error(`OpenClaw Gateway does not accept empty attachments: ${attachment.fileName}`); }
+          return { type: attachment.type, mimeType: attachment.mimeType, fileName: attachment.fileName, content: data };
+        })),
+      ]), turn.signal);
+      if (!prepared || !isCurrent()) { return; }
+      const sessionKey = this._openClawSessionKey(session);
+      const runId = `mysti-${randomUUID()}`;
+      lease = await waitForSetup(runtime.broker.openRun({ runId, sessionKey, panelId: session.panelId,
+        settings, signal: turn.signal, handler, isCurrent }), turn.signal);
+      if (!lease || !isCurrent() || lease.signal.aborted) { return; }
+      yield { type: 'session_active', sessionId: sessionKey };
+      if (!isCurrent() || lease.signal.aborted) { return; }
+      const thinkingMap: Record<string, string> = { none: 'off', low: 'low', medium: 'medium', high: 'high' };
+      for await (const chunk of runtime.gateway!.sendAgentMessage(prepared[0], {
+        runId, sessionKey, signal: lease.signal,
+        hasPending: () => lease!.hasPending, onPendingChanged: listener => lease!.onPendingChanged(listener),
+        thinking: thinkingMap[settings.thinkingLevel] || 'medium', attachments: prepared[1],
+        onAccepted: acceptedKey => {
+          if (isCurrent() && !lease!.signal.aborted && acceptedKey === sessionKey) { session.sessionId = sessionKey; }
+        },
+      })) {
+        if (!isCurrent() || lease.signal.aborted) { break; }
+        if (chunk.type === 'done') { doneChunk ??= chunk; }
+        else { yield chunk; }
       }
-      if (!turn.signal.aborted) { yield doneChunk ?? { type: 'done' }; }
+      if (isCurrent() && lease.signal.aborted) { throw new Error('OpenClaw native approval connection was revoked. Retry to start a verified runtime.'); }
+      completed = isCurrent();
     } catch (error) {
-      if (!turn.signal.aborted) {
-        yield this.handleError(error);
-        yield doneChunk ?? { type: 'done' };
-      }
+      if (runtime && isCurrent()) { this._retireRuntime(session.panelId, runtime); }
+      if (isCurrent()) { errorChunk = this.handleError(error); completed = true; }
     } finally {
+      lease?.dispose();
       turn.abort();
-      if (this._transportTurns.get(session.panelId) === turn) {
-        this._transportTurns.delete(session.panelId);
-      }
+      if (this._transportTurns.get(session.panelId) === turn) { this._transportTurns.delete(session.panelId); }
+    }
+    if (completed) {
+      if (errorChunk) { yield errorChunk; }
+      yield doneChunk ?? { type: 'done' };
     }
   }
 
-  /** A turn owns submission across asynchronous connection and prompt setup. */
-  private async *_sendViaGateway(
-    content: string,
-    context: ContextItem[],
-    settings: Settings,
-    persona?: import('../base/IProvider').PersonaConfig,
-    panelId?: string,
-    agentConfig?: AgentConfiguration,
-    signal: AbortSignal = new AbortController().signal,
-    conversation: Conversation | null = null,
-    attachments?: Attachment[],
-  ): AsyncGenerator<StreamChunk> {
-    const session = this._getSession(panelId);
-    const prepared = await waitForSetup(Promise.all([
-      this.buildPromptAsync(content, context, this._conversationForPrompt(session, conversation),
-        settings, persona, agentConfig, attachments, session.channelSystemContext),
-      Promise.all((attachments ?? []).map(async attachment => {
-        const content = attachment.base64Data ?? (attachment.filePath
-          ? (await fs.promises.readFile(attachment.filePath, { signal })).toString('base64') : undefined);
-        if (content === undefined) { throw new Error(`Cannot read attachment: ${attachment.fileName}`); }
-        if (content.length === 0) { throw new Error(`OpenClaw Gateway does not accept empty attachments: ${attachment.fileName}`); }
-        return { type: attachment.type, mimeType: attachment.mimeType, fileName: attachment.fileName, content };
-      })),
-    ]), signal);
-    if (!prepared || signal.aborted) { return; }
-    const [fullPrompt, gatewayAttachments] = prepared;
-    const thinkingMap: Record<string, string> = { none: 'off', low: 'low', medium: 'medium', high: 'high' };
-    const sessionKey = this._openClawSessionKey(session);
-    yield { type: 'session_active', sessionId: session.sessionId || sessionKey };
-    if (signal.aborted) { return; }
-    yield* this._gateway.sendAgentMessage(fullPrompt, {
-      thinking: thinkingMap[settings.thinkingLevel] || 'medium',
-      sessionKey,
-      signal,
-      onAccepted: () => {
-        if (!signal.aborted && !session.sessionId) { session.sessionId = sessionKey; }
-      },
-      attachments: gatewayAttachments,
-    });
-  }
-
-  /**
-   * Send message via CLI fallback (spawn process)
-   */
-  private async *_sendViaCli(
-    content: string,
-    context: ContextItem[],
-    settings: Settings,
-    persona?: import('../base/IProvider').PersonaConfig,
-    panelId?: string,
-    providerManager?: unknown,
-    agentConfig?: AgentConfiguration,
-    conversation: Conversation | null = null,
-    attachments?: Attachment[],
-  ): AsyncGenerator<StreamChunk> {
-    const session = this._getSession(panelId) as OpenClawSessionState;
-    session.activeToolCalls.clear();
-    session.lastUsageStats = null;
-    yield* super.sendMessage(
-      content, context, settings, conversation, persona, panelId, providerManager, agentConfig, attachments,
-    );
-  }
-
-  /**
-   * Cancel current request (Gateway or CLI)
-   */
   cancelCurrentRequest(panelId?: string): void {
     if (panelId) { this._transportTurns.get(panelId)?.abort(); }
     else { for (const turn of this._transportTurns.values()) { turn.abort(); } }
@@ -906,55 +921,18 @@ export class OpenClawProvider extends BaseCliProvider {
   }
 
   async enhancePrompt(prompt: string): Promise<string> {
-    // Prefer Gateway if connected
-    if (this._gateway.isConnected()) {
-      try {
-        let result = '';
-        const enhanceMsg = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
-        for await (const chunk of this._gateway.sendAgentMessage(enhanceMsg, { thinking: 'off' })) {
-          if (chunk.type === 'text' && chunk.content) {
-            result += chunk.content;
-          }
-        }
-        return result.trim() || prompt;
-      } catch {
-        // Fall through to CLI
+    const panelId = `openclaw-enhance-${randomUUID()}`;
+    const settings: Settings = { provider: 'openclaw', model: '', mode: 'quick-plan',
+      accessLevel: 'read-only', contextMode: 'auto', thinkingLevel: 'none' };
+    const message = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without explanation:\n\n${prompt}`;
+    let result = '';
+    try {
+      for await (const chunk of this.sendMessage(message, [], settings, null, undefined, panelId)) {
+        if (chunk.type === 'text') { result += chunk.content ?? ''; }
+        if (chunk.type === 'error' || chunk.type === 'auth_error') { throw new Error(chunk.content || 'OpenClaw prompt enhancement failed.'); }
       }
-    }
-
-    // CLI fallback
-    const { spawn } = await import('child_process');
-    const cliPath = this.getCliPath();
-    const enhanceMsg = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
-
-    return new Promise((resolve) => {
-      const proc = spawn(cliPath, ['agent', '--message', enhanceMsg, '--json', '--local'], {
-        env: getEnrichedEnv(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let output = '';
-      proc.stdout?.on('data', (data: Buffer) => {
-        try {
-          const parsed = JSON.parse(data.toString().trim());
-          if (parsed.content || parsed.text) {
-            output += parsed.content || parsed.text;
-          }
-        } catch {
-          output += data.toString();
-        }
-      });
-
-      proc.on('close', (code: number | null) => {
-        if (code === 0 && output.trim()) {
-          resolve(output.trim());
-        } else {
-          resolve(prompt);
-        }
-      });
-
-      proc.on('error', () => resolve(prompt));
-    });
+      return result.trim() || prompt;
+    } finally { this.disposeSession(panelId); }
   }
 
 }

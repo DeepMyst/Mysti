@@ -1,14 +1,38 @@
 /** Mysti - AI Coding Agent. SPDX-License-Identifier: Apache-2.0 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { OpenClawAgentRun } from '../../../src/providers/openclaw/OpenClawAgentRun';
+import { OpenClawAgentRun, type OpenClawAgentRunOptions } from '../../../src/providers/openclaw/OpenClawAgentRun';
+import { NativeApprovalScope } from '../../../src/providers/base/NativeApprovalScope';
 import type { StreamChunk } from '../../../src/types';
 
 const runs: OpenClawAgentRun[] = [];
-function create(options: { signal?: AbortSignal; timeoutMs?: number } = {}, id = 'run-a', session = 'mysti-a') {
+const approvals: NativeApprovalScope[] = [];
+function create(options: OpenClawAgentRunOptions = {}, id = 'run-a', session = 'mysti-a') {
   const abort = vi.fn();
   const run = new OpenClawAgentRun(id, session, options, abort);
   runs.push(run);
   return { run, abort };
+}
+function approvalScope() {
+  const decisions = new Map<string, (value: boolean) => void>();
+  const controller = new AbortController();
+  const scope = new NativeApprovalScope({
+    providerId: 'openclaw', panelId: 'panel-a', signal: controller.signal, isCurrent: () => true,
+    handler: request => new Promise<boolean>(resolve => { decisions.set(String(request.nativeRequestId), resolve); }),
+  });
+  approvals.push(scope);
+  const remove = vi.fn();
+  const options = {
+    signal: controller.signal,
+    hasPending: () => scope.hasPending,
+    onPendingChanged: vi.fn((listener: () => void) => {
+      const unsubscribe = scope.onPendingChanged(listener);
+      return () => { remove(); unsubscribe(); };
+    }),
+  };
+  const request = (id: string) => scope.request(id, {
+    id, name: 'write', input: { path: `/fixture/${id}` }, status: 'running',
+  }, 'ask', () => {});
+  return { scope, controller, options, remove, request, decide: (id: string) => decisions.get(id)!(true) };
 }
 function assistant(run: OpenClawAgentRun, delta: string, extra: Record<string, unknown> = {}) {
   run.onEvent('agent', { runId: run.runId, stream: 'assistant', data: { delta }, ...extra });
@@ -30,6 +54,7 @@ async function collect(run: OpenClawAgentRun): Promise<StreamChunk[]> {
 beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => {
   for (const run of runs.splice(0)) { run.dispose(); }
+  for (const scope of approvals.splice(0)) { scope.dispose(); }
   expect(vi.getTimerCount()).toBe(0);
   vi.useRealTimers();
 });
@@ -175,6 +200,89 @@ describe('OpenClaw gateway run ownership', () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(await result).toEqual([{ type: 'error', content: 'OpenClaw Gateway: Request timed out' }]);
     expect(abort).toHaveBeenCalledExactlyOnceWith('agent:main:mysti-a', 'run-a');
+  });
+
+  it('pauses for all pending native approvals and resumes only the unspent execution budget', async () => {
+    const approval = approvalScope();
+    const { run, abort } = create({ ...approval.options, timeoutMs: 100 });
+    const output = collect(run);
+    await vi.advanceTimersByTimeAsync(30);
+    approval.request('a');
+    approval.request('b');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(run.isFinished).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    approval.decide('a');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(run.isFinished).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    approval.decide('b');
+    await vi.advanceTimersByTimeAsync(20);
+    approval.request('c');
+    await vi.advanceTimersByTimeAsync(1000);
+    approval.decide('c');
+    await vi.advanceTimersByTimeAsync(49);
+    expect(run.isFinished).toBe(false);
+    expect(abort).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await output).toEqual([{ type: 'error', content: 'OpenClaw Gateway: Request timed out' }]);
+    expect(abort).toHaveBeenCalledExactlyOnceWith('mysti-a', 'run-a');
+    expect(approval.remove).toHaveBeenCalledOnce();
+  });
+
+  it.each(['abort', 'return', 'disconnect', 'complete'] as const)(
+    '%s settles a silent approval wait and releases observers before late approval', async reason => {
+      const approval = approvalScope();
+      approval.request('pending');
+      const { run, abort } = create({ ...approval.options, timeoutMs: 20 });
+      const iterator = run.chunks();
+      const next = iterator.next();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(run.isFinished).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      if (reason === 'abort') { approval.controller.abort(); }
+      else if (reason === 'return') { await iterator.return(undefined); }
+      else if (reason === 'disconnect') { run.fail(new Error('Disconnected')); }
+      else { complete(run); }
+      const result = await next;
+      if (reason === 'disconnect') {
+        expect(result.value).toEqual({ type: 'error', content: 'Disconnected' });
+        expect(await iterator.next()).toEqual({ done: true, value: undefined });
+      } else { expect(result).toEqual({ done: true, value: undefined }); }
+      expect(abort).toHaveBeenCalledTimes(reason === 'abort' || reason === 'return' ? 1 : 0);
+      expect(approval.remove).toHaveBeenCalledOnce();
+      approval.decide('pending');
+      approval.options.onPendingChanged.mock.calls[0][0]();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('releases a subscription that synchronously cancels during registration', async () => {
+    const controller = new AbortController();
+    const remove = vi.fn();
+    const { run, abort } = create({ signal: controller.signal, hasPending: () => true,
+      onPendingChanged: () => { controller.abort(); return remove; },
+    });
+    expect(await collect(run)).toEqual([]);
+    expect(remove).toHaveBeenCalledOnce();
+    expect(abort).toHaveBeenCalledOnce();
+  });
+
+  it('fails and aborts when approval state cannot be observed, without keeping a silent reader', async () => {
+    let notify!: () => void;
+    let fail = false;
+    const remove = vi.fn();
+    const { run, abort } = create({
+      hasPending: () => { if (fail) { throw new Error('Scope unavailable'); } return false; },
+      onPendingChanged: listener => { notify = listener; return remove; },
+    });
+    const output = collect(run);
+    fail = true;
+    notify();
+    expect(await output).toEqual([{ type: 'error', content: 'OpenClaw Gateway: Approval state unavailable' }]);
+    expect(remove).toHaveBeenCalledOnce();
+    expect(abort).toHaveBeenCalledOnce();
   });
 
   it('normal completion and a connection failure release ownership without remote abort', async () => {

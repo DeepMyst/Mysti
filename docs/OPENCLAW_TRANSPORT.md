@@ -2,8 +2,8 @@
 
 The transport fixtures target the installed OpenClaw **2026.6.34** gateway
 protocol 4. They exercise real loopback WebSockets and inert child processes.
-They do not establish authenticated provider compatibility or native approval
-coverage. The remaining authority gaps are tracked in [NATIVE_APPROVAL.md](NATIVE_APPROVAL.md).
+They do not establish authenticated provider compatibility. Native execution
+authority is covered separately by [the owned policy contract](OPENCLAW_NATIVE_POLICY.md).
 
 ## Ownership boundaries
 
@@ -14,16 +14,16 @@ coverage. The remaining authority gaps are tracked in [NATIVE_APPROVAL.md](NATIV
   tool identities and cancellation. Gateway RPC request IDs and agent run IDs
   are distinct: the caller's unique idempotency key is the run ID.
 - `OpenClawProvider` owns submission across connection, prompt preparation and
-  transport selection. Stop during preparation prevents submission; abandoning
-  the gateway iterator also aborts its pending read. Once submitted, a failed
-  gateway run is not replayed through the CLI.
+  native runtime admission. Stop during preparation prevents submission; abandoning
+  the gateway iterator also aborts its pending read. Agent sends require a live
+  policy lease, and no failure is replayed through an unguarded CLI.
 - `BaseCliProvider` owns CLI spawning, process tracking and cleanup. OpenClaw's
   optional pre-spawn hook writes a complete private prompt file before the child
   can read it. `readCliStdout` keeps one pending read across stderr heartbeats
   and binds cancellation and inactivity termination to the captured child.
 
-The logical OpenClaw session key is shared by both transports. It is separate
-from the CLI's returned transcript UUID. Clearing a session rotates only that
+The logical OpenClaw session key identifies the panel within its owned runtime.
+It is separate from a native transcript UUID. Clearing a session rotates only that
 panel's key. A gateway session indicator does not establish resumable history;
 that state is saved after the matching accepted acknowledgement.
 
@@ -33,6 +33,13 @@ The client advertises protocols 3–4 and validates the negotiated hello. The
 protocol 4 implementation is the version exercised by these fixtures. The
 `tool-events` capability requests native tool observations; it does not advertise
 or implement an approval client.
+
+The owned loopback runtime uses OpenClaw's authenticated backend client identity
+and requires granted `operator.write` authority and the agent/abort methods in
+its hello response. A successful CLI-style hello can have no granted scopes;
+it is insufficient as an agent readiness check. Fresh run IDs are single-use
+within the gateway client, with a bounded history that fails closed on overflow.
+Time awaiting a native permission card pauses the remaining execution budget.
 
 | Frame | Handling |
 | --- | --- |
@@ -52,13 +59,12 @@ can return `no-active-run`. A cancelled request therefore retains a bounded
 acknowledgement watcher and repeats the targeted abort if acceptance arrives
 late. The watcher expires after the remaining request budget, with a 30-second
 minimum, and is released on acknowledgement, terminal response or disconnect.
-A disconnected client cannot prove that remote work stopped; native run-policy
-revocation remains part of the approval work.
+Transport cancellation alone cannot prove that remote work stopped. The owned
+native policy also revokes the run grant and its execution abort signal.
 
 The installed gateway rejects empty attachment bodies; Mysti reports that
-specific limitation before submission. CLI attachments are materialized in
-request-owned files and their paths are included in the prompt file. Cleanup of
-an old turn cannot remove a replacement's files or process registration.
+specific limitation before submission. The legacy private CLI prompt-file
+helpers remain regression-tested, but public agent execution has no CLI fallback.
 
 ## Verification
 
@@ -74,9 +80,12 @@ noise, canonical aliases, cancellation before/after acceptance, paused consumers
 iterator return/throw, timeout, shutdown, failed handshake and socket replacement.
 `gatewayProviderLifecycle.test.ts` exercises the actual provider boundary around
 connection/prompt awaits, history, session clearing, attachments and final chunks.
-`cliLifecycle.test.ts` runs inert Node children that immediately read the prompt
-file, return NDJSON or formatted JSON, fail to start, or remain silent until Stop.
-The run-owner tests check normalization, identity guards, deadlines and cleanup.
+`cliLifecycle.test.ts` checks explicit configuration, discovery and startup
+failure without executing an unguarded agent. `messageDelivery.test.ts` retains
+historical private-file helper coverage. `managedRuntime.test.ts` checks private
+provisioning and process cleanup. The run-owner tests check normalization,
+identity guards, deadlines and cleanup; `nativePolicyIntegration.test.ts`
+exercises the actual installed gateway and native tools against a local fake model.
 
 Version-specific implementation decisions were checked against these files in
 the installed OpenClaw distribution, rather than inferred from `--help`:
@@ -90,12 +99,15 @@ the installed OpenClaw distribution, rather than inferred from `--help`:
 - `dist/register.agent-turn-CfOzQ9g2.js`: CLI parser registration.
 - Bundled `docs/gateway/protocol.md` and gateway-protocol schema declarations.
 
-## Remaining release work
+## Native policy and remaining acceptance
 
-The CLI parser still rejects Mysti's `--sandbox` and `--yolo` flags. They must be
-replaced together with real native authority enforcement, not simply removed.
-The gateway also lacks a bridge that enforces Mysti's mode/access settings before
-all tool execution. Exec-only approvals do not cover file edits or arbitrary
-plugin tools. A versioned policy/approval bridge, sentinel side-effect tests,
-and an authenticated disposable-workspace smoke are still required. Transport
-fixture passes must not be described as approval or release-readiness evidence.
+Agent execution uses the [owned native policy runtime](OPENCLAW_NATIVE_POLICY.md),
+with a per-turn immutable policy, exact final-action digest and revocable grant.
+Only its verified embedded tool path is admitted. The former unsupported
+`--sandbox`/`--yolo` fallback and shared `chat.send` agent delegation are disabled.
+Channel markers use direct delivery to configured targets or exact international
+phone numbers; fuzzy contact resolution cannot start an unowned agent.
+
+Transport passes and local fake-model fixtures do not establish authenticated
+account compatibility, alternate harness support or cross-platform editor
+release readiness. Those remain separate acceptance requirements.

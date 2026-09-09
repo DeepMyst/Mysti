@@ -21,10 +21,19 @@ import { OPENCLAW_GATEWAY_TIMEOUT_MS } from '../../constants';
 export interface GatewayAgentOptions {
   thinking?: string;
   sessionKey?: string;
+  /** Fresh Mysti-prefixed identity, reserved once for this client's lifetime. */
+  runId?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  hasPending?: () => boolean;
+  onPendingChanged?: (listener: () => void) => () => void;
   onAccepted?: (sessionKey: string) => void;
   attachments?: Array<{ type: string; mimeType: string; fileName: string; content: string }>;
+}
+
+export interface GatewayConnectionOptions {
+  /** Only the token-authenticated gateway process created and owned by Mysti. */
+  ownedRuntime?: boolean;
 }
 
 // --- Active Mode types (used by ActiveModeManager) ---
@@ -145,11 +154,16 @@ export class OpenClawGateway {
   private _connecting: Promise<boolean> | null = null;
   private _cancelConnect: (() => void) | null = null;
   private readonly _activeRuns = new Map<string, { run: OpenClawAgentRun; sessionKey: string }>();
+  // Never reuse identities: late events/acknowledgements can outlive local runs.
+  // Fail closed at capacity instead of evicting into cross-turn authority.
+  private readonly _usedRunIds = new Set<string>();
   private _token: string | undefined;
+  private readonly _ownedRuntime: boolean;
 
-  constructor(url: string = 'ws://127.0.0.1:18789', token?: string) {
+  constructor(url: string = 'ws://127.0.0.1:18789', token?: string, options: GatewayConnectionOptions = {}) {
     this._url = url;
     this._token = token;
+    this._ownedRuntime = options.ownedRuntime === true;
   }
 
   /**
@@ -159,6 +173,9 @@ export class OpenClawGateway {
   connect(): Promise<boolean> {
     if (this.isConnected()) { return Promise.resolve(true); }
     if (this._disposed) { return Promise.resolve(false); }
+    if (this._ownedRuntime && (!this._token?.trim() || !/^ws:\/\/127\.0\.0\.1(?::[0-9]{1,5})?\/?$/.test(this._url))) {
+      return Promise.resolve(false);
+    }
     if (this._connecting) { return this._connecting; }
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
@@ -210,9 +227,10 @@ export class OpenClawGateway {
           void this._sendRequest('connect', {
             minProtocol: 3,
             maxProtocol: 4,
-            client: { id: 'cli', version: '1.0.0', platform: process.platform, mode: 'cli' },
+            client: { id: this._ownedRuntime ? 'gateway-client' : 'cli', version: '1.0.0', platform: process.platform,
+              mode: this._ownedRuntime ? 'backend' : 'cli' },
             role: 'operator',
-            scopes: ['operator.admin', 'operator.read', 'operator.write'],
+            scopes: this._ownedRuntime ? ['operator.read', 'operator.write'] : ['operator.admin', 'operator.read', 'operator.write'],
             // Tool events are observations; this does not advertise an approval bridge.
             caps: ['tool-events'],
             auth: this._token ? { token: this._token } : {},
@@ -223,6 +241,17 @@ export class OpenClawGateway {
                 ![3, 4].includes(response.payload.protocol as number)) {
               fail(response.error?.message || 'Unsupported handshake response');
               return;
+            }
+            if (this._ownedRuntime) {
+              const auth = response.payload.auth as { role?: unknown; scopes?: unknown } | undefined;
+              const features = response.payload.features as { methods?: unknown } | undefined;
+              const methods = features?.methods;
+              // Stock operator.write also grants reads and sessions.abort.
+              if (auth?.role !== 'operator' || !Array.isArray(auth.scopes) || !auth.scopes.includes('operator.write') ||
+                  !Array.isArray(methods) || !['agent', 'sessions.abort'].every(method => methods.includes(method))) {
+                fail('Owned gateway lacks required agent authority');
+                return;
+              }
             }
             this._connected = true;
             this._reconnectAttempts = 0;
@@ -288,10 +317,20 @@ export class OpenClawGateway {
     if (options.signal?.aborted) { return; }
     if (!this.isConnected()) { throw new Error('Gateway not connected'); }
 
-    const requestId = this._nextId();
     // Installed protocol uses the idempotency key as the run ID, including
     // events emitted before the accepted response. Never correlate by session alone.
-    const runId = `mysti-${randomUUID()}`;
+    const runId = options.runId === undefined ? `mysti-${randomUUID()}` : options.runId;
+    if (typeof runId !== 'string' || runId.length > 256 || !/^mysti-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) {
+      throw new Error('OpenClaw Gateway: Invalid run ID');
+    }
+    if (this._usedRunIds.has(runId)) {
+      throw new Error('OpenClaw Gateway: Run ID was already used; allocate a fresh identity');
+    }
+    if (this._usedRunIds.size >= 10000) {
+      throw new Error('OpenClaw Gateway: Run identity capacity reached; create a new client');
+    }
+    this._usedRunIds.add(runId);
+    const requestId = this._nextId();
     const sessionKey = options.sessionKey || `mysti-ephemeral-${randomUUID()}`;
     const deadline = Date.now() + (options.timeoutMs ?? OPENCLAW_GATEWAY_TIMEOUT_MS);
     let accepted = false;
@@ -335,11 +374,11 @@ export class OpenClawGateway {
     });
     try {
       try {
-        this._sendFrame({ type: 'req', id: requestId, method: 'agent', params: {
+        if (!run.isFinished) { this._sendFrame({ type: 'req', id: requestId, method: 'agent', params: {
           message, idempotencyKey: runId, sessionKey,
           ...(options.attachments?.length ? { attachments: options.attachments } : {}),
           ...(options.thinking ? { thinking: options.thinking } : {}),
-        } });
+        } }); }
       } catch (error) {
         run.fail(error instanceof Error ? error : new Error(String(error)));
       }
@@ -564,33 +603,12 @@ export class OpenClawGateway {
   }
 
   /**
-   * Delegate a task to the OpenClaw agent via the `chat.send` RPC.
-   * Routes through the agent pipeline — the agent can use tools (message, exec,
-   * browse, etc.) and resolve fuzzy contact names.
+   * Compatibility entrypoint: channel delegation has no owned execution lease.
+   * It must remain disabled until its runtime and tool authority are enforced.
    */
-  async sendAgentTask(prompt: string, sessionKey: string = 'main'): Promise<boolean> {
-    if (!this.isConnected()) {
-      console.log('[Mysti] OpenClaw Gateway: Cannot delegate — not connected');
-      return false;
-    }
-    try {
-      const idempotencyKey = `mysti-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      console.log(`[Mysti] OpenClaw Gateway: chat.send (session: ${sessionKey}, ${prompt.length} chars)`);
-      const response = await this._sendRequest('chat.send', {
-        sessionKey,
-        idempotencyKey,
-        message: prompt,
-      });
-      if (!response.ok) {
-        console.log('[Mysti] OpenClaw Gateway: chat.send failed:', JSON.stringify(response.error || response.payload));
-      } else {
-        console.log('[Mysti] OpenClaw Gateway: chat.send accepted');
-      }
-      return response.ok === true;
-    } catch (err) {
-      console.log('[Mysti] OpenClaw Gateway: chat.send error:', err);
-      return false;
-    }
+  async sendAgentTask(_prompt: string, _sessionKey: string = 'main'): Promise<boolean> {
+    console.warn('[Mysti] OpenClaw Gateway: Agent delegation is unavailable because delegated execution policy is unsupported');
+    return false;
   }
 
   /**

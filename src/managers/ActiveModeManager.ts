@@ -173,8 +173,8 @@ export class ActiveModeManager {
   }
 
   /**
-   * Delegate a task to the OpenClaw agent via `chat.send`.
-   * The agent can use its tools (message, exec, browse) and resolve fuzzy contacts.
+   * Compatibility entry point. Shared-gateway agent delegation is unavailable
+   * until that route has its own native approval and run-lifetime authority.
    */
   async sendAgentTask(prompt: string, sessionKey?: string): Promise<boolean> {
     return this._gateway.sendAgentTask(prompt, sessionKey);

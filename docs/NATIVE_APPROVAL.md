@@ -1,6 +1,6 @@
 # Native approval contracts
 
-Hermes and Kimi route ACP permission requests through a native request → host permission card → native response bridge. Each request belongs to the issuing process and turn. The provider sends one allow, deny, or cancelled response, and tool notifications are used for display. Other tool-executing adapters still rely on streamed notifications, restrictive native modes, or external configuration. SIGSTOP after a notification does not establish that execution waited for approval.
+Hermes and Kimi route ACP permission requests through a native request → host permission card → native response bridge. OpenClaw uses a version-verified owned runtime and a final-execution approval broker for its supported embedded tools; see [the native policy contract](OPENCLAW_NATIVE_POLICY.md). Each request belongs to the issuing process and turn. The provider sends one allow, deny, or cancelled response, and tool notifications are used for display. Other tool-executing adapters still rely on streamed notifications, restrictive native modes, or external configuration. SIGSTOP after a notification does not establish that execution waited for approval.
 
 `supportsNativeApproval` means this native request/response bridge is implemented. It does not infer approval support from JSON output, nor prove that a particular CLI release requests permission for every operation. Release verification must cover the agent's native permission configuration as well as the host bridge.
 
@@ -32,7 +32,7 @@ Hermes and Kimi route ACP permission requests through a native request → host 
 | Cline | Legacy `--yolo`, modern `--auto-approve true`; stream events trigger SIGSTOP | Legacy `--mode plan`, modern `--plan` | No; installed CLI supports ACP | `src/providers/cline/ClineProvider.ts` |
 | Copilot | Modern JSON CLI: `--allow-all-tools` plus stream SIGSTOP. Legacy plain text: native shell/write denial | `--deny-tool shell --deny-tool write` | No; installed modern CLI supports ACP | `src/providers/copilot/CopilotProvider.ts` |
 | Cursor | `--force`; stream notifications trigger SIGSTOP | Only omits `--force`; does not select the installed CLI's `--mode plan/ask` | No | `src/providers/cursor/CursorProvider.ts` |
-| OpenClaw | Gateway: no mode/access authority field sent, and no local process to stop. CLI fallback: adds `--yolo` | Gateway: prompt instructions only. CLI: adds `--sandbox` | No; gateway approval RPCs are not bridged | `src/providers/openclaw/OpenClawProvider.ts`; `OpenClawGateway.ts` |
+| OpenClaw | Owned OpenClaw 2026.6.34/Pi runtime; final `read`/`write`/`edit`/foreground `exec` actions request scoped host decisions | Non-read actions denied by immutable host policy | Yes, within the verified four-tool boundary; unsupported harnesses/delegation and CLI fallback denied | [OpenClaw native policy](OPENCLAW_NATIVE_POLICY.md) |
 | OpenCode | Chooses `--agent build`; local native permissions remain externally configured; notifications are used for stream gate | Chooses configurable `--agent plan` | No request/response bridge; build/plan labels are not immutable permission policies | `src/providers/opencode/OpenCodeProvider.ts` |
 | Qwen Code | `--approval-mode auto-edit`, including ask-before-edit; edits are natively auto-approved | `--approval-mode plan` | No; installed CLI supports ACP | `src/providers/qwen/QwenCodeProvider.ts` |
 | Hermes | ACP permission request held until the scoped host card resolves; explicit native denials remain blocked | Non-read permission requests denied | Yes, for emitted ACP permission requests | `src/providers/hermes/HermesProvider.ts`; `src/providers/base/AcpApproval.ts` |
@@ -60,26 +60,21 @@ or establish authenticated CLI execution; those remain acceptance work below.
 1. **The advertised approval contract is stronger than the mechanism.** `package.json:563` advertises “confirm every change”; Legacy Chat and collaborator stream-gate comments describe SIGSTOP as pre-execution enforcement. The provider interface now labels it as a best-effort pause. A JSON notification has no acknowledgement dependency. The CLI may run before the extension reads stdout, even if a later SIGSTOP succeeds. Existing tests mock `suspendRequest` and assert cards/flags; they do not prove a write is absent while approval is pending.
 2. **Suspension does not stop an already spawned tool child.** `BaseCliProvider.suspendProcess` calls `proc.kill('SIGSTOP')` only on its direct process. An offline process fixture started a command child, emitted a tool-start event, then stopped the parent. Result: `suspended: true`, `toolSideEffectWhileStopped: true`. This demonstrates process semantics independently of a model call. Killing after denial cannot undo the effect.
 3. **Zero-argument tools bypass the stream gate.** Direct Chat checks `Object.keys(input).length > 0` before gating (`ChatViewProvider.ts`, direct tool-use gate), as does the legacy subagent path (`_gateLegacySubagentToolUse`). A valid mutating tool with `{}` input never reaches the gate. The existing partial-input workaround needs an explicit event phase or a native permission request, not a nonempty-input test.
-4. **OpenClaw authority never reaches the primary gateway.** `_sendViaGateway` sends prompt, thinking, session key and attachments; mode/access are merely prompt material. There is no owned local CLI process, so SIGSTOP cannot enforce gateway execution. Under default/read-only, the shared classifier delegates restrictions to native mode, but none is transmitted.
-5. **OpenClaw fallback supplies nonexistent native flags.** Installed OpenClaw 2026.6.34 `dist/register.agent-turn-CfOzQ9g2.js:20` registers neither `--sandbox` nor `--yolo`; Mysti always adds one. Executing that registration with an inert action callback accepts the supported base arguments and rejects both flags with `commander.unknownOption`. No agent or model request ran. A repeated `agent --help` probe now completes, but help also accepts an invalid control flag and therefore cannot establish argument acceptance.
+4. **OpenClaw gateway authority repaired for the supported owned runtime.** Agent sends and prompt enhancement require a captured run lease and final-execution guard. Shared-gateway agent delegation is disabled. Native Codex, ACP, delegated/background execution and arbitrary plugin tools remain unsupported; see [the exact boundary](OPENCLAW_NATIVE_POLICY.md).
+5. **OpenClaw invalid fallback removed with its authority replacement.** Installed OpenClaw 2026.6.34 registers neither `--sandbox` nor `--yolo`. Mysti no longer invokes the unsupported agent fallback; failure to start the owned approval runtime reports an error and prevents execution. The original inert parser proof remains useful evidence that dropping flags alone would have been insufficient.
 6. **Read-only selection is not uniform.** Cursor only omits `--force` despite installed explicit read-only `--mode plan/ask`. OpenCode chooses a configurable plan agent: official V1 docs describe edits/bash as `ask`, and user configuration can replace its policy. Neither choice establishes the absolute “never modify” setting promise.
 7. **Capability vocabulary hides these differences.** `ProviderCapabilities.supportsNativeApproval` now distinguishes the implemented ACP bridge; native read-only strength and proposal-only tool reporting remain separate contract work. `supportsToolUse` covers actual CLI execution and Ollama/LocalAI proposals; callers cannot infer approval enforcement from it.
 
 ## Remaining acceptance requirements
 
-The next adapter migrations must provide a native permission request and response path instead of relying on stdout notification timing. Gemini, Cline, Copilot, Qwen, and OpenCode expose ACP in the inspected CLI versions. Claude exposes a host permission protocol; Codex app-server exposes command/file approval requests. OpenClaw needs its gateway's actual approval and policy contract, and valid CLI fallback arguments.
+The next adapter migrations must provide a native permission request and response path instead of relying on stdout notification timing. Gemini, Cline, Copilot, Qwen, and OpenCode expose ACP in the inspected CLI versions. Claude exposes a host permission protocol; Codex app-server exposes command/file approval requests. OpenClaw now has the bounded owned-runtime bridge described above; authenticated provider and wider runtime acceptance remain outstanding.
 
-OpenClaw's supported session exec controls (`execSecurity`, `execAsk`, `execHost`,
-`elevatedLevel`) cover shell execution, not every built-in or plugin tool. Its
-[pre-tool hook](https://docs.openclaw.ai/plugins/hooks) and
-[blocking plugin approval contract](https://docs.openclaw.ai/plugins/plugin-permission-requests)
-provide the integration point for a policy bound to a Mysti panel, session and
-run. The bridge must verify policy registration before starting, route approval
-requests into the owning native scope, deny on timeout/cancellation and prevent
-late replies from reaching replacements. Local fallback needs the same policy
-and an owned configuration/approval broker; dropping unsupported flags alone
-would not preserve operation-mode authority. OpenClaw documents the distinction
-between [exec approvals and general tool policy](https://docs.openclaw.ai/tools/exec-approvals).
+OpenClaw's session exec controls cover shell execution rather than every tool.
+The implemented bridge combines a live host policy with a verified final raw
+execution guard because ordinary hooks and tool finalization can mutate the
+arguments after the early trusted policy. An early hook or exec-only approval
+must not be presented as equivalent coverage. The [native policy contract](OPENCLAW_NATIVE_POLICY.md)
+records startup, action identity, supported tools and compatibility limits.
 
 For each adapter, verify its native configuration requests approval for every policy-gated action. ACP permits an agent to omit permission requests, so handling requests alone is not proof that all tools are gated. Pin or probe supported CLI versions and record evidence for writes, commands, deletes, network requests, and zero-argument tools. A configured native read-only mode must withstand repository configuration that otherwise enables writes.
 
@@ -99,6 +94,6 @@ npx vitest run tests/providers/nativeApprovalBridge.test.ts tests/providers/base
 - [Codex app-server](https://developers.openai.com/codex/app-server/): command/file approval requests have distinct IDs and native responses; installed app-server supports stdio.
 - [OpenCode permissions](https://opencode.ai/docs/permissions/) and [agents](https://opencode.ai/docs/agents): build/plan policy semantics and configurability.
 
-The [OpenClaw transport repair](OPENCLAW_TRANSPORT.md) adds protocol 4 negotiation,
-run isolation, targeted cancellation, native event normalization and owned CLI
-prompt delivery. It does not resolve the authority gaps above.
+The [OpenClaw transport contract](OPENCLAW_TRANSPORT.md) covers negotiation, run
+isolation and targeted cancellation. The [native policy contract](OPENCLAW_NATIVE_POLICY.md)
+separately defines the final execution authority and its verified limits.

@@ -1,0 +1,23 @@
+{
+  "id": "mysti-policy",
+  "name": "Mysti native approvals",
+  "activation": { "onStartup": true },
+  "contracts": { "trustedToolPolicies": ["mysti-final-policy"] },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["broker"],
+    "properties": {
+      "broker": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "token", "runtimeId"],
+        "properties": {
+          "url": { "type": "string" },
+          "token": { "type": "string" },
+          "runtimeId": { "type": "string" }
+        }
+      }
+    }
+  }
+}

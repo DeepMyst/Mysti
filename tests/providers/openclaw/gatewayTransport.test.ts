@@ -1,5 +1,5 @@
 /** Real loopback WebSocket tests: no gateway daemon, CLI, credentials, or model. */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { once } from 'node:events';
 import WebSocket, { WebSocketServer } from 'ws';
 import { OpenClawGateway } from '../../../src/providers/openclaw/OpenClawGateway';
@@ -53,13 +53,15 @@ class Fixture {
   readonly server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   readonly requests: Request[] = [];
   readonly sockets: WebSocket[] = [];
+  readonly origins: (string | undefined)[] = [];
   private readonly sequences = new Map<string, number>();
   url = '';
 
   constructor(private readonly options: { challenge?: boolean; autoHello?: boolean } = {}) {
     fixtures.push(this);
-    this.server.on('connection', socket => {
+    this.server.on('connection', (socket, request) => {
       this.sockets.push(socket);
+      this.origins.push(request.headers.origin);
       socket.on('error', () => { /* Expected when a test terminates its peer. */ });
       socket.on('message', bytes => {
         const request = { ...JSON.parse(bytes.toString()), socket } as Request;
@@ -179,8 +181,8 @@ describe('OpenClaw gateway over real WebSockets', () => {
     fixture.challenge(socket);
     expect(await bounded(connection)).toBe(true);
     for (const value of ['null', '[]', '{"type":"event","event":"agent","payload":null}']) { socket.send(value); }
-    const response = gateway.sendAgentTask('fixture task', 'fixture-session');
-    const request = await fixture.request('chat.send');
+    const response = gateway.sendToChannel('fixture-channel', 'fixture task', 'fixture-target');
+    const request = await fixture.request('send');
     fixture.reply(request, { status: 'accepted', runId: request.params.idempotencyKey });
     expect(await bounded(response)).toBe(true);
   });
@@ -192,6 +194,56 @@ describe('OpenClaw gateway over real WebSockets', () => {
     fixture.reply(await fixture.request('connect'), hello(protocol));
     expect(await bounded(connection)).toBe(true);
   });
+
+  it('authenticates an explicitly owned local runtime as a backend with write and cancellation authority', async () => {
+    const fixture = await new Fixture().listen();
+    const gateway = new OpenClawGateway(fixture.url, 'owned-fixture-token', { ownedRuntime: true });
+    gateways.push(gateway);
+    expect(await bounded(gateway.connect())).toBe(true);
+    const handshake = await fixture.request('connect');
+    expect(handshake.params).toMatchObject({
+      client: { id: 'gateway-client', mode: 'backend' },
+      auth: { token: 'owned-fixture-token' }, scopes: ['operator.read', 'operator.write'],
+    });
+    expect(fixture.origins).toEqual([undefined]);
+    const output = collect(gateway.sendAgentMessage('owned', { runId: 'mysti-owned', sessionKey: 'agent:main:mysti-panel' }));
+    fixture.finish(await fixture.request('agent'), 'owned answer');
+    expect(text(await bounded(output))).toBe('owned answer');
+  });
+
+  it.each([
+    { auth: { role: 'operator', scopes: [] } },
+    { auth: { role: 'operator', scopes: ['operator.read'] } },
+    { auth: { role: 'node', scopes: ['operator.write'] } },
+    { features: { methods: ['agent'] } },
+  ])('rejects an owned hello without required agent authority: %j', async overrides => {
+    const fixture = await new Fixture({ autoHello: false }).listen();
+    const gateway = new OpenClawGateway(fixture.url, 'owned-fixture-token', { ownedRuntime: true });
+    gateways.push(gateway);
+    const connection = gateway.connect();
+    fixture.reply(await fixture.request('connect'), { ...hello(), ...overrides });
+    expect(await bounded(connection)).toBe(false);
+    expect(gateway.isConnected()).toBe(false);
+    expect(fixture.requests.some(request => request.method === 'agent')).toBe(false);
+  });
+
+  it.each(['missing-token', 'localhost', 'ipv4-alias', 'remote', 'url-auth', 'path'] as const)(
+    'refuses owned backend identity before opening a socket for %s', async reason => {
+      const fixture = await new Fixture().listen();
+      const urls = {
+        'missing-token': fixture.url,
+        localhost: fixture.url.replace('127.0.0.1', 'localhost'),
+        'ipv4-alias': fixture.url.replace('127.0.0.1', '127.1'),
+        remote: 'ws://example.invalid:18789',
+        'url-auth': fixture.url.replace('ws://', 'ws://user:password@'),
+        path: `${fixture.url}/unowned`,
+      };
+      const gateway = new OpenClawGateway(urls[reason], reason === 'missing-token' ? undefined : 'token', { ownedRuntime: true });
+      gateways.push(gateway);
+      expect(await bounded(gateway.connect())).toBe(false);
+      expect(fixture.sockets).toHaveLength(0);
+    },
+  );
 
   it.each([{ type: 'hello-ok', protocol: 5 }, { type: 'unrecognized', protocol: 4 }])(
     'rejects unsupported hello %j without leaving connection callers pending', async payload => {
@@ -221,6 +273,86 @@ describe('OpenClaw gateway over real WebSockets', () => {
     fixture.finish(ar, 'A');
     expect(text(await bounded(a))).toBe('A');
     expect(text(await bounded(b))).toBe('B');
+  });
+
+  it('uses the caller identity for pre-ack events and rejects duplicate active ownership without aborting it', async () => {
+    const { fixture, gateway } = await ready();
+    const runId = 'mysti-owned-request';
+    const original = collect(gateway.sendAgentMessage('original', { runId, sessionKey: 'panel-a' }));
+    const request = await fixture.request('agent');
+    expect(request.params.idempotencyKey).toBe(runId);
+    const duplicate = collect(gateway.sendAgentMessage('duplicate', { runId, sessionKey: 'panel-b' }));
+    await expect(bounded(duplicate)).rejects.toThrow('Run ID was already used');
+    fixture.event(request, { text: 'still owned', delta: 'still owned' });
+    fixture.accept(request);
+    fixture.finish(request, 'still owned');
+    expect(text(await bounded(original))).toBe('still owned');
+    expect(fixture.requests.filter(item => item.method === 'agent')).toHaveLength(1);
+    expect(fixture.requests.some(item => item.method === 'sessions.abort')).toBe(false);
+  });
+
+  it.each(['', 'mysti-', 'another-prefix', ' mysti-id', 'mysti-id\n', 'mysti-../path', 'mysti-' + 'a'.repeat(251), null, 7])(
+    'rejects invalid supplied run ID %j before transport mutation', async runId => {
+      const { fixture, gateway } = await ready();
+      await expect(bounded(collect(gateway.sendAgentMessage('invalid', { runId: runId as string })))).rejects.toThrow('Invalid run ID');
+      expect(fixture.requests.filter(item => item.method !== 'connect')).toEqual([]);
+    },
+  );
+
+  it.each(['completed', 'cancelled'] as const)('retains %s run identities so late events cannot attach to another turn', async reason => {
+    const { fixture, gateway } = await ready();
+    const controller = new AbortController();
+    const runId = `mysti-${reason}`;
+    const old = collect(gateway.sendAgentMessage('old', { runId, sessionKey: 'panel', signal: controller.signal }));
+    const oldRequest = await fixture.request('agent');
+    if (reason === 'completed') { fixture.finish(oldRequest, 'done'); }
+    else { controller.abort(); }
+    await bounded(old);
+    await expect(bounded(collect(gateway.sendAgentMessage('reuse', { runId, sessionKey: 'panel' })))).rejects.toThrow('Run ID was already used');
+    const next = collect(gateway.sendAgentMessage('fresh', { runId: 'mysti-fresh', sessionKey: 'panel' }));
+    const nextRequest = await fixture.request('agent', request => request.params.message === 'fresh');
+    fixture.accept(oldRequest);
+    fixture.event(oldRequest, { text: 'stale', delta: 'stale' });
+    fixture.finish(nextRequest, 'fresh answer');
+    expect(text(await bounded(next))).toBe('fresh answer');
+    expect(fixture.requests.filter(request => request.method === 'agent')).toHaveLength(2);
+    expect(fixture.requests.filter(request => request.method === 'sessions.abort')
+      .every(request => request.params.runId === runId)).toBe(true);
+  });
+
+  it('fails closed at the bounded identity capacity without evicting or stopping an active run', async () => {
+    const { fixture, gateway } = await ready();
+    const output = collect(gateway.sendAgentMessage('active', { runId: 'mysti-active' }));
+    const request = await fixture.request('agent');
+    // Seed the capacity boundary; active/reused identity behavior above uses real traffic.
+    const used = (gateway as unknown as { _usedRunIds: Set<string> })._usedRunIds;
+    for (let index = 1; index < 10000; index++) { used.add(`mysti-retired-${index}`); }
+    await expect(bounded(collect(gateway.sendAgentMessage('overflow', { runId: 'mysti-overflow' })))).rejects.toThrow('identity capacity reached');
+    await expect(bounded(collect(gateway.sendAgentMessage('reuse', { runId: 'mysti-retired-1' })))).rejects.toThrow('already used');
+    fixture.finish(request, 'active survives');
+    expect(text(await bounded(output))).toBe('active survives');
+    expect(used.size).toBe(10000);
+    expect(fixture.requests.filter(item => item.method === 'agent')).toHaveLength(1);
+    expect(fixture.requests.some(item => item.method === 'sessions.abort')).toBe(false);
+  });
+
+  it('forwards approval observation so the gateway does not time out a pending human decision', async () => {
+    const { fixture, gateway } = await ready();
+    let pending = true;
+    let changed!: () => void;
+    const remove = vi.fn();
+    const output = collect(gateway.sendAgentMessage('approval wait', {
+      timeoutMs: 100, hasPending: () => pending,
+      onPendingChanged: listener => { changed = listener; return remove; },
+    }));
+    const request = await fixture.request('agent');
+    await pause(150);
+    expect(fixture.requests.some(item => item.method === 'sessions.abort')).toBe(false);
+    pending = false;
+    changed();
+    fixture.finish(request, 'approved answer');
+    expect(text(await bounded(output))).toBe('approved answer');
+    expect(remove).toHaveBeenCalledOnce();
   });
 
   it('extracts a nested final-only reply and does not render the completion summary', async () => {
@@ -439,20 +571,27 @@ describe('OpenClaw gateway over real WebSockets', () => {
     expect(gateway.isConnected()).toBe(false);
     next.reply(newHello, hello());
     expect(await bounded(newConnection)).toBe(true);
-    const task = gateway.sendAgentTask('new endpoint');
-    const request = await next.request('chat.send');
+    const task = gateway.sendToChannel('fixture-channel', 'new endpoint', 'fixture-target');
+    const request = await next.request('send');
     next.reply(request, { status: 'accepted' });
     expect(await bounded(task)).toBe(true);
-    expect(old.requests.some(request => request.method === 'chat.send')).toBe(false);
+    expect(old.requests.some(request => request.method === 'send')).toBe(false);
   });
 
   it.each(['accepted', 'pending', 'running', 'in_flight'])('resolves one-response channel RPC status %s', async status => {
     const { fixture, gateway } = await ready();
-    const delegated = gateway.sendAgentTask('delegate', 'channel-panel');
-    fixture.reply(await fixture.request('chat.send'), { status, runId: 'channel-run' });
-    expect(await bounded(delegated)).toBe(true);
     const delivered = gateway.sendToChannel('fixture-channel', 'hello', 'fixture-target');
     fixture.reply(await fixture.request('send'), { status });
     expect(await bounded(delivered)).toBe(true);
+  });
+
+  it('rejects channel agent delegation without submitting an unowned chat.send request', async () => {
+    const { fixture, gateway } = await ready();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await gateway.sendAgentTask('resolve a contact and send a message', 'channel-panel')).toBe(false);
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('delegated execution policy is unsupported'));
+      expect(fixture.requests.filter(request => request.method !== 'connect')).toEqual([]);
+    } finally { warning.mockRestore(); }
   });
 });

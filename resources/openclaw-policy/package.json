@@ -1,0 +1,6 @@
+{
+  "name": "mysti-policy",
+  "version": "1.0.0",
+  "type": "module",
+  "openclaw": { "extensions": ["./index.mjs"] }
+}

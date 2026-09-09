@@ -217,10 +217,10 @@ export class ChannelBridge {
 
     const snippet = `[SYSTEM: OpenClaw Integration]
 
-OpenClaw is a local gateway daemon running on the user's machine. It provides:
-- Bidirectional messaging with WhatsApp, Telegram, Slack, Discord, Signal, iMessage, and more
-- An AI agent with skills for automation, research, messaging, and more
-- Contact resolution — you can refer to people by name (no need for exact match or phone number)
+OpenClaw is a local gateway daemon running on the user's machine. It provides
+bidirectional messaging with its configured channels. Send to a configured
+channel target or an exact international phone number. Contact-name resolution
+requires a separate agent and is unavailable through these message markers.
 
 Currently connected channels:
 ${channelList}
@@ -234,13 +234,13 @@ Send a message to the user's own device:
 Your message content here
 <<<END_CHANNEL_SEND>>>
 
-Send a message to a specific person (use their name — OpenClaw resolves it):
-<<<CHANNEL_SEND channel="${connected[0].type}" to="PersonName">>>
+Send a message to a specific phone number, when that channel supports it:
+<<<CHANNEL_SEND channel="${connected[0].type}" to="+15551234567">>>
 Your message content here
 <<<END_CHANNEL_SEND>>>
 
 Ask someone a question and wait for their reply:
-<<<CHANNEL_ASK channel="${connected[0].type}" to="PersonName" id="unique-id">>>
+<<<CHANNEL_ASK channel="${connected[0].type}" to="+15551234567" id="unique-id">>>
 Your question here
 <<<END_CHANNEL_ASK>>>
 
@@ -249,7 +249,7 @@ RULES:
 - Use CHANNEL_SEND for messages that don't need a reply
 - Use CHANNEL_ASK when you need someone to respond before continuing
 - The "to" attribute is optional — omit it to send to the user's own device
-- When the user says "tell X", "ask X", "message X", or "send to X", use to="X" — OpenClaw automatically resolves contact names, no exact match required
+- Use an exact international phone number for "to"; ask for it when only a contact name is known
 - You can include multiple markers in a single response
 - Every marker is shown to the user for approval before anything is sent — write the message you actually mean to send
 - Do NOT say you cannot send messages or contact specific people — these are built-in capabilities via OpenClaw`;
@@ -347,7 +347,7 @@ RULES:
 
   /**
    * Execute a send action — deliver message to channel.
-   * Routes through agent pipeline for fuzzy contact names, direct for phone numbers / self.
+   * Direct delivery only; contact resolution cannot borrow unowned agent tools.
    */
   async executeSend(action: ChannelAction): Promise<boolean> {
     const channelId = this._resolveChannelId(action.channel);
@@ -356,13 +356,9 @@ RULES:
       return false;
     }
 
-    // Fuzzy name (not E.164 phone) → delegate to agent for contact resolution
-    if (action.to && !action.to.startsWith('+')) {
-      const prompt = `Send the following message to ${action.to} on ${action.channel}:\n\n${action.content}`;
-      const ok = await this._activeModeManager.sendAgentTask(prompt, action.channel);
-      console.log(`[Mysti] ChannelBridge: Delegated send to '${action.to}' via agent: ${ok ? 'accepted' : 'failed'}`);
-      if (ok && action.to) { this._trackContact(action.to, channelId, this._resolveChannelType(channelId, action.channel)); }
-      return ok;
+    if (action.to && !/^\+[1-9]\d{1,14}$/.test(action.to)) {
+      console.log('[Mysti] ChannelBridge: Contact resolution unavailable; an exact international phone number is required.');
+      return false;
     }
 
     // Direct delivery (self-chat or exact phone number)
@@ -378,7 +374,7 @@ RULES:
    */
   /**
    * Execute an ask action — send question and register pending reply listener.
-   * Routes through agent pipeline for fuzzy contact names.
+   * Direct delivery only; unsupported contact resolution creates no pending ask.
    */
   async executeAsk(action: ChannelAction, panelId: string): Promise<boolean> {
     const channelId = this._resolveChannelId(action.channel);
@@ -387,18 +383,12 @@ RULES:
       return false;
     }
 
-    let ok: boolean;
-
-    // Fuzzy name → delegate to agent for contact resolution
-    if (action.to && !action.to.startsWith('+')) {
-      const prompt = `Send the following question to ${action.to} on ${action.channel} and wait for their reply:\n\n${action.content}`;
-      ok = await this._activeModeManager.sendAgentTask(prompt, action.channel);
-      console.log(`[Mysti] ChannelBridge: Delegated ask to '${action.to}' via agent: ${ok ? 'accepted' : 'failed'}`);
-    } else {
-      // Direct delivery (self-chat or exact phone number)
-      const target = action.to || this._resolveChannelTarget(action.channel);
-      ok = await this._activeModeManager.sendToChannel(channelId, action.content, target || undefined);
+    if (action.to && !/^\+[1-9]\d{1,14}$/.test(action.to)) {
+      console.log('[Mysti] ChannelBridge: Contact resolution unavailable; an exact international phone number is required.');
+      return false;
     }
+    const target = action.to || this._resolveChannelTarget(action.channel);
+    const ok = await this._activeModeManager.sendToChannel(channelId, action.content, target || undefined);
 
     // Track the contact so inbound replies are routed
     if (ok && action.to) { this._trackContact(action.to, channelId, this._resolveChannelType(channelId, action.channel)); }

@@ -89,6 +89,29 @@ describe('native request ownership', () => {
     old.scope.dispose();
   });
 
+  it('captures the original child even if the caller replaces its process reference', async () => {
+    const decision = deferred<boolean>();
+    const original = new EventEmitter() as ChildProcess;
+    const replacement = new EventEmitter() as ChildProcess;
+    const owner = {
+      process: original, panelId: 'p', providerId: 'hermes', signal: new AbortController().signal,
+      handler: () => decision.promise, isCurrent: () => true,
+    };
+    const scope = new NativeApprovalRequests(owner);
+    const respond = vi.fn();
+    try {
+      scope.request(77, { id: 'tool', name: 'Edit', input: {}, status: 'running' }, 'ask', respond);
+      owner.process = replacement;
+      decision.resolve(true);
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledExactlyOnceWith('allow', original));
+    } finally { scope.dispose(); }
+    for (const child of [original, replacement]) {
+      expect(child.listenerCount('close')).toBe(0);
+      expect(child.listenerCount('exit')).toBe(0);
+      expect(child.listenerCount('error')).toBe(0);
+    }
+  });
+
   it('identical native IDs in different turns and panels remain independent', async () => {
     const a = deferred<boolean>(); const b = deferred<boolean>();
     const requests: NativeApprovalRequest[] = [];

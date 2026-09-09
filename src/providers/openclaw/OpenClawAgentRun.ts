@@ -7,6 +7,9 @@ import { asRecord, asString } from '../../utils/valueGuards';
 export interface OpenClawAgentRunOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Human approval time does not consume the remaining execution budget. */
+  hasPending?: () => boolean;
+  onPendingChanged?: (listener: () => void) => () => void;
 }
 
 export interface OpenClawAgentResponse {
@@ -66,6 +69,10 @@ export class OpenClawAgentRun {
   private _queue: StreamChunk[] = [];
   private _wake?: () => void;
   private _timer?: ReturnType<typeof setTimeout>;
+  private _remainingTimeoutMs = 0;
+  private _timeoutStartedAt?: number;
+  private _hasPending?: () => boolean;
+  private _removePendingListener?: () => void;
   private _signal?: AbortSignal;
   private readonly _onAbort = () => this.cancel();
   private _text = '';
@@ -90,12 +97,22 @@ export class OpenClawAgentRun {
     }
     this._signal?.addEventListener('abort', this._onAbort, { once: true });
     const timeout = options.timeoutMs;
-    this._timer = setTimeout(() => {
+    this._remainingTimeoutMs = typeof timeout === 'number' && Number.isFinite(timeout) && timeout >= 0
+      ? timeout : OPENCLAW_GATEWAY_TIMEOUT_MS;
+    this._hasPending = options.hasPending;
+    try {
+      if (!!options.hasPending !== !!options.onPendingChanged) {
+        throw new Error('Incomplete pending approval observation');
+      }
+      const remove = options.onPendingChanged?.(() => this._syncTimeout());
+      // A subscriber may synchronously cancel this run before returning cleanup.
+      if (this._finished) { remove?.(); }
+      else { this._removePendingListener = remove; }
+      this._syncTimeout();
+    } catch {
       this._abort();
-      this.fail(new Error('OpenClaw Gateway: Request timed out'));
-    }, typeof timeout === 'number' && Number.isFinite(timeout) && timeout >= 0
-      ? timeout : OPENCLAW_GATEWAY_TIMEOUT_MS);
-    this._timer.unref?.();
+      this.fail(new Error('OpenClaw Gateway: Approval state unavailable'));
+    }
   }
 
   get isFinished(): boolean { return this._finished; }
@@ -298,9 +315,43 @@ export class OpenClawAgentRun {
   }
 
   private _release(): void {
-    if (this._timer !== undefined) { clearTimeout(this._timer); this._timer = undefined; }
+    this._pauseTimeout();
+    const remove = this._removePendingListener;
+    this._removePendingListener = undefined;
+    this._hasPending = undefined;
+    try { remove?.(); } catch { /* Subscription cleanup cannot strand a reader. */ }
     this._signal?.removeEventListener('abort', this._onAbort);
     this._signal = undefined;
+  }
+
+  private _pauseTimeout(): void {
+    if (this._timer !== undefined) { clearTimeout(this._timer); this._timer = undefined; }
+    if (this._timeoutStartedAt !== undefined) {
+      this._remainingTimeoutMs = Math.max(0, this._remainingTimeoutMs - (performance.now() - this._timeoutStartedAt));
+      this._timeoutStartedAt = undefined;
+    }
+  }
+
+  private _syncTimeout(): void {
+    if (this._finished) { return; }
+    const wasRunning = this._timeoutStartedAt !== undefined;
+    this._pauseTimeout();
+    try {
+      if (this._hasPending?.() === true) { return; }
+    } catch {
+      this._abort();
+      this.fail(new Error('OpenClaw Gateway: Approval state unavailable'));
+      return;
+    }
+    if (this._finished) { return; }
+    if (wasRunning && this._remainingTimeoutMs <= 0) {
+      this._abort();
+      this.fail(new Error('OpenClaw Gateway: Request timed out'));
+      return;
+    }
+    this._timeoutStartedAt = performance.now();
+    this._timer = setTimeout(() => this._syncTimeout(), this._remainingTimeoutMs);
+    this._timer.unref?.();
   }
 
   private _abort(): void {

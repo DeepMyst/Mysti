@@ -188,6 +188,11 @@ export abstract class BaseCliProvider implements ICliProvider {
     this._nativeApprovalHost = host;
   }
 
+  /** Capture once before asynchronous setup; a later host registration cannot acquire this turn. */
+  protected _captureNativeApprovalHandler(panelId: string, signal: AbortSignal): NativeApprovalHandler | undefined {
+    return this._nativeApprovalHost?.handlerForPanel(panelId, signal);
+  }
+
   protected _nativeApprovalRequests(session: PanelSessionState): NativeApprovalRequests | undefined {
     return this._requests.get(session)?.nativeApprovals;
   }
@@ -1442,7 +1447,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     const controller = new AbortController();
     const request = {
       controller, submitted: false,
-      nativeHandler: this._nativeApprovalHost?.handlerForPanel(session.panelId, controller.signal),
+      nativeHandler: this._captureNativeApprovalHandler(session.panelId, controller.signal),
     };
     this._requests.set(session, request);
 
