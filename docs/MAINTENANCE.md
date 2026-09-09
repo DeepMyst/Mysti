@@ -38,6 +38,7 @@ not use write mode to make an unexplained integrity failure disappear.
 | Vendored asset verification | Committed Mermaid assets match the recorded build configuration, dependency versions and artifact hashes. |
 | VSIX package-shape gate | Runtime dependencies and promised walkthrough assets ship; source maps/declarations and unintended large assets do not. |
 | Real VS Code integration | The extension-host environment, including webview/CSP behavior, works in the editor rather than only in mocks. |
+| Minimum embedded runtime | A production fixture compiles/edits Canvas JSX and exchanges MCP tool messages on Node 18.17.1, independently of newer development Node. The fixture rejects execution on a different Node version. |
 
 Tests must assert behavior rather than elapsed speed on shared CI machines. Use
 fake clocks for deadlines, cancellation and delayed callbacks. Preserve exhaustive
@@ -63,6 +64,16 @@ minimum embeds Node 18.15, which lacks that API. Keep the VS Code type declarati
 pinned to the declared minimum and exercise that host in CI; neither bundled
 syntax nor a newer local editor proves all older runtime APIs exist.
 
+To reproduce the runtime-only gate, build with the development Node:
+`node scripts/build-runtime-fixture.js`. Then run
+`node out-test/runtime/minimum.cjs` with Node 18.17.1. It bundles its dependencies
+with the production webpack configuration and rejects non-builtin externals, so
+the old runtime cannot silently load the newer development dependency graph.
+This covers the exercised bundled paths; the real-editor integration remains a
+separate requirement. In particular, Babel 8 declares newer upstream Node
+support even though these bundled parser/compiler behaviors pass on the minimum
+editor runtime.
+
 For an update:
 
 1. Read the upstream release/migration notes and inspect the manifest/lock diff.
@@ -77,6 +88,36 @@ For an update:
 
 Do not publish as part of a dependency bot update. Publishing requires the release
 review below.
+
+### Editor test runtime and audit exception
+
+The test CLI runs under development Node, but its Mocha runner executes inside
+the editor. Mocha 10.8.2 supports the minimum editor's Node 18.17.1; Mocha 11
+requires at least 18.18 and Mocha 12 requires a newer major runtime. The
+`@vscode/test-cli` override keeps its in-editor Mocha aligned with the direct
+dependency. Recheck this override when either package or the minimum editor
+changes. Do not raise the production editor minimum solely to update a test tool.
+
+The current residual audit chain is development-only:
+`@vscode/test-cli → mocha → serialize-javascript@6.0.2`. The serializer has
+[crafted-object code execution](https://github.com/advisories/GHSA-5c6j-r48x-rmvq)
+and [CPU exhaustion](https://github.com/advisories/GHSA-qj8w-gfj5-8c6v) advisories.
+Mocha loads it in its optional parallel worker pool. Our editor tests explicitly
+run serially, and none of these packages ships in the VSIX. The release maintainer
+owns this exception: keep parallel execution disabled and remove the exception
+when a compatible patched serializer is available or the runner is replaced.
+Serializer 7.0.5 requires Node 20, so overriding it into the minimum editor would
+violate its declared runtime support.
+
+The estree-only `minimatch` override updates its pinned vulnerable 9.0.3 to a
+patched 9.0.x release without downgrading typescript-eslint. Remove that override
+when an upgraded parser resolves a patched version itself.
+
+Source Node declarations still target Node 20. The old 18.17 declarations conflict
+with current TypeScript Buffer definitions and omit the fetch globals used here;
+a direct downgrade is not sufficient. They can therefore admit APIs missing in
+the minimum editor. Minimum-runtime and real-editor checks remain required; a
+separate compatible type-check project is follow-up work.
 
 ### Vendored browser assets
 

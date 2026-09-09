@@ -1,12 +1,15 @@
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { Writable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { respondToAcpApproval } from '../../../src/providers/base/AcpApproval';
 import { NativeApprovalRequests } from '../../../src/providers/base/NativeApprovalRequests';
 
 function respond(options: Record<string, unknown>[]) {
   const write = vi.fn();
-  const proc = Object.assign(new EventEmitter(), { stdin: { writable: true, write } }) as unknown as ChildProcess;
+  const stdin = new Writable({ write(chunk, _encoding, callback) { write(String(chunk)); callback(); } });
+  const proc = Object.assign(new EventEmitter(), { stdin }) as unknown as ChildProcess;
   const handler = vi.fn(async () => true);
   const requests = new NativeApprovalRequests({
     panelId: 'p', providerId: 'hermes', process: proc,
@@ -17,7 +20,7 @@ function respond(options: Record<string, unknown>[]) {
     settings: { mode: 'ask-before-edit', accessLevel: 'full-access' },
     process: proc, sessionId: 's', trackedTools: new Map(), requests,
   });
-  return { write, handler, requests, outcome: () => JSON.parse(write.mock.calls[0][0]).result.outcome };
+  return { write, handler, requests, stdin, outcome: () => JSON.parse(write.mock.calls[0][0]).result.outcome };
 }
 
 describe('ACP permission choices', () => {
@@ -29,6 +32,8 @@ describe('ACP permission choices', () => {
     ]);
     await vi.waitFor(() => expect(h.write).toHaveBeenCalledOnce());
     expect(h.outcome()).toEqual({ outcome: 'selected', optionId: 'opaque-once' });
+    expect(h.stdin.listenerCount('error')).toBe(0);
+    expect(h.stdin.listenerCount('close')).toBe(0);
     h.requests.dispose();
   });
 
@@ -57,5 +62,31 @@ describe('ACP permission choices', () => {
     await vi.waitFor(() => expect(h.write).toHaveBeenCalledOnce());
     expect(h.outcome()).toEqual({ outcome: 'selected', optionId: 'allow_once' });
     h.requests.dispose();
+  });
+
+  it('handles an asynchronous EPIPE and ends only the child whose stdin closed', async () => {
+    const child = spawn(process.execPath, ['-e',
+      "require('node:fs').closeSync(0); process.stdout.write('ready'); setTimeout(() => {}, 30000);",
+    ], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const exited = new Promise<void>(resolve => child.once('close', () => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', reject);
+        child.stdout.once('data', () => { child.removeListener('error', reject); resolve(); });
+      });
+      expect(child.stdin.writable).toBe(true);
+      respondToAcpApproval({
+        id: 91, params: { toolCall: { kind: 'read' }, options: [{ optionId: 'yes', kind: 'allow_once' }] },
+        settings: { mode: 'default', accessLevel: 'full-access' },
+        process: child, sessionId: null, trackedTools: new Map(), requests: undefined,
+      });
+      await exited;
+      expect(child.killed).toBe(true);
+      expect(child.stdin.listenerCount('error')).toBe(0);
+      expect(child.stdin.listenerCount('close')).toBe(0);
+    } finally {
+      child.kill();
+      await exited;
+    }
   });
 });

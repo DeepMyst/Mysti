@@ -169,4 +169,14 @@ describe('single-shot process ownership', () => {
     expect(cleanup).toHaveBeenCalledOnce();
     expect(state._activePanelProcesses.has('panel')).toBe(false);
   });
+
+  it('delivers the prompt and closes the issuing process stdin', async () => {
+    const { deliver, send } = harness();
+    const proc = fakeProcess();
+    vi.mocked(spawn).mockReturnValue(proc);
+    deliver.mockRestore();
+    await collect(send());
+    expect(proc.stdin?.write).toHaveBeenCalledWith('current prompt');
+    expect(proc.stdin?.end).toHaveBeenCalledOnce();
+  });
 });

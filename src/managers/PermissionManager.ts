@@ -253,7 +253,7 @@ export class PermissionManager {
     const effectiveTimeout = isSemiAutonomous
       ? this._config.semiAutonomousTimeout
       : this._config.timeout;
-    const expiresAt = effectiveTimeout > 0
+    const expiresAt = effectiveTimeout > 0 && this._config.timeoutBehavior !== 'require-action'
       ? now + (effectiveTimeout * 1000)
       : 0; // 0 = no expiry
 

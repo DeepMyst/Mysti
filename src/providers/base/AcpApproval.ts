@@ -70,9 +70,7 @@ export function respondToAcpApproval(options: {
     const result = chosen
       ? { outcome: { outcome: 'selected', optionId: chosen } }
       : { outcome: { outcome: 'cancelled' } };
-    if (target?.stdin?.writable) {
-      target.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
-    }
+    writeApprovalResponse(target, JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
   };
   const defaultDecision = allowed && !wrongSession ? acpApprovalDecision(options.settings, kind) : 'deny';
   if (options.requests) {
@@ -80,5 +78,31 @@ export function respondToAcpApproval(options: {
   } else {
     // Standalone parsing/diagnostics has no live turn owner to display a card.
     respond(defaultDecision === 'allow' ? 'allow' : 'deny', proc);
+  }
+}
+
+function writeApprovalResponse(target: ChildProcess | null, message: string): void {
+  const stdin = target?.stdin;
+  if (!target || !stdin?.writable || stdin.destroyed) { return; }
+  const cleanup = () => {
+    stdin.removeListener('error', failed);
+    stdin.removeListener('close', cleanup);
+  };
+  const failed = () => {
+    cleanup();
+    // A closed input pipe cannot complete the ACP exchange. End this captured
+    // child so its reader and any other pending requests settle promptly.
+    try { target.kill(); } catch { /* The child may already have exited. */ }
+  };
+  stdin.once('error', failed);
+  stdin.once('close', cleanup);
+  try {
+    stdin.write(message, error => {
+      // Node invokes a failed write callback before emitting `error`; keep the
+      // listener through that event so an EPIPE never escapes into the host.
+      if (!error) { cleanup(); }
+    });
+  } catch {
+    failed();
   }
 }

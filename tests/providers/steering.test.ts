@@ -104,7 +104,7 @@ describe('Plan 28 Phase 2 — steering capability', () => {
       .toContain('proc.stdin.end()');
 
     // …and the send path still routes through it rather than writing its own.
-    expect(src).toContain('await this._deliverPrompt(session.process, fullPrompt, session)');
+    expect(src).toContain('await this._deliverPrompt(proc, fullPrompt, session)');
   });
 
   /**

@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { ChildProcess } from 'child_process';
+import { Writable } from 'node:stream';
 import { TestableKimiProvider } from '../../helpers/providerFactory';
 import { createKimiSession } from '../../helpers/sessionFactory';
 import type { KimiCodeSessionState } from '../../../src/providers/kimi/KimiCodeProvider';
@@ -28,10 +29,7 @@ function settings(overrides?: Partial<Settings>): Settings {
 function fakeProc(): { proc: ChildProcess; written: string[] } {
   const written: string[] = [];
   const proc = {
-    stdin: {
-      writable: true,
-      write: (chunk: string) => { written.push(chunk); return true; }
-    }
+    stdin: new Writable({ write(chunk, _encoding, callback) { written.push(String(chunk)); callback(); } })
   } as unknown as ChildProcess;
   return { proc, written };
 }

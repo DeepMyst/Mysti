@@ -47,6 +47,15 @@ interface MentionRun {
   children: Map<string, () => void>;
 }
 
+interface MentionNativeActions {
+  mayHaveSideEffects: boolean;
+  denied: boolean;
+}
+
+// A native delegation or unknown tool can mutate state. Only canonical
+// analysis operations are safe to repeat after an approval and transport error.
+const NATIVE_RETRY_SAFE_TOOLS = new Set(['read', 'grep', 'glob', 'ls', 'think']);
+
 // Agent display names come from the Provider Manifest (Plan 02 Phase 1) via
 // getProviderDisplayName() — the local 7-entry map (which silently missed
 // opencode/ollama/localai/qwen-code) is gone.
@@ -319,15 +328,27 @@ export class MentionRouter {
     prompt: string,
     context: ContextItem[],
     settings: Settings,
-    childPanelId: string
+    childPanelId: string,
+    nativeActions?: MentionNativeActions
   ): AsyncGenerator<import('../types').StreamChunk> {
     run.controller.signal.throwIfAborted();
     let active = true;
     const registration = this._providerManager.setNativeApprovalHandlerForPanel(childPanelId, async request => {
       if (!active || run.controller.signal.aborted || request.signal.aborted) { return 'cancelled'; }
-      if (request.panelId !== childPanelId || request.defaultDecision === 'deny' || !run.parentApproval) { return false; }
+      if (nativeActions?.denied) { return false; }
+      if (request.panelId !== childPanelId || request.defaultDecision === 'deny' || !run.parentApproval) {
+        if (nativeActions) { nativeActions.denied = true; }
+        return false;
+      }
       const approved = await run.parentApproval({ ...request, panelId: run.panelId });
-      return active && !run.controller.signal.aborted && !request.signal.aborted ? approved : 'cancelled';
+      if (!active || run.controller.signal.aborted || request.signal.aborted) { return 'cancelled'; }
+      if (nativeActions) {
+        if (approved !== true) { nativeActions.denied = true; }
+        else if (!NATIVE_RETRY_SAFE_TOOLS.has(request.toolCall.name.toLowerCase())) {
+          nativeActions.mayHaveSideEffects = true;
+        }
+      }
+      return approved;
     });
     const retire = () => {
       active = false;
@@ -590,6 +611,9 @@ export class MentionRouter {
   ): AsyncGenerator<MentionStreamChunk, { responseText: string; hasError: boolean }> {
     let attempt = 0;
     let lastError: string | undefined;
+    // Primary attempts and question follow-ups belong to the same task. Once
+    // an approved action may have run, replaying its prompt is unsafe.
+    const nativeActions: MentionNativeActions = { mayHaveSideEffects: false, denied: false };
 
     while (attempt <= SUBAGENT_MAX_RETRIES) {
       run.controller.signal.throwIfAborted();
@@ -612,7 +636,7 @@ export class MentionRouter {
       };
 
       try {
-        const stream = this._sendChildMessage(run, agentId, prompt, context, subAgentSettings, subAgentPanelId);
+        const stream = this._sendChildMessage(run, agentId, prompt, context, subAgentSettings, subAgentPanelId, nativeActions);
 
         // Set up timeout
         let timedOut = false;
@@ -624,6 +648,12 @@ export class MentionRouter {
         try {
           for await (const chunk of stream) {
             run.controller.signal.throwIfAborted();
+            if (nativeActions.denied) {
+              hasError = true;
+              lastError = 'Permission denied for sub-agent task.';
+              yield { type: 'subagent_error', agentId, content: lastError };
+              break;
+            }
             if (timedOut) {
               hasError = true;
               lastError = `Sub-agent timed out after ${SUBAGENT_TIMEOUT_MS / 1000}s`;
@@ -668,11 +698,16 @@ export class MentionRouter {
                   const followUpPanelId = `${subAgentPanelId}-followup`;
 
                   console.log(`[Mysti] MentionRouter: Resuming sub-agent ${agentId} with user's answers`);
-                  const followUpStream = this._sendChildMessage(run, agentId, followUpPrompt, context, subAgentSettings, followUpPanelId);
+                  const followUpStream = this._sendChildMessage(run, agentId, followUpPrompt, context, subAgentSettings, followUpPanelId, nativeActions);
 
                   // Stream follow-up response
                   for await (const fChunk of followUpStream) {
                     run.controller.signal.throwIfAborted();
+                    if (nativeActions.denied) {
+                      hasError = true;
+                      yield { type: 'subagent_error', agentId, content: 'Permission denied for sub-agent task.' };
+                      break;
+                    }
                     if (fChunk.type === 'text' && fChunk.content) {
                       responseText += fChunk.content;
                       yield { type: 'subagent_text', agentId, content: fChunk.content };
@@ -696,7 +731,7 @@ export class MentionRouter {
                 }
 
                 // We already handled the follow-up — return from this attempt
-                return { responseText, hasError };
+                return { responseText, hasError: hasError || nativeActions.denied };
               } else {
                 // No callback — fallback to auto-skip (backward compat)
                 console.log(`[Mysti] MentionRouter: Sub-agent ${agentId} tried to ask user a question, auto-skipping`);
@@ -720,6 +755,11 @@ export class MentionRouter {
           clearTimeout(timeoutHandle);
         }
 
+        if (nativeActions.denied && !hasError) {
+          hasError = true;
+          lastError = 'Permission denied for sub-agent task.';
+          yield { type: 'subagent_error', agentId, content: lastError };
+        }
         if (!hasError) {
           return { responseText, hasError: false };
         }
@@ -730,6 +770,9 @@ export class MentionRouter {
         yield { type: 'subagent_error', agentId, content: lastError };
       }
 
+      if (nativeActions.denied || nativeActions.mayHaveSideEffects) {
+        return { responseText, hasError: true };
+      }
       attempt++;
     }
 

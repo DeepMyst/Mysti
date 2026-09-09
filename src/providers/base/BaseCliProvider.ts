@@ -902,14 +902,24 @@ export abstract class BaseCliProvider implements ICliProvider {
       }
     });
 
-    // Handle spawn errors (e.g., ENOENT/EINVAL on Windows)
+    // Handle spawn and stdin transport errors (e.g., ENOENT/EPIPE).
     proc.on('error', (err) => {
-      console.error(`[Mysti] ${this.displayName}: Persistent process spawn error for panel ${session.panelId}:`, err);
+      console.error(`[Mysti] ${this.displayName}: Persistent process error for panel ${session.panelId}:`, err);
       if (session.persistentProcess === proc) {
         session.persistentProcess = null;
         session.persistentReady = false;
       }
     });
+
+    // stdin errors are stream events, not ChildProcess errors. Keep this
+    // listener for the whole captured process lifetime: initial prompts, ACP
+    // handshake writes, and late permission replies can all race pipe closure.
+    const onStdinError = (error: Error) => {
+      proc.emit('error', error);
+      void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
+    };
+    proc.stdin?.on('error', onStdinError);
+    proc.once('close', () => { proc.stdin?.removeListener('error', onStdinError); });
 
     // The CLI with --input-format stream-json produces NO stdout until it receives
     // a message on stdin. Don't wait for init — just mark as ready immediately.

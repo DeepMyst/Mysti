@@ -36,7 +36,8 @@ beforeAll(() => {
 
 describe('a blocked capability names itself', () => {
   it('the announcer runs on the coordinator turn', () => {
-    expect(provider).toContain('this._announceRefusedCapability(panelId, turnText, delegateNonce, scanKinds)');
+    // The extracted turn runner calls this port for each completed model turn.
+    expect(provider.includes('onTurnText: text => this._announceRefusedCapability(panelId, text, delegateNonce, scanKinds)')).toBe(true);
   });
 
   it('it fires only when the model ACTUALLY tried — and only for THIS run', () => {

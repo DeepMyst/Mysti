@@ -7,7 +7,7 @@ Hermes and Kimi route ACP permission requests through a native request → host 
 ## Implemented ownership and policy
 
 - Added `src/providers/base/NativeApprovalPolicy.ts`; it uses the shared permission classifier and keeps native plan/read-only restrictions first.
-- Hermes/Kimi now deny edit/execute/delete/fetch permission requests in `ask-before-edit + full-access`. Their former unconditional full-access branch approved them before any UI interaction.
+- Hermes/Kimi require interactive approval for edit/execute/delete/fetch permission requests in `ask-before-edit + full-access`. A missing owner denies these requests; an explicit host approval permits the one operation. Their former unconditional full-access branch approved them before any UI interaction.
 - Continue and legacy plain-text Copilot no longer receive unrestricted auto-approval in `edit-automatically + ask-permission`. Continue uses `--readonly`; legacy Copilot denies shell/write because these transports cannot present native requests.
 - Modern Copilot's existing stream-pause behavior is unchanged. Correcting its policy predicate does not establish pre-execution approval.
 - `shouldGateToolUse` accepts only the mode/access fields it actually uses; classifier behavior is unchanged.
