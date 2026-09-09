@@ -44,6 +44,28 @@ describe('vendored asset verification', () => {
     expect(result.status, result.stderr).toBe(0);
   });
 
+  it('accepts the renamed webpack minimizer only when its provenance matches the lock', () => {
+    const f = fixture();
+    const buildPackages = f.manifest.buildPackages as Record<string, { version: string; integrity: string }>;
+    const lockPackages = f.lock.packages as typeof buildPackages;
+    buildPackages['node_modules/minimizer-webpack-plugin'] = buildPackages['node_modules/terser-webpack-plugin'];
+    lockPackages['node_modules/minimizer-webpack-plugin'] = lockPackages['node_modules/terser-webpack-plugin'];
+    delete buildPackages['node_modules/terser-webpack-plugin'];
+    delete lockPackages['node_modules/terser-webpack-plugin'];
+    f.save();
+    expect(f.check().status).toBe(0);
+    lockPackages['node_modules/minimizer-webpack-plugin'] = { version: '2.0.0', integrity: 'sha512-new' };
+    f.save();
+    expect(f.check().status).toBe(1);
+  });
+
+  it('rejects provenance that omits the minimizer', () => {
+    const f = fixture();
+    delete (f.manifest.buildPackages as Record<string, unknown>)['node_modules/terser-webpack-plugin'];
+    f.save();
+    expect(f.check().status).toBe(1);
+  });
+
   it('rejects incomplete provenance instead of validating empty maps', () => {
     const f = fixture();
     f.manifest.assets = {} as typeof f.manifest.assets;

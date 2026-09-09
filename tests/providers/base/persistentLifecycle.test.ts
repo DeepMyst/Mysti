@@ -38,7 +38,7 @@ function fakeProcess() {
     exitCode: null as number | null,
     signalCode: null as NodeJS.Signals | null,
     stdout, stderr,
-    stdin: { writable: true, write },
+    stdin: Object.assign(new EventEmitter(), { writable: true, write }),
     kill: vi.fn(() => true),
   });
   return { proc: proc as unknown as ChildProcess, stdout, stderr, write, written };
@@ -111,7 +111,13 @@ describe('persistent process ownership and turn cleanup', () => {
       expect(killProcessTree).toHaveBeenCalledWith(child.proc, expect.any(Number), expect.objectContaining({ initialSignal: 'SIGKILL' }));
     }
     expect(child.stdout.listenerCount('data')).toBe(0);
+    // The turn reader is detached, but the still-live child retains its stdin
+    // error guard until close so an asynchronous failed write stays handled.
+    expect(child.proc.listenerCount('close')).toBe(1);
+    expect(child.proc.stdin!.listenerCount('error')).toBe(1);
+    child.proc.emit('close', null, 'SIGTERM');
     expect(child.proc.listenerCount('close')).toBe(0);
+    expect(child.proc.stdin!.listenerCount('error')).toBe(0);
   });
 
   it('a completed response retains its process and cleans attachments', async () => {

@@ -20,7 +20,7 @@ describe.each([
   ['Hermes', () => new TestableHermesProvider(), createHermesSession],
   ['Kimi', () => new TestableKimiProvider(), createKimiSession],
 ] as const)('%s native permission policy', (_name, createProvider, createSession) => {
-  it.each(['edit', 'execute', 'delete', 'fetch'])('denies %s under ask-before-edit even with full access', kind => {
+  it.each(['edit', 'execute', 'delete', 'fetch'])('denies an unowned %s request under ask-before-edit even with full access', kind => {
     const provider = createProvider();
     const session = createSession();
     session.acpMode = 'ask-before-edit';

@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { ProviderManager } from '../../src/managers/ProviderManager';
 import type { NativeApprovalHost, NativeApprovalRequest } from '../../src/providers/base/IProvider';
+import { NativeApprovalRequests } from '../../src/providers/base/NativeApprovalRequests';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -30,6 +33,45 @@ function harness() {
 }
 
 describe('native approval handler routing', () => {
+  it('a rejected observer stays isolated through manager forwarding and cannot prevent denial', async () => {
+    const h = harness();
+    const onDecision = vi.fn(async () => { throw new Error('observer failed'); });
+    const handler = Object.assign(vi.fn(async () => true), { onDecision });
+    h.manager.setNativeApprovalHandlerForPanel('panel', handler);
+    const scope = new NativeApprovalRequests({
+      process: new EventEmitter() as ChildProcess, panelId: 'panel', providerId: 'hermes',
+      signal: h.controller.signal, handler: h.host.handlerForPanel('panel', h.controller.signal),
+      isCurrent: () => true,
+    });
+    const respond = vi.fn();
+    scope.request(77, h.request().toolCall, 'deny', respond);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(handler).not.toHaveBeenCalled();
+    expect(onDecision).toHaveBeenCalledOnce();
+    expect(respond).toHaveBeenCalledExactlyOnceWith('deny', expect.any(EventEmitter));
+    scope.dispose();
+  });
+
+  it('decision observation keeps the captured panel, registration and turn ownership', () => {
+    const h = harness();
+    const oldObserver = vi.fn();
+    h.manager.setNativeApprovalHandlerForPanel('panel', Object.assign(async () => true, { onDecision: oldObserver }));
+    const old = h.host.handlerForPanel('panel', h.controller.signal)!;
+    old.onDecision!(h.request('other'), 'deny');
+    expect(oldObserver).not.toHaveBeenCalled();
+    old.onDecision!(h.request(), 'deny');
+    expect(oldObserver).toHaveBeenCalledOnce();
+    const newObserver = vi.fn();
+    h.manager.setNativeApprovalHandlerForPanel('panel', Object.assign(async () => true, { onDecision: newObserver }));
+    old.onDecision!(h.request(), 'deny');
+    expect(oldObserver).toHaveBeenCalledOnce();
+    expect(newObserver).not.toHaveBeenCalled();
+    const current = h.host.handlerForPanel('panel', h.controller.signal)!;
+    h.controller.abort();
+    current.onDecision!(h.request(), 'deny');
+    expect(newObserver).not.toHaveBeenCalled();
+  });
+
   it('captures the host panel scope at turn start', async () => {
     const h = harness();
     let current = 'original';

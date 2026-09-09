@@ -158,7 +158,7 @@ export class ProviderManager {
       handler = typeof registration.handler === 'function'
         ? registration.handler : registration.handler.handlerForPanel(panelId, signal);
     } catch { /* an unavailable host cannot approve a native request */ }
-    return async request => {
+    const captured: NativeApprovalHandler = async request => {
       const completion = new AbortController();
       const scope = createAbortScope([request.signal, registration.controller.signal, signal, completion.signal]);
       try {
@@ -186,6 +186,14 @@ export class ProviderManager {
         scope.dispose();
       }
     };
+    captured.onDecision = (request, decision) => {
+      if (request.panelId !== panelId || request.signal.aborted
+        || registration.controller.signal.aborted || signal?.aborted) { return; }
+      // Capture the observer with its registration; never retarget a late
+      // outcome to a new panel handler or turn.
+      return handler?.onDecision?.(request, decision);
+    };
+    return captured;
   }
 
   /**

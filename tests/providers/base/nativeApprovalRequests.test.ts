@@ -131,4 +131,19 @@ describe('native request ownership', () => {
     expect(h.respond.mock.calls.map(call => call[0])).toEqual(['deny', 'allow']);
     h.scope.dispose();
   });
+
+  it('reports a hard policy denial without invoking approval or allowing an observer to widen it', () => {
+    const onDecision = vi.fn(() => true);
+    const handler = Object.assign(vi.fn(async () => true), { onDecision });
+    const h = harness(handler);
+    h.request(1, 'deny');
+    expect(handler).not.toHaveBeenCalled();
+    expect(onDecision).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ defaultDecision: 'deny' }), 'deny');
+    expect(h.respond).toHaveBeenCalledExactlyOnceWith('deny', h.proc);
+    onDecision.mockImplementation(() => { throw new Error('observer unavailable'); });
+    h.request(2, 'deny');
+    expect(h.respond).toHaveBeenCalledTimes(2);
+    expect(h.respond).toHaveBeenLastCalledWith('deny', h.proc);
+    h.scope.dispose();
+  });
 });

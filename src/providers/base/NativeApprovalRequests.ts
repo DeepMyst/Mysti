@@ -1,9 +1,9 @@
 /** Mysti — SPDX-License-Identifier: Apache-2.0 */
 import { randomUUID } from 'crypto';
 import type { ChildProcess } from 'child_process';
-import type { NativeApprovalHandler, NativeApprovalRequest } from './IProvider';
+import type { NativeApprovalDecision, NativeApprovalHandler, NativeApprovalRequest } from './IProvider';
 
-export type NativeApprovalDecision = 'allow' | 'deny' | 'cancelled';
+export type { NativeApprovalDecision } from './IProvider';
 
 /** One process and one turn own all requests in this scope. */
 export class NativeApprovalRequests {
@@ -49,6 +49,11 @@ export class NativeApprovalRequests {
     const key = `${typeof nativeRequestId}:${nativeRequestId}`;
     if (this._pending.has(key)) { return; }
     const controller = new AbortController();
+    const request: NativeApprovalRequest = {
+      id: `native-${randomUUID()}`, nativeRequestId,
+      providerId: this._owner.providerId, panelId: this._owner.panelId,
+      toolCall, defaultDecision, signal: controller.signal,
+    };
     let settled = false;
     const finish = (decision: NativeApprovalDecision) => {
       if (settled) { return; }
@@ -56,6 +61,10 @@ export class NativeApprovalRequests {
       this._pending.delete(key);
       this._notify();
       if (decision !== 'cancelled' && !this._owner.isCurrent()) { decision = 'cancelled'; }
+      // Observation cannot widen a local policy denial or request a card.
+      try {
+        void Promise.resolve(this._owner.handler?.onDecision?.(request, decision)).catch(() => {});
+      } catch { /* host observation must not prevent the native response */ }
       // Capture the original process. Never look up a replacement by panel ID.
       try { respond(decision, this._owner.process); } catch { /* process closed while writing */ }
       controller.abort();
@@ -70,11 +79,6 @@ export class NativeApprovalRequests {
       finish(defaultDecision === 'allow' ? 'allow' : 'deny');
       return;
     }
-    const request: NativeApprovalRequest = {
-      id: `native-${randomUUID()}`, nativeRequestId,
-      providerId: this._owner.providerId, panelId: this._owner.panelId,
-      toolCall, defaultDecision, signal: controller.signal,
-    };
     try {
       void Promise.resolve(this._owner.handler(request)).then(
         approved => finish(approved === 'cancelled' ? 'cancelled' : approved === true ? 'allow' : 'deny'),

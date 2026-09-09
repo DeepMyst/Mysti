@@ -32,7 +32,7 @@ describe.each([
   const cleanups: Array<() => void> = [];
   afterEach(() => { vi.useRealTimers(); for (const cleanup of cleanups.splice(0)) { cleanup(); } vi.restoreAllMocks(); });
 
-  function harness() {
+  function harness(closeAfter = '') {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-acp-test-'));
     const provider = createProvider();
     const originalFolders = vscode.workspace.workspaceFolders;
@@ -43,7 +43,7 @@ describe.each([
     vi.spyOn(provider, 'getCliPath').mockReturnValue(process.execPath);
     vi.spyOn(provider, 'buildPersistentCliArgs').mockImplementation((config, session) => {
       originalBuild(config, session);
-      return [path.resolve(__dirname, '../fixtures/acpPermissionAgent.cjs'), directory, session.panelId];
+      return [path.resolve(__dirname, '../fixtures/acpPermissionAgent.cjs'), directory, session.panelId, closeAfter];
     });
     vi.spyOn(provider as unknown as { buildPromptAsync(): Promise<string> }, 'buildPromptAsync').mockResolvedValue('fixture');
     const suspend = vi.spyOn(provider, 'suspendProcess');
@@ -55,6 +55,16 @@ describe.each([
     const send = (panelId: string) => collect(provider.sendMessage('fixture', [], settings, null, undefined, panelId));
     return { provider, suspend, send, marker: (panel: string) => path.join(directory, panel) };
   }
+
+  it.each(['initialize', 'session/new'])('a closed ACP pipe after %s ends the turn with an error', async method => {
+    const h = harness(method);
+    const handler = vi.fn(async () => true);
+    h.provider.setNativeApprovalHost({ handlerForPanel: () => handler });
+    const chunks = await h.send('closed-pipe');
+    expect(chunks.some(chunk => chunk.type === 'error' && /EPIPE|broken pipe/i.test(chunk.content))).toBe(true);
+    expect(handler).not.toHaveBeenCalled();
+    expect(fs.existsSync(h.marker('closed-pipe'))).toBe(false);
+  });
 
   it('blocks the real child side effect until approval and reuses a native ID in the next turn', async () => {
     const h = harness();

@@ -633,29 +633,43 @@ describe('PageCompiler — compilePartial', () => {
     expect(Date.now).toHaveBeenCalledTimes(2);
   });
 
-  it.each(PAGE_SCAFFOLDS)('handles EVERY byte-level prefix of $id, not just tidy ones', (scaffold) => {
+  const prefixWindowSize = 250;
+  const prefixWindows = PAGE_SCAFFOLDS.flatMap(scaffold => Array.from(
+    { length: Math.ceil(scaffold.jsx.length / prefixWindowSize) },
+    (_, window) => ({
+      id: scaffold.id,
+      src: scaffold.jsx,
+      start: window * prefixWindowSize + 1,
+      end: Math.min((window + 1) * prefixWindowSize, scaffold.jsx.length),
+    }),
+  ));
+
+  it.each(prefixWindows)('handles every source prefix of $id from $start through $end', ({ id, src, start, end }) => {
     // A stream cuts wherever the token boundary falls: mid-entity, mid-attribute
     // name, between a `<` and its tag, inside `{{`. Sampling at 5% steps walks
-    // past exactly the offsets where prefix repair is hardest.
+    // past exactly the offsets where prefix repair is hardest. Bound each test's
+    // work while retaining every offset and the transition between windows.
     const shrinks: string[] = [];
     const badMids: string[] = [];
-    const src = scaffold.jsx;
-    let prev = 0;
-    for (let i = 1; i <= src.length; i++) {
+    const previousPrefix = src.slice(0, start - 1);
+    const previous = compilePartial(previousPrefix);
+    expect(previous.ok, `${id}@${start - 1}: ${previous.ok ? '' : previous.error}`).toBe(hasRoot(previousPrefix));
+    let prev = previous.ok ? [...walk(previous.doc)].length : 0;
+    for (let i = start; i <= end; i++) {
       const prefix = src.slice(0, i);
       const r = compilePartial(prefix);
-      expect(r.ok, `${scaffold.id}@${i}: ${r.ok ? '' : r.error}`).toBe(hasRoot(prefix));
+      expect(r.ok, `${id}@${i}: ${r.ok ? '' : r.error}`).toBe(hasRoot(prefix));
       if (!r.ok) { continue; }
       const nodes = [...walk(r.doc)];
       // A partial may only ever gain nodes as more source arrives; a shrink
       // means repair invented a tree the next chunk contradicts, which is
       // what makes a streaming preview flicker.
-      if (nodes.length < prev) { shrinks.push(`${scaffold.id}@${i}: ${prev} → ${nodes.length}`); }
+      if (nodes.length < prev) { shrinks.push(`${id}@${i}: ${prev} → ${nodes.length}`); }
       prev = nodes.length;
-      for (const n of nodes) { if (!isMid(n.mid)) { badMids.push(`${scaffold.id}@${i}: ${n.mid}`); } }
+      for (const n of nodes) { if (!isMid(n.mid)) { badMids.push(`${id}@${i}: ${n.mid}`); } }
     }
     // The last prefix is the whole page, so the sweep must land on it exactly.
-    expect(prev, scaffold.id).toBe([...walk(ok(src))].length);
+    if (end === src.length) { expect(prev, id).toBe([...walk(ok(src))].length); }
     expect(shrinks.slice(0, 5)).toEqual([]);
     expect(badMids.slice(0, 5)).toEqual([]);
   });

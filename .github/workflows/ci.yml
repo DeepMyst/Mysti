@@ -78,11 +78,33 @@ jobs:
       - name: Lint
         run: npm run lint
 
+  minimum-runtime:
+    name: bundled runtime (Node 18.17.1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install locked build toolchain
+        run: npm ci
+      - name: Build runtime compatibility fixture
+        run: node scripts/build-runtime-fixture.js
+      # VS Code 1.86.0 embeds Node 18.17.1. This checks bundled runtime paths;
+      # the separate VS Code integration workflow exercises the editor UI.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18.17.1'
+      - name: Exercise the minimum supported runtime
+        run: node out-test/runtime/minimum.cjs
+
   package-shape:
     name: package shape
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [gates, test, lint]
+    needs: [gates, test, lint, minimum-runtime]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -42,5 +42,5 @@ export default defineConfig({
   // A scratch folder so the canvas has a real workspace to write `.mysti/canvas`
   // into; created by the test's own setup.
   workspaceFolder: './out-vscode-test/fixture-workspace',
-  mocha: { ui: 'bdd', timeout: 120_000, color: false },
+  mocha: { ui: 'bdd', timeout: 120_000, color: false, parallel: false },
 });

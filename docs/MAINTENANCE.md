@@ -39,6 +39,7 @@ not use write mode to make an unexplained integrity failure disappear.
 | VSIX package-shape gate | Runtime dependencies and promised walkthrough assets ship; source maps/declarations and unintended large assets do not. |
 | Real VS Code integration | The extension-host environment, including webview/CSP behavior, works in the editor rather than only in mocks. |
 | Installed VSIX on Linux, minimum and stable VS Code | The archive produced by the package gate activates, resolves its shipped Playwright dependency and mounts an interactive Canvas frame. |
+| Minimum embedded runtime | A production fixture compiles/edits Canvas JSX and exchanges MCP tool messages on Node 18.17.1, independently of newer development Node. The fixture rejects execution on a different Node version. |
 
 `npm run test:vscode` builds the release bundles and opens a fresh editor profile.
 The Canvas test inspects the editor's actual nested webview through a loopback
@@ -99,11 +100,16 @@ runtime identity, not a successful editor integration run. The minimum-host
 Linux CI gate remains required. A current-editor pass does not resolve this
 local crash or establish minimum-host compatibility.
 
-As a narrower check on that runtime, a production-webpack-config bundle of the
-PageCompiler ran under Node 18.17.1: all five shipped scaffolds and five partial
-scaffolds compiled, and an unsupported `process.env` expression was rejected.
-This covers the exercised bundled parser subset despite its upstream package's
-newer Node engine declaration; it does not replace full minimum-host validation.
+To reproduce the runtime-only gate, build with the development Node:
+`node scripts/build-runtime-fixture.js`. Then run
+`node out-test/runtime/minimum.cjs` with Node 18.17.1. It bundles its dependencies
+with the production webpack configuration and rejects non-builtin externals, so
+the old runtime cannot silently load the newer development dependency graph.
+This covers the exercised bundled paths; it does not load the shipped extension
+bundle, activate the editor, or test Mysti's MCP stdio/HTTP transports. Real-editor
+integration remains a separate requirement. In particular, Babel 8 declares newer upstream Node
+support even though these bundled parser/compiler behaviors pass on the minimum
+editor runtime.
 
 For an update:
 
@@ -120,22 +126,22 @@ For an update:
 Do not publish as part of a dependency bot update. Publishing requires the release
 review below.
 
-### Dependency audit evidence and exceptions (2026-09-09)
+### Dependency audit evidence and exceptions (2026-09-10)
 
-The reviewed lock installs cleanly with Node 22.20.0 and npm 10.9.3. The full
-audit decreased from 24 entries, including one critical, to four development
-entries: `@vscode/test-cli`, `mocha`, `diff` and `serialize-javascript` (two low,
-one moderate, one high). `npm audit --omit=dev` reports zero. Re-run both audits
-when updating the graph; these counts are dated evidence, not a permanent claim.
+The reconciled lock installs cleanly with Node 22.20.0 and npm 10.9.3. The
+full audit reports three development entries: `@vscode/test-cli`, `mocha` and
+`serialize-javascript` (two moderate, one high). `npm audit --omit=dev` reports
+zero. Re-run both audits when updating the graph; these counts are dated
+evidence, not a permanent claim.
 
 Vitest 4.1.11 fixes the [UI/API access advisory](https://github.com/vitest-dev/vitest/security/advisories/GHSA-5xrq-8626-4rwp)
 and [mock redirect traversal](https://github.com/vitest-dev/vitest/security/advisories/GHSA-82fw-gwwq-j7x9).
 The explicit Vite 7.3.6 dependency retains a patched supported peer major.
 Webpack remains on major 5; its Terser plugin resolves to 5.6.1, which no longer
 depends on the vulnerable serializer. The upstream [5.3.17 release](https://github.com/webpack/minimizer-webpack-plugin/releases/tag/v5.3.17)
-removed that dependency from the release-build path. The update also changes
-MCP's resolved AJV from 8.18.0 to 8.20.0 and hoists its existing ajv-formats 3.0.1;
-runtime direct versions are unchanged, but the resolved runtime graph changes.
+removed that dependency from the release-build path. The reconciled lock
+preserves MCP's previously reviewed AJV 8.20.0 and ajv-formats 3.0.1. Direct esbuild 0.28.2 declares the dependency already imported
+by the browser fixtures instead of relying on Vite's transitive dependency.
 
 The scoped `@typescript-eslint/typescript-estree` override replaces its exact
 minimatch 9.0.3 pin with 9.0.9, retaining the major-9 API while fixing
@@ -146,28 +152,30 @@ program creation with this resolved version. Dependency maintainers own the
 override; remove it when the supported parser dependency resolves a patched
 minimatch without it, and repeat typed-project discovery plus the lint checks.
 
-The editor-test toolchain maintainers own these remaining exceptions:
+The test CLI runs under development Node, but its Mocha runner executes inside
+the editor. Mocha 10.8.2 supports the minimum editor's Node 18.17.1; Mocha 11
+requires at least 18.18 and Mocha 12 requires a newer major runtime. The
+`@vscode/test-cli` override keeps its in-editor Mocha aligned with the direct
+dependency. Its diff 5.2.2 uses the patched backport, removing the previous
+diff exception. Recheck this override when either package or the minimum editor
+changes. Do not raise the production editor minimum solely to update a test tool.
 
-- Mocha 11.8.0 retains serialize-javascript 6.0.2, affected by
-  [RegExp/Date output injection](https://github.com/yahoo/serialize-javascript/security/advisories/GHSA-5c6j-r48x-rmvq)
-  and [array-like CPU exhaustion](https://github.com/yahoo/serialize-javascript/security/advisories/GHSA-qj8w-gfj5-8c6v).
-  Mocha uses it for parallel-worker options in
-  `lib/nodejs/buffered-worker-pool.js`; `.vscode-test.mjs` does not enable parallel
-  execution. The affected path is therefore not exercised by the current test
-  configuration. Reassess before enabling parallel tests. Remove the exception
-  when supported Mocha and test-cli versions adopt serializer 7.0.5 or later,
-  with the real editor suite passing.
-- Mocha's diff 7.0.0 has a [patch-parser denial of service](https://github.com/kpdecker/jsdiff/security/advisories/GHSA-73rr-hh4g-fpgx).
-  The advisory affects `parsePatch` and `applyPatch(string)`; Mocha's reporter
-  uses `createPatch` and display-diff methods. The affected parser is not used
-  by this reporter. Remove the exception when supported Mocha/test-cli versions
-  adopt a fixed diff release (for example 8.0.3 or later), with reporter and
-  editor tests passing. Reassess before introducing patch parsing.
+The current residual audit chain is development-only:
+`@vscode/test-cli → mocha → serialize-javascript@6.0.2`. The serializer has
+[crafted-object code execution](https://github.com/advisories/GHSA-5c6j-r48x-rmvq)
+and [CPU exhaustion](https://github.com/advisories/GHSA-qj8w-gfj5-8c6v) advisories.
+Mocha loads it in its optional parallel worker pool. Our editor tests explicitly
+run serially, and none of these packages ships in the VSIX. The release maintainer
+owns this exception: keep parallel execution disabled and remove the exception
+when a compatible patched serializer is available or the runner is replaced.
+Serializer 7.0.5 requires Node 20, so overriding it into the minimum editor would
+violate its declared runtime support.
 
-Neither remaining package is a production dependency. Mocha and test-cli audit
-entries inherit these findings; they do not represent additional vulnerable
-implementations. Do not force a major transitive override or downgrade test-cli
-merely to remove audit entries; validate the affected toolchain first.
+Source Node declarations still target Node 20. The old 18.17 declarations conflict
+with current TypeScript Buffer definitions and omit the fetch globals used here;
+a direct downgrade is not sufficient. They can therefore admit APIs missing in
+the minimum editor. Minimum-runtime and real-editor checks remain required; a
+separate compatible type-check project is follow-up work.
 
 ### Vendored browser assets
 

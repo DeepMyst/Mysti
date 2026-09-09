@@ -47,7 +47,13 @@ export interface NativeApprovalRequest {
   signal: AbortSignal;
 }
 
-export type NativeApprovalHandler = (request: NativeApprovalRequest) => Promise<boolean | 'cancelled'>;
+export type NativeApprovalDecision = 'allow' | 'deny' | 'cancelled';
+
+export interface NativeApprovalHandler {
+  (request: NativeApprovalRequest): Promise<boolean | 'cancelled'>;
+  /** Observe the final native decision, including policy denials that never open a card. */
+  onDecision?(request: NativeApprovalRequest, decision: NativeApprovalDecision): void;
+}
 
 /** Resolve once per turn so later registrations cannot acquire an old request. */
 export interface NativeApprovalHost {

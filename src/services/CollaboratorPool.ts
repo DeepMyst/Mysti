@@ -639,30 +639,45 @@ export class CollaboratorPool {
     if (!register) { throw new Error(`Native approval routing is unavailable for ${spec.agentId}`); }
     let active = true;
     const scope: NativeChildApprovalScope = { denied: [], cancelled: false, dispose: () => {} };
-    const registration = register.call(this._providerManager, childPanelId, async request => {
-      const current = () => active && !request.signal.aborted && !this._closedRuns.has(options.runId)
-        && !!this._activeChildPanels.get(options.runId)?.has(childPanelId);
-      if (!current()) { scope.cancelled = true; return 'cancelled'; }
+    const deniedRequests = new Set<string>();
+    const current = (request: NativeApprovalRequest) => active && !request.signal.aborted
+      && !this._closedRuns.has(options.runId) && !!this._activeChildPanels.get(options.runId)?.has(childPanelId);
+    const deny = (request: NativeApprovalRequest, reason: string) => {
+      if (!deniedRequests.has(request.id)) {
+        deniedRequests.add(request.id);
+        scope.denied.push({ toolCall: request.toolCall, reason });
+      }
+      return false;
+    };
+    const handler: NativeApprovalHandler = async request => {
+      if (scope.cancelled || !current(request)) { scope.cancelled = true; return 'cancelled'; }
       if (request.panelId !== childPanelId || request.providerId !== spec.agentId) { return false; }
-      const deny = (reason: string) => { scope.denied.push({ toolCall: request.toolCall, reason }); return false; };
+      if (scope.denied.length) { return deny(request, 'Another tool request in this task was denied.'); }
       // A transport hard denial is never widened by the host's permission UI.
-      if (request.defaultDecision === 'deny') { return deny('The provider denied this tool.'); }
+      if (request.defaultDecision === 'deny') { return deny(request, 'The provider denied this tool.'); }
       const policy = this._toolPolicy(spec, options, request.toolCall);
-      if (policy.decision === 'deny') { return deny(policy.reason); }
+      if (policy.decision === 'deny') { return deny(request, policy.reason); }
 
       let approved: boolean | 'cancelled' = policy.decision === 'allow' && request.defaultDecision === 'allow';
       if (!approved) {
         approved = await this._awaitNativeGate(spec, options, request);
       }
-      if (approved === 'cancelled' || !current()) { scope.cancelled = true; return 'cancelled'; }
-      if (!approved) { return deny('Permission denied.'); }
+      if (approved === 'cancelled' || scope.cancelled || !current(request)) { scope.cancelled = true; return 'cancelled'; }
+      if (scope.denied.length) { return deny(request, 'Another tool request in this task was denied.'); }
+      if (!approved) { return deny(request, 'Permission denied.'); }
       // Native approval is a real pre-execution decision. Once a non-read
       // action may have run, a later transport failure cannot retry the prompt.
       if (policy.mayHaveSideEffects) {
         this._approvedWriteChildren.add(childPanelId.replace(/-followup$/, ''));
       }
       return true;
-    });
+    };
+    handler.onDecision = (request, decision) => {
+      if (decision === 'deny' && current(request) && request.panelId === childPanelId && request.providerId === spec.agentId) {
+        deny(request, 'The provider denied this tool.');
+      }
+    };
+    const registration = register.call(this._providerManager, childPanelId, handler);
     scope.dispose = () => {
       if (!active) { return; }
       active = false;

@@ -32,7 +32,7 @@ function fakeProcess(): ChildProcess {
   return Object.assign(new EventEmitter(), {
     pid: 4001, exitCode: null, signalCode: null,
     stdout: new EventEmitter(), stderr: new EventEmitter(),
-    stdin: { write: vi.fn(), end: vi.fn() },
+    stdin: Object.assign(new EventEmitter(), { write: vi.fn(), end: vi.fn() }),
     kill: vi.fn(() => true),
   }) as unknown as ChildProcess;
 }
@@ -303,5 +303,42 @@ describe('single-shot process ownership', () => {
     expect(signals[1].aborted).toBe(true);
     expect(cleanup).toHaveBeenCalledOnce();
     expect(state._activePanelProcesses.has('panel')).toBe(false);
+  });
+
+  it('delivers the prompt and closes the issuing process stdin', async () => {
+    const { deliver, send } = harness();
+    const proc = fakeProcess();
+    vi.mocked(spawn).mockReturnValue(proc);
+    deliver.mockRestore();
+    await collect(send());
+    expect(proc.stdin?.write).toHaveBeenCalledWith('current prompt');
+    expect(proc.stdin?.end).toHaveBeenCalledOnce();
+  });
+
+  it('an asynchronous closed stdin pipe settles the issuing child without an unhandled error', async () => {
+    const { spawn: realSpawn } = await vi.importActual<typeof import('child_process')>('child_process');
+    const proc = realSpawn(process.execPath, ['-e',
+      "require('node:fs').closeSync(0); process.stdout.write('ready'); setInterval(() => {}, 1000);",
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const exited = new Promise<void>(resolve => proc.once('close', () => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        proc.once('error', reject);
+        proc.stdout!.once('data', () => { proc.removeListener('error', reject); resolve(); });
+      });
+      const { provider, deliver, cleanup, send } = harness();
+      deliver.mockRestore();
+      vi.mocked((provider as any).processStream).mockRestore();
+      vi.mocked(spawn).mockReturnValue(proc);
+      vi.mocked(killProcessTree).mockImplementation(async target => { target.kill(); });
+      const chunks = await collect(send());
+      expect(chunks).toContainEqual(expect.objectContaining({ type: 'error', content: expect.stringMatching(/EPIPE|broken pipe/i) }));
+      await exited;
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(proc.stdin!.listenerCount('error')).toBe(0);
+    } finally {
+      proc.kill();
+      await exited;
+    }
   });
 });

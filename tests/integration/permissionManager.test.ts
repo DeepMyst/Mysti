@@ -218,6 +218,22 @@ describe('PermissionManager', () => {
       expect(expired.payload.approved).toBe(false);
     });
 
+    it.each([false, true])('does not advertise an expiry with require-action (forced=%s)', async forced => {
+      setMockConfig('permission.timeout', 5);
+      setMockConfig('permission.timeoutBehavior', 'require-action');
+      pm.dispose();
+      pm = new PermissionManager('ask-permission');
+
+      const result = pm.requestPermission('file-edit', 'Edit', 'desc', {}, postToWebview, 'tool', 'panel', forced);
+      const request = pm.getPendingRequests()[0];
+      expect(webviewMessages).toContainEqual({ type: 'permissionRequest', payload: expect.objectContaining({ id: request.id, expiresAt: 0 }) });
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(pm.getPendingCount()).toBe(1);
+      pm.cancelRequest(request.id);
+      expect(await result).toBe(false);
+    });
+
     it('should wait forever with require-action', async () => {
       setMockConfig('permission.timeout', 5);
       setMockConfig('permission.timeoutBehavior', 'require-action');

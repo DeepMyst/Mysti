@@ -12,7 +12,9 @@ try {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'resources/mermaid.provenance.json'), 'utf8'));
   const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
   if (!manifest.packages?.['node_modules/mermaid'] || !manifest.packages?.['node_modules/dompurify']
-      || !manifest.buildPackages?.['node_modules/webpack'] || !manifest.buildPackages?.['node_modules/terser-webpack-plugin']
+      || !manifest.buildPackages?.['node_modules/webpack']
+      || (!manifest.buildPackages?.['node_modules/terser-webpack-plugin']
+        && !manifest.buildPackages?.['node_modules/minimizer-webpack-plugin'])
       || !manifest.assets?.['mermaid.min.js'] || !manifest.assets?.['mermaid.min.js.LICENSE.txt']) {
     throw new Error('Vendor provenance is incomplete');
   }

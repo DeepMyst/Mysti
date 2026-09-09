@@ -154,9 +154,77 @@ describe('CollaboratorPool native approvals through ProviderManager', () => {
       yield { type: 'text', content: 'denied by backend' };
     });
     const gate = vi.fn(async () => true);
-    await collectCollabChunks(h.pool.dispatch([collabSpec('a', 'hermes', { access: 'gated-write' })], collabOptions({ onGate: gate })));
+    const chunks = await collectCollabChunks(h.pool.dispatch([collabSpec('a', 'hermes', { access: 'gated-write' })], collabOptions({ onGate: gate })));
     expect(h.decisions[0].decision).toBe('deny');
     expect(gate).not.toHaveBeenCalled();
+    expect(completions(chunks)[0].failure).toBe('denied');
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('does not retry a native policy denial when the backend fails afterward', async () => {
+    const h = harness(async function* (turn) {
+      await turn.ask('Write', 'deny');
+      yield { type: 'error', content: 'Backend refused the tool' };
+    });
+    const gate = vi.fn(async () => true);
+    const chunks = await collectCollabChunks(h.pool.dispatch([collabSpec('a', 'hermes', { access: 'gated-write' })], collabOptions({ onGate: gate })));
+    expect(gate).not.toHaveBeenCalled();
+    expect(h.calls).toHaveLength(1);
+    expect(completions(chunks)[0].failure).toBe('denied');
+    expect(chunks.some(chunk => chunk.type === 'collab_retry')).toBe(false);
+  });
+
+  it.each(['card', 'native policy'] as const)('a %s denial prevents an already pending card from allowing another action', async source => {
+    const arrived = deferred<void>();
+    const pendingAnswer = deferred<boolean>();
+    const h = harness(async function* (turn) {
+      const pending = turn.ask('Write');
+      await arrived.promise;
+      expect(await turn.ask('Bash', source === 'native policy' ? 'deny' : 'ask')).toBe('deny');
+      pendingAnswer.resolve(true);
+      expect(await pending).toBe('deny');
+      yield { type: 'done' };
+    });
+    const gate = vi.fn((_spec, tool) => {
+      if (tool.name === 'Bash') { return Promise.resolve(false); }
+      arrived.resolve();
+      return pendingAnswer.promise;
+    });
+    const chunks = await collectCollabChunks(h.pool.dispatch([collabSpec('a', 'hermes', { access: 'gated-write' })], collabOptions({ onGate: gate })));
+    expect(gate).toHaveBeenCalledTimes(source === 'native policy' ? 1 : 2);
+    expect(h.decisions.map(result => result.decision)).toEqual(['deny', 'deny']);
+    expect(h.calls).toHaveLength(1);
+    expect(completions(chunks)[0].failure).toBe('denied');
+  });
+
+  it('a cancelled gate prevents both pending and later native requests from allowing actions', async () => {
+    const arrived = deferred<void>();
+    const answer = deferred<boolean>();
+    const h = harness(async function* (turn) {
+      const pending = turn.ask('Write');
+      await arrived.promise;
+      expect(await turn.ask('Bash')).toBe('cancelled');
+      answer.resolve(true);
+      expect(await pending).toBe('cancelled');
+      expect(await turn.ask('Read', 'allow')).toBe('cancelled');
+      yield { type: 'done' };
+    });
+    // Exercise the gate's typed cancellation result while keeping the real
+    // native request scope and manager routing for simultaneous requests.
+    const gate = vi.spyOn(h.pool as unknown as {
+      _awaitNativeGate(spec: unknown, options: unknown, request: NativeApprovalRequest): Promise<boolean | 'cancelled'>;
+    }, '_awaitNativeGate').mockImplementation((_spec, _options, request) => {
+      if (request.toolCall.name === 'Bash') { return Promise.resolve('cancelled'); }
+      arrived.resolve();
+      return answer.promise;
+    });
+    try {
+      const chunks = await collectCollabChunks(h.pool.dispatch([collabSpec('a', 'hermes', { access: 'gated-write' })], collabOptions()));
+      expect(h.decisions.map(result => result.decision)).toEqual(['cancelled', 'cancelled', 'cancelled']);
+      expect(gate).toHaveBeenCalledTimes(2);
+      expect(h.calls).toHaveLength(1);
+      expect(completions(chunks)[0].failure).toBe('cancelled');
+    } finally { gate.mockRestore(); }
   });
 
   it('allows sealed file reads while preserving the user web gate for read-only advisors', async () => {

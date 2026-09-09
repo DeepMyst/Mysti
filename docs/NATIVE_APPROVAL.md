@@ -7,7 +7,7 @@ Hermes and Kimi route ACP permission requests through a native request → host 
 ## Implemented ownership and policy
 
 - Added `src/providers/base/NativeApprovalPolicy.ts`; it uses the shared permission classifier and keeps native plan/read-only restrictions first.
-- Hermes/Kimi now deny edit/execute/delete/fetch permission requests in `ask-before-edit + full-access`. Their former unconditional full-access branch approved them before any UI interaction.
+- Hermes/Kimi require interactive approval for edit/execute/delete/fetch permission requests in `ask-before-edit + full-access`. A missing owner denies these requests; an explicit host approval permits the one operation. Their former unconditional full-access branch approved them before any UI interaction.
 - Continue and legacy plain-text Copilot no longer receive unrestricted auto-approval in `edit-automatically + ask-permission`. Continue uses `--readonly`; legacy Copilot denies shell/write because these transports cannot present native requests.
 - Modern Copilot's existing stream-pause behavior is unchanged. Correcting its policy predicate does not establish pre-execution approval.
 - `shouldGateToolUse` accepts only the mode/access fields it actually uses; classifier behavior is unchanged.
@@ -15,6 +15,7 @@ Hermes and Kimi route ACP permission requests through a native request → host 
 - `NativeApprovalRequests` binds callbacks to one process and turn. Stop, process exit/error, disposal, supersession, and handler failure settle pending requests. A late response never targets a replacement process. Duplicate IDs while a request is pending share one decision. Reuse after settlement creates a fresh request and card, including within the same turn.
 - `ProviderManager.setNativeApprovalHandler` installs the default host. `setNativeApprovalHandlerForPanel` supplies an explicit child-run destination. Both return identity-safe disposables. `captureNativeApprovalHandler` captures a parent destination without replacing its turn, enabling explicit mention/brainstorm relays.
 - Native policy has three outcomes: allow, ask, deny. Host callbacks may further restrict an allowed operation, so collaborator role policy still applies. Native read-only denials cannot be widened by a host approval. Missing handlers deny ask-required operations.
+- Native decision observers report settled outcomes under the captured panel and turn, including policy denials that never open a card. Observers cannot change the response. Mention and collaborator tasks stop after denial and do not replay an approved action that may have side effects after a transport failure; this applies across question follow-ups. An approval already awaiting a parent response cannot permit another action after task denial or cancellation.
 - A single card can select only a native `allow_once` option. Persistent native grants are not silently substituted; the option kind is authoritative when supplied.
 - The normal stream inactivity clock is paused while a native approval is pending; permission timeout policy belongs to the host card. Request signals abort on settlement and disposal so card listeners can be removed.
 - Tests include a real local ACP fixture process (`tests/fixtures/acpPermissionAgent.cjs`). The fixture writes a marker only after a matching native allow response. It uses no model API or provider account.

@@ -904,14 +904,16 @@ export abstract class BaseCliProvider implements ICliProvider {
       }
     });
 
-    // Handle spawn errors (e.g., ENOENT/EINVAL on Windows)
+    // Handle spawn and stdin transport errors (e.g., ENOENT/EPIPE).
     proc.on('error', (err) => {
-      console.error(`[Mysti] ${this.displayName}: Persistent process spawn error for panel ${session.panelId}:`, err);
+      console.error(`[Mysti] ${this.displayName}: Persistent process error for panel ${session.panelId}:`, err);
       if (session.persistentProcess === proc) {
         session.persistentProcess = null;
         session.persistentReady = false;
       }
     });
+
+    this._guardProcessInput(proc);
 
     // The CLI with --input-format stream-json produces NO stdout until it receives
     // a message on stdin. Don't wait for init — just mark as ready immediately.
@@ -1327,6 +1329,16 @@ export abstract class BaseCliProvider implements ICliProvider {
     return match ? Number(match[1]) : null;
   }
 
+  /** Input-pipe errors must settle the owning process even after its turn reader exits. */
+  private _guardProcessInput(proc: ChildProcess): void {
+    const onError = (error: Error) => {
+      proc.emit('error', error);
+      void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
+    };
+    proc.stdin?.on('error', onError);
+    proc.once('close', () => { proc.stdin?.removeListener('error', onError); });
+  }
+
   /**
    * Deliver the built prompt to a freshly spawned CLI.
    *
@@ -1619,6 +1631,7 @@ export abstract class BaseCliProvider implements ICliProvider {
         earlySpawnError = err;
         console.error(`[Mysti] ${this.displayName}: Spawn error:`, err);
       });
+      this._guardProcessInput(proc);
 
       const spawnTime = Date.now() - startTime;
       console.log(`[Mysti] ${this.displayName}: CLI spawned in ${spawnTime}ms, building prompt...`);
@@ -1653,6 +1666,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       // Hand the prompt to the CLI (stdin by default — see _deliverPrompt).
       await this._deliverPrompt(proc, fullPrompt, session);
       if (!isCurrent()) { return; }
+      if (earlySpawnError) { throw earlySpawnError; }
       const promptSentTime = Date.now() - startTime;
       console.log(`[Mysti] ${this.displayName}: Prompt delivered in ${promptSentTime}ms`);
 

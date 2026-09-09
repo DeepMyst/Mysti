@@ -2189,14 +2189,15 @@
     "@types/node": "^20.10.0",
     "@types/vscode": "1.86.0",
     "@types/ws": "^8.18.1",
-    "@typescript-eslint/eslint-plugin": "^6.13.0",
-    "@typescript-eslint/parser": "^6.13.0",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
+    "esbuild": "^0.28.2",
     "eslint": "^8.54.0",
     "jsdom": "^29.1.1",
-    "mocha": "^11.8.0",
+    "mocha": "^10.8.2",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.2",
     "vite": "^7.3.6",
@@ -2220,6 +2221,9 @@
   "overrides": {
     "@typescript-eslint/typescript-estree": {
       "minimatch": "9.0.9"
+    },
+    "@vscode/test-cli": {
+      "mocha": "$mocha"
     }
   }
 }
