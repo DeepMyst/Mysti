@@ -3,88 +3,24 @@ import { TestableCodexProvider } from '../../helpers/providerFactory';
 import { createCodexSession } from '../../helpers/sessionFactory';
 import { clearMockConfig } from '../../helpers/mockVscode';
 import type { Settings } from '../../../src/types';
-
-function defaultSettings(overrides?: Partial<Settings>): Settings {
-  return {
-    mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission',
-    contextMode: 'auto', model: '', provider: 'openai-codex', ...overrides,
-  };
-}
-
-describe('CodexProvider.buildCliArgs', () => {
-  let provider: TestableCodexProvider;
-
-  beforeEach(() => {
-    clearMockConfig();
-    provider = new TestableCodexProvider();
+const settings = (extra: Partial<Settings> = {}): Settings => ({ mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission', contextMode: 'auto', model: '', provider: 'openai-codex', ...extra });
+beforeEach(clearMockConfig);
+describe('Codex native app-server launch', () => {
+  it('uses stdio app-server with conservative launch authority', () => {
+    const args = new TestableCodexProvider().buildCliArgs(settings(), createCodexSession());
+    expect(args.slice(0, 3)).toEqual(['app-server', '--listen', 'stdio://']);
+    expect(args).toContain('sandbox_mode="read-only"');
+    expect(args).toContain('approval_policy="on-request"');
+    expect(args).toContain('approvals_reviewer="user"');
+    expect(args).toContain('notify=[]');
+    expect(args).not.toContain('exec'); expect(args).not.toContain('-');
   });
-
-  it('should include exec --json --skip-git-repo-check', () => {
-    const args = provider.buildCliArgs(defaultSettings(), createCodexSession());
-    expect(args).toContain('exec');
-    expect(args).toContain('--json');
-    expect(args).toContain('--skip-git-repo-check');
+  it.each([['high', 'high'], ['max', 'xhigh']] as const)('maps %s effort to pinned native %s', (effortLevel, expected) => {
+    const args = new TestableCodexProvider().buildCliArgs(settings({ effortLevel }), createCodexSession());
+    expect(args).toContain(`model_reasoning_effort="${expected}"`);
   });
-
-  it('should use read-only sandbox for plan modes', () => {
-    const args = provider.buildCliArgs(defaultSettings({ mode: 'quick-plan' }), createCodexSession());
-    expect(args).toContain('--sandbox');
-    expect(args).toContain('read-only');
-  });
-
-  it('should use read-only sandbox for read-only access', () => {
-    const args = provider.buildCliArgs(defaultSettings({ accessLevel: 'read-only' }), createCodexSession());
-    expect(args).toContain('--sandbox');
-    expect(args).toContain('read-only');
-  });
-
-  it('should bypass approvals for edit-automatically + full-access', () => {
-    const args = provider.buildCliArgs(defaultSettings({
-      mode: 'edit-automatically', accessLevel: 'full-access',
-    }), createCodexSession());
-    expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
-  });
-
-  it('uses workspace-write for default + full-access', () => {
-    const args = provider.buildCliArgs(defaultSettings({
-      accessLevel: 'full-access',
-    }), createCodexSession());
-    expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'workspace-write']);
-    expect(args).not.toContain('--full-auto');
-  });
-
-  it('uses workspace-write for ask-permission', () => {
-    const args = provider.buildCliArgs(defaultSettings(), createCodexSession());
-    expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'workspace-write']);
-    expect(args).not.toContain('--full-auto');
-  });
-
-  it('should map effort to -c model_reasoning_effort', () => {
-    const args = provider.buildCliArgs(defaultSettings({ effortLevel: 'high' }), createCodexSession());
-    const i = args.indexOf('-c');
-    expect(args).toContain('-c');
-    // the -c value carrying the effort override
-    expect(args.some(a => a === 'model_reasoning_effort="high"')).toBe(true);
-  });
-
-  it('should clamp max down to xhigh (Codex has no max tier)', () => {
-    const args = provider.buildCliArgs(defaultSettings({ effortLevel: 'max' }), createCodexSession());
-    expect(args.some(a => a === 'model_reasoning_effort="xhigh"')).toBe(true);
-  });
-
-  it('should omit the effort override when effortLevel is unset', () => {
-    const args = provider.buildCliArgs(defaultSettings(), createCodexSession());
-    expect(args.some(a => a.startsWith('model_reasoning_effort'))).toBe(false);
-  });
-});
-
-// Plan 18 Wave 3: the bespoke sendMessage override is gone — the base
-// single-shot path sends the prompt on stdin, so buildCliArgs MUST end with
-// the `-` stdin marker or `codex exec` waits on argv it never gets.
-describe('stdin marker (Plan 18 Wave 3)', () => {
-  it('args end with "-" so the base stdin path feeds the prompt', () => {
-    const provider = new TestableCodexProvider();
-    const args = provider.buildCliArgs(defaultSettings(), createCodexSession());
-    expect(args[args.length - 1]).toBe('-');
+  it('leaves native effort default alone when unset', () => {
+    const args = new TestableCodexProvider().buildCliArgs(settings(), createCodexSession());
+    expect(args.some(arg => arg.startsWith('model_reasoning_effort'))).toBe(false);
   });
 });

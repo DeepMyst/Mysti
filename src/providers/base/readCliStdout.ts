@@ -12,6 +12,10 @@ export async function* readCliStdout(proc: ChildProcess | null, options: {
   stderr: { output: string };
   inactivityMs: number;
   label: string;
+  approvals?: {
+    readonly hasPending: boolean;
+    onPendingChanged(listener: () => void): () => void;
+  };
 }): AsyncGenerator<Buffer | string> {
   if (!proc?.stdout || !options.isCurrent()) { return; }
   const iterator = proc.stdout[Symbol.asyncIterator]();
@@ -21,21 +25,28 @@ export async function* readCliStdout(proc: ChildProcess | null, options: {
   const failed = new Promise<never>((_resolve, reject) => { onError = reject; });
   options.signal?.addEventListener('abort', onAbort, { once: true });
   proc.on('error', onError);
+  let wakeApproval: (() => void) | undefined;
+  const releaseApprovalListener = options.approvals?.onPendingChanged(() => wakeApproval?.());
   let lastStderrLen = options.stderr.output.length;
   try {
     let pendingRead = iterator.next();
     while (options.isCurrent()) {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<'timeout'>(resolve => {
-        timer = setTimeout(() => resolve('timeout'), options.inactivityMs);
+      const changed = new Promise<'approval-changed'>(resolve => { wakeApproval = () => resolve('approval-changed'); });
+      const inactivity = new Promise<'timeout'>(resolve => {
+        if (!options.approvals?.hasPending) {
+          timer = setTimeout(() => resolve('timeout'), options.inactivityMs);
+        }
       });
-      let result: Awaited<ReturnType<typeof iterator.next>> | 'aborted' | 'timeout';
+      let result: Awaited<ReturnType<typeof iterator.next>> | 'aborted' | 'timeout' | 'approval-changed';
       try {
-        result = await Promise.race([pendingRead, aborted, failed, timeout]);
+        result = await Promise.race([pendingRead, aborted, failed, inactivity, changed]);
       } finally {
         clearTimeout(timer);
+        wakeApproval = undefined;
       }
       if (!options.isCurrent() || result === 'aborted') { return; }
+      if (result === 'approval-changed') { continue; }
       if (result === 'timeout') {
         if (options.stderr.output.length > lastStderrLen) {
           lastStderrLen = options.stderr.output.length;
@@ -52,6 +63,7 @@ export async function* readCliStdout(proc: ChildProcess | null, options: {
   } finally {
     options.signal?.removeEventListener('abort', onAbort);
     proc.removeListener('error', onError);
+    releaseApprovalListener?.();
     try { void Promise.resolve(iterator.return?.(undefined)).catch(() => {}); } catch { /* best-effort */ }
   }
 }

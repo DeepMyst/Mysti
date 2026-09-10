@@ -37,7 +37,7 @@ describe('Claude permission flag mapping', () => {
     expect(args).toContain('plan');
   });
 
-  // All non-plan, non-read-only → --dangerously-skip-permissions
+  // Every writable tier keeps the blocking native host protocol.
   it.each([
     { mode: 'default' as const, accessLevel: 'ask-permission' as const },
     { mode: 'default' as const, accessLevel: 'full-access' as const },
@@ -45,9 +45,12 @@ describe('Claude permission flag mapping', () => {
     { mode: 'edit-automatically' as const, accessLevel: 'ask-permission' as const },
     { mode: 'ask-before-edit' as const, accessLevel: 'ask-permission' as const },
     { mode: 'ask-before-edit' as const, accessLevel: 'full-access' as const },
-  ])('should use --dangerously-skip-permissions for mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
+  ])('should use native host permissions for mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
     const args = provider.buildCliArgs(s({ mode, accessLevel }), createClaudeSession());
-    expect(args).toContain('--dangerously-skip-permissions');
-    expect(args).not.toContain('--permission-mode');
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    expect(args).toContain('manual');
+    expect(args).toContain('--permission-prompt-tool');
+    expect(args).toContain('stdio');
+    expect(args).toContain('--settings');
   });
 });

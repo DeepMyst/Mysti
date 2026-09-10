@@ -15,6 +15,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { ChildProcess } from 'child_process';
 import { BaseCliProvider, PanelSessionState } from '../base/BaseCliProvider';
 import type {
   CliDiscoveryResult,
@@ -40,11 +41,12 @@ import {
   type ReportedNativeCommands,
 } from '../base/NativeCommands';
 import { validateModelName } from '../../utils/validation';
-import { getEnrichedEnv } from '../../utils/platform';
+import { getEnrichedEnv, probeCliVersion } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
 import { clampEffort } from '../../utils/effort';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
+import { ClaudeApprovalTransport, CLAUDE_NATIVE_TOOLS, CLAUDE_NATIVE_VERSIONS, CLAUDE_NATIVE_POLICY } from './ClaudeApproval';
 
 /**
  * Extended per-panel session state for Claude Code provider.
@@ -82,6 +84,8 @@ export interface ClaudeSessionState extends PanelSessionState {
 export class ClaudeCodeProvider extends BaseCliProvider {
   readonly id = 'claude-code';
   readonly displayName = 'Claude Code';
+  private readonly _approvalTransports = new WeakMap<ChildProcess, ClaudeApprovalTransport>();
+  private _verifiedCli: { path: string; identity: string; pending: Promise<void> } | undefined;
 
   readonly config: ProviderConfig = {
     name: 'claude-code',
@@ -202,6 +206,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
+    supportsNativeApproval: true,
     supportsSessions: true,
     supportsNativeCompact: true,
     supportsPersistentProcess: true,
@@ -314,7 +319,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   getInstallCommand(): string {
-    return 'npm install -g @anthropic-ai/claude-code';
+    return 'npm install -g @anthropic-ai/claude-code@2.1.266';
   }
 
   // ============================================================================
@@ -388,6 +393,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     // --verbose is required by Claude CLI when using --print with --output-format=stream-json
     const args: string[] = [
       '--output-format', 'stream-json',
+      '--input-format', 'stream-json',
       '--include-partial-messages',
       '--verbose',
     ];
@@ -397,8 +403,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     this._addPermissionFlags(args, settings);
 
     // Always use --print for single-shot (non-interactive) mode.
-    // Without --print, the CLI enters interactive REPL mode which doesn't work
-    // with piped stdin (we write the prompt and close stdin immediately).
+    // The structured stdin pipe remains open for native permission responses.
     args.push('--print');
 
     // Session handling - resume existing session or start new
@@ -451,6 +456,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    */
   protected buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] | null {
     const args: string[] = [
+      '--print',
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
       '--include-partial-messages',
@@ -505,6 +511,37 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     return JSON.stringify(message) + '\n';
   }
 
+  protected override async _deliverPrompt(proc: ChildProcess, prompt: string, session: PanelSessionState): Promise<void> {
+    // The native permission response channel must stay open through the result.
+    if (!proc.stdin?.writable) { throw new Error('Claude permission input channel is unavailable.'); }
+    proc.stdin.write(this._formatPersistentInput(prompt, session));
+  }
+
+  protected override async _validateNativeApprovalCli(_session: PanelSessionState, _settings: Settings): Promise<void> {
+    await this._verifyNativePermissionPolicy();
+    const cliPath = this.getCliPath();
+    const stat = await fs.promises.stat(cliPath);
+    const identity = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    if (this._verifiedCli?.path !== cliPath || this._verifiedCli.identity !== identity) {
+      const pending = (async () => {
+        const version = (await probeCliVersion(cliPath))?.match(/^([0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)/)?.[1];
+        if (!version || !CLAUDE_NATIVE_VERSIONS.has(version)) {
+          throw new Error(`Claude Code ${version || 'unknown'} has no verified Mysti permission bridge. Select Claude Code 2.1.266 in mysti.claudeCodePath.`);
+        }
+      })();
+      this._verifiedCli = { path: cliPath, identity, pending };
+    }
+    await this._verifiedCli.pending;
+  }
+
+  private async _verifyNativePermissionPolicy(): Promise<void> {
+    const policyPath = path.join(this._extensionContext.extensionPath, 'resources', 'claude-policy', 'settings.json');
+    const policy = JSON.parse(await fs.promises.readFile(policyPath, 'utf8'));
+    if (JSON.stringify(policy) !== JSON.stringify(CLAUDE_NATIVE_POLICY)) {
+      throw new Error('Claude native permission policy is missing or changed; reinstall this Mysti extension.');
+    }
+  }
+
   /**
    * Cancel the in-flight turn on the persistent `--input-format stream-json`
    * process.
@@ -515,19 +552,10 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    * `{"type":"user",...}` message Mysti writes is unparseable — so Stop
    * silently bricked the session instead of cancelling the turn.
    *
-   * Claude Code does expose a stdin control protocol with an interrupt request,
-   * but its wire shape is not part of the published CLI documentation, and a
-   * guessed frame on this pipe would reintroduce exactly the corruption being
-   * fixed. What IS documented is the signal contract: "To end the turn instead,
-   * send SIGINT, or call the Agent SDK's interrupt(), before you stop the
-   * process."
-   * (https://code.claude.com/docs/en/headless — "Stop a run with SIGTERM")
-   *
-   * So: SIGINT first (the documented end-the-turn signal, which lets the CLI
-   * flush its session file), with killProcessTree's SIGKILL escalation as the
-   * backstop, then evict the process. The next turn respawns and re-attaches
-   * via `--resume <sessionId>` in buildPersistentCliArgs, so the conversation
-   * survives — same trade Hermes and Kimi already make, for the same reason.
+   * Pending native approvals are revoked by the base turn owner first. SIGINT
+   * lets the native CLI flush its session; process-tree SIGKILL escalation
+   * provides the cleanup backstop. The next turn resumes the saved session
+   * with a fresh process and freshly captured host authority.
    */
   protected _interruptPersistentProcess(session: PanelSessionState): void {
     const proc = session.persistentProcess;
@@ -569,17 +597,13 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   /**
-   * Keep the headless `claude -p` process waiting for BACKGROUND subagents and
-   * workflows to finish before it exits. Without this, when the model launches a
-   * background workflow (e.g. the Workflow tool) the turn ends and the detached
-   * task's completion is never reported. `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
-   * (claude ≥ v2.1.182) caps that wait; 0 = wait indefinitely. Configurable via
-   * `mysti.claude.backgroundWaitCeilingMs`.
+   * Retain the legacy wait-ceiling setting for configuration compatibility.
+   * Native background tasks remain disabled until their ownership is verified.
    */
   protected override getExtraSpawnEnv(_settings: Settings): Record<string, string> {
     const ceiling = vscode.workspace.getConfiguration('mysti').get<number>('claude.backgroundWaitCeilingMs', 600000);
     const safe = Number.isFinite(ceiling) && ceiling >= 0 ? Math.floor(ceiling) : 600000;
-    return { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: String(safe) };
+    return { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: String(safe), CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' };
   }
 
   /**
@@ -588,30 +612,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    */
   private _addPermissionFlags(args: string[], settings: Settings): void {
     const { mode, accessLevel } = settings;
-
-    // Plan modes → always read-only regardless of access level
-    if (mode === 'quick-plan' || mode === 'detailed-plan') {
-      args.push('--permission-mode', 'plan');
-      console.log(`[Mysti] Claude: Using plan mode (${mode})`);
-      return;
-    }
-
-    // Read-only access level → plan mode regardless of operation mode
-    if (accessLevel === 'read-only') {
-      args.push('--permission-mode', 'plan');
-      console.log('[Mysti] Claude: Using plan mode (read-only access level)');
-      return;
-    }
-
-    // All non-plan/non-read-only modes: bypass CLI-level permissions with --dangerously-skip-permissions.
-    // Claude CLI's interactive permission prompt tries to read from stdin, which is already closed
-    // (we pipe the prompt and call stdin.end()). This causes the process to hang or crash.
-    // The stream-level tool-use gate in ChatViewProvider intercepts tool_use events and shows
-    // permission cards in the webview UI for user approval when settings require it.
-    // IMPORTANT: Use ONLY --dangerously-skip-permissions. Do NOT combine with --permission-mode
-    // bypassPermissions — the two flags conflict and can cause exit code null.
-    args.push('--dangerously-skip-permissions');
-    console.log(`[Mysti] Claude: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
+    const restricted = mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only';
+    args.push('--permission-mode', restricted ? 'plan' : 'manual',
+      '--permission-prompt-tool', 'stdio', '--permission-prompts', 'host',
+      '--settings', path.join(this._extensionContext.extensionPath, 'resources', 'claude-policy', 'settings.json'),
+      '--setting-sources=', '--strict-mcp-config', '--disable-slash-commands', '--no-chrome',
+      '--tools', (restricted ? ['Read', 'Glob', 'Grep'] : CLAUDE_NATIVE_TOOLS).join(','));
   }
 
   /**
@@ -684,6 +690,25 @@ export class ClaudeCodeProvider extends BaseCliProvider {
 
     try {
       const data = JSON.parse(line);
+
+      const proc = session.process;
+      if (proc && (data.type === 'control_request' || data.type === 'control_cancel_request'
+        || (data.type === 'system' && data.subtype === 'init'))) {
+        let transport = this._approvalTransports.get(proc);
+        if (!transport) {
+          transport = new ClaudeApprovalTransport(proc);
+          this._approvalTransports.set(proc, transport);
+        }
+        try {
+          if (data.type === 'system') { transport.attest(data.claude_code_version); }
+          else { transport.handle(data, this._nativeApprovalRequests(session), this._requestSettings(session)); return null; }
+        } catch (error) {
+          transport.fail();
+          this._nativeApprovalRequests(session)?.dispose();
+          void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName, initialSignal: 'SIGKILL' });
+          return { type: 'error', content: error instanceof Error ? error.message : 'Claude permission protocol failed.' };
+        }
+      }
 
       // Handle stream_event wrapper
       if (data.type === 'stream_event') {
@@ -774,7 +799,10 @@ export class ClaudeCodeProvider extends BaseCliProvider {
             if (completedTool.name === 'ExitPlanMode') {
               // Extract plan file path from input, ensuring it's a string or null
               const rawPath = parsedInput.plan_file_path || parsedInput.planFilePath;
-              const planFilePath: string | null = typeof rawPath === 'string' ? rawPath : null;
+              // A streamed notification has no authority to make the host
+              // read a model-selected file. Live turns review streamed plan
+              // text; standalone transcript parsing retains historical paths.
+              const planFilePath: string | null = !proc && typeof rawPath === 'string' ? rawPath : null;
               console.log('[Mysti] Claude: ExitPlanMode tool called, plan file:', planFilePath);
               return {
                 type: 'exit_plan_mode',
@@ -830,6 +858,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       // For normal messages, text was already streamed via text_delta chunks — skip to avoid duplication.
       // For CLI internal commands like /compact, no text_delta events are emitted, so emit the result text.
       if (data.type === 'result') {
+        if (proc && session.persistentProcess !== proc) { proc.stdin?.end(); }
         if (!claudeSession.hasStreamedText && data.result && typeof data.result === 'string') {
           return { type: 'text', content: data.result };
         }
@@ -1067,6 +1096,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    * Enhance a prompt using Claude
    */
   async enhancePrompt(prompt: string): Promise<string> {
+    try { await this._verifyNativePermissionPolicy(); } catch { return prompt; }
     const { spawn } = await import('child_process');
     const claudePath = this.getCliPath();
 
@@ -1077,7 +1107,11 @@ Original prompt: "${prompt}"
 Enhanced prompt:`;
 
     return new Promise((resolve) => {
-      const args = ['--print', '--output-format', 'text'];
+      // Enhancement has no panel approval owner. Native tools, hooks, skills,
+      // and implicitly configured MCP servers therefore remain unavailable.
+      const args = ['--print', '--output-format', 'text', '--tools=', '--permission-mode', 'dontAsk',
+        '--settings', path.join(this._extensionContext.extensionPath, 'resources', 'claude-policy', 'settings.json'),
+        '--setting-sources=', '--strict-mcp-config', '--disable-slash-commands', '--no-chrome'];
 
       const config = vscode.workspace.getConfiguration('mysti');
       const useShell = config.get<boolean>('useShellForCli', false);

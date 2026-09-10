@@ -89,6 +89,11 @@ export class NativeApprovalScope {
     } catch { finish('deny'); }
   }
 
+  /** A native cancellation retires only its own pending request and card. */
+  cancel(nativeRequestId: string | number): void {
+    this._pending.get(`${typeof nativeRequestId}:${nativeRequestId}`)?.('cancelled');
+  }
+
   dispose(): void {
     if (this._disposed) { return; }
     this._disposed = true;

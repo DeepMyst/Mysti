@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import { setTimeout as realDelay } from 'node:timers/promises';
 import { getEnrichedEnv, resetPlatformCache } from '../../../src/utils/platform';
 import { buildOpenClawManagedConfig, OpenClawManagedRuntime, type OpenClawManagedRuntimeOptions,
   type OpenClawManagedRuntimeHandle } from '../../../src/providers/openclaw/OpenClawManagedRuntime';
@@ -237,11 +238,34 @@ describe.skipIf(process.platform === 'win32')('OpenClaw managed runtime owned pr
 
   it('bounds silent startup and reaps its process', async () => {
     const { options, journal } = await fixture('silent');
-    await expect(OpenClawManagedRuntime.start({ ...options, startupTimeoutMs: 500 })).rejects.toThrow('timed out');
-    const records = await readJournal(journal);
-    expect(records).toHaveLength(2);
-    expect(() => process.kill(records[1].pid, 0)).toThrow();
-    expect(await fs.readdir(options.storageDir)).toEqual([]);
+    const realNow = Date.now.bind(Date);
+    const controller = new AbortController();
+    // Keep the production deadline deterministic while both actual children
+    // start. A real 500ms deadline may expire during preflight under suite load,
+    // which never exercises the silent gateway whose cleanup this test asserts.
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const pending = OpenClawManagedRuntime.start({ ...options, signal: controller.signal, startupTimeoutMs: 500 });
+    const outcome = pending.then(() => new Error('Unexpected runtime readiness'), error => error as Error);
+    try {
+      const until = realNow() + 3000;
+      let records: InertRecord[] = [];
+      while (realNow() < until) {
+        try { records = await readJournal(journal); } catch { /* not started yet */ }
+        if (records.length === 2) { break; }
+        await realDelay(10);
+      }
+      expect(records).toHaveLength(2);
+      expect(() => process.kill(records[1].pid, 0)).not.toThrow();
+      await vi.advanceTimersByTimeAsync(501);
+      expect((await outcome).message).toContain('timed out');
+      expect(() => process.kill(records[1].pid, 0)).toThrow();
+      expect(await fs.readdir(options.storageDir)).toEqual([]);
+    } finally {
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(1001);
+      await outcome;
+      vi.useRealTimers();
+    }
   });
 
   it('cancels startup and later lifetime without orphaning processes or config', async () => {

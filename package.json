@@ -623,7 +623,8 @@
           "type": "number",
           "default": 600000,
           "minimum": 0,
-          "markdownDescription": "How long (ms) the headless Claude Code process waits for **background subagents/workflows** to finish before exiting, so their results are reported back through the turn (sets `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`; requires `claude` \u2265 v2.1.182). Default `600000` (10 min). `0` = wait indefinitely. Raise it if you run long background workflows. If a workflow launched via Claude Code never reports its result, first check `claude --version` is \u2265 2.1.182."
+          "markdownDescription": "Retained for existing configurations. Mysti's native approval bridge disables Claude background tasks and delegated runtimes.",
+          "markdownDeprecationMessage": "Background execution is unsupported by the current native approval bridge."
         },
         "mysti.codexModel": {
           "type": "string",
@@ -638,7 +639,8 @@
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-]*$",
           "maxLength": 64,
-          "description": "Codex profile from ~/.codex/config.toml. Leave empty to use default profile."
+          "description": "Reserved legacy setting. Leave empty: the native approval bridge rejects named profiles because their execution authority is not supported.",
+          "markdownDeprecationMessage": "Named Codex profiles are unsupported by the native approval bridge. Clear this setting before starting a Codex turn."
         },
         "mysti.geminiModel": {
           "type": "string",

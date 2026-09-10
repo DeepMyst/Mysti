@@ -31,6 +31,23 @@ function harness(handler?: NativeApprovalHandler, panelId = 'panel', signal?: Ab
 }
 
 describe('process-free native approval ownership', () => {
+  it('native cancellation retires only the matching typed request and ignores its late allowance', async () => {
+    const first = deferred<boolean>(); const second = deferred<boolean>();
+    const received: NativeApprovalRequest[] = [];
+    const h = harness(request => {
+      received.push(request);
+      return typeof request.nativeRequestId === 'number' ? first.promise : second.promise;
+    });
+    h.request(77); h.request('77');
+    h.scope.cancel(77); h.scope.cancel(77); h.scope.cancel('unknown');
+    expect(h.respond).toHaveBeenCalledExactlyOnceWith('cancelled');
+    expect(received[0].signal.aborted).toBe(true);
+    expect(received[1].signal.aborted).toBe(false);
+    expect(h.scope.hasPending).toBe(true);
+    first.resolve(true); second.resolve(false);
+    await vi.waitFor(() => expect(h.respond.mock.calls).toEqual([['cancelled'], ['deny']]));
+  });
+
   it('settles requests and cancellation even when a pending-state observer throws', async () => {
     const decision = deferred<boolean>();
     const h = harness(() => decision.promise);

@@ -1,6 +1,6 @@
 # Native approval contracts
 
-Hermes and Kimi route ACP permission requests through a native request → host permission card → native response bridge. OpenClaw uses a version-verified owned runtime and a final-execution approval broker for its supported embedded tools; see [the native policy contract](OPENCLAW_NATIVE_POLICY.md). Each request belongs to the issuing process and turn. The provider sends one allow, deny, or cancelled response, and tool notifications are used for display. Other tool-executing adapters still rely on streamed notifications, restrictive native modes, or external configuration. SIGSTOP after a notification does not establish that execution waited for approval.
+Hermes and Kimi route ACP permission requests through a native request → host permission card → native response bridge. OpenClaw uses a version-verified owned runtime and a final-execution approval broker for its supported embedded tools; see [the native policy contract](OPENCLAW_NATIVE_POLICY.md). Each request belongs to the issuing process and turn. The provider sends one allow, deny, or cancelled response, and tool notifications are used for display. Claude Code and Codex now use the version-pinned native bridges described in [the CLI approval contract](NATIVE_CLI_APPROVAL.md). Other tool-executing adapters still rely on streamed notifications, restrictive native modes, or external configuration. SIGSTOP after a notification does not establish that execution waited for approval.
 
 `supportsNativeApproval` means this native request/response bridge is implemented. It does not infer approval support from JSON output, nor prove that a particular CLI release requests permission for every operation. Release verification must cover the agent's native permission configuration as well as the host bridge.
 
@@ -12,7 +12,7 @@ Hermes and Kimi route ACP permission requests through a native request → host 
 - Modern Copilot's existing stream-pause behavior is unchanged. Correcting its policy predicate does not establish pre-execution approval.
 - `shouldGateToolUse` accepts only the mode/access fields it actually uses; classifier behavior is unchanged.
 - `IProvider.NativeApprovalHost.handlerForPanel` is resolved before a turn starts; a later handler cannot acquire an old request. `NativeApprovalRequest.id` is a unique host card key, separate from the native JSON-RPC ID and tool-call ID.
-- `NativeApprovalRequests` binds callbacks to one process and turn. Stop, process exit/error, disposal, supersession, and handler failure settle pending requests. A late response never targets a replacement process. Duplicate IDs while a request is pending share one decision. Reuse after settlement creates a fresh request and card, including within the same turn.
+- `NativeApprovalRequests` binds callbacks to one process and turn. Stop, process exit/error, disposal, supersession, and handler failure settle pending requests. A late response never targets a replacement process. Duplicate IDs while a request is pending share one decision. The shared scope permits a fresh request after settlement; Claude/Codex add stricter transport-level replay rejection for their native IDs.
 - `ProviderManager.setNativeApprovalHandler` installs the default host. `setNativeApprovalHandlerForPanel` supplies an explicit child-run destination. Both return identity-safe disposables. `captureNativeApprovalHandler` captures a parent destination without replacing its turn, enabling explicit mention/brainstorm relays.
 - Native policy has three outcomes: allow, ask, deny. Host callbacks may further restrict an allowed operation, so collaborator role policy still applies. Native read-only denials cannot be widened by a host approval. Missing handlers deny ask-required operations.
 - Native decision observers report settled outcomes under the captured panel and turn, including policy denials that never open a card. Observers cannot change the response. Mention and collaborator tasks stop after denial and do not replay an approved action that may have side effects after a transport failure; this applies across question follow-ups. An approval already awaiting a parent response cannot permit another action after task denial or cancellation.
@@ -26,8 +26,8 @@ Hermes and Kimi route ACP permission requests through a native request → host 
 
 | Provider | Current ask-tier path | Plan/read-only path | Native interactive approval in Mysti? | Source |
 | --- | --- | --- | --- | --- |
-| Claude Code | `--dangerously-skip-permissions`; stream-json tool notifications trigger SIGSTOP | `--permission-mode plan` | No; no host permission-request handler | `src/providers/claude/ClaudeCodeProvider.ts` |
-| Codex | `--sandbox workspace-write`; JSONL item notifications trigger SIGSTOP | `--sandbox read-only` | No; adapter uses `exec`, not app-server request/response | `src/providers/codex/CodexProvider.ts` |
+| Claude Code | 2.1.266 host control requests with mandatory wildcard ask policy | Native plan tool subset plus immutable host mutation denial | Yes, for the supported built-ins and explicit Mysti Canvas tools | [CLI approval contract](NATIVE_CLI_APPROVAL.md) |
+| Codex | 0.153.4 app-server command/file approvals; inherited authority checked before execution | Native read-only/network-disabled sandbox plus host mutation denial | Yes, for emitted native command/file requests; trusted native reads may run without cards | [CLI approval contract](NATIVE_CLI_APPROVAL.md) |
 | Gemini | `--yolo`; stream-json tool notifications trigger SIGSTOP | `--approval-mode plan` | No; installed CLI supports ACP, adapter does not use it | `src/providers/gemini/GeminiProvider.ts` |
 | Cline | Legacy `--yolo`, modern `--auto-approve true`; stream events trigger SIGSTOP | Legacy `--mode plan`, modern `--plan` | No; installed CLI supports ACP | `src/providers/cline/ClineProvider.ts` |
 | Copilot | Modern JSON CLI: `--allow-all-tools` plus stream SIGSTOP. Legacy plain text: native shell/write denial | `--deny-tool shell --deny-tool write` | No; installed modern CLI supports ACP | `src/providers/copilot/CopilotProvider.ts` |
@@ -42,18 +42,14 @@ Hermes and Kimi route ACP permission requests through a native request → host 
 | LocalAI | Receives model tool-call proposals but never executes them | No local execution | Not applicable to execution; `supportsToolUse: true` means proposal reporting here | `src/providers/localai/LocalAIProvider.ts` |
 | OpenRouter | Chat-only HTTP transport; `supportsToolUse: false` | No local execution | Not applicable | `src/providers/openrouter/OpenRouterProvider.ts` |
 
-## Codex exec compatibility (2026-09-09)
+## Claude/Codex native transport replacement (2026-09-10)
 
-Installed Codex 0.153.4 rejects `exec --full-auto` before starting a turn. Mysti
-now emits `--sandbox workspace-write` for the same settings; the exact adapter
-prefix with this replacement passes that CLI's parser in a help-only probe.
-The [official non-interactive guide](https://learn.chatgpt.com/docs/non-interactive-mode)
-recommends this replacement. The [earlier exec implementation](https://github.com/openai/codex/blob/rust-v0.114.0/codex-rs/exec/src/lib.rs#L218)
-expanded the alias to workspace-write and selected `Never` for headless approvals;
-interactive CLI alias descriptions are not evidence of exec approval semantics.
-Read-only and explicitly unrestricted branches keep their separate sandbox flags.
-This compatibility fix does not implement the app-server native approval bridge
-or establish authenticated CLI execution; those remain acceptance work below.
+Claude's bypass-permissions and Codex's headless exec execution paths have been
+replaced for public agent turns. Claude uses its stdin host control protocol and
+Codex uses app-server requests/responses. Both reject unsupported runtime or
+policy conditions before model submission, with no legacy execution fallback.
+The [CLI approval contract](NATIVE_CLI_APPROVAL.md) records exact versions,
+configuration restrictions, native safe-read exceptions, and test evidence.
 
 ## Remaining concrete defects and misleading promises
 
@@ -63,11 +59,11 @@ or establish authenticated CLI execution; those remain acceptance work below.
 4. **OpenClaw gateway authority repaired for the supported owned runtime.** Agent sends and prompt enhancement require a captured run lease and final-execution guard. Shared-gateway agent delegation is disabled. Native Codex, ACP, delegated/background execution and arbitrary plugin tools remain unsupported; see [the exact boundary](OPENCLAW_NATIVE_POLICY.md).
 5. **OpenClaw invalid fallback removed with its authority replacement.** Installed OpenClaw 2026.6.34 registers neither `--sandbox` nor `--yolo`. Mysti no longer invokes the unsupported agent fallback; failure to start the owned approval runtime reports an error and prevents execution. The original inert parser proof remains useful evidence that dropping flags alone would have been insufficient.
 6. **Read-only selection is not uniform.** Cursor only omits `--force` despite installed explicit read-only `--mode plan/ask`. OpenCode chooses a configurable plan agent: official V1 docs describe edits/bash as `ask`, and user configuration can replace its policy. Neither choice establishes the absolute “never modify” setting promise.
-7. **Capability vocabulary hides these differences.** `ProviderCapabilities.supportsNativeApproval` now distinguishes the implemented ACP bridge; native read-only strength and proposal-only tool reporting remain separate contract work. `supportsToolUse` covers actual CLI execution and Ollama/LocalAI proposals; callers cannot infer approval enforcement from it.
+7. **Capability vocabulary hides these differences.** `ProviderCapabilities.supportsNativeApproval` now distinguishes the implemented native bridges; native read-only strength and proposal-only tool reporting remain separate contract work. `supportsToolUse` covers actual CLI execution and Ollama/LocalAI proposals; callers cannot infer approval enforcement from it.
 
 ## Remaining acceptance requirements
 
-The next adapter migrations must provide a native permission request and response path instead of relying on stdout notification timing. Gemini, Cline, Copilot, Qwen, and OpenCode expose ACP in the inspected CLI versions. Claude exposes a host permission protocol; Codex app-server exposes command/file approval requests. OpenClaw now has the bounded owned-runtime bridge described above; authenticated provider and wider runtime acceptance remain outstanding.
+The next adapter migrations must provide a native permission request and response path instead of relying on stdout notification timing. Gemini, Cline, Copilot, Qwen, and OpenCode expose ACP in the inspected CLI versions. Claude and Codex now have bounded native bridges; their authenticated and installed-editor acceptance remains outstanding. OpenClaw now has the bounded owned-runtime bridge described above; authenticated provider and wider runtime acceptance remain outstanding.
 
 OpenClaw's session exec controls cover shell execution rather than every tool.
 The implemented bridge combines a live host policy with a verified final raw
@@ -88,7 +84,7 @@ npx vitest run tests/providers/nativeApprovalBridge.test.ts tests/providers/base
 
 ## Evidence used
 
-- Installed, read-only `--help`/`--version`: Claude PATH 2.1.263 and preferred extension binary 2.1.266; Codex 0.153.4; Gemini 0.58.0; Cline 3.0.61; Copilot 1.0.83; Cursor 2026.02.13-41ac335; Qwen 0.23.0; OpenCode 1.18.29. Hermes/Kimi/Continue were not installed during this audit; native bridge behavior was verified with local protocol fixtures. No model/API calls made.
+- Installed, read-only `--help`/`--version`: Claude preferred extension binary 2.1.266 (item-4 follow-up found PATH 2.0.71; a separate 2.1.263 binary was also present); Codex 0.153.4; Gemini 0.58.0; Cline 3.0.61; Copilot 1.0.83; Cursor 2026.02.13-41ac335; Qwen 0.23.0; OpenCode 1.18.29. Hermes/Kimi/Continue were not installed during this audit; native bridge behavior was verified with local protocol fixtures. The original audit used no model/API calls. Follow-up native runtime tests use isolated local fake models, with no authenticated provider service.
 - [ACP tool-call permission protocol](https://agentclientprotocol.com/protocol/v1/tool-calls): distinguishes tool progress notifications from permission requests and requires cancelled outcomes on prompt cancellation.
 - [Claude SDK approvals](https://code.claude.com/docs/en/agent-sdk/user-input): supported callback receives tool/input and returns allow/deny. Installed help additionally exposes print-mode host permission prompts.
 - [Codex app-server](https://developers.openai.com/codex/app-server/): command/file approval requests have distinct IDs and native responses; installed app-server supports stdio.

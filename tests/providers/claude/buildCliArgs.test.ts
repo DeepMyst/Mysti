@@ -49,13 +49,14 @@ describe('ClaudeCodeProvider.buildCliArgs', () => {
     expect(args).toContain('plan');
   });
 
-  it('should skip permissions for full-access + edit-automatically', () => {
+  it('should retain native host permissions for full-access + edit-automatically', () => {
     const args = provider.buildCliArgs(defaultSettings({
       accessLevel: 'full-access',
       mode: 'edit-automatically',
     }), session);
-    expect(args).toContain('--dangerously-skip-permissions');
-    expect(args).not.toContain('--permission-mode');
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    expect(args).toContain('--permission-mode');
+    expect(args).toContain('manual');
   });
 
   it('should include --resume with session ID', () => {

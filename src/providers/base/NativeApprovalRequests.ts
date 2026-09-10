@@ -59,4 +59,8 @@ export class NativeApprovalRequests {
     this._process.removeListener('error', this._onClose);
     this._scope.dispose();
   }
+
+  cancel(nativeRequestId: string | number): void {
+    this._scope.cancel(nativeRequestId);
+  }
 }

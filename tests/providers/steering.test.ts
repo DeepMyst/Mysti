@@ -18,8 +18,9 @@
  * great deal). This file pins the finding that made queueing the whole of
  * Phase 2's shipped behaviour:
  *
- *   - The single-shot path writes the prompt and calls `stdin.end()`. There is
- *     no pipe left to write into.
+ *   - The legacy single-shot path writes the prompt and calls `stdin.end()`.
+ *     Claude's native approval path keeps stdin open for structured permission
+ *     responses; an open pipe alone does not implement steering.
  *   - The persistent path leaves stdin open, but every persistent backend
  *     speaks a STRUCTURED protocol on it — Claude Code's `--input-format
  *     stream-json` (NDJSON), Hermes/Kimi's ACP (JSON-RPC over stdio). An
@@ -86,14 +87,7 @@ describe('Plan 28 Phase 2 — steering capability', () => {
       .toEqual([]);
   });
 
-  it('the single-shot send path still closes stdin, which is why', () => {
-    // The structural reason, asserted rather than described. If stdin ever stops
-    // being closed, mid-turn input becomes possible on the one-shot path and
-    // this whole file should be revisited.
-    //
-    // The close moved out of the send path and into `_deliverPrompt`, the hook
-    // OpenClaw overrides because `openclaw agent` reads its prompt from
-    // --message-file and ignores the pipe entirely. It still ends the pipe.
+  it('the legacy single-shot delivery closes stdin', () => {
     const fs = require('fs') as typeof import('fs');
     const path = require('path') as typeof import('path');
     const src = fs.readFileSync(
@@ -108,11 +102,10 @@ describe('Plan 28 Phase 2 — steering capability', () => {
   });
 
   /**
-   * A provider that overrides prompt delivery must still close stdin: an open
-   * pipe holds the child forever, and a half-open one would quietly reintroduce
-   * the mid-turn input path this file exists to rule out.
+   * Only the native Claude approval channel deliberately retains this pipe.
+   * Its full sendMessage lifecycle is tested separately with an actual child.
    */
-  it('every _deliverPrompt override ends stdin too', () => {
+  it('only the native Claude control channel keeps delivery stdin open', () => {
     const fs = require('fs') as typeof import('fs');
     const path = require('path') as typeof import('path');
     const dir = path.resolve(__dirname, '../../src/providers');
@@ -132,7 +125,7 @@ describe('Plan 28 Phase 2 — steering capability', () => {
         }
       }
     }
-    expect(offenders, 'these override prompt delivery without closing stdin').toEqual([]);
+    expect(offenders, 'unexpected provider retaining the prompt pipe').toEqual(['claude/ClaudeCodeProvider.ts']);
   });
 });
 

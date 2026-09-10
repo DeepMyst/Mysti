@@ -179,9 +179,12 @@ export abstract class BaseCliProvider implements ICliProvider {
   private readonly _requests = new WeakMap<PanelSessionState, {
     controller: AbortController;
     submitted: boolean;
+    settings: Readonly<Settings>;
     nativeHandler?: NativeApprovalHandler;
     nativeApprovals?: NativeApprovalRequests;
   }>();
+  /** Eager CLI validation cannot replace a newer warmup or a submitted turn. */
+  private readonly _warmups = new WeakMap<PanelSessionState, object>();
   private _nativeApprovalHost?: NativeApprovalHost;
 
   public setNativeApprovalHost(host: NativeApprovalHost | undefined): void {
@@ -195,6 +198,33 @@ export abstract class BaseCliProvider implements ICliProvider {
 
   protected _nativeApprovalRequests(session: PanelSessionState): NativeApprovalRequests | undefined {
     return this._requests.get(session)?.nativeApprovals;
+  }
+
+  protected _requestSettings(session: PanelSessionState): Readonly<Settings> | undefined {
+    return this._requests.get(session)?.settings;
+  }
+
+  protected _requestNativeHandler(session: PanelSessionState): NativeApprovalHandler | undefined {
+    return this._requests.get(session)?.nativeHandler;
+  }
+
+  protected _isCurrentRequest(session: PanelSessionState, signal: AbortSignal): boolean {
+    return !signal.aborted && !session.cancelled && this._requests.get(session)?.controller.signal === signal;
+  }
+
+  /** Bind native decisions before a prompt can start work on this captured child. */
+  protected _createNativeApprovalRequests(
+    session: PanelSessionState, proc: ChildProcess, isCurrent?: () => boolean,
+  ): NativeApprovalRequests | undefined {
+    const request = this._requests.get(session);
+    if (!request || !this.capabilities.supportsNativeApproval) { return undefined; }
+    request.nativeApprovals?.dispose();
+    return request.nativeApprovals = new NativeApprovalRequests({
+      providerId: this.id, panelId: session.panelId, process: proc,
+      signal: request.controller.signal, handler: request.nativeHandler,
+      isCurrent: () => this._isCurrentRequest(session, request.controller.signal)
+        && session.process === proc && (!isCurrent || isCurrent()),
+    });
   }
   protected _agentContextManager: AgentContextManager | null = null;
   protected _cachedCliPath: string | null = null;
@@ -467,6 +497,7 @@ export abstract class BaseCliProvider implements ICliProvider {
    * For persistent processes, sends an interrupt instead of killing.
    */
   private _cancelSessionRequest(session: PanelSessionState): void {
+    this._warmups.delete(session);
     // Mark this session as user-cancelled so any in-flight sendMessage() does NOT
     // re-send the prompt via the single-shot fallback (bug B4).
     session.cancelled = true;
@@ -603,6 +634,16 @@ export abstract class BaseCliProvider implements ICliProvider {
   protected buildPersistentCliArgs(_settings: Settings, _session: PanelSessionState): string[] | null {
     return null;
   }
+
+  /** A native protocol owns its complete turn; failures never fall back to CLI execution. */
+  protected _sendNativeTurn?(
+    content: string, context: ContextItem[], settings: Settings, conversation: Conversation | null,
+    session: PanelSessionState, persona?: PersonaConfig, agentConfig?: AgentConfiguration,
+    attachments?: Attachment[],
+  ): AsyncGenerator<StreamChunk>;
+
+  /** Verify the supported native protocol before eager startup or submitting a turn. */
+  protected _validateNativeApprovalCli?(session: PanelSessionState, settings: Readonly<Settings>): Promise<void>;
 
   /**
    * Detect whether a parsed stream line marks the end of a response.
@@ -863,28 +904,7 @@ export abstract class BaseCliProvider implements ICliProvider {
 
     console.log(`[Mysti] ${this.displayName}: Spawning persistent process for panel: ${session.panelId}`);
 
-    // Apply shell mode for persistent spawn (needed for Windows .cmd wrappers)
-    const useShell = process.platform === 'win32' || vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
-    const persistentSpawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
-    let persistentSpawnArgs = args;
-    if (useShell) {
-      persistentSpawnOpts.shell = true;
-      // Mirror the single-shot spawn path: refuse genuine shell-injection
-      // vectors, then single-quote bracketed args (Plan 01 R1). Brackets are
-      // glob characters — a bracketed model id like claude-opus-4-6[1m] would
-      // otherwise glob-expand against the cwd on POSIX shells. Without this the
-      // persistent (Claude) spawn path had the glob-safety hole the single-shot
-      // path already closed.
-      for (const arg of args) {
-        if (this._isUnsafeShellArg(arg)) {
-          console.error(`[Mysti] Rejecting unsafe CLI argument in shell mode (persistent spawn)`);
-          throw new Error('Invalid argument detected in shell mode');
-        }
-      }
-      persistentSpawnArgs = this._quoteShellArgsForBrackets(args);
-    }
-
-    const proc = spawn(cliPath, persistentSpawnArgs, persistentSpawnOpts);
+    const proc = this._spawnCliProcess(args, cwd, env, cliPath);
     session.persistentProcess = proc;
 
     // Log stderr but don't treat it as fatal. A bounded tail is retained so
@@ -1011,12 +1031,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     let attachmentCleanup: (() => Promise<void>) | null = null;
     const isCurrent = () => !request?.controller.signal.aborted
       && !session.cancelled && session.process === proc && session.persistentProcess === proc;
-    if (request && this.capabilities.supportsNativeApproval) {
-      request.nativeApprovals = new NativeApprovalRequests({
-        providerId: this.id, panelId: session.panelId, process: proc,
-        signal: request.controller.signal, handler: request.nativeHandler, isCurrent,
-      });
-    }
+    this._createNativeApprovalRequests(session, proc, isCurrent);
     try {
       attachmentCleanup = await this.prepareAttachments(attachments, []);
       if (!isCurrent()) { return; }
@@ -1070,6 +1085,7 @@ export abstract class BaseCliProvider implements ICliProvider {
   disposePersistentProcess(panelId?: string): void {
     const key = panelId || 'default';
     const session = this._panelSessions.get(key);
+    if (session) { this._warmups.delete(session); }
     if (session) { this._requests.get(session)?.nativeApprovals?.dispose(); }
     if (session && isProcessLive(session.persistentProcess)) {
       console.log(`[Mysti] ${this.displayName}: Disposing persistent process for panel: ${key}`);
@@ -1185,6 +1201,21 @@ export abstract class BaseCliProvider implements ICliProvider {
     if (!this.capabilities.supportsPersistentProcess) { return; }
 
     const session = this._getSession(panelId);
+    if (this._requests.has(session)) { return; }
+    const warmup = {};
+    this._warmups.set(session, warmup);
+    const isCurrent = () => this._warmups.get(session) === warmup
+      && this._panelSessions.get(session.panelId) === session && !this._requests.has(session);
+    settings = Object.freeze({ ...settings });
+    if (this._validateNativeApprovalCli) {
+      try { await this._validateNativeApprovalCli(session, settings); }
+      catch (error) {
+        if (isCurrent()) { this._warmups.delete(session); throw error; }
+        return;
+      }
+    }
+    if (!isCurrent()) { return; }
+    this._warmups.delete(session);
 
     // If existing process matches current settings, keep it
     if (session.persistentProcess && this._isPersistentProcessHealthy(session)) {
@@ -1335,7 +1366,7 @@ export abstract class BaseCliProvider implements ICliProvider {
   }
 
   /** Input-pipe errors must settle the owning process even after its turn reader exits. */
-  private _guardProcessInput(proc: ChildProcess): void {
+  protected _guardProcessInput(proc: ChildProcess): void {
     const onError = (error: Error) => {
       proc.emit('error', error);
       void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
@@ -1421,7 +1452,8 @@ export abstract class BaseCliProvider implements ICliProvider {
 
   /**
    * Send a message to the AI provider.
-   * Tries persistent process mode first (if supported), falls back to single-shot spawn.
+   * Uses an explicit native transport when supplied; otherwise tries persistent
+   * mode and permits a single-shot fallback only before submission.
    * A caller abandoning a pending next() must cancelCurrentRequest first;
    * async-generator return() alone queues behind an outstanding transport read.
    */
@@ -1437,21 +1469,50 @@ export abstract class BaseCliProvider implements ICliProvider {
     attachments?: Attachment[]
   ): AsyncGenerator<StreamChunk> {
     const startTime = Date.now();
+    // The caller may reuse or mutate settings while discovery/prompt preparation awaits.
+    settings = Object.freeze({ ...settings });
     // Attachment preparation mutates filePath. Each turn owns its records even
     // when a caller reuses the same attachment array in concurrent panels.
     attachments = attachments?.map(attachment => ({ ...attachment }));
     const session = this._getSession(panelId);
+    this._warmups.delete(session);
     if (this._requests.has(session)) { this._cancelSessionRequest(session); }
     session.autonomousMode = settings.autonomousMode === true;
     session.cancelled = false;
     const controller = new AbortController();
     const request = {
-      controller, submitted: false,
+      controller, submitted: false, settings,
       nativeHandler: this._captureNativeApprovalHandler(session.panelId, controller.signal),
     };
     this._requests.set(session, request);
 
     try {
+      if (this._validateNativeApprovalCli) {
+        try { await this._validateNativeApprovalCli(session, settings); } catch (error) {
+          if (this._isCurrentRequest(session, controller.signal)) {
+            yield this.handleError(error);
+            yield { type: 'done' };
+          }
+          return;
+        }
+        if (!this._isCurrentRequest(session, controller.signal)) { return; }
+      }
+      if (this._sendNativeTurn) {
+        try {
+          for await (const chunk of this._sendNativeTurn(content, context, settings, conversation, session, persona, agentConfig, attachments)) {
+            if (!this._isCurrentRequest(session, controller.signal)) { break; }
+            yield chunk;
+          }
+        } catch (error) {
+          if (this._isCurrentRequest(session, controller.signal)) { yield this.handleError(error); }
+        }
+        if (this._requests.get(session) === request) {
+          this._nativeApprovalRequests(session)?.dispose();
+          const usage = this.getStoredUsage(panelId);
+          yield usage ? { type: 'done', usage } : { type: 'done' };
+        }
+        return;
+      }
       if (this.capabilities.supportsPersistentProcess) {
         let usedPersistent = false;
         try {
@@ -1492,6 +1553,29 @@ export abstract class BaseCliProvider implements ICliProvider {
       request.controller.abort();
       if (this._requests.get(session) === request) { this._requests.delete(session); }
     }
+  }
+
+  /** Shared spawning rules for CLI and native-protocol transports. */
+  protected _spawnCliProcess(
+    args: string[], cwd: string, env: NodeJS.ProcessEnv, cliPath = this.getCliPath(),
+  ): ChildProcess {
+    const useShell = process.platform === 'win32'
+      || vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
+    const options: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
+    let spawnArgs = args;
+    if (useShell) {
+      options.shell = true;
+      for (const arg of args) {
+        if (this._isUnsafeShellArg(arg)) {
+          console.error('[Mysti] Rejecting unsafe CLI argument in shell mode');
+          throw new Error('Invalid argument detected in shell mode');
+        }
+      }
+      // Node joins shell-mode array arguments without escaping; preserve the
+      // existing POSIX bracket and Windows path quoting after injection checks.
+      spawnArgs = this._quoteShellArgsForBrackets(args);
+    }
+    return spawn(cliPath, spawnArgs, options);
   }
 
   /**
@@ -1597,38 +1681,9 @@ export abstract class BaseCliProvider implements ICliProvider {
       const env = getEnrichedEnv(Object.keys(spawnExtraEnv).length > 0 ? spawnExtraEnv : undefined);
       console.log(`[Mysti] ${this.displayName}: Spawning CLI process for panel ${panelId || 'default'}...`);
       console.log(`[Mysti] ${this.displayName}: CLI args: ${args.map(a => a.length > 100 ? a.slice(0, 100) + '...[' + a.length + ' chars]' : a).join(' ')}`);
-      // Check if we should use shell for spawning (auto-enable on Windows for .cmd wrapper support)
-      const useShell = process.platform === 'win32' || vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
-      const spawnOpts: SpawnOptions = { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] };
-      let spawnArgs = args;
-      if (useShell) {
-        spawnOpts.shell = true;
-        for (const arg of args) {
-          // Refuse genuine shell-injection vectors. Square brackets are NOT
-          // refused: some model ids use them (e.g. claude-opus-4-6[1m]); they are
-          // glob characters, not injection vectors (no command substitution or
-          // separators). On POSIX shells they would still glob-expand if a
-          // matching filename exists in cwd, so _quoteShellArgsForBrackets below
-          // single-quotes any bracketed arg to force literal interpretation.
-          // Win32 filesystem paths are exempted by shape (see _isUnsafeShellArg)
-          // and double-quoted below — otherwise `--mcp-config C:\...` threw.
-          if (this._isUnsafeShellArg(arg)) {
-            console.error(`[Mysti] Rejecting unsafe CLI argument in shell mode`);
-            throw new Error('Invalid argument detected in shell mode');
-          }
-        }
-        // Glob-safety (Plan 01 R1): when Node spawns with shell:true and an args
-        // array, it joins args into a command string WITHOUT quoting. On POSIX
-        // shells, [ and ] are glob characters and could expand against the cwd
-        // (e.g. claude-opus-4-6[1m] matching a stray file). Single-quote bracketed
-        // args so the model id reaches the CLI verbatim. Windows cmd.exe does not
-        // glob [ ], so we leave win32 args untouched (quoting there would break the
-        // .cmd shim invocation).
-        spawnArgs = this._quoteShellArgsForBrackets(args);
-      }
-
-      proc = spawn(cliPath, spawnArgs, spawnOpts);
+      proc = this._spawnCliProcess(args, cwd, env, cliPath);
       session.process = proc;
+      this._createNativeApprovalRequests(session, proc, isCurrent);
 
       // Attach early error handler to catch async spawn errors (e.g., ENOENT/EINVAL on Windows)
       let earlySpawnError: Error | null = null;
@@ -1721,6 +1776,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       if (isCurrent()) { yield chunk; }
     } finally {
       // A late completion owns only its captured process, never a replacement.
+      request.nativeApprovals?.dispose();
       proc?.stderr?.removeListener('data', stderrHandler);
       if (isProcessLive(proc)) {
         try {
@@ -1766,6 +1822,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     try {
       for await (const chunk of readCliStdout(proc, {
         signal, isCurrent, stderr: stderrRef, label: this.displayName,
+        approvals: this._nativeApprovalRequests(session),
         inactivityMs: session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : STREAM_INACTIVITY_TIMEOUT_MS,
       })) {
         if (firstChunkTime === null) {

@@ -25,7 +25,7 @@ Mysti supports 12 AI providers. You only need one to get started — install any
 ### Installation
 
 ```bash
-npm install -g @anthropic-ai/claude-code
+npm install -g @anthropic-ai/claude-code@2.1.266
 ```
 
 ### Authentication
@@ -47,13 +47,19 @@ Opens a browser window to authenticate with your Anthropic account.
 - **Thinking Mode**: Extended reasoning with configurable thinking levels
 - **Native Compaction**: Built-in `/compact` command for context management
 - **Session Resume**: Continue previous conversations with `--resume`
-- **MCP Permission Server**: Fine-grained permission control through VSCode UI
+- **Native approvals**: Claude's host control channel waits for the owning Mysti permission decision before executing a supported tool.
+
+The approval bridge supports Claude Code **2.1.266**. Other versions stop before
+submission. Mysti supplies its own permission policy and disables native hooks,
+custom skills, implicit MCP servers, background tasks, and delegated runtimes.
+Explicit Mysti Canvas MCP tools remain available. See the
+[native CLI approval contract](NATIVE_CLI_APPROVAL.md) for mode and lifecycle limits.
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.claudePath` | `claude` | Path to Claude CLI executable |
+| `mysti.claudeCodePath` | `claude` | Path to the supported Claude CLI executable |
 | `mysti.claudeModel` | `sonnet` | Default model |
 | `mysti.thinkingLevel` | `none` | Thinking level (none, low, medium, high) |
 
@@ -66,6 +72,11 @@ Fast iteration cycles with OpenAI's latest models.
 ### Installation
 
 Follow [OpenAI's Codex CLI installation guide](https://github.com/openai/codex).
+The Mysti bridge currently supports **0.153.4**:
+
+```bash
+npm install -g @openai/codex@0.153.4
+```
 
 ### Authentication
 
@@ -83,8 +94,15 @@ Or set `OPENAI_API_KEY` environment variable.
 
 ### Unique Features
 
-- **Profile Switching**: Switch between different OpenAI configurations
+- **Native approvals**: Command and patch requests wait for Mysti's captured permission decision over app-server stdio.
 - **Fast Iteration**: Optimized for quick code generation cycles
+
+Each turn starts a fresh native thread with prompt history and a read-only,
+network-disabled sandbox. Native trusted reads may run without a host card.
+Saved execution rules, named profiles, managed policy, MCP servers, and other
+unsupported configuration stop startup; Mysti does not modify those files.
+Windows support and authenticated/editor acceptance remain pending. See the
+[native CLI approval contract](NATIVE_CLI_APPROVAL.md) for the supported boundary.
 
 ### Settings
 

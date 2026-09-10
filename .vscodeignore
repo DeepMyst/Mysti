@@ -39,12 +39,9 @@ flake.nix
 flake.lock
 fetch-stargazers.log
 
-# Fossil. `mcp-permission-server.js` is the wrapper for the CLI-NATIVE
-# permission path (`--permission-prompt-tool`); it requires
-# dist/mcp/permissionServer.js, which does not exist and is built by nothing —
-# neither `--permission-prompt-tool` nor `permissionServer` appears anywhere in
-# src/. It is kept in the repo (the native path may be worth resurrecting) but
-# must not ship as a dead entrypoint.
+# Legacy MCP permission wrapper: its dist/mcp/permissionServer.js target is
+# not built. The Claude bridge now uses --permission-prompt-tool stdio and
+# resources/claude-policy/settings.json; this obsolete entrypoint stays out.
 resources/mcp-permission-server.js
 
 # Playwright is a webpack EXTERNAL (webpack.config.js), so it is required from

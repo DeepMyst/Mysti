@@ -21,7 +21,7 @@ import { KimiCodeProvider } from '../../src/providers/kimi/KimiCodeProvider';
 import type { OpenRouterClient } from '../../src/services/OpenRouterClient';
 
 // Mock extension context for provider constructors
-function createMockContext(): vscode.ExtensionContext {
+export function createMockContext(): vscode.ExtensionContext {
   return {
     subscriptions: [],
     globalState: {

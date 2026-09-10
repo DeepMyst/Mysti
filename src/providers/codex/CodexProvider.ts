@@ -24,16 +24,20 @@ import type {
 } from '../base/IProvider';
 import type {
   Settings,
+  AgentConfiguration,
+  Attachment,
   StreamChunk,
   ProviderConfig,
   ContextItem,
   Conversation,
-  AuthStatus,
-  SlashCommandDefinition
+  AuthStatus
 } from '../../types';
 import { validateModelName, validateProfileName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
+import { CodexAppServer, CODEX_APP_SERVER_VERSION } from './CodexAppServer';
+import { captureCodexNativeConfig, assertCodexServerConfigSafe, CODEX_NATIVE_CONFIG_OVERRIDES } from './CodexNativeConfig';
+import { killProcessTree } from '../../utils/processKill';
 import { clampEffort } from '../../utils/effort';
 import type { EffortLevel } from '../../types';
 
@@ -55,7 +59,7 @@ export interface CodexSessionState extends PanelSessionState {
  * OpenAI Codex CLI provider implementation
  * Requires ChatGPT Plus/Pro subscription or API key for authentication
  *
- * Uses `codex exec --json` for non-interactive streaming output
+ * Uses the pinned app-server protocol for native command and patch approvals
  *
  * @see https://github.com/openai/codex
  * @see https://developers.openai.com/codex/cli/
@@ -123,13 +127,14 @@ export class CodexProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: true, // Codex has 'reasoning' events
     supportsToolUse: true,
-    supportsSessions: true,  // Can resume sessions with `codex exec resume`
+    supportsSessions: true,  // Fresh native threads preserve conversation through prompt history
     // Plan 27 Phase 5: attachments are written to a temp file and referenced
     // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
     // tools, so it can open what it is given.
     supportsImages: true,
     supportsAutoInstall: true,
     supportsPromptEnhancement: false,
+    supportsNativeApproval: true,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'complete-blocks',  // whole 'reasoning' blocks per event
     thinkingLevelEffective: false,     // getThinkingTokens returns undefined
@@ -142,27 +147,6 @@ export class CodexProvider extends BaseCliProvider {
     usageConvention: 'openai',   // Codex reports cached_input_tokens as a SUBSET of input_tokens (OpenAI convention).
     modelSelection: 'full'
   };
-
-  // ============================================================================
-  // Slash command menu: Codex-specific commands
-  // ============================================================================
-
-  public override getSlashCommands(_panelId?: string): SlashCommandDefinition[] {
-    const base = super.getSlashCommands(_panelId);
-    return [
-      ...base,
-      {
-        id: 'codex:profile',
-        label: 'Switch profile',
-        description: 'Change Codex CLI profile',
-        section: 'customize',
-        icon: 'account',
-        provider: 'openai-codex',
-        action: 'execute',
-        keywords: ['profile', 'config', 'codex'],
-      },
-    ];
-  }
 
   protected _createSession(panelId: string): CodexSessionState {
     return {
@@ -273,7 +257,7 @@ export class CodexProvider extends BaseCliProvider {
   }
 
   getInstallCommand(): string {
-    return 'npm install -g @openai/codex';
+    return `npm install -g @openai/codex@${CODEX_APP_SERVER_VERSION}`;
   }
 
   /**
@@ -292,7 +276,7 @@ export class CodexProvider extends BaseCliProvider {
 
   /**
    * Override buildPrompt to skip mode instructions
-   * Codex's --sandbox flags handle access control at CLI level,
+   * The captured native sandbox and approval policy enforce access control,
    * so we don't need prompt-level mode instructions that cause
    * verbose planning responses for simple messages
    */
@@ -337,65 +321,85 @@ export class CodexProvider extends BaseCliProvider {
     return fullPrompt;
   }
 
-  // Plan 18 (Wave 3 / providers H1): the bespoke sendMessage override is GONE.
-  // It re-implemented the spawn loop and silently missed the base-path
-  // hardening: Windows auto-shell (.cmd shims -> spawn EINVAL), the shell-mode
-  // arg injection gate + bracket quoting, the early spawn 'error' listener,
-  // kill-in-finally for abandoned generators, attachment lifecycle, and the
-  // three-tier agentConfig (personas/skills never reached Codex). The base
-  // _sendSingleShot now drives codex exec: buildCliArgs supplies the args
-  // (with the stdin marker), buildPromptAsync folds in channel context the
-  // same way as every other base-path provider (the old native
-  // `-c developer_instructions=` injection was ALSO the unquoted shell-mode
-  // injection vector), and parseStreamLine handles the JSONL events.
-  // Behavioral delta (accepted): the base surfaces a non-zero exit as an
-  // error chunk even after answer text was produced, where the old
-  // _processCodexStream stayed silent.
-
-  /**
-   * Build Codex-specific CLI arguments
-   *
-   * Key flags from codex exec --help:
-   * - --sandbox, -s: read-only | workspace-write | danger-full-access
-   * - --dangerously-bypass-approvals-and-sandbox: skip all confirmations (DANGEROUS)
-   * - --json: output JSONL events to stdout
-   * - --model, -m: override configured model
-   * - --skip-git-repo-check: allow running outside git repo
-   */
-  private _buildCodexArgs(settings: Settings): string[] {
-    const args: string[] = ['exec'];
-
-    // Always use JSON mode for structured streaming output
-    args.push('--json');
-
-    // Map Mysti settings to Codex sandbox flags
-    // Priority: mode restrictions first, then access level
-    this._addSandboxFlags(args, settings);
-
-    // Add profile if configured
-    const profile = this._getProfile();
-    if (profile) {
-      args.push('--profile', profile);
+  /** Native app-server is the only public execution transport. */
+  protected async *_sendNativeTurn(
+    content: string, context: ContextItem[], settings: Settings,
+    conversation: Conversation | null, baseSession: PanelSessionState,
+    persona?: PersonaConfig, agentConfig?: AgentConfiguration, attachments?: Attachment[],
+  ): AsyncGenerator<StreamChunk> {
+    const session = baseSession as CodexSessionState;
+    const snapshot = { ...(this._requestSettings(session) ?? settings) };
+    const signal = this._requestSignal(session);
+    if (!signal || signal.aborted) { return; }
+    session.activeToolCalls.clear(); session.completedToolCalls.clear(); session.lastUsageStats = null;
+    const cliPath = this.getCliPath();
+    const args = this.buildCliArgs(snapshot, session);
+    const model = this._getEffectiveModel(snapshot);
+    const effort = clampEffort(snapshot.effortLevel, CODEX_EFFORT_LEVELS);
+    const handler = this._requestNativeHandler(session);
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const env = getEnrichedEnv();
+    let cleanup: (() => Promise<void>) | null = null;
+    let client: CodexAppServer | undefined;
+    let processHandle: ReturnType<typeof this._spawnCliProcess> | undefined;
+    let killing: Promise<void> | undefined;
+    const terminate = () => {
+      if (processHandle && !killing) {
+        killing = killProcessTree(processHandle, 250, { label: 'Codex native app-server' });
+      }
+    };
+    try {
+      const nativeConfig = await captureCodexNativeConfig(cwd, env);
+      if (!this._isCurrentRequest(session, signal)) { return; }
+      cleanup = await this.prepareAttachments(attachments, args);
+      if (!this._isCurrentRequest(session, signal)) { return; }
+      const prompt = await this.buildPromptAsync(
+        content, context, this._conversationForPrompt(session, conversation), snapshot,
+        persona, agentConfig, attachments, session.channelSystemContext,
+      );
+      if (!this._isCurrentRequest(session, signal)) { return; }
+      processHandle = this._spawnCliProcess(args, cwd, env, cliPath);
+      session.process = processHandle;
+      client = new CodexAppServer({
+        process: processHandle, panelId: session.panelId, signal, handler, settings: snapshot,
+        isCurrent: () => this._isCurrentRequest(session, signal) && session.process === processHandle,
+        terminate,
+      });
+      let stderr = '';
+      processHandle.stderr?.on('data', (data: Buffer) => { stderr = (stderr + data.toString()).slice(-4000); });
+      await client.initialize();
+      await client.verifyConfiguration(assertCodexServerConfigSafe, cwd);
+      await client.startThread({
+        cwd, ...(model ? { model } : {}), ephemeral: true,
+        approvalPolicy: 'untrusted', approvalsReviewer: 'user', sandbox: 'read-only',
+        environments: [], dynamicTools: [], selectedCapabilityRoots: [],
+      });
+      if (!this._isCurrentRequest(session, signal)) { return; }
+      await client.verifyConfiguration(assertCodexServerConfigSafe, cwd);
+      await nativeConfig.assertUnchanged();
+      if (!this._isCurrentRequest(session, signal)) { return; }
+      session.sessionId = client.threadId ?? null;
+      await client.startTurn({
+        input: [
+          { type: 'text', text: prompt, text_elements: [] },
+          ...(attachments ?? []).filter(attachment => attachment.type === 'image' && attachment.filePath).map(attachment => ({ type: 'localImage', path: attachment.filePath })),
+        ],
+        cwd, ...(model ? { model } : {}), ...(effort ? { effort } : {}),
+        approvalPolicy: 'untrusted', approvalsReviewer: 'user',
+        sandboxPolicy: { type: 'readOnly', networkAccess: false }, environments: [],
+      });
+      for await (const chunk of client.stream()) {
+        if (!this._isCurrentRequest(session, signal)) { break; }
+        if (chunk.type === 'error' && stderr) { chunk.content += ` ${stderr}`; }
+        yield chunk;
+      }
+      if (client.usage && this._isCurrentRequest(session, signal)) { session.lastUsageStats = client.usage; }
+    } finally {
+      client?.dispose(); terminate();
+      if (killing) { await killing; }
+      if (session.process === processHandle) { session.process = null; }
+      await cleanup?.();
     }
-
-    // Add model selection (custom model override or dropdown selection)
-    const effectiveModel = this._getEffectiveModel(settings);
-    if (effectiveModel) {
-      args.push('--model', effectiveModel);
-    }
-
-    // Reasoning effort → model_reasoning_effort config override. Codex tops out
-    // at xhigh (max clamps down). The quotes are part of the TOML value the
-    // `-c` parser reads (no shell involved — the literal chars reach codex).
-    const effort = clampEffort(settings.effortLevel, CODEX_EFFORT_LEVELS);
-    if (effort) {
-      args.push('-c', `model_reasoning_effort="${effort}"`);
-    }
-
-    // Skip git repo check - useful if workspace isn't a git repo
-    args.push('--skip-git-repo-check');
-
-    return args;
   }
 
   /**
@@ -406,43 +410,6 @@ export class CodexProvider extends BaseCliProvider {
     // Codex doesn't use MAX_THINKING_TOKENS env var
     // Reasoning is controlled by model_reasoning_effort in config.toml
     return undefined;
-  }
-
-  /**
-   * Add sandbox flags based on mode and access level
-   * Maps Mysti settings to Codex CLI sandbox modes
-   */
-  private _addSandboxFlags(args: string[], settings: Settings): void {
-    const { mode, accessLevel } = settings;
-
-    // Plan modes → always read-only regardless of access level
-    if (mode === 'quick-plan' || mode === 'detailed-plan') {
-      args.push('--sandbox', 'read-only');
-      console.log(`[Mysti] Codex: Using read-only sandbox (${mode})`);
-      return;
-    }
-
-    // Read-only access level → read-only sandbox regardless of operation mode
-    if (accessLevel === 'read-only') {
-      args.push('--sandbox', 'read-only');
-      console.log('[Mysti] Codex: Using read-only sandbox (read-only access level)');
-      return;
-    }
-
-    // More-restrictive-wins: only bypass when BOTH mode and access allow it
-    // edit-automatically + full-access = bypass all approvals and sandboxing
-    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
-      args.push('--dangerously-bypass-approvals-and-sandbox');
-      console.log('[Mysti] Codex: Bypassing all approvals and sandbox (edit-automatically + full-access)');
-      return;
-    }
-
-    // Codex 0.153.4 rejects the former exec --full-auto alias. Its sandbox
-    // expansion was workspace-write; spell that policy directly, as the
-    // non-interactive CLI documentation recommends. Stream notifications still
-    // do not provide a native approval handshake (see docs/NATIVE_APPROVAL.md).
-    args.push('--sandbox', 'workspace-write');
-    console.log(`[Mysti] Codex: Using workspace-write sandbox [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**
@@ -930,12 +897,13 @@ export class CodexProvider extends BaseCliProvider {
     return undefined;
   }
 
-  // These methods are required by abstract base but we override sendMessage
   protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
-    // Plan 18 (Wave 3): the base single-shot path sends the prompt via stdin;
-    // `-` tells `codex exec` to read it from there (this used to live in the
-    // deleted sendMessage override).
-    return [...this._buildCodexArgs(settings), '-'];
+    const args = ['app-server', '--listen', 'stdio://', ...CODEX_NATIVE_CONFIG_OVERRIDES.flatMap(value => ['-c', value])];
+    const profile = this._getProfile();
+    if (profile) { throw new Error('Codex native approvals do not support named CLI profiles. Clear the Mysti Codex profile setting before starting this turn.'); }
+    const effort = clampEffort(settings.effortLevel, CODEX_EFFORT_LEVELS);
+    if (effort) { args.push('-c', `model_reasoning_effort=${JSON.stringify(effort)}`); }
+    return args;
   }
 
   protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {

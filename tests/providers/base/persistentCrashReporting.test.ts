@@ -15,7 +15,7 @@
  * path and the inactivity watchdog already use.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { TestableClaudeProvider } from '../../helpers/providerFactory';
+import { CliLifecycleProvider } from '../../helpers/cliLifecycleProvider';
 import { createClaudeSession } from '../../helpers/sessionFactory';
 import { clearMockConfig } from '../../helpers/mockVscode';
 import type { StreamChunk } from '../../../src/types';
@@ -55,7 +55,7 @@ function fakeProc() {
 
 /** Drive _readUntilBoundary through one stdout write and then a process exit. */
 async function runUntilExit(
-  provider: TestableClaudeProvider,
+  provider: CliLifecycleProvider,
   session: any,
   exit: { code: number | null; signal: NodeJS.Signals | null },
   opts: { boundaryFirst?: boolean; cancelled?: boolean; stderr?: string } = {},
@@ -90,7 +90,7 @@ describe('D-5 — a persistent process that dies mid-stream is reported, not sil
   beforeEach(() => clearMockConfig());
 
   it('surfaces a non-zero exit as an error chunk carrying the code and the stderr tail', async () => {
-    const provider = new TestableClaudeProvider();
+    const provider = new CliLifecycleProvider(true);
     const session: any = createClaudeSession();
 
     const chunks = await runUntilExit(provider, session, { code: 1, signal: null }, {
@@ -111,7 +111,7 @@ describe('D-5 — a persistent process that dies mid-stream is reported, not sil
   });
 
   it('surfaces an OOM-style signal kill', async () => {
-    const provider = new TestableClaudeProvider();
+    const provider = new CliLifecycleProvider(true);
     const session: any = createClaudeSession();
 
     const chunks = await runUntilExit(provider, session, { code: null, signal: 'SIGKILL' });
@@ -122,7 +122,7 @@ describe('D-5 — a persistent process that dies mid-stream is reported, not sil
   });
 
   it('stays silent when the response completed before the process exited', async () => {
-    const provider = new TestableClaudeProvider();
+    const provider = new CliLifecycleProvider(true);
     const session: any = createClaudeSession();
 
     const chunks = await runUntilExit(provider, session, { code: 0, signal: null }, { boundaryFirst: true });
@@ -132,7 +132,7 @@ describe('D-5 — a persistent process that dies mid-stream is reported, not sil
   });
 
   it('does not report a user-initiated Stop as a crash', async () => {
-    const provider = new TestableClaudeProvider();
+    const provider = new CliLifecycleProvider(true);
     const session: any = createClaudeSession();
 
     const chunks = await runUntilExit(provider, session, { code: null, signal: 'SIGINT' }, { cancelled: true });

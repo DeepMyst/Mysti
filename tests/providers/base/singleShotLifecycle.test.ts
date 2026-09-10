@@ -6,7 +6,7 @@
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TestableCodexProvider } from '../../helpers/providerFactory';
+import { CliLifecycleProvider } from '../../helpers/cliLifecycleProvider';
 import { clearMockConfig } from '../../helpers/mockVscode';
 import { ProviderManager } from '../../../src/managers/ProviderManager';
 import { killProcessTree } from '../../../src/utils/processKill';
@@ -38,7 +38,7 @@ function fakeProcess(): ChildProcess {
 }
 
 function harness() {
-  const provider = new TestableCodexProvider();
+  const provider = new CliLifecycleProvider();
   vi.spyOn(provider, 'getCliPath').mockReturnValue('/mock/codex');
   vi.spyOn(provider, 'buildCliArgs').mockReturnValue([]);
   const cleanup = vi.fn(async () => undefined);

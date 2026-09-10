@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TestableClaudeProvider } from '../../helpers/providerFactory';
+import { CliLifecycleProvider } from '../../helpers/cliLifecycleProvider';
 import { clearMockConfig } from '../../helpers/mockVscode';
 import type { Settings, StreamChunk } from '../../../src/types';
 import type { PanelSessionState } from '../../../src/providers/base/BaseCliProvider';
@@ -45,7 +45,7 @@ function fakeProcess() {
 }
 
 function harness() {
-  const provider = new TestableClaudeProvider();
+  const provider = new CliLifecycleProvider(true);
   vi.spyOn(provider, 'getCliPath').mockReturnValue('/mock/claude');
   const cleanup = vi.fn(async () => undefined);
   vi.spyOn(provider as any, 'prepareAttachments').mockResolvedValue(cleanup);

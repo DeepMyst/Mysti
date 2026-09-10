@@ -1,0 +1,6 @@
+{
+  "disableAllHooks": true,
+  "permissions": {
+    "ask": ["*"]
+  }
+}
