@@ -380,7 +380,7 @@ export const AUTHORITY_BEARING_SETTINGS: readonly string[] = [
 
   // Shell-shaped surfaces.
   'mysti.useShellForCli',
-  // Plan 27 N-2: turns extension activation into `openclaw gateway --detach`
+  // Plan 27 N-2: turns extension activation into `openclaw gateway start`
   // (ActiveModeManager.initialize → startDaemon). Machine-scoped AND gated on
   // a trusted workspace; default off.
   'mysti.activeMode.autoStartDaemon',

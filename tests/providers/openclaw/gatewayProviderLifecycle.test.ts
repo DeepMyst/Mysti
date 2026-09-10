@@ -93,8 +93,10 @@ describe('OpenClaw provider managed turn ownership', () => {
   const message = (text = 'hello', panel = 'a', authority = settings, history: Conversation | null = null, attachments?: Attachment[]) =>
     provider.sendMessage(text, [], authority, history, undefined, panel, undefined, undefined, attachments);
 
-  it('creates the native lease before submission and never sends on the shared gateway', async () => {
-    setMockConfig('openclawUseGateway', false);
+  it.each([false, true])('creates the native lease before submission with openclawUseGateway=%s', async useGateway => {
+    setMockConfig('openclawUseGateway', useGateway);
+    await provider.initialize();
+    expect(connect.mock.contexts.includes(internal._gateway)).toBe(useGateway);
     const chunks = await collect(message());
     const options = send.mock.calls[0][1]!;
     expect(send.mock.contexts[0]).not.toBe(internal._gateway);

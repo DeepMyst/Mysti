@@ -547,7 +547,7 @@ describe('authority-shaped namespaces are machine-scoped OR clamped (structural,
     expect(key in MODEL_SELECTORS).toBe(false);
   });
 
-  it('mysti.activeMode.autoStartDaemon is machine-scoped AND authority-bearing (it execs `openclaw gateway --detach`)', () => {
+  it('mysti.activeMode.autoStartDaemon is machine-scoped AND authority-bearing (it execs `openclaw gateway start`)', () => {
     const key = 'mysti.activeMode.autoStartDaemon';
     expect(props[key], `${key} must stay declared — it is read by ActiveModeManager.initialize()`).toBeDefined();
     expect(props[key].default, `${key} must default OFF`).toBe(false);

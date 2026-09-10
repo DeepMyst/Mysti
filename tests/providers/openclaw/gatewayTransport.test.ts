@@ -124,15 +124,15 @@ class Fixture {
   }
 }
 
-function client(fixture: Fixture): OpenClawGateway {
-  const gateway = new OpenClawGateway(fixture.url);
+function client(fixture: Fixture, ownedRuntime = false): OpenClawGateway {
+  const gateway = new OpenClawGateway(fixture.url, ownedRuntime ? 'owned-fixture-token' : undefined, { ownedRuntime });
   gateways.push(gateway);
   return gateway;
 }
 
-async function ready(): Promise<{ fixture: Fixture; gateway: OpenClawGateway }> {
+async function ready(ownedRuntime = true): Promise<{ fixture: Fixture; gateway: OpenClawGateway }> {
   const fixture = await new Fixture().listen();
-  const gateway = client(fixture);
+  const gateway = client(fixture, ownedRuntime);
   expect(await bounded(gateway.connect())).toBe(true);
   return { fixture, gateway };
 }
@@ -209,6 +209,18 @@ describe('OpenClaw gateway over real WebSockets', () => {
     const output = collect(gateway.sendAgentMessage('owned', { runId: 'mysti-owned', sessionKey: 'agent:main:mysti-panel' }));
     fixture.finish(await fixture.request('agent'), 'owned answer');
     expect(text(await bounded(output))).toBe('owned answer');
+  });
+
+  it.each([false, true])('rejects agent execution on a shared gateway before any agent RPC (connected: %s)', async connected => {
+    const fixture = await new Fixture().listen();
+    const gateway = client(fixture);
+    if (connected) { expect(await bounded(gateway.connect())).toBe(true); }
+    await expect(bounded(collect(gateway.sendAgentMessage('must not execute', {
+      runId: 'mysti-unowned', sessionKey: 'agent:main:mysti-panel',
+    })))).rejects.toThrow('requires the owned native approval runtime');
+    expect(fixture.requests.map(request => request.method)).toEqual(connected ? ['connect'] : []);
+    expect(fixture.sockets).toHaveLength(connected ? 1 : 0);
+    expect(gateway.isConnected()).toBe(connected);
   });
 
   it.each([
@@ -579,14 +591,14 @@ describe('OpenClaw gateway over real WebSockets', () => {
   });
 
   it.each(['accepted', 'pending', 'running', 'in_flight'])('resolves one-response channel RPC status %s', async status => {
-    const { fixture, gateway } = await ready();
+    const { fixture, gateway } = await ready(false);
     const delivered = gateway.sendToChannel('fixture-channel', 'hello', 'fixture-target');
     fixture.reply(await fixture.request('send'), { status });
     expect(await bounded(delivered)).toBe(true);
   });
 
   it('rejects channel agent delegation without submitting an unowned chat.send request', async () => {
-    const { fixture, gateway } = await ready();
+    const { fixture, gateway } = await ready(false);
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       expect(await gateway.sendAgentTask('resolve a contact and send a message', 'channel-panel')).toBe(false);

@@ -314,6 +314,9 @@ export class OpenClawGateway {
     message: string,
     options: GatewayAgentOptions = {}
   ): AsyncGenerator<StreamChunk> {
+    if (!this._ownedRuntime) {
+      throw new Error('OpenClaw agent execution requires the owned native approval runtime. Shared gateways support only status and direct channel operations.');
+    }
     if (options.signal?.aborted) { return; }
     if (!this.isConnected()) { throw new Error('Gateway not connected'); }
 

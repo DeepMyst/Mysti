@@ -10,6 +10,8 @@ authority is covered separately by [the owned policy contract](OPENCLAW_NATIVE_P
 - `OpenClawGateway` owns the connection, RPC requests and reconnection. Concurrent
   connection callers share one attempt. A retired socket cannot change the state
   of its replacement. Disconnect rejects waiting requests and releases timers.
+  Shared clients reject agent submissions before sending an RPC; only explicitly
+  owned clients may submit agent turns after validating their native handshake.
 - `OpenClawAgentRun` owns a single run's queue, deadline, stream normalization,
   tool identities and cancellation. Gateway RPC request IDs and agent run IDs
   are distinct: the caller's unique idempotency key is the run ID.
@@ -18,8 +20,8 @@ authority is covered separately by [the owned policy contract](OPENCLAW_NATIVE_P
   the gateway iterator also aborts its pending read. Agent sends require a live
   policy lease, and no failure is replayed through an unguarded CLI.
 - `BaseCliProvider` owns CLI spawning, process tracking and cleanup. OpenClaw's
-  optional pre-spawn hook writes a complete private prompt file before the child
-  can read it. `readCliStdout` keeps one pending read across stderr heartbeats
+  legacy pre-spawn hook and private prompt-file parser remain fixture-tested;
+  its raw agent argument builder rejects execution. `readCliStdout` keeps one pending read across stderr heartbeats
   and binds cancellation and inactivity termination to the captured child.
 
 The logical OpenClaw session key identifies the panel within its owned runtime.
@@ -107,6 +109,11 @@ Only its verified embedded tool path is admitted. The former unsupported
 `--sandbox`/`--yolo` fallback and shared `chat.send` agent delegation are disabled.
 Channel markers use direct delivery to configured targets or exact international
 phone numbers; fuzzy contact resolution cannot start an unowned agent.
+
+The `openclawUseGateway` setting controls the provider's initial shared-gateway
+connection, not the agent execution path. Active Mode starts an installed shared
+service with `openclaw gateway start`; the inspected CLI has no `gateway --detach`
+option. A service startup failure does not launch an alternate agent route.
 
 Transport passes and local fake-model fixtures do not establish authenticated
 account compatibility, alternate harness support or cross-platform editor

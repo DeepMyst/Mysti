@@ -3,12 +3,40 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import http from "node:http";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 const require2 = createRequire(import.meta.url);
+// Keep shutdown failures reviewable without changing production signal handling.
+const signalErrors = [];
+const ownedChildren = new Map();
+const childProcess = require2("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = function(command, args, options) {
+  const child = originalSpawn.call(this, command, args, options);
+  if (options?.env?.MYSTI_OPENCLAW_OWNED_RUNTIME === "1" && child.pid) {
+    const observed = { child, exitObserved: false };
+    ownedChildren.set(child.pid, observed);
+    child.once("exit", () => { observed.exitObserved = true; });
+  }
+  return child;
+};
+const originalKill = process.kill;
+process.kill = function(pid, signal) {
+  try { return originalKill.call(this, pid, signal); } catch (error) {
+    const owned = ownedChildren.get(Math.abs(pid));
+    if (owned && error.code !== "ESRCH") {
+      const status = spawnSync("/bin/ps", ["-o", "pid=,ppid=,pgid=,stat=", "-p", String(Math.abs(pid))],
+        { encoding: "utf8", timeout: 1000, stdio: ["ignore", "pipe", "pipe"] });
+      signalErrors.push({ pid, signal, code: error.code,
+        exitCode: owned.child.exitCode, signalCode: owned.child.signalCode, exitObserved: owned.exitObserved,
+        processStatus: { status: status.status, output: status.stdout?.trim() ?? "", error: status.error?.code } });
+    }
+    throw error;
+  }
+};
 const { OpenClawManagedRuntime } = require2(path.join(process.env.MYSTI_TEST_BUNDLE_DIR, "OpenClawManagedRuntime.js"));
 const { OpenClawPolicyBroker } = require2(path.join(process.env.MYSTI_TEST_BUNDLE_DIR, "OpenClawPolicyBroker.js"));
 const { OpenClawGateway } = require2(path.join(process.env.MYSTI_TEST_BUNDLE_DIR, "OpenClawGateway.js"));
@@ -29,7 +57,11 @@ if (mode === "missing-admission") {
   const altered = source.replace("api.on('before_agent_run', owner.admitRun);", "/* Fixture: missing admission hook */").replace(/from '\.\/([^']+)'/g, (_match, filename) => "from " + JSON.stringify(path.join(original, filename)));
   await fs.writeFile(path.join(pluginPath, "index.mjs"), altered);
 }
-const result = { startedAt: (/* @__PURE__ */ new Date()).toISOString(), fixture, nativeReady: false, policyReady: false, modelRequests: [], authorityRequests: [], cards: [], decisions: [], cases: [], pendingChecks: [] };
+const result = { startedAt: (/* @__PURE__ */ new Date()).toISOString(), fixture, nativeReady: false, policyReady: false, modelRequests: [], authorityRequests: [], cards: [], decisions: [], cases: [], pendingChecks: [], signalErrors };
+function errorDetails(error) {
+  return error instanceof Error ? { name: error.name, message: error.message, stack: error.stack,
+    code: error.code, cause: error.cause ? errorDetails(error.cause) : undefined } : { message: String(error) };
+}
 let scenario = "pipeline", step = 0;
 const marker = (name) => path.join(workspace, name);
 const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
@@ -243,13 +275,28 @@ try {
   }
 } catch (error) {
   result.error = String(error);
+  result.failure = errorDetails(error);
   process.exitCode = 1;
 } finally {
-  lifetime.abort();
-  gateway?.disconnect();
-  await runtime?.dispose();
-  broker.dispose();
-  await new Promise((resolve) => model.close(resolve));
+  result.phase = "cleanup";
+  await fs.writeFile(path.join(fixture, "result.json"), JSON.stringify(result, null, 2));
+  const cleanupErrors = [];
+  for (const [operation, cleanup] of [
+    ["abort lifetime", () => lifetime.abort()],
+    ["disconnect gateway", () => gateway?.disconnect()],
+    ["dispose managed runtime", () => runtime?.dispose()],
+    ["dispose broker", () => broker.dispose()],
+    ["close model fixture", () => new Promise((resolve, reject) => model.close((error) => error ? reject(error) : resolve()))],
+  ]) {
+    try { await cleanup(); } catch (error) { cleanupErrors.push({ operation, ...errorDetails(error) }); }
+  }
+  if (cleanupErrors.length > 0) {
+    result.cleanupErrors = cleanupErrors;
+    result.error ??= "Native fixture cleanup failed: " + cleanupErrors.map((error) => error.operation + ": " + error.message).join("; ");
+    result.passed = false;
+    process.exitCode = 1;
+  }
+  result.phase = "complete";
   result.finishedAt = (/* @__PURE__ */ new Date()).toISOString();
   await fs.writeFile(path.join(fixture, "result.json"), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ passed: result.passed, error: result.error, modelRequests: result.modelRequests.length, cards: result.cards.length, cases: result.cases.map((x) => x.name) }));

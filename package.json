@@ -434,18 +434,18 @@
           "scope": "machine",
           "type": "string",
           "default": "openclaw",
-          "description": "Path to OpenClaw CLI executable"
+          "description": "Path to the verified OpenClaw 2026.6.34 CLI executable. Agent execution requires POSIX and the owned native approval runtime."
         },
         "mysti.openclawGatewayUrl": {
           "scope": "machine",
           "type": "string",
           "default": "ws://127.0.0.1:18789",
-          "description": "URL of the OpenClaw Gateway WebSocket server"
+          "description": "URL of the shared OpenClaw Gateway for status and channels. Agent turns use a separate local runtime with native approvals."
         },
         "mysti.openclawUseGateway": {
           "type": "boolean",
           "default": true,
-          "description": "Use OpenClaw Gateway WebSocket for streaming (falls back to CLI if unavailable)"
+          "description": "Connect this provider to the shared OpenClaw Gateway for status and channels at initialization. Agent turns always require the owned native approval runtime; disabling this setting does not enable CLI fallback."
         },
         "mysti.opencodePath": {
           "scope": "machine",
@@ -673,7 +673,8 @@
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
-          "description": "Custom model for OpenClaw. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4-6"
+          "description": "Legacy model setting. OpenClaw agent turns use the provider-qualified model in agents.defaults.model from OpenClaw's configuration.",
+          "deprecationMessage": "Configure agents.defaults.model in your OpenClaw JSON configuration. Mysti's model dropdown and this setting do not select the owned runtime's model."
         },
         "mysti.opencodeModel": {
           "type": "string",
@@ -1036,7 +1037,7 @@
           "scope": "machine",
           "type": "boolean",
           "default": false,
-          "description": "Automatically start the OpenClaw daemon (`openclaw gateway --detach`) when it is not running at extension activation. Only in trusted workspaces; a workspace's settings cannot enable this."
+          "description": "Automatically start the installed OpenClaw Gateway service (`openclaw gateway start`) when it is not running at extension activation. Requires an installed service and a trusted workspace; a workspace's settings cannot enable this."
         },
         "mysti.lifecycle.enabled": {
           "type": "boolean",

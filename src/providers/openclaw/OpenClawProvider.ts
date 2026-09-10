@@ -435,7 +435,7 @@ export class OpenClawProvider extends BaseCliProvider {
     return undefined;
   }
 
-  // --- Stream Parsing (for CLI fallback) ---
+  // --- Legacy stream parsing (public CLI agent execution is disabled) ---
 
   protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
     const openClawSession = session as OpenClawSessionState;
@@ -603,7 +603,7 @@ export class OpenClawProvider extends BaseCliProvider {
   }
 
   /**
-   * Override processStream for CLI fallback — uses hybrid streaming:
+   * Legacy processStream retained for parser regression coverage:
    * 1. Try line-by-line NDJSON first (like BaseCliProvider) for real-time output
    * 2. Fall back to full-blob JSON parse if no NDJSON lines yielded content
    */

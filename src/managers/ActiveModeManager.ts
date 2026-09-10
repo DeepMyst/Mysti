@@ -240,14 +240,16 @@ export class ActiveModeManager {
   }
 
   /**
-   * Attempt to start the OpenClaw daemon if it's not running.
+   * Start an installed OpenClaw Gateway service, then verify connectivity.
+   * The CLI can repair an existing service definition; it does not install a
+   * missing service or provide a foreground fallback.
    */
   async startDaemon(): Promise<boolean> {
     try {
       const { exec } = await import('child_process');
       const env = getEnrichedEnv();
       return new Promise<boolean>((resolve) => {
-        exec('openclaw gateway --detach', { timeout: 10000, env }, (error) => {
+        exec('openclaw gateway start', { timeout: 10000, env }, (error) => {
           if (error) {
             console.log('[Mysti] ActiveMode: Failed to start daemon:', error.message);
             resolve(false);

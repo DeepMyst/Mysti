@@ -45,8 +45,15 @@ describe('installed OpenClaw owned native approval integration', () => {
         try { await fs.copyFile(path.join(fixture, name), path.join(evidence, name)); } catch { /* Startup may precede the guard. */ }
       }
       await fs.writeFile(path.join(evidence, 'process-error.txt'), executionError instanceof Error ? executionError.message : 'Process passed');
-      const result = JSON.parse(await fs.readFile(path.join(fixture, 'result.json'), 'utf8'));
-      expect(result.error, `${executionError instanceof Error ? executionError.message : ''}\nEvidence: ${evidence}`).toBeUndefined();
+      let report: string;
+      try { report = await fs.readFile(path.join(fixture, 'result.json'), 'utf8'); } catch (error) {
+        throw new Error(`Native fixture did not save result.json. Evidence: ${evidence}\n${executionError instanceof Error ? executionError.message : 'Fixture process exited without a report'}`, { cause: error });
+      }
+      const result = JSON.parse(report);
+      const diagnostics = `${executionError instanceof Error ? executionError.message : ''}\nEvidence: ${evidence}\n${JSON.stringify({ failure: result.failure, cleanupErrors: result.cleanupErrors, signalErrors: result.signalErrors })}`;
+      expect(result.error, diagnostics).toBeUndefined();
+      expect(executionError, diagnostics).toBeUndefined();
+      expect(result.phase, diagnostics).toBe('complete');
       expect(result.passed).toBe(true);
       expect(result.nativeReady).toBe(true);
       if (mode === 'normal') {

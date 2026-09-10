@@ -260,43 +260,48 @@ Or set `CURSOR_API_KEY` environment variable.
 
 ## OpenClaw
 
-Dual-transport provider with real-time WebSocket streaming and CLI fallback.
+Agent turns stream through an owned local runtime with native approvals.
+Mysti supports verified OpenClaw **2026.6.34 on POSIX** with the embedded
+OpenClaw/Pi harness and stock `read`, `write`, `edit`, and foreground `exec` tools.
+Unsupported runtimes or failed approval startup prevent execution. There is no
+CLI fallback.
 
 ### Installation
 
 ```bash
-npm install -g openclaw@latest && openclaw onboard --install-daemon
+npm install -g openclaw@2026.6.34
 ```
 
-### Authentication
+### Configuration and credentials
 
-```bash
-openclaw login
-```
-
-Configuration stored in `~/.openclaw/openclaw.json`.
-
-### Supported Models
-
-- Claude Opus 4.6
-- Claude Sonnet 4.5
-- GPT-5
+Use ordinary JSON in `~/.openclaw/openclaw.json`, or select a file with
+`OPENCLAW_CONFIG_PATH`. Set `agents.defaults.model` to an explicit
+`provider/model` identifier and configure the matching provider. The owned
+runtime accepts inline or process-environment credentials; it does not import
+external OAuth/auth-profile stores, executable credentials, or `config.env`.
+The Mysti model dropdown and legacy `mysti.openclawModel` setting do not override
+this configured model. Authenticated provider acceptance remains pending.
 
 ### Unique Features
 
-- **WebSocket Gateway**: Primary mode uses real-time WebSocket streaming at `ws://127.0.0.1:18789` for low-latency responses
-- **CLI Fallback**: Automatically falls back to CLI mode if the gateway is unavailable
-- **Thinking Levels**: Configurable thinking (off, low, medium, high) for deeper reasoning
-- **Session Persistence**: Continue conversations across sessions
+- **Native approvals**: Final tool arguments are checked before execution; Stop and disconnect revoke the turn's authority.
+- **Owned streaming runtime**: Agent turns require an approved local runtime regardless of shared-gateway availability.
+- **Shared gateway**: Status and direct channel delivery use the configured gateway. Its agent submission routes are disabled.
+- **Session continuity**: A panel retains its logical session within its owned runtime; clearing the session rotates that identity.
+
+Active Mode can start an already installed shared Gateway service using
+`openclaw gateway start`. It does not fall back to foreground agent execution
+when service startup fails. See [native approval support and limits](OPENCLAW_NATIVE_POLICY.md)
+and the [transport contract](OPENCLAW_TRANSPORT.md).
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.openclawPath` | `openclaw` | Path to OpenClaw CLI executable |
-| `mysti.openclawModel` | `claude-opus-4-6` | Default model |
-| `mysti.openclawUseGateway` | `true` | Use WebSocket Gateway |
-| `mysti.openclawGatewayUrl` | `ws://127.0.0.1:18789` | Gateway URL |
+| `mysti.openclawPath` | `openclaw` | Path to the verified 2026.6.34 executable |
+| `mysti.openclawModel` | empty | Deprecated; configure `agents.defaults.model` in OpenClaw |
+| `mysti.openclawUseGateway` | `true` | Connect the provider's shared gateway at initialization; does not select agent transport |
+| `mysti.openclawGatewayUrl` | `ws://127.0.0.1:18789` | Shared gateway URL for status and channels |
 
 ---
 

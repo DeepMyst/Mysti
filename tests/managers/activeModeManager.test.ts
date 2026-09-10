@@ -10,7 +10,7 @@
  * NOTHING. Its description promised "Automatically start OpenClaw daemon if
  * not running on extension activation"; the only thing that ever started the
  * daemon was the webview's Start button (`startDaemon()` → `exec('openclaw
- * gateway --detach')`). This wires the setting to that same method, behind
+ * gateway start')`). This wires the setting to that same method, behind
  * two gates a repository cannot open: the setting is machine-scoped, and the
  * workspace must be trusted. The daemon is only started when the first
  * connect attempt fails — an already-running gateway is never re-spawned.
@@ -20,10 +20,12 @@ import { exec } from 'child_process';
 import * as vscode from 'vscode';
 import { setMockConfig, clearMockConfig } from '../helpers/mockVscode';
 
+const execState = vi.hoisted(() => ({ error: new Error('mocked exec') as Error | null }));
+
 vi.mock('child_process', () => ({
   exec: vi.fn((_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
-    // Report failure so startDaemon() resolves without arming its 3 s reconnect timer.
-    cb?.(new Error('mocked exec'));
+    // Default to failure so auto-start tests do not arm the 3 s reconnect timer.
+    cb?.(execState.error);
     return {} as unknown;
   }),
 }));
@@ -80,6 +82,7 @@ describe('ActiveModeManager — mysti.activeMode.autoStartDaemon (Plan 27 N-2)',
   beforeEach(() => {
     clearMockConfig();
     execMock.mockClear();
+    execState.error = new Error('mocked exec');
     gatewayState.connected = false;
     delete mockWorkspace.isTrusted;
   });
@@ -87,6 +90,7 @@ describe('ActiveModeManager — mysti.activeMode.autoStartDaemon (Plan 27 N-2)',
   afterEach(() => {
     m?.dispose();
     m = undefined;
+    vi.useRealTimers();
     delete mockWorkspace.isTrusted;
     clearMockConfig();
   });
@@ -99,13 +103,53 @@ describe('ActiveModeManager — mysti.activeMode.autoStartDaemon (Plan 27 N-2)',
     expect(daemonStartCommands()).toEqual([]);
   });
 
-  it('on + trusted workspace + daemon unreachable: issues `openclaw gateway --detach` once', async () => {
+  it('on + trusted workspace + daemon unreachable: issues `openclaw gateway start` once', async () => {
     setMockConfig('activeMode.autoStartDaemon', true);
     mockWorkspace.isTrusted = true;
     m = manager();
     await m.initialize();
     await settle();
-    expect(daemonStartCommands()).toEqual(['openclaw gateway --detach']);
+    expect(daemonStartCommands()).toEqual(['openclaw gateway start']);
+  });
+
+  it('reports success only after the service command succeeds and the gateway connects', async () => {
+    vi.useFakeTimers();
+    execState.error = null;
+    gatewayState.connected = true;
+    m = manager();
+    const connect = vi.spyOn(m as unknown as { _connectAndStartPolling(): Promise<void> }, '_connectAndStartPolling');
+
+    const result = m.startDaemon();
+    await vi.advanceTimersByTimeAsync(3000);
+
+    await expect(result).resolves.toBe(true);
+    expect(daemonStartCommands()).toEqual(['openclaw gateway start']);
+    expect(connect).toHaveBeenCalledOnce();
+  });
+
+  it('returns false without a fallback when the service command fails', async () => {
+    m = manager();
+    const connect = vi.spyOn(m as unknown as { _connectAndStartPolling(): Promise<void> }, '_connectAndStartPolling');
+
+    await expect(m.startDaemon()).resolves.toBe(false);
+
+    expect(daemonStartCommands()).toEqual(['openclaw gateway start']);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('returns false without a fallback when the CLI exits zero but no gateway connects', async () => {
+    // OpenClaw can report a missing service installation with exit code zero.
+    vi.useFakeTimers();
+    execState.error = null;
+    m = manager();
+    const connect = vi.spyOn(m as unknown as { _connectAndStartPolling(): Promise<void> }, '_connectAndStartPolling');
+
+    const result = m.startDaemon();
+    await vi.advanceTimersByTimeAsync(3000);
+
+    await expect(result).resolves.toBe(false);
+    expect(daemonStartCommands()).toEqual(['openclaw gateway start']);
+    expect(connect).toHaveBeenCalledOnce();
   });
 
   it('on but UNTRUSTED workspace: never starts the daemon (a repo cannot buy a process by being opened)', async () => {
