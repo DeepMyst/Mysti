@@ -15,7 +15,11 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import type { PanelSessionState } from '../base/BaseCliProvider';
+import { AcpNativeProvider } from '../base/AcpNativeProvider';
+import type { AcpNativeLaunch, AcpNativeLaunchContext } from '../base/AcpNativeTypes';
+import { QWEN_ACP_VERSION, QWEN_ACP_TOOLS, QWEN_ACP_EXCLUDED_TOOLS, decodeQwenPermission } from './QwenNativeApproval';
+import { captureNativeFamilyConfig, nativeFamilyEnvironment } from './QwenNativeConfig';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -53,7 +57,7 @@ export interface QwenSessionState extends PanelSessionState {
  * Qwen Code uses the same streaming protocol as Claude Code (Anthropic stream-json format).
  * CLI: qwen -p "prompt" --output-format stream-json --include-partial-messages --verbose
  */
-export class QwenCodeProvider extends BaseCliProvider {
+export class QwenCodeProvider extends AcpNativeProvider {
   readonly id = 'qwen-code';
   readonly displayName = 'Qwen Code';
 
@@ -87,6 +91,7 @@ export class QwenCodeProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
+    supportsNativeApproval: true,
     supportsSessions: true,
     // Plan 27 Phase 5: attachments are written to a temp file and referenced
     // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
@@ -100,7 +105,7 @@ export class QwenCodeProvider extends BaseCliProvider {
     planMode: 'detected',
     // F8 caveat: `--continue` resumes the globally-latest session (cross-panel
     // bleed) — value stays 'cli-resume' until Plan 00 Batch 1.3 fixes it.
-    sessionKind: 'cli-resume',
+    sessionKind: 'prompt-history',
     emitsToolResults: true,
     emitsUsage: true,
     usageConvention: 'none',   // Qwen's message_delta usage carries no cache fields.
@@ -280,38 +285,71 @@ export class QwenCodeProvider extends BaseCliProvider {
 
   // --- CLI Args ---
 
-  protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
-    const args: string[] = [
-      '--output-format', 'stream-json',
-      '--include-partial-messages',
-    ];
-
-    // Map Mysti modes to Qwen approval modes
-    this._addApprovalMode(args, settings);
-
-    // Prompt is sent via stdin by BaseCliProvider.sendMessage()
-    // No -p flag needed — Qwen reads from stdin by default
-
-    // Session resume — pass the per-panel session ID explicitly.
-    // Bare --continue resumes the *globally most recent* session for the
-    // project, which bleeds conversations across panels (and across any
-    // terminal `qwen` run in the same repo). When no session ID has been
-    // captured yet, start a fresh session (no flag).
-    if (session.sessionId) {
-      args.push('--resume', session.sessionId);
-      console.log('[Mysti] Qwen: Resuming session:', session.sessionId);
-    } else {
-      console.log('[Mysti] Qwen: Starting new session');
+  protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
+    // All grants are decided by Mysti after a blocking native request. Native
+    // automatic/bare modes discard the explicit force-ask policy and are unsafe.
+    const args = ['--acp', '--approval-mode', 'default', '--no-safe-mode', '--no-sandbox',
+      '--no-chat-recording', '--core-tools', QWEN_ACP_TOOLS.join(','),
+      '--exclude-tools', QWEN_ACP_EXCLUDED_TOOLS.join(','),
+      '--allowed-mcp-server-names', '__mysti_no_mcp__', '--extensions', '__mysti_no_extensions__'];
+    if (settings.accessLevel === 'read-only' || settings.mode === 'quick-plan' || settings.mode === 'detailed-plan') {
+      args.push('--exclude-tools', 'edit,notebook_edit,run_shell_command');
     }
-
-    // Model selection
-    const effectiveModel = this._getEffectiveModel(settings);
-    if (effectiveModel) {
-      args.push('--model', effectiveModel);
-    }
-
-    console.log('[Mysti] Qwen: Built CLI args:', args.join(' '));
+    const model = this._getEffectiveModel(settings);
+    if (model) { args.push('--model', model); }
     return args;
+  }
+
+  protected override async _prepareAcpLaunch(context: AcpNativeLaunchContext): Promise<AcpNativeLaunch> {
+    const args = this.buildCliArgs(context.settings, context.session);
+    const nativeEnv = nativeFamilyEnvironment(context.env);
+    // Pin the native home before the bootstrap can redirect it through a user
+    // .env file. Match the wrapper's tilde/relative-path resolution exactly.
+    const configuredHome = nativeEnv.QWEN_HOME?.trim();
+    nativeEnv.QWEN_HOME = !configuredHome ? path.join(os.homedir(), '.qwen')
+      : configuredHome === '~' ? os.homedir()
+        : configuredHome.startsWith('~/') || configuredHome.startsWith('~\\')
+          ? path.join(os.homedir(), configuredHome.slice(2)) : path.resolve(context.cwd, configuredHome);
+    const policyFile = path.join(this._extensionContext.extensionPath, 'resources', 'qwen-policy', 'settings.json');
+    const capture = await captureNativeFamilyConfig({ ...context, env: nativeEnv, flavor: 'qwen', version: QWEN_ACP_VERSION, policyFiles: [policyFile] });
+    const env = { ...nativeEnv, QWEN_CODE_SYSTEM_SETTINGS_PATH: policyFile,
+      QWEN_CODE_SYSTEM_DEFAULTS_PATH: policyFile, QWEN_CODE_SIMPLE: '0', QWEN_CODE_SAFE_MODE: '0',
+      QWEN_CODE_NO_RELAUNCH: '1',
+      // cli-entry.js otherwise prefers a mutable managed installation before
+      // importing the verified npm payload. A null pin disables that lookup.
+      QWEN_CODE_MANAGED_NPM_PIN: JSON.stringify({ bootstrap: capture.cliPath, version: null, updateRoot: path.dirname(capture.cliPath) }) };
+    let inputTokens = 0; let outputTokens = 0;
+    return {
+      cliPath: capture.cliPath, args, env,
+      expectedAgentInfo: { name: 'qwen-code', version: QWEN_ACP_VERSION },
+      mode: 'default', images: true,
+      // 0.23.0 treats MethodNotFound as a permanently unavailable optional
+      // mid-turn queue and continues its ordinary current prompt.
+      nonFatalUnsupportedRequests: ['craft/drainMidTurnQueue'],
+      validateNotification: (method, params) => {
+        if (method === 'qwen/notify/session/mode-update' && (params.v !== 1 || params.currentModeId !== 'default')) {
+          throw new Error('Qwen changed the captured native approval mode.');
+        }
+      },
+      validateUpdate: update => {
+        if (update.sessionUpdate === 'config_option_update' && Array.isArray(update.configOptions)) {
+          for (const option of update.configOptions) {
+            if (option?.category === 'mode' && option.currentValue !== 'default') { throw new Error('Qwen changed the captured native approval mode.'); }
+          }
+        }
+      },
+      decodePermission: params => decodeQwenPermission(params, context.cwd),
+      decodeUsage: value => {
+        const meta = value._meta;
+        const usage = meta && typeof meta === 'object' && 'usage' in meta ? meta.usage : undefined;
+        if (!usage || typeof usage !== 'object' || !('inputTokens' in usage) || !('outputTokens' in usage)
+          || !Number.isSafeInteger(usage.inputTokens) || !Number.isSafeInteger(usage.outputTokens)
+          || Number(usage.inputTokens) < 0 || Number(usage.outputTokens) < 0) { return undefined; }
+        inputTokens += Number(usage.inputTokens); outputTokens += Number(usage.outputTokens);
+        return { input_tokens: inputTokens, output_tokens: outputTokens };
+      },
+      assertUnchanged: capture.assertUnchanged,
+    };
   }
 
   protected getThinkingTokens(thinkingLevel: string): number | undefined {
@@ -322,27 +360,6 @@ export class QwenCodeProvider extends BaseCliProvider {
       'high': 16000
     };
     return tokenMap[thinkingLevel];
-  }
-
-  private _addApprovalMode(args: string[], settings: Settings): void {
-    const { mode, accessLevel } = settings;
-
-    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--approval-mode', 'plan');
-      console.log(`[Mysti] Qwen: Using plan approval mode [mode=${mode}, access=${accessLevel}]`);
-      return;
-    }
-
-    // For full-access + edit-automatically, use yolo mode
-    if (accessLevel === 'full-access' && mode === 'edit-automatically') {
-      args.push('--approval-mode', 'yolo');
-      console.log('[Mysti] Qwen: Using yolo approval mode');
-      return;
-    }
-
-    // Default: auto-edit (auto-approve edits, ask for commands)
-    args.push('--approval-mode', 'auto-edit');
-    console.log(`[Mysti] Qwen: Using auto-edit approval mode [mode=${mode}, access=${accessLevel}]`);
   }
 
   protected _getEffectiveModel(settings: Settings): string | undefined {

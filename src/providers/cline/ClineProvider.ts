@@ -15,8 +15,10 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { spawn } from "child_process";
-import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from "../base/BaseCliProvider";
+import type { PanelSessionState } from "../base/BaseCliProvider";
+import { AcpNativeProvider } from "../base/AcpNativeProvider";
+import type { AcpNativeLaunchContext, AcpNativeLaunch } from "../base/AcpNativeTypes";
+import { prepareClineAcpLaunch } from "./ClineAcp";
 import type {
 	CliDiscoveryResult,
 	AuthConfig,
@@ -27,15 +29,9 @@ import type {
 	StreamChunk,
 	ProviderConfig,
 	AuthStatus,
-	ContextItem,
-	Conversation,
 	SlashCommandDefinition,
-	AgentConfiguration,
 	ToolCall,
 } from "../../types";
-import { PROCESS_KILL_GRACE_PERIOD_MS } from "../../constants";
-import { killProcessTree, isProcessLive } from "../../utils/processKill";
-import { getEnrichedEnv } from "../../utils/platform";
 import { toolKind } from "../../utils/toolNames";
 import { isRecord } from "../../utils/valueGuards";
 
@@ -72,7 +68,7 @@ interface ClineSessionState extends PanelSessionState {
  * Note: Cline is primarily distributed as a VSCode extension. The CLI path
  * should point to the Cline extension's binary or a standalone installation.
  */
-export class ClineProvider extends BaseCliProvider {
+export class ClineProvider extends AcpNativeProvider {
 	readonly id = "cline";
 	readonly displayName = "Cline";
 
@@ -143,18 +139,19 @@ export class ClineProvider extends BaseCliProvider {
 		supportsStreaming: true,
 		supportsThinking: true,
 		supportsToolUse: true,
+		supportsNativeApproval: true,
 		supportsSessions: true,
 		supportsAutoInstall: true,
-		supportsPromptEnhancement: true,
+		supportsPromptEnhancement: false,
 		// Plan 02 Phase 1 capability matrix
 		thinkingStyle: 'complete-blocks',  // say:"reasoning" blocks arrive whole
-		thinkingLevelEffective: true,      // levels map to real CLI behavior
+		thinkingLevelEffective: false,     // ACP 3.0.61 fixes thinking off
 		planMode: 'detected',
 		sessionKind: 'prompt-history',     // no actual resume — history replayed into the prompt
 		emitsToolResults: true,
-		emitsUsage: true,
-		usageConvention: 'auto',   // Cline fronts whichever vendor the user configured and passes that vendor's own numbers straight through.
-		modelSelection: 'none',            // model configured via cline CLI config; dropdown is a no-op (F18)
+		emitsUsage: false,                 // ACP 3.0.61 does not forward usage
+		usageConvention: 'none',   // The pinned ACP adapter omits native usage events.
+		modelSelection: 'full',            // session/set_model before each prompt
 	};
 
 	// ============================================================================
@@ -246,71 +243,13 @@ export class ClineProvider extends BaseCliProvider {
 	}
 
 	async getAuthConfig(): Promise<AuthConfig> {
-		const config = vscode.workspace.getConfiguration("cline");
-		const apiKey = config.get<string>("apiKey", "");
-
-		return {
-			type: "api-key",
-			isAuthenticated: !!apiKey,
-			configPath: "", // Cline stores keys in VSCode settings
-		};
+		return { type: "api-key", isAuthenticated: Boolean(process.env.CLINE_API_KEY?.trim()), configPath: "" };
 	}
 
 	async checkAuthentication(): Promise<AuthStatus> {
-		// `cline auth` persists credentials into the data dir (default ~/.cline/data,
-		// relocatable via CLINE_DATA_DIR): secrets.json (API keys / OAuth tokens) and
-		// settings/providers.json (per-provider apiKey + OAuth tokenSource). The old
-		// check keyed on mere data-dir EXISTENCE, which is created on first run before
-		// any login (false-positive) and ignored CLINE_DATA_DIR (false-negative on a
-		// relocated dir). Check the real creds instead.
-		const dataDir = (process.env.CLINE_DATA_DIR || '').trim() || path.join(os.homedir(), '.cline', 'data');
-
-		// 1) secrets.json — API keys / OAuth tokens (openRouterApiKey, clineAccountId, …)
-		try {
-			const p = path.join(dataDir, 'secrets.json');
-			if (fs.existsSync(p)) {
-				const raw = fs.readFileSync(p, 'utf-8').trim();
-				if (raw && raw !== '{}') {
-					const s = JSON.parse(raw) as Record<string, unknown>;
-					if (Object.values(s).some(v => typeof v === 'string' && v.length > 0)) {
-						return { authenticated: true, user: 'Cline CLI' };
-					}
-				}
-			}
-		} catch { /* fall through */ }
-
-		// 2) settings/providers.json — a provider with an apiKey OR an OAuth tokenSource
-		try {
-			const p = path.join(dataDir, 'settings', 'providers.json');
-			if (fs.existsSync(p)) {
-				const raw = fs.readFileSync(p, 'utf-8').trim();
-				if (raw) {
-					const providers = (JSON.parse(raw) as { providers?: Record<string, { settings?: { apiKey?: string }; tokenSource?: unknown }> }).providers ?? {};
-					const ok = Object.values(providers).some(pr => {
-						const key = pr?.settings?.apiKey;
-						return (typeof key === 'string' && key.length > 0) || !!pr?.tokenSource;
-					});
-					if (ok) { return { authenticated: true, user: 'Cline CLI' }; }
-				}
-			}
-		} catch { /* fall through */ }
-
-		// 3) env-var auth (Cline standalone mode reads provider keys from the env)
-		if (['OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'CLINE_API_KEY']
-			.some(k => (process.env[k] || '').trim().length > 0)) {
-			return { authenticated: true, user: 'Cline CLI (env)' };
-		}
-
-		// 4) Fallback: the Cline VSCode extension's apiKey setting
-		const auth = await this.getAuthConfig();
-		if (auth.isAuthenticated) {
-			return { authenticated: true };
-		}
-
-		return {
-			authenticated: false,
-			error: 'Not authenticated. Run "cline auth" in your terminal to configure a provider.'
-		};
+		return process.env.CLINE_API_KEY?.trim()
+			? { authenticated: true, user: 'Cline API key (environment)' }
+			: { authenticated: false, error: 'Native approvals require CLINE_API_KEY in the extension environment. Stored CLI login profiles are not imported into isolated ACP sessions.' };
 	}
 
 	getAuthCommand(): string {
@@ -318,76 +257,15 @@ export class ClineProvider extends BaseCliProvider {
 	}
 
 	getInstallCommand(): string {
-		return "npm install -g cline";
+		return "npm install -g cline@3.0.61";
 	}
 
-	protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
-		// Cline 2.0 renamed every flag Mysti used. On 3.0.61 the old invocation
-		// dies immediately with `error: unknown option '--output-format'`, so the
-		// provider was completely non-functional against a current CLI:
-		//
-		//   1.x                      2.x+
-		//   --output-format json     --json
-		//   --mode plan | --mode act -p/--plan   (act is the default)
-		//   --yolo                   --auto-approve <boolean>
-		//
-		// The major version comes from the `--version` probe discovery now runs.
-		// When it is unknown, assume the CURRENT CLI — an unknown version is far
-		// more likely to be a new release this table has not seen than a 1.x from
-		// before the rename.
-		const major = this._getCliMajorVersion();
-		const legacy = major !== null && major < 2;
+	protected buildCliArgs(_settings: Settings, _session: PanelSessionState): string[] {
+		return ["--acp", "--auto-approve", "false"];
+	}
 
-		const args: string[] = legacy ? ["--output-format", "json"] : ["--json"];
-
-		// Do NOT connect to the VSCode Cline extension's Core instance.
-		// Its auth config is separate from CLI auth (configured via "cline auth").
-		// Let the CLI start its own Core so it uses the CLI-configured provider/key.
-
-		// Only add --verbose when debug mode is explicitly enabled
-		if (
-			vscode.workspace.getConfiguration("mysti").get<boolean>("debugVerbose", false)
-		) {
-			args.push("--verbose");
-		}
-
-		// Map Mysti modes to Cline modes.
-		// Cline uses 'plan' (read-only) or 'act' (can make changes).
-		const { mode, accessLevel } = settings;
-		const planMode =
-			mode === "quick-plan" ||
-			mode === "detailed-plan" ||
-			accessLevel === "read-only";
-
-		if (planMode) {
-			args.push(...(legacy ? ["--mode", "plan"] : ["--plan"]));
-			console.log("[Mysti] Cline: Using plan mode (read-only)");
-		} else if (legacy) {
-			// 2.x+ has no act flag — act IS the default.
-			args.push("--mode", "act");
-			console.log("[Mysti] Cline: Using act mode");
-		}
-
-		// Auto-approve tools so the CLI never blocks on its own stdin prompt; the
-		// stream-level tool-use gate in ChatViewProvider is what actually asks the
-		// user. In act mode only — plan mode changes nothing to approve.
-		if (!planMode) {
-			args.push(...(legacy ? ["--yolo"] : ["--auto-approve", "true"]));
-			console.log(
-				`[Mysti] Cline: auto-approving tools (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`,
-			);
-		}
-
-		// 2.x+ gained a real per-session model flag; 1.x had none (-m was the short
-		// form of --mode), so the model stayed a global `cline auth` setting there.
-		if (!legacy) {
-			const effectiveModel = this._getEffectiveModel(settings);
-			if (effectiveModel) {
-				args.push("--model", effectiveModel);
-			}
-		}
-
-		return args;
+	protected _prepareAcpLaunch(context: AcpNativeLaunchContext): Promise<AcpNativeLaunch> {
+		return prepareClineAcpLaunch(context, this._getEffectiveModel(context.settings));
 	}
 
 	/**
@@ -867,297 +745,7 @@ export class ClineProvider extends BaseCliProvider {
 		return usage;
 	}
 
-	/**
-	 * Override sendMessage to pass prompt as CLI argument (not stdin).
-	 * Each Cline CLI invocation is a fresh process, so conversation history
-	 * is included in the prompt via buildPromptAsync.
-	 */
-	async *sendMessage(
-		content: string,
-		context: ContextItem[],
-		settings: Settings,
-		conversation: Conversation | null,
-		persona?: import("../base/IProvider").PersonaConfig,
-		panelId?: string,
-		providerManager?: unknown,
-		agentConfig?: AgentConfiguration,
-	): AsyncGenerator<StreamChunk> {
-		const session = this._getSession(panelId) as ClineSessionState;
-
-		// Reset per-message state from any previous interrupted message
-		session.jsonBuffer = [];
-		session.askReceived = false;
-
-		const cliPath = this.getCliPath();
-		const baseArgs = this.buildCliArgs(settings, session);
-
-		// Store user input to filter out echoed text from Cline's response
-		session.lastUserInput = content.trim();
-
-		// Build system instructions separately — these go into .clinerules so Cline
-		// injects them as real system prompt, not visible user message text.
-		const agentInstructions = await this.buildAgentInstructionsAsync(agentConfig);
-		const systemParts: string[] = [];
-		if (agentInstructions) {
-			systemParts.push(agentInstructions);
-		} else if (persona) {
-			const personaPrompt = this.getPersonaPrompt(persona);
-			if (personaPrompt) {
-				systemParts.push(personaPrompt);
-			}
-		}
-		if (session.channelSystemContext) {
-			systemParts.push(session.channelSystemContext);
-		}
-		const systemInstructions = systemParts.join('\n\n');
-
-		// Build user prompt WITHOUT agent config or system context (moved to .clinerules)
-		// Include conversation history since each Cline CLI invocation is a
-		// fresh process with no memory of prior turns
-		const fullPrompt = await this.buildPromptAsync(
-			content,
-			context,
-			conversation,
-			settings,
-			undefined, // persona — handled in .clinerules above
-			undefined, // agentConfig — handled in .clinerules above
-			undefined, // attachments
-			undefined, // systemContext — handled in .clinerules above
-		);
-
-		console.log(`[Mysti] Cline: Prompt length: ${fullPrompt.length} chars, preview: ${fullPrompt.substring(0, 200)}...`);
-
-		// Pass prompt as CLI argument unless it exceeds OS limits (~256KB on macOS)
-		const MAX_ARG_LENGTH = 200_000;
-		// Cline 2.x+ has NO working stdin path. It advertises one — the error says
-		// "requires a prompt argument or piped stdin" — but 3.0.61 rejects a pipe
-		// AND a file redirect, and the `-` sentinel 1.x used is now parsed as a
-		// command ("Unknown command or unquoted prompt: -"). The positional
-		// argument is the only route that works, so long prompts cannot fall back
-		// to stdin the way they could on 1.x.
-		const legacyCli = (this._getCliMajorVersion() ?? 2) < 2;
-		const useStdin = legacyCli && fullPrompt.length > MAX_ARG_LENGTH;
-		const args = useStdin ? [...baseArgs, "-"] : [...baseArgs, fullPrompt];
-
-		if (useStdin) {
-			console.log(`[Mysti] Cline: Prompt too long for CLI arg (${fullPrompt.length} chars), using stdin`);
-		} else if (fullPrompt.length > MAX_ARG_LENGTH) {
-			// Beyond this the spawn fails with E2BIG, which surfaces as an opaque
-			// "process exited" — say what actually happened instead.
-			console.warn(`[Mysti] Cline: Prompt is ${fullPrompt.length} chars and this CLI has no stdin path`);
-			yield {
-				type: "error",
-				content:
-					`This request is too large for the Cline CLI (${Math.round(fullPrompt.length / 1000)}k characters). `
-					+ `Cline 2.0 and later accept a prompt only as a command-line argument, with no stdin fallback. `
-					+ `Start a new conversation or reduce the attached context.`,
-			};
-			return;
-		}
-
-		// Declare outside try so finally block can access for cleanup
-		const stderrRef = { output: "" };
-		const stderrHandler = (data: Buffer) => {
-			const text = data.toString();
-			stderrRef.output += text;
-			console.log("[Mysti] Cline stderr:", text);
-		};
-
-		// Resolve workspace root early so we can write .clinerules and clean up in finally
-		const workspaceFolders = vscode.workspace.workspaceFolders;
-		const cwd = workspaceFolders
-			? workspaceFolders[0].uri.fsPath
-			: process.cwd();
-
-		// Write system instructions to .clinerules so Cline injects them
-		// as proper system prompt (not part of user message)
-		if (systemInstructions) {
-			this._writeClinerules(cwd, systemInstructions, session);
-		}
-
-		try {
-			console.log("[Mysti] Cline: Starting CLI");
-			console.log("[Mysti] Cline: Working directory:", cwd);
-
-			// SECURITY: Never use shell mode for Cline -- the user prompt is passed
-			// as a CLI argument which is fundamentally incompatible with shell: true
-			session.process = spawn(cliPath, args, {
-				cwd,
-				env: getEnrichedEnv(),
-				stdio: [useStdin ? "pipe" : "ignore", "pipe", "pipe"],
-				shell: false,
-			});
-
-			// Plan 18 (2.4 audit): early error listener — an async spawn failure
-			// otherwise emits an unhandled 'error' event before waitForProcess
-			// attaches its own listener.
-			session.process.on("error", (err) => {
-				console.error("[Mysti] Cline: Spawn error:", err);
-				stderrRef.output += `\nspawn error: ${err.message}`;
-			});
-
-			// Send prompt via stdin for large prompts
-			if (useStdin && session.process.stdin) {
-				session.process.stdin.write(fullPrompt);
-				session.process.stdin.end();
-			}
-
-			// Register process
-			if (
-				panelId &&
-				providerManager &&
-				typeof (providerManager as ProcessTracker).registerProcess === "function"
-			) {
-				(providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
-			}
-
-			// Capture stderr for error reporting and auth error detection
-			if (session.process.stderr) {
-				session.process.stderr.on("data", stderrHandler);
-			}
-
-			// Emit session_active so the webview shows the session indicator
-			if (!session.sessionId) {
-				session.sessionId = `cline-${panelId || 'default'}-${Date.now()}`;
-			}
-			yield { type: 'session_active' as const, sessionId: session.sessionId };
-
-			// Process output
-			yield* this.processStream(stderrRef, session);
-
-			// If Cline sent an "ask" message, terminate the process gracefully
-			if (session.askReceived && isProcessLive(session.process)) {
-				console.log("[Mysti] Cline: Killing process after ask message");
-				void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
-			}
-
-			// Yield single authoritative done chunk
-			const storedUsage = this.getStoredUsage(panelId);
-			yield storedUsage
-				? { type: "done", usage: storedUsage }
-				: { type: "done" };
-		} catch (error) {
-			yield this.handleError(error);
-			yield { type: "done" };
-		} finally {
-			// Restore original .clinerules (or remove temp one)
-			this._restoreClinerules(cwd, session);
-
-			// Liveness-gated (not `.killed`): a SIGTERM'd-but-alive CLI must still be
-			// escalated to SIGKILL, which the old `!killed` guard skipped.
-			if (isProcessLive(session.process)) {
-				try {
-					// Remove only our stderr handler -- don't strip waitForProcess listeners
-					if (session.process!.stderr) {
-						session.process!.stderr.removeListener("data", stderrHandler);
-					}
-					// SIGTERM with reliable SIGKILL escalation (timer cleared on exit).
-					void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
-				} catch (e) {
-					console.error("[Mysti] Cline: Error cleaning up process:", e);
-				}
-			}
-			session.process = null;
-			if (
-				panelId &&
-				providerManager &&
-				typeof (providerManager as ProcessTracker).clearProcess === "function"
-			) {
-				(providerManager as ProcessTracker).clearProcess(panelId);
-			}
-		}
-	}
-
-	/**
-	 * Enhance a prompt using Cline
-	 */
-	async enhancePrompt(prompt: string): Promise<string> {
-		const clinePath = this.getCliPath();
-
-		const enhancePrompt = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
-
-		return new Promise((resolve) => {
-			const args = ["--print", "--output-format", "text"];  // enhancePrompt uses text output, not --json
-
-			const proc = spawn(clinePath, args, {
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-
-			let output = "";
-
-			if (proc.stdin) {
-				proc.stdin.write(enhancePrompt);
-				proc.stdin.end();
-			}
-
-			proc.stdout?.on("data", (data) => {
-				output += data.toString();
-			});
-
-			proc.on("close", (code) => {
-				if (code === 0 && output.trim()) {
-					resolve(output.trim());
-				} else {
-					resolve(prompt);
-				}
-			});
-
-			proc.on("error", () => {
-				resolve(prompt);
-			});
-		});
-	}
-
-	// Private helper methods
-
-	/**
-	 * Write system instructions to a .clinerules file in the workspace root.
-	 * Cline CLI auto-discovers this file and injects its content into the
-	 * system prompt slot of API requests (not the user message).
-	 * Backs up any existing .clinerules content on the session for later restore.
-	 */
-	private _writeClinerules(cwd: string, instructions: string, session: ClineSessionState): void {
-		const rulesPath = path.join(cwd, '.clinerules');
-		try {
-			if (fs.existsSync(rulesPath)) {
-				session.clineruleBackup = fs.readFileSync(rulesPath, 'utf-8');
-				console.log('[Mysti] Cline: Backed up existing .clinerules');
-			} else {
-				session.clineruleBackup = null;
-			}
-			fs.writeFileSync(rulesPath, instructions, 'utf-8');
-			session.clineruleWritten = true;
-			console.log(`[Mysti] Cline: Wrote .clinerules (${instructions.length} chars)`);
-		} catch (error) {
-			console.warn('[Mysti] Cline: Failed to write .clinerules:', error);
-			session.clineruleWritten = false;
-		}
-	}
-
-	/**
-	 * Restore the original .clinerules file (or delete the temp one).
-	 */
-	private _restoreClinerules(cwd: string, session: ClineSessionState): void {
-		if (!session.clineruleWritten) {
-			return;
-		}
-		const rulesPath = path.join(cwd, '.clinerules');
-		try {
-			if (session.clineruleBackup !== null) {
-				fs.writeFileSync(rulesPath, session.clineruleBackup, 'utf-8');
-				console.log('[Mysti] Cline: Restored original .clinerules');
-			} else {
-				if (fs.existsSync(rulesPath)) {
-					fs.unlinkSync(rulesPath);
-					console.log('[Mysti] Cline: Removed temp .clinerules');
-				}
-			}
-		} catch (error) {
-			console.warn('[Mysti] Cline: Failed to restore .clinerules:', error);
-		}
-		session.clineruleBackup = null;
-		session.clineruleWritten = false;
-	}
+	/** Prompt enhancement has no independently bounded tool-free ACP route. */
 
 	private _findVSCodeExtensionCli(): string | null {
 		const homeDir = os.homedir();

@@ -1,0 +1,16 @@
+{
+  "hooksConfig": { "enabled": false },
+  "ide": { "enabled": false },
+  "skills": { "enabled": false },
+  "experimental": {
+    "enableAgents": false,
+    "extensionReloading": false,
+    "autoMemory": false,
+    "taskTracker": false
+  },
+  "security": { "disableYoloMode": true, "disableAlwaysAllow": true, "enablePermanentToolApproval": false },
+  "tools": { "discoveryCommand": "", "callCommand": "", "disableLLMCorrection": true },
+  "mcp": { "serverCommand": "" },
+  "telemetry": { "enabled": false },
+  "general": { "disableAutoUpdate": true }
+}

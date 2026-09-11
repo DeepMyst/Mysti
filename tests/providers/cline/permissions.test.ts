@@ -1,54 +1,25 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { TestableClineProvider } from '../../helpers/providerFactory';
-import { createClineSession } from '../../helpers/sessionFactory';
-import { clearMockConfig } from '../../helpers/mockVscode';
-import type { Settings } from '../../../src/types';
+import { describe, it, expect } from 'vitest';
+import { decodeClinePermission } from '../../../src/providers/cline/ClineAcp';
 
-function s(overrides?: Partial<Settings>): Settings {
-  return {
-    mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission',
-    contextMode: 'auto', model: '', provider: 'cline', ...overrides,
-  };
-}
-
-describe('Cline permission flag mapping', () => {
-  let provider: TestableClineProvider;
-
-  beforeEach(() => {
-    clearMockConfig();
-    provider = new TestableClineProvider();
-    // These assert the Cline 1.x flag names; 2.0 renamed them (see
-    // modernCliCompat.test.ts). Pin the major so the mapping under test is the
-    // one these expectations were written for.
-    (provider as unknown as { _cachedCliVersion: string | null })._cachedCliVersion = '1.0.8';
+const request = (title: string, kind: string, rawInput: unknown) => ({ toolCall: { toolCallId: 'tool-1', title, kind, rawInput } });
+describe('Cline native permission identity', () => {
+  it('rejects inherited JavaScript property names as native tools', () => {
+    expect(decodeClinePermission({ toolCall: { toolCallId: 'id', title: 'constructor', rawInput: {} } })).toBeUndefined();
   });
-
-  it.each([
-    ['quick-plan'],
-    ['detailed-plan'],
-  ] as const)('should use --mode plan (no --yolo) for %s', (mode) => {
-    const args = provider.buildCliArgs(s({ mode }), createClineSession());
-    expect(args).toContain('--mode');
-    expect(args).toContain('plan');
-    expect(args).not.toContain('--yolo');
+  it('uses the final native input including command arrays', () => {
+    const input = { commands: [{ command: 'printf approved > marker' }] };
+    expect(decodeClinePermission(request('run_commands: write marker', 'execute', input))).toMatchObject({ name: 'Bash', input });
   });
-
-  it('should use --mode plan for read-only access', () => {
-    const args = provider.buildCliArgs(s({ accessLevel: 'read-only' }), createClineSession());
-    expect(args).toContain('--mode');
-    expect(args).toContain('plan');
-    expect(args).not.toContain('--yolo');
+  it.each(['Agent', 'spawn_agent', 'skills', 'schedule_task', 'mcp_other'])('denies unsupported %s even when Cline labels it think', title => {
+    expect(decodeClinePermission(request(title, 'think', { prompt: 'write marker' }))).toBeUndefined();
   });
-
-  it.each([
-    { mode: 'default' as const, accessLevel: 'ask-permission' as const },
-    { mode: 'default' as const, accessLevel: 'full-access' as const },
-    { mode: 'edit-automatically' as const, accessLevel: 'full-access' as const },
-    { mode: 'ask-before-edit' as const, accessLevel: 'ask-permission' as const },
-  ])('should use --mode act --yolo for mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
-    const args = provider.buildCliArgs(s({ mode, accessLevel }), createClineSession());
-    expect(args).toContain('--mode');
-    expect(args).toContain('act');
-    expect(args).toContain('--yolo');
+  it('rejects a command disguised as a safe read', () => {
+    expect(decodeClinePermission(request('run_commands: dangerous', 'read', { command: 'touch marker' }))).toBeUndefined();
+  });
+  it.each([{ run_in_background: true }, { background: true }, { detached: true }])('denies background inputs %j', extra => {
+    expect(decodeClinePermission(request('Bash', 'execute', { command: 'touch marker', ...extra }))).toBeUndefined();
+  });
+  it.each([undefined, null, 'command', []])('rejects incomplete final input %j', input => {
+    expect(decodeClinePermission(request('Bash', 'execute', input))).toBeUndefined();
   });
 });

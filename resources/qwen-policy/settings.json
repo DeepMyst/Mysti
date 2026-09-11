@@ -1,0 +1,27 @@
+{
+  "$version": 4,
+  "disableAllHooks": true,
+  "ide": { "enabled": false },
+  "permissions": {
+    "ask": ["read_file", "edit", "notebook_edit", "run_shell_command"]
+  },
+  "general": { "enableAutoUpdate": false, "preventSystemSleep": false },
+  "tools": {
+    "discoveryCommand": "",
+    "callCommand": "",
+    "workflowsEnabled": false,
+    "shell": { "enableInteractiveShell": false }
+  },
+  "mcp": { "serverCommand": "" },
+  "skills": { "disabledLevels": ["bundled", "extension", "user", "project"] },
+  "memory": {
+    "enableManagedAutoMemory": false,
+    "enableManagedAutoDream": false,
+    "enableTeamMemory": false,
+    "enableTeamMemorySync": false,
+    "enableAutoSkill": false
+  },
+  "goals": { "modelProposed": "disabled" },
+  "experimental": { "cron": false, "agentTeams": false },
+  "telemetry": { "enabled": false }
+}

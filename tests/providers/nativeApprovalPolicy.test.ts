@@ -73,7 +73,7 @@ describe.each([
   });
 });
 
-describe('CLI transports without permission requests', () => {
+describe('native CLI execution policy', () => {
   it('Continue keeps commands disabled in the auto-edit tier', () => {
     const args = new TestableContinueProvider().buildCliArgs(
       settings('edit-automatically', 'ask-permission'), createContinueSession(),
@@ -82,13 +82,12 @@ describe('CLI transports without permission requests', () => {
     expect(args).not.toContain('--auto');
   });
 
-  it('legacy Copilot keeps commands disabled in the auto-edit tier', () => {
+  it('Copilot never selects legacy execution even with a cached old version', () => {
     const provider = new TestableCopilotProvider();
     (provider as unknown as { _cachedCliVersion: string })._cachedCliVersion = '0.0.372';
     const args = provider.buildCliArgs(settings('edit-automatically', 'ask-permission'), createCopilotSession());
-    expect(args).toContain('--deny-tool');
-    expect(args).toContain('shell');
-    expect(args).toContain('write');
+    expect(args).toContain('--acp');
+    expect(provider.capabilities.supportsNativeApproval).toBe(true);
     expect(args).not.toContain('--allow-all-tools');
   });
 });

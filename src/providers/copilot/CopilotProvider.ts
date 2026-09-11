@@ -12,38 +12,27 @@
  */
 
 import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import { spawn } from 'child_process';
-import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from '../base/BaseCliProvider';
-import { allowsUnrestrictedNativeTools } from '../base/NativeApprovalPolicy';
+import type { PanelSessionState } from '../base/BaseCliProvider';
+import { AcpNativeProvider } from '../base/AcpNativeProvider';
+import type { AcpNativeLaunchContext, AcpNativeLaunch } from '../base/AcpNativeTypes';
+import { prepareCopilotAcpLaunch, copilotAcpArgs } from './CopilotAcp';
 import type {
   CliDiscoveryResult,
   AuthConfig,
   ProviderCapabilities,
-  PersonaConfig
 } from '../base/IProvider';
 import type {
   Settings,
   StreamChunk,
   ProviderConfig,
   AuthStatus,
-  ContextItem,
-  Conversation,
-  AgentConfiguration,
   ModelInfo
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
-import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
-import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
-import { killProcessTree, isProcessLive } from '../../utils/processKill';
-import { clampEffort } from '../../utils/effort';
-import type { EffortLevel } from '../../types';
 
-/** Copilot CLI `--effort` supports low→xhigh (no `max`; clamp down). */
-const COPILOT_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
+
+const COPILOT_EFFORT_LEVELS: import('../../types').EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
 
 export interface CopilotSessionState extends PanelSessionState {
   activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
@@ -54,7 +43,7 @@ export interface CopilotSessionState extends PanelSessionState {
  * GitHub Copilot CLI provider implementation
  * Supports copilot-cli for AI-powered code assistance with GitHub integration
  */
-export class CopilotProvider extends BaseCliProvider {
+export class CopilotProvider extends AcpNativeProvider {
   readonly id = 'github-copilot';
   readonly displayName = 'GitHub Copilot';
 
@@ -144,13 +133,9 @@ export class CopilotProvider extends BaseCliProvider {
   readonly capabilities: ProviderCapabilities = {
     supportsStreaming: true,
     supportsThinking: false,
-    // Flag/reality alignment (Plan 02 Phase 1): the Copilot CLI emits plain
-    // text — no tool events ever fire, so no tool cards / permission gating.
-    // True since Copilot CLI 1.0, whose `--output-format json` carries
-    // tool.execution_start / tool.execution_complete. On 0.0.x the stream is
-    // plain text and no tool_use chunk is ever produced, so this flag simply
-    // describes a capability that stream cannot exercise.
+    // The pinned ACP runtime is restricted to native read/search tools.
     supportsToolUse: true,
+    supportsNativeApproval: true,
     supportsSessions: true,
     supportsAutoInstall: true,
     supportsPromptEnhancement: false,
@@ -160,7 +145,7 @@ export class CopilotProvider extends BaseCliProvider {
     effortLevels: COPILOT_EFFORT_LEVELS,  // --effort (low→xhigh)
     effortDefault: 'medium',
     planMode: 'detected',
-    sessionKind: 'prompt-history',  // fabricated --resume IDs (F4/B5) — honest value until Plan 00 Batch 2.4 lands
+    sessionKind: 'prompt-history',  // Fresh native ACP session per turn.
     emitsToolResults: true,         // 1.0 JSONL: tool.execution_complete carries the result
     // Copilot reports no honest token count on EITHER path: 1.0's JSONL carries
     // `session.usage_checkpoint`, which bills in nano AIU rather than tokens
@@ -195,41 +180,10 @@ export class CopilotProvider extends BaseCliProvider {
     return this._getCliPathCommon();
   }
 
-  /**
-   * Live model discovery (Plan 01 Phase 3). The Copilot CLI has no `list models`
-   * subcommand, but `--model` is a CLOSED enum and its choices are printed in
-   * `copilot --help`:
-   *
-   *   --model <model>   Set the AI model to use (choices:
-   *                     "claude-sonnet-4.5", "claude-haiku-4.5", ..., "gpt-4.1")
-   *
-   * So the installed CLI is itself the authority on what it will accept — which
-   * is the whole point of refreshing automatically: GitHub rotates this set, and
-   * a bundled list goes stale the moment they do.
-   *
-   * The help text hard-wraps, so the output is whitespace-collapsed before
-   * matching and only the quoted ids inside the choices parenthesis are taken.
-   * Returns null on any failure (CLI absent, help text reworded, no choices
-   * found) so the registry keeps its curated/cached list. Never throws.
-   */
-  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
-    const raw = await this._runCliForDiscovery(['--help'], timeoutMs);
-    if (!raw) { return null; }
-
-    // Collapse the hard-wrapped help block onto one line before matching.
-    const flat = raw.replace(/\s+/g, ' ');
-    const choices = /--model\b[^(]*\(choices:([^)]*)\)/.exec(flat);
-    if (!choices) { return null; }
-
-    const seen = new Set<string>();
-    const models: ModelInfo[] = [];
-    for (const match of choices[1].matchAll(/"([^"]+)"/g)) {
-      const id = match[1].trim();
-      if (!id || seen.has(id)) { continue; }
-      seen.add(id);
-      models.push({ id, name: id });
-    }
-    return models.length > 0 ? models : null;
+  async discoverModels(_timeoutMs: number): Promise<ModelInfo[] | null> {
+    // BYOK selects its own model. Do not execute an unisolated native --help
+    // wrapper just to populate a subscription-only model catalogue.
+    return null;
   }
 
   protected _getCliCommandName(): string {
@@ -241,83 +195,16 @@ export class CopilotProvider extends BaseCliProvider {
     return config.get<string>('copilotPath', 'copilot');
   }
 
-  /** Copilot CLI home (honors COPILOT_HOME; default ~/.copilot). */
-  private _copilotHome(): string {
-    return process.env.COPILOT_HOME || path.join(os.homedir(), '.copilot');
-  }
-
-  /**
-   * Persisted login identity for the `@github/copilot` CLI. The token lives in
-   * the OS keychain; `/login` writes the signed-in identity into
-   * ~/.copilot/config.json (`logged_in_users` / `last_logged_in_user`). The old
-   * check looked at ~/.config/github-copilot — the OLD editor-plugin path, which
-   * is absent for the agentic CLI, so a signed-in user was wrongly blocked.
-   * Reads a non-empty identity marker (not mere file existence, which is created
-   * pre-login with only banner/theme keys → would false-positive).
-   */
-  private _copilotLoginState(): { loggedIn: boolean; login?: string } {
-    const home = this._copilotHome();
-    for (const name of ['config.json', 'settings.json']) {
-      const file = path.join(home, name);
-      if (!fs.existsSync(file)) { continue; }
-      try {
-        const d = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
-          logged_in_users?: Array<{ host?: string; login?: string }>;
-          last_logged_in_user?: { host?: string; login?: string };
-        };
-        const users = Array.isArray(d.logged_in_users) ? d.logged_in_users : [];
-        if (users.length > 0 || d.last_logged_in_user?.login) {
-          return { loggedIn: true, login: d.last_logged_in_user?.login || users[0]?.login };
-        }
-      } catch {
-        return { loggedIn: true }; // present but unreadable → lean authenticated (avoid false-negative)
-      }
-    }
-    return { loggedIn: false };
-  }
-
   async getAuthConfig(): Promise<AuthConfig> {
-    // Check for GH_TOKEN or GITHUB_TOKEN environment variables (per official docs)
-    const hasToken = !!(process.env.GH_TOKEN || process.env.GITHUB_TOKEN);
-    const configPath = path.join(this._copilotHome(), 'config.json');
-    const login = this._copilotLoginState();
-
-    return {
-      type: hasToken ? 'api-key' : 'oauth',
-      isAuthenticated: hasToken || login.loggedIn,
-      configPath
-    };
+    const authenticated = !!process.env.COPILOT_PROVIDER_BASE_URL?.trim();
+    return { type: 'api-key', isAuthenticated: authenticated, configPath: '' };
   }
 
   async checkAuthentication(): Promise<AuthStatus> {
-    // Check for GH_TOKEN or GITHUB_TOKEN environment variables (per official docs)
-    if (process.env.GH_TOKEN) {
-      return {
-        authenticated: true,
-        user: 'GitHub Token (GH_TOKEN)'
-      };
-    }
-
-    if (process.env.GITHUB_TOKEN) {
-      return {
-        authenticated: true,
-        user: 'GitHub Token (GITHUB_TOKEN)'
-      };
-    }
-
-    // Signed-in via `copilot /login` (identity in ~/.copilot/config.json).
-    const login = this._copilotLoginState();
-    if (login.loggedIn) {
-      return {
-        authenticated: true,
-        user: login.login ? `GitHub (${login.login})` : 'GitHub Account'
-      };
-    }
-
-    return {
-      authenticated: false,
-      error: 'Not authenticated. Run "copilot" and use the /login command, or set GH_TOKEN/GITHUB_TOKEN environment variable.'
-    };
+    const auth = await this.getAuthConfig();
+    return auth.isAuthenticated
+      ? { authenticated: true, user: 'Copilot custom model provider' }
+      : { authenticated: false, error: 'Native approvals require COPILOT_PROVIDER_BASE_URL (BYOK) in the extension environment. GitHub-token and stored-login sessions can load unobservable managed execution policy and are not supported.' };
   }
 
   getAuthCommand(): string {
@@ -325,194 +212,17 @@ export class CopilotProvider extends BaseCliProvider {
   }
 
   getInstallCommand(): string {
-    return 'npm install -g @github/copilot';
+    return 'npm install -g @github/copilot@1.0.83';
   }
 
-  /**
-   * Override sendMessage to use -p flag instead of stdin
-   * Copilot CLI uses -p "prompt" for programmatic (non-interactive) mode
-   */
-  async *sendMessage(
-    content: string,
-    context: ContextItem[],
-    settings: Settings,
-    conversation: Conversation | null,
-    persona?: PersonaConfig,
-    panelId?: string,
-    providerManager?: unknown,
-    agentConfig?: AgentConfiguration
-  ): AsyncGenerator<StreamChunk> {
-    const session = this._getSession(panelId) as CopilotSessionState;
-    const startTime = Date.now();
-
-    // Plan 18 (2.4 audit): the entire setup — prompt build and spawn — runs
-    // INSIDE the try. Previously a synchronous spawn failure (Windows EINVAL
-    // on a .cmd shim, Node >= 18.20) escaped the generator with no
-    // handleError, no finally, and no cleanup: the provider was hard-broken
-    // for every default npm Windows install.
-    const stderrRef = { output: '' };
-    // Declared outside the try — the finally detaches it during cleanup.
-    const stderrHandler = (data: Buffer) => {
-      const text = data.toString();
-      stderrRef.output += text;
-      console.log(`[Mysti] Copilot stderr:`, text);
-    };
-    try {
-      const cliPath = this.getCliPath();
-
-      // Get workspace folder for CWD
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
-
-      // Build prompt first (needed for -p flag)
-      const fullPrompt = await this.buildPromptAsync(
-        content, context, conversation, settings, persona, agentConfig,
-        undefined, session.channelSystemContext,
-      );
-      const promptTime = Date.now() - startTime;
-      console.log(`[Mysti] Copilot: Prompt built in ${promptTime}ms`);
-
-      // Build args with prompt using -p flag
-      const args = this.buildCliArgs(settings, session);
-      args.push('-p', fullPrompt);
-
-      console.log(`[Mysti] Copilot: Spawning CLI with -p flag...`);
-
-      session.process = spawn(cliPath, args, {
-        cwd,
-        env: getEnrichedEnv(),
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-      // Plan 18 (2.4 audit): early error listener — an async spawn failure
-      // (ENOENT on a stale path) otherwise emits an unhandled 'error' event
-      // in the window before waitForProcess attaches its own listener.
-      session.process.on('error', (err) => {
-        console.error(`[Mysti] Copilot: Spawn error:`, err);
-        stderrRef.output += `\nspawn error: ${err.message}`;
-      });
-
-      const spawnTime = Date.now() - startTime;
-      console.log(`[Mysti] Copilot: CLI spawned in ${spawnTime}ms`);
-
-      // Register process with ProviderManager for per-panel cancellation
-      if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-        (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
-      }
-
-      if (session.process.stderr) {
-        session.process.stderr.on('data', stderrHandler);
-      }
-      console.log(`[Mysti] Copilot: ⏱️ TIMING BREAKDOWN:`);
-      console.log(`  - Prompt build: ${promptTime}ms`);
-      console.log(`  - CLI spawn: ${spawnTime - promptTime}ms`);
-      console.log(`  - Total setup: ${spawnTime}ms`);
-      console.log(`  - Waiting for first response...`);
-
-      // Emit session_active so the webview shows the session indicator
-      // Copilot CLI outputs plain text so its JSON init handler never fires
-      if (!session.sessionId) {
-        session.sessionId = `copilot-${panelId || 'default'}-${Date.now()}`;
-      }
-      yield { type: 'session_active' as const, sessionId: session.sessionId };
-
-      // Process stream output (stderrRef is mutable, so processStream sees full stderr)
-      yield* this.processStream(stderrRef, session);
-
-      // Additional auth error check after stream processing
-      if (stderrRef.output && this.isAuthenticationError(stderrRef.output)) {
-        console.log(`[Mysti] Copilot: Auth error detected in stderr:`, stderrRef.output);
-        yield {
-          type: 'auth_error',
-          content: stderrRef.output,
-          authCommand: this.getAuthCommand(),
-          providerName: this.displayName
-        };
-        return; // Don't yield done after auth error
-      }
-
-      // Yield final done with any stored usage
-      const totalTime = Date.now() - startTime;
-      console.log(`[Mysti] Copilot: ✅ Request completed in ${totalTime}ms`);
-
-      const storedUsage = this.getStoredUsage(panelId);
-      yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
-    } catch (error) {
-      yield this.handleError(error);
-    } finally {
-      // Clean up process — liveness-gated (not `.killed`): a SIGTERM'd-but-alive
-      // CLI must still be escalated to SIGKILL, which the old `!killed` guard skipped.
-      if (isProcessLive(session.process)) {
-        try {
-          // Remove only our stderr handler — don't strip waitForProcess listeners
-          if (session.process!.stderr) {
-            session.process!.stderr.removeListener('data', stderrHandler);
-          }
-          // SIGTERM with reliable SIGKILL escalation (timer cleared on exit).
-          void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
-        } catch (e) {
-          console.error(`[Mysti] Copilot: Error cleaning up process:`, e);
-        }
-      }
-
-      session.process = null;
-
-      // Clear process tracking
-      if (panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
-        (providerManager as ProcessTracker).clearProcess(panelId);
-      }
-    }
+  protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
+    return copilotAcpArgs(settings, this._getEffectiveModel(settings));
   }
 
-  /**
-   * True when the installed Copilot CLI emits the structured JSON stream.
-   *
-   * Added in 1.0; the 0.0.x line has no `--output-format` at all and passing it
-   * aborts the run. When the version could not be probed, assume the CURRENT
-   * CLI — 0.0.x predates the 1.0 release by a long way, and guessing old would
-   * leave every current install on the plain-text path with no permission gate.
-   */
-  private _supportsJsonOutput(): boolean {
-    const major = this._getCliMajorVersion();
-    return major === null || major >= 1;
+  protected _prepareAcpLaunch(context: AcpNativeLaunchContext): Promise<AcpNativeLaunch> {
+    return prepareCopilotAcpLaunch(context, this._getEffectiveModel(context.settings));
   }
 
-  protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
-    // Note: Copilot CLI uses -p flag for prompt (set in sendMessage override).
-    //
-    // Copilot CLI 1.0 added `--output-format json` (JSONL, one object per line)
-    // — the 0.0.x line had none, which is why this provider used to scrape
-    // plain text. The structured stream is what finally gives Mysti tool
-    // events, and therefore a working permission gate; see _addPermissionFlags.
-    const args: string[] = [];
-    if (this._supportsJsonOutput()) {
-      args.push('--output-format', 'json');
-    }
-
-    // Add model selection (custom model override or dropdown selection)
-    const effectiveModel = this._getEffectiveModel(settings);
-    if (effectiveModel) {
-      args.push('--model', effectiveModel);
-    }
-
-    // Reasoning effort → --effort (Copilot tops out at xhigh; max clamps down).
-    const effort = clampEffort(settings.effortLevel, COPILOT_EFFORT_LEVELS);
-    if (effort) {
-      args.push('--effort', effort);
-    }
-
-    // Map Mysti modes/access levels to Copilot CLI flags
-    this._addPermissionFlags(args, settings);
-
-    // Session handling - Copilot supports --resume
-    if (session.sessionId) {
-      args.push('--resume', session.sessionId);
-      console.log('[Mysti] Copilot: Resuming session:', session.sessionId);
-    }
-
-    console.log('[Mysti] Copilot: Built CLI args:', args.join(' '));
-    return args;
-  }
 
   /**
    * Get the effective model, preferring provider-specific custom model over dropdown selection
@@ -539,54 +249,6 @@ export class CopilotProvider extends BaseCliProvider {
    */
   protected getThinkingTokens(_thinkingLevel: string): number | undefined {
     return undefined;
-  }
-
-  /**
-   * Add permission flags based on mode and access level
-   * Per official docs:
-   * - --allow-all-tools: allows any tool without approval
-   * - --deny-tool 'shell': denies shell commands
-   * - --deny-tool 'write': denies file modification tools
-   */
-  private _addPermissionFlags(args: string[], settings: Settings): void {
-    const { mode, accessLevel } = settings;
-
-    // Plan modes or read-only → deny shell and write tools
-    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--deny-tool', 'shell');
-      args.push('--deny-tool', 'write');
-      console.log('[Mysti] Copilot: Using read-only mode (deny shell and write)');
-      return;
-    }
-
-    // Fully autonomous policy is independent of stream format. Auto-edit is
-    // not full autonomy: commands/deletes/network still require approval.
-    const gateIntentionallyOff = allowsUnrestrictedNativeTools(settings);
-
-    if (gateIntentionallyOff) {
-      args.push('--allow-all-tools');
-      console.log(`[Mysti] Copilot: Using auto-approve mode [mode=${mode}, access=${accessLevel}]`);
-      return;
-    }
-
-    // Ask-tier combinations (ask-before-edit mode, or ask-permission access).
-    //
-    // Copilot 1.0+ retains the stream-event pause path. These notifications
-    // carry no blocking native permission response; a pause cannot guarantee
-    // that the tool has not already executed. Native approval needs an ACP
-    // request/response bridge before this path can provide that guarantee.
-    if (this._supportsJsonOutput()) {
-      args.push('--allow-all-tools');
-      console.log(`[Mysti] Copilot: Ask-tier gated by Mysti's stream gate [mode=${mode}, access=${accessLevel}]`);
-      return;
-    }
-
-    // Copilot 0.0.x emits plain text with no tool events, so there is nothing
-    // to gate on and no way to prompt. Fail closed rather than silently running
-    // shell commands and file writes under --allow-all-tools.
-    args.push('--deny-tool', 'shell');
-    args.push('--deny-tool', 'write');
-    console.log(`[Mysti] Copilot: Ask-tier permissions cannot be prompted on this CLI (plain-text output) — denying shell/write tools (fail closed) [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**

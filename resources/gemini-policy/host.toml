@@ -1,0 +1,11 @@
+# A bounded file-tool surface for Gemini CLI 0.58.0. This version does not send
+# full shell inputs through ACP, so native shell/delegation remains denied.
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 998
+
+[[rule]]
+toolName = ["read_file", "write_file", "replace"]
+decision = "ask_user"
+priority = 999

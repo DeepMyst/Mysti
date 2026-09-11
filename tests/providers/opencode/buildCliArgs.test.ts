@@ -1,42 +1,24 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { TestableOpenCodeProvider } from '../../helpers/providerFactory';
 import { createOpenCodeSession } from '../../helpers/sessionFactory';
 import { clearMockConfig } from '../../helpers/mockVscode';
 import type { Settings } from '../../../src/types';
 
-function defaultSettings(overrides?: Partial<Settings>): Settings {
-  return {
-    mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission',
-    contextMode: 'auto', model: '', provider: 'opencode', ...overrides,
-  };
-}
-
-describe('OpenCodeProvider.buildCliArgs', () => {
-  let provider: TestableOpenCodeProvider;
-
-  beforeEach(() => {
-    clearMockConfig();
-    provider = new TestableOpenCodeProvider();
+const settings: Settings = { mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission', contextMode: 'auto', model: '', provider: 'opencode' };
+beforeEach(clearMockConfig);
+describe('OpenCode ACP launch arguments', () => {
+  it('starts only ACP in pure mode on ephemeral loopback', () => {
+    const provider = new TestableOpenCodeProvider();
+    expect(provider.buildCliArgs(settings, createOpenCodeSession())).toEqual(['acp', '--pure', '--hostname', '127.0.0.1', '--port', '0']);
+    expect(provider.capabilities.supportsNativeApproval).toBe(true);
+    expect(provider.capabilities.sessionKind).toBe('prompt-history');
   });
-
-  it('should include run --format json --thinking', () => {
-    const args = provider.buildCliArgs(defaultSettings(), createOpenCodeSession());
-    expect(args).toContain('run');
-    expect(args).toContain('--format');
-    expect(args).toContain('json');
-    expect(args).toContain('--thinking');
+  it('never resumes a native session with inherited approvals', () => {
+    const session = createOpenCodeSession(); session.sessionId = 'previous-session';
+    const args = new TestableOpenCodeProvider().buildCliArgs(settings, session);
+    expect(args).not.toContain('--session'); expect(args).not.toContain('previous-session');
   });
-
-  it('should include --session for session resume', () => {
-    const session = createOpenCodeSession();
-    session.sessionId = 'oc_sess_1';
-    const args = provider.buildCliArgs(defaultSettings(), session);
-    expect(args).toContain('--session');
-    expect(args).toContain('oc_sess_1');
-  });
-
-  it('should not pass model for default', () => {
-    const args = provider.buildCliArgs(defaultSettings({ model: 'default' }), createOpenCodeSession());
-    expect(args).not.toContain('-m');
+  it('pins the native protocol version in installation instructions', () => {
+    expect(new TestableOpenCodeProvider().getInstallCommand()).toBe('npm i -g opencode-ai@1.18.29');
   });
 });

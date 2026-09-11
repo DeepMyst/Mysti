@@ -15,7 +15,11 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import type { PanelSessionState } from '../base/BaseCliProvider';
+import { AcpNativeProvider } from '../base/AcpNativeProvider';
+import type { AcpNativeLaunch, AcpNativeLaunchContext } from '../base/AcpNativeTypes';
+import { GEMINI_ACP_VERSION, decodeGeminiPermission, decodeGeminiUsage } from './GeminiNativeApproval';
+import { captureNativeFamilyConfig, nativeFamilyEnvironment } from '../qwen/QwenNativeConfig';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -43,7 +47,7 @@ export interface GeminiSessionState extends PanelSessionState {
  * Google Gemini CLI provider implementation
  * Supports Gemini 3 Pro, 3 Flash, 2.5 Pro, and 2.5 Flash models
  */
-export class GeminiProvider extends BaseCliProvider {
+export class GeminiProvider extends AcpNativeProvider {
   readonly id = 'google-gemini';
   readonly displayName = 'Gemini';
 
@@ -130,6 +134,7 @@ export class GeminiProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: false, // Gemini doesn't expose thinking tokens like Claude
     supportsToolUse: true,
+    supportsNativeApproval: true,
     supportsSessions: true,
     // Plan 27 Phase 5: attachments are written to a temp file and referenced
     // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
@@ -141,9 +146,9 @@ export class GeminiProvider extends BaseCliProvider {
     thinkingStyle: 'none',
     thinkingLevelEffective: false,
     planMode: 'detected',
-    sessionKind: 'cli-resume',
+    sessionKind: 'prompt-history',
     emitsToolResults: true,
-    emitsUsage: true,
+    emitsUsage: true, // Final ACP _meta.quota.token_count totals.
     usageConvention: 'none',   // Gemini CLI's result stats carry no cache split.
     modelSelection: 'full'
   };
@@ -309,77 +314,42 @@ export class GeminiProvider extends BaseCliProvider {
     return 'npm install -g @google/gemini-cli';
   }
 
-  protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
-    // Note: Prompt is sent via stdin by BaseCliProvider
-    // The -p flag appends to stdin, but having it without value may cause issues
-    // So we omit it and just use stdin directly like Claude provider does
-    const args: string[] = [
-      '--output-format', 'stream-json'
-    ];
-
-    // Add model selection (custom model override or dropdown selection)
-    const effectiveModel = this._getEffectiveModel(settings);
-    if (effectiveModel) {
-      args.push('-m', effectiveModel);
-    }
-
-    // Map Mysti modes/access levels to Gemini CLI flags
-    this._addPermissionFlags(args, settings);
-
-    // Session handling - Gemini supports --resume for session continuation
-    if (session.sessionId) {
-      args.push('--resume', session.sessionId);
-      console.log('[Mysti] Gemini: Resuming session:', session.sessionId);
-    }
-
-    console.log('[Mysti] Gemini: Built CLI args:', args.join(' '));
+  protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
+    const restricted = settings.accessLevel === 'read-only' || settings.mode === 'quick-plan' || settings.mode === 'detailed-plan';
+    const args = ['--acp', '--approval-mode', 'default', '--no-sandbox', '--admin-policy',
+      path.join(this._extensionContext.extensionPath, 'resources', 'gemini-policy', restricted ? 'readonly.toml' : 'host.toml'),
+      '--allowed-mcp-server-names', '__mysti_no_mcp__', '--extensions', '__mysti_no_extensions__'];
+    const model = this._getEffectiveModel(settings);
+    if (model) { args.push('-m', model); }
     return args;
   }
 
-  /**
-   * Gemini doesn't support thinking tokens like Claude
-   * Returns undefined to indicate no thinking token support
-   */
-  protected getThinkingTokens(_thinkingLevel: string): number | undefined {
-    return undefined;
+  protected override async _prepareAcpLaunch(context: AcpNativeLaunchContext): Promise<AcpNativeLaunch> {
+    const args = this.buildCliArgs(context.settings, context.session);
+    const nativeEnv = nativeFamilyEnvironment(context.env);
+    const policyDir = path.join(this._extensionContext.extensionPath, 'resources', 'gemini-policy');
+    const policyFile = path.join(policyDir, 'settings.json');
+    const capture = await captureNativeFamilyConfig({ ...context, flavor: 'gemini', version: GEMINI_ACP_VERSION,
+      policyFiles: [policyFile, path.join(policyDir, 'host.toml'), path.join(policyDir, 'readonly.toml')] });
+    return {
+      cliPath: capture.cliPath, args,
+      env: { ...nativeEnv, GEMINI_CLI_SYSTEM_SETTINGS_PATH: policyFile,
+        GEMINI_CLI_SYSTEM_DEFAULTS_PATH: policyFile, GEMINI_CLI_NO_RELAUNCH: '1' },
+      expectedAgentInfo: { name: 'gemini-cli', version: GEMINI_ACP_VERSION },
+      mode: 'default', images: true, decodePermission: decodeGeminiPermission, decodeUsage: decodeGeminiUsage,
+      validateUpdate: update => {
+        if (update.sessionUpdate === 'config_option_update' && Array.isArray(update.configOptions)) {
+          for (const option of update.configOptions) {
+            if (option?.category === 'mode' && option.currentValue !== 'default') { throw new Error('Gemini changed the captured native approval mode.'); }
+          }
+        }
+      },
+      assertUnchanged: capture.assertUnchanged,
+    };
   }
 
-  /**
-   * Add permission flags based on mode and access level
-   * Maps Mysti settings to Gemini CLI sandbox/yolo modes
-   */
-  private _addPermissionFlags(args: string[], settings: Settings): void {
-    const { mode, accessLevel } = settings;
-
-    // Plan modes or read-only → the CLI's documented read-only mode.
-    // Plan 18 (4.3): this was `--sandbox`, which is a container/seatbelt
-    // boolean, NOT read-only — and it hard-fails to spawn on hosts where a
-    // container runtime is configured but absent. `--approval-mode plan`
-    // (gemini >= 0.2x) is the actual "analyze, don't act" mode.
-    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--approval-mode', 'plan');
-      console.log('[Mysti] Gemini: Using approval-mode plan (read-only)');
-      return;
-    }
-
-    // More-restrictive-wins: only auto-approve when BOTH mode and access allow it
-    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
-      args.push('--yolo');
-      console.log('[Mysti] Gemini: Using yolo mode (edit-automatically + full-access)');
-      return;
-    }
-
-    // default mode + full-access = yolo (no explicit edit restriction)
-    if (mode === 'default' && accessLevel === 'full-access') {
-      args.push('--yolo');
-      console.log('[Mysti] Gemini: Using yolo mode (default + full-access)');
-      return;
-    }
-
-    // All other combinations: bypass CLI permissions to prevent stdin hang.
-    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-    args.push('--yolo');
-    console.log(`[Mysti] Gemini: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
+  protected getThinkingTokens(_thinkingLevel: string): number | undefined {
+    return undefined;
   }
 
   /**

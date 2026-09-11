@@ -1343,9 +1343,14 @@ export abstract class BaseCliProvider implements ICliProvider {
     this._cachedCliPath = cliPath;
     // Ask the CLI its version while we have it resolved. This is what finally
     // fills CliDiscoveryResult.version — see the field comment above.
-    const version = await probeCliVersion(cliPath);
+    const version = await this._probeCliVersion(cliPath);
     this._cachedCliVersion = version ?? null;
     return { found: true, path: cliPath, version };
+  }
+
+  /** Native approval adapters can inspect metadata without executing startup code. */
+  protected _probeCliVersion(cliPath: string): Promise<string | undefined> {
+    return probeCliVersion(cliPath);
   }
 
   /**

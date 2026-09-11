@@ -31,7 +31,7 @@ const AUTH_ENV_KEYS = [
   'GH_TOKEN', 'GITHUB_TOKEN', 'CURSOR_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
   'GEMINI_API_KEY', 'GROQ_API_KEY', 'OPENROUTER_API_KEY', 'QWEN_API_KEY', 'DASHSCOPE_API_KEY',
   'CONTINUE_API_KEY', 'CLINE_API_KEY', 'NOUS_API_KEY', 'GLM_API_KEY', 'OPENCLAW_GATEWAY_TOKEN',
-  'COPILOT_HOME', 'CLINE_DATA_DIR', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'HERMES_HOME',
+  'COPILOT_HOME', 'COPILOT_GITHUB_TOKEN', 'COPILOT_PROVIDER_BASE_URL', 'CLINE_DATA_DIR', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'HERMES_HOME',
   'CONTINUE_GLOBAL_DIR', 'OPENCLAW_STATE_DIR', 'LITECLAW_STATE_DIR', 'LITECLAW_AGENT_DIR',
   'MOONSHOT_API_KEY', 'KIMI_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'KIMI_HOME',
 ];
@@ -60,13 +60,18 @@ describe('provider auth detection (wrong-path false-negative fixes)', () => {
     realFs.writeFileSync(p, content);
   }
 
-  it('copilot: signed in via ~/.copilot/config.json (logged_in_users), NOT ~/.config/github-copilot', async () => {
+  it('copilot: isolated ACP sessions do not use stored login or GitHub token policy', async () => {
     write('.copilot/config.json', JSON.stringify({ logged_in_users: [{ host: 'github.com', login: 'octocat' }], theme: 'dark' }));
     const p = new TestableCopilotProvider();
-    expect((await p.getAuthConfig()).isAuthenticated).toBe(true);
+    process.env.COPILOT_GITHUB_TOKEN = 'synthetic-token';
+    expect((await p.getAuthConfig()).isAuthenticated).toBe(false);
     const s = await p.checkAuthentication();
-    expect(s.authenticated).toBe(true);
-    expect(s.user).toContain('octocat');
+    expect(s.authenticated).toBe(false);
+  });
+
+  it('copilot: the isolated BYOK endpoint is recognized', async () => {
+    process.env.COPILOT_PROVIDER_BASE_URL = 'http://127.0.0.1:1';
+    expect((await new TestableCopilotProvider().checkAuthentication()).authenticated).toBe(true);
   });
 
   it('copilot: a pre-login config.json (banner/theme only, no logged_in_users) is NOT authenticated', async () => {
@@ -96,9 +101,9 @@ describe('provider auth detection (wrong-path false-negative fixes)', () => {
     expect(s.user).toBe('OPENROUTER_API_KEY');
   });
 
-  it('opencode: ~/.local/share/opencode/auth.json marks authenticated', async () => {
+  it('opencode: isolated native transport does not consume the saved login store', async () => {
     write('.local/share/opencode/auth.json', JSON.stringify({ anthropic: { type: 'oauth' } }));
-    expect((await new TestableOpenCodeProvider().checkAuthentication()).authenticated).toBe(true);
+    expect((await new TestableOpenCodeProvider().checkAuthentication()).authenticated).toBe(false);
   });
 
   it('continue: legacy Hub login ~/.continue/auth.json marks authenticated', async () => {
@@ -108,17 +113,19 @@ describe('provider auth detection (wrong-path false-negative fixes)', () => {
     expect((await p.checkAuthentication()).authenticated).toBe(true);
   });
 
-  it('cline: real secrets.json creds authenticate; a bare data dir (no creds) does NOT (false-positive fixed)', async () => {
+  it('cline: isolated ACP sessions do not import a saved credential store', async () => {
     // bare data dir — old code reported authenticated on mere existence
     realFs.mkdirSync(path.join(tmpHome, '.cline', 'data'), { recursive: true });
     expect((await new TestableClineProvider().checkAuthentication()).authenticated).toBe(false);
     // real creds present
     write('.cline/data/secrets.json', JSON.stringify({ openRouterApiKey: 'sk-or-1234567890' }));
-    expect((await new TestableClineProvider().checkAuthentication()).authenticated).toBe(true);
+    expect((await new TestableClineProvider().checkAuthentication()).authenticated).toBe(false);
   });
 
-  it('cline: env-var auth (OPENROUTER_API_KEY) is recognized', async () => {
+  it('cline: native ACP requires CLINE_API_KEY rather than unrelated provider keys', async () => {
     process.env.OPENROUTER_API_KEY = 'sk-or-x';
+    expect((await new TestableClineProvider().checkAuthentication()).authenticated).toBe(false);
+    process.env.CLINE_API_KEY = 'synthetic-cline-key';
     expect((await new TestableClineProvider().checkAuthentication()).authenticated).toBe(true);
   });
 

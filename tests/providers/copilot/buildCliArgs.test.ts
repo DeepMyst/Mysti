@@ -19,20 +19,6 @@ describe('CopilotProvider.buildCliArgs', () => {
     provider = new TestableCopilotProvider();
   });
 
-  /**
-   * Ask-tier on Copilot 0.0.x: plain-text output, no tool events, so nothing
-   * for Mysti's gate to intercept and the only safe answer is to deny outright.
-   * 1.0 changed this — see tests/providers/copilot/permissions.test.ts.
-   */
-  it('should deny shell/write for default ask-permission on a pre-1.0 CLI', () => {
-    (provider as unknown as { _cachedCliVersion: string | null })._cachedCliVersion = '0.0.372';
-    const args = provider.buildCliArgs(defaultSettings(), createCopilotSession());
-    expect(args).not.toContain('--allow-all-tools');
-    expect(args).toContain('--deny-tool');
-    expect(args).toContain('shell');
-    expect(args).toContain('write');
-  });
-
   it('should deny shell and write tools for read-only access', () => {
     const args = provider.buildCliArgs(defaultSettings({ accessLevel: 'read-only' }), createCopilotSession());
     expect(args).toContain('--deny-tool');
@@ -47,19 +33,20 @@ describe('CopilotProvider.buildCliArgs', () => {
     expect(args).toContain('shell');
   });
 
-  it('should allow all tools for edit-automatically + full-access', () => {
+  it('keeps native approvals enabled for edit-automatically + full-access', () => {
     const args = provider.buildCliArgs(defaultSettings({
       mode: 'edit-automatically', accessLevel: 'full-access',
     }), createCopilotSession());
-    expect(args).toContain('--allow-all-tools');
+    expect(args).not.toContain('--allow-all-tools');
+    expect(args).toContain('--acp');
   });
 
-  it('should include --resume for session resume', () => {
+  it('uses a fresh ACP session instead of untrusted persisted permission grants', () => {
     const session = createCopilotSession();
     session.sessionId = 'copilot_sess_1';
     const args = provider.buildCliArgs(defaultSettings(), session);
-    expect(args).toContain('--resume');
-    expect(args).toContain('copilot_sess_1');
+    expect(args).not.toContain('--resume');
+    expect(args).not.toContain('copilot_sess_1');
   });
 
   it('should include --model when set', () => {

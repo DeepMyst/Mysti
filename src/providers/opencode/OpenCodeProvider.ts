@@ -12,10 +12,10 @@
  */
 
 import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import type { PanelSessionState } from '../base/BaseCliProvider';
+import { AcpNativeProvider } from '../base/AcpNativeProvider';
+import type { AcpNativeLaunch, AcpNativeLaunchContext } from '../base/AcpNativeTypes';
+import { OPENCODE_ACP_VERSION, OPENCODE_ENV_AUTH, prepareOpenCodeNativeLaunch } from './OpenCodeNative';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -42,10 +42,9 @@ export interface OpenCodeSessionState extends PanelSessionState {
 
 /**
  * OpenCode CLI provider implementation
- * Supports multiple LLM backends via OpenCode's unified interface
- * (OpenAI, Anthropic, Gemini, Groq, AWS Bedrock, Azure OpenAI, OpenRouter)
+ * Uses supported API-key backends through an isolated OpenCode ACP runtime.
  */
-export class OpenCodeProvider extends BaseCliProvider {
+export class OpenCodeProvider extends AcpNativeProvider {
   readonly id = 'opencode';
   readonly displayName = 'OpenCode';
 
@@ -55,8 +54,8 @@ export class OpenCodeProvider extends BaseCliProvider {
     models: [
       {
         id: 'default',
-        name: 'Default Model',
-        description: 'Uses your OpenCode configured default model',
+        name: 'Configure provider/model',
+        description: 'Set an explicit provider/model ID in Mysti’s OpenCode model setting',
         contextWindow: 200000
       }
     ],
@@ -67,21 +66,20 @@ export class OpenCodeProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
+    supportsNativeApproval: true,
     supportsSessions: true,
-    // Plan 27 Phase 5: attachments are written to a temp file and referenced
-    // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
-    // tools, so it can open what it is given.
+    // ACP 1.18.29 consumes native image and embedded-context blocks.
     supportsImages: true,
     supportsAutoInstall: true,
     supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,
-    planMode: 'detected',
-    sessionKind: 'cli-resume',
+    planMode: 'native',
+    sessionKind: 'prompt-history',
     emitsToolResults: true,
     emitsUsage: true,
-    usageConvention: 'none',   // step-finish tokens are flat input/output.
+    usageConvention: 'none',   // ACP prompt response reports flat input/output.
     modelSelection: 'custom-only'  // provider/model free-form — no meaningful static dropdown
   };
 
@@ -109,25 +107,10 @@ export class OpenCodeProvider extends BaseCliProvider {
     return this._getCliPathCommon();
   }
 
-  /**
-   * Live model discovery (Plan 01 Phase 3) via `opencode models`, which prints
-   * one `provider/model` id per line — exactly the form the `-m`/`--model` flag
-   * accepts. Returns null on any failure so the registry keeps its curated/cached
-   * list. Never throws.
-   */
-  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
-    const raw = await this._runCliForDiscovery(['models'], timeoutMs);
-    if (!raw) { return null; }
-    const seen = new Set<string>();
-    const models: ModelInfo[] = [];
-    for (const line of raw.split('\n')) {
-      const id = line.trim();
-      // Keep only `provider/model`-shaped ids; skip headers/blank/log lines.
-      if (!id || id.includes(' ') || !id.includes('/') || seen.has(id)) { continue; }
-      seen.add(id);
-      models.push({ id, name: id });
-    }
-    return models.length > 0 ? models : null;
+  /** Saved native configuration is excluded from the approval-controlled
+   * runtime. Explicit model IDs are validated by the isolated ACP session. */
+  async discoverModels(_timeoutMs: number): Promise<ModelInfo[] | null> {
+    return null;
   }
 
   protected _getCliCommandName(): string {
@@ -139,143 +122,46 @@ export class OpenCodeProvider extends BaseCliProvider {
     return config.get<string>('opencodePath', 'opencode');
   }
 
-  /**
-   * Provider API keys OpenCode auto-loads from the environment. The old check
-   * saw only 4 — notably NOT OPENROUTER_API_KEY (the most common OpenCode setup)
-   * — so an OpenRouter-only user was wrongly reported unauthenticated.
-   */
-  private static readonly ENV_KEYS = [
-    'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY',
-    'OPENROUTER_API_KEY', 'GROQ_API_KEY', 'DEEPSEEK_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY',
-    'TOGETHER_API_KEY', 'FIREWORKS_API_KEY', 'PERPLEXITY_API_KEY', 'CEREBRAS_API_KEY', 'NVIDIA_API_KEY',
-  ];
-
-  /** ~/.local/share/opencode/auth.json (honors $XDG_DATA_HOME). */
-  private _ocAuthPath(): string {
-    const data = process.env.XDG_DATA_HOME?.trim();
-    const dir = data ? path.join(data, 'opencode') : path.join(os.homedir(), '.local', 'share', 'opencode');
-    return path.join(dir, 'auth.json');
-  }
-
-  /** Config candidates ~/.config/opencode/opencode.json[c] (honors $XDG_CONFIG_HOME). */
-  private _ocConfigPaths(): string[] {
-    const cfg = process.env.XDG_CONFIG_HOME?.trim();
-    const dir = cfg ? path.join(cfg, 'opencode') : path.join(os.homedir(), '.config', 'opencode');
-    return [path.join(dir, 'opencode.json'), path.join(dir, 'opencode.jsonc')];
-  }
-
   private _ocEnvKey(): string | undefined {
-    return OpenCodeProvider.ENV_KEYS.find(k => (process.env[k] || '').trim().length > 0);
+    return Object.values(OPENCODE_ENV_AUTH).flat().find(key => process.env[key]?.trim());
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
-    const envKey = this._ocEnvKey();
-    const authPath = this._ocAuthPath();
-    const hasAuth = fs.existsSync(authPath);
-    const configPath = this._ocConfigPaths().find(p => fs.existsSync(p));
-
-    return {
-      type: envKey ? 'api-key' : 'oauth',
-      isAuthenticated: !!envKey || hasAuth || !!configPath,
-      configPath: hasAuth ? authPath : (configPath || this._ocConfigPaths()[0])
-    };
+    return { type: 'api-key', isAuthenticated: !!this._ocEnvKey() };
   }
 
   async checkAuthentication(): Promise<AuthStatus> {
-    // Any provider API key OpenCode reads from the environment.
     const envKey = this._ocEnvKey();
-    if (envKey) {
-      return { authenticated: true, user: envKey };
-    }
-
-    // `opencode auth login` credentials — the strong marker (don't parse/require
-    // fields inside it: an unreadable-but-present file must not false-negative).
-    if (fs.existsSync(this._ocAuthPath())) {
-      return { authenticated: true, user: 'OpenCode Account' };
-    }
-
-    // Global config declaring a provider/model.
-    for (const configPath of this._ocConfigPaths()) {
-      if (!fs.existsSync(configPath)) { continue; }
-      try {
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-        if (config.provider || config.model) {
-          return { authenticated: true, user: 'OpenCode Config' };
-        }
-      } catch {
-        // Config exists but couldn't parse
-      }
-    }
-
-    return {
+    return envKey ? { authenticated: true, user: envKey } : {
       authenticated: false,
-      error: 'Not authenticated. Run "opencode auth login" or set a provider API key (e.g., OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY).'
+      error: 'OpenCode native approvals use an isolated runtime. Set the selected provider API key (for example ANTHROPIC_API_KEY or OPENAI_API_KEY) in the extension environment and an explicit provider/model ID in Mysti. Native OpenCode login stores are not used.',
     };
   }
 
   getAuthCommand(): string {
-    return 'opencode auth login';
+    return 'echo Set your provider API key in the VS Code environment and restart VS Code. Select an explicit provider/model ID in Mysti.';
   }
 
   getInstallCommand(): string {
-    return 'npm i -g opencode-ai@latest';
+    return `npm i -g opencode-ai@${OPENCODE_ACP_VERSION}`;
   }
 
-  protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
-    // OpenCode uses: opencode run --format json [--model <model>] [--session <id>] [--agent <agent>]
-    // Prompt is sent via stdin
-    const args: string[] = [
-      'run',
-      '--format', 'json',
-      '--thinking'
-    ];
+  protected buildCliArgs(_settings: Settings, _session: PanelSessionState): string[] {
+    return ['acp', '--pure', '--hostname', '127.0.0.1', '--port', '0'];
+  }
 
-    // Add model selection
-    const effectiveModel = this._getEffectiveModel(settings);
-    if (effectiveModel) {
-      args.push('-m', effectiveModel);
-    }
-
-    // Map Mysti modes to OpenCode agents
-    this._addModeFlags(args, settings);
-
-    // Session resume
-    if (session.sessionId) {
-      args.push('--session', session.sessionId);
-      console.log('[Mysti] OpenCode: Resuming session:', session.sessionId);
-    }
-
-    console.log('[Mysti] OpenCode: Built CLI args:', args.join(' '));
-    return args;
+  protected async _prepareAcpLaunch(context: AcpNativeLaunchContext): Promise<AcpNativeLaunch> {
+    return prepareOpenCodeNativeLaunch(context, this._getEffectiveModel(context.settings));
   }
 
   protected getThinkingTokens(_thinkingLevel: string): number | undefined {
-    // OpenCode handles thinking internally based on model capabilities
     return undefined;
-  }
-
-  /**
-   * Map Mysti operation modes to OpenCode agent modes
-   */
-  private _addModeFlags(args: string[], settings: Settings): void {
-    const { mode, accessLevel } = settings;
-
-    // Plan modes or read-only → use plan agent (read-only analysis)
-    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--agent', 'plan');
-      console.log('[Mysti] OpenCode: Using plan agent (read-only)');
-      return;
-    }
-
-    // Default: use build agent (full access)
-    args.push('--agent', 'build');
-    console.log(`[Mysti] OpenCode: Using build agent [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
-  protected _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Readonly<Settings>): string | undefined {
     // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
     if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
@@ -347,9 +233,8 @@ export class OpenCodeProvider extends BaseCliProvider {
               return null;
 
             case 'tool': {
-              // Normalize OpenCode's lowercase native names (bash, edit,
-              // write, patch, ...) to the canonical names the permission
-              // gate classifies — the gate is the sole enforcement point.
+              // Historical NDJSON parsing remains display-only. Public turns
+              // execute through the blocking ACP permission transport.
               const toolName = normalizeToolName(part.name || '');
               const toolId = part.id || `tool-${Date.now()}`;
               const state = part.state || 'running';

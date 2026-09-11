@@ -682,7 +682,7 @@ describe('no NEW read-but-undeclared configuration keys', () => {
     // only matched single quotes was blind to those five reads, so an
     // undeclared double-quoted key could never fail the test below.
     expect(hits.has('mysti.cursorPath')).toBe(true);
-    expect(hits.has('mysti.debugVerbose')).toBe(true);
+    expect(hits.has('mysti.clinePath')).toBe(true);
   });
 
   it('no configuration key is read that package.json does not declare', () => {

@@ -21,17 +21,17 @@ describe('QwenCodeProvider.buildCliArgs', () => {
 
   it('should include base flags', () => {
     const args = provider.buildCliArgs(defaultSettings(), createQwenSession());
-    expect(args).toContain('--output-format');
-    expect(args).toContain('stream-json');
-    expect(args).toContain('--include-partial-messages');
+    expect(args).toContain('--acp');
+    expect(args).not.toContain('--output-format');
+    expect(args).not.toContain('--include-partial-messages');
   });
 
-  it('should include --resume <sessionId> for session resume (not bare --continue)', () => {
+  it('should use fresh native sessions with explicit panel history', () => {
     const session = createQwenSession();
     session.sessionId = 'qwen_sess_1';
     const args = provider.buildCliArgs(defaultSettings(), session);
-    expect(args).toContain('--resume');
-    expect(args[args.indexOf('--resume') + 1]).toBe('qwen_sess_1');
+    expect(args).not.toContain('--resume');
+    expect(args).not.toContain('qwen_sess_1');
     // Bare --continue resumes the globally most recent session — cross-panel bleed
     expect(args).not.toContain('--continue');
   });

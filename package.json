@@ -683,7 +683,7 @@
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
-          "description": "Custom model for OpenCode. Overrides the dropdown selection. Leave empty to use the default model. Example: anthropic/claude-sonnet-4-5"
+          "description": "Required provider/model ID for OpenCode native approvals, with a matching provider API key in the extension environment. Saved OpenCode login and model configuration are isolated. Example: anthropic/claude-sonnet-4-5"
         },
         "mysti.qwenCodeModel": {
           "type": "string",
@@ -1663,7 +1663,8 @@
         "mysti.debugVerbose": {
           "type": "boolean",
           "default": false,
-          "description": "Pass --verbose flag to CLI providers (Claude Code, Cline). Adds extra diagnostic output but may slow responses. Only enable for debugging."
+          "description": "Legacy verbose CLI flag setting. Native approval transports use their required protocol flags.",
+          "deprecationMessage": "This setting is no longer read. Use the Mysti output channel and debug.performanceLogging for supported diagnostics."
         },
         "mysti.debug.performanceLogging": {
           "type": "boolean",

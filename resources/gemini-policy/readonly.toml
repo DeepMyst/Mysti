@@ -1,0 +1,9 @@
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 998
+
+[[rule]]
+toolName = "read_file"
+decision = "ask_user"
+priority = 999

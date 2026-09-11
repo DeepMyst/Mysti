@@ -119,7 +119,7 @@ describe('buildProviderManifest', () => {
     expect(byId.get('claude-code')!.capabilities.usageConvention).toBe('anthropic');
     expect(byId.get('openai-codex')!.capabilities.usageConvention).toBe('openai');
     // Backends that front other vendors resolve per-turn from the model id.
-    expect(byId.get('cline')!.capabilities.usageConvention).toBe('auto');
+    expect(byId.get('cline')!.capabilities.usageConvention).toBe('none');
     expect(byId.get('openrouter')!.capabilities.usageConvention).toBe('auto');
     expect(byId.get('localai')!.capabilities.usageConvention).toBe('auto');
     // No cache accounting on the transport Mysti drives.
@@ -141,22 +141,16 @@ describe('buildProviderManifest', () => {
 
     const gemini = byId.get('google-gemini')!.capabilities;
     expect(gemini.thinkingStyle).toBe('none');
-    expect(gemini.sessionKind).toBe('cli-resume');
+    expect(gemini.sessionKind).toBe('prompt-history');
 
     const cline = byId.get('cline')!.capabilities;
     expect(cline.thinkingStyle).toBe('complete-blocks');
-    expect(cline.thinkingLevelEffective).toBe(true);
+    expect(cline.thinkingLevelEffective).toBe(false);
     expect(cline.sessionKind).toBe('prompt-history');
-    expect(cline.modelSelection).toBe('none');
+    expect(cline.modelSelection).toBe('full');
 
-    // Copilot CLI 1.0 added `--output-format json`, whose
-    // tool.execution_start / tool.execution_complete events are what Mysti's
-    // permission gate intercepts. The 0.0.x line emitted plain text with no
-    // tool events at all — these flags were false for exactly that reason, and
-    // ask-tier had to deny shell/write outright to stay safe.
-    // Copilot reports no honest token count on EITHER path: 1.0's JSONL bills in
-    // nano AIU (not tokens) and 0.0.x streams plain text with no usage event.
-    // Declaring true left the context pie holding the PREVIOUS provider's number.
+    // The pinned ACP bridge reports tools, but this release exposes no
+    // token usage. Fresh native sessions receive prompt history.
     const copilotUsage = byId.get('github-copilot')!.capabilities;
     expect(copilotUsage.emitsUsage).toBe(false);
 
@@ -174,12 +168,12 @@ describe('buildProviderManifest', () => {
     expect(openclaw.supportsChannels).toBe(true);
 
     const opencode = byId.get('opencode')!.capabilities;
-    expect(opencode.sessionKind).toBe('cli-resume');
+    expect(opencode.sessionKind).toBe('prompt-history');
     expect(opencode.modelSelection).toBe('custom-only');
 
     const qwen = byId.get('qwen-code')!.capabilities;
     expect(qwen.thinkingStyle).toBe('complete-blocks');
-    expect(qwen.sessionKind).toBe('cli-resume');
+    expect(qwen.sessionKind).toBe('prompt-history');
 
     // Hermes: ACP persistent transport; model chosen inside hermes itself
     const hermes = byId.get('hermes')!.capabilities;

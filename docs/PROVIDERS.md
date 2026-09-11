@@ -120,7 +120,7 @@ Google's AI with fast response times and strong Google ecosystem integration.
 ### Installation
 
 ```bash
-npm install -g @google/gemini-cli
+npm install -g @google/gemini-cli@0.58.0
 ```
 
 ### Authentication
@@ -140,6 +140,8 @@ gemini auth login
 - **Thinking Support**: Deep thinking mode available
 - **Google Integration**: Works well with Google Cloud and Firebase projects
 
+The **0.58.0** ACP bridge permits file reads, writes and replacements. Shell and delegation are disabled because this version omits their complete approval inputs. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
+
 ### Settings
 
 | Setting | Default | Description |
@@ -156,12 +158,12 @@ Versatile CLI tool with plan/act workflow support.
 ### Installation
 
 ```bash
-npm install -g cline
+npm install -g cline@3.0.61
 ```
 
 ### Authentication
 
-Depends on the underlying model provider selected within Cline.
+The ACP bridge requires `CLINE_API_KEY` in the extension environment, with optional `CLINE_PROVIDER`. Saved CLI login profiles are not imported into its private local session.
 
 ### Supported Models
 
@@ -171,9 +173,11 @@ Depends on the underlying model provider selected within Cline.
 
 ### Unique Features
 
-- **Plan/Act Mode**: Separate planning and execution phases via `/plan-act` command
+- **Plan/Act Mode**: Mysti selects the native session mode before each turn
 - **Multi-Model**: Supports models from multiple providers
 - **Task-Oriented**: Designed for structured task completion
+
+The **3.0.61** ACP bridge uses private local state and native permission requests. Images, native thinking controls and usage reporting are unavailable in this transport. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
 
 ### Settings
 
@@ -186,20 +190,17 @@ Depends on the underlying model provider selected within Cline.
 
 ## GitHub Copilot
 
-Access 14+ models from Anthropic, OpenAI, and Google through your GitHub subscription.
+Use the supported Copilot CLI with an isolated BYOK endpoint. Subscription login support remains pending native policy attestation.
 
 ### Installation
 
 ```bash
-npm install -g @github/copilot-cli
+npm install -g @github/copilot@1.0.83
 ```
 
 ### Authentication
 
-```bash
-copilot
-# Then use the /login command
-```
+The ACP bridge requires an explicit BYOK endpoint through `COPILOT_PROVIDER_BASE_URL`, with its model and API key configured through the native `COPILOT_PROVIDER_*` environment variables. It runs offline from GitHub. GitHub tokens and stored subscription logins are currently unsupported because remotely managed hooks cannot be attested by this bridge.
 
 ### Supported Models
 
@@ -222,8 +223,9 @@ copilot
 ### Unique Features
 
 - **Multi-Model Access**: Use Claude, GPT, and Gemini through a single subscription
-- **GitHub Integration**: Leverages your existing GitHub Copilot subscription
-- **No Extra Cost**: Included with GitHub Copilot Pro/Pro+/Business plans
+- **Native approvals**: This verified Copilot release is restricted to read/search operations; native reads run without a host card
+
+The **1.0.83** ACP transport permits only read/search operations. It disables file writes, shell, web tools, hooks, plugins, MCP and delegation. Native workspace writes and some shell commands bypass the approval callback, so writable Copilot support remains unresolved. Native safe reads do not reach host approval policy. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
 
 ### Settings
 
@@ -330,27 +332,24 @@ Multi-backend coding agent supporting multiple LLM providers through a unified C
 ### Installation
 
 ```bash
-npm i -g opencode-ai@latest
+npm i -g opencode-ai@1.18.29
 ```
 
 ### Authentication
 
-```bash
-opencode auth login
-```
-
-Or set provider API keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`.
+Set the API key for the selected standard provider in the extension environment, such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`. Saved OpenCode login stores and custom provider configuration are not imported.
 
 ### Supported Models
 
-OpenCode uses your configured default model. Models depend on your provider setup — run `opencode models` to see available models.
+Set `mysti.opencodeModel` to an explicit `provider/model` ID. The bridge supports OpenCode **1.18.29** and checks the selected model in its isolated native session.
 
 ### Unique Features
 
-- **Multi-Backend**: Single CLI supporting Anthropic, OpenAI, Google, Groq, AWS Bedrock, Azure OpenAI, OpenRouter
-- **Agent Modes**: `build` agent for full access, `plan` agent for read-only analysis
-- **Thinking Support**: Built-in thinking block streaming
-- **Session Resume**: Continue previous sessions via `--session <id>` or `--continue`
+- **Native approvals**: File, search and fetch tools use a fixed native permission policy.
+- **Restricted mode**: Mutating tools are removed from the executable tool map.
+- **Prompt history**: Each turn starts a fresh native session.
+
+Shell commands, delegation, plugins, MCP, custom tools, formatters and native session resume are unavailable in this bridge.
 
 ### Settings
 
@@ -363,12 +362,12 @@ OpenCode uses your configured default model. Models depend on your provider setu
 
 ## Qwen Code
 
-Alibaba's AI coding CLI agent with deep reasoning capabilities. Uses the same streaming protocol as Claude Code.
+Alibaba's AI coding CLI agent with an ACP permission bridge for version **0.23.0**.
 
 ### Installation
 
 ```bash
-npm install -g @qwen-code/qwen-code@latest
+npm install -g @qwen-code/qwen-code@0.23.0
 ```
 
 ### Authentication
@@ -378,7 +377,7 @@ qwen
 # Then type /auth in the interactive session
 ```
 
-Or set API keys: `QWEN_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
+Or configure a supported Qwen/OpenAI-compatible API endpoint, key and model. `ANTHROPIC_API_KEY` alone is not Qwen authentication.
 
 ### Supported Models
 
@@ -387,10 +386,11 @@ Or set API keys: `QWEN_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
 
 ### Unique Features
 
-- **Claude-Compatible Protocol**: Uses the same stream-json NDJSON format as Claude Code
-- **Approval Modes**: plan, default, auto-edit, yolo — mapped from Mysti's access levels
-- **Auth Error UI**: Guided authentication when not configured
-- **Session Resume**: Continue previous sessions with `--continue`
+- **Native approvals**: Read, edit, notebook edit and foreground shell use explicit native ask rules.
+- **Restricted mode**: Mutation tools are excluded before model submission.
+- **Prompt history**: Each turn starts a fresh session with the conversation history.
+
+The bridge disables hooks, extensions, skills, MCP, background execution and delegated tools. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
 
 ### Settings
 
