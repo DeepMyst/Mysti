@@ -266,7 +266,7 @@ Or set `CURSOR_API_KEY` environment variable.
 ### Unique Features
 
 - **Auto Model Selection**: The "Auto" model intelligently picks the best model for each task
-- **Auto-Approve Mode**: When access level is set to full-access, enables `--force` flag for uninterrupted workflows
+- **Execution limits**: Available only for `default` or `edit-automatically` with `full-access`. All approval-required and read-only turns are rejected before launch; streamed tool events cannot enforce approval. Prompt enhancement is unavailable. See [restricted transports](RESTRICTED_TRANSPORTS.md).
 - **Tool Use Detection**: Detects and displays tool usage (bash, file read/write, grep, etc.)
 
 ### Settings

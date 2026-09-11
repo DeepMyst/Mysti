@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * ContinueProvider CLI-arg mapping: headless print mode, permission
- * policy flags (--readonly / --auto), custom model, and rule injection.
+ * unrestricted policy (--auto only), custom model, and rule injection.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TestableContinueProvider } from '../../helpers/providerFactory';
@@ -15,7 +15,7 @@ import type { Settings } from '../../../src/types';
 
 function s(overrides?: Partial<Settings>): Settings {
   return {
-    mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission',
+    mode: 'default', thinkingLevel: 'none', accessLevel: 'full-access',
     contextMode: 'auto', model: '', provider: 'continue', ...overrides,
   } as Settings;
 }
@@ -33,32 +33,8 @@ describe('Continue buildCliArgs', () => {
     expect(args[0]).toBe('-p');
   });
 
-  it.each([['quick-plan'], ['detailed-plan']] as const)('uses --readonly for %s mode', (mode) => {
-    const args = provider.buildCliArgs(s({ mode }), createContinueSession());
-    expect(args).toContain('--readonly');
-    expect(args).not.toContain('--auto');
-  });
-
-  it('uses --readonly for read-only access', () => {
-    const args = provider.buildCliArgs(s({ accessLevel: 'read-only' }), createContinueSession());
-    expect(args).toContain('--readonly');
-  });
-
-  it('FAILS CLOSED: ask-tier settings use --readonly, never --auto (no tool events to gate)', () => {
-    // Shipped defaults are ask-permission + ask-before-edit — the exact combo
-    // whose contract is "ask before each change". A plain-text CLI cannot
-    // prompt, so deny writes/shell via --readonly instead of --auto.
-    for (const settings of [
-      s(),                                                      // default ask-before-edit + ask-permission
-      s({ mode: 'ask-before-edit', accessLevel: 'ask-permission' }),
-      s({ mode: 'default', accessLevel: 'ask-permission' }),
-      s({ mode: 'ask-before-edit', accessLevel: 'full-access' }), // full-access but still ask-before-edit
-      s({ mode: 'edit-automatically', accessLevel: 'ask-permission' }), // commands still require approval
-    ]) {
-      const args = provider.buildCliArgs(settings, createContinueSession());
-      expect(args, JSON.stringify(settings)).toContain('--readonly');
-      expect(args, JSON.stringify(settings)).not.toContain('--auto');
-    }
+  it('rejects restricted tiers instead of treating --readonly as command denial', () => {
+    expect(() => provider.buildCliArgs(s({ accessLevel: 'ask-permission' }), createContinueSession())).toThrow('cannot enforce');
   });
 
   it('uses --auto only where the gate is intentionally off (autonomous tiers)', () => {

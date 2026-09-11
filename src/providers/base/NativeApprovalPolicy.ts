@@ -37,3 +37,10 @@ export function allowsUnrestrictedNativeTools(settings: ApprovalSettings): boole
   return ['Write', 'Edit', 'Delete', 'Bash', 'WebFetch', 'Agent', 'UnknownTool']
     .every(toolName => !shouldGateToolUse(settings, toolName));
 }
+
+/** A notification-only transport cannot enforce a host decision before execution. */
+export function requireUnrestrictedLegacyTransport(settings: ApprovalSettings, provider: string): void {
+  if (!allowsUnrestrictedNativeTools(settings)) {
+    throw new Error(`${provider} cannot enforce Mysti's selected approval or read-only policy with its current transport. This turn was not started. Select a provider with a supported native approval transport.`);
+  }
+}

@@ -75,11 +75,9 @@ describe.each([
 
 describe('native CLI execution policy', () => {
   it('Continue keeps commands disabled in the auto-edit tier', () => {
-    const args = new TestableContinueProvider().buildCliArgs(
+    expect(() => new TestableContinueProvider().buildCliArgs(
       settings('edit-automatically', 'ask-permission'), createContinueSession(),
-    );
-    expect(args).toContain('--readonly');
-    expect(args).not.toContain('--auto');
+    )).toThrow('cannot enforce');
   });
 
   it('Copilot never selects legacy execution even with a cached old version', () => {

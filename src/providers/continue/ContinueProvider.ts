@@ -20,9 +20,8 @@
  * (no tool events, no usage). `<think>…</think>` blocks in the output
  * are parsed into thinking chunks.
  *
- * Permissions are set at spawn like other CLI providers (piped stdin
- * cannot answer prompts): plan/read-only panels run with `--readonly`
- * (Continue's plan mode — read-only tools), everything else `--auto`.
+ * This notification-free transport is available only in unrestricted tiers.
+ * Native --readonly permits Bash and MCP tools; it is not a read-only boundary.
  */
 
 import * as vscode from 'vscode';
@@ -30,7 +29,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
-import { allowsUnrestrictedNativeTools } from '../base/NativeApprovalPolicy';
+import { requireUnrestrictedLegacyTransport } from '../base/NativeApprovalPolicy';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -82,7 +81,7 @@ export class ContinueProvider extends BaseCliProvider {
     supportsPromptEnhancement: false,
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,
-    planMode: 'detected',
+    planMode: 'none',
     // `--resume` targets the globally-last session (cross-panel bleed) and
     // headless mode never reports a session id to fork — so continuity is
     // Mysti-side prompt history, same as Copilot.
@@ -223,37 +222,13 @@ export class ContinueProvider extends BaseCliProvider {
     return args;
   }
 
-  /**
-   * Map Mysti's mode/access to Continue's permission flags — FAILS CLOSED.
-   *
-   * The stream-level permission gate cannot protect Continue: `cn -p` emits
-   * plain final text (no tool events), so parseStreamLine never yields
-   * tool_use chunks and ChatViewProvider's gate never fires. So `--auto`
-   * (full autonomy) is used ONLY for combinations where the gate is
-   * intentionally off anyway; every ask-tier combination gets `--readonly`
-   * (Continue's read-only plan mode) rather than silently executing writes
-   * and shell commands. Mirrors CopilotProvider's fail-closed mapping.
-   */
+  protected async _validateNativeApprovalCli(_session: PanelSessionState, settings: Readonly<Settings>): Promise<void> {
+    requireUnrestrictedLegacyTransport(settings, this.displayName);
+  }
+
   private _addPermissionFlags(args: string[], settings: Settings): void {
-    const { mode, accessLevel } = settings;
-
-    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--readonly');
-      return;
-    }
-
-    const gateIntentionallyOff = allowsUnrestrictedNativeTools(settings);
-
-    if (gateIntentionallyOff) {
-      args.push('--auto');
-      return;
-    }
-
-    // Ask-tier (ask-before-edit, or ask-permission access): no way to prompt
-    // the user from a plain-text single-shot CLI, so deny writes/shell by
-    // running in read-only mode instead of --auto.
-    args.push('--readonly');
-    console.log(`[Mysti] Continue: ask-tier permissions cannot be prompted (plain-text CLI) — using --readonly (fail closed) [mode=${mode}, access=${accessLevel}]`);
+    requireUnrestrictedLegacyTransport(settings, this.displayName);
+    args.push('--auto');
   }
 
   /**

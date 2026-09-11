@@ -16,6 +16,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from "../base/BaseCliProvider";
+import { requireUnrestrictedLegacyTransport } from "../base/NativeApprovalPolicy";
 import { validateModelName } from "../../utils/validation";
 import { normalizeToolName, toolKind } from "../../utils/toolNames";
 import { getEnrichedEnv } from "../../utils/platform";
@@ -115,11 +116,11 @@ export class CursorProvider extends BaseCliProvider {
 		supportsToolUse: true,
 		supportsSessions: false,
 		supportsAutoInstall: false,
-		supportsPromptEnhancement: true,
+		supportsPromptEnhancement: false,
 		// Plan 02 Phase 1 capability matrix
 		thinkingStyle: 'none',
 		thinkingLevelEffective: false,
-		planMode: 'detected',
+		planMode: 'none',
 		sessionKind: 'none',  // stateless: history discarded, fabricated session IDs (F7/B8)
 		emitsToolResults: true,
 		emitsUsage: true,
@@ -330,6 +331,7 @@ export class CursorProvider extends BaseCliProvider {
 	}
 
 	protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
+		requireUnrestrictedLegacyTransport(settings, this.displayName);
 		const args: string[] = [
 			"--output-format",
 			"stream-json",
@@ -344,28 +346,8 @@ export class CursorProvider extends BaseCliProvider {
 			console.log("[Mysti] Cursor: Using model:", effectiveModel);
 		}
 
-		const { mode, accessLevel } = settings;
-
-		// --force enables direct file modifications without confirmation
-		// More-restrictive-wins: only auto-approve when BOTH mode and access allow it
-		if (
-			mode === "quick-plan" ||
-			mode === "detailed-plan" ||
-			accessLevel === "read-only"
-		) {
-			console.log("[Mysti] Cursor: Read-only mode (no --force)");
-		} else if (mode === "edit-automatically" && accessLevel === "full-access") {
-			args.push("--force");
-			console.log("[Mysti] Cursor: Using --force (edit-automatically + full-access)");
-		} else if (mode === "default" && accessLevel === "full-access") {
-			args.push("--force");
-			console.log("[Mysti] Cursor: Using --force (default + full-access)");
-		} else {
-			// Bypass CLI permissions to prevent stdin hang.
-			// The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-			args.push("--force");
-			console.log(`[Mysti] Cursor: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
-		}
+		// Only tiers that authorize every native tool can use this transport.
+		args.push("--force");
 
 		return args;
 	}
@@ -380,8 +362,8 @@ export class CursorProvider extends BaseCliProvider {
 	/**
 	 * Map Cursor tool type names to canonical Claude-compatible names.
 	 * The webview's formatToolSummary() and the stream-level permission gate
-	 * (utils/permissionClassifier.ts) expect these canonical names — the gate
-	 * is the sole enforcement point since the CLI runs with --force.
+	 * (utils/permissionClassifier.ts) expect these canonical display names.
+	 * Notifications do not establish pre-execution permission authority.
 	 */
 	private static readonly TOOL_TYPE_MAP: Record<string, string> = {
 		shellToolCall: "Bash",
@@ -677,6 +659,14 @@ export class CursorProvider extends BaseCliProvider {
 		providerManager?: unknown,
 		agentConfig?: AgentConfiguration,
 	): AsyncGenerator<StreamChunk> {
+		settings = Object.freeze({ ...settings });
+		try {
+			requireUnrestrictedLegacyTransport(settings, this.displayName);
+		} catch (error) {
+			yield this.handleError(error);
+			yield { type: 'done' };
+			return;
+		}
 		const session = this._getSession(panelId) as CursorSessionState;
 		const cliPath = this.getCliPath();
 		const baseArgs = this.buildCliArgs(settings, session);
@@ -788,56 +778,6 @@ export class CursorProvider extends BaseCliProvider {
 				(providerManager as ProcessTracker).clearProcess(panelId);
 			}
 		}
-	}
-
-	/**
-	 * Enhance a prompt using Cursor CLI
-	 */
-	async enhancePrompt(prompt: string): Promise<string> {
-		const { spawn } = await import("child_process");
-		const agentPath = this.getCliPath();
-
-		const enhancePrompt = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
-
-		return new Promise((resolve) => {
-			const envExtra: Record<string, string | undefined> = {};
-			const resolvedKey = this._resolveApiKey();
-			if (resolvedKey) {
-				envExtra.CURSOR_API_KEY = resolvedKey;
-			}
-
-			const cliArgs = ["--output-format", "text", "--print", "-p", enhancePrompt];
-			if (resolvedKey) {
-				cliArgs.push("--api-key", resolvedKey);
-			}
-
-			const proc = spawn(
-				agentPath,
-				cliArgs,
-				{
-					stdio: ["ignore", "pipe", "pipe"],
-					env: getEnrichedEnv(envExtra),
-				},
-			);
-
-			let output = "";
-
-			proc.stdout?.on("data", (data: Buffer) => {
-				output += data.toString();
-			});
-
-			proc.on("close", (code: number | null) => {
-				if (code === 0 && output.trim()) {
-					resolve(output.trim());
-				} else {
-					resolve(prompt);
-				}
-			});
-
-			proc.on("error", () => {
-				resolve(prompt);
-			});
-		});
 	}
 
 	// Private helpers

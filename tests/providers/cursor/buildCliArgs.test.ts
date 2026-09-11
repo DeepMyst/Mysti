@@ -6,7 +6,7 @@ import type { Settings } from '../../../src/types';
 
 function defaultSettings(overrides?: Partial<Settings>): Settings {
   return {
-    mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission',
+    mode: 'default', thinkingLevel: 'none', accessLevel: 'full-access',
     contextMode: 'auto', model: '', provider: 'cursor', ...overrides,
   };
 }
@@ -28,13 +28,11 @@ describe('CursorProvider.buildCliArgs', () => {
   });
 
   it('should not include --force for read-only', () => {
-    const args = provider.buildCliArgs(defaultSettings({ accessLevel: 'read-only' }), createCursorSession());
-    expect(args).not.toContain('--force');
+    expect(() => provider.buildCliArgs(defaultSettings({ accessLevel: 'read-only' }), createCursorSession())).toThrow('cannot enforce');
   });
 
   it('should not include --force for plan modes', () => {
-    const args = provider.buildCliArgs(defaultSettings({ mode: 'quick-plan' }), createCursorSession());
-    expect(args).not.toContain('--force');
+    expect(() => provider.buildCliArgs(defaultSettings({ mode: 'quick-plan' }), createCursorSession())).toThrow('cannot enforce');
   });
 
   it('should include --force for full-access + edit-automatically', () => {
@@ -44,8 +42,7 @@ describe('CursorProvider.buildCliArgs', () => {
     expect(args).toContain('--force');
   });
 
-  it('should include --force for default ask-permission (bypassing CLI permissions)', () => {
-    const args = provider.buildCliArgs(defaultSettings({ accessLevel: 'ask-permission' }), createCursorSession());
-    expect(args).toContain('--force');
+  it('rejects default ask-permission before constructing a launch', () => {
+    expect(() => provider.buildCliArgs(defaultSettings({ accessLevel: 'ask-permission' }), createCursorSession())).toThrow('cannot enforce');
   });
 });

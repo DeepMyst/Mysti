@@ -86,7 +86,7 @@ describe('Continue parseStreamLine', () => {
   it('buildCliArgs resets think-block state between runs', () => {
     provider.parseStreamLine('<think>', session);
     expect(session.inThinkBlock).toBe(true);
-    provider.buildCliArgs({ mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission', contextMode: 'auto', model: '', provider: 'continue' } as never, session);
+    provider.buildCliArgs({ mode: 'default', thinkingLevel: 'none', accessLevel: 'full-access', contextMode: 'auto', model: '', provider: 'continue' } as never, session);
     expect(session.inThinkBlock).toBe(false);
   });
 
