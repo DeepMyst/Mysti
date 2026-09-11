@@ -105,6 +105,7 @@ export class LocalAIProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: false,
     supportsToolUse: true,
+    toolExecution: 'proposal-only',
     supportsSessions: false,
     supportsImages: false,
     supportsAutoInstall: false,

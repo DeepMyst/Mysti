@@ -368,7 +368,16 @@ export class MentionRouter {
     run.controller.signal.addEventListener('abort', retire, { once: true });
     try {
       run.controller.signal.throwIfAborted();
-      yield* this._providerManager.sendMessageToProvider(providerId, prompt, context, settings, null, undefined, childPanelId);
+      const proposalOnly = this._providerManager.getProviderInstance?.(providerId)?.capabilities.toolExecution === 'proposal-only';
+      for await (const chunk of this._providerManager.sendMessageToProvider(providerId, prompt, context, settings, null, undefined, childPanelId)) {
+        // A native operation may auto-allow and only emit a notification. Once
+        // observed, replaying this task can duplicate its effect even without a card.
+        if (nativeActions && !proposalOnly && chunk.type === 'tool_use' && chunk.toolCall
+          && !NATIVE_RETRY_SAFE_TOOLS.has(chunk.toolCall.name.toLowerCase())) {
+          nativeActions.mayHaveSideEffects = true;
+        }
+        yield chunk;
+      }
     } finally { retire(); }
   }
 

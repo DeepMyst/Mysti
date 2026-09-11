@@ -118,6 +118,8 @@ export interface ProviderCapabilities {
   supportsStreaming: boolean;
   supportsThinking: boolean;
   supportsToolUse: boolean;
+  /** Whether tool events describe native execution or unexecuted model proposals. */
+  toolExecution?: 'native' | 'proposal-only' | 'none';
   /** Native request/response approval is implemented; tool notifications are display-only. */
   supportsNativeApproval?: boolean;
   supportsSessions: boolean;

@@ -158,6 +158,7 @@ import type { UsageConvention } from '../services/TokenAccounting';
 import type { CollaboratorGateCallback, CollaboratorSpec, CollaboratorFailure } from '../types';
 import { validateModelName, validateProfileName } from '../utils/validation';
 import { filterInstallMethodsForOS } from '../utils/platform';
+import { requiresNativeToolApproval } from './base/NativeApprovalPolicy';
 import { classifyToolAction, shouldGateToolUse, isNeverGatedAction } from '../utils/permissionClassifier';
 import { PerfTracker } from '../utils/PerfTracker';
 import { replaceAsciiControlCharacters } from '../utils/controlCharacters';
@@ -3735,35 +3736,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._handleToggleAutonomous();
   }
 
-  /**
-   * Gate a legacy `@agent` sub-agent tool_use (Plan 18 H1). Sub-agent CLIs run
-   * with CLI-level permissions bypassed, so this stream gate is the ONLY
-   * enforcement point — and a gate that merely awaits lets the child keep
-   * executing while the user reads the card. Mirror the main-path SIGSTOP
-   * gate: freeze the child panels BEFORE awaiting, resume on approve; on deny
-   * kill the actual children (`${panelId}-subagent-<agent>` plus retry/
-   * followup variants) and abort the whole mention pass via the loop's
-   * cancel flag. Returns true when processing may continue.
-   */
+  /** Stop a child that reports an approval-required operation without native authority. */
   private async _gateSubAgentToolUse(
     chunk: { agentId?: AgentType; toolCall?: ToolCall },
     settings: Settings,
     panelId: string
   ): Promise<boolean> {
-    if (chunk.agentId && this._providerManager.getProviderInstance(chunk.agentId)?.capabilities.supportsNativeApproval) {
-      return true;
-    }
-    if (!chunk.toolCall || !this._shouldGateToolUse(settings, chunk.toolCall.name)) {
-      return true;
-    }
-    const action = this._classifyToolAction(chunk.toolCall.name);
-    // L5: providers emit tool_use twice per tool (start/stop pair, the first
-    // with {} input) — only gate the input-bearing event or every tool
-    // double-prompts.
-    const hasInput = Object.keys(chunk.toolCall.input || {}).length > 0;
-    if (action === 'file-read' || !hasInput) {
-      return true;
-    }
+    const capabilities = chunk.agentId ? this._providerManager.getProviderInstance(chunk.agentId)?.capabilities : undefined;
+    if (capabilities?.supportsNativeApproval || capabilities?.toolExecution === 'proposal-only') { return true; }
+    if (!chunk.toolCall || !requiresNativeToolApproval(settings, chunk.toolCall.name)) { return true; }
 
     // Every panel variant this agent's child may be running under right now
     // (MentionRouter: base, -retryN on auto-retry, -followup after a relayed
@@ -3777,34 +3758,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    // Freeze BEFORE waiting on the user. Best-effort (returns false on
-    // Windows / no live process) — parity with the main-path gate.
-    const suspended = childPanels.filter(p => this._providerManager.suspendRequest(p));
-
-    const approved = await this.requestPermissionInline(
-      action,
-      chunk.toolCall.name,
-      `${chunk.agentId || 'Sub-agent'} wants to: ${chunk.toolCall.name}`,
-      {
-        command: JSON.stringify(chunk.toolCall.input || {}, null, 2).slice(0, 500),
-        riskLevel: PermissionManager.classifyRisk(action),
-        suspended: suspended.length > 0,
-        ...this._permissionToolDetails(chunk.toolCall)
-      },
-      panelId,
-      chunk.toolCall.id
-    );
-
-    if (approved) {
-      for (const p of suspended) {
-        this._providerManager.resumeRequest(p);
-      }
-      return true;
-    }
-
-    // Deny: kill the children (cancelRequest SIGKILLs suspended processes —
-    // never resume-then-terminate, which would give the CLI a window to run
-    // the tool) and abort the pass.
+    this._postToPanel(panelId, {
+      type: 'error',
+      payload: `Stopped ${chunk.agentId || 'sub-agent'}: ${chunk.toolCall.name} was reported without native approval. The operation may already have executed.`,
+    });
     for (const p of childPanels) {
       this._providerManager.cancelRequest(p);
     }
@@ -4949,92 +4906,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
 
           case 'tool_use': {
-            // Native requests already held execution for approval. Legacy
-            // notifications can only support a best-effort process pause.
-            // NOTE: Claude emits two tool_use chunks per tool (content_block_start with empty input,
-            // then content_block_stop with full input). We skip gating for chunks with empty input
-            // to avoid double-gating and to show meaningful input preview in the permission card.
             const hasInput = chunk.toolCall?.input && Object.keys(chunk.toolCall.input).length > 0;
-            if (!this._providerManager.getProviderInstance(effectiveSettings.provider)?.capabilities.supportsNativeApproval
-              && chunk.toolCall && hasInput && this._shouldGateToolUse(effectiveSettings, chunk.toolCall.name)) {
-              const gateActionType = this._classifyToolAction(chunk.toolCall.name);
-              if (gateActionType !== 'file-read') {
-                // Freeze the CLI process immediately to prevent tool execution.
-                // SIGSTOP halts the process at the OS level — no further instructions
-                // run until SIGCONT is sent. Returns false on Windows.
-                const wasSuspended = this._providerManager.suspendRequest(panelId);
-
-                // D-6: the freeze did not take. On Windows SIGSTOP does not
-                // exist so `suspendProcess` returns false unconditionally; the
-                // same false comes back for an already-dead process. Every CLI
-                // is spawned with its own permission prompts bypassed, so the
-                // tool is executing RIGHT NOW — prompting over it is theatre:
-                // the user "approves" something that already happened, and a
-                // "deny" arrives after the write. Fail closed instead, mirroring
-                // CollaboratorPool's un-suspendable-child rule (and its single
-                // carve-out: a read-ish web fetch keeps the best-effort prompt
-                // rather than killing every researching turn on Windows).
-                if (!wasSuspended && gateActionType !== 'web-request') {
-                  if (!this._cancelledPanels.has(panelId)) {
-                    this._providerManager.cancelRequest(panelId);
-                    this._postToPanel(panelId, {
-                      type: 'toolResult',
-                      payload: {
-                        id: chunk.toolCall.id,
-                        name: chunk.toolCall.name,
-                        output: 'Denied — the agent process could not be paused on this platform, so this tool could not be held for approval.',
-                        status: 'failed'
-                      }
-                    });
-                    this._postToPanel(panelId, {
-                      type: 'error',
-                      payload: `Operation "${chunk.toolCall.name}" was denied: Mysti could not pause the agent on this platform to hold it for your approval, and it will not ask you to approve a tool that is already running. Request cancelled.`
-                    });
-                  }
-                  return;
-                }
-
-                const inputPreview = JSON.stringify(chunk.toolCall.input || {}, null, 2).slice(0, 500);
-                const riskLevel = PermissionManager.classifyRisk(gateActionType);
-                const gateApproved = await this.requestPermissionInline(
-                  gateActionType,
-                  chunk.toolCall.name,
-                  `Mysti wants to: ${chunk.toolCall.name}`,
-                  { command: inputPreview, riskLevel, suspended: wasSuspended, ...this._permissionToolDetails(chunk.toolCall) },
-                  panelId,
-                  chunk.toolCall.id
-                );
-                // This gate may have settled as a replacement conversation or
-                // turn started. Its decision cannot control the new process.
-                if (!isPlanCurrent()) { return; }
-                if (gateApproved) {
-                  // Resume the frozen CLI process so tool execution proceeds
-                  if (wasSuspended) {
-                    this._providerManager.resumeRequest(panelId);
-                  }
-                } else {
-                  // User denied or a new message superseded this request.
-                  // If cancelled by a new message, skip error posting — the new message
-                  // already cancelled the process and the user expects a fresh response.
-                  if (!this._cancelledPanels.has(panelId)) {
-                    this._providerManager.cancelRequest(panelId);
-                    this._postToPanel(panelId, {
-                      type: 'toolResult',
-                      payload: {
-                        id: chunk.toolCall.id,
-                        name: chunk.toolCall.name,
-                        output: 'Permission denied by user',
-                        status: 'failed'
-                      }
-                    });
-                    this._postToPanel(panelId, {
-                      type: 'error',
-                      payload: `Operation "${chunk.toolCall.name}" was denied. Request cancelled.`
-                    });
-                  }
-                  return;
-                }
-              }
+            const capabilities = this._providerManager.getProviderInstance(effectiveSettings.provider)?.capabilities;
+            if (!capabilities?.supportsNativeApproval && capabilities?.toolExecution !== 'proposal-only'
+              && chunk.toolCall && requiresNativeToolApproval(effectiveSettings, chunk.toolCall.name)) {
+              const message = `Stopped: ${chunk.toolCall.name} was reported without native approval. The operation may already have executed.`;
+              this._providerManager.cancelRequest(panelId);
+              this._postToPanel(panelId, {
+                type: 'toolResult',
+                payload: { id: chunk.toolCall.id, name: chunk.toolCall.name, output: message, status: 'failed' },
+              });
+              this._postToPanel(panelId, { type: 'error', payload: message });
+              return;
             }
             // Plan 02 Phase 3: accumulate for persistence. Merge duplicate
             // emissions for the same tool id (Claude's start/stop pair) into

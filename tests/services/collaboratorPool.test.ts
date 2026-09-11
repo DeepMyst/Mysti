@@ -1,7 +1,7 @@
 /**
  * CollaboratorPool tests (Plan 14 Phase 0).
  * Exercises the shared bounded dispatch primitive: cap, availability taxonomy,
- * timeout, retry, cancel fan-out, read-only deny, gated-write approval, and the
+ * timeout, retry, cancel fan-out, read-only deny, notification-only rejection, and the
  * question relay — all without spawning real CLI processes.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -240,7 +240,7 @@ describe('CollaboratorPool', () => {
 
       const denied = chunks.find(c => c.type === 'collab_tool_denied');
       expect(denied).toBeDefined();
-      expect(suspendSpy).toHaveBeenCalled();
+      expect(suspendSpy).not.toHaveBeenCalled();
       expect(pm.cancelledPanelIds.some(p => p.includes('collab'))).toBe(true);
       const complete = chunks.find(c => c.type === 'collab_complete');
       expect(complete!.failure).toBe('denied');
@@ -267,11 +267,10 @@ describe('CollaboratorPool', () => {
   });
 
   describe('Gated-write', () => {
-    it('re-emits a write when the gate approves and resumes the child', async () => {
+    it('stops a notification-only write even if a host hook would approve', async () => {
       const { pool, mockPM: pm } = createTestCollaboratorPool(mockPM);
       pm.setProviderAvailable('claude-code');
-      // Simulate a successful SIGSTOP so the pool resumes on approval (the mock
-      // stub returns false, which would model a Windows no-op suspend).
+      // Even a process that could be paused cannot authorize an earlier operation.
       vi.spyOn(pm, 'suspendRequest').mockReturnValue(true);
       const resumeSpy = vi.spyOn(pm, 'resumeRequest');
       pm.streamFactories.set('claude-code', () => createMockStream([
@@ -287,14 +286,14 @@ describe('CollaboratorPool', () => {
         )
       );
 
-      expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(true);
-      expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(false);
-      expect(resumeSpy).toHaveBeenCalled();
+      expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(false);
+      expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
+      expect(resumeSpy).not.toHaveBeenCalled();
       const complete = chunks.find(c => c.type === 'collab_complete');
-      expect(complete!.hasError).toBeFalsy();
+      expect(complete!.failure).toBe('denied');
     });
 
-    it('denies a write when the gate rejects', async () => {
+    it('stops a notification-only write without invoking the host hook', async () => {
       const { pool, mockPM: pm } = createTestCollaboratorPool(mockPM);
       pm.setProviderAvailable('claude-code');
       vi.spyOn(pm, 'suspendRequest').mockReturnValue(true);
@@ -311,7 +310,7 @@ describe('CollaboratorPool', () => {
         )
       );
 
-      expect(gateCalled).toBe(true);
+      expect(gateCalled).toBe(false);
       expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
       const complete = chunks.find(c => c.type === 'collab_complete');
       expect(complete!.failure).toBe('denied');
@@ -375,7 +374,7 @@ describe('CollaboratorPool', () => {
       expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(false);
     });
 
-    it('routes a gated-write Task delegation through the gate (not the read fast-path)', async () => {
+    it('stops zero-argument delegation without invoking the host hook', async () => {
       const { pool, mockPM: pm } = createTestCollaboratorPool(mockPM);
       pm.setProviderAvailable('claude-code');
       vi.spyOn(pm, 'suspendRequest').mockReturnValue(true);
@@ -392,7 +391,7 @@ describe('CollaboratorPool', () => {
         )
       );
 
-      expect(gateCalled).toBe(true);
+      expect(gateCalled).toBe(false);
     });
 
     it('allows a read-only advisor to do a web read without killing it (non-gating policy)', async () => {
@@ -617,7 +616,7 @@ describe('CollaboratorPool web-request policy (Plan 18 F5)', () => {
     ];
   }
 
-  it('gates a WebFetch under ask-permission (was a hardcoded pass)', async () => {
+  it('stops a notification-only WebFetch under ask-permission', async () => {
     const { pool, mockPM } = createTestCollaboratorPool();
     vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
     mockPM.setProviderChunks('google-gemini', webFetchStream());
@@ -632,11 +631,11 @@ describe('CollaboratorPool web-request policy (Plan 18 F5)', () => {
       })
     ));
 
-    expect(gateAsked).toBe(true);
-    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(true);
+    expect(gateAsked).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(false);
   });
 
-  it('a read-only advisor gets the PROMPT for a policy-gated WebFetch, not the write hard-deny', async () => {
+  it('a read-only advisor stops when a WebFetch lacks native approval', async () => {
     const { pool, mockPM } = createTestCollaboratorPool();
     vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
     mockPM.setProviderChunks('google-gemini', webFetchStream());
@@ -650,8 +649,8 @@ describe('CollaboratorPool web-request policy (Plan 18 F5)', () => {
       })
     ));
 
-    expect(gateAsked).toBe(true);
-    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(false);
+    expect(gateAsked).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
   });
 
   it('still fast-passes a WebFetch where policy would not gate it (full access)', async () => {
@@ -681,7 +680,7 @@ describe('CollaboratorPool web-request policy (Plan 18 F5)', () => {
 describe('CollaboratorPool web-request corrections (Plan 18 W2 review)', () => {
   beforeEach(() => { clearMockConfig(); });
 
-  it('read-only spec + read-only user policy: web request still PROMPTS (never ungated)', async () => {
+  it('read-only spec and user policy stop an unapproved web notification', async () => {
     const { pool, mockPM } = createTestCollaboratorPool();
     vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
     mockPM.setProviderChunks('google-gemini', [
@@ -701,10 +700,10 @@ describe('CollaboratorPool web-request corrections (Plan 18 W2 review)', () => {
       })
     ));
 
-    expect(gateAsked).toBe(true);
+    expect(gateAsked).toBe(false);
   });
 
-  it('failed freeze (Windows) prompts for a web read instead of killing the child', async () => {
+  it('Windows also stops an unapproved web notification', async () => {
     const { pool, mockPM } = createTestCollaboratorPool();
     vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(false); // no SIGSTOP available
     mockPM.setProviderChunks('google-gemini', [
@@ -722,9 +721,9 @@ describe('CollaboratorPool web-request corrections (Plan 18 W2 review)', () => {
       })
     ));
 
-    expect(gateAsked).toBe(true);
-    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(false);
-    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(true);
+    expect(gateAsked).toBe(false);
+    expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
+    expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(false);
   });
 
   it('failed freeze still fail-closes for WRITES (unchanged)', async () => {
@@ -752,7 +751,7 @@ describe('CollaboratorPool web-request corrections (Plan 18 W2 review)', () => {
 describe('CollaboratorPool Wave 4 (follow-up deadline, write-terminal retry)', () => {
   beforeEach(() => { clearMockConfig(); });
 
-  it('an approved gated write makes a later crash TERMINAL (no retry, no double-apply)', async () => {
+  it('an unapproved write notification stops the attempt without retry', async () => {
     const { pool, mockPM } = createTestCollaboratorPool();
     vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
     let dispatches = 0;
@@ -769,7 +768,7 @@ describe('CollaboratorPool Wave 4 (follow-up deadline, write-terminal retry)', (
       collabOptions({ runId: 'run-write-term', onGate: async () => true })
     ));
 
-    expect(dispatches).toBe(1); // crashed AFTER an approved write → no retry
+    expect(dispatches).toBe(1); // stopped at the unapproved notification; never replay it
     const complete = chunks.find(c => c.type === 'collab_complete');
     expect(complete?.hasError).toBe(true);
   });
@@ -931,7 +930,7 @@ describe('CollaboratorPool sealed access (Plan 21 Phase 0)', () => {
     expect(chunks.some(c => c.type === 'collab_tool_denied')).toBe(true);
   });
 
-  it('denies a delegation tool, which classifies as a READ but hides writes inside the child', async () => {
+  it('denies a delegation tool that can hide writes inside the child', async () => {
     const { pool, mockPM } = createTestCollaboratorPool();
     vi.spyOn(mockPM, 'suspendRequest').mockReturnValue(true);
     mockPM.setProviderChunks('google-gemini', toolStream('task', { prompt: 'write a file for me' }));

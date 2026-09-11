@@ -70,6 +70,7 @@ interface Harness {
   setProjectFiles(files: { mystiMd?: string; rules?: string; memory?: string }): void;
   setSuspendResult(value: boolean): void;
   setNativeApprovalSupported(value: boolean): void;
+  setProposalOnly(value: boolean): void;
   nativeHandler(panelId: string): NativeApprovalHandler | undefined;
   setAutoApprove(value: boolean): void;
   suspendCalls(): number;
@@ -104,6 +105,7 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
   let suspendResult = true;
   let suspendCallCount = 0;
   let nativeApprovalSupported = false;
+  let proposalOnly = false;
   let nativeHost: NativeApprovalHost | undefined;
   let autoApprove = true;
   const systemContexts: string[] = [];
@@ -126,7 +128,7 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
     },
     setAgentContextManager: () => undefined,
     getProvider: () => undefined,
-    getProviderInstance: () => ({ capabilities: { thinkingStyle: 'streamed', supportsNativeApproval: nativeApprovalSupported } }),
+    getProviderInstance: () => ({ capabilities: { thinkingStyle: 'streamed', supportsNativeApproval: nativeApprovalSupported, toolExecution: proposalOnly ? 'proposal-only' : 'native' } }),
     getModelContextWindow: () => 200000,
     setChannelSystemContext: (_panelId: string, context: string) => { systemContexts.push(context); },
     cancelRequest: (panelId: string) => { cancelled.push(panelId); },
@@ -261,6 +263,7 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
     cancelled,
     setStream(chunks) { streamChunks = chunks; },
     setProjectFiles(files) { projectFiles = files; },
+    setProposalOnly(value) { proposalOnly = value; },
     setSuspendResult(value) { suspendResult = value; },
     setNativeApprovalSupported(value) { nativeApprovalSupported = value; },
     nativeHandler(panelId) { return nativeHost?.handlerForPanel(panelId); },
@@ -434,84 +437,43 @@ describe('D-7: mysti.md / .mysti/rules fencing in the CLI system prompt', () => 
 // ===========================================================================
 // D-6 — never prompt over a tool that could not be frozen
 // ===========================================================================
-describe('D-6: permission gate fails closed when the process cannot be paused', () => {
+describe('notification-only operations never open an approval card', () => {
   let h: Harness;
   beforeEach(() => { clearMockConfig(); h = createHarness(); });
   afterEach(() => { h.dispose(); });
 
-  const GATED: Partial<Settings> = { mode: 'ask-before-edit', accessLevel: 'ask-permission' };
-  const WRITE_CHUNK: StreamChunk = {
-    type: 'tool_use',
-    toolCall: { id: 'tu-1', name: 'Write', input: { file_path: '/src/a.ts', content: 'x' }, status: 'running' },
-  } as StreamChunk;
+  it.each(['Write', 'WebFetch', 'Agent', 'UnknownTool'])('stops %s with empty or populated input on every platform', async name => {
+    for (const suspended of [true, false]) {
+      for (const input of [{}, { target: 'example' }]) {
+        h.setSuspendResult(suspended);
+        h.setStream([{ type: 'tool_use', toolCall: { id: 'notification', name, input, status: 'running' } }, { type: 'done' }]);
+        await send(h, { mode: 'ask-before-edit', accessLevel: 'ask-permission' });
+        expect(h.sidebarMessages.some(m => m.type === 'permissionRequest')).toBe(false);
+        expect(h.sidebarMessages.some(m => m.type === 'error' && /may already have executed/.test(String(m.payload)))).toBe(true);
+        expect(h.cancelled).toContain('sidebar');
+      }
+    }
+    expect(h.suspendCalls()).toBe(0);
+  });
 
-  it('denies (never prompts) when suspendRequest() returns false — the Windows case', async () => {
-    h.setSuspendResult(false);
-    h.setStream([WRITE_CHUNK, { type: 'text', content: 'wrote it' }, { type: 'done' }]);
-
-    await send(h, GATED);
-
-    expect(h.suspendCalls()).toBe(1);
-    // The card must never be shown over a running tool.
+  it.each(['read-only', 'ask-permission'] as const)('stops legacy zero-argument child mutations under %s', async accessLevel => {
+    const pm = (h.provider as any)._providerManager;
+    pm.getAllProviderIds = () => ['cursor'];
+    (h.provider as any)._mentionRouter.cancelSubAgents = vi.fn();
+    const allowed = await (h.provider as any)._gateSubAgentToolUse({ agentId: 'cursor', toolCall: { id: 'zero', name: 'Delete', input: {}, status: 'running' } }, { ...SETTINGS, mode: 'ask-before-edit', accessLevel }, 'sidebar');
+    expect(allowed).toBe(false);
+    expect(h.cancelled).toContain('sidebar-subagent-cursor');
+    expect(h.suspendCalls()).toBe(0);
     expect(h.sidebarMessages.some(m => m.type === 'permissionRequest')).toBe(false);
-    // The denial must be VISIBLE, not silent.
-    const toolResult = h.sidebarMessages.find(m => m.type === 'toolResult');
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.payload.status).toBe('failed');
-    expect(String(toolResult!.payload.output)).toMatch(/could not be paused/i);
-    const error = h.sidebarMessages.find(m => m.type === 'error');
-    expect(error).toBeDefined();
-    expect(String(error!.payload)).toMatch(/denied/i);
-    expect(String(error!.payload)).toMatch(/could not pause/i);
-    // And the run is cancelled rather than left streaming.
-    expect(h.cancelled).toContain('sidebar');
   });
 
-  it('still prompts normally when the process WAS frozen', async () => {
-    h.setSuspendResult(true);
-    h.setStream([WRITE_CHUNK, { type: 'text', content: 'wrote it' }, { type: 'done' }]);
-
-    await send(h, GATED);
-
-    expect(h.sidebarMessages.some(m => m.type === 'permissionRequest')).toBe(true);
-    expect(h.sidebarMessages.some(
-      m => m.type === 'error' && /could not pause/i.test(String(m.payload)))).toBe(false);
-  });
-
-  it.each([true, false])('does not apply a stale gate decision (%s) to a replacement conversation', async approved => {
-    let decide!: (approved: boolean) => void;
-    let opened!: () => void;
-    const gateOpened = new Promise<void>(resolve => { opened = resolve; });
-    const gate = new Promise<boolean>(resolve => { decide = resolve; });
-    const provider = h.provider as any;
-    provider.requestPermissionInline = () => { opened(); return gate; };
-    const resume = vi.spyOn(provider._providerManager, 'resumeRequest');
-    provider._conversationManager.getConversation = () => ({ id: 'replacement', messages: [] });
-    h.setStream([WRITE_CHUNK, { type: 'done' }]);
-    const sending = send(h, GATED);
-    await gateOpened;
-    await provider._handleMessage({ type: 'switchConversation', panelId: 'sidebar', payload: { id: 'replacement' } });
-    expect(h.cancelled).toEqual(['sidebar']);
-    h.cancelled.length = 0;
-    decide(approved);
-    await sending;
-    expect(resume).not.toHaveBeenCalled();
+  it('keeps unexecuted model proposals visible without a permission card', async () => {
+    h.setProposalOnly(true);
+    h.setStream([{ type: 'tool_use', toolCall: { id: 'proposal', name: 'Write', input: {}, status: 'running' } }, { type: 'done' }]);
+    await send(h, { mode: 'ask-before-edit', accessLevel: 'read-only' });
     expect(h.cancelled).toEqual([]);
-    expect(h.sidebarMessages.some(m => m.type === 'responseComplete')).toBe(false);
-  });
-
-  it('keeps CollaboratorPool\'s carve-out: a read-ish web fetch still gets the best-effort prompt', async () => {
-    h.setSuspendResult(false);
-    h.setStream([
-      { type: 'tool_use', toolCall: { id: 'tu-2', name: 'WebFetch', input: { url: 'https://example.com' }, status: 'running' } } as StreamChunk,
-      { type: 'done' },
-    ]);
-
-    await send(h, GATED);
-
-    expect(h.sidebarMessages.some(m => m.type === 'permissionRequest')).toBe(true);
-    expect(h.sidebarMessages.some(
-      m => m.type === 'error' && /could not pause/i.test(String(m.payload)))).toBe(false);
+    expect(h.sidebarMessages.some(m => m.type === 'toolUse')).toBe(true);
+    expect(h.sidebarMessages.some(m => m.type === 'permissionRequest')).toBe(false);
   });
 });
 
@@ -644,12 +606,17 @@ describe('Plan 27 gate — the send path migrates a legacy authority mode', () =
 // ===========================================================================
 // P0#2 / H-1 — the permission card must carry the edit it is gating
 // ===========================================================================
-describe('H-1: the CLI gate puts the intact tool input on the permission card', () => {
+describe('H-1: native requests put the intact tool input on the permission card', () => {
   let h: Harness;
   beforeEach(() => { clearMockConfig(); h = createHarness(); });
   afterEach(() => { h.dispose(); });
 
-  const GATED: Partial<Settings> = { mode: 'ask-before-edit', accessLevel: 'ask-permission' };
+  async function approve(toolCall: NonNullable<StreamChunk['toolCall']>): Promise<void> {
+    await h.nativeHandler('sidebar')!({
+      id: 'native-card', nativeRequestId: 1, panelId: 'sidebar', providerId: 'hermes',
+      toolCall, defaultDecision: 'ask', signal: new AbortController().signal,
+    });
+  }
   const BUDGET = 64 * 1024;
 
   function gateChunk(name: string, input: Record<string, unknown>): StreamChunk {
@@ -674,8 +641,7 @@ describe('H-1: the CLI gate puts the intact tool input on the permission card', 
   };
 
   it('a realistic 3-line Edit arrives whole — the 500-char preview alone could not be parsed', async () => {
-    h.setStream([gateChunk('Edit', REALISTIC_EDIT), { type: 'done' }]);
-    await send(h, GATED);
+    await approve(gateChunk('Edit', REALISTIC_EDIT).toolCall!);
 
     const d = postedDetails();
     // The old wire source is still there for older consumers, and is still useless as a diff source.
@@ -694,8 +660,7 @@ describe('H-1: the CLI gate puts the intact tool input on the permission card', 
     expect(JSON.stringify({ file_path: '/repo/big.ts', content }).length).toBeLessThan(BUDGET);
     const input = { file_path: '/repo/big.ts', content };
     const chunk = gateChunk('Write', input);
-    h.setStream([chunk, { type: 'done' }]);
-    await send(h, GATED);
+    await approve(chunk.toolCall!);
 
     const d = postedDetails();
     expect(d.toolName).toBe('Write');
@@ -709,8 +674,7 @@ describe('H-1: the CLI gate puts the intact tool input on the permission card', 
     const content = Array.from({ length: 50000 }, (_, i) => `line ${i}`).join('\n');
     const input = { file_path: '/repo/huge.txt', content, extra: { nested: 'kept', n: 7 } };
     expect(JSON.stringify(input).length).toBeGreaterThan(BUDGET);
-    h.setStream([gateChunk('Write', input), { type: 'done' }]);
-    await send(h, GATED);
+    await approve(gateChunk('Write', input).toolCall!);
 
     const d = postedDetails();
     expect(d.toolName).toBe('Write');

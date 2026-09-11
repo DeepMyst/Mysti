@@ -59,7 +59,7 @@ export interface PoolProviderManager {
     installCommand?: string;
   } | null>;
   getProviderDefaultModel(providerId: string): string;
-  getProviderInstance?(providerId: string): { capabilities: { supportsNativeApproval?: boolean } } | undefined;
+  getProviderInstance?(providerId: string): { capabilities: { supportsNativeApproval?: boolean; toolExecution?: 'native' | 'proposal-only' | 'none' } } | undefined;
   setNativeApprovalHandlerForPanel?(panelId: string, handler: NativeApprovalHandler): { dispose(): void };
 }
 
@@ -738,13 +738,7 @@ export class CollaboratorPool {
     });
   }
 
-  /**
-   * Permission gate for a collaborator tool_use. Returns whether to re-emit the
-   * tool_use (i.e. let it proceed). Read operations always pass. For read-only
-   * collaborators any write/exec is hard-denied locally. For gated-write ones
-   * the child is SIGSTOPped, the caller's gate is awaited, then the child is
-   * resumed (approved) or cancelled (rejected).
-   */
+  /** A notification can expose an authority violation; it cannot be approved after execution. */
   private async *_gateToolUse(
     spec: CollaboratorSpec,
     options: CollaboratorDispatchOptions,
@@ -752,64 +746,16 @@ export class CollaboratorPool {
     childPanelId: string,
     toolCall: NonNullable<StreamChunk['toolCall']>
   ): AsyncGenerator<CollaboratorChunk, boolean> {
+    if (this._providerManager.getProviderInstance?.(spec.agentId)?.capabilities.toolExecution === 'proposal-only') { return true; }
     const policy = this._toolPolicy(spec, options, toolCall);
-    if (policy.decision === 'allow') { return true; }
-    const action = classifyToolAction(toolCall.name);
-    const suspended = this._providerManager.suspendRequest(childPanelId);
-    if (policy.decision === 'deny') {
-      yield { ...base, type: 'collab_tool_denied', toolCall, content: policy.reason };
-      this._forgetChild(options.runId, childPanelId);
-      this._providerManager.cancelRequest(childPanelId);
-      return false;
-    }
-
-    // Gated-write, but the freeze didn't take (Windows/no live process): the
-    // child keeps running with CLI permissions bypassed while we'd prompt, so
-    // the "gate" would be after-the-fact. Fail closed instead of prompting —
-    // EXCEPT for web reads (Plan 18 F5 review): killing every researching
-    // collaborator on platforms without SIGSTOP contradicts the feature; a
-    // read-ish fetch gets a best-effort prompt (suspended=false), matching
-    // the main-path gate's Windows behavior.
-    if (!suspended && action !== 'web-request') {
-      yield {
-        ...base,
-        type: 'collab_tool_denied',
-        toolCall,
-        content: `Cannot pause ${spec.label || spec.agentId} to gate ${toolCall.name} on this platform — denied.`,
-      };
-      this._forgetChild(options.runId, childPanelId);
-      this._providerManager.cancelRequest(childPanelId);
-      return false;
-    }
-
-    // Gated-write: require an explicit gate hook. No hook ⇒ fail-closed deny.
-    let approved = false;
-    if (options.onGate) {
-      try {
-        approved = await options.onGate(spec, toolCall);
-      } catch (err) {
-        console.warn(`[Mysti] CollaboratorPool: gate hook threw for ${childPanelId}:`, err);
-        approved = false;
-      }
-    }
-
-    if (approved) {
-      // Plan 18 (1.3/M4b): record that a gated non-read action was APPROVED on
-      // this child — if the attempt later crashes/times out, retrying the
-      // whole prompt could re-apply the write (e.g. a duplicate append-edit).
-      // _dispatchWithRetry treats attempts with an approved write as terminal
-      // (mirrors the Mysti reroute's `!result.wrote` rule). Normalize the
-      // question-relay suffix: a write approved during a `-followup` stream
-      // belongs to the same attempt (W4 review: the un-normalized id made
-      // follow-up writes invisible to the retry gate).
-      this._approvedWriteChildren.add(childPanelId.replace(/-followup$/, ''));
-      if (suspended) {
-        this._providerManager.resumeRequest(childPanelId);
-      }
+    if (policy.decision === 'allow') {
+      if (policy.mayHaveSideEffects) { this._approvedWriteChildren.add(childPanelId.replace(/-followup$/, '')); }
       return true;
     }
-
-    yield { ...base, type: 'collab_tool_denied', toolCall, content: 'Permission denied.' };
+    yield {
+      ...base, type: 'collab_tool_denied', toolCall,
+      content: `Stopped ${spec.label || spec.agentId}: ${toolCall.name} was reported without native approval. The operation may already have executed. ${policy.decision === 'deny' ? policy.reason : ''}`.trim(),
+    };
     this._forgetChild(options.runId, childPanelId);
     this._providerManager.cancelRequest(childPanelId);
     return false;

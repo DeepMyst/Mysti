@@ -1,6 +1,6 @@
 /** Mysti — SPDX-License-Identifier: Apache-2.0 */
 import type { Settings } from '../../types';
-import { shouldGateToolUse } from '../../utils/permissionClassifier';
+import { classifyToolAction, shouldGateToolUse } from '../../utils/permissionClassifier';
 
 type ApprovalSettings = Pick<Settings, 'mode' | 'accessLevel'>;
 
@@ -43,4 +43,10 @@ export function requireUnrestrictedLegacyTransport(settings: ApprovalSettings, p
   if (!allowsUnrestrictedNativeTools(settings)) {
     throw new Error(`${provider} cannot enforce Mysti's selected approval or read-only policy with its current transport. This turn was not started. Select a provider with a supported native approval transport.`);
   }
+}
+
+/** Notifications cannot authorize a mutation, including tools with no arguments. */
+export function requiresNativeToolApproval(settings: ApprovalSettings, toolName: string): boolean {
+  if (classifyToolAction(toolName) === 'file-read') { return false; }
+  return isReadOnly(settings) || shouldGateToolUse(settings, toolName);
 }

@@ -82,6 +82,7 @@ export class OpenRouterProvider extends BaseCliProvider {
     supportsThinking: true,
     // No tool-execution runtime — OpenRouter is a completion API, not an agent.
     supportsToolUse: false,
+    toolExecution: 'none',
     supportsSessions: false,
     supportsAutoInstall: false,
     supportsPromptEnhancement: false,

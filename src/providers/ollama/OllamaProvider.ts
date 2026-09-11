@@ -123,6 +123,7 @@ export class OllamaProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: false,
     supportsToolUse: true,
+    toolExecution: 'proposal-only',
     supportsSessions: false,
     // Flag/reality alignment (Plan 02 Phase 1): attachments are dropped
     // before the request (Plan 00 Batch 3.5 owns wiring real image support).

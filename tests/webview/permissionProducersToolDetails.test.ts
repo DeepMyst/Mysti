@@ -93,8 +93,6 @@ function assertAllProducersSpread(text: string): string[] {
 
 const EXPECTED_PRODUCERS = [
   'constructor',             // blocking native provider requests
-  '_gateSubAgentToolUse',      // legacy @agent sub-agent gate
-  '_handleSendMessageForTurn', // CLI stream gate (covered elsewhere too)
   '_requestCollaboratorPermission', // role, delegation, orchestration and session gates
 ];
 
@@ -122,9 +120,9 @@ describe('tool-use permission producers all send toolInput (static over ChatView
     expect(() => assertAllProducersSpread(mutated)).toThrow(/_requestCollaboratorPermission: permission card does not spread/);
   });
 
-  it('the checker recognises the sub-agent shape (chunk.toolCall) and the stream gate', () => {
+  it('only native and host-owned pre-execution calls remain permission producers', () => {
     const calls = permissionCalls(SRC).filter(c => isToolUseCard(c.args));
     const exprs = new Set(calls.map(c => toolCallExpr(c.args)));
-    expect(exprs).toEqual(new Set(['toolCall', 'chunk.toolCall', 'request.toolCall']));
+    expect(exprs).toEqual(new Set(['toolCall', 'request.toolCall']));
   });
 });

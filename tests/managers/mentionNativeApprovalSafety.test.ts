@@ -72,6 +72,17 @@ describe('mention native approval retry safety', () => {
     expect(chunks).toContainEqual({ type: 'subagent_complete', agentId: 'claude-code', hasError: true });
   });
 
+  it.each(['Write', 'Bash', 'WebFetch', 'Agent'])('does not replay an observed %s that had no native card', async name => {
+    const h = harness();
+    h.pm.defaultStreamFactory = async function* () {
+      yield { type: 'tool_use', toolCall: { id: 'observed', name, input: {}, status: 'running' } };
+      yield { type: 'error', content: 'Backend crashed after the tool notification' };
+    };
+    await h.run();
+    expect(h.pm.sendCalls).toHaveLength(1);
+    expect(h.approve).not.toHaveBeenCalled();
+  });
+
   it.each(['Read', 'Grep', 'Think'])('preserves retry after an approved %s', async name => {
     const h = harness();
     let attempt = 0;
