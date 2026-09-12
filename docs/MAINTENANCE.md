@@ -73,6 +73,11 @@ fake clocks for deadlines, cancellation and delayed callbacks. Preserve exhausti
 parser checks but partition expensive inputs into independent cases. Benchmark
 speed separately before making a performance claim.
 
+The Vitest suite caps concurrent test files at four because native CLI and
+Chromium fixtures also launch child processes. This prevents CPU oversubscription
+from consuming native startup deadlines on developer machines. Individual test
+deadlines and assertions remain unchanged; the cap is not a retry policy.
+
 Warnings remain useful debt signals. Do not suppress lint errors, make a failing
 job advisory, or add retries to get a green result. Fix the cause or document an
 explicitly bounded follow-up with evidence.
