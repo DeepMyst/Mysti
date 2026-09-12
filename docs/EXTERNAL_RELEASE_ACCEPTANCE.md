@@ -1,0 +1,52 @@
+# Remaining external acceptance
+
+Reviewed 2026-09-12. These checks require the exact candidate commit/archive and
+an environment not supplied by the local isolated review. They are release gates,
+not results inferred from unit tests or source presence.
+
+## Hosted CI and editor support
+
+The workflows retain blocking Linux/macOS/Windows source gates, lint, browser
+tests, the Node 18.17.1 bundled-runtime fixture, package shape, and installed-VSIX
+checks on minimum VS Code 1.86.0 and stable Linux. The packaged jobs consume the
+same uploaded archive without rebuilding it. No workflow was weakened.
+
+After the candidate branch is published for review, require its exact-commit
+results: `gates (<OS>)`, `test (<OS>)`, `lint`, `bundled runtime (Node 18.17.1)`,
+`package shape`, `packaged VS Code (1.86.0)`, `packaged VS Code (stable)`, and the
+`VS Code host (<OS>, <version>)` matrix. Inspect repository rules/branch protection
+separately: workflow YAML does not establish that checks are required for merge.
+No branch publication or repository-rule change was performed in this review.
+
+The local minimum-editor macOS SIGTRAP predates extension activation and remains
+unresolved. The standalone reproduction and runtime-only distinction are recorded
+in [maintenance](MAINTENANCE.md). A newer editor pass does not close that issue.
+
+## Installed provider and chat acceptance
+
+Hermes, Kimi and Continue are absent from the reviewed PATH. The previously pinned
+Claude binary is also unavailable at its recorded test location. Account-backed
+checks remain pending for every provider; isolated fake-model proofs are in the
+[approval matrix](APPROVAL_ACCEPTANCE_MATRIX.md).
+
+In disposable workspaces and fresh editor profiles, verify a streamed turn, Stop
+during preparation/execution/approval, two concurrent panels, switching and
+restoring conversations, provider setup failure/recovery, and approval decisions
+with actual effects observed. Save the editor/provider versions, artifact hash,
+requests allowed/denied and final process state. Do not log credentials.
+
+## Desk scope and two-machine acceptance
+
+Pairing, identity, grants and revocation are integrated. The native vocabulary
+publishes only `status` and `locate`; consult/review/assign/handoff/followup are
+excluded. Desk's HTTP transport and remote dispatcher are not connected to the
+production entry points. Cross-machine task execution is therefore unavailable
+in this candidate. The dispatcher's pure import boundary is independently tested;
+it does not prove deployment or connectivity.
+
+The local Desk scope/transport/pairing suite passes 1,284 tests in 17 files.
+A two-machine result has not been produced. Before enabling remote task execution,
+wire the authenticated transport with explicit lifecycle ownership, then test
+pairing both directions, grant expiry/revocation, scope and secret egress checks,
+replay rejection, disconnect/Stop, restart recovery and a real returned result.
+Record which machine executes each step. A local loopback fixture is insufficient.

@@ -1,5 +1,10 @@
 Mysti repository review — 2026-09-08
 
+This is a historical snapshot. For subsequent approval and release findings, see
+[the approval matrix](APPROVAL_ACCEPTANCE_MATRIX.md) and
+[remaining external acceptance](EXTERNAL_RELEASE_ACCEPTANCE.md). The `/panel` catalog
+now describes its implemented independent-answer output; it does not promise synthesis.
+
 Reviewed repository: `/Users/bahaabunojaim/Documents/GitHub/Mysti`, version 0.5.1, branch `feat/plan-20-agent-catalog`, HEAD `ce034f0`. This review covers the working tree, including its existing uncommitted changes. No project source files were edited. Validation regenerated ignored build outputs; review logs are alongside this document.
 
 Mysti is a TypeScript VS Code extension that combines a common interface for 15 AI backends with its own model-driven coordinator, several collaboration workflows, an editable design canvas, context and memory management, and DeepMyst account/tool integration. The current application is substantially larger than the README's older release descriptions suggest: 220 source files, approximately 130,000 source lines, 183 configuration properties, and 30 contributed commands. Those figures describe this checkout, not a verified Marketplace release.

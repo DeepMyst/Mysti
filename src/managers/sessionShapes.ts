@@ -35,7 +35,7 @@ export const SESSION_SHAPES: readonly SessionShapeDef[] = [
     id: 'panel',
     command: '/panel',
     label: '/panel',
-    description: 'each answers alone, then one synthesis',
+    description: 'independent answers, shown together',
     // Three is the floor on purpose: two agents answering independently is a
     // debate with the disagreement hidden, which is the one thing a panel is
     // supposed to surface.

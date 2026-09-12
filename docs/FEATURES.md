@@ -395,3 +395,16 @@ Type `/` in the chat to access slash commands organized by section.
 |---------|---------|-------------|
 | `mysti.permission.timeout` | `30` | Timeout seconds (0 = none) |
 | `mysti.permission.timeoutBehavior` | `"auto-reject"` | Timeout behavior |
+
+
+### Panel sessions
+
+`/panel` asks each selected participant independently and displays their answers
+together. It does not run an additional synthesis model call. Participant failures
+are shown with the partial result. Provider availability and restricted-mode
+support determine which participants can run; see [the approval matrix](APPROVAL_ACCEPTANCE_MATRIX.md).
+
+### Desk availability
+
+Desk pairing, grants and revocation are integrated. Remote task execution is not
+connected in this candidate. See [the execution scope and two-machine acceptance](EXTERNAL_RELEASE_ACCEPTANCE.md#desk-scope-and-two-machine-acceptance).
