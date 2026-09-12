@@ -35,6 +35,13 @@ restoring conversations, provider setup failure/recovery, and approval decisions
 with actual effects observed. Save the editor/provider versions, artifact hash,
 requests allowed/denied and final process state. Do not log credentials.
 
+Local source acceptance now passes 12 real-editor cases on VS Code 1.136.2:
+five loopback-provider chat cases (streaming, Stop, history, concurrent panels
+and HTTP error recovery), plus seven Canvas cases. The editor ran with user-store
+reads/writes and off-machine networking blocked. A disappearing Stop button was
+fixed from this run. This does not exercise authenticated CLI setup or replace
+the exact-archive and minimum-editor/platform gates.
+
 ## Desk scope and two-machine acceptance
 
 Pairing, identity, grants and revocation are integrated. The native vocabulary

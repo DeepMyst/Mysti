@@ -320,6 +320,28 @@ describe('Plan 28 Phase 1 — the trust pill drives everything', () => {
 });
 
 describe('Plan 28 Phase 2 — the composer stays live', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps Stop available after the first streamed token', async () => {
+    const pg = await newPanelPage();
+    try {
+      await pg.evaluate(() => {
+        for (const message of [
+          { type: 'responseStarted', payload: { provider: 'ollama' } },
+          { type: 'responseChunk', payload: { type: 'text', content: 'Still streaming.' } },
+        ]) { window.dispatchEvent(new MessageEvent('message', { data: message })); }
+      });
+      await pg.locator('.message.streaming').waitFor();
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+      expect(await pg.locator('#send-btn').isVisible()).toBe(false);
+      expect(await pg.locator('#message-input').isEnabled()).toBe(true);
+      await pg.locator('#stop-btn').click();
+      expect(await pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string }> }).__posted
+        .some(message => message.type === 'cancelRequest'))).toBe(true);
+      await pg.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'requestCancelled' } })));
+      expect(await pg.locator('#send-btn').isVisible()).toBe(true);
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(false);
+    } finally { await pg.context().close(); }
+  });
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('never disables the input while a turn runs', async () => {
     await startTurn();
     expect(await page!.$eval('#message-input', (e) => (e as HTMLTextAreaElement).disabled)).toBe(false);

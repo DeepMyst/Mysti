@@ -4,6 +4,30 @@ All notable changes to the Mysti extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - Review candidate, unpublished
+
+### Changed
+
+- Native approval transports replace notification-time permission cards on the supported Claude, Codex, OpenClaw and ACP paths. Bounded installed-version checks use isolated local model fixtures; authenticated compatibility remains a release gate.
+- Gemini, Qwen, Cline and OpenCode use isolated ACP sessions with explicit tool restrictions. Copilot is limited to read/search because the reviewed native runtime bypasses approval for some writes and shell operations. OpenCode shell execution is unavailable in this transport.
+- Cursor and Continue reject restricted turns before launch until they have an enforceable native approval path. Their fully unrestricted modes remain available. A tool notification requiring approval stops the turn; the operation may already have executed. This supersedes 0.5.1's process-pause description.
+- Provider capabilities distinguish native execution, proposed tools and no tools. HTTP providers and Cursor replay prompt history. `/panel` is described as independent answers shown together; it does not add a synthesis pass.
+- Desk pairing and grants remain available. Remote task execution is not connected to production entry points and is excluded from this candidate's claims.
+
+### Fixed
+
+- OpenClaw process-group cleanup waits for actual disappearance, including macOS zombie groups that temporarily return EPERM. Failed cleanup retains owned state for diagnosis.
+- Cursor shares the common Stop/replacement lifecycle, passes prompts as literal arguments without a shell, and keeps API keys out of command arguments.
+- Chat keeps Stop visible after the first streamed token. The composer stays in its active-turn state until completion, failure or cancellation, preserving Escape and queued follow-ups during streaming.
+- History clears serialize with appends. Partial journal tails no longer swallow the next valid record, and existing symlinks are refused. Canvas backup restore preserves the primary before replacement and fails if that recovery copy cannot be made.
+- Coordinator budgets have their own per-run owner. Source and browser lint warnings are resolved without relaxing the rules.
+
+Conversation and Canvas schemas remain at version 1. Keep data snapshots and the
+prior archive before downgrade; schema compatibility with every older release is
+not established. Cross-platform hosted CI, minimum-editor acceptance,
+authenticated providers and two-machine Desk checks remain open. This candidate
+has not been published or merged into the original working checkout.
+
 ## [0.5.1] - 2026-09-05
 
 Pre-release channel (odd minor). First publishable build since 0.4.0; everything under 0.4.0's

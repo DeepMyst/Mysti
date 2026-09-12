@@ -42,6 +42,11 @@ not use write mode to make an unexplained integrity failure disappear.
 | Minimum embedded runtime | A production fixture compiles/edits Canvas JSX and exchanges MCP tool messages on Node 18.17.1, independently of newer development Node. The fixture rejects execution on a different Node version. |
 
 `npm run test:vscode` builds the release bundles and opens a fresh editor profile.
+Its loopback Ollama fixture starts before editor activation, avoiding a negative
+startup availability probe. Chat checks exercise streaming, Stop after token one,
+history restoration, concurrent panels and recovery from HTTP errors. The driver
+focuses the native webview before composing so macOS click-to-activate does not
+consume the Send click. The suite never needs a model account.
 The Canvas test inspects the editor's actual nested webview through a loopback
 debugging connection. It uses Zoom In to reach interactive scale before checking
 visible content and editing an input inside the sandboxed artboard; a narrow

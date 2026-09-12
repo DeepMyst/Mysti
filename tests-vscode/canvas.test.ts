@@ -219,8 +219,10 @@ describe('Mysti Canvas — real VS Code host', function () {
     // Re-open so the client re-reports with pages present.
     await vscode.commands.executeCommand('mysti.openCanvas');
     const live = await waitFor(
-      d => d.rendered !== null && d.rendered.pages > 0,
-      'the webview to report a render WITH artboards',
+      // A previous nonempty render can arrive before the newly added page's
+      // report. Wait for the current host count, not any earlier render.
+      d => d.pages > 0 && d.rendered !== null && d.rendered.pages === d.pages,
+      'the webview to report all current artboards',
     );
     assert.ok(live.rendered);
     assert.strictEqual(live.rendered.pages, live.pages, 'painted a different artboard count than the host holds');

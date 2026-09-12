@@ -9897,19 +9897,13 @@
         var streamingEl = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
 
         if (!streamingEl) {
-          // Remove loading indicator and reset button states when first streaming content arrives
+          // The first token replaces the spinner; the request remains active.
           var loading = messagesEl.querySelector('.loading');
           if (loading) { loading.remove(); }
 
-          // Reset loading state and buttons
-          state.isLoading = false;
-          if (sendBtn) {
-            sendBtn.style.display = 'flex';
-            sendBtn.disabled = false;
-          }
-          if (stopBtn) {
-            stopBtn.style.display = 'none';
-          }
+          // Only completion/error/cancel releases processing ownership. Hiding
+          // Stop here made an active HTTP/CLI stream impossible to interrupt
+          // from the button and disabled Escape/queue behavior after token one.
 
           streamingEl = document.createElement('div');
           streamingEl.className = 'message assistant streaming';
