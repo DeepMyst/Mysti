@@ -50,6 +50,7 @@ async function nativeCase(kind: keyof typeof installed, scenario: Scenario) {
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
+  let nativeClosed: Promise<void> | undefined;
   const Provider = kind === 'cline' ? ClineProvider : CopilotProvider;
   class NativeProvider extends Provider {
     protected override async _prepareAcpLaunch(context: AcpNativeLaunchContext) {
@@ -71,6 +72,7 @@ async function nativeCase(kind: keyof typeof installed, scenario: Scenario) {
         + `(deny file-read* (subpath ${literal(os.homedir())}))`
         + `(deny file-write* (require-all (require-not (subpath ${literal(directory)})) (require-not (subpath ${literal(state)})) (require-not (subpath "/dev"))))`;
       const child = spawn('/usr/bin/sandbox-exec', ['-p', sandbox, installed[kind], ...args], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+      nativeClosed = new Promise(resolve => child.once('close', () => resolve()));
       child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-5000); });
       child.stdout.on('data', chunk => { frames = (frames + chunk).slice(-18000); });
       return child;
@@ -101,6 +103,7 @@ async function nativeCase(kind: keyof typeof installed, scenario: Scenario) {
     if (scenario.startsWith('readonly-') || scenario === 'blocked-shell') { expect(cards).toHaveLength(0); }
   } finally {
     provider.dispose(); Object.defineProperty(folder.uri, 'fsPath', { configurable: true, value: previous });
+    if (nativeClosed) { await nativeClosed; }
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await fs.rm(directory, { recursive: true, force: true });
   }
 }

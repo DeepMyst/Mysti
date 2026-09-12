@@ -27,6 +27,8 @@ class FixtureProvider extends AcpNativeProvider {
   readonly events: string[] = [];
   readonly prepared = deferred<AcpNativeLaunchContext>();
   readonly cleanupStarted = deferred<void>();
+  readonly pipeClosePending = deferred<void>();
+  releasePipeClose?: Promise<void>;
   readonly launches: Array<{ path: string; env: NodeJS.ProcessEnv }> = [];
   preparation?: Promise<void>;
   finishCleanup?: Promise<void>;
@@ -68,6 +70,15 @@ class FixtureProvider extends AcpNativeProvider {
   protected override _spawnCliProcess(_args: string[], _cwd: string, env: NodeJS.ProcessEnv, cliPath: string): ChildProcess {
     this.launches.push({ path: cliPath, env }); this.events.push('spawn');
     const child = spawn(process.execPath, [fixture, this.dir, this.scenario], { cwd: this.dir, env: {}, stdio: ['pipe', 'pipe', 'pipe'] });
+    if (this.releasePipeClose) {
+      const emit = child.emit.bind(child);
+      child.emit = (event, ...args) => {
+        if (event !== 'close') { return emit(event, ...args); }
+        this.pipeClosePending.resolve();
+        void this.releasePipeClose!.then(() => emit(event, ...args));
+        return true;
+      };
+    }
     child.once('exit', () => { this.events.push('child-exit'); });
     return child;
   }
@@ -93,6 +104,7 @@ afterEach(async () => {
   for (const provider of providers.splice(0)) { provider.dispose(); if (provider.dir) { await fs.rm(provider.dir, { recursive: true, force: true }); } }
   if (savedEnv === undefined) { delete process.env[envKey]; } else { process.env[envKey] = savedEnv; }
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('shared ACP public provider lifecycle', () => {
@@ -141,6 +153,25 @@ describe('shared ACP public provider lifecycle', () => {
     const chunks = await collect(provider);
     expect(provider.events).toContain('launch-cleanup-end'); expect(provider.events.at(-1)).toBe('done');
     expect(chunks.some(chunk => chunk.type === 'error' && chunk.content === 'Attachment cleanup failed')).toBe(true);
+  });
+
+  it('keeps private state until pipes close after the launcher exits', async () => {
+    const provider = await harness(); const pipes = deferred<void>(); provider.releasePipeClose = pipes.promise;
+    const pending = collect(provider); await provider.pipeClosePending.promise;
+    expect(provider.events).toEqual(['spawn', 'child-exit']);
+    pipes.resolve(); await pending;
+    expect(provider.events).toEqual(['spawn', 'child-exit', 'attachment-cleanup', 'launch-cleanup-start', 'launch-cleanup-end', 'done']);
+  });
+
+  it('reports unverified shutdown and retains private state when pipes never close', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const provider = await harness(); const pipes = deferred<void>(); provider.releasePipeClose = pipes.promise;
+    const pending = collect(provider); await provider.pipeClosePending.promise;
+    await vi.advanceTimersByTimeAsync(5000);
+    const chunks = await pending;
+    expect(chunks.filter(chunk => chunk.type === 'error')).toEqual([expect.objectContaining({ content: expect.stringContaining('private state retained') })]);
+    expect(provider.events).toEqual(['spawn', 'child-exit', 'done']);
+    pipes.resolve();
   });
 
   it('cleans an asynchronously returned launch after Stop without spawning', async () => {

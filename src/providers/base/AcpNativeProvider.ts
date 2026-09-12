@@ -55,6 +55,7 @@ export abstract class AcpNativeProvider extends BaseCliProvider {
     let launch: AcpNativeLaunch | undefined;
     let gitPolicy: AcpGitPolicy | undefined;
     let child: ChildProcess | undefined;
+    let closed: Promise<void> | undefined;
     let client: AcpNativeClient | undefined;
     let attachmentCleanup: (() => Promise<void>) | null = null;
     let killing: Promise<void> | undefined;
@@ -95,6 +96,9 @@ export abstract class AcpNativeProvider extends BaseCliProvider {
       await gitPolicy.assertUnchanged();
       if (!current()) { return; }
       child = this._spawnCliProcess(args, cwd, gitPolicy.applyEnv(launch.env ?? env), launch.cliPath ?? cliPath);
+      // A launcher may exit before its child's inherited pipes close. Register
+      // immediately so cleanup also waits for that final native shutdown.
+      closed = new Promise(resolve => child!.once('close', () => resolve()));
       session.process = child;
       client = new AcpNativeClient({ process: child, providerId: this.id, label: this.displayName,
         panelId: session.panelId, signal, settings: captured, handler, launch, isCurrent: current, terminate });
@@ -117,14 +121,19 @@ export abstract class AcpNativeProvider extends BaseCliProvider {
       if (current()) { (session as AcpSession).lastUsageStats = client.usage ?? null; }
     } finally {
       client?.dispose(); terminate();
-      try { if (killing) { await killing; } }
+      if (killing) { await killing; }
+      if (closed) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`${this.displayName} native process did not close after termination; private state retained.`)), 5000);
+          void closed!.then(() => { clearTimeout(timer); resolve(); });
+        });
+      }
+      // Retain all private state if shutdown could not be verified above.
+      if (session.process === child) { session.process = null; }
+      try { await attachmentCleanup?.(); }
       finally {
-        if (session.process === child) { session.process = null; }
-        try { await attachmentCleanup?.(); }
-        finally {
-          try { await launch?.cleanup?.(); }
-          finally { await gitPolicy?.cleanup(); }
-        }
+        try { await launch?.cleanup?.(); }
+        finally { await gitPolicy?.cleanup(); }
       }
     }
   }
