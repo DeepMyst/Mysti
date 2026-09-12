@@ -267,7 +267,8 @@ Or set `CURSOR_API_KEY` environment variable.
 
 - **Auto Model Selection**: The "Auto" model intelligently picks the best model for each task
 - **Execution limits**: Available only for `default` or `edit-automatically` with `full-access`. All approval-required and read-only turns are rejected before launch; streamed tool events cannot enforce approval. Prompt enhancement is unavailable. See [restricted transports](RESTRICTED_TRANSPORTS.md).
-- **Tool Use Detection**: Detects and displays tool usage (bash, file read/write, grep, etc.)
+- **Tool Use Detection**: Displays native tool notifications; they are not permission requests.
+- **Conversation history**: Replayed in each prompt, with shared per-turn Stop and replacement ownership.
 
 ### Settings
 

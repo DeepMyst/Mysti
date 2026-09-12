@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { setTimeout as realDelay } from 'node:timers/promises';
+import * as ownedGroups from '../../../src/providers/openclaw/OwnedProcessGroup';
 import { getEnrichedEnv, resetPlatformCache } from '../../../src/utils/platform';
 import { buildOpenClawManagedConfig, OpenClawManagedRuntime, type OpenClawManagedRuntimeOptions,
   type OpenClawManagedRuntimeHandle } from '../../../src/providers/openclaw/OpenClawManagedRuntime';
@@ -234,6 +235,15 @@ describe.skipIf(process.platform === 'win32')('OpenClaw managed runtime owned pr
     expect(records).toHaveLength(mode === 'invalid-config' ? 1 : 2);
     expect(await fs.readdir(options.storageDir)).toEqual([]);
     records.forEach(record => expect(() => process.kill(record.pid, 0)).toThrow());
+  });
+
+  it('retains private state and rejects startup when group cleanup cannot be confirmed', async () => {
+    const { options } = await fixture('invalid-config');
+    const cleanup = vi.spyOn(ownedGroups, 'terminateOwnedProcessGroup').mockRejectedValue(new Error('inaccessible owned group'));
+    try {
+      await expect(OpenClawManagedRuntime.start(options)).rejects.toThrow(/cleanup failed/);
+      expect(await fs.readdir(options.storageDir)).toHaveLength(1);
+    } finally { cleanup.mockRestore(); }
   });
 
   it('bounds silent startup and reaps its process', async () => {

@@ -15,13 +15,12 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from "../base/BaseCliProvider";
+import { spawn, type ChildProcess } from "child_process";
+import { BaseCliProvider, type PanelSessionState } from "../base/BaseCliProvider";
 import { requireUnrestrictedLegacyTransport } from "../base/NativeApprovalPolicy";
 import { validateModelName } from "../../utils/validation";
 import { normalizeToolName, toolKind } from "../../utils/toolNames";
 import { getEnrichedEnv } from "../../utils/platform";
-import { killProcessTree, isProcessLive } from "../../utils/processKill";
-import { PROCESS_KILL_GRACE_PERIOD_MS } from "../../constants";
 import type {
 	CliDiscoveryResult,
 	AuthConfig,
@@ -32,9 +31,6 @@ import type {
 	StreamChunk,
 	ProviderConfig,
 	AuthStatus,
-	ContextItem,
-	Conversation,
-	AgentConfiguration,
 	ModelInfo,
 } from "../../types";
 
@@ -114,14 +110,14 @@ export class CursorProvider extends BaseCliProvider {
 		supportsStreaming: true,
 		supportsThinking: false,
 		supportsToolUse: true,
-		supportsSessions: false,
+		supportsSessions: true,
 		supportsAutoInstall: false,
 		supportsPromptEnhancement: false,
 		// Plan 02 Phase 1 capability matrix
 		thinkingStyle: 'none',
 		thinkingLevelEffective: false,
 		planMode: 'none',
-		sessionKind: 'none',  // stateless: history discarded, fabricated session IDs (F7/B8)
+		sessionKind: 'prompt-history',
 		emitsToolResults: true,
 		emitsUsage: true,
 		usageConvention: 'none',   // cursor-agent reports flat input/output only.
@@ -332,6 +328,10 @@ export class CursorProvider extends BaseCliProvider {
 
 	protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
 		requireUnrestrictedLegacyTransport(settings, this.displayName);
+		const session = _session as CursorSessionState;
+		session.activeToolCalls.clear();
+		session.lastUsageStats = null;
+		session.streamedTextLength = 0;
 		const args: string[] = [
 			"--output-format",
 			"stream-json",
@@ -645,139 +645,29 @@ export class CursorProvider extends BaseCliProvider {
 		return usage;
 	}
 
-	/**
-	 * Override sendMessage to pass prompt via -p flag (not stdin)
-	 * Cursor CLI uses: agent -p "prompt" [flags]
-	 */
-	async *sendMessage(
-		content: string,
-		context: ContextItem[],
-		settings: Settings,
-		_conversation: Conversation | null,
-		persona?: import("../base/IProvider").PersonaConfig,
-		panelId?: string,
-		providerManager?: unknown,
-		agentConfig?: AgentConfiguration,
-	): AsyncGenerator<StreamChunk> {
-		settings = Object.freeze({ ...settings });
-		try {
-			requireUnrestrictedLegacyTransport(settings, this.displayName);
-		} catch (error) {
-			yield this.handleError(error);
-			yield { type: 'done' };
-			return;
-		}
-		const session = this._getSession(panelId) as CursorSessionState;
-		const cliPath = this.getCliPath();
-		const baseArgs = this.buildCliArgs(settings, session);
+	protected async _validateNativeApprovalCli(_session: PanelSessionState, settings: Readonly<Settings>): Promise<void> {
+		requireUnrestrictedLegacyTransport(settings, this.displayName);
+	}
 
-		// Build prompt (without conversation history — Cursor manages its own context)
-		const fullPrompt = await this.buildPromptAsync(
-			content,
-			context,
-			null,
-			settings,
-			persona,
-			agentConfig,
-			undefined,
-			session.channelSystemContext,
-		);
+	/** Cursor needs an argv prompt; the base owns preparation, Stop and supersession. */
+	protected async _preparePromptBeforeSpawn(fullPrompt: string, args: string[]): Promise<() => Promise<void>> {
+		args.push("-p", `Mysti user request:\n\n${fullPrompt}`);
+		return async () => {};
+	}
 
-		// Pass prompt via -p flag
-		const args = [...baseArgs, "-p", fullPrompt];
+	protected getExtraSpawnEnv(_settings: Settings): Record<string, string> {
+		const key = this._resolveApiKey();
+		return key ? { CURSOR_API_KEY: key } : {};
+	}
 
-		// Declare outside try so finally block can access for cleanup
-		const stderrRef = { output: "" };
-		const stderrHandler = (data: Buffer) => {
-			const text = data.toString();
-			stderrRef.output += text;
-			console.log("[Mysti] Cursor stderr:", text);
-		};
+	protected _spawnCliProcess(args: string[], cwd: string, env: NodeJS.ProcessEnv, cliPath = this.getCliPath()): ChildProcess {
+		// User prose is one literal argv value, never a shell program. Windows
+		// therefore requires Cursor's executable rather than a cmd/bat wrapper.
+		return spawn(cliPath, args, { cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+	}
 
-		try {
-			const workspaceFolders = (await import("vscode")).workspace
-				.workspaceFolders;
-			const cwd = workspaceFolders
-				? workspaceFolders[0].uri.fsPath
-				: process.cwd();
-
-			console.log("[Mysti] Cursor: Starting CLI at:", cliPath);
-			console.log("[Mysti] Cursor: Working directory:", cwd);
-
-			const { spawn } = await import("child_process");
-			const envExtra: Record<string, string | undefined> = {};
-			const resolvedKey = this._resolveApiKey();
-			if (resolvedKey) {
-				// Plan 18 (2.4 audit): env only — the key on argv was visible to any
-				// local user via `ps`. CURSOR_API_KEY is the documented channel.
-				envExtra.CURSOR_API_KEY = resolvedKey;
-			}
-
-			session.process = spawn(cliPath, args, {
-				cwd,
-				env: getEnrichedEnv(envExtra),
-				stdio: ["ignore", "pipe", "pipe"],
-			});
-
-			// Plan 18 (2.4 audit): early error listener — an async spawn failure
-			// otherwise emits an unhandled 'error' event before waitForProcess
-			// attaches its own listener.
-			session.process.on("error", (err) => {
-				console.error("[Mysti] Cursor: Spawn error:", err);
-				stderrRef.output += `\nspawn error: ${err.message}`;
-			});
-
-			// Register process for per-panel cancellation
-			if (
-				panelId &&
-				providerManager &&
-				typeof (providerManager as ProcessTracker).registerProcess === "function"
-			) {
-				(providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
-			}
-
-			// Capture stderr for error reporting
-			if (session.process.stderr) {
-				session.process.stderr.on("data", stderrHandler);
-			}
-
-			// Emit session_active so the webview shows the session indicator
-			if (!session.sessionId) {
-				session.sessionId = `cursor-${panelId || 'default'}-${Date.now()}`;
-			}
-			yield { type: 'session_active' as const, sessionId: session.sessionId };
-
-			// Process streaming output
-			yield* this.processStream(stderrRef, session);
-
-			// Yield done with usage stats
-			const storedUsage = this.getStoredUsage(panelId);
-			yield storedUsage
-				? { type: "done", usage: storedUsage }
-				: { type: "done" };
-			console.log("[Mysti] Cursor: Stream complete");
-		} catch (error) {
-			yield this.handleError(error);
-			yield { type: "done" };
-		} finally {
-			// Plan 18 (2.4 audit): liveness-gated tree kill with SIGKILL escalation —
-			// the old `.killed` guard skipped a signalled-but-alive CLI, and a bare
-			// SIGTERM orphaned cursor-agent's own children mid-tool-run.
-			if (isProcessLive(session.process)) {
-				if (session.process!.stderr) {
-					session.process!.stderr.removeListener("data", stderrHandler);
-				}
-				void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
-			}
-			session.process = null;
-			if (
-				panelId &&
-				providerManager &&
-				typeof (providerManager as ProcessTracker).clearProcess === "function"
-			) {
-				(providerManager as ProcessTracker).clearProcess(panelId);
-			}
-		}
+	protected async _deliverPrompt(proc: ChildProcess): Promise<void> {
+		proc.stdin?.end();
 	}
 
 	// Private helpers

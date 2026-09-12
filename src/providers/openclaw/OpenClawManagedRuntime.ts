@@ -1,4 +1,5 @@
 /** Mysti — SPDX-License-Identifier: Apache-2.0 */
+import { terminateOwnedProcessGroup } from './OwnedProcessGroup';
 import { spawn, type ChildProcess } from 'child_process';
 import { randomBytes } from 'crypto';
 import * as fs from 'fs/promises';
@@ -244,13 +245,18 @@ export class OpenClawManagedRuntime {
     const controller = new AbortController();
     const children = new Set<ChildProcess>();
     const cleanupErrors: unknown[] = [];
-    const killRemainingGroup = (child: ChildProcess): void => {
-      if (process.platform === 'win32' || typeof child.pid !== 'number') { return; }
-      // Every child here was spawned detached, so its PID owns this group.
-      // The leader may already be reaped while an approved command remains live.
-      try { process.kill(-child.pid, 'SIGKILL'); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') { cleanupErrors.push(error); }
-      }
+    const groupCleanup = new Map<ChildProcess, Promise<void>>();
+    const retireGroup = (child: ChildProcess): Promise<void> => {
+      const existing = groupCleanup.get(child);
+      if (existing) { return existing; }
+      const cleanup = (async () => {
+        try {
+          if (typeof child.pid === 'number') { await terminateOwnedProcessGroup(child.pid); }
+        } catch (error) { cleanupErrors.push(error); }
+        finally { children.delete(child); }
+      })();
+      groupCleanup.set(child, cleanup);
+      return cleanup;
     };
     let ready = false;
     let disposal: Promise<void> | undefined;
@@ -261,12 +267,12 @@ export class OpenClawManagedRuntime {
       disposal = (async () => {
         await Promise.all([...children].map(async child => {
           await killProcessTree(child, 1000, { useProcessGroup: process.platform !== 'win32' });
-          // killProcessTree resolves when the leader exits, or immediately after
-          // escalation. Its leader liveness check cannot establish group liveness.
-          if (children.has(child)) { killRemainingGroup(child); }
+          // The leader may be exiting while its group still exists. Share the
+          // exit listener's cleanup and wait for actual group disappearance.
+          await retireGroup(child);
         }));
-        await fs.rm(runDir, { recursive: true, force: true });
         if (cleanupErrors.length > 0) { throw new Error('OpenClaw owned process group cleanup failed', { cause: cleanupErrors[0] }); }
+        await fs.rm(runDir, { recursive: true, force: true });
       })();
       return disposal;
     };
@@ -287,9 +293,11 @@ export class OpenClawManagedRuntime {
       const completed = new Promise<void>((resolve, reject) => {
         child.once('error', () => { children.delete(child); reject(new Error('OpenClaw managed CLI could not start')); });
         child.once('exit', (code, signal) => {
-          killRemainingGroup(child);
-          children.delete(child);
-          if (code === 0) { resolve(); } else { reject(new Error(`OpenClaw managed CLI exited (${code ?? signal ?? 'unknown'})`)); }
+          void retireGroup(child).then(() => {
+            if (cleanupErrors.length > 0) { reject(new Error('OpenClaw owned process group cleanup failed', { cause: cleanupErrors[0] })); }
+            else if (code === 0) { resolve(); }
+            else { reject(new Error(`OpenClaw managed CLI exited (${code ?? signal ?? 'unknown'})`)); }
+          });
         });
       });
       // A gateway may exit while readiness is awaiting a socket; always observe it.
@@ -310,6 +318,8 @@ export class OpenClawManagedRuntime {
       const gateway = run(['gateway', 'run', '--port', String(port), '--bind', 'loopback', '--auth', 'token', '--tailscale', 'off'], env);
       const gatewayUrl = `ws://127.0.0.1:${port}`;
       let exited = false;
+      gateway.child.once('exit', () => { exited = true; });
+      gateway.child.once('error', () => { exited = true; });
       void gateway.completed.then(() => { exited = true; }, () => { exited = true; });
       while (Date.now() < deadline) {
         assertActive(controller.signal);

@@ -104,3 +104,24 @@ installation; `MYSTI_TEST_OPENCLAW_ROOT` selects its path. A fixture that skips
 because that installation is absent is not native execution evidence. Local
 fake-model checks do not replace authenticated account/provider testing or
 cross-platform editor acceptance.
+
+
+## Owned process cleanup (2026-09-12)
+
+Cleanup now waits for the process group to disappear before removing its private
+state. A successful SIGKILL is only a termination attempt. `ESRCH` confirms group
+absence; a persistent live/inaccessible group fails the bounded cleanup and keeps
+the private state for diagnosis. Exit and disposal share one cleanup operation.
+
+An inert local C probe reproduced the macOS failure: a same-user detached child
+exited, group signalling returned `EPERM` while it remained a zombie, and returned
+`ESRCH` after its parent reaped it. Apple's
+[killpg1 implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c)
+excludes zombies during group iteration and can return EPERM when the group exists
+but no eligible member is found. This explains why treating every intermediate
+EPERM as a permanent cleanup failure was incorrect. The implementation still
+requires confirmed absence; it does not suppress failures for surviving groups.
+
+Regression coverage includes transient and persistent EPERM, no signals after
+confirmed absence, retention of state on failed cleanup, and actual descendants
+that ignore SIGTERM and must not produce delayed effects after Stop/gateway crash.

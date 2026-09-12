@@ -14,7 +14,7 @@ for permission. Authenticated editor acceptance remains separate.
 | Cline | 3.0.61 actual command/write, denial, read-only and Stop through public send | Saved-login, images, usage and broader native tools unavailable. |
 | Copilot | 1.0.83 public read/search; forced shell/write rejected | Writable approval failed native tests; read/search only. Reads do not open host cards. |
 | OpenCode | 1.18.29 public and native read/edit/fetch policies, denial, restricted modes, Stop | Shell/delegation removed from native executable tool map. |
-| OpenClaw | 2026.6.34 actual stock read/write/edit/foreground exec; admission, denial, read-only, Stop, disconnect and gateway-crash descendant cleanup | Recurrent macOS group-cleanup EPERM remains under investigation; authenticated/editor and Windows acceptance pending. |
+| OpenClaw | 2026.6.34 actual stock read/write/edit/foreground exec; admission, denial, read-only, Stop, disconnect and gateway-crash descendant cleanup | macOS zombie-group EPERM is now handled by waiting for confirmed group absence; authenticated/editor and Windows acceptance pending. |
 | Hermes, Kimi | Protocol fixture side effects occur only after a matching native allow; scoped routing, denial/cancel, concurrency, late answers and retry ownership | Neither CLI is installed. Native policy completeness and authenticated acceptance unverified. |
 | Cursor, Continue | Every restricted mode/access combination rejected before discovery/prompt preparation | Restricted functionality unavailable. Continue is not installed; no native execution proof claimed. |
 | Ollama, LocalAI | Proposal reporting and stream fixtures | Proposals are never locally executed by these providers. |
@@ -23,8 +23,8 @@ for permission. Authenticated editor acceptance remains separate.
 The item-8 checkpoint ran 14 test files: 158 tests passed, one test/file skipped
 (the unavailable Claude binary). The individual native cases include several
 operations within one test. Evidence is retained in
-`out-test/release-evidence/item8-native-matrix.log`. This pass does not erase
-previous OpenClaw cleanup failures or establish authenticated acceptance.
+`out-test/release-evidence/item8-native-matrix.log`. This checkpoint preceded the documented OpenClaw group-cleanup correction.
+It does not establish authenticated acceptance.
 
 Delegation coverage includes actual denial of unsupported native delegation,
 plus Mysti child-run protocol fixtures covering captured parent authority,
