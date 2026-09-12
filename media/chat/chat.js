@@ -14140,5 +14140,8 @@
           console.error('Failed to expand edit report diff:', e);
         }
       }
+      // The host can finish discovery before this document has loaded. Ask
+      // for initial state only after all message/UI handlers are registered.
+      postMessageWithPanelId({ type: 'chatReady' });
     })();
   

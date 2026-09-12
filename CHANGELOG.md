@@ -20,6 +20,7 @@ All notable changes to the Mysti extension will be documented in this file.
 - ACP cleanup waits for the native process and its inherited pipes to close before removing private state. Unverified shutdown reports an error and retains the state.
 - Cursor shares the common Stop/replacement lifecycle, passes prompts as literal arguments without a shell, and keeps API keys out of command arguments.
 - Chat keeps Stop visible after the first streamed token. The composer stays in its active-turn state until completion, failure or cancellation, preserving Escape and queued follow-ups during streaming.
+- Chat requests initial state after its message listener is ready, preventing a fast host from losing the first state update during sidebar or tab startup.
 - History clears serialize with appends. Partial journal tails no longer swallow the next valid record, and existing symlinks are refused. Canvas backup restore preserves the primary before replacement and fails if that recovery copy cannot be made.
 - Coordinator budgets have their own per-run owner. Source and browser lint warnings are resolved without relaxing the rules.
 

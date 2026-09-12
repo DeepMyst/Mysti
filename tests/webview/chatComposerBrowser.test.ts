@@ -70,7 +70,7 @@ function bootPayload(): Record<string, unknown> {
   return boot;
 }
 
-function composeHtml(): string {
+function composeHtml(replyOnReady = false): string {
   let html = read('media/chat/index.html');
   // CSP is another suite's subject; strip it so inline injection is not the
   // thing under test here.
@@ -105,7 +105,18 @@ function composeHtml(): string {
     window.__posted = [];
     window.acquireVsCodeApi = function () {
       return {
-        postMessage: function (m) { window.__posted.push(m); },
+        postMessage: function (m) {
+          window.__posted.push(m);
+          if (${replyOnReady} && m.type === 'chatReady') {
+            window.dispatchEvent(new MessageEvent('message', { data: {
+              type: 'initialState', payload: {
+                panelId: 'ready-fixture',
+                settings: { provider: 'ollama', model: '', mode: 'ask-before-edit', thinkingLevel: 'none', effortLevel: 'high', accessLevel: 'ask-permission', contextMode: 'auto', autonomousMode: false },
+                messages: [], context: [], conversations: []
+              }
+            } }));
+          }
+        },
         getState: function () { return undefined; },
         setState: function () {}
       };
@@ -230,6 +241,20 @@ afterAll(async () => {
 });
 
 describe('chat webview boots', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('receives an immediate host reply only after its readiness handshake', async () => {
+    const pg = await browser!.newPage(); const errors: string[] = [];
+    pg.on('pageerror', error => errors.push(String(error)));
+    try {
+      const file = path.join(tmpDir!, 'ready-handshake.html');
+      fs.writeFileSync(file, composeHtml(true));
+      await pg.goto(`file://${file}`, { waitUntil: 'load' });
+      await pg.waitForSelector('#init-loading-overlay.hidden', { state: 'attached' });
+      // This minimal reply has no display-name manifest, so the UI uses the ID.
+      expect(await pg.locator('#agent-name').innerText()).toBe('ollama');
+      expect(await pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string }> }).__posted.filter(message => message.type === 'chatReady'))).toHaveLength(1);
+      expect(errors).toEqual([]);
+    } finally { await pg.close(); }
+  }, 20000);
   it.skipIf(CHROMIUM_UNAVAILABLE)('shows the actual timeout denial when a forced card overrides auto-accept', async () => {
     const pg = await newPanelPage();
     try {

@@ -181,4 +181,14 @@ describe('chat question integration', () => {
     await h.provider._receivePanelMessage({ type: 'ready', panelId: null } as unknown as WebviewMessage, 'other', h.otherWebview);
     expect(dispatch).toHaveBeenCalledWith({ type: 'ready', panelId: 'other' });
   });
+
+  it('initializes only the sending live webview after its readiness handshake', async () => {
+    const h = harness(); const initialize = vi.fn(async () => undefined);
+    Object.assign(h.provider, { _sendInitialState: initialize });
+    await h.provider._receivePanelMessage({ type: 'chatReady', panelId: 'panel' }, 'other', h.otherWebview);
+    expect(initialize).toHaveBeenCalledExactlyOnceWith('other');
+    await h.provider._receivePanelMessage({ type: 'chatReady' }, 'other', h.webview);
+    await h.provider._receivePanelMessage({ type: 'chatReady' }, 'gone', h.webview);
+    expect(initialize).toHaveBeenCalledTimes(1);
+  });
 });

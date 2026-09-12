@@ -45,7 +45,18 @@ describe('Mysti Chat — real VS Code host and loopback provider', function () {
     await frame.locator('#init-loading-overlay').waitFor({ state: 'hidden' });
     // The fresh profile selects Ollama. Wait for the host's initial state;
     // opening a menu during that update races its intentional re-render.
-    await until(async () => (await frame.locator('#agent-name').innerText()).includes('Ollama'), 'The configured Ollama selection did not reach the webview');
+    try {
+      await until(async () => (await frame.locator('#agent-name').innerText()).includes('Ollama'), 'The configured Ollama selection did not reach the webview');
+    } catch (error) {
+      console.log('[Mysti chat setup failure]', await frame.evaluate(() => ({
+        agent: document.getElementById('agent-name')?.textContent,
+        provider: (document.getElementById('provider-select') as HTMLSelectElement)?.value,
+        trace: (window as unknown as { __mystiAcceptanceTrace?: unknown[] }).__mystiAcceptanceTrace?.slice(-30),
+        messages: document.getElementById('messages')?.textContent?.slice(-1500),
+        overlay: document.getElementById('init-loading-overlay')?.outerHTML,
+      })));
+      throw error;
+    }
   }
 
   async function send(frame: Frame, marker: string): Promise<RequestRecord> {

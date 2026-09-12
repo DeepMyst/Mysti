@@ -1121,7 +1121,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
 
     const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
-    webviewView.webview.html = getWebviewContent(webviewView.webview, this._extensionUri, version);
 
     // Register sidebar in panel states
     const currentConversation = this._conversationManager.getCurrentConversation();
@@ -1136,6 +1135,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage(async (message: unknown) => {
       await this._receivePanelMessage(message, this._sidebarId, webviewView.webview);
     });
+    // Bind routing before loading HTML. The document requests initial state
+    // only after its own message listener and UI handlers are ready.
+    webviewView.webview.html = getWebviewContent(webviewView.webview, this._extensionUri, version);
 
     // review[25]: the sidebar WebviewView can be disposed (dragged to another
     // container, host recycle). Without this hook the stale _panelStates entry
@@ -1158,9 +1160,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._pendingPlanSelections.delete(this._sidebarId);
       }
     });
-
-    // Send initial state with panelId
-    this._sendInitialState(this._sidebarId);
 
     // Pre-spawn persistent process so first message is instant
     this._tryPreSpawnPersistentProcess(this._sidebarId);
@@ -1492,6 +1491,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       msg.panelId = this._sidebarId;
     }
     switch (msg.type) {
+      case 'chatReady':
+        await this._sendInitialState(msg.panelId);
+        break;
+
       case 'sendMessage':
         await this._handleSendMessage(
           msg.payload as {
@@ -12926,7 +12929,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
 
     const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
-    panel.webview.html = getWebviewContent(panel.webview, this._extensionUri, version);
 
     // Create a new conversation for this panel
     const newConversation = this._conversationManager.createNewConversation();
@@ -12946,6 +12948,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this._receivePanelMessage(message, panelId, panel.webview);
       }
     );
+    panel.webview.html = getWebviewContent(panel.webview, this._extensionUri, version);
 
     // Cleanup on dispose
     panel.onDidDispose(() => {
@@ -13015,9 +13018,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._mystiRunGen.delete(panelId);
       this._mystiAbortControllers.delete(panelId);
     });
-
-    // Send initial state with the new conversation
-    this._sendInitialState(panelId);
 
     // Pre-spawn persistent process so first message is instant
     this._tryPreSpawnPersistentProcess(panelId);
