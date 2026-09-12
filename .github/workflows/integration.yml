@@ -1,8 +1,8 @@
 name: integration
 
 on:
+  # Run the exact pushed candidate as well as GitHub's PR merge commit.
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 

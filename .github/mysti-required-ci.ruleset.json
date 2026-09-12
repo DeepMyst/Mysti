@@ -1,0 +1,38 @@
+{
+  "name": "Mysti required CI",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/main"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "gates (ubuntu-latest)", "integration_id": 15368 },
+          { "context": "gates (macos-latest)", "integration_id": 15368 },
+          { "context": "gates (windows-latest)", "integration_id": 15368 },
+          { "context": "test (ubuntu-latest)", "integration_id": 15368 },
+          { "context": "test (macos-latest)", "integration_id": 15368 },
+          { "context": "test (windows-latest)", "integration_id": 15368 },
+          { "context": "lint", "integration_id": 15368 },
+          { "context": "bundled runtime (Node 18.17.1)", "integration_id": 15368 },
+          { "context": "package shape", "integration_id": 15368 },
+          { "context": "packaged VS Code (1.86.0)", "integration_id": 15368 },
+          { "context": "packaged VS Code (stable)", "integration_id": 15368 },
+          { "context": "VS Code host (ubuntu-latest, stable)", "integration_id": 15368 },
+          { "context": "VS Code host (macos-latest, stable)", "integration_id": 15368 },
+          { "context": "VS Code host (windows-latest, stable)", "integration_id": 15368 },
+          { "context": "VS Code host (ubuntu-latest, 1.86.0)", "integration_id": 15368 }
+        ]
+      }
+    }
+  ]
+}

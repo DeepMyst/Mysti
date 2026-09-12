@@ -18,6 +18,13 @@ results: `gates (<OS>)`, `test (<OS>)`, `lint`, `bundled runtime (Node 18.17.1)`
 separately: workflow YAML does not establish that checks are required for merge.
 No branch publication or repository-rule change was performed in this review.
 
+The 2026-09-12 remote inspection confirmed that `main` is unprotected, no active
+rules apply to it, and the candidate has no hosted runs. The only repository
+ruleset is disabled. The integration workflow now also runs on candidate pushes
+so the source editor matrix can test the exact branch commit before integration.
+The [hosted CI procedure](HOSTED_CI_ACCEPTANCE.md) records the findings, the 15
+required check names and a prepared, unapplied repository ruleset.
+
 The local minimum-editor macOS SIGTRAP predates extension activation and remains
 unresolved. The standalone reproduction and runtime-only distinction are recorded
 in [maintenance](MAINTENANCE.md). A newer editor pass does not close that issue.
