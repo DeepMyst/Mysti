@@ -206,9 +206,9 @@ describe('ConversationManager.importFromShareable — deep-link payload hardenin
   it('refuses a deflate bomb instead of inflating it into memory', () => {
     const { context } = createMockContext();
     const manager = new ConversationManager(context);
-    // 64 MB of JSON deflates to well under 100 KB — a URI-sized payload that
-    // would otherwise be inflated in full before a single field is checked.
-    const bomb = encode({ t: 'Shared', m: [{ r: 'u', c: 'a'.repeat(64 * 1024 * 1024) }] });
+    // 2 MiB exceeds the 1 MiB inflated-input contract while compressing below
+    // the URI cap. Larger allocations only add fixture construction cost.
+    const bomb = encode({ t: 'Shared', m: [{ r: 'u', c: 'a'.repeat(2 * 1024 * 1024) }] });
     expect(bomb.length).toBeLessThan(100 * 1024);
 
     let result: unknown = 'unset';
