@@ -237,12 +237,12 @@ them in reviewable feature increments with these acceptance criteria:
 
 | Increment | Completion criteria |
 | --- | --- |
-| Extract coordinator run orchestration | Model stream orchestration now lives in `CoordinatorTurnRunner` with explicit ports and abandonment tests; permission/tool dispatch and whole-run budgets still need a separate run service. |
+| Extract coordinator run orchestration | Model streams live in `CoordinatorTurnRunner`; `CoordinatorRunBudget` now owns immutable settings snapshots, separate tool/delegation counters and batch reservations. Permission and tool dispatch still need a separate run service. |
 | Extract Canvas host integration | Canvas session ownership, tool dispatch and view lifecycle have narrow ports; all browser and real-editor Canvas tests continue to pass. |
 | Split the chat renderer | Markdown/diagrams and sub-agent cards are extracted behind explicit ports with browser/CSP coverage. Continue with cohesive message/timeline features while preserving the existing state contract. |
 | Consolidate remaining interaction state | Questions, native approval cards, pending plans and queued continuations have explicit owners. Move remaining host-owned interaction lifecycles into independently testable services as they change. |
 | Validate native provider contracts | Hermes/Kimi have blocking ACP approval paths with transport and host tests. Remaining adapters need equivalent native enforcement and recorded live smoke results for approval timing and process termination. |
-| Strengthen persistence evolution | Migration fixtures cover supported old schemas, partial/corrupt writes and downgrade preservation; backups can actually be restored. |
+| Strengthen persistence evolution | Migration and corruption fixtures, ordered journal mutations, and backup restore failure paths pass. See [recovery and downgrade guidance](PERSISTENCE_RECOVERY.md); real-profile downgrade acceptance remains open. |
 
 Keep these criteria current as work lands. Avoid broad rewrites that change
 transport behavior, persistence and UI state simultaneously.

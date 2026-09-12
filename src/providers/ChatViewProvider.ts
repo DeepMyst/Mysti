@@ -45,6 +45,7 @@ import { isSafeAgentId } from '../managers/agentMarkdown';
 import { SKILL_STAGING_DIR } from '../services/MystiLocalTools';
 import { parseToolArgs } from '../utils/toolCallAccumulator';
 import { CoordinatorTurnRunner } from '../coordinator/CoordinatorTurnRunner';
+import { CoordinatorRunBudget, resolveCoordinatorRunLimits, READ_ONLY_BATCH_CONCURRENCY } from '../coordinator/CoordinatorRunBudget';
 import { runBounded } from '../utils/boundedConcurrency';
 import { selectToolBatch } from '../utils/toolBatching';
 import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
@@ -8490,64 +8491,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Delegation governor default: max sub-agent dispatches per Mysti run. */
-  private static readonly _MYSTI_MAX_DELEGATIONS = 4;
-  /**
-   * Turn governor default: the HARD cap on coordinator model streams per run
-   * (review [6]). Each loop iteration is one stream (a delegation result, a
-   * local-tool result, or a length-continue each start a new one), so this is
-   * generous enough to accommodate the delegation + local-tool sub-budgets plus
-   * a finalize stream — lower it to cap spend more tightly.
-   */
-  private static readonly _MYSTI_MAX_TURNS = 24;
-  /** Local read-only tool calls per run (read/ls/grep/diag) — cheap, capped separately. */
-  private static readonly _MYSTI_MAX_LOCAL_TOOLS = 20;
-  /** Local EXECUTION ops per run (write/edit) — heavier + gated, capped tighter (Plan 19). */
-  private static readonly _MYSTI_MAX_LOCAL_EXEC = 12;
-  /** External MCP tool calls per run (Plan 19 Phase 6) — gated network side effects, capped tight. */
-  private static readonly _MYSTI_MAX_MCP_CALLS = 6;
-  /**
-   * Plan 22: per-run canvas edit cap. Deliberately generous and separate from
-   * the delegation/exec budgets — canvas ops are local, invertible and touch
-   * only `.mysti/canvas/`, and a six-artboard design is legitimately dozens of
-   * edits. This bounds a runaway edit loop, nothing else.
-   */
-  private static readonly _MYSTI_MAX_CANVAS_CALLS = 60;
-  /** Default visual looks per coordinator run (effort-scaled in _mystiGovernors). */
-  private static readonly _MYSTI_MAX_VISUAL_LOOKS = 6;
-
-  /**
-   * Bounded concurrency for a native parallel-tool-call batch of READ-ONLY local
-   * tools (Plan 19 Phase 5) — matches CollaboratorPool's cap 3. Only read-only
-   * tools batch (no gate, no write race, no interactive-card collision); every
-   * mutating/gated op stays on the serial one-at-a-time path.
-   */
-  private static readonly _MYSTI_READONLY_BATCH_CONCURRENCY = 3;
-
-  /**
-   * Resolve the run governors: settings-backed and effort-scaled (high effort
-   * doubles the budget — a deep task earns a deeper loop). Plan 17 P0.5.
-   */
-  private _mystiGovernors(settings: Settings): { maxDelegations: number; maxTurns: number; maxLocalTools: number; maxLocalExec: number; maxMcpCalls: number; maxVisualLooks: number } {
+  private _mystiGovernors(settings: Settings) {
     const cfg = vscode.workspace.getConfiguration('mysti');
-    const clampInt = (v: unknown, def: number, lo: number, hi: number): number => {
-      const n = typeof v === 'number' && Number.isFinite(v) ? Math.floor(v) : def;
-      return Math.min(hi, Math.max(lo, n));
-    };
-    const scale = settings.effortLevel === 'high' ? 2 : 1;
-    return {
-      maxDelegations: clampInt(cfg.get('mysti.maxDelegations'), ChatViewProvider._MYSTI_MAX_DELEGATIONS, 1, 16) * scale,
-      maxTurns: clampInt(cfg.get('mysti.maxTurns'), ChatViewProvider._MYSTI_MAX_TURNS, 2, 64) * scale,
-      maxLocalTools: ChatViewProvider._MYSTI_MAX_LOCAL_TOOLS * scale,
-      maxLocalExec: ChatViewProvider._MYSTI_MAX_LOCAL_EXEC * scale,
-      // External MCP tool calls per run (Plan 19 Phase 6) — each is a gated,
-      // un-undoable network side effect, so capped tight and NOT effort-scaled.
-      maxMcpCalls: clampInt(cfg.get('mysti.maxMcpCalls'), ChatViewProvider._MYSTI_MAX_MCP_CALLS, 1, 32),
-      // Visual looks per run. Effort-scaled (unlike maxMcpCalls): a look is
-      // idempotent, local and undoable-by-definition — it only reads a rendered
-      // page — so a longer-effort run is allowed to iterate more.
-      maxVisualLooks: clampInt(cfg.get('mysti.maxVisualLooks'), ChatViewProvider._MYSTI_MAX_VISUAL_LOOKS, 1, 24) * scale,
-    };
+    return resolveCoordinatorRunLimits(settings.effortLevel, key => cfg.get(key));
   }
 
   /**
@@ -9639,7 +9585,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const backends = this._availableMystiBackends();
     const effort = clampEffort(settings.effortLevel, ['low', 'medium', 'high']) as
       'low' | 'medium' | 'high' | undefined;
-    const gov = this._mystiGovernors(settings);
+    const budget = new CoordinatorRunBudget(this._mystiGovernors(settings));
+    const gov = budget.limits;
     // Plan 19: whether the coordinator may write/edit locally this run (off by
     // default; requires the setting + a trusted workspace + a non-plan tier).
     const execEnabled = this._mystiLocalExecEnabled(settings);
@@ -9786,7 +9733,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let errorMsg = '';
     /** Plan 25: the UNMAPPED error, so a background job card can classify it too. */
     let rawErrorMsg = '';
-    let delegations = 0;
     let delegId = 0;
     // Agents whose continuing session already received the attached-file fold
     // ([15]) — re-sending bodies each turn bloats cost + the child's context.
@@ -9880,15 +9826,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // (a cheap `<read:>` never costs a delegation slot), but maxTurns is the
       // HARD per-run stream cap that bounds total spend (review [6]).
       const liveBackends = [...backends];
-      let localTools = 0;
-      let localExec = 0;
-      let mcpCalls = 0;
-      let visualLooks = 0;
-      // Plan 22: canvas edits are cheap, local and invertible, so they get a
-      // generous budget of their own rather than competing with delegations —
-      // a six-artboard design would otherwise starve the coding loop. The cap
-      // exists only to bound a runaway edit loop.
-      let canvasCalls = 0;
       // Canvas steering belongs to this run for its entire tool/model loop.
       this._canvasSteeringRuns.add(runId);
       for await (const turn of turnRunner.turns(messages)) {
@@ -9945,14 +9882,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           );
           if (batchDecision.batchSize > 0) {
             const batchConvs = convs.slice(0, batchDecision.batchSize);
-            if (localTools >= gov.maxLocalTools) {
+            if (budget.remaining('localTools') === 0) {
               messages.push({ role: 'assistant', content: turnText });
               messages.push({ role: 'user', content: `Local tool budget exhausted (${gov.maxLocalTools} calls). Answer with what you have, or delegate the remaining investigation to an agent.` });
               continue;
             }
-            const remaining = gov.maxLocalTools - localTools;
+            const remaining = budget.remaining('localTools');
             const runList = batchConvs.slice(0, remaining).map(c => c.conv as Extract<MystiDirective, { kind: 'read' | 'ls' | 'grep' | 'diag' }>);
-            localTools += runList.length;
+            budget.consume('localTools', runList.length);
             // Post every card first (all show as running), then run bounded-
             // parallel, then resolve + fence IN ORDER for deterministic replay.
             const jobs = runList.map(d => {
@@ -9964,7 +9901,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Honor Stop per-tool (matching the serial path): once cancelled, the
             // remaining jobs short-circuit instead of scanning the repo — a big
             // parallel-grep batch must not keep running for seconds after Stop.
-            const outcomes = await runBounded(jobs, ChatViewProvider._MYSTI_READONLY_BATCH_CONCURRENCY, async (j) =>
+            const outcomes = await runBounded(jobs, READ_ONLY_BATCH_CONCURRENCY, async (j) =>
               isCancelled()
                 ? { j, res: { ok: false, output: '(cancelled by user)' } }
                 : { j, res: await this._runMystiLocalTool(j.d) });
@@ -10034,12 +9971,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (directive && (directive.kind === 'read' || directive.kind === 'ls' || directive.kind === 'grep' || directive.kind === 'diag')) {
           const toolId = `mysti-local-${runId}-${delegId++}`;
           const input = this._localToolCardInput(directive);
-          if (localTools >= gov.maxLocalTools) {
+          if (!budget.consume('localTools')) {
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: `Local tool budget exhausted (${gov.maxLocalTools} calls). Answer with what you have, or delegate the remaining investigation to an agent.` });
             continue;
           }
-          localTools++;
           runOutput.postToolUse({ id: toolId, name: directive.kind, input });
           const res = await this._runMystiLocalTool(directive);
           // Resolve the card either way — Stop must not leave an eternal spinner
@@ -10072,12 +10008,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               : directive.kind === 'bash'
                 ? { command: directive.command }
                 : { patch: directive.patchText.slice(0, 200) };
-          if (localExec >= gov.maxLocalExec) {
+          if (!budget.consume('localExec')) {
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: `Local edit budget exhausted (${gov.maxLocalExec} writes/edits this run). Finish with what you have, or delegate the remaining changes to a coding agent.` });
             continue;
           }
-          localExec++;
           runOutput.postToolUse({ id: toolId, name: directive.kind, input });
           const res = await this._runMystiLocalExec(directive, settings, panelId, toolId, cancelKey);
           runOutput.postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
@@ -10124,7 +10059,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (directive && directive.kind === 'skillrun') {
           const toolId = `mysti-skillrun-${runId}-${delegId++}`;
           runOutput.postToolUse({ id: toolId, name: 'skillrun', input: { tool: directive.tool, args: directive.args } });
-          if (localExec >= gov.maxLocalExec) {
+          if (!budget.consume('localExec')) {
             const msg = `Capability budget reached (${gov.maxLocalExec} per run).`;
             runOutput.postToolResult({ id: toolId, name: 'skillrun', output: msg, status: 'failed' });
             runOutput.recordTool(toolId, 'skillrun', { tool: directive.tool }, msg, true);
@@ -10132,7 +10067,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             messages.push({ role: 'user', content: `${msg} Finish with what you have.` });
             continue;
           }
-          localExec++;
           const res = await this._runMystiSkillRun(directive, settings, panelId);
           runOutput.postToolResult({ id: toolId, name: 'skillrun', output: res.output, status: res.ok ? 'completed' : 'failed' });
           runOutput.recordTool(toolId, 'skillrun', { tool: directive.tool }, res.output, !res.ok);
@@ -10151,7 +10085,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (directive && directive.kind === 'skill') {
           const toolId = `mysti-skill-${runId}-${delegId++}`;
           runOutput.postToolUse({ id: toolId, name: 'skill', input: directive.id ? { id: directive.id, part: directive.part } : { query: directive.query } });
-          if (localTools >= gov.maxLocalTools) {
+          if (!budget.consume('localTools')) {
             const msg = `Local tool budget exhausted (${gov.maxLocalTools} calls).`;
             runOutput.postToolResult({ id: toolId, name: 'skill', output: msg, status: 'failed' });
             runOutput.recordTool(toolId, 'skill', {}, msg, true);
@@ -10159,7 +10093,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             messages.push({ role: 'user', content: `${msg} Answer with what you have.` });
             continue;
           }
-          localTools++;
           if (directive.id) { skillViewed.push(directive.id); } else { skillSearches++; }
           const res = await this._runMystiSkillLookup(directive);
           runOutput.postToolResult({ id: toolId, name: 'skill', output: res.output, status: res.ok ? 'completed' : 'failed' });
@@ -10212,7 +10145,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             messages.push({ role: 'user', content: 'External tools are not available. Answer without them or delegate.' });
             continue;
           }
-          if (mcpCalls >= gov.maxMcpCalls) {
+          if (budget.remaining('mcpCalls') === 0) {
             runOutput.postToolResult({ id: toolId, name: 'mcptool', output: `External tool budget reached (${gov.maxMcpCalls} calls).`, status: 'failed' });
             runOutput.recordTool(toolId, 'mcptool', { tool: directive.tool }, `External tool budget reached (${gov.maxMcpCalls} calls).`, true);
             messages.push({ role: 'assistant', content: turnText });
@@ -10228,7 +10161,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             messages.push({ role: 'user', content: `No connected tool "${directive.tool}". Available: ${mcpToolset.tools.map(t => t.name).slice(0, 40).join(', ')} — or answer without it.` });
             continue;
           }
-          mcpCalls++;
+          budget.consume('mcpCalls');
           const res = await this._runMystiMcpTool(
             directive, mcpToolset.client, panelId, toolId, cancelKey,
             mcpToolset.tools.find(t => t.name === directive.tool)?.description,
@@ -10255,7 +10188,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const input: Record<string, unknown> = directive.kind === 'look'
             ? { path: directive.path || '(current page)', ...(directive.selector ? { selector: directive.selector } : {}) }
             : { actions: directive.actions.length };
-          if (visualLooks >= gov.maxVisualLooks) {
+          if (!budget.consume('visualLooks')) {
             runOutput.postToolUse({ id: toolId, name: directive.kind, input });
             const msg = `Visual budget reached (${gov.maxVisualLooks} looks this run).`;
             runOutput.postToolResult({ id: toolId, name: directive.kind, output: msg, status: 'failed' });
@@ -10264,7 +10197,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             messages.push({ role: 'user', content: `${msg} Finish with what you have.` });
             continue;
           }
-          visualLooks++;
           runOutput.postToolUse({ id: toolId, name: directive.kind, input });
           const res = await this._runMystiVisual(directive, settings, panelId, toolId, cancelKey);
           runOutput.postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
@@ -10301,15 +10233,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             ? { tool: directive.tool, args: directive.args }
             : { page: directive.pageId, title: directive.title, bytes: directive.source.length };
           runOutput.postToolUse({ id: toolId, name: 'canvas', input });
-          if (canvasCalls >= ChatViewProvider._MYSTI_MAX_CANVAS_CALLS) {
-            const out = `Canvas edit budget reached (${ChatViewProvider._MYSTI_MAX_CANVAS_CALLS} edits this run).`;
+          if (!budget.consume('canvasCalls')) {
+            const out = `Canvas edit budget reached (${gov.maxCanvasCalls} edits this run).`;
             runOutput.postToolResult({ id: toolId, name: 'canvas', output: out, status: 'failed' });
             runOutput.recordTool(toolId, 'canvas', input, out, true);
             messages.push({ role: 'assistant', content: turnText });
             messages.push({ role: 'user', content: `${out} Summarize what you built and stop editing.` });
             continue;
           }
-          canvasCalls++;
           const res = await this._runMystiCanvasTool(directive, panelId, runId, toolId);
           runOutput.postToolResult({ id: toolId, name: 'canvas', output: res.output, status: res.ok ? 'completed' : 'failed' });
           runOutput.recordTool(toolId, 'canvas', input, res.output, !res.ok);
@@ -10319,7 +10250,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           continue;
         }
 
-        if (directive && delegations >= gov.maxDelegations) {
+        if (directive && budget.remaining('delegations') === 0) {
           // Governor: out of delegations. Ask for a final answer next turn.
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: 'You have reached the delegation limit. Provide your final answer now using what you already have. Do not delegate again.' });
@@ -10390,7 +10321,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               const idx = liveBackends.indexOf(agent);
               if (idx >= 0) { liveBackends.splice(idx, 1); }
             } else {
-              delegations++;
+              budget.consume('delegations');
               if (bg) { this._backgroundJobManager.incrementDelegations(jobId!); }
             }
             return r;
@@ -10408,7 +10339,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // non-env first failure already consumed a slot, so an unconditional
           // reroute would push the run to maxDelegations+1.
           if (result.hasError && !result.wrote && result.failure && REROUTE_FAILS.has(result.failure)
-              && delegations < gov.maxDelegations && !isCancelled()) {
+              && budget.remaining('delegations') > 0 && !isCancelled()) {
             const alt = pickCrossVendorReviewer(writer, liveBackends) ?? liveBackends.find(b => b !== writer) ?? null;
             if (alt) {
               const note = `(failed: ${result.failure}${result.errorDetail ? ` — ${result.errorDetail}` : ''}) — rerouting to ${alt}`;
@@ -10463,7 +10394,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const cmdHint = cmds.length > 0 ? ` If appropriate, verify by delegating a run of: ${cmds.join(' / ')}.` : '';
             // Accurate wording (nit #1: bash-only isn't necessarily a file edit)
             // and don't say "delegate again" when the budget is spent (nit #2).
-            const canRedelegate = delegations < gov.maxDelegations;
+            const canRedelegate = budget.remaining('delegations') > 0;
             const fixHint = canRedelegate
               ? 'If there are errors or the change is risky, fix them (delegate again) before your final answer.'
               : 'If there are errors, note them clearly in your final answer (you are out of delegations).';
@@ -10653,21 +10584,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       model: coordinatorModel,
       ...runOutput.measurements(),
       roundTrips: turnRunner.roundTrips,
-      delegations,
+      delegations: budget.used('delegations'),
       // Plan 24 Phase 3, record-only: what the round-trip reducer could have saved.
       redundantToolCalls,
       mergeableRoundTrips,
     });
     if (bg) {
       const job = this._backgroundJobManager.markDone(jobId!, answer, Date.now());
-      this._postToPanel(panelId, { type: 'jobComplete', payload: { jobId, message: assistantMessage, delegations: job?.delegations ?? delegations } });
+      this._postToPanel(panelId, { type: 'jobComplete', payload: { jobId, message: assistantMessage, delegations: job?.delegations ?? budget.used('delegations') } });
       // P1.5: notify + mark reported so it isn't re-surfaced on a later reload.
       this._notifyJobDone(job, 'done');
     } else {
       // P0.8: footer shows tokens + estimated coordinator cost + a delegations
       // pill — the agent's work has a visible receipt. `tokensPartial` flags a
       // delegation-heavy run whose per-directive turns were estimated ([10]).
-      const usagePayload = runOutput.receipt(delegations);
+      const usagePayload = runOutput.receipt(budget.used('delegations'));
       this._postToPanel(panelId, { type: 'responseComplete', payload: { message: assistantMessage, usage: usagePayload } });
     }
   }
