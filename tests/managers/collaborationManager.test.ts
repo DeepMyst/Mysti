@@ -244,14 +244,17 @@ describe('CollaborationManager', () => {
   });
 
   it('M-1: the permission card title for an untrusted role carries the role id, not the spoofed name', async () => {
-    // Reachability: an untrusted role is clamped read-only, and a read-only
-    // collaborator's WebFetch is NOT hard-denied — under accessLevel
-    // `read-only` it always goes to the user gate (CollaboratorPool, Plan 18
-    // F5 carve-out). The gate's `spec.label` is what the card shows.
+    // A native WebFetch request blocks before execution and carries the
+    // untrusted role's host-generated label into the user gate.
     pm.setProviderAvailable('google-gemini', 'Gemini');
-    pm.streamFactories.set('google-gemini', () => (async function* () {
-      yield { type: 'tool_use', toolCall: { id: 't', name: 'WebFetch', input: { url: 'https://example.com' } } } as StreamChunk;
-      yield { type: 'text', content: 'fetched' } as StreamChunk;
+    Object.assign(pm, { getProviderInstance: () => ({ capabilities: { supportsNativeApproval: true } }) });
+    pm.streamFactories.set('google-gemini', (_provider, _content, _context, _settings, _conversation, _persona, panelId) => (async function* () {
+      const toolCall = { id: 't', name: 'WebFetch', input: { url: 'https://example.com' } };
+      const approved = await pm.nativeApprovalPanels.get(panelId!)!({
+        id: 'request-t', nativeRequestId: 1, providerId: 'google-gemini', panelId: panelId!,
+        toolCall, defaultDecision: 'ask', signal: new AbortController().signal,
+      });
+      expect(approved).toBe(false);
       yield { type: 'done' } as StreamChunk;
     })());
 
@@ -292,13 +295,19 @@ describe('CollaborationManager', () => {
 
   it('resolves access from the role (gated-write requires a gate, read-only never writes)', async () => {
     pm.setProviderAvailable('claude-code');
-    // Simulate a successful SIGSTOP so the gate is reached (the pool fails
-    // closed when the child cannot be frozen).
-    vi.spyOn(pm, 'suspendRequest').mockReturnValue(true);
+    Object.assign(pm, { getProviderInstance: () => ({ capabilities: { supportsNativeApproval: true } }) });
+    const suspend = vi.spyOn(pm, 'suspendRequest');
     let gateAsked = false;
-    // Coworker (gated-write) emits a write; gate approves.
-    pm.streamFactories.set('claude-code', () => (async function* () {
-      yield { type: 'tool_use', toolCall: { id: 't', name: 'Write', input: {} } } as StreamChunk;
+    // Coworker waits for the native write decision before any tool execution.
+    pm.streamFactories.set('claude-code', (_provider, _content, _context, _settings, _conversation, _persona, panelId) => (async function* () {
+      const toolCall = { id: 't', name: 'Write', input: { file_path: 'a.txt', content: 'validation' } };
+      const approved = await pm.nativeApprovalPanels.get(panelId!)!({
+        id: 'request-t', nativeRequestId: 1, providerId: 'claude-code', panelId: panelId!,
+        toolCall, defaultDecision: 'ask', signal: new AbortController().signal,
+      });
+      expect(approved).toBe(true);
+      expect(gateAsked).toBe(true);
+      yield { type: 'tool_use', toolCall } as StreamChunk;
       yield { type: 'text', content: 'edited' } as StreamChunk;
       yield { type: 'done' } as StreamChunk;
     })());
@@ -315,6 +324,8 @@ describe('CollaborationManager', () => {
 
     expect(gateAsked).toBe(true);
     expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(true);
+    expect(suspend).not.toHaveBeenCalled();
+    expect(pm.nativeApprovalPanels.size).toBe(0);
   });
 
   it('read-only role denies a write without asking the gate', async () => {

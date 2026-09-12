@@ -326,7 +326,7 @@ export class SmartCompactor {
   // (turns observed between one compaction and the next). Replaces the fixed
   // SMART_DEFAULT_REMAINING_TURNS guess in the break-even gate once we have any
   // real sample. Global (cross-panel) so a fresh panel benefits immediately.
-  private static readonly _EPOCH_ALPHA = 0.3;
+  private static readonly _epochAlpha = 0.3;
   private readonly _turnsSinceCompaction = new Map<string, number>();
   private _epochEwma: number | null = null;
   private _epochSamples = 0;
@@ -365,7 +365,7 @@ export class SmartCompactor {
    * default until we've observed at least one epoch.
    */
   estimateRemainingTurns(): number {
-    if (this._epochEwma != null && this._epochSamples >= 1) {
+    if (this._epochEwma !== null && this._epochSamples >= 1) {
       return Math.max(1, Math.round(this._epochEwma));
     }
     return SMART_DEFAULT_REMAINING_TURNS;
@@ -380,9 +380,9 @@ export class SmartCompactor {
     const turns = this._turnsSinceCompaction.get(panelId) || 0;
     this._turnsSinceCompaction.set(panelId, 0);
     if (turns <= 0) { return; }
-    this._epochEwma = this._epochEwma == null
+    this._epochEwma = this._epochEwma === null
       ? turns
-      : SmartCompactor._EPOCH_ALPHA * turns + (1 - SmartCompactor._EPOCH_ALPHA) * this._epochEwma;
+      : SmartCompactor._epochAlpha * turns + (1 - SmartCompactor._epochAlpha) * this._epochEwma;
     this._epochSamples += 1;
   }
 
@@ -560,7 +560,7 @@ export class SmartCompactor {
     const bootstrap = !existingMemory.trim();
     const prompt = bootstrap
       ? this._buildMemoryPrompt(existingMemory, toSummarize, p.minSummaryTokens)
-      : this._buildPatchPrompt(existingMemory, toSummarize, p.minSummaryTokens);
+      : this._buildPatchPrompt(existingMemory, toSummarize);
 
     const result = await this._gateway.chatCompletion({
       model: p.cheapModel,
@@ -767,7 +767,7 @@ export class SmartCompactor {
    * byte-identical (no re-summarization drift). Falls back to full-rewrite
    * semantics if the model ignores the format (see summarize()).
    */
-  private _buildPatchPrompt(existingMemory: string, newMessages: Message[], minSummaryTokens: number): string {
+  private _buildPatchPrompt(existingMemory: string, newMessages: Message[]): string {
     const convo = newMessages.map(m => {
       const role = m.role === 'user' ? 'User' : m.role === 'assistant' ? 'Assistant' : 'System';
       const content = m.content.length > 4000 ? m.content.slice(0, 4000) + '…' : m.content;

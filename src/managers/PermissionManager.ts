@@ -105,7 +105,7 @@ export class PermissionManager {
   private _onSemiAutonomousTimeout: ((requestId: string, postToWebview: (msg: unknown) => void) => void) | null = null;
 
   /** Scope used when a caller supplies no ownerKey. */
-  private static readonly GLOBAL_SCOPE = '__global__';
+  private static readonly _globalScope = '__global__';
 
   constructor(initialAccessLevel: AccessLevel) {
     this._baseAccessLevel = initialAccessLevel;
@@ -113,7 +113,7 @@ export class PermissionManager {
   }
 
   private _scopeKey(ownerKey?: string): string {
-    return ownerKey ?? PermissionManager.GLOBAL_SCOPE;
+    return ownerKey ?? PermissionManager._globalScope;
   }
 
   /**
@@ -187,7 +187,7 @@ export class PermissionManager {
    * Get current session access level
    */
   get sessionAccessLevel(): AccessLevel {
-    return this._effectiveAccessLevel(PermissionManager.GLOBAL_SCOPE);
+    return this._effectiveAccessLevel(PermissionManager._globalScope);
   }
 
   /**

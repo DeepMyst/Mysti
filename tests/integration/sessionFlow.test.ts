@@ -250,6 +250,6 @@ describe('the picker and the dispatcher agree on the catalog', () => {
   });
 
   it('Run stays dead below the floor', () => {
-    expect(js).toContain('if (agentIds.length < picker.shape.minAgents) return;');
+    expect(js).toMatch(/if \(agentIds\.length < picker\.shape\.minAgents\)\s*\{\s*return;\s*\}/);
   });
 });

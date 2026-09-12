@@ -2,7 +2,7 @@
       var vscode = acquireVsCodeApi();
       var issueCount = 0;
       var actionCount = 0;
-      var isRunning = false;
+
 
       // ── Elements ──
       var statusEl = document.getElementById('vt-status');
@@ -51,7 +51,7 @@
         configPanel.classList.add('hidden');
         progressPanel.classList.add('active');
         cancelBtn.classList.remove('hidden');
-        isRunning = true;
+
         issueCount = 0;
         actionCount = 0;
         issuesEl.innerHTML = '';
@@ -62,13 +62,6 @@
         setStatus('Starting...', 'running');
       }
 
-      function switchToConfig() {
-        configPanel.classList.remove('hidden');
-        progressPanel.classList.remove('active');
-        cancelBtn.classList.add('hidden');
-        isRunning = false;
-        setStatus('Idle', 'idle');
-      }
 
       function setStatus(text, state) {
         statusEl.textContent = text;
@@ -98,20 +91,20 @@
         // still inject arbitrary markup. Build nodes instead of HTML.
         var item = document.createElement('div');
         item.className = 'vt-issue-item';
-        var sev = String(issue.severity == null ? 'minor' : issue.severity);
+        var sev = String(issue.severity ?? 'minor');
         var safeSev = /^[a-z-]{1,20}$/.test(sev) ? sev : 'minor';
         var sevEl = document.createElement('span');
         sevEl.className = 'vt-severity vt-severity-' + safeSev;
         sevEl.textContent = sev;
         var descEl = document.createElement('span');
-        descEl.textContent = String(issue.description == null ? '' : issue.description);
+        descEl.textContent = String(issue.description ?? '');
         item.appendChild(sevEl);
         item.appendChild(descEl);
         issuesEl.appendChild(item);
       }
 
       function showReport(report) {
-        if (!report || !report.summary) return;
+        if (!report || !report.summary) { return; }
         var s = report.summary;
         var verdictEl = document.getElementById('vt-verdict');
         var cls = s.verdict === 'pass' ? 'pass' : s.verdict === 'partial' ? 'partial' : 'fail';
@@ -124,28 +117,28 @@
       }
 
       function escapeHtml(str) {
-        if (str === null || str === undefined || str === '') return '';
+        if (str === null || str === undefined || str === '') { return ''; }
         return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       }
 
       // ── Message handler ──
       window.addEventListener('message', function(event) {
         var msg = event.data;
-        if (!msg) return;
+        if (!msg) { return; }
 
         switch (msg.type) {
           case 'visualTestDashboardConfig': {
             // Pre-fill config from agent trigger
             var c = msg.payload;
             if (c) {
-              if (c.url) document.getElementById('cfg-url').value = c.url;
-              if (c.devServerCommand) document.getElementById('cfg-dev-cmd').value = c.devServerCommand;
-              if (c.requirements) document.getElementById('cfg-requirements').value = c.requirements;
-              if (c.maxIterations) document.getElementById('cfg-max-iter').value = c.maxIterations.toString();
-              if (c.screenshotMode) document.getElementById('cfg-screenshot-mode').value = c.screenshotMode;
-              if (c.elementSelector) document.getElementById('cfg-element-selector').value = c.elementSelector;
-              if (c.browser) document.getElementById('cfg-browser').value = c.browser;
-              if (c.interactionsEnabled !== undefined) document.getElementById('cfg-interactions').checked = c.interactionsEnabled;
+              if (c.url) { document.getElementById('cfg-url').value = c.url; }
+              if (c.devServerCommand) { document.getElementById('cfg-dev-cmd').value = c.devServerCommand; }
+              if (c.requirements) { document.getElementById('cfg-requirements').value = c.requirements; }
+              if (c.maxIterations) { document.getElementById('cfg-max-iter').value = c.maxIterations.toString(); }
+              if (c.screenshotMode) { document.getElementById('cfg-screenshot-mode').value = c.screenshotMode; }
+              if (c.elementSelector) { document.getElementById('cfg-element-selector').value = c.elementSelector; }
+              if (c.browser) { document.getElementById('cfg-browser').value = c.browser; }
+              if (c.interactionsEnabled !== undefined) { document.getElementById('cfg-interactions').checked = c.interactionsEnabled; }
             }
             break;
           }
@@ -154,10 +147,10 @@
             // Agent triggered — auto-fill and start immediately
             var cfg = msg.payload;
             if (cfg) {
-              if (cfg.url) document.getElementById('cfg-url').value = cfg.url;
-              if (cfg.devServerCommand) document.getElementById('cfg-dev-cmd').value = cfg.devServerCommand;
-              if (cfg.requirements) document.getElementById('cfg-requirements').value = cfg.requirements;
-              if (cfg.maxIterations) document.getElementById('cfg-max-iter').value = cfg.maxIterations.toString();
+              if (cfg.url) { document.getElementById('cfg-url').value = cfg.url; }
+              if (cfg.devServerCommand) { document.getElementById('cfg-dev-cmd').value = cfg.devServerCommand; }
+              if (cfg.requirements) { document.getElementById('cfg-requirements').value = cfg.requirements; }
+              if (cfg.maxIterations) { document.getElementById('cfg-max-iter').value = cfg.maxIterations.toString(); }
             }
             switchToProgress();
             break;
@@ -165,7 +158,7 @@
 
           case 'visualTestDashboardUpdate': {
             var chunk = msg.payload;
-            if (!chunk) break;
+            if (!chunk) { break; }
             handleChunk(chunk);
             break;
           }
@@ -173,7 +166,7 @@
           case 'visualTestDashboardCancelled':
             setStatus('Cancelled', 'cancelled');
             cancelBtn.classList.add('hidden');
-            isRunning = false;
+
             addAction('done', 'Visual test cancelled');
             break;
         }
@@ -244,7 +237,7 @@
           case 'visual_test_interaction':
             if (chunk.interaction) {
               var desc = chunk.interaction.action;
-              if (chunk.interaction.target) desc += ' on ' + chunk.interaction.target;
+              if (chunk.interaction.target) { desc += ' on ' + chunk.interaction.target; }
               addAction('running', 'Action: ' + desc);
             }
             break;
@@ -255,13 +248,13 @@
             break;
 
           case 'visual_test_complete':
-            isRunning = false;
+
             cancelBtn.classList.add('hidden');
             var verdict = chunk.report && chunk.report.summary ? chunk.report.summary.verdict : 'fail';
             setStatus(verdict === 'pass' ? 'Passed' : verdict === 'partial' ? 'Partial' : 'Failed',
               verdict === 'pass' ? 'complete' : 'failed');
             addAction('done', 'Visual test complete');
-            if (chunk.report) showReport(chunk.report);
+            if (chunk.report) { showReport(chunk.report); }
             break;
         }
       }

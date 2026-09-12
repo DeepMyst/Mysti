@@ -211,9 +211,9 @@ export class CoordinatorModelClient {
    */
   private _stickyIndex = 0;
   private _stickyAt = 0;
-  private static readonly _STICKY_TTL_MS = 10 * 60 * 1000;
+  private static readonly _stickyTtlMs = 10 * 60 * 1000;
   /** Per-turn stream ceiling — long agentic turns on slow free models need more than the 120s default. */
-  private static readonly _STREAM_TIMEOUT_MS = 300_000;
+  private static readonly _streamTimeoutMs = 300_000;
 
   constructor(
     private readonly _gateway: DeepMystGatewayClient,
@@ -278,7 +278,7 @@ export class CoordinatorModelClient {
    * walk from the same learned chain position.
    */
   private _stickyStart(len: number): number {
-    return Date.now() - this._stickyAt < CoordinatorModelClient._STICKY_TTL_MS
+    return Date.now() - this._stickyAt < CoordinatorModelClient._stickyTtlMs
       ? Math.max(0, Math.min(this._stickyIndex, len - 1))
       : 0;
   }
@@ -291,7 +291,7 @@ export class CoordinatorModelClient {
    * another TTL rather than re-probing free every turn).
    */
   private _stampSticky(i: number): void {
-    if (this._stickyIndex !== i || Date.now() - this._stickyAt >= CoordinatorModelClient._STICKY_TTL_MS) {
+    if (this._stickyIndex !== i || Date.now() - this._stickyAt >= CoordinatorModelClient._stickyTtlMs) {
       this._stickyIndex = i;
       this._stickyAt = Date.now();
     }
@@ -362,7 +362,7 @@ export class CoordinatorModelClient {
       // so a non-capable model never 400s on an unsupported `tools` field
       // (review round-5 #5/#9).
       const orModel = await this.resolveCoordinatorModel();
-      yield* this._drain(this._openRouter.streamChat({ model: orModel, messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: modelSupportsToolCalls(orModel) ? opts.tools : undefined }));
+      yield* this._drain(this._openRouter.streamChat({ model: orModel, messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._streamTimeoutMs, tools: modelSupportsToolCalls(orModel) ? opts.tools : undefined }));
       return;
     }
     if (!this._isSignedIn()) {
@@ -408,7 +408,7 @@ export class CoordinatorModelClient {
       // model that actually supports them so a non-capable fallback can't 400 on
       // an unsupported field and break a run the text protocol would've survived.
       const modelTools = modelSupportsToolCalls(models[i]) ? opts.tools : undefined;
-      for await (const ev of this._gateway.streamChat({ model: models[i], messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: modelTools })) {
+      for await (const ev of this._gateway.streamChat({ model: models[i], messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._streamTimeoutMs, tools: modelTools })) {
         if (ev.error) { streamErr = ev.error; break; }
         if (ev.model) { resolvedModel = ev.model; yield { model: ev.model }; }
         if (ev.reasoning) { yield { reasoning: ev.reasoning }; }

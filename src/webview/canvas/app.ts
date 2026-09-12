@@ -163,8 +163,8 @@ export class CanvasApp {
   private _diagSig = '';
   private _helloTimer: ReturnType<typeof setTimeout> | null = null;
   /** Wait before re-asking for state, and how many times. */
-  private static readonly _HELLO_TIMEOUT_MS = 1500;
-  private static readonly _HELLO_RETRIES = 2;
+  private static readonly _helloTimeoutMs = 1500;
+  private static readonly _helloRetries = 2;
   /** Responsive view state. Local and sovereign, exactly like zoom and pan. */
   private _layout: BoardLayout = { mode: 'wide', panes: { rail: true, inspector: true } };
   /** The published frame runtime, kept so the Babel slot can be filled later. */
@@ -484,14 +484,14 @@ export class CanvasApp {
     this._helloTimer = setTimeout(() => {
       this._helloTimer = null;
       if (this._store.artifact) { return; }          // hello landed
-      if (attempt < CanvasApp._HELLO_RETRIES) {
+      if (attempt < CanvasApp._helloRetries) {
         this._env.warn(`canvas: no reply from the extension; re-asking (attempt ${attempt + 2})`);
         this._client.send({ t: 'canvas/ready' });
         this._awaitHello(attempt + 1);
         return;
       }
       this._showBootFailure();
-    }, CanvasApp._HELLO_TIMEOUT_MS);
+    }, CanvasApp._helloTimeoutMs);
   }
 
   /** Replace the indefinite spinner with a stated failure and a way forward. */

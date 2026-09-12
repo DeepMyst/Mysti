@@ -142,7 +142,7 @@ import { DeskIdentity } from '../services/desk/DeskIdentity';
 import { DeskPairing, buildInviteUrl } from '../managers/DeskPairing';
 import { DeskPeerBook } from '../managers/DeskPeerBook';
 import { DeskPairingFlow } from '../managers/DeskPairingFlow';
-import type { WebviewMessage, Settings, AgentSelection, ContextItem, Attachment, QuickActionSuggestion, Message, MessageSegment, MessageThinking, MessageThinkingStyle, ToolCall, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualTestStreamChunk, VisualObservation, VisualTestInteraction } from '../types';
+import type { WebviewMessage, Settings, AgentSelection, ContextItem, Attachment, QuickActionSuggestion, Message, MessageSegment, MessageThinking, MessageThinkingStyle, ToolCall, PermissionResponse, PlanSelectionResult, QuestionSubmission, ClarifyingQuestion, AgentConfiguration, ProviderType, Mention, MentionTask, MentionTaskList, SubAgentResponse, AgentType, AskUserQuestionData, AskUserQuestionItem, CompactionEvent, UsageStats, Conversation, PlanOption, AuthMethodType, SubAgentQuestionCallback, VisualTestConfig, VisualObservation, VisualTestInteraction } from '../types';
 import { AUTONOMOUS_CONTINUATION_DELAY_MS, DEFAULT_AGENT, DEFAULT_PROVIDER, DEFAULT_FALLBACK_MODEL, SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S, SUBAGENT_MAX_RETRIES, isPseudoAgentId } from '../constants';
 import { DEVELOPER_PERSONAS, DEVELOPER_SKILLS } from './base/IProvider';
 import { NATIVE_COMMAND_PREFIX } from './base/NativeCommands';
@@ -8628,7 +8628,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Whether the coordinator may call the user's CONNECTED external MCP tools this run (Plan 19 Phase 6). */
-  private _mystiMcpToolsEnabled(settings: Settings): boolean {
+  private _mystiMcpToolsEnabled(): boolean {
     const on = vscode.workspace.getConfiguration('mysti').get<string>('mysti.mcpTools', 'off') === 'on';
     if (!on || !vscode.workspace.isTrusted) { return false; }
     // read-only access still allows external READS in principle, but every MCP
@@ -8646,8 +8646,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * connection-supplied url (the upstream `mcpUrl` is not CLI-reachable anyway).
    */
   /** Max external tools advertised to the model (bounds prompt AND native-schema size). */
-  private static readonly _MYSTI_MCP_MAX_TOOLS = 60;
-  private static readonly _MCP_TOOLS_CACHE_TTL_MS = 5 * 60_000;
+  private static readonly _mystiMcpMaxTools = 60;
+  private static readonly _mcpToolsCacheTtlMs = 5 * 60_000;
 
   /**
    * Sanitize + bound a discovered tool list. listTools() metadata is UNTRUSTED
@@ -8656,7 +8656,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * allowlist key, so a name that isn't a plain identifier is DROPPED (never
    * mutated — a mutated name wouldn't match the real broker tool). Descriptions
    * are free text → newlines/controls stripped and length-bounded so a malicious
-   * description can't inject instructions. Capped to _MYSTI_MCP_MAX_TOOLS.
+   * description can't inject instructions. Capped to _mystiMcpMaxTools.
    */
   private _sanitizeMcpTools(tools: Array<{ name: string; description?: string; inputSchema?: unknown }>): McpToolInfo[] {
     const out: McpToolInfo[] = [];
@@ -8669,7 +8669,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // argument names for every connected tool.
       const inputSchema = sanitizeMcpInputSchema(t.inputSchema) ?? undefined;
       out.push({ name, description: desc, inputSchema });
-      if (out.length >= ChatViewProvider._MYSTI_MCP_MAX_TOOLS) { break; }
+      if (out.length >= ChatViewProvider._mystiMcpMaxTools) { break; }
     }
     return out;
   }
@@ -9212,7 +9212,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private static readonly _MCP_USAGE_KEY = 'mysti.mcpToolUsage.v1';
+  private static readonly _mcpUsageKey = 'mysti.mcpToolUsage.v1';
 
   /**
    * How often each connected tool has actually been used, per workspace.
@@ -9223,7 +9223,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * what the next turn sees.
    */
   private _mcpUsage(): Record<string, number> {
-    const raw = this._extensionContext.workspaceState.get<Record<string, number>>(ChatViewProvider._MCP_USAGE_KEY);
+    const raw = this._extensionContext.workspaceState.get<Record<string, number>>(ChatViewProvider._mcpUsageKey);
     return raw && typeof raw === 'object' ? raw : {};
   }
 
@@ -9233,7 +9233,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Bound the map so a long-lived workspace can't grow it without limit.
     const entries = Object.entries(usage).sort((a, b) => b[1] - a[1]).slice(0, 100);
     void this._extensionContext.workspaceState.update(
-      ChatViewProvider._MCP_USAGE_KEY, Object.fromEntries(entries)
+      ChatViewProvider._mcpUsageKey, Object.fromEntries(entries)
     );
   }
 
@@ -9246,8 +9246,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .map(entry => entry.tool);
   }
 
-  private async _mystiMcpToolset(settings: Settings): Promise<{ client: McpClient; tools: McpToolInfo[] } | null> {
-    if (!this._mystiMcpToolsEnabled(settings)) { return null; }
+  private async _mystiMcpToolset(): Promise<{ client: McpClient; tools: McpToolInfo[] } | null> {
+    if (!this._mystiMcpToolsEnabled()) { return null; }
     const auth = this._deepMystAuth;
     const key = auth?.getApiKey();
     if (!auth || !key) { return null; }
@@ -9263,7 +9263,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // (a fresh client still connects lazily on the first actual callTool). Short
     // handshake timeout so a wedged broker can't stall the turn for long.
     const now = Date.now();
-    if (this._mcpToolsCache && now - this._mcpToolsCache.at < ChatViewProvider._MCP_TOOLS_CACHE_TTL_MS) {
+    if (this._mcpToolsCache && now - this._mcpToolsCache.at < ChatViewProvider._mcpToolsCacheTtlMs) {
       if (!this._mcpToolsCache.tools.length) { return null; }
       return { client: new McpClient({ url, bearer: key, timeoutMs: 30_000 }), tools: this._rankMcpTools(this._mcpToolsCache.tools) };
     }
@@ -9630,7 +9630,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // discovered via the DeepMyst broker. null when disabled/signed-out/handshake
     // fails ⇒ the whole MCP capability is silently absent (block omitted, tag not
     // even recognized). Off by default (mysti.mysti.mcpTools, machine-scoped).
-    const mcpToolset = await this._mystiMcpToolset(settings);
+    const mcpToolset = await this._mystiMcpToolset();
     // Plan 20 Phase 1: the agent catalog. Off by default and machine-scoped;
     // an index over a handful of artifacts is skipped entirely, since a catalog
     // that small is cheaper to list than to search.

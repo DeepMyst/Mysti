@@ -17,8 +17,6 @@ import type {
   DesignNode,
   DesignTheme,
   DesignAssetRef,
-  DesignLayout,
-  DesignStyle,
   DesignNodeType
 } from '../types';
 

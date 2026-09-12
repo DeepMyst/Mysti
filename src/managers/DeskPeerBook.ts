@@ -277,13 +277,10 @@ export function resolveDeskPeerLimits(partial?: Partial<DeskPeerLimits>): DeskPe
  * `publicKey` is either corrupt or an attempt to inherit another identity's
  * pin, and both answers are "drop it".
  *
- * `nowMs` is required because `pairedAt` is not merely a display field: it is
- * the anchor of the absolute-lifetime ceiling (`pairedAt + absoluteMax`), so a
- * record that claims to have been paired in the year 3000 clamps to nothing
- * and lives forever. Bounding it here is the actual defence the load-time
- * re-clamp was believed to be.
+ * Future pairing timestamps are preserved during parsing. `getGrant` denies
+ * authority under a suspect clock without deleting the pairing record.
  */
-function validatePeer(v: unknown, nowMs: number): DeskPeer | null {
+function validatePeer(v: unknown): DeskPeer | null {
   if (typeof v !== 'object' || v === null) { return null; }
   const p = v as Record<string, unknown>;
   const alias = validateAlias(p.alias);
@@ -461,7 +458,7 @@ export class DeskPeerBook {
       console.error('[Mysti] DeskPeerBook: store read failed, starting empty', err);
       return;
     }
-    const parsed = this._parse(raw, this._nowMs());
+    const parsed = this._parse(raw);
     this._peers = parsed.peers;
     this._revoked = parsed.revoked;
     this._ledger = parsed.ledger;
@@ -476,7 +473,7 @@ export class DeskPeerBook {
    * disk and may have been edited, so the persisted TYPE is a claim, not a
    * fact. Every row is re-validated here.
    */
-  private _parse(raw: unknown, nowMs: number): ParsedBook {
+  private _parse(raw: unknown): ParsedBook {
     const out: ParsedBook = { peers: new Map(), revoked: new Map(), ledger: new Map() };
     if (typeof raw !== 'object' || raw === null) { return out; }
     const book = raw as { peers?: unknown; revoked?: unknown; ledger?: unknown };
@@ -511,7 +508,7 @@ export class DeskPeerBook {
         if (out.revoked.has(peerId)) { continue; }
         if (typeof row !== 'object' || row === null) { continue; }
         const rec = row as Record<string, unknown>;
-        const peer = validatePeer(rec.peer, nowMs);
+        const peer = validatePeer(rec.peer);
         // The map KEY is what every lookup uses; a record filed under someone
         // else's key would answer `getGrant(bob)` with alice's pinned key.
         if (!peer || peer.peerId !== peerId) { continue; }
@@ -536,9 +533,8 @@ export class DeskPeerBook {
         seenAliases.add(peer.alias);
         out.peers.set(peerId, {
           // Re-clamp on load: a store edited to push `expiresAt` past the
-          // absolute maximum must not buy the peer a longer life. This is only
-          // sound because `validatePeer` has already refused a forward-dated
-          // `pairedAt` — the ceiling is measured from it.
+          // absolute maximum must not buy the peer a longer life. `getGrant`
+          // also refuses authority while `pairedAt` is ahead of the clock.
           peer: { ...peer, expiresAt: this._clampExpiry(peer.pairedAt, peer.expiresAt) },
           grant,
           rotatedFrom: isPeerId(rec.rotatedFrom) ? rec.rotatedFrom : undefined,
@@ -638,7 +634,7 @@ export class DeskPeerBook {
         stored = undefined;
       }
       if (typeof stored === 'object' && stored !== null) {
-        this._mergeFrom(this._parse(stored, this._nowMs()));
+        this._mergeFrom(this._parse(stored));
       }
       const snapshot: PersistedBook = {
         peers: Object.fromEntries(this._peers),
@@ -679,7 +675,7 @@ export class DeskPeerBook {
    */
   async addPeer(peer: DeskPeer, grant: PeerGrant): Promise<void> {
     const now = this._nowMs();
-    const clean = validatePeer(peer, now);
+    const clean = validatePeer(peer);
     if (!clean) { throw new Error('DeskPeerBook: peer failed validation'); }
     const cleanGrant = validateGrant(grant, clean.peerId);
     if (!cleanGrant) { throw new Error('DeskPeerBook: grant failed validation'); }
@@ -745,7 +741,7 @@ export class DeskPeerBook {
       throw new Error(`DeskPeerBook: ${previousPeerId} is revoked and cannot be rotated from`);
     }
     const now = this._nowMs();
-    const clean = validatePeer(peer, now);
+    const clean = validatePeer(peer);
     if (!clean) { throw new Error('DeskPeerBook: peer failed validation'); }
     // Both halves compare KEYS, not spellings: `publicKey` is canonical base64
     // by validation, and `peerId` is its fingerprint.

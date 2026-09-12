@@ -17,7 +17,6 @@
       });
 
       const LOGO_URI = window.__MYSTI_BOOT__.logoUri;
-      const MYSTI_VERSION = window.__MYSTI_BOOT__.version;
       var ICON_URIS = window.__MYSTI_BOOT__.iconUris;
       var CLAUDE_LOGO = window.__MYSTI_BOOT__.claudeLogoUri;
       var OPENAI_LOGO_LIGHT = window.__MYSTI_BOOT__.openaiLogoLightUri;
@@ -220,9 +219,9 @@
 
       function getManifestEntry(providerId) {
         var manifest = state.providerManifest;
-        if (!manifest || !manifest.providers) return undefined;
+        if (!manifest || !manifest.providers) { return undefined; }
         for (var i = 0; i < manifest.providers.length; i++) {
-          if (manifest.providers[i].id === providerId) return manifest.providers[i];
+          if (manifest.providers[i].id === providerId) { return manifest.providers[i]; }
         }
         return undefined;
       }
@@ -242,14 +241,14 @@
       // 'none'); undefined when the manifest has no entry for the id.
       function getThinkingStyle(providerId) {
         var entry = getManifestEntry(providerId);
-        if (!entry || !entry.capabilities) return undefined;
+        if (!entry || !entry.capabilities) { return undefined; }
         return entry.capabilities.thinkingStyle || 'none';
       }
 
       // Resolve a manifest entry's logo to a webview URI, honoring
       // theme-aware logos (entry.iconDark in dark themes).
       function getEntryLogo(entry) {
-        if (!entry) return '';
+        if (!entry) { return ''; }
         if (entry.themeAwareLogo && entry.iconDark && isDarkTheme()) {
           return LOGO_BY_ICON_PATH[entry.iconDark] || LOGO_BY_ICON_PATH[entry.icon] || '';
         }
@@ -311,12 +310,12 @@
       // W9: settings "Agent" dropdown options come from the manifest; only
       // the brainstorm pseudo-agent is appended statically.
       function renderProviderSelectOptions() {
-        if (!providerSelect) return;
+        if (!providerSelect) { return; }
         var manifest = state.providerManifest;
         var providers = (manifest && manifest.providers) || [];
-        if (providers.length === 0) return; // keep bootstrap markup until the manifest arrives
+        if (providers.length === 0) { return; } // keep bootstrap markup until the manifest arrives
         var fingerprint = manifestFingerprint();
-        if (providerSelect.dataset.manifestFingerprint === fingerprint) return;
+        if (providerSelect.dataset.manifestFingerprint === fingerprint) { return; }
         providerSelect.dataset.manifestFingerprint = fingerprint;
         var html = providers.map(function(p) {
           return '<option value="' + p.id + '">' + escapeHtml(p.displayName) + '</option>';
@@ -326,18 +325,18 @@
         providerSelect.innerHTML = html;
         var isPseudo = state.activeAgent === 'brainstorm' || state.activeAgent === 'mysti';
         var desired = (state.settings && state.settings.provider) || (!isPseudo ? state.activeAgent : null);
-        if (desired) providerSelect.value = desired;
+        if (desired) { providerSelect.value = desired; }
       }
 
       // W9/W10: brainstorm agent checkboxes come from the manifest.
       function renderBrainstormAgentOptions() {
         var selector = document.getElementById('brainstorm-agent-selector');
-        if (!selector) return;
+        if (!selector) { return; }
         var manifest = state.providerManifest;
         var providers = (manifest && manifest.providers) || [];
-        if (providers.length === 0) return;
+        if (providers.length === 0) { return; }
         var fingerprint = manifestFingerprint();
-        if (selector.dataset.manifestFingerprint === fingerprint) return;
+        if (selector.dataset.manifestFingerprint === fingerprint) { return; }
         selector.dataset.manifestFingerprint = fingerprint;
         selector.innerHTML = providers.map(function(p) {
           return '<label class="brainstorm-agent-option" data-agent="' + p.id + '">' +
@@ -364,7 +363,7 @@
       // go through updateSettings with the settingKey as payload key.
       function renderProviderSettingsSections(providerId) {
         var container = document.getElementById('provider-settings-sections');
-        if (!container) return;
+        if (!container) { return; }
         container.innerHTML = '';
         var entry = getManifestEntry(providerId);
         var sections = (entry && entry.settingsSections) || [];
@@ -403,12 +402,12 @@
               o.textContent = opt.label;
               control.appendChild(o);
             });
-            if (savedValue) control.value = savedValue;
+            if (savedValue) { control.value = savedValue; }
           } else {
             control = document.createElement('input');
             control.type = section.type === 'number' ? 'number' : 'text';
             control.className = 'input';
-            if (section.placeholder) control.placeholder = section.placeholder;
+            if (section.placeholder) { control.placeholder = section.placeholder; }
             control.value = savedValue;
             control.maxLength = 256;
           }
@@ -467,16 +466,16 @@
       // Fuzzy match scorer: returns a score (higher = better) or -1 for no match.
       // Prefers: starts-with > word-boundary match > contains > fuzzy character match
       function fuzzyScore(text, query) {
-        if (!query) return 100; // Empty query matches everything
+        if (!query) { return 100; } // Empty query matches everything
         var t = text.toLowerCase();
         var q = query.toLowerCase();
 
         // Exact match
-        if (t === q) return 1000;
+        if (t === q) { return 1000; }
         // Starts with query
-        if (t.indexOf(q) === 0) return 500 + (100 - t.length);
+        if (t.indexOf(q) === 0) { return 500 + (100 - t.length); }
         // Contains query as substring
-        if (t.indexOf(q) !== -1) return 200 + (100 - t.indexOf(q));
+        if (t.indexOf(q) !== -1) { return 200 + (100 - t.indexOf(q)); }
 
         // Fuzzy: every character in query appears in order in text
         var ti = 0;
@@ -495,13 +494,13 @@
         }
 
         // All query chars consumed = match
-        if (qi === q.length) return score;
+        if (qi === q.length) { return score; }
         return -1; // No match
       }
 
       // Highlight matched characters in a display name
       function highlightMatch(text, query) {
-        if (!query) return text;
+        if (!query) { return text; }
         var t = text.toLowerCase();
         var q = query.toLowerCase();
 
@@ -534,7 +533,7 @@
         var filesList = document.getElementById('mention-files-list');
         var filesHeader = document.getElementById('mention-files-header');
         var agentsHeader = mentionMenu ? mentionMenu.querySelector('.mention-menu-header') : null;
-        if (!mentionMenu || !agentsList || !filesList) return;
+        if (!mentionMenu || !agentsList || !filesList) { return; }
 
         // Build and score agent items (from the provider manifest)
         var scoredAgents = [];
@@ -681,12 +680,12 @@
       // Resolve an agent token (shortname or full id) to its canonical shortId,
       // or null if it is not a known agent. Used to detect @agent:role.
       function resolveAgentShortName(word) {
-        if (!word) return null;
+        if (!word) { return null; }
         var lower = word.toLowerCase();
-        if (MENTION_SHORT_MAP[lower]) return lower; // already a shortId
+        if (MENTION_SHORT_MAP[lower]) { return lower; } // already a shortId
         var providers = (state.providerManifest && state.providerManifest.providers) || [];
         for (var i = 0; i < providers.length; i++) {
-          if (providers[i].id === lower) return providers[i].shortId || lower;
+          if (providers[i].id === lower) { return providers[i].shortId || lower; }
         }
         return null;
       }
@@ -698,7 +697,7 @@
         var filesList = document.getElementById('mention-files-list');
         var filesHeader = document.getElementById('mention-files-header');
         var agentsHeader = mentionMenu ? mentionMenu.querySelector('.mention-menu-header') : null;
-        if (!mentionMenu || !agentsList || !filesList) return;
+        if (!mentionMenu || !agentsList || !filesList) { return; }
 
         var roles = state.availableRoles || [];
         var scoredRoles = [];
@@ -727,7 +726,7 @@
         state.mentionMenuIndex = Math.min(state.mentionMenuIndex, Math.max(0, scoredRoles.length - 1));
 
         // Files section is irrelevant when picking a role
-        if (filesHeader) filesHeader.style.display = 'none';
+        if (filesHeader) { filesHeader.style.display = 'none'; }
         filesList.innerHTML = '';
         if (agentsHeader) {
           agentsHeader.style.display = '';
@@ -812,7 +811,7 @@
         var mentionMenu = document.getElementById('mention-menu');
         // Restore the agents header text (role mode overwrites it)
         var agentsHeader = mentionMenu ? mentionMenu.querySelector('.mention-menu-header') : null;
-        if (agentsHeader) agentsHeader.textContent = 'Agents';
+        if (agentsHeader) { agentsHeader.textContent = 'Agents'; }
         state.mentionMode = 'agent';
         state.mentionRoleAgent = null;
         if (mentionMenu) {
@@ -824,7 +823,7 @@
 
       function insertMention(item) {
         var inputEl = document.getElementById('message-input');
-        if (!inputEl) return;
+        if (!inputEl) { return; }
 
         var before = inputEl.value.substring(0, state.mentionStartPos);
         var after = inputEl.value.substring(inputEl.selectionStart);
@@ -877,7 +876,7 @@
           } else {
             // M4: File matching with path boundary check — require minimum 3 chars
             // and match on path separator boundary or exact filename
-            if (word.length < 3) continue;
+            if (word.length < 3) { continue; }
             var matchedFile = null;
             var files = state.workspaceFileCache || [];
             for (var i = 0; i < files.length; i++) {
@@ -923,10 +922,10 @@
 
       function handleMentionTaskListGenerated(payload) {
         var tasks = payload.tasks || [];
-        if (tasks.length === 0) return;
+        if (tasks.length === 0) { return; }
 
         var messagesEl = document.getElementById('messages');
-        if (!messagesEl) return;
+        if (!messagesEl) { return; }
 
         var banner = document.createElement('div');
         banner.className = 'mention-task-list';
@@ -1034,7 +1033,7 @@
       // and drops the ring buffer.
       function perfSetEnabled(on) {
         on = !!on;
-        if (on === perfState.enabled) return;
+        if (on === perfState.enabled) { return; }
         perfState.enabled = on;
         if (on) {
           perfPostHeapSample();
@@ -1056,10 +1055,10 @@
       // Record one handleResponseChunk body duration into the ring buffer.
       // Only called when perfState.enabled is true.
       function perfRecordChunk(ms) {
-        if (!perfState.samples) perfState.samples = [];
+        if (!perfState.samples) { perfState.samples = []; }
         perfState.samples[perfState.index] = ms;
         perfState.index = (perfState.index + 1) % PERF_SAMPLE_BUFFER_CAP;
-        if (perfState.count < PERF_SAMPLE_BUFFER_CAP) perfState.count++;
+        if (perfState.count < PERF_SAMPLE_BUFFER_CAP) { perfState.count++; }
         perfState.chunkCount++;
       }
 
@@ -1068,7 +1067,7 @@
       // idx = min(n-1, max(0, ceil(p/100*n)-1))).
       function perfPercentile(sortedAscending, p) {
         var n = sortedAscending.length;
-        if (n === 0) return 0;
+        if (n === 0) { return 0; }
         var clamped = Math.min(100, Math.max(0, p));
         var rank = Math.ceil((clamped / 100) * n) - 1;
         var idx = Math.min(n - 1, Math.max(0, rank));
@@ -1117,7 +1116,7 @@
       // Coarse panel.timeToUsable: posted once, in the rAF after the initial
       // initialState render, regardless of the enabled flag.
       function perfPostUiReady() {
-        if (perfState.uiReadySent) return;
+        if (perfState.uiReadySent) { return; }
         perfState.uiReadySent = true;
         requestAnimationFrame(function() {
           postMessageWithPanelId({ type: 'uiReady' });
@@ -1151,7 +1150,7 @@
 
       // Helper to convert absolute paths to relative paths
       function makeRelativePath(absolutePath) {
-        if (!absolutePath || !state.workspacePath) return absolutePath;
+        if (!absolutePath || !state.workspacePath) { return absolutePath; }
         // Normalize path separators
         var normalizedPath = absolutePath.replace(/\\/g, '/');
         var normalizedWorkspace = state.workspacePath.replace(/\\/g, '/');
@@ -1166,7 +1165,7 @@
 
       // Helper to replace absolute paths with relative paths in a string (for commands)
       function cleanPathsInString(str) {
-        if (!str || !state.workspacePath) return str;
+        if (!str || !state.workspacePath) { return str; }
         var normalizedWorkspace = state.workspacePath.replace(/\\/g, '/');
         // Replace workspace path with ./ or just remove it
         return str.split(normalizedWorkspace + '/').join('')
@@ -1206,7 +1205,6 @@
       const contextModeLabel = document.getElementById('context-mode-label');
       const addContextBtn = document.getElementById('add-context-btn');
       const clearContextBtn = document.getElementById('clear-context-btn');
-      const contextItems = document.getElementById('context-items');
       const slashCmdBtn = document.getElementById('slash-cmd-btn');
       const slashMenu = document.getElementById('slash-menu');
       const enhanceBtn = document.getElementById('enhance-btn');
@@ -1463,7 +1461,7 @@
           var found = suggestion.messages.find(function(m) {
             return m.provider === currentProvider || m.provider === shortId;
           });
-          if (found) return found.message;
+          if (found) { return found.message; }
           // Fallback to first message if provider not found
           return suggestion.messages[0] ? suggestion.messages[0].message : '';
         }
@@ -1473,7 +1471,7 @@
 
       function renderWelcomeSuggestions() {
         var container = document.getElementById('welcome-suggestions');
-        if (!container) return;
+        if (!container) { return; }
         container.innerHTML = '';
 
         WELCOME_SUGGESTIONS.forEach(function(s) {
@@ -1709,15 +1707,15 @@
         // Paste handler for images and files
         inputEl.addEventListener('paste', function(e) {
           var clipboardData = e.clipboardData;
-          if (!clipboardData || !clipboardData.items) return;
+          if (!clipboardData || !clipboardData.items) { return; }
 
           for (var i = 0; i < clipboardData.items.length; i++) {
             var item = clipboardData.items[i];
-            if (item.kind !== 'file') continue;
+            if (item.kind !== 'file') { continue; }
 
             var isImage = item.type.startsWith('image/');
             var blob = item.getAsFile();
-            if (!blob) continue;
+            if (!blob) { continue; }
 
             e.preventDefault();
 
@@ -2204,7 +2202,7 @@
         var personaGrid = document.getElementById('persona-grid');
         var skillsList = document.getElementById('skills-list');
 
-        if (!personaGrid || !skillsList) return;
+        if (!personaGrid || !skillsList) { return; }
 
         // Render personas
         personaGrid.innerHTML = '';
@@ -2254,7 +2252,7 @@
         var chipsContainer = document.getElementById('inline-suggestions-chips');
         var autoSuggestCheck = document.getElementById('inline-auto-suggest-check');
 
-        if (!widget || !chipsContainer) return;
+        if (!widget || !chipsContainer) { return; }
 
         // Hide if no recommendations
         if (!payload.recommendations || payload.recommendations.length === 0) {
@@ -2314,7 +2312,7 @@
 
         if (dismissBtn) {
           dismissBtn.addEventListener('click', function() {
-            if (widget) widget.classList.add('hidden');
+            if (widget) { widget.classList.add('hidden'); }
           });
         }
 
@@ -2350,12 +2348,12 @@
         if (personaBtn) {
           personaBtn.addEventListener('click', function(e) {
             // Don't open suggestions if clicking the clear button
-            if (e.target.closest('.toolbar-persona-clear')) return;
+            if (e.target.closest('.toolbar-persona-clear')) { return; }
 
             var widget = document.getElementById('inline-suggestions');
             var inputEl = document.getElementById('message-input');
 
-            if (!widget) return;
+            if (!widget) { return; }
 
             if (widget.classList.contains('hidden')) {
               // Request recommendations based on current input
@@ -2393,7 +2391,7 @@
 
             // Hide inline suggestions if visible
             var widget = document.getElementById('inline-suggestions');
-            if (widget) widget.classList.add('hidden');
+            if (widget) { widget.classList.add('hidden'); }
 
             updateConfigSummary();
             updateToolbarPersonaIndicator();
@@ -2456,13 +2454,13 @@
         var summaryText = document.getElementById('config-summary-text');
         var configBtn = document.getElementById('agent-config-btn');
 
-        if (!summaryText) return;
+        if (!summaryText) { return; }
 
         var parts = [];
 
         if (state.agentConfig.personaId) {
           var persona = state.availablePersonas.find(function(p) { return p.id === state.agentConfig.personaId; });
-          if (persona) parts.push(persona.name);
+          if (persona) { parts.push(persona.name); }
         }
 
         if (state.agentConfig.enabledSkills.length > 0) {
@@ -2472,10 +2470,10 @@
 
         if (parts.length === 0) {
           summaryText.textContent = 'Default (no customization)';
-          if (configBtn) configBtn.classList.remove('has-config');
+          if (configBtn) { configBtn.classList.remove('has-config'); }
         } else {
           summaryText.textContent = parts.join(' + ');
-          if (configBtn) configBtn.classList.add('has-config');
+          if (configBtn) { configBtn.classList.add('has-config'); }
         }
 
         // Also update toolbar persona indicator
@@ -2487,7 +2485,7 @@
         var nameEl = document.getElementById('toolbar-persona-name');
         var btn = document.getElementById('toolbar-persona-btn');
         var clearBtn = document.getElementById('toolbar-persona-clear');
-        if (!nameEl || !btn) return;
+        if (!nameEl || !btn) { return; }
 
         if (state.agentConfig.personaId) {
           var persona = state.availablePersonas.find(function(p) {
@@ -2496,12 +2494,12 @@
           nameEl.textContent = persona ? persona.name : 'Unknown';
           btn.classList.add('has-persona');
           btn.title = 'Active: ' + (persona ? persona.name : 'Unknown') + ' (click to change)';
-          if (clearBtn) clearBtn.classList.remove('hidden');
+          if (clearBtn) { clearBtn.classList.remove('hidden'); }
         } else {
           nameEl.textContent = 'No persona';
           btn.classList.remove('has-persona');
           btn.title = 'Click to select a persona';
-          if (clearBtn) clearBtn.classList.add('hidden');
+          if (clearBtn) { clearBtn.classList.add('hidden'); }
         }
       }
 
@@ -2510,7 +2508,7 @@
         var widget = document.getElementById('inline-suggestions');
         var chipsContainer = document.getElementById('inline-suggestions-chips');
         var autoSuggestCheck = document.getElementById('inline-auto-suggest-check');
-        if (!widget || !chipsContainer) return;
+        if (!widget || !chipsContainer) { return; }
 
         // Sync checkbox state
         if (autoSuggestCheck) {
@@ -2630,7 +2628,7 @@
 
       // Render history menu items
       function renderHistoryMenu(conversations, currentId) {
-        if (!historyMenu) return;
+        if (!historyMenu) { return; }
         historyMenu.innerHTML = '';
 
         if (conversations.length === 0) {
@@ -2691,14 +2689,14 @@
       // settings value and re-dispatch, then mirror back. One source of truth.
       if (modelSelectInline) {
         modelSelectInline.addEventListener('change', function() {
-          if (!modelSelect) return;
+          if (!modelSelect) { return; }
           modelSelect.value = modelSelectInline.value;
           modelSelect.dispatchEvent(new Event('change'));
         });
       }
       if (effortSelectInline) {
         effortSelectInline.addEventListener('change', function() {
-          if (!effortSelect) return;
+          if (!effortSelect) { return; }
           effortSelect.value = effortSelectInline.value;
           effortSelect.dispatchEvent(new Event('change'));
         });
@@ -2818,13 +2816,13 @@
           state.agentSettings.tokenLimitEnabled = !state.agentSettings.tokenLimitEnabled;
           if (state.agentSettings.tokenLimitEnabled) {
             tokenLimitToggle.classList.add('active');
-            if (tokenBudgetSection) tokenBudgetSection.classList.remove('hidden');
+            if (tokenBudgetSection) { tokenBudgetSection.classList.remove('hidden'); }
             // Restore budget value when enabled
             var budgetValue = state.agentSettings.maxTokenBudget || 2000;
             postMessageWithPanelId({ type: 'updateSettings', payload: { 'agents.maxTokenBudget': budgetValue } });
           } else {
             tokenLimitToggle.classList.remove('active');
-            if (tokenBudgetSection) tokenBudgetSection.classList.add('hidden');
+            if (tokenBudgetSection) { tokenBudgetSection.classList.add('hidden'); }
             // Set to 0 (unlimited) when disabled
             postMessageWithPanelId({ type: 'updateSettings', payload: { 'agents.maxTokenBudget': 0 } });
           }
@@ -2834,8 +2832,8 @@
       if (tokenBudgetInput) {
         tokenBudgetInput.addEventListener('change', function() {
           var value = parseInt(tokenBudgetInput.value, 10);
-          if (value < 100) value = 100;
-          if (value > 16000) value = 16000;
+          if (value < 100) { value = 100; }
+          if (value > 16000) { value = 16000; }
           tokenBudgetInput.value = value;
           state.agentSettings.maxTokenBudget = value;
           postMessageWithPanelId({ type: 'updateSettings', payload: { 'agents.maxTokenBudget': value } });
@@ -2848,10 +2846,10 @@
           var quickActionsContainer = document.getElementById('quick-actions-container');
           if (state.agentSettings.showSuggestions) {
             suggestionsToggle.classList.add('active');
-            if (quickActionsContainer) quickActionsContainer.classList.remove('hidden');
+            if (quickActionsContainer) { quickActionsContainer.classList.remove('hidden'); }
           } else {
             suggestionsToggle.classList.remove('active');
-            if (quickActionsContainer) quickActionsContainer.classList.add('hidden');
+            if (quickActionsContainer) { quickActionsContainer.classList.add('hidden'); }
           }
           postMessageWithPanelId({ type: 'updateSettings', payload: { showSuggestions: state.agentSettings.showSuggestions } });
         });
@@ -2870,24 +2868,24 @@
       var autonomousCancelBtn = document.getElementById('autonomous-cancel-btn');
 
       function showAutonomySubSettings(level) {
-        if (manualTimeoutSection) manualTimeoutSection.classList.toggle('hidden', level !== 'manual');
-        if (semiAutoSettings) semiAutoSettings.classList.toggle('hidden', level !== 'semi-autonomous');
-        if (autonomousSettings) autonomousSettings.classList.toggle('hidden', level !== 'autonomous');
+        if (manualTimeoutSection) { manualTimeoutSection.classList.toggle('hidden', level !== 'manual'); }
+        if (semiAutoSettings) { semiAutoSettings.classList.toggle('hidden', level !== 'semi-autonomous'); }
+        if (autonomousSettings) { autonomousSettings.classList.toggle('hidden', level !== 'autonomous'); }
       }
 
       function updateAutonomyIndicator() {
         var indicator = document.getElementById('autonomy-indicator');
         var label = document.getElementById('autonomy-indicator-label');
-        if (!indicator) return;
+        if (!indicator) { return; }
         indicator.classList.remove('autonomous', 'semi-autonomous');
         if (state.autonomyLevel === 'autonomous') {
           indicator.style.display = 'flex';
           indicator.classList.add('autonomous');
-          if (label) label.textContent = 'Autonomous';
+          if (label) { label.textContent = 'Autonomous'; }
         } else if (state.autonomyLevel === 'semi-autonomous') {
           indicator.style.display = 'flex';
           indicator.classList.add('semi-autonomous');
-          if (label) label.textContent = 'Semi-Auto';
+          if (label) { label.textContent = 'Semi-Auto'; }
         } else {
           indicator.style.display = 'none';
         }
@@ -2931,9 +2929,9 @@
         }
 
         // Sync dropdowns
-        if (autonomySelect) autonomySelect.value = newLevel;
+        if (autonomySelect) { autonomySelect.value = newLevel; }
         var popupAutonomy = document.getElementById('popup-autonomy-select');
-        if (popupAutonomy) popupAutonomy.value = newLevel;
+        if (popupAutonomy) { popupAutonomy.value = newLevel; }
 
         updateAutonomyIndicator();
         updateBehaviorIndicator();
@@ -2950,8 +2948,8 @@
       var autonomousSafetySelect = document.getElementById('autonomous-safety-select');
 
       function syncSafetySelects(value) {
-        if (semiAutoSafetySelect) semiAutoSafetySelect.value = value;
-        if (autonomousSafetySelect) autonomousSafetySelect.value = value;
+        if (semiAutoSafetySelect) { semiAutoSafetySelect.value = value; }
+        if (autonomousSafetySelect) { autonomousSafetySelect.value = value; }
         postMessageWithPanelId({ type: 'updateSettings', payload: { 'autonomous.safetyMode': value } });
       }
 
@@ -3001,7 +2999,7 @@
       if (autonomousConfirmBtn) {
         autonomousConfirmBtn.addEventListener('click', function() {
           var goalText = autonomousGoalInput ? autonomousGoalInput.value.trim() : '';
-          if (autonomousOverlay) autonomousOverlay.classList.add('hidden');
+          if (autonomousOverlay) { autonomousOverlay.classList.add('hidden'); }
           postMessageWithPanelId({
             type: 'confirmAutonomousActivation',
             payload: { goal: goalText || undefined }
@@ -3011,12 +3009,12 @@
 
       if (autonomousCancelBtn) {
         autonomousCancelBtn.addEventListener('click', function() {
-          if (autonomousOverlay) autonomousOverlay.classList.add('hidden');
+          if (autonomousOverlay) { autonomousOverlay.classList.add('hidden'); }
           // Revert to previous level since user cancelled
           state.autonomyLevel = state.previousAutonomyLevel;
-          if (autonomySelect) autonomySelect.value = state.autonomyLevel;
+          if (autonomySelect) { autonomySelect.value = state.autonomyLevel; }
           var popupAut = document.getElementById('popup-autonomy-select');
-          if (popupAut) popupAut.value = state.autonomyLevel;
+          if (popupAut) { popupAut.value = state.autonomyLevel; }
           showAutonomySubSettings(state.autonomyLevel);
           updateAutonomyIndicator();
           updateBehaviorIndicator();
@@ -3041,9 +3039,9 @@
         quickActionsHideBtn.addEventListener('click', function() {
           state.agentSettings.showSuggestions = false;
           var quickActionsContainer = document.getElementById('quick-actions-container');
-          if (quickActionsContainer) quickActionsContainer.classList.add('hidden');
+          if (quickActionsContainer) { quickActionsContainer.classList.add('hidden'); }
           // Update settings toggle if visible
-          if (suggestionsToggle) suggestionsToggle.classList.remove('active');
+          if (suggestionsToggle) { suggestionsToggle.classList.remove('active'); }
           postMessageWithPanelId({ type: 'updateSettings', payload: { showSuggestions: false } });
         });
       }
@@ -3121,7 +3119,7 @@
 
       // Function to show/hide brainstorm section based on provider availability
       function updateBrainstormSectionVisibility() {
-        if (!brainstormAgentSection) return;
+        if (!brainstormAgentSection) { return; }
 
         var providerAvailability = state.providerAvailability || {};
 
@@ -3168,7 +3166,7 @@
 
       // Function to sync brainstorm agents UI from state
       function updateBrainstormAgentsUI() {
-        if (!state.brainstormAgents) return;
+        if (!state.brainstormAgents) { return; }
 
         brainstormAgentCheckboxes.forEach(function(cb) {
           cb.checked = state.brainstormAgents.includes(cb.value);
@@ -3221,7 +3219,7 @@
       // brainstorm pseudo-agent, pre-manifest renders) keep it visible.
       function updateThinkingSectionVisibility(provider) {
         var thinkingSection = document.getElementById('thinking-section');
-        if (!thinkingSection) return;
+        if (!thinkingSection) { return; }
         var entry = getManifestEntry(provider);
         var caps = entry && entry.capabilities;
         var hidden = !!(caps && caps.thinkingStyle === 'none');
@@ -3240,7 +3238,7 @@
       var EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' };
       function updateEffortSectionVisibility(provider) {
         var section = document.getElementById('effort-section');
-        if (!section) return;
+        if (!section) { return; }
         var levels, effortDefault;
         if (provider === 'mysti') {
           // The Mysti coordinator honors settings.effortLevel (clamped low→high),
@@ -3273,7 +3271,7 @@
 
       // Function to show/hide strategy indicator chip based on provider
       function updateStrategyIndicatorVisibility(provider) {
-        if (!strategyIndicator) return;
+        if (!strategyIndicator) { return; }
         if (provider === 'brainstorm') {
           strategyIndicator.classList.remove('hidden');
           updateStrategyIndicator();
@@ -3562,7 +3560,7 @@
       };
 
       function updateStrategyIndicator() {
-        if (!strategyIndicator) return;
+        if (!strategyIndicator) { return; }
         var current = state.brainstormStrategy || 'quick';
         strategyIndicator.textContent = strategyLabels[current] || current;
         strategyIndicator.title = 'Strategy: ' + (strategyDescriptions[current] || current) + ' (click to cycle)';
@@ -3620,7 +3618,7 @@
         agentSelectBtn.addEventListener('click', function() {
           agentMenu.classList.toggle('hidden');
           // Close slash menu if open
-          if (slashMenu) slashMenu.classList.add('hidden');
+          if (slashMenu) { slashMenu.classList.add('hidden'); }
         });
 
         // Agent menu clicks with event delegation
@@ -3640,7 +3638,7 @@
 
           // SECOND: Check if a menu item was clicked
           var menuItem = e.target.closest('.agent-menu-item');
-          if (!menuItem) return; // Click was on header/divider/etc
+          if (!menuItem) { return; } // Click was on header/divider/etc
 
           // Skip disabled items
           if (menuItem.classList.contains('disabled')) {
@@ -3655,7 +3653,7 @@
             state.activeAgent = agent;
             state.settings.provider = agent;
 
-            if (providerSelect) providerSelect.value = agent;
+            if (providerSelect) { providerSelect.value = agent; }
 
             // brainstorm + mysti are Mysti-branded pseudo-agents with no model list.
             if (agent !== 'brainstorm' && agent !== 'mysti') {
@@ -3675,7 +3673,7 @@
       }
 
       function updateModelsForProvider(providerId) {
-        if (!state.providers || state.providers.length === 0) return;
+        if (!state.providers || state.providers.length === 0) { return; }
 
         var provider = state.providers.find(function(p) { return p.name === providerId; });
         if (provider && provider.models) {
@@ -3733,7 +3731,7 @@
        * an error. Returns true when the picker ended up on the id.
        */
       function selectModelOption(modelId) {
-        if (!modelSelect || !modelId) return false;
+        if (!modelSelect || !modelId) { return false; }
         var present = Array.prototype.some.call(modelSelect.options, function(o) {
           return o.value === modelId;
         });
@@ -3762,13 +3760,13 @@
         if (!state.providerSettings) { state.providerSettings = {}; }
         state.providerSettings.customModel = customModel || '';
         if (customModel) {
-          if (modelSelect) modelSelect.value = '__custom__';
-          if (customModelSection) customModelSection.classList.remove('hidden');
-          if (customModelInput) customModelInput.value = customModel;
+          if (modelSelect) { modelSelect.value = '__custom__'; }
+          if (customModelSection) { customModelSection.classList.remove('hidden'); }
+          if (customModelInput) { customModelInput.value = customModel; }
           return;
         }
-        if (customModelSection) customModelSection.classList.add('hidden');
-        if (customModelInput) customModelInput.value = '';
+        if (customModelSection) { customModelSection.classList.add('hidden'); }
+        if (customModelInput) { customModelInput.value = ''; }
         selectModelOption(state.settings.model);
       }
 
@@ -3780,7 +3778,7 @@
        * list no longer carries it).
        */
       function renderModelOptions(provider) {
-        if (!modelSelect || !provider || !Array.isArray(provider.models)) return;
+        if (!modelSelect || !provider || !Array.isArray(provider.models)) { return; }
 
         var selected = modelSelect.value;
         var activeId = (selected && selected !== '__custom__')
@@ -3817,7 +3815,7 @@
        */
       function renderUpdateNotices() {
         var host = document.getElementById('update-notices');
-        if (!host) return;
+        if (!host) { return; }
 
         var models = (state.newModelNotices || []).slice();
         var updates = (state.cliUpdateNotices || []).slice();
@@ -3829,7 +3827,7 @@
         }
 
         models.sort(function(a, b) {
-          if (!!a.isActiveProvider !== !!b.isActiveProvider) return a.isActiveProvider ? -1 : 1;
+          if (!!a.isActiveProvider !== !!b.isActiveProvider) { return a.isActiveProvider ? -1 : 1; }
           return (b.announcedAt || 0) - (a.announcedAt || 0);
         });
 
@@ -3883,12 +3881,12 @@
        */
       (function bindUpdateNoticeActions() {
         var host = document.getElementById('update-notices');
-        if (!host) return;
+        if (!host) { return; }
         host.addEventListener('click', function(e) {
           var btn = e.target && e.target.closest ? e.target.closest('button[data-action]') : null;
-          if (!btn) return;
+          if (!btn) { return; }
           var card = btn.closest('.update-card');
-          if (!card) return;
+          if (!card) { return; }
 
           var provider = card.getAttribute('data-provider') || '';
           var modelId = card.getAttribute('data-model') || '';
@@ -3918,14 +3916,14 @@
        * the panel currently showing that provider repaints.
        */
       function applyModelsUpdate(payload) {
-        if (!payload || !payload.provider || !Array.isArray(payload.models)) return;
-        if (!state.providers || state.providers.length === 0) return;
+        if (!payload || !payload.provider || !Array.isArray(payload.models)) { return; }
+        if (!state.providers || state.providers.length === 0) { return; }
 
         var provider = state.providers.find(function(p) { return p.name === payload.provider; });
-        if (!provider) return;
+        if (!provider) { return; }
 
         provider.models = payload.models;
-        if (payload.defaultModel) provider.defaultModel = payload.defaultModel;
+        if (payload.defaultModel) { provider.defaultModel = payload.defaultModel; }
 
         if (state.settings && state.settings.provider === payload.provider) {
           renderModelOptions(provider);
@@ -3947,8 +3945,8 @@
           } else {
             item.classList.remove('selected');
             // Remove "Active" badge
-            var badge = item.querySelector('.agent-item-badge');
-            if (badge) badge.remove();
+            badge = item.querySelector('.agent-item-badge');
+            if (badge) { badge.remove(); }
           }
         });
         // Update agent button label and icon (W6: identity from the manifest;
@@ -3983,9 +3981,9 @@
       function updateThemeAwareLogos() {
         var providers = (state.providerManifest && state.providerManifest.providers) || [];
         providers.forEach(function(entry) {
-          if (!entry.themeAwareLogo) return;
+          if (!entry.themeAwareLogo) { return; }
           var logo = getEntryLogo(entry);
-          if (!logo) return;
+          if (!logo) { return; }
           document.querySelectorAll('img[data-agent-logo="' + entry.id + '"]').forEach(function(img) {
             img.src = logo;
           });
@@ -3994,7 +3992,7 @@
             var agentIconEl = document.getElementById('agent-icon');
             if (agentIconEl) {
               var img = agentIconEl.querySelector('img');
-              if (img) img.src = logo;
+              if (img) { img.src = logo; }
             }
           }
         });
@@ -4040,9 +4038,9 @@
       }
 
       function updateEnhanceAffordance() {
-        if (!enhanceBtn) return;
+        if (!enhanceBtn) { return; }
         // A click already in flight owns the button's label/state.
-        if (enhanceBtn.classList.contains('enhancing')) return;
+        if (enhanceBtn.classList.contains('enhancing')) { return; }
 
         var resolved = resolveEnhanceProvider();
         if (!resolved) {
@@ -4089,7 +4087,7 @@
       }
 
       function updateProviderAvailability() {
-        if (!state.providerAvailability) return;
+        if (!state.providerAvailability) { return; }
         updateEnhanceAffordance();
 
         var availability = state.providerAvailability;
@@ -4100,7 +4098,7 @@
         getManifestProviderIds().forEach(function(providerId) {
           if (availability[providerId] && availability[providerId].available) {
             availableCount++;
-            if (!firstAvailable) firstAvailable = providerId;
+            if (!firstAvailable) { firstAvailable = providerId; }
           }
         });
 
@@ -4144,13 +4142,13 @@
                 var badge = existingBadge || document.createElement('span');
                 badge.className = 'agent-item-badge';
                 badge.textContent = 'Requires 2+';
-                if (!existingBadge) item.appendChild(badge);
+                if (!existingBadge) { item.appendChild(badge); }
               }
             } else {
               item.classList.remove('disabled');
               item.title = '';
               // Remove disabled badge if not active
-              var badge = item.querySelector('.agent-item-badge');
+              badge = item.querySelector('.agent-item-badge');
               if (badge && badge.textContent === 'Requires 2+') {
                 badge.remove();
               }
@@ -4162,7 +4160,7 @@
               item.title = 'Not installed - click Install to set up';
 
               // Add or update "Not Installed" badge inside the item
-              var badge = item.querySelector('.agent-item-badge');
+              badge = item.querySelector('.agent-item-badge');
               if (!badge) {
                 badge = document.createElement('span');
                 badge.className = 'agent-item-badge';
@@ -4190,12 +4188,12 @@
               item.title = '';
               delete item.dataset.installCommand;
               // Remove "Not Installed" badge
-              var badge = item.querySelector('.agent-item-badge');
+              badge = item.querySelector('.agent-item-badge');
               if (badge && badge.textContent === 'Not Installed') {
                 badge.remove();
               }
               // Remove Install button
-              var installBtn = item.querySelector('.agent-install-btn');
+              installBtn = item.querySelector('.agent-install-btn');
               if (installBtn) {
                 installBtn.remove();
               }
@@ -4243,7 +4241,7 @@
           enhanceBtn.classList.add('enhancing');
           enhanceBtn.title = 'Enhancing prompt...';
           var inputArea = document.querySelector('.input-area');
-          if (inputArea) inputArea.classList.add('enhancing');
+          if (inputArea) { inputArea.classList.add('enhancing'); }
 
           // Safety timeout - reset UI if no response after 30 seconds
           enhanceTimeout = setTimeout(function() {
@@ -4251,7 +4249,7 @@
               enhanceBtn.classList.remove('enhancing');
               updateEnhanceAffordance();
               var ia = document.querySelector('.input-area');
-              if (ia) ia.classList.remove('enhancing');
+              if (ia) { ia.classList.remove('enhancing'); }
               inputEl.placeholder = 'Enhancement timed out. Try again.';
               setTimeout(function() {
                 inputEl.placeholder = 'Ask Mysti...';
@@ -4322,7 +4320,7 @@
             currentTurnAttribution = message.payload || null;
             // Perf: per-response chunk counter (ring buffer keeps rolling
             // across responses — "last 2000 samples").
-            if (perfState.enabled) perfState.chunkCount = 0;
+            if (perfState.enabled) { perfState.chunkCount = 0; }
             // Clean up any incomplete streaming message from previous request
             var oldStreaming = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
             if (oldStreaming) {
@@ -4350,7 +4348,7 @@
           case 'responseComplete':
             // Perf: post the per-response chunk-cost summary + heap sample
             // ("done" report). No-op (single boolean check) when disabled.
-            if (perfState.enabled) postMessageWithPanelId(perfBuildReport());
+            if (perfState.enabled) { postMessageWithPanelId(perfBuildReport()); }
             hideLoading();
             // Payload is { message, usage } - extract message for finalization
             var responsePayload = message.payload || {};
@@ -4598,7 +4596,7 @@
             break;
           case 'clearSuggestions':
             // Clear suggestions when user interacts with questions/plans
-            var suggestionsContainer = document.getElementById('quick-actions');
+            suggestionsContainer = document.getElementById('quick-actions');
             if (suggestionsContainer) {
               suggestionsContainer.classList.remove('loading');
               suggestionsContainer.innerHTML = '';
@@ -4666,7 +4664,7 @@
                 ? ids.map(function(id) { return document.querySelector('.permission-card[data-id="' + String(id).replace(/"/g, '\\"') + '"]'); }).filter(Boolean)
                 : Array.prototype.slice.call(document.querySelectorAll('.permission-card.pending'));
               cards.forEach(function(card) {
-                if (!card || !card.classList.contains('pending')) return;
+                if (!card || !card.classList.contains('pending')) { return; }
                 card.classList.remove('pending');
                 card.classList.add('expired');
                 var actionsEl = card.querySelector('.permission-actions');
@@ -4808,7 +4806,7 @@
             // Reset enhancing state
             enhanceBtn.classList.remove('enhancing');
             var inputAreaReset = document.querySelector('.input-area');
-            if (inputAreaReset) inputAreaReset.classList.remove('enhancing');
+            if (inputAreaReset) { inputAreaReset.classList.remove('enhancing'); }
 
             // Payload is a PromptEnhancedPayload object; a bare string is the
             // legacy shape a cached webview may still receive mid-upgrade.
@@ -4849,7 +4847,7 @@
             }
             enhanceBtn.classList.remove('enhancing');
             var inputAreaUnavail = document.querySelector('.input-area');
-            if (inputAreaUnavail) inputAreaUnavail.classList.remove('enhancing');
+            if (inputAreaUnavail) { inputAreaUnavail.classList.remove('enhancing'); }
 
             enhanceBtn.disabled = true;
             enhanceBtn.title = (message.payload && message.payload.reason) || 'Prompt enhancement is not available';
@@ -4865,7 +4863,7 @@
             // Reset enhancing state on error
             enhanceBtn.classList.remove('enhancing');
             var inputAreaError = document.querySelector('.input-area');
-            if (inputAreaError) inputAreaError.classList.remove('enhancing');
+            if (inputAreaError) { inputAreaError.classList.remove('enhancing'); }
             updateEnhanceAffordance();
 
             // Show error briefly in the input area
@@ -5003,7 +5001,7 @@
             state.activeAgent = message.payload.agent;
             state.settings.provider = message.payload.agent;
             // Sync provider dropdown
-            if (providerSelect) providerSelect.value = message.payload.agent;
+            if (providerSelect) { providerSelect.value = message.payload.agent; }
             // Plan 25: an extension-driven switch (the action card's "switch to
             // another agent") must repaint the same surfaces a menu click does,
             // or the model picker and capability chips keep showing the agent
@@ -5119,9 +5117,9 @@
               }
               var overlay = document.getElementById('autonomous-confirm-overlay');
               var goalInput = document.getElementById('autonomous-goal-input');
-              if (overlay) overlay.classList.remove('hidden');
-              if (goalInput) goalInput.value = '';
-              if (goalInput) goalInput.focus();
+              if (overlay) { overlay.classList.remove('hidden'); }
+              if (goalInput) { goalInput.value = ''; }
+              if (goalInput) { goalInput.focus(); }
             }
             break;
 
@@ -5129,9 +5127,9 @@
             {
               state.autonomyLevel = 'autonomous';
               var aSelect = document.getElementById('autonomy-select');
-              if (aSelect) aSelect.value = 'autonomous';
+              if (aSelect) { aSelect.value = 'autonomous'; }
               var popupASelect = document.getElementById('popup-autonomy-select');
-              if (popupASelect) popupASelect.value = 'autonomous';
+              if (popupASelect) { popupASelect.value = 'autonomous'; }
               showAutonomySubSettings('autonomous');
               updateAutonomyIndicator();
               updateBehaviorIndicator();
@@ -5143,10 +5141,10 @@
               // If payload has stats, it was a real deactivation — go back to manual
               if (message.payload && message.payload.totalDecisions !== undefined) {
                 state.autonomyLevel = 'manual';
-                var aSelect = document.getElementById('autonomy-select');
-                if (aSelect) aSelect.value = 'manual';
-                var popupASelect = document.getElementById('popup-autonomy-select');
-                if (popupASelect) popupASelect.value = 'manual';
+                aSelect = document.getElementById('autonomy-select');
+                if (aSelect) { aSelect.value = 'manual'; }
+                popupASelect = document.getElementById('popup-autonomy-select');
+                if (popupASelect) { popupASelect.value = 'manual'; }
                 showAutonomySubSettings('manual');
                 // Restore manual timeout behavior
                 var tbSelect = document.getElementById('timeout-behavior-select');
@@ -5161,15 +5159,15 @@
                     message.payload.tasksCompleted + ' tasks completed.';
                   console.log('[Mysti] ' + statsText);
                   var feedEl = document.getElementById('autonomous-decision-feed');
-                  if (feedEl) feedEl.remove();
+                  if (feedEl) { feedEl.remove(); }
                 }
               } else {
                 // Cancelled confirmation — revert to previous level
                 state.autonomyLevel = state.previousAutonomyLevel;
-                var aSelect = document.getElementById('autonomy-select');
-                if (aSelect) aSelect.value = state.autonomyLevel;
-                var popupASelect = document.getElementById('popup-autonomy-select');
-                if (popupASelect) popupASelect.value = state.autonomyLevel;
+                aSelect = document.getElementById('autonomy-select');
+                if (aSelect) { aSelect.value = state.autonomyLevel; }
+                popupASelect = document.getElementById('popup-autonomy-select');
+                if (popupASelect) { popupASelect.value = state.autonomyLevel; }
                 showAutonomySubSettings(state.autonomyLevel);
               }
               updateAutonomyIndicator();
@@ -5327,10 +5325,10 @@
               var msgEl = document.getElementById('stat-messages');
               var brainEl = document.getElementById('stat-brainstorms');
               var streakEl = document.getElementById('stat-streak');
-              if (convEl) convEl.textContent = String(data.stats.totalConversations || 0);
-              if (msgEl) msgEl.textContent = String(data.stats.totalMessages || 0);
-              if (brainEl) brainEl.textContent = String(data.stats.totalBrainstorms || 0);
-              if (streakEl) streakEl.textContent = String(data.stats.dayStreak || 0);
+              if (convEl) { convEl.textContent = String(data.stats.totalConversations || 0); }
+              if (msgEl) { msgEl.textContent = String(data.stats.totalMessages || 0); }
+              if (brainEl) { brainEl.textContent = String(data.stats.totalBrainstorms || 0); }
+              if (streakEl) { streakEl.textContent = String(data.stats.dayStreak || 0); }
             }
             break;
           }
@@ -5352,34 +5350,34 @@
         const daemonActions = document.getElementById('active-mode-daemon-actions');
         const headerBtn = document.getElementById('active-mode-btn');
         const headerDot = document.getElementById('active-mode-btn-dot');
-        if (!strip || !dot || !label) return;
+        if (!strip || !dot || !label) { return; }
 
         if (!payload.installed) {
           strip.style.display = 'none';
-          if (headerBtn) headerBtn.style.display = 'none';
+          if (headerBtn) { headerBtn.style.display = 'none'; }
           return;
         }
 
         strip.style.display = 'block';
-        if (headerBtn) headerBtn.style.display = '';
+        if (headerBtn) { headerBtn.style.display = ''; }
         const status = payload.status;
         if (status && status.running) {
           dot.classList.add('connected');
           const chCount = status.channelCount || 0;
           label.textContent = 'OpenClaw Active' + (chCount > 0 ? ' \u00B7 ' + chCount + ' channel' + (chCount !== 1 ? 's' : '') : '');
-          if (daemonActions) daemonActions.style.display = 'none';
+          if (daemonActions) { daemonActions.style.display = 'none'; }
           if (headerDot) { headerDot.className = 'active-mode-btn-dot connected'; }
         } else {
           dot.classList.remove('connected');
           label.textContent = 'OpenClaw Offline';
-          if (daemonActions) daemonActions.style.display = 'block';
+          if (daemonActions) { daemonActions.style.display = 'block'; }
           if (headerDot) { headerDot.className = 'active-mode-btn-dot offline'; }
         }
       }
 
       function handleActiveModeChannels(channels) {
         const container = document.getElementById('active-mode-channels');
-        if (!container) return;
+        if (!container) { return; }
 
         if (!channels || channels.length === 0) {
           container.innerHTML = '<div class="active-mode-empty">No channels connected</div>';
@@ -5412,11 +5410,11 @@
 
       function handleActiveModeActivity(entry) {
         var container = document.getElementById('active-mode-activity');
-        if (!container) return;
+        if (!container) { return; }
 
         // Remove empty placeholder if present
         var empty = container.querySelector('.active-mode-empty');
-        if (empty) empty.remove();
+        if (empty) { empty.remove(); }
 
         var el = document.createElement('div');
         el.className = 'active-mode-activity-entry';
@@ -5460,10 +5458,10 @@
       // Visual test mini status handler (dashboard runs in separate tab)
       var vtMiniHideTimer = null;
       function handleVisualTestMiniStatus(chunk) {
-        if (!chunk) return;
+        if (!chunk) { return; }
         var bar = document.getElementById('vt-mini-status');
         var text = document.getElementById('vt-mini-status-text');
-        if (!bar || !text) return;
+        if (!bar || !text) { return; }
 
         bar.classList.remove('hidden');
         if (vtMiniHideTimer) { clearTimeout(vtMiniHideTimer); vtMiniHideTimer = null; }
@@ -5528,7 +5526,7 @@
 
       function handleExportResult(payload) {
         var toast = document.getElementById('export-toast');
-        if (!toast) return;
+        if (!toast) { return; }
         if (payload && payload.success) {
           toast.textContent = 'Copied to clipboard!';
           toast.classList.add('visible');
@@ -5640,7 +5638,7 @@
 
       function showExportToast(text) {
         var toast = document.getElementById('export-toast');
-        if (!toast) return;
+        if (!toast) { return; }
         toast.textContent = text;
         toast.classList.add('visible');
         setTimeout(function() {
@@ -5650,9 +5648,9 @@
 
       function formatTimeAgo(timestamp) {
         var diff = Date.now() - timestamp;
-        if (diff < 60000) return 'now';
-        if (diff < 3600000) return Math.floor(diff / 60000) + 'm';
-        if (diff < 86400000) return Math.floor(diff / 3600000) + 'h';
+        if (diff < 60000) { return 'now'; }
+        if (diff < 3600000) { return Math.floor(diff / 60000) + 'm'; }
+        if (diff < 86400000) { return Math.floor(diff / 3600000) + 'h'; }
         return Math.floor(diff / 86400000) + 'd';
       }
 
@@ -5671,7 +5669,7 @@
               body.style.display = hidden ? 'block' : 'none';
               toggle.classList.toggle('expanded', hidden);
               // Scroll strip into view
-              if (hidden) strip.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              if (hidden) { strip.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
             }
           };
         }
@@ -5787,7 +5785,7 @@
         updateSetupOverlay();
       }
 
-      function handleSetupComplete(payload) {
+      function handleSetupComplete() {
         reviveSetupRetry();   // terminal
         state.setup.isReady = true;
         state.setup.currentStep = 'ready';
@@ -5845,18 +5843,6 @@
         showAuthPromptUI(payload);
       }
 
-      function showSetupOverlay() {
-        // `skipSetup` does not cancel the extension's auth poll, so a later
-        // `setupFailed` used to re-raise this overlay after the user had
-        // explicitly left it — and by then `showAuthPromptUI` has replaced
-        // `.setup-content`, so what came back was a full-screen wall with no
-        // controls at all. A dismissal the user made by hand stands.
-        if (state.setup && state.setup.dismissedByUser) { return; }
-        var overlay = document.getElementById('setup-overlay');
-        if (overlay) {
-          overlay.classList.remove('hidden');
-        }
-      }
 
       function hideSetupOverlay() {
         var overlay = document.getElementById('setup-overlay');
@@ -5868,9 +5854,9 @@
 
       function updateSetupOverlay() {
         var overlay = document.getElementById('setup-overlay');
-        if (!overlay) return;
+        if (!overlay) { return; }
         // Every path that can re-raise this full-screen overlay has to respect
-        // an explicit dismissal, not just `showSetupOverlay`. `skipSetup` does
+        // an explicit dismissal. `skipSetup` does
         // not cancel the extension's auth poll, so a `setupFailed` arrives
         // afterwards and used to bring the wall back — by then with its buttons
         // replaced by `showAuthPromptUI`.
@@ -5918,14 +5904,14 @@
           if (errorSection) {
             errorSection.classList.remove('hidden');
             var errorMsg = errorSection.querySelector('.setup-error-message');
-            if (errorMsg) errorMsg.textContent = state.setup.error;
+            if (errorMsg) { errorMsg.textContent = state.setup.error; }
           }
         }
       }
 
       function showAuthPromptUI(payload) {
         var overlay = document.getElementById('setup-overlay');
-        if (!overlay) return;
+        if (!overlay) { return; }
         // The third path that un-hides this overlay. The invariant is "every
         // path respects a dismissal the user made by hand", and an invariant
         // with an exception is not one — an `authPrompt` arriving after a hand
@@ -5934,7 +5920,7 @@
 
         overlay.classList.remove('hidden');
         var content = overlay.querySelector('.setup-content');
-        if (!content) return;
+        if (!content) { return; }
 
         content.innerHTML =
           '<div class="setup-auth-prompt">' +
@@ -6059,7 +6045,7 @@
         showAuthOptionsModal(payload);
       }
 
-      function handleWizardComplete(payload) {
+      function handleWizardComplete() {
         hideWizard();
         // Main UI will be shown via initialState
       }
@@ -6071,7 +6057,7 @@
 
       function renderWizard() {
         var wizard = document.getElementById('setup-wizard');
-        if (!wizard) return;
+        if (!wizard) { return; }
 
         wizard.classList.remove('hidden');
 
@@ -6097,12 +6083,12 @@
 
       function updateWizardProviderCard(providerId) {
         var card = document.querySelector('.provider-card[data-provider="' + providerId + '"]');
-        if (!card) return;
+        if (!card) { return; }
 
         var provider = state.wizard.providers.find(function(p) {
           return p.providerId === providerId;
         });
-        if (!provider) return;
+        if (!provider) { return; }
 
         // Determine status
         var status = getWizardProviderStatus(provider);
@@ -6161,10 +6147,10 @@
       }
 
       function getWizardProviderStatus(provider) {
-        if (provider.setupStep === 'failed') return 'failed';
-        if (provider.setupStep && provider.setupStep !== 'complete') return provider.setupStep;
-        if (provider.installed && provider.authenticated) return 'ready';
-        if (provider.installed && !provider.authenticated) return 'not-authenticated';
+        if (provider.setupStep === 'failed') { return 'failed'; }
+        if (provider.setupStep && provider.setupStep !== 'complete') { return provider.setupStep; }
+        if (provider.installed && provider.authenticated) { return 'ready'; }
+        if (provider.installed && !provider.authenticated) { return 'not-authenticated'; }
         return 'not-installed';
       }
 
@@ -6312,7 +6298,7 @@
       // injected coordinator DAG node.id in data-node="…"). Coerces non-strings so
       // it is a drop-in for the deleted textContent version.
       function escapeHtml(str) {
-        if (str === null || str === undefined || str === '') return '';
+        if (str === null || str === undefined || str === '') { return ''; }
         return String(str).replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;')
@@ -6323,10 +6309,10 @@
       // ── Dynamic in-app messages (DeepMyst announcements) ──────────────────
       function renderInAppMessages(messages) {
         var container = document.getElementById('inapp-messages');
-        if (!container) return;
+        if (!container) { return; }
         container.innerHTML = '';
         (messages || []).forEach(function(msg) {
-          if (!msg || !msg.id) return;
+          if (!msg || !msg.id) { return; }
           container.appendChild(renderInAppMessageCard(msg));
         });
       }
@@ -6341,7 +6327,7 @@
       function dismissInAppCard(card, message, action, value) {
         sendInAppMessageAction(message, action || 'dismiss', value);
         card.classList.add('inapp-removing');
-        setTimeout(function() { if (card.parentNode) card.parentNode.removeChild(card); }, 200);
+        setTimeout(function() { if (card.parentNode) { card.parentNode.removeChild(card); } }, 200);
       }
 
       function renderInAppMessageCard(message) {
@@ -6408,7 +6394,7 @@
 
       function showInAppFreetext(card, message, choice) {
         var actions = card.querySelector('.inapp-actions');
-        if (actions) actions.remove();
+        if (actions) { actions.remove(); }
         var wrap = document.createElement('div');
         wrap.className = 'inapp-freetext';
         var input = document.createElement('textarea');
@@ -6426,7 +6412,7 @@
         wrap.appendChild(input);
         wrap.appendChild(submit);
         var bw = card.querySelector('.inapp-body-wrap');
-        if (bw) bw.appendChild(wrap);
+        if (bw) { bw.appendChild(wrap); }
         input.focus();
       }
 
@@ -6454,7 +6440,7 @@
 
       function handleDiagnosticsResult(payload) {
         var panel = document.getElementById('diagnostics-panel');
-        if (!panel) return;
+        if (!panel) { return; }
 
         var btn = document.querySelector('.wizard-diagnose-btn');
         if (btn) {
@@ -6489,7 +6475,7 @@
           result.providers.forEach(function(p) {
             var statusClass = p.installed ? (p.authenticated ? 'ok' : 'warn') : 'error';
             var statusText = p.installed ? (p.authenticated ? 'Ready' : 'Not authenticated') : 'Not installed';
-            if (p.error) statusText = p.error;
+            if (p.error) { statusText = p.error; }
             html += '<div class="diagnostics-row"><span class="label">' + escapeHtml(p.id) + '</span><span class="value ' + statusClass + '">' + escapeHtml(statusText) + (p.version ? ' (v' + escapeHtml(p.version) + ')' : '') + '</span></div>';
           });
           html += '</div>';
@@ -6522,7 +6508,7 @@
 
       function copyDiagnostics() {
         var panel = document.getElementById('diagnostics-panel');
-        if (!panel) return;
+        if (!panel) { return; }
         var data = panel.getAttribute('data-diagnostics');
         if (data) {
           copyToClipboard(data);
@@ -6604,7 +6590,7 @@
 
       function showAuthOptionsModal(payload) {
         var modal = document.getElementById('auth-options-modal');
-        if (!modal) return;
+        if (!modal) { return; }
 
         var subtitle = document.getElementById('auth-options-subtitle');
         if (subtitle) {
@@ -6728,22 +6714,22 @@
         var methodsSection = document.getElementById('install-methods-section');
         var manualSection = document.getElementById('install-manual-section');
         var progressSection = document.getElementById('install-progress-section');
-        if (progressSection) progressSection.classList.add('hidden');
+        if (progressSection) { progressSection.classList.add('hidden'); }
 
         var supportsAutoInstall = payload.supportsAutoInstall !== false;
         var installMethods = payload.installMethods || [];
 
         if (supportsAutoInstall) {
           // Auto-installable provider: show auto-install button + manual fallback
-          if (autoSection) autoSection.classList.remove('hidden');
-          if (methodsSection) methodsSection.classList.add('hidden');
-          if (manualSection) manualSection.classList.remove('hidden');
+          if (autoSection) { autoSection.classList.remove('hidden'); }
+          if (methodsSection) { methodsSection.classList.add('hidden'); }
+          if (manualSection) { manualSection.classList.remove('hidden'); }
           var autoBtn = document.getElementById('install-auto-btn');
-          if (autoBtn) autoBtn.disabled = false;
+          if (autoBtn) { autoBtn.disabled = false; }
         } else {
           // Interactive provider: hide auto-install, show install methods
-          if (autoSection) autoSection.classList.add('hidden');
-          if (manualSection) manualSection.classList.add('hidden');
+          if (autoSection) { autoSection.classList.add('hidden'); }
+          if (manualSection) { manualSection.classList.add('hidden'); }
 
           if (methodsSection) {
             methodsSection.classList.remove('hidden');
@@ -6817,13 +6803,13 @@
       }
 
       function startAutoInstallFromModal() {
-        if (!currentInstallProviderId) return;
+        if (!currentInstallProviderId) { return; }
 
         // Show progress, hide auto-install section
         var autoSection = document.getElementById('install-auto-section');
         var progressSection = document.getElementById('install-progress-section');
-        if (autoSection) autoSection.classList.add('hidden');
-        if (progressSection) progressSection.classList.remove('hidden');
+        if (autoSection) { autoSection.classList.add('hidden'); }
+        if (progressSection) { progressSection.classList.remove('hidden'); }
 
         rearmSetupOverlay();
 
@@ -6845,7 +6831,7 @@
         }
 
         if (payload.step === 'complete') {
-          if (progressMsg) progressMsg.textContent = '✓ ' + payload.message;
+          if (progressMsg) { progressMsg.textContent = '✓ ' + payload.message; }
           // Hide error details on success
           var errorDetails = document.getElementById('install-error-details');
           if (errorDetails) {
@@ -6858,7 +6844,7 @@
             postMessageWithPanelId({ type: 'requestProviderAvailability' });
           }, 1500);
         } else if (payload.step === 'failed') {
-          if (progressMsg) progressMsg.textContent = '✗ ' + payload.message;
+          if (progressMsg) { progressMsg.textContent = '✗ ' + payload.message; }
 
           // Show enhanced error details in the install modal
           var installErrorDetails = document.getElementById('install-error-details');
@@ -6910,7 +6896,7 @@
           if (payload.retryable !== false) {
             setTimeout(function() {
               var autoSection = document.getElementById('install-auto-section');
-              if (autoSection) autoSection.classList.remove('hidden');
+              if (autoSection) { autoSection.classList.remove('hidden'); }
             }, 2000);
           }
         }
@@ -7034,7 +7020,7 @@
 
       function updateProgressStepper(currentPhase) {
         var stepper = document.getElementById('brainstorm-stepper');
-        if (!stepper) return;
+        if (!stepper) { return; }
 
         var allSteps = stepper.querySelectorAll('.brainstorm-step');
         var allConns = stepper.querySelectorAll('.brainstorm-step-connector');
@@ -7096,10 +7082,10 @@
       // relying on selector escaping — iterate and compare dataset.node.
       function mystiNodeEl(nodeId) {
         var container = mystiContainerEl();
-        if (!container) return null;
+        if (!container) { return null; }
         var cards = container.querySelectorAll('.mysti-node');
         for (var i = 0; i < cards.length; i++) {
-          if (cards[i].dataset.node === nodeId) return cards[i];
+          if (cards[i].dataset.node === nodeId) { return cards[i]; }
         }
         return null;
       }
@@ -7139,22 +7125,22 @@
 
       function updateMystiStepper(currentPhase) {
         var stepper = document.getElementById('mysti-stepper');
-        if (!stepper) return;
+        if (!stepper) { return; }
         var allSteps = stepper.querySelectorAll('.brainstorm-step');
         var allConns = stepper.querySelectorAll('.brainstorm-step-connector');
         var phases = [];
         allSteps.forEach(function(s) { phases.push(s.dataset.phase); });
         var currentIdx = phases.indexOf(currentPhase);
-        if (currentIdx < 0) return;
+        if (currentIdx < 0) { return; }
         allSteps.forEach(function(step, i) {
           step.classList.remove('active', 'completed');
-          if (i < currentIdx) step.classList.add('completed');
-          else if (i === currentIdx) step.classList.add('active');
+          if (i < currentIdx) { step.classList.add('completed'); }
+          else if (i === currentIdx) { step.classList.add('active'); }
         });
         allConns.forEach(function(conn) {
           var afterIdx = phases.indexOf(conn.dataset.after);
-          if (afterIdx < currentIdx) conn.classList.add('completed');
-          else conn.classList.remove('completed');
+          if (afterIdx < currentIdx) { conn.classList.add('completed'); }
+          else { conn.classList.remove('completed'); }
         });
       }
 
@@ -7184,7 +7170,7 @@
 
       function mystiSetNodeStatus(nodeId, statusClass, label) {
         var el = mystiNodeEl(nodeId);
-        if (!el) return;
+        if (!el) { return; }
         var statusEl = el.querySelector('.mysti-node-status');
         if (statusEl) {
           statusEl.className = 'mysti-node-status ' + statusClass;
@@ -7219,15 +7205,15 @@
       }
 
       function handleMystiEvent(evt) {
-        if (!evt || !evt.type) return;
+        if (!evt || !evt.type) { return; }
         switch (evt.type) {
           case 'orch_status': {
             var container = mystiContainerEl();
             if (container) {
               var statusEl = container.querySelector('.mysti-status');
-              if (statusEl && evt.content) statusEl.textContent = evt.content;
+              if (statusEl && evt.content) { statusEl.textContent = evt.content; }
             }
-            if (evt.phase) updateMystiStepper(evt.phase);
+            if (evt.phase) { updateMystiStepper(evt.phase); }
             break;
           }
           case 'orch_plan': {
@@ -7247,11 +7233,11 @@
             if (el && evt.nodeBackend) {
               var disp = mystiBackendDisplay(evt.nodeBackend);
               var logoEl = el.querySelector('.mysti-node-logo');
-              if (logoEl) logoEl.src = disp.logo || MYSTI_LOGO;
+              if (logoEl) { logoEl.src = disp.logo || MYSTI_LOGO; }
               var nameEl = el.querySelector('.mysti-node-backend-name');
               if (nameEl) { nameEl.textContent = ' · ' + disp.name; nameEl.style.color = disp.color; }
               var stepEl = el.querySelector('.mysti-node-step');
-              if (stepEl) stepEl.style.color = disp.color;
+              if (stepEl) { stepEl.style.color = disp.color; }
               el.style.setProperty('--agent-color', disp.color);
             }
             scrollToBottom();
@@ -7293,7 +7279,7 @@
         var el = mystiNodeEl(evt.nodeId);
         var out = el ? el.querySelector('.mysti-node-output') : null;
         if (chunk.type === 'collab_text' && chunk.content) {
-          if (!out) return;
+          if (!out) { return; }
           mystiNodeText[evt.nodeId] = (mystiNodeText[evt.nodeId] || '') + chunk.content;
           out.innerHTML = formatContent(mystiNodeText[evt.nodeId]);
           scrollToBottom();
@@ -7344,10 +7330,10 @@
       }
 
       function mystiToolSummary(input) {
-        if (!input) return '';
-        if (input.file_path || input.path) return String(input.file_path || input.path);
-        if (input.command) return String(input.command);
-        if (input.pattern) return String(input.pattern);
+        if (!input) { return ''; }
+        if (input.file_path || input.path) { return String(input.file_path || input.path); }
+        if (input.command) { return String(input.command); }
+        if (input.pattern) { return String(input.pattern); }
         var keys = Object.keys(input);
         if (keys.length > 0) {
           var v = String(input[keys[0]]);
@@ -7358,7 +7344,7 @@
 
       function mystiNodeToolUse(nodeEl, toolCall) {
         var act = mystiNodeActivityEl(nodeEl);
-        if (!act || !toolCall) return;
+        if (!act || !toolCall) { return; }
         var inputJson = '';
         try { inputJson = JSON.stringify(toolCall.input || {}, null, 2); }
         catch (e) { inputJson = String(toolCall.input || '{}'); }
@@ -7416,11 +7402,11 @@
 
       function mystiNodeToolResult(nodeEl, toolCall) {
         var act = mystiNodeActivityEl(nodeEl);
-        if (!act || !toolCall) return;
+        if (!act || !toolCall) { return; }
         // CSS.escape the id (review [21]): a sub-agent-supplied id with a quote/
         // backslash would make querySelector throw and freeze the trace card.
         var toolDiv = act.querySelector('.subagent-tool-call[data-id="' + (window.CSS && CSS.escape ? CSS.escape(String(toolCall.id)) : String(toolCall.id)) + '"]');
-        if (!toolDiv) return;
+        if (!toolDiv) { return; }
         toolDiv.classList.remove('running');
         var resultStatus = (toolCall.status === 'failed') ? 'failed' : 'completed';
         toolDiv.classList.add(resultStatus);
@@ -7449,7 +7435,7 @@
 
       function mystiNodeThinking(nodeEl, nodeId, text) {
         var act = mystiNodeActivityEl(nodeEl);
-        if (!act) return;
+        if (!act) { return; }
         mystiNodeThinkingText[nodeId] = (mystiNodeThinkingText[nodeId] || '') + text;
         var block = act.querySelector('.mysti-node-thinking');
         if (!block) {
@@ -7471,10 +7457,10 @@
       // so a delegation is a live activity feed instead of a blank spinner.
       // ==================================================================
       function handleMystiDelegateTrace(payload) {
-        if (!payload || !payload.parentId || !payload.chunk) return;
+        if (!payload || !payload.parentId || !payload.chunk) { return; }
         var pid = (window.CSS && CSS.escape) ? CSS.escape(String(payload.parentId)) : String(payload.parentId);
         var card = messagesEl.querySelector('.tool-call[data-id="' + pid + '"]');
-        if (!card) return;
+        if (!card) { return; }
         var act = card.querySelector('.mysti-node-activity');
         if (!act) {
           act = document.createElement('div');
@@ -7517,7 +7503,7 @@
           messagesEl.appendChild(el);
         }
         var contentEl = el.querySelector('.message-content');
-        if (contentEl) contentEl.innerHTML = formatContent(content);
+        if (contentEl) { contentEl.innerHTML = formatContent(content); }
         scrollToBottom();
       }
 
@@ -7531,11 +7517,11 @@
           if (container) {
             container.classList.add('mysti-done', 'mysti-cancelled');
             var statusEl = container.querySelector('.mysti-status');
-            if (statusEl) statusEl.textContent = 'Cancelled';
+            if (statusEl) { statusEl.textContent = 'Cancelled'; }
           }
         } else {
           updateMystiStepper('complete');
-          if (container) container.classList.add('mysti-done');
+          if (container) { container.classList.add('mysti-done'); }
         }
         state.mystiSession = null;
         mystiNodeText = {};
@@ -7574,7 +7560,7 @@
       function handleJobStarted(payload) {
         payload = payload || {};
         var jobId = payload.jobId;
-        if (!jobId) return;
+        if (!jobId) { return; }
         // The turn becomes a background job — free the input AND remove the
         // bottom "thinking" spinner that responseStarted appended.
         hideLoading();
@@ -7606,7 +7592,7 @@
       function handleJobProgress(payload) {
         payload = payload || {};
         var card = jobCardEl(payload.jobId);
-        if (!card) return;
+        if (!card) { return; }
         if (payload.kind === 'thinking') {
           var think = card.querySelector('.mysti-job-thinking');
           if (!think) {
@@ -7616,18 +7602,18 @@
             card.querySelector('.mysti-job-activity').appendChild(think);
           }
           var tbody = think.querySelector('.mysti-job-thinking-body');
-          if (tbody) tbody.textContent += payload.content || '';
+          if (tbody) { tbody.textContent += payload.content || ''; }
           return;
         }
         jobOutputText[payload.jobId] = (jobOutputText[payload.jobId] || '') + (payload.content || '');
         var out = card.querySelector('.mysti-job-output');
-        if (out) out.innerHTML = formatContent(jobOutputText[payload.jobId]);
+        if (out) { out.innerHTML = formatContent(jobOutputText[payload.jobId]); }
         scrollToBottom();
       }
 
       function jobToolLine(card, toolCall) {
         var act = card.querySelector('.mysti-job-activity');
-        if (!act || !toolCall) return null;
+        if (!act || !toolCall) { return null; }
         var line = act.querySelector('.mysti-job-tool[data-id="' + cssAttr(toolCall.id) + '"]');
         if (!line) {
           line = document.createElement('div');
@@ -7644,9 +7630,9 @@
         payload = payload || {};
         var card = jobCardEl(payload.jobId);
         var tc = payload.toolCall;
-        if (!card || !tc) return;
+        if (!card || !tc) { return; }
         var line = jobToolLine(card, tc);
-        if (!line) return;
+        if (!line) { return; }
         // review[35]: label by the tool NAME, not always "delegate → agent" — a
         // background run also uses read/ls/grep/diag/remember/review, whose inputs
         // have no .agent/.task, so the old code showed identical blank
@@ -7670,23 +7656,23 @@
         payload = payload || {};
         var card = jobCardEl(payload.jobId);
         var tc = payload.toolCall;
-        if (!card || !tc) return;
+        if (!card || !tc) { return; }
         var line = jobToolLine(card, tc);
-        if (!line) return;
+        if (!line) { return; }
         line.classList.remove('running');
         line.classList.add(tc.status === 'failed' ? 'failed' : 'done');
         var spinner = line.querySelector('.mysti-job-tool-spinner');
-        if (spinner) spinner.outerHTML = '<span class="mysti-job-tool-icon">' + (tc.status === 'failed' ? '✗' : '✓') + '</span>';
+        if (spinner) { spinner.outerHTML = '<span class="mysti-job-tool-icon">' + (tc.status === 'failed' ? '✗' : '✓') + '</span>'; }
       }
 
       function jobFinish(jobId, statusText, statusClass) {
         var card = jobCardEl(jobId);
-        if (!card) return card;
+        if (!card) { return card; }
         card.classList.add('mysti-job-done');
         var spinner = card.querySelector('.mysti-job-spinner');
-        if (spinner) spinner.remove();
+        if (spinner) { spinner.remove(); }
         var stop = card.querySelector('.mysti-job-stop');
-        if (stop) stop.remove();
+        if (stop) { stop.remove(); }
         var status = card.querySelector('.mysti-job-status');
         if (status) { status.className = 'mysti-job-status ' + statusClass; status.textContent = statusText; }
         return card;
@@ -7700,9 +7686,9 @@
         // Ensure the final answer is shown (in case no incremental text streamed).
         if (card && msg && msg.content && !(jobOutputText[payload.jobId] || '').trim()) {
           var out = card.querySelector('.mysti-job-output');
-          if (out) out.innerHTML = formatContent(msg.content);
+          if (out) { out.innerHTML = formatContent(msg.content); }
         }
-        if (card && msg && msg.id) card.dataset.messageId = msg.id;
+        if (card && msg && msg.id) { card.dataset.messageId = msg.id; }
         delete jobOutputText[payload.jobId];
       }
 
@@ -7801,9 +7787,9 @@
         row.className = 'mysti-action-row';
 
         actions.forEach(function(action) {
-          if (action === 'switchAgent' || action === 'retry') return; // handled below
+          if (action === 'switchAgent' || action === 'retry') { return; } // handled below
           var spec = MYSTI_ACTION_LABELS[action];
-          if (!spec) return;
+          if (!spec) { return; }
           var btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'mysti-signin-btn' + (spec.primary ? '' : ' mysti-action-secondary');
@@ -7838,13 +7824,13 @@
           list.className = 'mysti-action-agents';
           list.hidden = true;
           agents.forEach(function(agent) {
-            if (!agent || !agent.id) return;
+            if (!agent || !agent.id) { return; }
             var item = document.createElement('button');
             item.type = 'button';
             item.className = 'mysti-action-agent';
             item.textContent = agent.name || agent.id;
             item.addEventListener('click', function() {
-              if (spent) return;
+              if (spent) { return; }
               disableCard();
               postMessageWithPanelId({
                 type: 'switchAgentAndRetry',
@@ -7879,7 +7865,7 @@
           retryBtn.className = 'mysti-signin-btn mysti-action-secondary';
           retryBtn.textContent = 'Retry';
           retryBtn.addEventListener('click', function() {
-            if (spent) return;
+            if (spent) { return; }
             disableCard();
             postMessageWithPanelId({
               type: 'switchAgentAndRetry',
@@ -7916,7 +7902,7 @@
 
       function makeCollapsible(sectionId, label) {
         var section = document.getElementById(sectionId);
-        if (!section || section.previousElementSibling && section.previousElementSibling.classList.contains('brainstorm-section-toggle')) return;
+        if (!section || section.previousElementSibling && section.previousElementSibling.classList.contains('brainstorm-section-toggle')) { return; }
 
         var toggle = document.createElement('div');
         toggle.className = 'brainstorm-section-toggle';
@@ -8030,11 +8016,11 @@
         var chunkType = payload.type || 'text';
 
         var bodyEl = document.getElementById('brainstorm-' + getAgentShortId(agentId) + '-body');
-        if (!bodyEl) return;
+        if (!bodyEl) { return; }
 
         // Remove typing indicator on first chunk
         var typingEl = document.getElementById('brainstorm-' + getAgentShortId(agentId) + '-typing');
-        if (typingEl) typingEl.remove();
+        if (typingEl) { typingEl.remove(); }
 
         // Clear timeout for this agent
         clearAgentTimeout(agentId);
@@ -8089,7 +8075,7 @@
 
         if (payload.phase === 'discussion') {
           var wrapper = document.getElementById('brainstorm-discussion-wrapper-' + state.brainstormSession);
-          if (wrapper) wrapper.classList.remove('hidden');
+          if (wrapper) { wrapper.classList.remove('hidden'); }
         }
 
         if (payload.phase === 'synthesis') {
@@ -8116,10 +8102,10 @@
 
       function handleBrainstormDiscussionRoundStart(payload) {
         var wrapper = document.getElementById('brainstorm-discussion-wrapper-' + state.brainstormSession);
-        if (wrapper) wrapper.classList.remove('hidden');
+        if (wrapper) { wrapper.classList.remove('hidden'); }
 
         var bubblesContainer = document.getElementById('brainstorm-discussion-bubbles-' + state.brainstormSession);
-        if (!bubblesContainer) return;
+        if (!bubblesContainer) { return; }
 
         var roundLabel = payload.label || ('Round ' + payload.roundNumber);
         var marker = document.createElement('div');
@@ -8135,11 +8121,11 @@
         var role = payload.role || '';
 
         var bubblesContainer = document.getElementById('brainstorm-discussion-bubbles-' + state.brainstormSession);
-        if (!bubblesContainer) return;
+        if (!bubblesContainer) { return; }
 
         // Show discussion wrapper
         var wrapper = document.getElementById('brainstorm-discussion-wrapper-' + state.brainstormSession);
-        if (wrapper) wrapper.classList.remove('hidden');
+        if (wrapper) { wrapper.classList.remove('hidden'); }
 
         // Determine alignment: first agent = left, second = right
         var agents = state.brainstormAgents || [];
@@ -8169,8 +8155,8 @@
 
         // Accumulate content
         var stateKey = 'discussion_' + agentId + '_' + (state.currentDiscussionRound || 1);
-        if (!state.discussionContent) state.discussionContent = {};
-        if (!state.discussionContent[stateKey]) state.discussionContent[stateKey] = '';
+        if (!state.discussionContent) { state.discussionContent = {}; }
+        if (!state.discussionContent[stateKey]) { state.discussionContent[stateKey] = ''; }
         state.discussionContent[stateKey] += content;
 
         var contentEl = msgEl.querySelector('.discussion-bubble-content');
@@ -8182,14 +8168,14 @@
 
       function handleBrainstormConvergenceUpdate(payload) {
         var convergence = payload.convergence;
-        if (!convergence) return;
+        if (!convergence) { return; }
 
         var bubblesContainer = document.getElementById('brainstorm-discussion-bubbles-' + state.brainstormSession);
-        if (!bubblesContainer) return;
+        if (!bubblesContainer) { return; }
 
         // Remove existing convergence meter if any
         var existing = bubblesContainer.querySelector('.convergence-meter');
-        if (existing) existing.remove();
+        if (existing) { existing.remove(); }
 
         var pct = Math.round(convergence.overallConvergence * 100);
         var level = pct < 30 ? 'low' : (pct < 70 ? 'medium' : 'high');
@@ -8209,7 +8195,7 @@
 
       function handleBrainstormDiscussionError(payload) {
         var bubblesContainer = document.getElementById('brainstorm-discussion-bubbles-' + state.brainstormSession);
-        if (!bubblesContainer) return;
+        if (!bubblesContainer) { return; }
 
         var agentInfo = getAgentDisplay(payload.agentId);
         var errorEl = document.createElement('div');
@@ -8227,7 +8213,7 @@
 
         // Remove typing indicator
         var typingEl = document.getElementById('brainstorm-' + getAgentShortId(agentId) + '-typing');
-        if (typingEl) typingEl.remove();
+        if (typingEl) { typingEl.remove(); }
 
         // Show error in the agent's message body
         var bodyEl = document.getElementById('brainstorm-' + getAgentShortId(agentId) + '-body');
@@ -8276,7 +8262,7 @@
             '<span class="message-model-info">Brainstorm Synthesis</span>' +
             '</div></div><div class="message-body"><div class="message-content">' +
             formatContent(payload.unifiedSolution) + '</div></div>';
-          if (payload.message) div.dataset.id = payload.message.id;
+          if (payload.message) { div.dataset.id = payload.message.id; }
           messagesEl.appendChild(div);
         }
 
@@ -8577,10 +8563,10 @@
           var msgEl = document.getElementById('stat-messages');
           var brainEl = document.getElementById('stat-brainstorms');
           var streakEl = document.getElementById('stat-streak');
-          if (convEl) convEl.textContent = String(stats.totalConversations || 0);
-          if (msgEl) msgEl.textContent = String(stats.totalMessages || 0);
-          if (brainEl) brainEl.textContent = String(stats.totalBrainstorms || 0);
-          if (streakEl) streakEl.textContent = String(stats.dayStreak || 0);
+          if (convEl) { convEl.textContent = String(stats.totalConversations || 0); }
+          if (msgEl) { msgEl.textContent = String(stats.totalMessages || 0); }
+          if (brainEl) { brainEl.textContent = String(stats.totalBrainstorms || 0); }
+          if (streakEl) { streakEl.textContent = String(stats.dayStreak || 0); }
         }
 
         // Badges
@@ -8642,7 +8628,7 @@
       }
 
       function handleDroppedFiles(dataTransfer) {
-        if (!dataTransfer || !dataTransfer.files || dataTransfer.files.length === 0) return;
+        if (!dataTransfer || !dataTransfer.files || dataTransfer.files.length === 0) { return; }
 
         for (var i = 0; i < dataTransfer.files.length; i++) {
           var file = dataTransfer.files[i];
@@ -8687,7 +8673,7 @@
 
       function renderAttachmentPreviews() {
         var container = document.getElementById('attachment-previews');
-        if (!container) return;
+        if (!container) { return; }
 
         if (state.attachments.length === 0) {
           container.innerHTML = '';
@@ -8743,7 +8729,7 @@
       var _rewindMenuEl = null;
 
       function getRewindMenuEl() {
-        if (_rewindMenuEl) return _rewindMenuEl;
+        if (_rewindMenuEl) { return _rewindMenuEl; }
         var menu = document.createElement('div');
         menu.className = 'rewind-menu';
         menu.id = 'rewind-menu';
@@ -8848,7 +8834,7 @@
       // snapshot runs off the send critical path). Stamp it on the button so
       // the code-rewind actions become available.
       function handleCheckpointCreated(payload) {
-        if (!payload || !payload.messageId || !payload.commit) return;
+        if (!payload || !payload.messageId || !payload.commit) { return; }
         var btn = messagesEl.querySelector('.message[data-id="' + payload.messageId + '"] .message-rewind-btn');
         if (btn) { btn.dataset.commit = payload.commit; }
         // If the menu is open for this very message, enable its code items now.
@@ -8866,7 +8852,7 @@
       }
 
       function handleRewindComplete(payload) {
-        if (!payload) return;
+        if (!payload) { return; }
         if (payload.ok) {
           showToast(payload.undone ? 'Rewind undone.' : 'Code rewound to checkpoint.', 'info');
         } else if (payload.reason && payload.reason !== 'cancelled') {
@@ -9430,7 +9416,7 @@
        */
       function enqueueMessage(text) {
         var content = (text || '').trim();
-        if (!content) return false;
+        if (!content) { return false; }
         // Attachments belong to the message they were staged for. Capturing
         // them here is what lets the drain hand the queued item ITS files and
         // give the composer back whatever was staged for the draft.
@@ -9460,7 +9446,7 @@
 
       function renderQueue() {
         var host = document.getElementById('queued-messages');
-        if (!host) return;
+        if (!host) { return; }
         host.classList.toggle('has-items', state.queue.length > 0);
         host.innerHTML = state.queue.map(function(q, i) {
           var att = (q.attachments && q.attachments.length) || 0;
@@ -9482,7 +9468,7 @@
 
       /** Send the next queued message. Only ever called from responseComplete. */
       function drainQueue() {
-        if (state.isLoading || state.queue.length === 0) return;
+        if (state.isLoading || state.queue.length === 0) { return; }
         var next = state.queue.shift();
         renderQueue();
         // Phase 2 made the composer live for the whole turn, so by the time a
@@ -9508,8 +9494,8 @@
 
       function sendMessage() {
         var content = inputEl.value.trim();
-        if (!content && state.attachments.length === 0) return;
-        if (state.isLoading) return;
+        if (!content && state.attachments.length === 0) { return; }
+        if (state.isLoading) { return; }
 
         // Hide quick actions when sending a message
         var quickActions = document.getElementById('quick-actions');
@@ -9584,7 +9570,7 @@
 
       function addMessage(msg) {
         var welcome = messagesEl.querySelector('.welcome-container');
-        if (welcome) welcome.remove();
+        if (welcome) { welcome.remove(); }
 
         var div = document.createElement('div');
         div.className = 'message ' + msg.role;
@@ -9670,7 +9656,7 @@
 
         var toolCallById = {};
         (msg.toolCalls || []).forEach(function(call) {
-          if (call && call.id) toolCallById[call.id] = call;
+          if (call && call.id) { toolCallById[call.id] = call; }
         });
 
         if (msg.segments && msg.segments.length > 0) {
@@ -9685,13 +9671,13 @@
           }
           var segmentIndex = 0;
           msg.segments.forEach(function(segment) {
-            if (!segment) return;
+            if (!segment) { return; }
             if (segment.type === 'thinking') {
               // All thinking funnels into ONE zone anchored where thinking
               // first appeared — identical to the live render.
               renderThinkingZone(body, thinkingStyle, segment.content || '');
             } else if (segment.type === 'text') {
-              if (!segment.content) return;
+              if (!segment.content) { return; }
               var segmentEl = document.createElement('div');
               segmentEl.className = 'message-content content-segment-' + segmentIndex;
               segmentIndex++;
@@ -9723,7 +9709,7 @@
             body.appendChild(flatContent);
           }
           (msg.toolCalls || []).forEach(function(call) {
-            if (call) body.appendChild(buildToolCallElement(call));
+            if (call) { body.appendChild(buildToolCallElement(call)); }
           });
         }
 
@@ -9742,7 +9728,7 @@
       var sessionCardState = null;
 
       function handleSessionEvent(evt) {
-        if (!evt || !evt.type) return;
+        if (!evt || !evt.type) { return; }
 
         if (evt.type === 'session_started') {
           sessionCardState = {
@@ -9755,7 +9741,7 @@
           renderSessionCard();
           return;
         }
-        if (!sessionCardState) return;
+        if (!sessionCardState) { return; }
 
         if (evt.type === 'lane_update' && evt.lane) {
           var lanes = sessionCardState.lanes;
@@ -9763,7 +9749,7 @@
           for (var i = 0; i < lanes.length; i++) {
             if (lanes[i].collaboratorId === evt.lane.collaboratorId) { lanes[i] = evt.lane; replaced = true; break; }
           }
-          if (!replaced) lanes.push(evt.lane);
+          if (!replaced) { lanes.push(evt.lane); }
           renderSessionCard();
         } else if (evt.type === 'session_round') {
           sessionCardState.round = { n: evt.round, of: evt.of };
@@ -9782,7 +9768,7 @@
 
       function removeSessionCard() {
         var el = document.getElementById('session-card');
-        if (el) el.remove();
+        if (el) { el.remove(); }
         sessionCardState = null;
       }
 
@@ -9795,7 +9781,7 @@
       };
 
       function renderSessionCard() {
-        if (!sessionCardState) return;
+        if (!sessionCardState) { return; }
         var el = document.getElementById('session-card');
         if (!el) {
           el = document.createElement('div');
@@ -9841,7 +9827,7 @@
         el.innerHTML = html;
         el.onclick = function(e) {
           var stop = e.target.closest('.session-lane-stop');
-          if (!stop) return;
+          if (!stop) { return; }
           postMessageWithPanelId({
             type: 'stopSessionLane',
             payload: { runId: st.runId, collaboratorId: stop.dataset.lane }
@@ -9866,8 +9852,6 @@
       // (an @-mention routes elsewhere) and not always the picker's model.
       var currentTurnAttribution = null;
       var pendingToolData = new Map(); // toolId -> { name, input } for edit report cards
-      var currentTodos = []; // Track current todo list for sticky progress
-      var previousTodoContents = new Set(); // Track previous todo content for completion detection
       var stuckTodoObservers = new Map(); // todoId -> IntersectionObserver
       var stuckTodos = new Map(); // todoId -> { originalEl, cloneEl }
       // Thinking buffers live on each message's .thinking-zone element
@@ -9886,13 +9870,13 @@
         // for the always-on coarse send.ttftRender measure).
         if (!perfState.enabled) {
           handleResponseChunkBody(chunk);
-          if (chunk.perfSentAt) perfPostFirstChunkRendered(chunk.perfSentAt);
+          if (chunk.perfSentAt) { perfPostFirstChunkRendered(chunk.perfSentAt); }
           return;
         }
         var perfT0 = performance.now();
         handleResponseChunkBody(chunk);
         perfRecordChunk(performance.now() - perfT0);
-        if (chunk.perfSentAt) perfPostFirstChunkRendered(chunk.perfSentAt);
+        if (chunk.perfSentAt) { perfPostFirstChunkRendered(chunk.perfSentAt); }
       }
 
       function handleResponseChunkBody(chunk) {
@@ -9915,7 +9899,7 @@
         if (!streamingEl) {
           // Remove loading indicator and reset button states when first streaming content arrives
           var loading = messagesEl.querySelector('.loading');
-          if (loading) loading.remove();
+          if (loading) { loading.remove(); }
 
           // Reset loading state and buttons
           state.isLoading = false;
@@ -9964,7 +9948,7 @@
       // and no per-agent maps.
       // ======================================================================
       function renderThinkingZone(containerEl, style, content) {
-        if (!containerEl || !content) return null;
+        if (!containerEl || !content) { return null; }
 
         var zone = containerEl.querySelector('.thinking-zone');
         if (!zone) {
@@ -10059,19 +10043,7 @@
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 
-      // Legacy function for backward compatibility
-      function updateStreamingMessage(content, thinking) {
-        if (thinking) {
-          appendThinkingBlock(thinking);
-        }
-        if (content) {
-          updateCurrentContentSegment(content);
-        }
-      }
 
-      function toggleToolCall(el) {
-        el.classList.toggle('expanded');
-      }
 
       // ======================================================================
       // Tool summary (Plan 02 Phase 3.4)
@@ -10086,9 +10058,9 @@
       // Accepts a ToolCall-shaped object: { name, input, kind? }.
       // ======================================================================
       function formatToolSummary(toolCall) {
-        if (!toolCall) return '';
+        if (!toolCall) { return ''; }
         var input = toolCall.input;
-        if (!input) return '';
+        if (!input) { return ''; }
         var name = (toolCall.name || '').toLowerCase();
 
         // 1) Kind-first: provider-agnostic summaries from the semantic kind.
@@ -10096,33 +10068,33 @@
         //    switch below.
         switch (toolCall.kind) {
           case 'execute':
-            if (input.description) return cleanPathsInString(input.description);
-            if (input.command) return cleanPathsInString(input.command);
+            if (input.description) { return cleanPathsInString(input.description); }
+            if (input.command) { return cleanPathsInString(input.command); }
             break;
           case 'read':
           case 'edit':
           case 'delete': {
             var kindPath = input.file_path || input.notebook_path || input.path;
-            if (kindPath) return makeRelativePath(kindPath);
+            if (kindPath) { return makeRelativePath(kindPath); }
             break;
           }
           case 'move': {
             var movePath = input.file_path || input.path || input.source || input.old_path;
             var moveDest = input.destination || input.new_path || input.newPath;
-            if (movePath && moveDest) return makeRelativePath(movePath) + ' \u2192 ' + makeRelativePath(moveDest);
-            if (movePath) return makeRelativePath(movePath);
+            if (movePath && moveDest) { return makeRelativePath(movePath) + ' \u2192 ' + makeRelativePath(moveDest); }
+            if (movePath) { return makeRelativePath(movePath); }
             break;
           }
           case 'search': {
             var kindPattern = input.pattern || input.query || '';
             var kindDir = input.path ? makeRelativePath(input.path) : '';
-            if (kindPattern && kindDir) return kindPattern + ' in ' + kindDir;
-            if (kindPattern || kindDir) return kindPattern || kindDir;
+            if (kindPattern && kindDir) { return kindPattern + ' in ' + kindDir; }
+            if (kindPattern || kindDir) { return kindPattern || kindDir; }
             break;
           }
           case 'fetch':
-            if (input.url) return input.url;
-            if (input.query) return input.query;
+            if (input.url) { return input.url; }
+            if (input.query) { return input.query; }
             break;
           case 'think':
             if (input.todos && typeof input.todos.length === 'number') {
@@ -10141,7 +10113,7 @@
             // Mysti coordinator delegation card: "agent: task…" (P0.3 — was blank)
             var dTask = String(input.task || '');
             var dAgent = String(input.agent || '');
-            if (dTask.length > 60) dTask = dTask.substring(0, 60) + '...';
+            if (dTask.length > 60) { dTask = dTask.substring(0, 60) + '...'; }
             return dAgent && dTask ? dAgent + ': ' + dTask : (dAgent || dTask);
           }
           case 'review': {
@@ -10197,7 +10169,7 @@
           default:
             // Try common field names - apply makeRelativePath to potential file paths
             var filePath = input.file_path || input.path || '';
-            if (filePath) return makeRelativePath(filePath);
+            if (filePath) { return makeRelativePath(filePath); }
             return cleanPathsInString(input.command || '') || input.query || input.pattern || '';
         }
       }
@@ -10422,10 +10394,10 @@
         } else {
           targetEl = messagesEl.querySelector('.message.streaming') || messagesEl.querySelector('.message.assistant:last-child');
         }
-        if (!targetEl) return;
+        if (!targetEl) { return; }
 
         var messageBody = targetEl.querySelector('.message-body');
-        if (!messageBody) return;
+        if (!messageBody) { return; }
 
         var card = document.createElement('div');
         var actionType = payload.action || 'send';
@@ -11025,9 +10997,9 @@
 
       function handlePermissionAction(requestId, action) {
         var request = state.pendingPermissions.get(requestId);
-        if (action === 'always-allow' && request && (request.forceInteractive || request.remoteOrigin)) return;
+        if (action === 'always-allow' && request && (request.forceInteractive || request.remoteOrigin)) { return; }
         var card = document.querySelector('.permission-card[data-id="' + requestId + '"]');
-        if (!card) return;
+        if (!card) { return; }
 
         // Plan 28 Phase 3: this card is no longer waiting on anyone. The
         // extension's `permissionResult` reports {action, allowed} and never
@@ -11064,7 +11036,7 @@
       function handlePermissionExpired(payload) {
         var approved = payload.approved === true;
         var card = document.querySelector('.permission-card[data-id="' + payload.requestId + '"]');
-        if (!card) return;
+        if (!card) { return; }
 
         card.classList.remove('pending');
         card.classList.add('expired');
@@ -11099,14 +11071,14 @@
 
         // Remove after delay
         setTimeout(function() {
-          if (card.parentNode) card.remove();
+          if (card.parentNode) { card.remove(); }
         }, 3000);
       }
 
       function handleSemiAutonomousDecision(payload) {
         if (payload.targetType === 'permission') {
           var card = document.querySelector('.permission-card[data-id="' + payload.requestId + '"]');
-          if (!card) return;
+          if (!card) { return; }
 
           card.classList.remove('pending');
           card.classList.add(payload.approved ? 'approved' : 'denied');
@@ -11137,18 +11109,18 @@
 
           // Remove card after delay
           setTimeout(function() {
-            if (card.parentNode) card.remove();
+            if (card.parentNode) { card.remove(); }
           }, payload.approved ? 2000 : 3000);
 
         } else if (payload.targetType === 'question') {
           var container = document.querySelector(
             '.ask-user-question-container[data-tool-call-id="' + payload.requestId + '"]'
           );
-          if (!container) return;
+          if (!container) { return; }
 
           // Remove the timer bar if present
           var timerBar = container.querySelector('.auq-semi-auto-timer');
-          if (timerBar) timerBar.remove();
+          if (timerBar) { timerBar.remove(); }
 
           // Replace content with AI decision feedback
           container.innerHTML =
@@ -11163,7 +11135,7 @@
           container.classList.add('submitted');
 
           setTimeout(function() {
-            if (container.parentNode) container.remove();
+            if (container.parentNode) { container.remove(); }
           }, 3000);
         }
       }
@@ -11172,7 +11144,7 @@
         var container = document.querySelector(
           '.ask-user-question-container[data-tool-call-id="' + payload.toolCallId + '"]'
         );
-        if (!container) return;
+        if (!container) { return; }
 
         // Insert timer bar at the top of the container
         var timerBar = document.createElement('div');
@@ -11192,11 +11164,11 @@
           if (remaining <= 0) {
             clearInterval(interval);
             var timerText = timerBar.querySelector('.timer-text');
-            if (timerText) timerText.textContent = 'AI deciding...';
+            if (timerText) { timerText.textContent = 'AI deciding...'; }
             return;
           }
-          var timerText = timerBar.querySelector('.timer-text');
-          if (timerText) timerText.textContent = 'in ' + Math.ceil(remaining / 1000) + 's';
+          timerText = timerBar.querySelector('.timer-text');
+          if (timerText) { timerText.textContent = 'in ' + Math.ceil(remaining / 1000) + 's'; }
         }, 1000);
       }
 
@@ -11204,7 +11176,7 @@
         var container = document.querySelector(
           '.plan-options-container[data-message-id]'
         );
-        if (!container) return;
+        if (!container) { return; }
 
         // Store syntheticPlanId on container for skip button
         container.setAttribute('data-synthetic-plan-id', payload.syntheticPlanId);
@@ -11227,11 +11199,11 @@
           if (remaining <= 0) {
             clearInterval(interval);
             var timerText = timerBar.querySelector('.timer-text');
-            if (timerText) timerText.textContent = 'AI selecting...';
+            if (timerText) { timerText.textContent = 'AI selecting...'; }
             return;
           }
-          var timerText = timerBar.querySelector('.timer-text');
-          if (timerText) timerText.textContent = 'in ' + Math.ceil(remaining / 1000) + 's';
+          timerText = timerBar.querySelector('.timer-text');
+          if (timerText) { timerText.textContent = 'in ' + Math.ceil(remaining / 1000) + 's'; }
         }, 1000);
       }
 
@@ -11247,7 +11219,7 @@
         if (!focusedCard) {
           focusedCard = document.querySelector('.permission-card.pending');
         }
-        if (!focusedCard) return false;
+        if (!focusedCard) { return false; }
 
         var requestId = focusedCard.dataset.id;
 
@@ -11257,7 +11229,7 @@
             handlePermissionAction(requestId, 'approve');
             return true;
           case '2':
-            if (!focusedCard.querySelector('[data-action="always-allow"]')) return false;
+            if (!focusedCard.querySelector('[data-action="always-allow"]')) { return false; }
             e.preventDefault();
             handlePermissionAction(requestId, 'always-allow');
             return true;
@@ -11283,7 +11255,7 @@
 
       // Render plan options as interactive cards
       function renderPlanOptions(options, messageId, originalQuery, metaQuestions, syntheticPlanId, origin) {
-        if (!options || options.length === 0) return null;
+        if (!options || options.length === 0) { return null; }
 
         // Plan 02 Phase 3.5: native plan moments (exit_plan_mode) reuse this
         // exact card path — origin = { source: 'exit-plan-mode',
@@ -11456,7 +11428,7 @@
         card.onclick = function(e) {
           if (e.target.classList.contains('plan-execute-btn') ||
               e.target.classList.contains('custom-instructions-toggle') ||
-              e.target.classList.contains('custom-instructions-textarea')) return;
+              e.target.classList.contains('custom-instructions-textarea')) { return; }
           // Toggle expansion or select
           card.classList.toggle('plan-option-collapsed');
         };
@@ -11502,7 +11474,7 @@
 
       // Handle planOptions message from backend
       function handlePlanOptionsMessage(payload) {
-        if (!payload.options || payload.options.length === 0) return;
+        if (!payload.options || payload.options.length === 0) { return; }
 
         // Find the message to attach plan options to
         var messageEl = document.querySelector('.message[data-id="' + payload.messageId + '"]');
@@ -11515,7 +11487,7 @@
         if (messageEl) {
           // Remove any existing plan options
           var existing = messageEl.querySelector('.plan-options-container');
-          if (existing) existing.remove();
+          if (existing) { existing.remove(); }
 
           // Add new plan options (with optional meta-questions). Native
           // exit-plan moments (Plan 02 Phase 3.5) carry the ADDITIVE
@@ -11542,7 +11514,7 @@
 
       // Handle native AskUserQuestion tool from Claude Code CLI
       function handleAskUserQuestionMessage(payload) {
-        if (!payload || !payload.questions || payload.questions.length === 0) return;
+        if (!payload || !payload.questions || payload.questions.length === 0) { return; }
 
         // Find most recent assistant message
         var messages = document.querySelectorAll('.message.assistant');
@@ -11551,7 +11523,7 @@
         if (messageEl) {
           // Remove any existing AskUserQuestion container
           var existing = messageEl.querySelector('.ask-user-question-container');
-          if (existing) existing.remove();
+          if (existing) { existing.remove(); }
 
           // For detected questions, hide the matching question text in the response body
           // so it doesn't appear both as text and as an interactive card
@@ -11571,7 +11543,7 @@
       // Hide question text in the response body that duplicates the interactive card
       function hideDetectedQuestionText(messageEl, questions) {
         var contentEl = messageEl.querySelector('.content');
-        if (!contentEl) return;
+        if (!contentEl) { return; }
 
         // Build a set of normalized question strings to match against
         var questionTexts = questions.map(function(q) {
@@ -11582,7 +11554,7 @@
         var candidates = contentEl.querySelectorAll('p, li');
         candidates.forEach(function(el) {
           var text = (el.textContent || '').trim().toLowerCase().replace(/\?$/, '').trim();
-          if (!text) return;
+          if (!text) { return; }
 
           for (var i = 0; i < questionTexts.length; i++) {
             // Match if the element text is the question or ends with it
@@ -11753,7 +11725,7 @@
             var header = question.header || 'Q' + (index + 1);
             container._answers[header] = otherTextInput.value.trim();
           } else {
-            var header = question.header || 'Q' + (index + 1);
+            header = question.header || 'Q' + (index + 1);
             delete container._answers[header];
           }
           updateAuqSubmitButton(container);
@@ -11804,7 +11776,7 @@
           var checkedInput = panel.querySelector('input[type="radio"]:checked');
           if (checkedInput) {
             if (checkedInput.value === '__other__') {
-              var otherText = panel.querySelector('.auq-other-text');
+              otherText = panel.querySelector('.auq-other-text');
               if (otherText && otherText.value.trim()) {
                 container._answers[header] = otherText.value.trim();
               } else {
@@ -11891,7 +11863,7 @@
       // every terminal path (complete/error/cancel). Idempotent.
       /** Plan 28 Phase 2: the placeholder tells you the queue exists. */
       function syncComposerAffordance() {
-        if (!inputEl) return;
+        if (!inputEl) { return; }
         inputEl.placeholder = state.isLoading
           ? 'Working \u2014 press Tab to queue this for next\u2026'
           : 'Ask Mysti\u2026';
@@ -11933,13 +11905,13 @@
       function hideLoading() {
         setProcessing(false);
         var loading = messagesEl.querySelector('.loading');
-        if (loading) loading.remove();
+        if (loading) { loading.remove(); }
       }
 
       // Dynamic suggestions functions (ezorro-style cards)
       function showSuggestionSkeleton() {
         var container = document.getElementById('quick-actions');
-        if (!container) return;
+        if (!container) { return; }
 
         // Don't show if suggestions are disabled
         if (state.agentSettings && !state.agentSettings.showSuggestions) {
@@ -11966,7 +11938,7 @@
 
       function renderSuggestions(suggestions) {
         var container = document.getElementById('quick-actions');
-        if (!container) return;
+        if (!container) { return; }
 
         // Don't render if suggestions are disabled
         if (state.agentSettings && !state.agentSettings.showSuggestions) {
@@ -12004,11 +11976,11 @@
       // { style, content } from Plan 02 Phase 3 onwards — normalize to the
       // object shape. Legacy strings replay as one complete block.
       function normalizeMessageThinking(thinking) {
-        if (!thinking) return null;
+        if (!thinking) { return null; }
         if (typeof thinking === 'string') {
           return thinking.trim() ? { style: 'complete-blocks', content: thinking } : null;
         }
-        if (!thinking.content) return null;
+        if (!thinking.content) { return null; }
         return {
           style: thinking.style === 'streamed' ? 'streamed' : 'complete-blocks',
           content: thinking.content
@@ -12029,8 +12001,8 @@
 
       /** Display name for an agent id, pseudo-agents included. */
       function getAgentDisplayName(providerId) {
-        if (providerId === 'mysti') return 'Mysti';
-        if (providerId === 'brainstorm') return 'Brainstorm';
+        if (providerId === 'mysti') { return 'Mysti'; }
+        if (providerId === 'brainstorm') { return 'Brainstorm'; }
         var entry = getManifestEntry(providerId);
         return (entry && entry.displayName) || '';
       }
@@ -12047,8 +12019,8 @@
       function formatAttributionLabel(attribution) {
         var model = getModelDisplayName(attribution.model);
         var agent = getAgentDisplayName(attribution.provider);
-        if (!agent) return model;
-        if (!model) return agent;
+        if (!agent) { return model; }
+        if (!model) { return agent; }
         // Don't repeat an agent whose name IS the model (Ollama-style locals).
         return agent === model ? agent : agent + ' · ' + model;
       }
@@ -12058,9 +12030,9 @@
       // persisted message — including any @-mention provider switch — is
       // known).
       function updateMessageAttributionChip(messageEl, msg) {
-        if (!messageEl) return;
+        if (!messageEl) { return; }
         var chip = messageEl.querySelector('.message-model-info');
-        if (!chip) return;
+        if (!chip) { return; }
         var attribution = getMessageAttribution(msg);
         var agentName = getAgentDisplayName(attribution.provider);
         chip.textContent = formatAttributionLabel(attribution);
@@ -12073,14 +12045,14 @@
       // the stream).
       function shouldAutoResolveToolCards(providerId) {
         var entry = getManifestEntry(providerId);
-        if (!entry || !entry.capabilities) return false;
+        if (!entry || !entry.capabilities) { return false; }
         return entry.capabilities.emitsToolResults === false;
       }
 
       // Mark still-running/pending tool cards inside a finished message as
       // completed with a "not reported" note — never an eternal spinner.
       function autoResolveRunningToolCards(messageEl) {
-        if (!messageEl) return;
+        if (!messageEl) { return; }
         var cards = messageEl.querySelectorAll('.tool-call.running, .tool-call.pending');
         cards.forEach(function(card) {
           card.classList.remove('running');
@@ -12114,7 +12086,7 @@
       // drives the emitsToolResults auto-resolve. degradationPills:
       // string[] rendered verbatim (Phase 4 computes the real pills).
       function renderMessageFooter(messageEl, usage, sessionInfo, degradationPills) {
-        if (!messageEl) return null;
+        if (!messageEl) { return null; }
 
         var providerId = sessionInfo && sessionInfo.provider;
         if (shouldAutoResolveToolCards(providerId)) {
@@ -12122,7 +12094,7 @@
         }
 
         var existing = messageEl.querySelector('.message-footer');
-        if (existing) existing.remove();
+        if (existing) { existing.remove(); }
 
         var parts = [];
         if (usage && (usage.input_tokens || usage.output_tokens)) {
@@ -12161,7 +12133,7 @@
         // question above them. Consequence, stated rather than hidden: a
         // backend that reports neither usage nor a session id offers no Second
         // opinion. Every backend that reports either one does.
-        if (parts.length === 0) return null;
+        if (parts.length === 0) { return null; }
 
         parts.push('<span class="message-footer-action" data-second-opinion="1" ' +
           'role="button" tabindex="0" title="Ask a different agent the same question">Second opinion</span>');
@@ -12402,7 +12374,7 @@
         { id: 'full', label: 'Full', mode: 'edit-automatically', access: 'full-access',    desc: 'Edits, runs commands, reaches the network. Only machine policy still holds it back.' }
       ];
       function chatModeById(id) {
-        for (var i = 0; i < CHAT_MODES.length; i++) { if (CHAT_MODES[i].id === id) return CHAT_MODES[i]; }
+        for (var i = 0; i < CHAT_MODES.length; i++) { if (CHAT_MODES[i].id === id) { return CHAT_MODES[i]; } }
         return null;
       }
       // Mirrors `trustForAuthority` in src/utils/trustLadder.ts, branch for
@@ -12412,20 +12384,20 @@
       function deriveChatMode() {
         var m = state.settings.mode, a = state.settings.accessLevel;
         // 1. A plan mode never writes, whatever the access level says.
-        if (m === 'quick-plan' || m === 'detailed-plan') return 'plan';
+        if (m === 'quick-plan' || m === 'detailed-plan') { return 'plan'; }
         // 2. Read-only never writes either, whatever the mode says.
-        if (a === 'read-only') return 'plan';
+        if (a === 'read-only') { return 'plan'; }
         // 3. ask-before-edit gates every change on any access level.
-        if (m === 'ask-before-edit') return 'ask';
+        if (m === 'ask-before-edit') { return 'ask'; }
         // 4. Under ask-permission only edit-automatically reaches accept-edits.
-        if (a === 'ask-permission') return m === 'edit-automatically' ? 'auto' : 'ask';
+        if (a === 'ask-permission') { return m === 'edit-automatically' ? 'auto' : 'ask'; }
         // 5. full-access with a writing mode is ungated.
-        if (a === 'full-access') return 'full';
+        if (a === 'full-access') { return 'full'; }
         return 'ask';
       }
       function applyChatMode(id) {
         var def = chatModeById(id);
-        if (!def) return;
+        if (!def) { return; }
         // Mirrors `authorityForTrust(stop, current)`: a user already on
         // detailed-plan keeps it when they land on Plan, rather than being
         // silently downgraded to quick-plan by a round trip through the pill.
@@ -12456,7 +12428,7 @@
       }
 
       function updateBehaviorIndicator() {
-        if (!behaviorIndicator) return;
+        if (!behaviorIndicator) { return; }
         var id = deriveChatMode();
         var def = chatModeById(id);
         var label = def ? def.label : 'Ask';
@@ -12480,7 +12452,7 @@
       function syncUnattendedAvailability() {
         var sel = document.getElementById('popup-autonomy-select');
         var hint = document.getElementById('popup-autonomy-hint');
-        if (!sel) return;
+        if (!sel) { return; }
         var id = deriveChatMode();
         var allowed = (id === 'auto' || id === 'full');
         sel.disabled = !allowed;
@@ -12494,7 +12466,7 @@
 
       function updateBehaviorHint() {
         var hint = document.getElementById('behavior-hint');
-        if (!hint) return;
+        if (!hint) { return; }
         var def = chatModeById(deriveChatMode());
         hint.textContent = def ? def.desc : '';
       }
@@ -12773,7 +12745,7 @@
 
       function hideSlashMenu() {
         var menu = document.getElementById('slash-menu');
-        if (menu) menu.classList.add('hidden');
+        if (menu) { menu.classList.add('hidden'); }
         state.slashMenuVisible = false;
         state.slashMenuQuery = '';
         state.slashMenuIndex = 0;
@@ -12786,11 +12758,11 @@
         var sectionsEl = document.getElementById('slash-menu-sections');
         var emptyEl = document.getElementById('slash-menu-empty');
         var queryEl = document.getElementById('slash-menu-query');
-        if (!menu || !sectionsEl) return;
+        if (!menu || !sectionsEl) { return; }
 
         // Plan 29: the shape catalog rides with the menu so the picker can gate
         // Run and price the session without another round trip.
-        if (data && data.sessions) state.sessionCatalog = data.sessions;
+        if (data && data.sessions) { state.sessionCatalog = data.sessions; }
 
         // Picking agents for a session takes over the same menu — the row
         // anatomy is identical, the icon column just holds a checkbox.
@@ -12800,7 +12772,7 @@
         }
 
         // Update search display
-        if (queryEl) queryEl.textContent = state.slashMenuQuery;
+        if (queryEl) { queryEl.textContent = state.slashMenuQuery; }
 
         // Filter commands by query
         var query = (state.slashMenuQuery || '').toLowerCase();
@@ -12816,7 +12788,7 @@
         // Group by section, maintaining section order
         var grouped = {};
         filteredCmds.forEach(function(cmd) {
-          if (!grouped[cmd.section]) grouped[cmd.section] = [];
+          if (!grouped[cmd.section]) { grouped[cmd.section] = []; }
           grouped[cmd.section].push(cmd);
         });
 
@@ -12829,7 +12801,7 @@
 
         sortedSections.forEach(function(section) {
           var cmds = grouped[section.id];
-          if (!cmds || cmds.length === 0) return;
+          if (!cmds || cmds.length === 0) { return; }
 
           html += '<div class="slash-menu-section-header">' + escapeHtml(section.label) + '</div>';
 
@@ -12873,9 +12845,9 @@
 
         if (flatItems.length === 0) {
           sectionsEl.innerHTML = '';
-          if (emptyEl) emptyEl.classList.remove('hidden');
+          if (emptyEl) { emptyEl.classList.remove('hidden'); }
         } else {
-          if (emptyEl) emptyEl.classList.add('hidden');
+          if (emptyEl) { emptyEl.classList.add('hidden'); }
           sectionsEl.innerHTML = html;
         }
 
@@ -12920,7 +12892,7 @@
       function sessionShapeFor(commandId) {
         var list = state.sessionCatalog || [];
         for (var i = 0; i < list.length; i++) {
-          if (list[i].commandId === commandId) return list[i];
+          if (list[i].commandId === commandId) { return list[i]; }
         }
         return null;
       }
@@ -12986,8 +12958,8 @@
         // Pre-tick the shape's minimum, starting with the agent this panel is
         // already on — the one the user has most reason to trust here.
         var ordered = choices.slice().sort(function(a, b) {
-          if (a.id === state.activeAgent) return -1;
-          if (b.id === state.activeAgent) return 1;
+          if (a.id === state.activeAgent) { return -1; }
+          if (b.id === state.activeAgent) { return 1; }
           return 0;
         });
         for (var i = 0; i < ordered.length && i < shape.minAgents; i++) {
@@ -13001,7 +12973,7 @@
       }
 
       function sessionPickedIds() {
-        if (!state.sessionPicker) return [];
+        if (!state.sessionPicker) { return []; }
         var picked = state.sessionPicker.picked || {};
         return Object.keys(picked).filter(function(k) { return picked[k]; });
       }
@@ -13014,8 +12986,8 @@
         var enough = count >= shape.minAgents;
         var cost = count * shape.costRate * shape.rounds;
 
-        if (queryEl) queryEl.textContent = shape.command.slice(1);
-        if (emptyEl) emptyEl.classList.add('hidden');
+        if (queryEl) { queryEl.textContent = shape.command.slice(1); }
+        if (emptyEl) { emptyEl.classList.add('hidden'); }
 
         var html = '<div class="slash-menu-section-header">'
           + escapeHtml(shape.command) + ' &middot; ' + escapeHtml(shape.description)
@@ -13079,9 +13051,9 @@
           if (e.target.closest('.session-cancel-btn')) { hideSlashMenu(); return; }
           if (e.target.closest('.session-run-btn')) { startPickedSession(); return; }
           var row = e.target.closest('.session-agent-row');
-          if (!row || row.classList.contains('disabled')) return;
+          if (!row || row.classList.contains('disabled')) { return; }
           var id = row.dataset.agentId;
-          if (!id) return;
+          if (!id) { return; }
           if (picker.picked[id]) { delete picker.picked[id]; }
           else if (sessionPickedIds().length < shape.maxAgents) { picker.picked[id] = true; }
           renderSlashMenu({ sessions: state.sessionCatalog });
@@ -13091,9 +13063,9 @@
       /** Send the picked session; the brief is whatever is in the composer. */
       function startPickedSession() {
         var picker = state.sessionPicker;
-        if (!picker) return;
+        if (!picker) { return; }
         var agentIds = sessionPickedIds();
-        if (agentIds.length < picker.shape.minAgents) return;
+        if (agentIds.length < picker.shape.minAgents) { return; }
 
         var inputEl = document.getElementById('message-input');
         // A brief handed to the picker (the typed path) wins: on that path the
@@ -13165,7 +13137,7 @@
 
       function updateSlashMenuSelection() {
         var sectionsEl = document.getElementById('slash-menu-sections');
-        if (!sectionsEl) return;
+        if (!sectionsEl) { return; }
         var items = sectionsEl.querySelectorAll('.slash-menu-item');
         items.forEach(function(el) {
           var idx = parseInt(el.dataset.index, 10);
@@ -13258,7 +13230,7 @@
 
       // Helper to split content into lines (handles various newline formats)
       function splitLines(str) {
-        if (!str) return [];
+        if (!str) { return []; }
         // Handle both actual newlines and escaped \n sequences
         return String(str).split(/\r?\n|\\n/);
       }
@@ -13297,19 +13269,19 @@
         }
 
         // Add deletions (lines only in old)
-        for (var i = prefixLen; i < oldLines.length - suffixLen; i++) {
+        for (i = prefixLen; i < oldLines.length - suffixLen; i++) {
           push({ type: 'deletion', content: oldLines[i], lineNum: i + 1 });
         }
 
         // Add additions (lines only in new)
-        for (var i = prefixLen; i < newLines.length - suffixLen; i++) {
+        for (i = prefixLen; i < newLines.length - suffixLen; i++) {
           push({ type: 'addition', content: newLines[i], lineNum: i + 1 });
         }
 
         // Add context lines from suffix (5 lines after changes)
         var contextAfter = Math.min(suffixLen, 5);
         var suffixStart = newLines.length - suffixLen;
-        for (var i = suffixStart; i < suffixStart + contextAfter; i++) {
+        for (i = suffixStart; i < suffixStart + contextAfter; i++) {
           push({ type: 'context', content: newLines[i], lineNum: i + 1 });
         }
 
@@ -13421,8 +13393,8 @@
           var newLines = splitLines(newStr);
 
           // Filter out empty lines that result from empty strings
-          if (oldLines.length === 1 && oldLines[0] === '') oldLines = [];
-          if (newLines.length === 1 && newLines[0] === '') newLines = [];
+          if (oldLines.length === 1 && oldLines[0] === '') { oldLines = []; }
+          if (newLines.length === 1 && newLines[0] === '') { newLines = []; }
 
           // Use GitHub-style diff algorithm to identify context vs changes
           var editStats = {};
@@ -13460,13 +13432,13 @@
           info.action = 'create';
           // MultiWrite may have multiple files - just show stats
           if (input.content) {
-            var lines = splitLines(input.content);
+            lines = splitLines(input.content);
             info.linesAdded = lines.length;
           }
         } else if (toolLower === 'notebookedit') {
           info.action = 'edit';
           if (input.new_source) {
-            var lines = splitLines(input.new_source);
+            lines = splitLines(input.new_source);
             info.linesAdded = lines.length;
             info.diffLines = additionRows(lines);
           }
@@ -13488,7 +13460,7 @@
       // Update sticky progress count display
       function updateStickyProgressCount() {
         var container = document.getElementById('sticky-progress-container');
-        if (!container) return;
+        if (!container) { return; }
         var countEl = container.querySelector('.sticky-progress-count');
         if (countEl) {
           countEl.textContent = stuckTodos.size + ' in progress';
@@ -13497,12 +13469,12 @@
 
       // Stick a todo item to the top
       function stickTodoItem(originalEl, todoId) {
-        if (stuckTodos.has(todoId)) return; // Already stuck
+        if (stuckTodos.has(todoId)) { return; } // Already stuck
 
         var container = document.getElementById('sticky-progress-container');
-        if (!container) return;
+        if (!container) { return; }
         var listEl = container.querySelector('.sticky-progress-list');
-        if (!listEl) return;
+        if (!listEl) { return; }
 
         // Mark original as stuck
         originalEl.classList.add('is-stuck');
@@ -13534,7 +13506,7 @@
       // Unstick a todo item (animate it back)
       function unstickTodoItem(todoId) {
         var stuckItem = stuckTodos.get(todoId);
-        if (!stuckItem) return;
+        if (!stuckItem) { return; }
 
         var cloneEl = stuckItem.cloneEl;
         var originalEl = stuckItem.originalEl;
@@ -13566,7 +13538,7 @@
       // Handle completion of a stuck todo
       function completeStuckTodo(todoId) {
         var stuckItem = stuckTodos.get(todoId);
-        if (!stuckItem) return;
+        if (!stuckItem) { return; }
 
         var cloneEl = stuckItem.cloneEl;
 
@@ -13608,10 +13580,10 @@
       // Setup IntersectionObserver for a todo element
       function setupTodoIntersectionObserver(todoElement) {
         var todoId = todoElement.getAttribute('data-todo-id');
-        if (!todoId || stuckTodoObservers.has(todoId)) return;
+        if (!todoId || stuckTodoObservers.has(todoId)) { return; }
 
         var messagesEl = document.getElementById('messages');
-        if (!messagesEl) return;
+        if (!messagesEl) { return; }
 
         var observer = new IntersectionObserver(function(entries) {
           entries.forEach(function(entry) {
@@ -13679,7 +13651,7 @@
       // Initialize sticky progress observation with MutationObserver
       function initStickyProgressObserver() {
         var messagesEl = document.getElementById('messages');
-        if (!messagesEl) return;
+        if (!messagesEl) { return; }
 
         // Observe for new todo items being added
         var mutationObserver = new MutationObserver(function(mutations) {
@@ -13703,7 +13675,7 @@
       }
 
       function renderTodoList(todos) {
-        if (!todos || !todos.length) return '';
+        if (!todos || !todos.length) { return ''; }
 
         var html = '<div class="todo-list">';
         todos.forEach(function(todo) {
@@ -13736,12 +13708,10 @@
       function updateStickyTodos(todos) {
         // Build set of current in-progress todo contents
         var newInProgressContents = new Set();
-        var newInProgressMap = new Map(); // content -> todo
 
         (todos || []).forEach(function(todo) {
           if (todo.status === 'in_progress') {
             newInProgressContents.add(todo.content);
-            newInProgressMap.set(todo.content, todo);
           }
         });
 
@@ -13753,10 +13723,6 @@
             completeStuckTodo(todoId);
           }
         });
-
-        // Update previous state for next comparison
-        previousTodoContents = newInProgressContents;
-        currentTodos = todos || [];
 
         // Re-observe any new in-progress items (after a small delay for DOM update)
         setTimeout(function() {
@@ -13793,7 +13759,7 @@
           var line = rows[i] || {};
           var prefix = line.type === 'addition' ? '+' : (line.type === 'deletion' ? '-' : ' ');
           var lineNum = line.lineNum ? line.lineNum : '';
-          var content = line.content == null ? '' : String(line.content);
+          var content = String(line.content ?? '');
           html += '<div class="edit-report-diff-line ' + escapeHtml(line.type) + '">' +
             '<span class="edit-report-diff-linenum">' + escapeHtml(lineNum) + '</span>' +
             '<span class="edit-report-diff-prefix">' + prefix + '</span>' +
@@ -13835,7 +13801,7 @@
           statsText += '<span class="edit-report-stats-added">Added ' + editInfo.linesAdded + ' line' + (editInfo.linesAdded !== 1 ? 's' : '') + '</span>';
         }
         if (editInfo.linesRemoved > 0) {
-          if (statsText) statsText += ', ';
+          if (statsText) { statsText += ', '; }
           statsText += '<span class="edit-report-stats-removed">Removed ' + editInfo.linesRemoved + ' line' + (editInfo.linesRemoved !== 1 ? 's' : '') + '</span>';
         }
         if (!statsText) {
@@ -13876,47 +13842,10 @@
         return html;
       }
 
-      function isDiffContent(content) {
-        var lines = content.split('\n');
-        var diffMarkers = 0;
-        var checkLines = Math.min(lines.length, 20);
 
-        for (var i = 0; i < checkLines; i++) {
-          var line = lines[i];
-          // Exclude CSS custom properties (--var) from diff detection
-          if (line.startsWith('+') || (line.startsWith('-') && !line.startsWith('--')) || line.startsWith('@@')) {
-            diffMarkers++;
-          }
-        }
-        return diffMarkers > checkLines * 0.2;
-      }
-
-      function formatDiffContent(content) {
-        var lines = content.split('\n');
-        var html = '';
-
-        for (var i = 0; i < lines.length; i++) {
-          var line = lines[i];
-          var lineClass = 'diff-line';
-
-          if (line.startsWith('+') && !line.startsWith('+++')) {
-            lineClass += ' diff-addition';
-          } else if (line.startsWith('-') && !line.startsWith('---')) {
-            lineClass += ' diff-deletion';
-          } else if (line.startsWith('@@')) {
-            lineClass += ' diff-hunk';
-          } else if (line.startsWith('diff ') || line.startsWith('index ') ||
-                     line.startsWith('---') || line.startsWith('+++')) {
-            lineClass += ' diff-header';
-          }
-
-          html += '<div class="' + lineClass + '">' + escapeHtml(line) + '</div>';
-        }
-        return html;
-      }
 
       function formatContent(content) {
-        if (!content) return '';
+        if (!content) { return ''; }
 
         // Use marked for full markdown parsing if available
         if (typeof marked !== 'undefined') {
@@ -13938,7 +13867,7 @@
         }
 
         // Fallback to basic formatting if marked is not available
-        var html = escapeHtml(content);
+        html = escapeHtml(content);
         html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
         html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -14025,7 +13954,7 @@
         // Handle tool call expand/collapse
         var toolCallHeader = e.target.closest('.tool-call-header');
         if (toolCallHeader) {
-          var toolCall = toolCallHeader.closest('.tool-call');
+          toolCall = toolCallHeader.closest('.tool-call');
           if (toolCall) {
             toolCall.classList.toggle('expanded');
           }
@@ -14108,7 +14037,7 @@
         // Edit Report: Open file button
         var editReportOpenBtn = e.target.closest('.edit-report-btn-open');
         if (editReportOpenBtn) {
-          var editCard = editReportOpenBtn.closest('.edit-report-card');
+          editCard = editReportOpenBtn.closest('.edit-report-card');
           if (editCard && editCard.dataset.filePath) {
             // Use stored line number to open at the changed location (convert to 0-based)
             var lineNum = editCard.dataset.lineNumber ? parseInt(editCard.dataset.lineNumber, 10) - 1 : undefined;
@@ -14123,7 +14052,7 @@
         // Edit Report: Revert button
         var editReportRevertBtn = e.target.closest('.edit-report-btn-revert');
         if (editReportRevertBtn) {
-          var editCard = editReportRevertBtn.closest('.edit-report-card');
+          editCard = editReportRevertBtn.closest('.edit-report-card');
           if (editCard && editCard.dataset.filePath) {
             editReportRevertBtn.textContent = 'Reverting...';
             editReportRevertBtn.disabled = true;
@@ -14146,7 +14075,7 @@
       // Expand file edit card to show all lines
       function expandFileEditCard(btn) {
         var card = btn.closest('.file-edit-card');
-        if (!card) return;
+        if (!card) { return; }
 
         try {
           var fullDiffData = JSON.parse(decodeURIComponent(card.dataset.fullDiff));
@@ -14173,7 +14102,7 @@
       // Handle revert action
       function handleFileEditRevert(btn) {
         var card = btn.closest('.file-edit-card');
-        if (!card) return;
+        if (!card) { return; }
 
         var filePath = card.dataset.filePath;
         postMessageWithPanelId({
@@ -14189,7 +14118,7 @@
       // Handle review action (open file in editor)
       function handleFileEditReview(btn) {
         var card = btn.closest('.file-edit-card');
-        if (!card) return;
+        if (!card) { return; }
 
         var filePath = card.dataset.filePath;
         postMessageWithPanelId({
@@ -14201,7 +14130,7 @@
       // Expand edit report diff to show all lines
       function expandEditReportDiff(btn) {
         var card = btn.closest('.edit-report-card');
-        if (!card) return;
+        if (!card) { return; }
 
         try {
           var fullDiffData = JSON.parse(decodeURIComponent(btn.dataset.fullDiff));

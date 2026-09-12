@@ -366,7 +366,7 @@ export class CursorProvider extends BaseCliProvider {
 	 * (utils/permissionClassifier.ts) expect these canonical display names.
 	 * Notifications do not establish pre-execution permission authority.
 	 */
-	private static readonly TOOL_TYPE_MAP: Record<string, string> = {
+	private static readonly _toolTypeMap: Record<string, string> = {
 		shellToolCall: "Bash",
 		readToolCall: "Read",
 		writeToolCall: "Write",
@@ -474,7 +474,7 @@ export class CursorProvider extends BaseCliProvider {
 					toolName = normalizeToolName(toolData?.name || "tool");
 				} else if (toolTypeKey) {
 					toolName =
-						CursorProvider.TOOL_TYPE_MAP[toolTypeKey] ||
+						CursorProvider._toolTypeMap[toolTypeKey] ||
 						normalizeToolName(toolTypeKey.replace(/ToolCall$/, "").toLowerCase());
 				} else {
 					toolName = "tool";

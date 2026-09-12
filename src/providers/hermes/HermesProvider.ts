@@ -228,7 +228,7 @@ export class HermesProvider extends BaseCliProvider {
    * Gemini/GLM/Kimi/DeepSeek key be recognized. Deliberately EXCLUDES bare
    * GH_TOKEN/GITHUB_TOKEN — those are ubiquitous and would false-positive.
    */
-  private static readonly ENV_KEYS = [
+  private static readonly _envKeys = [
     'NOUS_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_TOKEN',
     'CLAUDE_CODE_OAUTH_TOKEN', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'DEEPSEEK_API_KEY', 'GLM_API_KEY',
     'ZAI_API_KEY', 'Z_AI_API_KEY', 'KIMI_API_KEY', 'GROQ_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY',
@@ -240,7 +240,7 @@ export class HermesProvider extends BaseCliProvider {
   }
 
   private _hermesEnvKey(): string | undefined {
-    return HermesProvider.ENV_KEYS.find(k => (process.env[k] || '').trim().length > 0);
+    return HermesProvider._envKeys.find(k => (process.env[k] || '').trim().length > 0);
   }
 
   async getAuthConfig(): Promise<AuthConfig> {

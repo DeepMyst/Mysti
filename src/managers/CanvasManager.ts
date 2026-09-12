@@ -21,7 +21,6 @@ import {
   CANVAS_DIR,
   CANVAS_ASSETS_DIR,
   CANVAS_AUTOSAVE_DEBOUNCE_MS,
-  CANVAS_MAX_VARIANTS,
   CANVAS_RENDER_DEFAULT_VIEWPORT,
   CANVAS_ASSET_REF_PREFIX,
   STITCH_DEVICE_DIMENSIONS,
@@ -41,7 +40,6 @@ import type {
   ElementEditPayload,
   DesignNode,
   DesignTheme,
-  DesignSpec,
   DesignAssetRef,
   Settings,
   Attachment,
@@ -1963,8 +1961,7 @@ Be specific and concise. Return ONLY the profile lines, no other text.`;
     imageBase64: string,
     prompt: string,
     imageService: ImageGenerationService,
-    frameBounds?: { left: number; top: number; width: number; height: number },
-    frameMetadata?: Record<string, string>
+    frameBounds?: { left: number; top: number; width: number; height: number }
   ): AsyncGenerator<CanvasStreamChunk> {
     yield { type: 'canvas_svg_started', canvasId };
     yield { type: 'canvas_svg_progress', canvasId, content: 'Analyzing image...', progress: 10 };
@@ -2832,7 +2829,7 @@ Theme description: "${prompt}"`;
           filePath: `src/components/${componentName}.stories.tsx`,
           fileName: `${componentName}.stories.tsx`,
           fileType: 'story',
-          content: this._generateStorybook(componentName, framework),
+          content: this._generateStorybook(componentName),
         });
       } else if (framework === 'vue') {
         files.push({
@@ -3150,7 +3147,7 @@ Theme description: "${prompt}"`;
     return `<!DOCTYPE html>\n<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>\n<body style="margin:0;font-family:${theme.typography.fontFamily}">\n${this._nodeToVueTemplate(node, theme, 1)}\n</body></html>`;
   }
 
-  private _generateStorybook(componentName: string, framework: string): string {
+  private _generateStorybook(componentName: string): string {
     return `import type { Meta, StoryObj } from '@storybook/react';\nimport ${componentName} from './${componentName}';\n\nconst meta: Meta<typeof ${componentName}> = {\n  title: 'Components/${componentName}',\n  component: ${componentName},\n};\n\nexport default meta;\ntype Story = StoryObj<typeof ${componentName}>;\n\nexport const Default: Story = {};`;
   }
 

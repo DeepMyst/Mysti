@@ -126,7 +126,7 @@ For an update:
 Do not publish as part of a dependency bot update. Publishing requires the release
 review below.
 
-### Dependency audit evidence and exceptions (2026-09-10)
+### Dependency audit evidence and exceptions (2026-09-12)
 
 The reconciled lock installs cleanly with Node 22.20.0 and npm 10.9.3. The
 full audit reports three development entries: `@vscode/test-cli`, `mocha` and
@@ -168,8 +168,20 @@ Mocha loads it in its optional parallel worker pool. Our editor tests explicitly
 run serially, and none of these packages ships in the VSIX. The release maintainer
 owns this exception: keep parallel execution disabled and remove the exception
 when a compatible patched serializer is available or the runner is replaced.
-Serializer 7.0.5 requires Node 20, so overriding it into the minimum editor would
+The registry still has no patched 6.x release; current serializer 7.1.1 requires
+Node 20, so overriding it into the minimum editor would
 violate its declared runtime support.
+
+The 2026-09-12 source/media lint pass has zero errors and zero warnings, without
+relaxing rules. Missing braces and duplicate function-scoped declarations were
+corrected; unreachable helpers, unused state and stale parameters were removed.
+The release build retains three webpack performance warnings for the 347 KiB
+Canvas entry point (recommended threshold: 244 KiB). The release maintainer owns
+this performance follow-up: measure editor startup and split a cohesive optional
+feature with real-editor/CSP coverage before removing the exception. Do not hide
+the warnings or raise the threshold merely to make the log green. VSCE's file
+count warning includes the deliberately external Playwright runtime; package
+shape and installed-package resolution remain required.
 
 Source Node declarations still target Node 20. The old 18.17 declarations conflict
 with current TypeScript Buffer definitions and omit the fetch globals used here;

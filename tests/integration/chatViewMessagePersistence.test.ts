@@ -745,7 +745,7 @@ describe('Legacy @agent sub-agent gate deny (Plan 18 H1)', () => {
   beforeEach(() => { clearMockConfig(); h = createHarness(); });
   afterEach(() => { h.dispose(); });
 
-  it('deny cancels the sub-agent child panels and aborts the mention pass', async () => {
+  it('an approval-required notification cancels child panels and aborts the mention pass', async () => {
     const pm = (h.provider as any)._providerManager;
     pm.cancelRequest = vi.fn();
     pm.suspendRequest = vi.fn(() => true);
@@ -785,13 +785,9 @@ describe('Legacy @agent sub-agent gate deny (Plan 18 H1)', () => {
       'sidebar'
     );
 
-    // The child was FROZEN before the user was asked (suspend-before-gate) —
-    // an unfrozen permissions-bypassed CLI executes the tool during the wait.
-    expect(pm.suspendRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex');
-    const gateSpy = (h.provider as any).requestPermissionInline as ReturnType<typeof vi.fn>;
-    expect(Math.min(...pm.suspendRequest.mock.invocationCallOrder))
-      .toBeLessThan(Math.min(...gateSpy.mock.invocationCallOrder));
-    // No resume on deny — cancelRequest handles suspended children (SIGKILL).
+    // A tool notification cannot establish a pre-execution boundary.
+    expect(pm.suspendRequest).not.toHaveBeenCalled();
+    expect((h.provider as any).requestPermissionInline).not.toHaveBeenCalled();
     expect(pm.resumeRequest).not.toHaveBeenCalled();
 
     // The real children die — base panel plus retry AND followup variants.
@@ -810,7 +806,7 @@ describe('Legacy @agent sub-agent gate deny (Plan 18 H1)', () => {
     )).toBe(false);
   });
 
-  it('approve resumes the suspended child and the pass continues', async () => {
+  it('a would-approve handler cannot authorize a notification-only child', async () => {
     const pm = (h.provider as any)._providerManager;
     pm.cancelRequest = vi.fn();
     pm.suspendRequest = vi.fn((p: string) => p === 'sidebar-subagent-openai-codex');
@@ -844,14 +840,15 @@ describe('Legacy @agent sub-agent gate deny (Plan 18 H1)', () => {
       'sidebar'
     );
 
-    // Only the panel that actually froze gets resumed; children survive.
-    expect(pm.resumeRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex');
-    expect(pm.resumeRequest).toHaveBeenCalledTimes(1);
-    expect(pm.cancelRequest).not.toHaveBeenCalledWith('sidebar-subagent-openai-codex');
-    expect(h.sidebarMessages.some(m => m.type === 'subAgentToolUse')).toBe(true);
+    expect((h.provider as any).requestPermissionInline).not.toHaveBeenCalled();
+    expect(pm.suspendRequest).not.toHaveBeenCalled();
+    expect(pm.resumeRequest).not.toHaveBeenCalled();
+    expect(pm.cancelRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex');
+    expect(h.sidebarMessages.some(m => m.type === 'subAgentToolUse')).toBe(false);
+    expect(h.sidebarMessages.some(m => m.type === 'requestCancelled')).toBe(true);
   });
 
-  it('gate is skipped for the inputless preamble tool_use event (L5 double-prompt guard)', async () => {
+  it('an empty input notification also stops the child before later events are forwarded', async () => {
     const pm = (h.provider as any)._providerManager;
     pm.cancelRequest = vi.fn();
     pm.suspendRequest = vi.fn(() => true);
@@ -869,7 +866,7 @@ describe('Legacy @agent sub-agent gate deny (Plan 18 H1)', () => {
           agentId: 'openai-codex',
           toolCall: { id: 't1', name: 'Bash', input: {}, status: 'pending' }
         };
-        // Real event with input — this one gates.
+        // A later payload cannot revive the stopped turn.
         yield {
           type: 'subagent_tool_use',
           agentId: 'openai-codex',
@@ -894,7 +891,10 @@ describe('Legacy @agent sub-agent gate deny (Plan 18 H1)', () => {
       'sidebar'
     );
 
-    expect(gateSpy).toHaveBeenCalledTimes(1);
+    expect(gateSpy).not.toHaveBeenCalled();
+    expect(pm.suspendRequest).not.toHaveBeenCalled();
+    expect(pm.cancelRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex');
+    expect(h.sidebarMessages.some(m => m.type === 'subAgentToolUse')).toBe(false);
   });
 });
 

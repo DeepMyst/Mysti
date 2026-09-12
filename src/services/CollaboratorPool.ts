@@ -110,7 +110,7 @@ export class CollaboratorPool {
    * Bounded FIFO (one UUID per run).
    */
   private _closedRuns: Set<string> = new Set();
-  private static readonly CLOSED_RUNS_CAP = 256;
+  private static readonly _closedRunsCap = 256;
   /** Child panels where a gated WRITE was approved this run — a later crash/
    * timeout on such an attempt must NOT retry (double-apply risk). Pruned in
    * disposeRun. */
@@ -209,7 +209,7 @@ export class CollaboratorPool {
     // _relayQuestion check this set so a closed run can't repopulate the maps
     // or spawn new children (Plan 18 Stop race).
     this._closedRuns.add(runId);
-    if (this._closedRuns.size > CollaboratorPool.CLOSED_RUNS_CAP) {
+    if (this._closedRuns.size > CollaboratorPool._closedRunsCap) {
       const oldest = this._closedRuns.values().next().value;
       if (oldest !== undefined) { this._closedRuns.delete(oldest); }
     }
