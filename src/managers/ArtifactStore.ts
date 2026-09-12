@@ -497,9 +497,17 @@ export class ArtifactStore {
     }
     const filePath = path.join(dir, ARTIFACT_FILE);
     try {
-      await fs.rename(filePath, path.join(dir, ARTIFACT_CORRUPT_FILE));
-    } catch {
-      // Nothing to park (the primary was missing) — restoring is still correct.
+      // Preserve the primary before replacement; a failed recovery copy must
+      // leave it untouched. Repeated restores retain earlier recovery copies.
+      try {
+        await fs.copyFile(filePath, path.join(dir, ARTIFACT_CORRUPT_FILE), fsSync.constants.COPYFILE_EXCL);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') { throw error; }
+        await fs.copyFile(filePath, path.join(dir, `${ARTIFACT_CORRUPT_FILE}.${crypto.randomUUID()}`), fsSync.constants.COPYFILE_EXCL);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
+      // A missing primary needs no recovery copy.
     }
     await ArtifactStore._writeFileAtomic(filePath, res.raw);
     await this._updateIndexEntry(res.artifact, filePath);

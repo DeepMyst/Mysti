@@ -20,8 +20,8 @@
  *
  * Privacy: full tool output may include sensitive data. `.mysti/` is gitignored,
  * and this store ALSO drops a self-protecting `.gitignore` (`*`) into the
- * compaction tree on first write, so a transcript can never be committed even if
- * the repo's root .gitignore is missing the entry.
+ * compaction tree on first write, so ordinary Git adds exclude transcripts even if
+ * the repo's root .gitignore is missing the entry. Explicit force-adds can override it.
  */
 
 import * as fs from 'fs/promises';
@@ -87,16 +87,41 @@ export class HistoryStore {
    * Appends are serialized per panel so back-to-back user+assistant writes get
    * distinct, monotonic seqs. */
   async append(panelId: string, record: Omit<HistoryRecord, 'seq' | 'tokensEst'> & { tokensEst?: number }): Promise<void> {
-    const prev = this._appendChains.get(panelId) ?? Promise.resolve();
-    const next = prev.then(() => this._doAppend(panelId, record)).catch(() => undefined);
-    this._appendChains.set(panelId, next);
+    const captured = { ...record };
+    return this._queue(panelId, () => this._doAppend(panelId, captured));
+  }
+
+  /** Serialize by physical journal path, including identifiers that sanitize alike. */
+  private _queue(panelId: string, operation: () => Promise<void>): Promise<void> {
+    const key = this._file(panelId);
+    const next = (this._appendChains.get(key) ?? Promise.resolve()).then(operation).catch(error => {
+      console.warn(`[Mysti] History operation failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    this._appendChains.set(key, next);
+    void next.then(() => { if (this._appendChains.get(key) === next) { this._appendChains.delete(key); } });
     return next;
+  }
+
+  /** Do not follow repository-created links out of the history store. */
+  private async _assertStorePath(panelId: string): Promise<void> {
+    const directories = [path.join(this._workspaceRoot, '.mysti'), this._compactionRoot(), this._dir(panelId)];
+    for (const location of [...directories, this._file(panelId), path.join(this._compactionRoot(), '.gitignore')]) {
+      try {
+        const stat = await fs.lstat(location);
+        if (stat.isSymbolicLink() || (directories.includes(location) ? !stat.isDirectory() : !stat.isFile())) {
+          throw new Error('History store path must contain ordinary directories and files');
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
+      }
+    }
   }
 
   private async _doAppend(panelId: string, record: Omit<HistoryRecord, 'seq' | 'tokensEst'> & { tokensEst?: number }): Promise<void> {
     try {
+      await this._assertStorePath(panelId);
       const dir = this._dir(panelId);
-      await fs.mkdir(dir, { recursive: true });
+      await fs.mkdir(dir, { recursive: true, mode: 0o700 });
       await this._ensureGitignore();
       const seq = await this._nextSeq(panelId);
       const full: HistoryRecord = {
@@ -108,8 +133,19 @@ export class HistoryStore {
         tokensEst: record.tokensEst ?? estimateTokens(record.content),
         msgId: record.msgId,
       };
-      await fs.appendFile(this._file(panelId), JSON.stringify(full) + '\n', 'utf8');
-      this._seqCache.set(panelId, seq);
+      const file = await fs.open(this._file(panelId), 'a+', 0o600);
+      try {
+        const { size } = await file.stat();
+        if (size > 0) {
+          const last = Buffer.alloc(1);
+          await file.read(last, 0, 1, size - 1);
+          // Preserve a partial/corrupt tail, but do not concatenate the next
+          // valid record onto it and lose that new message too.
+          if (last[0] !== 10) { await file.appendFile('\n'); }
+        }
+        await file.appendFile(JSON.stringify(full) + '\n', 'utf8');
+      } finally { await file.close(); }
+      this._seqCache.set(this._file(panelId), seq);
     } catch (err) {
       console.warn(`[Mysti] HistoryStore.append(${panelId}) failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -117,7 +153,13 @@ export class HistoryStore {
 
   /** Read all records for a panel (in order). Returns [] when no file exists. */
   async readAll(panelId: string): Promise<HistoryRecord[]> {
+    await this._appendChains.get(this._file(panelId));
+    return this._readRecords(panelId);
+  }
+
+  private async _readRecords(panelId: string): Promise<HistoryRecord[]> {
     try {
+      await this._assertStorePath(panelId);
       const raw = await fs.readFile(this._file(panelId), 'utf8');
       const out: HistoryRecord[] = [];
       for (const line of raw.split('\n')) {
@@ -125,7 +167,12 @@ export class HistoryStore {
         if (!t) { continue; }
         try {
           const rec = JSON.parse(t) as HistoryRecord;
-          if (rec && typeof rec.seq === 'number') { out.push(rec); }
+          if (rec && Number.isSafeInteger(rec.seq) && rec.seq > 0 && Number.isFinite(rec.ts)
+            && ['user', 'assistant', 'system'].includes(rec.role)
+            && ['text', 'tool_use', 'tool_result'].includes(rec.kind) && typeof rec.content === 'string'
+            && (rec.tokensEst === undefined || (Number.isFinite(rec.tokensEst) && rec.tokensEst >= 0))) {
+            out.push({ ...rec, tokensEst: rec.tokensEst ?? estimateTokens(rec.content) });
+          }
         } catch { /* skip a corrupt line */ }
       }
       return out;
@@ -136,7 +183,9 @@ export class HistoryStore {
 
   /** Whether any archived history exists for this panel. */
   async hasHistory(panelId: string): Promise<boolean> {
+    await this._appendChains.get(this._file(panelId));
     try {
+      await this._assertStorePath(panelId);
       const st = await fs.stat(this._file(panelId));
       return st.size > 0;
     } catch {
@@ -146,10 +195,11 @@ export class HistoryStore {
 
   /** Clear a panel's history (e.g. new conversation). Never throws. */
   async clear(panelId: string): Promise<void> {
-    this._seqCache.delete(panelId);
-    try {
+    return this._queue(panelId, async () => {
+      await this._assertStorePath(panelId);
       await fs.rm(this._dir(panelId), { recursive: true, force: true });
-    } catch { /* ignore */ }
+      this._seqCache.delete(this._file(panelId));
+    });
   }
 
   /**
@@ -192,12 +242,14 @@ export class HistoryStore {
 
   /** Next seq from the in-memory cache, seeded once from disk on first use. */
   private async _nextSeq(panelId: string): Promise<number> {
-    let last = this._seqCache.get(panelId);
+    const key = this._file(panelId);
+    let last = this._seqCache.get(key);
     if (last === undefined) {
-      const existing = await this.readAll(panelId);
-      last = existing.length === 0 ? 0 : existing[existing.length - 1].seq;
-      this._seqCache.set(panelId, last);
+      const existing = await this._readRecords(panelId);
+      last = existing.reduce((max, record) => Math.max(max, record.seq), 0);
+      this._seqCache.set(key, last);
     }
+    if (last >= Number.MAX_SAFE_INTEGER) { throw new Error('History sequence is exhausted'); }
     return last + 1;
   }
 

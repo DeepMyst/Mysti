@@ -6,8 +6,10 @@
  * and every asset path routed through the traversal guard.
  * Runs against a real temp dir via an injected root resolver (no vscode.fs mock).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+vi.mock('fs/promises', async original => ({ ...await original<typeof import('fs/promises')>() }));
 import * as fs from 'fs';
+import * as asyncFs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
@@ -423,6 +425,42 @@ describe('ArtifactStore', () => {
       // The corrupt bytes are parked, not destroyed.
       const parked = path.join(canvasDir(), a.id, 'artifact.json.corrupt');
       expect(fs.readFileSync(parked, 'utf-8')).toBe('corrupt');
+    });
+
+    it('refuses restore when the original cannot be preserved', async () => {
+      const a = await savedArtifact('Before');
+      a.name = 'After'; await store.save(a);
+      writeRaw(artifactFile(a.id), 'irreplaceable original');
+      const copy = vi.spyOn(asyncFs, 'copyFile').mockRejectedValue(Object.assign(new Error('permission denied'), { code: 'EACCES' }));
+      try {
+        await expect(store.restoreFromBackup(a.id)).rejects.toThrow('permission denied');
+        expect(fs.readFileSync(artifactFile(a.id), 'utf8')).toBe('irreplaceable original');
+      } finally { copy.mockRestore(); }
+    });
+
+    it('keeps the primary in place when writing the restored file fails', async () => {
+      const a = await savedArtifact('Before');
+      a.name = 'After'; await store.save(a);
+      writeRaw(artifactFile(a.id), 'original before failed promotion');
+      const write = vi.spyOn(ArtifactStore as any, '_writeFileAtomic').mockRejectedValue(new Error('disk full'));
+      try {
+        await expect(store.restoreFromBackup(a.id)).rejects.toThrow('disk full');
+        expect(fs.readFileSync(artifactFile(a.id), 'utf8')).toBe('original before failed promotion');
+        expect(fs.readFileSync(path.join(canvasDir(), a.id, 'artifact.json.corrupt'), 'utf8')).toBe('original before failed promotion');
+      } finally { write.mockRestore(); }
+    });
+
+    it('preserves earlier recovery copies across repeated restores', async () => {
+      const a = await savedArtifact('Before');
+      a.name = 'After'; await store.save(a);
+      writeRaw(artifactFile(a.id), 'first broken copy');
+      await store.restoreFromBackup(a.id);
+      writeRaw(artifactFile(a.id), 'second broken copy');
+      await store.restoreFromBackup(a.id);
+      const dir = path.join(canvasDir(), a.id);
+      const recovered = fs.readdirSync(dir).filter(name => name.startsWith('artifact.json.corrupt'));
+      expect(recovered).toHaveLength(2);
+      expect(recovered.map(name => fs.readFileSync(path.join(dir, name), 'utf8')).sort()).toEqual(['first broken copy', 'second broken copy']);
     });
 
     it('restoreFromBackup returns null when there is nothing usable', async () => {
