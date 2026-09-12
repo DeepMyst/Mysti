@@ -124,7 +124,7 @@ export class OllamaProvider extends BaseCliProvider {
     supportsThinking: false,
     supportsToolUse: true,
     toolExecution: 'proposal-only',
-    supportsSessions: false,
+    supportsSessions: true,
     // Flag/reality alignment (Plan 02 Phase 1): attachments are dropped
     // before the request (Plan 00 Batch 3.5 owns wiring real image support).
     supportsImages: false,
@@ -136,7 +136,7 @@ export class OllamaProvider extends BaseCliProvider {
     effortLevels: OLLAMA_EFFORT_LEVELS,  // `think` graded strings (reasoning models)
     effortDefault: 'medium',
     planMode: 'detected',
-    sessionKind: 'none',           // stateless HTTP requests
+    sessionKind: 'prompt-history', // Conversation replayed in each HTTP request.
     emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
     emitsUsage: true,
     usageConvention: 'none',   // prompt_eval_count/eval_count are flat counts.

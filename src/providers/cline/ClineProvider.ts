@@ -139,6 +139,7 @@ export class ClineProvider extends AcpNativeProvider {
 		supportsStreaming: true,
 		supportsThinking: true,
 		supportsToolUse: true,
+		toolExecution: 'native',
 		supportsNativeApproval: true,
 		supportsSessions: true,
 		supportsAutoInstall: true,

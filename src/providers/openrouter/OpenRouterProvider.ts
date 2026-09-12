@@ -83,7 +83,7 @@ export class OpenRouterProvider extends BaseCliProvider {
     // No tool-execution runtime — OpenRouter is a completion API, not an agent.
     supportsToolUse: false,
     toolExecution: 'none',
-    supportsSessions: false,
+    supportsSessions: true,
     supportsAutoInstall: false,
     supportsPromptEnhancement: false,
     thinkingStyle: 'streamed',
@@ -92,7 +92,7 @@ export class OpenRouterProvider extends BaseCliProvider {
     effortDefault: 'medium',
     planMode: 'none',
     // Stateless: each turn re-sends the assembled prompt; no provider-side session.
-    sessionKind: 'none',
+    sessionKind: 'prompt-history',
     emitsToolResults: false,
     emitsUsage: true,
     usageConvention: 'auto',   // OpenRouter fronts every vendor; Anthropic models there report disjoint buckets.

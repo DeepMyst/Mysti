@@ -52,7 +52,15 @@
 
 ---
 
-## What's New in v0.4.0
+## Candidate compatibility
+
+The current candidate registers **15 backends** with different execution limits.
+Copilot is read/search only; Cursor and Continue reject approval-required and
+read-only turns. Native bridges are limited to the versions and operations in
+[the approval matrix](docs/APPROVAL_ACCEPTANCE_MATRIX.md). Account-backed,
+cross-platform editor and two-machine Desk acceptance remain pending.
+
+## Earlier release: v0.4.0
 
 ### 4 New Providers (12 Total)
 
@@ -68,7 +76,7 @@ Multi-backend coding agent supporting Anthropic, OpenAI, Google, and Groq throug
 
 ### Local AI Support
 
-Run AI models locally with **Ollama** and **LocalAI** — no cloud subscription needed. Full privacy, zero latency, complete control over your models.
+Run AI models locally with **Ollama** and **LocalAI** — no cloud subscription needed. Inference runs on your configured server; network access and data handling depend on that deployment.
 
 ### Stability & Testing
 

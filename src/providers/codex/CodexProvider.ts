@@ -127,6 +127,7 @@ export class CodexProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: true, // Codex has 'reasoning' events
     supportsToolUse: true,
+    toolExecution: 'native',
     supportsSessions: true,  // Fresh native threads preserve conversation through prompt history
     // Plan 27 Phase 5: attachments are written to a temp file and referenced
     // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read

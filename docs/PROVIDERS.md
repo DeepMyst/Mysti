@@ -1,22 +1,30 @@
 # AI Providers
 
-Mysti supports 12 AI providers. You only need one to get started — install any two to unlock Brainstorm Mode.
+Mysti registers 15 backends. Their transports and supported operations differ;
+registration does not establish installed or authenticated compatibility. Start
+with the [approval matrix](APPROVAL_ACCEPTANCE_MATRIX.md) and the provider's native
+contract before choosing a mode. Model examples below are configuration examples,
+not a guarantee that an account or installed CLI exposes those models.
 
-## Provider Overview
+## Provider overview
 
-| Provider | Type | Models | Best For |
-|----------|------|--------|----------|
-| **Claude Code** | CLI | Claude Opus 4.6, Sonnet 4.5, Haiku 4.5 | Deep reasoning, complex refactoring, thorough analysis |
-| **OpenAI Codex** | CLI | GPT-5.2, GPT-5.2 Thinking, GPT-5 | Quick iterations, familiar OpenAI style |
-| **Google Gemini** | CLI | Gemini 3 Deep Think, Gemini 2.5 Pro | Fast responses, Google ecosystem integration |
-| **Cline** | CLI | Claude 3.5 Sonnet, GPT-4o, Gemini Pro | Plan/Act mode, multi-model flexibility |
-| **GitHub Copilot** | CLI | 14+ models (Claude, GPT, Gemini) | Multi-model access via GitHub subscription |
-| **Cursor** | CLI | Auto, Claude Sonnet 4, GPT-5, o3, Gemini 2.5 Pro | Multi-model with auto-selection |
-| **OpenClaw** | CLI + WebSocket | Claude Opus 4.6, Sonnet 4.5, GPT-5 | Real-time WebSocket streaming, thinking levels |
-| **OpenCode** | CLI | Configurable (Anthropic, OpenAI, Google, Groq) | Multi-backend agent, flexible model selection |
-| **Qwen Code** | CLI | Qwen3 Coder, Qwen3 Coder Plus | Alibaba's AI coding agent, deep reasoning |
-| **Ollama** | CLI | Local models (Llama, Mistral, CodeLlama, etc.) | Local inference, privacy-first, no subscription |
-| **LocalAI** | CLI | Self-hosted models | Full control, on-premise deployment |
+| Provider | Agent transport | Execution boundary |
+| --- | --- | --- |
+| Claude Code | Native host-control CLI | Pinned native file/command approvals |
+| Codex | App-server | Native command/file requests and sandbox |
+| Gemini | ACP | Bounded file operations |
+| Cline | ACP | Supported final native tool inputs |
+| Copilot | ACP | Read/search only; writable support unresolved |
+| Cursor | CLI | Fully unrestricted turns only |
+| OpenClaw | Owned local gateway/runtime | Bounded stock tools with final execution guard |
+| OpenCode | ACP | File/search/fetch subset; no shell/delegation |
+| Qwen Code | ACP | Read/edit/notebook/foreground shell subset |
+| Hermes | Persistent ACP | Bridge implemented; installed policy acceptance pending |
+| Kimi Code | Persistent ACP | Bridge implemented; installed policy acceptance pending |
+| Continue | Plain-text CLI | Fully unrestricted turns only |
+| Ollama | HTTP | Reports tool proposals; does not execute them |
+| LocalAI | HTTP | Reports tool proposals; does not execute them |
+| OpenRouter | HTTP | Chat; no local tool execution |
 
 ## Claude Code
 
@@ -222,7 +230,7 @@ The ACP bridge requires an explicit BYOK endpoint through `COPILOT_PROVIDER_BASE
 
 ### Unique Features
 
-- **Multi-Model Access**: Use Claude, GPT, and Gemini through a single subscription
+- **Configured BYOK model**: Uses the explicitly configured provider endpoint/key/model. Subscription login is not supported by this isolated transport.
 - **Native approvals**: This verified Copilot release is restricted to read/search operations; native reads run without a host card
 
 The **1.0.83** ACP transport permits only read/search operations. It disables file writes, shell, web tools, hooks, plugins, MCP and delegation. Native workspace writes and some shell commands bypass the approval callback, so writable Copilot support remains unresolved. Native safe reads do not reach host approval policy. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
@@ -470,30 +478,28 @@ Supports a wide range of self-hosted models. See LocalAI documentation for compa
 
 ---
 
-## Manus (Experimental)
+## Hermes and Kimi Code
 
-HTTP API-based provider for Manus AI. Currently under development.
+These persistent ACP adapters implement native request/card/response routing,
+reported session continuity, images and usage. Neither CLI is installed in the
+review environment. Native policy completeness and authenticated/editor behavior
+remain unverified; fixture coverage does not establish universal tool approval.
 
-> **Note:** Manus is experimental and may not be fully functional. It uses HTTP polling rather than CLI streaming.
+## Continue
 
-### Authentication
+The `cn` CLI prints final text and exposes no host approval handshake. Its native
+`--readonly` mode permits Bash and MCP operations, so Mysti rejects restricted
+turns before launch. Only `full-access` with `default` or `edit-automatically` is
+available. It replays conversation history in the prompt and reports no usage.
+Continue is not installed in the review environment.
 
-Set your API key via settings (`mysti.manusApiKey`) or `MANUS_API_KEY` environment variable.
+## OpenRouter
 
-### Supported Models
+The HTTP adapter sends the built conversation prompt to the configured model.
+It reports streamed text/reasoning and returned usage, and executes no local tools.
+Its history is replayed in each request; it does not resume a server session.
 
-- Manus 1.6 Max
-- Manus 1.6
-- Manus 1.6 Lite
-
-### How It Differs
-
-Unlike other providers that use CLI tools, Manus communicates via HTTP API with an async polling workflow:
-1. POST to create a task
-2. GET to poll for completion
-3. Results returned when task finishes
-
----
+Manus source remains in the repository but is not a registered backend.
 
 ## Switching Providers
 
@@ -515,14 +521,32 @@ Click the settings gear icon in the Mysti sidebar to access the full settings pa
 
 ---
 
-## Provider Feature Matrix
+## Declared display and continuity capabilities
 
-| Feature | Claude | Codex | Gemini | Cline | Copilot | Cursor | OpenClaw | OpenCode | Qwen | Ollama | LocalAI |
-|---------|--------|-------|--------|-------|---------|--------|----------|----------|------|--------|---------|
-| Streaming | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Thinking Mode | Yes | Yes | Yes | No | No | Yes | Yes | Yes | Yes | No | No |
-| Native Compaction | Yes | No | No | No | No | No | No | No | No | No | No |
-| Session Resume | Yes | Yes | Yes | No | No | Yes | Yes | Yes | Yes | No | No |
-| Tool Use Display | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Brainstorm Support | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Autonomous Mode | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+This table describes the implemented adapters. “History” means Mysti replays the
+conversation in each request; “native” means a provider-managed session. Thinking
+output does not imply that Mysti's thinking-level control is effective. “Usage”
+means the transport can report it, not that every response contains measurements.
+External acceptance limits in the approval matrix still apply.
+
+| Provider | Continuity | Thinking output | Usage |
+| --- | --- | --- | --- |
+| Claude Code | native | streamed | yes |
+| Cline | history | complete blocks | no |
+| OpenAI Codex | history | complete blocks | yes |
+| Continue | history | complete blocks | no |
+| GitHub Copilot | history | none | no |
+| Cursor | history | none | yes |
+| Gemini | history | none | yes |
+| Hermes | native | none | yes |
+| Kimi Code | native | streamed | yes |
+| LocalAI | history | none | yes |
+| Ollama | history | none | yes |
+| OpenClaw | native | complete blocks | no |
+| OpenCode | history | complete blocks | yes |
+| OpenRouter | history | streamed | yes |
+| Qwen Code | history | complete blocks | yes |
+
+Brainstorm/session participation also requires availability and the requested
+restricted execution tier. There is no blanket autonomy or approval guarantee
+across providers.

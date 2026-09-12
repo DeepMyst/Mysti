@@ -49,7 +49,7 @@ describe('OpenRouterProvider', () => {
       expect(provider.capabilities.supportsStreaming).toBe(true);
       expect(provider.capabilities.supportsToolUse).toBe(false); // pure completion API
       expect(provider.capabilities.emitsUsage).toBe(true);
-      expect(provider.capabilities.sessionKind).toBe('none');
+      expect(provider.capabilities.sessionKind).toBe('prompt-history');
       expect(provider.config.defaultModel).toBe('openrouter/free'); // free by default
     });
 

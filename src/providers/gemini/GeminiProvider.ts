@@ -134,11 +134,10 @@ export class GeminiProvider extends AcpNativeProvider {
     supportsStreaming: true,
     supportsThinking: false, // Gemini doesn't expose thinking tokens like Claude
     supportsToolUse: true,
+    toolExecution: 'native',
     supportsNativeApproval: true,
     supportsSessions: true,
-    // Plan 27 Phase 5: attachments are written to a temp file and referenced
-    // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
-    // tools, so it can open what it is given.
+    // The native ACP transport sends validated image blocks.
     supportsImages: true,
     supportsAutoInstall: true,
     supportsPromptEnhancement: false,

@@ -75,6 +75,7 @@ export class ContinueProvider extends BaseCliProvider {
     // Headless `cn -p` prints only the final response — no tool events
     // ever reach stdout, so no tool cards / permission gating.
     supportsToolUse: false,
+    toolExecution: 'native',
     supportsSessions: true,
     supportsImages: false,
     supportsAutoInstall: true,   // plain npm global install

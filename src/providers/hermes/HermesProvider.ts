@@ -135,6 +135,7 @@ export class HermesProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: false,     // hermes acp does not emit thought chunks today; handled if it starts to
     supportsToolUse: true,
+    toolExecution: 'native',
     supportsNativeApproval: true,
     supportsSessions: true,
     supportsPersistentProcess: true,

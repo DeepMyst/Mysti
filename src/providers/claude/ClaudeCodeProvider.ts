@@ -206,6 +206,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
+    toolExecution: 'native',
     supportsNativeApproval: true,
     supportsSessions: true,
     supportsNativeCompact: true,

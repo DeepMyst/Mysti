@@ -91,6 +91,7 @@ export class QwenCodeProvider extends AcpNativeProvider {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
+    toolExecution: 'native',
     supportsNativeApproval: true,
     supportsSessions: true,
     // Plan 27 Phase 5: attachments are written to a temp file and referenced

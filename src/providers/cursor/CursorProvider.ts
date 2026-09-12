@@ -110,6 +110,7 @@ export class CursorProvider extends BaseCliProvider {
 		supportsStreaming: true,
 		supportsThinking: false,
 		supportsToolUse: true,
+		toolExecution: 'native',
 		supportsSessions: true,
 		supportsAutoInstall: false,
 		supportsPromptEnhancement: false,

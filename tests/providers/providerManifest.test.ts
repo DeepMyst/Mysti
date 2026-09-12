@@ -66,7 +66,7 @@ describe('buildProviderManifest', () => {
     byId = new Map(manifest.map((e) => [e.id, e]));
   });
 
-  it('contains one entry per registered provider (all 14)', () => {
+  it('contains one entry per registered provider (all 15)', () => {
     expect(manifest.length).toBe(registry.getIds().length);
     for (const id of ALL_PROVIDER_IDS) {
       expect(byId.has(id), `missing manifest entry for ${id}`).toBe(true);
@@ -160,7 +160,7 @@ describe('buildProviderManifest', () => {
     expect(copilot.sessionKind).toBe('prompt-history');
 
     const cursor = byId.get('cursor')!.capabilities;
-    expect(cursor.sessionKind).toBe('none');
+    expect(cursor.sessionKind).toBe('prompt-history');
 
     const openclaw = byId.get('openclaw')!.capabilities;
     expect(openclaw.emitsUsage).toBe(false);
@@ -194,13 +194,23 @@ describe('buildProviderManifest', () => {
     const ollama = byId.get('ollama')!.capabilities;
     expect(ollama.supportsImages).toBe(false);
     expect(ollama.emitsToolResults).toBe(false);
-    expect(ollama.sessionKind).toBe('none');
+    expect(ollama.sessionKind).toBe('prompt-history');
     expect(ollama.modelSelection).toBe('custom-only');
 
     const localai = byId.get('localai')!.capabilities;
     expect(localai.emitsToolResults).toBe(false);
-    expect(localai.sessionKind).toBe('none');
+    expect(localai.sessionKind).toBe('prompt-history');
     expect(localai.modelSelection).toBe('custom-only');
+  });
+
+  it('distinguishes native execution, proposals and chat across every registered backend', () => {
+    for (const entry of manifest) {
+      const expected = ['ollama', 'localai'].includes(entry.id) ? 'proposal-only' : entry.id === 'openrouter' ? 'none' : 'native';
+      expect(entry.capabilities.toolExecution, entry.id).toBe(expected);
+    }
+    expect(byId.get('cursor')!.capabilities.planMode).toBe('none');
+    expect(byId.get('continue')!.capabilities.planMode).toBe('none');
+    expect(byId.get('cursor')!.capabilities.supportsPromptEnhancement).toBe(false);
   });
 
   it('carries a complete customModelSettingKey map (C1 qwen-code drift fix)', () => {

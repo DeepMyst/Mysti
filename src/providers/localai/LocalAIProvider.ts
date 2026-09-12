@@ -106,7 +106,7 @@ export class LocalAIProvider extends BaseCliProvider {
     supportsThinking: false,
     supportsToolUse: true,
     toolExecution: 'proposal-only',
-    supportsSessions: false,
+    supportsSessions: true,
     supportsImages: false,
     supportsAutoInstall: false,
     supportsPromptEnhancement: false,
@@ -116,7 +116,7 @@ export class LocalAIProvider extends BaseCliProvider {
     effortLevels: LOCALAI_EFFORT_LEVELS,  // reasoning_effort (low/medium/high)
     effortDefault: 'medium',
     planMode: 'detected',
-    sessionKind: 'none',           // stateless HTTP requests
+    sessionKind: 'prompt-history', // Conversation replayed in each HTTP request.
     emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
     emitsUsage: true,
     usageConvention: 'auto',   // OpenAI-compatible server fronting arbitrary local models.

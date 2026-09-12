@@ -66,6 +66,7 @@ export class OpenCodeProvider extends AcpNativeProvider {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
+    toolExecution: 'native',
     supportsNativeApproval: true,
     supportsSessions: true,
     // ACP 1.18.29 consumes native image and embedded-context blocks.

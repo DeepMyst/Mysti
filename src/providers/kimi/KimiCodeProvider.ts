@@ -166,6 +166,7 @@ export class KimiCodeProvider extends BaseCliProvider {
     // Kimi's coding models reason; ACP surfaces it as agent_thought_chunk.
     supportsThinking: true,
     supportsToolUse: true,
+    toolExecution: 'native',
     supportsNativeApproval: true,
     supportsSessions: true,
     supportsPersistentProcess: true,

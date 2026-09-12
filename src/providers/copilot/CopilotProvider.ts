@@ -135,6 +135,7 @@ export class CopilotProvider extends AcpNativeProvider {
     supportsThinking: false,
     // The pinned ACP runtime is restricted to native read/search tools.
     supportsToolUse: true,
+    toolExecution: 'native',
     supportsNativeApproval: true,
     supportsSessions: true,
     supportsAutoInstall: true,
