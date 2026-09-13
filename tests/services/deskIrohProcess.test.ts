@@ -10,7 +10,9 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) { await
 
 async function fixture(source: string) {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mysti-iroh-process-'));
-  cleanup.push(() => fs.promises.rm(root, { recursive: true, force: true }));
+  // Windows can retain the killed child's cwd handle briefly after its PID is
+  // gone. Retry transient removal errors, while still failing a persistent lock.
+  cleanup.push(() => fs.promises.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   await fs.promises.mkdir(path.join(root, 'dist')); await fs.promises.mkdir(path.join(root, 'resources/desk-native'), { recursive: true });
   await fs.promises.writeFile(path.join(root, 'resources/desk-native/manifest.json'), '{}');
   await fs.promises.writeFile(path.join(root, 'dist/deskIrohWorker.js'),

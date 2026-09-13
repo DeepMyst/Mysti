@@ -325,9 +325,10 @@ describe('renderGrantStep', () => {
     const html = desk.renderGrantStep('p_x', ['status', 'consult', 'review']).toLowerCase();
     expect(html).not.toContain('data-desk-verb="consult"');
     expect(html).not.toContain('data-desk-verb="review"');
-    expect(html).toContain('status and scoped locate work through the desk local commands on this computer');
-    expect(html).toContain('workspace lookup requires an explicit sharing link');
-    expect(html).toContain('cross-machine requests, consultation, and review are not available');
+    expect(html).toContain('status and scoped locate use explicit desk sharing links');
+    expect(html).toContain('workspace lookup requires matching scope settings');
+    expect(html).toContain('cross-machine access requires a desk platform build and configured relay');
+    expect(html).toContain('consultation and review are not available');
   });
 
   it('says what status and locate do NOT expose', () => {

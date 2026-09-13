@@ -20,10 +20,47 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { describe, it, expect } from 'vitest';
+import * as os from 'os';
+import * as crypto from 'crypto';
+import { runInNewContext } from 'vm';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const vscodeignore = fs.readFileSync(path.join(ROOT, '.vscodeignore'), 'utf8');
+
+/** Observe the wrapper's real subprocess arguments using synthetic package
+ * files. Do not waive the dependency/pinned-tool property for a Node wrapper. */
+function packagingCommand(body: string, extraArgs: string[] = []): string {
+  if (body !== 'node scripts/package-desk.js') { return body; }
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-package-desk-'));
+  try {
+    const source = path.join(scratch, 'fixture.node'); fs.writeFileSync(source, 'fixture native bytes');
+    const name = '@number0/iroh-linux-x64-gnu';
+    let invocation: { executable: string; args: string[]; cwd: string } | undefined;
+    const modules: Record<string, unknown> = {
+      fs, path, crypto,
+      child_process: { execFileSync: (executable: string, args: string[], options: { cwd: string }) => {
+        invocation = { executable, args, cwd: options.cwd };
+      } },
+      '../package-lock.json': { packages: { [`node_modules/${name}`]: { version: '1.1.0', integrity: 'sha512-fixture' } } },
+      [`${name}/package.json`]: { name, main: 'iroh.linux-x64-gnu.node' },
+    };
+    const fixtureRequire = Object.assign((id: string) => {
+      if (!(id in modules)) { throw new Error(`Unexpected package wrapper dependency: ${id}`); }
+      return modules[id];
+    }, { resolve: (id: string) => { expect(id).toBe(name); return source; } });
+    runInNewContext(fs.readFileSync(path.join(ROOT, 'scripts/package-desk.js'), 'utf8'), {
+      require: fixtureRequire, __dirname: path.join(scratch, 'scripts'),
+      process: { argv: [process.execPath, 'package-desk.js', ...extraArgs], platform: 'linux', arch: 'x64', execPath: process.execPath },
+    });
+    expect(invocation?.executable).toBe(process.execPath);
+    expect(invocation?.cwd).toBe(scratch);
+    expect(invocation?.args[0]).toBe(path.join(scratch, 'node_modules/@vscode/vsce/vsce'));
+    expect(invocation?.args).toContain('--target');
+    expect(invocation?.args[invocation.args.indexOf('--target') + 1]).toBe('linux-x64');
+    return 'vsce ' + invocation!.args.slice(1).join(' ');
+  } finally { fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); }
+}
 
 // ---------------------------------------------------------------------------
 // A minimal .vscodeignore evaluator (gitignore-shaped: last match wins,
@@ -173,7 +210,7 @@ describe('packaging scripts must collect dependencies', () => {
 
   for (const [name, body] of packageScripts) {
     it(`"${name}" passes --dependencies`, () => {
-      expect(body).toContain('--dependencies');
+      expect(packagingCommand(body)).toContain('--dependencies');
     });
   }
 
@@ -207,12 +244,18 @@ describe('packaging scripts must collect dependencies', () => {
     expect(lock.packages['node_modules/@vscode/vsce'].version).toBe(version);
     expect(lock.packages['node_modules/@vscode/vsce'].dev).toBe(true);
     for (const [name, body] of packageScripts) {
-      expect(body, `"${name}" must use the installed packaging tool`)
+      expect(packagingCommand(body), `"${name}" must use the installed packaging tool`)
         .toMatch(/^vsce package\b/);
     }
     expect(pkg.dependencies?.['@vscode/vsce'],
       'The packaging tool must never ship inside the extension.').toBeUndefined();
   });
+
+  it.each([['--no-dependencies'], ['--target', 'win32-x64'], ['--target=win32-x64']])(
+    'refuses Desk flags that bypass dependency collection or target selection: %s', (...args) => {
+      expect(() => packagingCommand(pkg.scripts['package:desk'], args)).toThrow('chooses the actual host target');
+    },
+  );
 });
 
 describe('.vscodeignore globs are recursive where they must be', () => {
