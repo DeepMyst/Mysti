@@ -1880,20 +1880,20 @@
           "scope": "machine",
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Desk \u2014 cross-machine teamwork (off by default).** Lets the Mysti agent knock on a paired teammate's Desk: ask where something lives, or consult their agent about their codebase. Every call shows you exactly what will leave this machine before it goes. Machine-scoped: a cloned repository can never turn this on."
+          "markdownDescription": "**Desk pairing (off by default).** Manage your Desk identity, paired teammates, and saved permissions. Remote requests and task execution are not available in this version. Machine-scoped: a cloned repository can never turn this on."
         },
         "mysti.desk.serve": {
           "scope": "machine",
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Answer teammates' requests.** When off, Desk works one-way: you can ask paired teammates, but nothing on your machine ever answers. Turning it on binds a loopback-only listener; peers still need a pinned key and an explicit grant."
+          "markdownDescription": "**Reserved for answering teammates' requests.** Serving is not available in this version. This setting does not start a listener or enable remote requests."
         },
         "mysti.desk.servingBudgetUsdPerDay": {
           "scope": "machine",
           "type": "number",
           "default": 0.5,
           "minimum": 0,
-          "markdownDescription": "Hard daily ceiling on what answering ONE teammate may cost you. Checked before a request is served and enforced mid-answer, so a runaway peer stops rather than accumulating."
+          "markdownDescription": "Saved daily budget per teammate for future Desk serving. Serving is not available in this version, so this setting does not start or authorize model calls."
         },
         "mysti.desk.minRetentionClass": {
           "scope": "machine",
@@ -1904,7 +1904,7 @@
             "training-permitted"
           ],
           "default": "zero-retention",
-          "markdownDescription": "The weakest model-retention class you will let a teammate's question be processed by. If their Desk cannot meet it, your request is refused **before it leaves this machine**."
+          "markdownDescription": "Saved minimum model-retention policy for future Desk requests. Remote requests are not available in this version."
         },
         "mysti.mysti.visualTools": {
           "type": "string",

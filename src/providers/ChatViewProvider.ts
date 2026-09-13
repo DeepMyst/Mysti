@@ -14075,7 +14075,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } else {
           this._deskSession = null;
           vscode.window.showInformationMessage(
-            `Mysti Desk: paired with ${done.peer.alias}. They cannot ask anything until they pair with you too.`);
+            `Mysti Desk: paired with ${done.peer.alias}. Identity and permissions are saved; remote requests are not available in this version.`);
         }
         await this._sendDeskRoster(panelId);
         return;

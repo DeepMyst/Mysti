@@ -312,7 +312,7 @@ describe('renderChallenge', () => {
 });
 
 describe('renderGrantStep', () => {
-  it('defaults consult and review OFF, status and locate ON', () => {
+  it('defaults the saved status and locate permissions ON', () => {
     const html = desk.renderGrantStep('p_x');
     const checked = (s: string) => new RegExp(`data-desk-verb="${s}" checked`).test(html.replace(/"\s+checked/g, '" checked'));
     expect(checked('status')).toBe(true);
@@ -321,10 +321,11 @@ describe('renderGrantStep', () => {
     expect(checked('review')).toBe(false);
   });
 
-  it('states the COST of consult inline, where the decision is made', () => {
-    const html = desk.renderGrantStep('p_x').toLowerCase();
-    expect(html).toContain('costs you a model turn');
-    expect(html).toContain('approve the answer before it is sent');
+  it('omits unsupported grants even if previous state selected them', () => {
+    const html = desk.renderGrantStep('p_x', ['status', 'consult', 'review']).toLowerCase();
+    expect(html).not.toContain('data-desk-verb="consult"');
+    expect(html).not.toContain('data-desk-verb="review"');
+    expect(html).toContain('not available in this version');
   });
 
   it('says what status and locate do NOT expose', () => {

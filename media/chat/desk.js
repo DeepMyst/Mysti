@@ -107,7 +107,7 @@
     if (peers.length === 0) {
       return (
         '<div class="desk-empty">' +
-          '<span class="desk-empty-text">Desk — no teammates yet</span>' +
+          '<span class="desk-empty-text">Desk pairing — no teammates yet. Remote requests are not available yet.</span>' +
           '<button type="button" class="desk-btn desk-btn-link" data-desk-action="invite">Invite</button>' +
         '</div>'
       );
@@ -115,9 +115,10 @@
 
     return (
       '<div class="desk-header">' +
-        '<span class="desk-title">Teammates</span>' +
+        '<span class="desk-title">Paired teammates</span>' +
         '<button type="button" class="desk-btn desk-btn-link" data-desk-action="invite">Invite</button>' +
       '</div>' +
+      '<p class="desk-empty-text">Pairing saves identity and permissions. Remote requests are not available yet.</p>' +
       '<ul class="desk-roster">' + peers.map(renderPeerRow).join('') + '</ul>' +
       renderIdentity(state.identity)
     );
@@ -245,14 +246,13 @@
     var known = [
       { id: 'status', on: true, text: 'see whether you are available — costs you nothing' },
       { id: 'locate', on: true, text: 'ask where a symbol lives and get a path and line back — no file contents, costs you nothing' },
-      { id: 'consult', on: false, text: 'ask your agent questions about your code. Each question costs you a model turn, and you approve the answer before it is sent' },
-      { id: 'review', on: false, text: 'ask your agent to review a diff. Same cost, same approval' },
     ];
     var granted = Array.isArray(verbs) ? verbs : null;
 
     return (
       '<div class="desk-grant">' +
-        '<h3 class="desk-grant-title">What may they ask?</h3>' +
+        '<h3 class="desk-grant-title">Save pairing permissions</h3>' +
+        '<p class="desk-grant-note">Remote requests, consultation, and review are not available in this version.</p>' +
         '<div class="desk-grant-rows">' +
           known.map(function (v) {
             var on = granted ? granted.indexOf(v.id) !== -1 : v.on;
@@ -276,8 +276,7 @@
             'autocomplete="off" maxlength="32" placeholder="acme.com" />' +
         '</label>' +
         '<p class="desk-grant-note">' +
-          'Work only crosses as a git ref between machines in the same trust domain. ' +
-          'Across domains it crosses as files you tick one by one.' +
+          'Pairing saves these permissions. It does not send code or start remote work.' +
         '</p>' +
         '<div class="desk-ceremony-actions" data-desk-peer="' + safe(peerId, 64) + '">' +
           '<button type="button" class="desk-btn" data-desk-action="pair-cancel">Cancel</button>' +
