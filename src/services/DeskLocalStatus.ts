@@ -16,6 +16,7 @@ import { DeskLoopbackTransport, isDeskLoopbackUrl } from './DeskLoopbackTranspor
 const SESSION_MS = 10 * 60_000;
 const MAX_SESSIONS = 32;
 const MAX_CALLS = 128;
+const CHANNEL_REQUESTS_PER_MINUTE = 32;
 const LINK_PREFIX = 'desk://local-status/';
 const emptyIndex = DeskIndex.build(EMPTY_SCOPE, { paths: [], readText: () => null });
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -36,6 +37,8 @@ interface Session {
   challenge: string;
   expiresAt: number;
   calls: Map<string, { hash: string; result: Promise<unknown> }>;
+  windowStartedAt: number;
+  requestsRemaining: number;
 }
 
 export interface DeskLocalStatusDeps {
@@ -144,6 +147,7 @@ export class DeskLocalStatus {
     this._sessions.set(hash(bearer), {
       peerId, publicKey: peer.publicKey, challenge: connection.challenge,
       expiresAt: connection.expiresAt, calls: new Map(),
+      windowStartedAt: now, requestsRemaining: CHANNEL_REQUESTS_PER_MINUTE,
     });
     this._availability = availability;
     return LINK_PREFIX + Buffer.from(JSON.stringify(connection)).toString('base64url');
@@ -152,7 +156,19 @@ export class DeskLocalStatus {
   private _sessionFor(bearer: string): Session | undefined {
     if (!this._canServe()) { return undefined; }
     const session = this._sessions.get(hash(bearer));
-    return session && session.expiresAt > this._deps.now() ? session : undefined;
+    const now = this._deps.now();
+    if (!session || session.expiresAt <= now) { return undefined; }
+    // This resolver runs before the carrier reads/parses a body. Malformed
+    // frames and cached retries consume channel capacity too, independently
+    // of the grant's debit and unique-call rate limit. Clock rollback cannot
+    // replenish a window. Reissuing a link requires a local human command.
+    if (now - session.windowStartedAt >= 60_000) {
+      session.windowStartedAt = now;
+      session.requestsRemaining = CHANNEL_REQUESTS_PER_MINUTE;
+    }
+    if (session.requestsRemaining <= 0) { return undefined; }
+    --session.requestsRemaining;
+    return session;
   }
 
   private async _receive(peerId: string, body: unknown): Promise<unknown> {

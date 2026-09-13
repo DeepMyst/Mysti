@@ -4,10 +4,11 @@ Desk can exchange signed availability between paired editor profiles on the
 same computer. This is the loopback transport tier. Cross-machine transport,
 workspace lookup, consultation, review and task execution are not integrated.
 
-1. In two disposable editor profiles, enable `mysti.desk.enabled` and complete
+1. In two disposable editor instances with independent user-data directories,
+   enable `mysti.desk.enabled` and complete
    Desk pairing, including comparing the safety number. Grant `status` to the
-   profile that will check your availability. Each profile must have a distinct
-   Desk identity; windows sharing one profile also share its device identity.
+   profile that will check your availability. Each instance must have a distinct
+   Desk identity; windows sharing the same secret storage also share its device identity.
 2. In the serving profile, trust the workspace and enable `mysti.desk.serve`.
 3. Run **Mysti: Desk: Share local status**, choose the paired profile, and choose
    `available`, `busy`, `dnd` or `offline`. The temporary link is copied to the
@@ -35,7 +36,9 @@ expired peer cannot retrieve a cached result.
 The listener binds to an ephemeral port on `127.0.0.1`. The client accepts only
 that literal address and the `/desk` path; it does not resolve hostnames, use a
 proxy, follow redirects, or dial another machine. Bodies, response reads,
-deadlines, sessions and cached calls are bounded. The extension owns the
+deadlines, sessions and cached calls are bounded. Each recipient's channel
+accepts at most 32 requests per minute, including malformed bodies and cached
+retries; the peer grant also limits new calls. The extension owns the
 listener's configuration, workspace-trust and disposal lifecycle. Signing uses
 SecretStorage through `DeskIdentity`; the client never receives the private key.
 

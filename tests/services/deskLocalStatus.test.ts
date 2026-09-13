@@ -128,6 +128,41 @@ describe('production Desk local status over real loopback HTTP', () => {
     expect(f.a.peerBook.callsUsed(f.bKey.peerId)).toBe(1);
   });
 
+  it('throttles cached retries at the channel boundary without debiting them again', async () => {
+    const f = await fixture(1); const link = await f.a.runtime.share(f.bKey.peerId, 'busy');
+    const w = await wire(f, link);
+    for (let i = 0; i < 32; i++) { expect((await w.send()).status).toBe(200); }
+    expect((await w.send()).status).toBe(401);
+    expect(f.a.peerBook.callsUsed(f.bKey.peerId)).toBe(1);
+  });
+
+  it('bounds invalid signed frames and replenishes capacity only after the rate window', async () => {
+    const f = await fixture(); const link = await f.a.runtime.share(f.bKey.peerId, 'busy');
+    const w = await wire(f, link);
+    for (let i = 0; i < 32; i++) { expect((await w.send({})).status).toBe(200); }
+    expect((await w.send()).status).toBe(401);
+    f.advance(-1000);
+    expect((await w.send()).status).toBe(401);
+    f.advance(61_000);
+    expect((await f.b.runtime.check(link)).ok).toBe(true);
+    expect(f.a.peerBook.callsUsed(f.bKey.peerId)).toBe(1);
+  });
+
+  it('charges channel capacity before parsing malformed JSON', async () => {
+    const f = await fixture(); const c = decode(await f.a.runtime.share(f.bKey.peerId, 'busy'));
+    const malformed = () => new Promise<number>((resolve, reject) => {
+      const request = http.request(c.url, { method: 'POST', agent: false,
+        headers: { authorization: `Bearer ${c.bearer}`, 'content-type': 'application/json' },
+      }, response => { response.resume(); response.on('end', () => resolve(response.statusCode!)); });
+      request.on('error', reject);
+      request.setTimeout(2000, () => request.destroy(new Error('timeout')));
+      request.end('{');
+    });
+    for (let i = 0; i < 32; i++) { expect(await malformed()).toBe(400); }
+    expect(await malformed()).toBe(401);
+    expect(f.a.peerBook.callsUsed(f.bKey.peerId)).toBe(0);
+  });
+
   it('refuses stale challenges and deadlines before debiting', async () => {
     const f = await fixture(); const link = await f.a.runtime.share(f.bKey.peerId, 'busy');
     for (const patch of [{ challenge: 'a'.repeat(32) }, { issuedAt: f.now() - 5001 }, { deadlineMs: 10001 }]) {
