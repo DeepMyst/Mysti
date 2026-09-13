@@ -58,7 +58,9 @@ async function wire(f: Awaited<ReturnType<typeof fixture>>, link: string, patch:
 }
 
 async function lookupWorkspace() {
-  const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mysti-desk-http-')));
+  // Windows system temp is inside AppData, an intentionally unshareable store.
+  // Keep Windows fixtures in a fresh directory under the isolated checkout.
+  const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(process.platform === 'win32' ? process.cwd() : os.tmpdir(), 'mysti-desk-http-')));
   cleanup.push(() => fs.promises.rm(root, { recursive: true, force: true }));
   await fs.promises.mkdir(path.join(root, '.mysti'));
   await fs.promises.mkdir(path.join(root, 'src'));

@@ -11,7 +11,9 @@ afterEach(async () => {
 });
 
 async function fixture() {
-  const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mysti-desk-scope-')));
+  // Windows system temp is inside AppData, an intentionally unshareable store.
+  // Keep Windows fixtures in a fresh directory under the isolated checkout.
+  const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(process.platform === 'win32' ? process.cwd() : os.tmpdir(), 'mysti-desk-scope-')));
   roots.push(root);
   const write = async (name: string, text: string) => {
     await fs.promises.mkdir(path.dirname(path.join(root, name)), { recursive: true });
@@ -168,6 +170,14 @@ describe('Desk owner-prepared workspace coordinates', () => {
     const opens = vi.spyOn(fs.promises, 'open');
     await expect(new DeskWorkspaceLookup({ root: path.join(f.root, '.codex'), ceiling: () => ['*'], active: () => true })
       .prepare(['*'], () => true)).rejects.toThrow();
+    expect(opens).not.toHaveBeenCalled();
+  });
+
+  it.each(['AppData', 'Library'])('refuses a workspace inside the %s profile store before opening files', async store => {
+    const f = await fixture(); await f.write(`${store}/Temp/workspace/src/example.ts`, 'fixture');
+    const opens = vi.spyOn(fs.promises, 'open');
+    await expect(new DeskWorkspaceLookup({ root: path.join(f.root, store, 'Temp/workspace'), ceiling: () => ['*'], active: () => true })
+      .prepare(['*'], () => true)).rejects.toThrow('root unavailable');
     expect(opens).not.toHaveBeenCalled();
   });
 });
