@@ -92,11 +92,10 @@ const canvasWebviewConfig = {
   },
   module: {
     // `module: 'esnext'` (the repo default is `commonjs`) is what lets webpack
-    // see real ESM imports and tree-shake. It matters concretely here: the
-    // shared `CanvasSandbox` reaches `pageMigration`, which reaches
-    // `PageCompiler`, which reaches `@babel/parser` — 470 KB the webview never
-    // executes, because a document-model page is already parsed. With CommonJS
-    // output webpack cannot prove that and bundles the whole parser.
+    // see real ESM imports and tree-shake shared rendering helpers. The browser
+    // imports pageView/pageLayout directly; migration and PageCompiler stay in
+    // the host, so even parser initialization is absent from this entry graph.
+    // canvasBundleBoundary.test.ts verifies that dependency boundary.
     // `declaration: false` keeps the webview bundle from re-emitting the
     // extension's .d.ts tree as webpack assets.
     // `moduleResolution: 'node'` must ride along: TypeScript defaults to the

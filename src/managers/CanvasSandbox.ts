@@ -13,7 +13,7 @@
 
 import type { ArtifactPage, DesignTheme, CanvasFormatSpec } from '../types';
 import { putOwn, type DocNode, type Mid } from '../canvas/doc/DocNode';
-import { isLegacyPage, pageHtml, pageJsx, pageMode } from '../canvas/pageMigration';
+import { isLegacyPage, pageHtml, pageJsx, pageMode } from '../canvas/pageView';
 
 /**
  * Builds the self-contained HTML document for a page's sandboxed iframe (Plan 05

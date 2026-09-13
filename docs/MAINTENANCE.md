@@ -110,6 +110,15 @@ runtime identity, not a successful editor integration run. The minimum-host
 Linux CI gate remains required. A current-editor pass does not resolve this
 local crash or establish minimum-host compatibility.
 
+The 2026-09-13 follow-up used the test runner's `--no-sandbox` and
+`--disable-gpu-sandbox` flags inside the same outer OS sandbox that blocks
+user-store access and off-machine traffic. With extensions disabled and fresh
+profiles, minimum 1.86.0 still exited with SIGSEGV (default) or SIGTRAP
+(`--disable-gpu`), without the earlier probes' sandbox-initialization errors.
+Stable 1.136.2 reached the workbench and remained alive for the 25-second control.
+All owned process groups were stopped. This narrows the diagnostic; it does not
+identify the minimum editor's crash cause or provide a workaround.
+
 To reproduce the runtime-only gate, build with the development Node:
 `node scripts/build-runtime-fixture.js`. Then run
 `node out-test/runtime/minimum.cjs` with Node 18.17.1. It bundles its dependencies
@@ -185,11 +194,14 @@ violate its declared runtime support.
 The 2026-09-12 source/media lint pass has zero errors and zero warnings, without
 relaxing rules. Missing braces and duplicate function-scoped declarations were
 corrected; unreachable helpers, unused state and stale parameters were removed.
-The release build retains three webpack performance warnings for the 347 KiB
-Canvas entry point (recommended threshold: 244 KiB). The release maintainer owns
-this performance follow-up: measure editor startup and split a cohesive optional
-feature with real-editor/CSP coverage before removing the exception. Do not hide
-the warnings or raise the threshold merely to make the log green. VSCE's file
+The 2026-09-13 Canvas display extraction removes migration and the JSX parser
+from the browser dependency graph. The same production webpack build drops from
+355,782 bytes (347 KiB) to 183,372 bytes (179 KiB), clearing all three performance
+warnings below the unchanged 244 KiB threshold. `pageView` owns display accessors;
+`pageLayout` owns default placement; `pageMigration` preserves its host API through
+re-exports. A build of the actual browser entry checks that migration and parser
+dependencies stay absent. Keep browser, CSP, real-editor and performance checks
+blocking; bundle size alone is not a startup-time measurement. VSCE's file
 count warning includes the deliberately external Playwright runtime; package
 shape and installed-package resolution remain required.
 

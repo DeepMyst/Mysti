@@ -50,7 +50,7 @@
 import type { ArtifactPage, CanvasArtifact } from '../types';
 import type { CanvasOp } from './CanvasOps';
 import { CANVAS_MAX_VARIANTS } from '../constants';
-import { BOARD_COLUMN_PITCH } from './pageMigration';
+import { BOARD_COLUMN_PITCH } from './pageLayout';
 
 /** One row of side-by-side directions. */
 export interface VariantGroup {

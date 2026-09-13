@@ -32,27 +32,15 @@
  */
 
 import { compile } from './doc/PageCompiler';
-import { emit } from './doc/DocEmitter';
+import { boardPosForIndex } from './pageLayout';
+import { renderJsxCache } from './pageView';
 import { mintMid, type DocNode, type JsonValue } from './doc/DocNode';
 import type { ArtifactPage, CanvasArtifact, DesignNode, LegacyPageSource } from '../types';
 
-/* ─────────────────────────────── board layout ─────────────────────────────── */
-
-/** Horizontal pitch between artboards on the board, in design px. */
-export const BOARD_COLUMN_PITCH = 1600;
-/** Vertical pitch between artboard rows, in design px. */
-export const BOARD_ROW_PITCH = 1200;
-/** Artboards per board row before wrapping. */
-export const BOARD_COLUMNS = 4;
-
-/** Default board position for the page at `index`, laid out left-to-right. */
-export function boardPosForIndex(index: number): { x: number; y: number } {
-  const i = Number.isFinite(index) && index > 0 ? Math.floor(index) : 0;
-  return {
-    x: (i % BOARD_COLUMNS) * BOARD_COLUMN_PITCH,
-    y: Math.floor(i / BOARD_COLUMNS) * BOARD_ROW_PITCH,
-  };
-}
+// Preserve the existing host API while browser callers use the narrower modules.
+export { BOARD_COLUMN_PITCH, BOARD_ROW_PITCH, BOARD_COLUMNS, boardPosForIndex } from './pageLayout';
+export { renderJsxCache, pageMode, isLegacyPage, pageJsx, pageHtml, pageSource, pageWire } from './pageView';
+export type { PageWireView } from './pageView';
 
 /* ──────────────────────────────── doc helpers ──────────────────────────────── */
 
@@ -100,16 +88,6 @@ export function docFromJsx(
     return { doc: emptyDoc(opts.rand), error: res.error };
   } catch (err) {
     return { doc: emptyDoc(opts.rand), error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-/** The mid-annotated JSX for a page — what `read_page` returns. */
-export function renderJsxCache(doc: DocNode): string {
-  try {
-    return emit(doc, { mids: true, pins: true });
-  } catch (err) {
-    console.log('[Mysti] pageMigration: emit failed (non-fatal):', err);
-    return '';
   }
 }
 
@@ -339,73 +317,4 @@ export function migrateArtifactPages(artifact: CanvasArtifact, opts: { rand?: ()
     );
   }
   return report;
-}
-
-/* ───────────────────────── compatibility accessors ───────────────────────── */
-
-/**
- * How a page must be rendered today.
- *
- * `'html'` only for a legacy html page; everything else — including a legacy
- * JSX page the compiler rejected — is JSX.
- */
-export function pageMode(page: ArtifactPage): 'jsx' | 'html' {
-  return page.legacy?.mode === 'html' ? 'html' : 'jsx';
-}
-
-/** True when the page renders from {@link ArtifactPage.legacy}, not from `doc`. */
-export function isLegacyPage(page: ArtifactPage): boolean {
-  return !!page.legacy;
-}
-
-/** The JSX source for a page, or `''` for a legacy html page. */
-export function pageJsx(page: ArtifactPage): string {
-  if (page.legacy) { return page.legacy.mode === 'jsx' ? page.legacy.source : ''; }
-  if (typeof page.jsxCache === 'string' && page.jsxCache.length > 0) { return page.jsxCache; }
-  return renderJsxCache(page.doc);
-}
-
-/** The HTML source for a legacy html page, else `undefined`. */
-export function pageHtml(page: ArtifactPage): string | undefined {
-  return page.legacy?.mode === 'html' ? page.legacy.source : undefined;
-}
-
-/** Whatever source a validator/exporter should read — jsx or html. */
-export function pageSource(page: ArtifactPage): string {
-  return pageHtml(page) ?? pageJsx(page);
-}
-
-/**
- * The page shape the webview boot payload and the sandbox builder still speak.
- *
- * This is the "small compatibility accessor" Plan 22 sanctions: `mode` /
- * `jsxSource` / `htmlSource` remain *readable* while ceasing to be *stored*,
- * so the renderer rewrite is a separate, independently-landable change.
- */
-export interface PageWireView {
-  id: string;
-  version: number;
-  mode: 'jsx' | 'html';
-  jsxSource?: string;
-  htmlSource?: string;
-  actionTitle?: string;
-  boardPos: { x: number; y: number };
-  legacy: boolean;
-  compileError?: string;
-}
-
-export function pageWire(page: ArtifactPage): PageWireView {
-  const mode = pageMode(page);
-  const view: PageWireView = {
-    id: page.id,
-    version: page.version,
-    mode,
-    boardPos: page.boardPos,
-    legacy: !!page.legacy,
-  };
-  if (mode === 'jsx') { view.jsxSource = pageJsx(page); }
-  else { view.htmlSource = pageHtml(page) ?? ''; }
-  if (page.actionTitle !== undefined) { view.actionTitle = page.actionTitle; }
-  if (page.compileError !== undefined) { view.compileError = page.compileError; }
-  return view;
 }
