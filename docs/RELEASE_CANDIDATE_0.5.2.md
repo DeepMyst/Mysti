@@ -1,8 +1,9 @@
 # 0.5.2 review candidate
 
-Unpublished candidate prepared in the isolated reconciliation worktree. The
-original checkout and its index are unchanged by this review. No push, merge,
-tag, normal-profile installation or Marketplace publication was performed.
+Candidate prepared in the isolated reconciliation worktree and published on
+`codex/mysti-hosted-ci-review-2026-09-12` for hosted checks. The original checkout
+and its index are unchanged by this review. Main merge, tagging, normal-profile
+installation and Marketplace publication have not been performed.
 
 ## Disposition of the original review items
 
@@ -17,27 +18,28 @@ tag, normal-profile installation or Marketplace publication was performed.
 | 8. Approval matrix | Local native/protocol/routing matrix recorded; it is not authenticated end-to-end acceptance for every provider. |
 | 9. Installed accounts | Hermes/Kimi/Continue are absent from PATH; account-backed checks remain open. |
 | 10. Editor lifecycle | OpenClaw zombie-group cleanup and Cursor lifecycle fixed. Real-editor chat testing found and fixed Stop disappearing after token one. Loopback chat and Canvas acceptance are part of the final archive gate. |
-| 11. CI and editor minimum | Blocking workflows retained. Hosted results, branch protection and the minimum macOS pre-activation SIGTRAP remain open. |
-| 12. Desk | Pairing/grants and status/locate scope verified locally. Remote task execution is not wired into production; two-machine acceptance is open. |
+| 11. CI and editor minimum | All 15 required checks passed on `c9a3f35`, including installed archives on minimum/stable Linux editors; the exact-context main ruleset is active. Every later candidate needs fresh exact-commit checks. Minimum macOS 1.86.0 still crashes before activation (SIGSEGV by default, SIGTRAP with GPU disabled). |
+| 12. Desk | Pairing/grants plus signed local status are connected to production commands and lifecycle. Local status uses temporary recipient-specific loopback links. Scoped locate remains a pure dispatcher implementation; production workspace indexing and cross-machine transport/acceptance remain open. |
 | 13. Panel | Product claim corrected to independent answers shown together. No synthesis pass is claimed. |
 | 14. Capabilities/docs | Execution types and prompt-history behavior explicitly declared; documentation aligned with reachable provider paths. |
 | 15. Persistence | Journal ordering/tail handling and Canvas recovery preservation fixed. Migration, future-schema refusal and failure fixtures pass; real-profile downgrade acceptance is open. |
-| 16. Modularity | Run budgets extracted alongside the existing stream/output owners. Broader permission/tool dispatch and Canvas/chat decomposition remain architectural debt. |
-| 17. Dependencies/warnings | Source/media lint is clean. Production audit is clear; the development serializer exception and Canvas performance warnings remain bounded, owned follow-ups. |
+| 16. Modularity | Run budgets and Canvas display/layout owners extracted; Desk local transport and editor lifecycle have separate owners outside the sealed dispatcher. Broader permission/tool dispatch and Canvas/chat decomposition remain architectural debt. |
+| 17. Dependencies/warnings | Source/media lint and production audit are clear. Canvas no longer imports migration/compiler code in the browser; its bundle fell from 355,782 to 183,372 bytes and all three webpack size warnings cleared without changing thresholds. The development serializer exception remains. |
 | 18. Release preparation | Version and notes prepared; final test logs, archive hash and installed-editor result are recorded with the artifact. Publication remains blocked on the external acceptance gates. |
 
 See [provider approval evidence](APPROVAL_ACCEPTANCE_MATRIX.md),
 [external acceptance gates](EXTERNAL_RELEASE_ACCEPTANCE.md),
 [persistence recovery and downgrade](PERSISTENCE_RECOVERY.md), and
-[dependency/build exceptions](MAINTENANCE.md).
+[dependency/build exceptions](MAINTENANCE.md), and [Desk local status](DESK_LOCAL_STATUS.md).
 
 ## Artifact and rollback discipline
 
 The final evidence directory is `out-test/release-evidence/` (ignored by Git and
-excluded from the VSIX). `HANDOFF.md` and `item18-release-manifest.json` identify
-the exact source commit, archive SHA-256, checks, prior candidate and remaining
-gates. Retain the tested archive; rebuilding creates another artifact that must
-be verified separately.
+excluded from the VSIX). `ACTIVE_REVIEW_PROGRESS.json` points to the current
+continuation's handoff; each continuation retains its own exact source commit,
+archive SHA-256, checks, prior candidate and remaining gates. The original
+`HANDOFF.md` and `item18-release-manifest.json` are historical evidence. Retain
+the tested archive; rebuilding creates another artifact that must be verified separately.
 
 Conversation and Canvas schemas remain version 1. Preserve the complete `.mysti`
 workspace data and the relevant editor profile before switching versions. The

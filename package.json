@@ -111,6 +111,16 @@
     },
     "commands": [
       {
+        "command": "mysti.deskShareLocalStatus",
+        "title": "Desk: Share local status",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.deskCheckLocalStatus",
+        "title": "Desk: Check local status",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.deskPair",
         "title": "Desk: Pair with a teammate",
         "category": "Mysti"
@@ -1880,20 +1890,20 @@
           "scope": "machine",
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Desk pairing (off by default).** Manage your Desk identity, paired teammates, and saved permissions. Remote requests and task execution are not available in this version. Machine-scoped: a cloned repository can never turn this on."
+          "markdownDescription": "**Desk (off by default).** Manage pairing and use the Desk local status commands between paired editor profiles on this computer. Cross-machine requests and task execution are not available. Machine-scoped: a cloned repository can never turn this on."
         },
         "mysti.desk.serve": {
           "scope": "machine",
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Reserved for answering teammates' requests.** Serving is not available in this version. This setting does not start a listener or enable remote requests."
+          "markdownDescription": "**Serve local status (off by default).** With Desk enabled and workspace trust granted, starts a loopback listener. Use **Desk: Share local status** to publish an owner-chosen status through a temporary link for a paired profile on this computer. Only status is served; no files or model calls. Turning this off closes the listener and invalidates its links."
         },
         "mysti.desk.servingBudgetUsdPerDay": {
           "scope": "machine",
           "type": "number",
           "default": 0.5,
           "minimum": 0,
-          "markdownDescription": "Saved daily budget per teammate for future Desk serving. Serving is not available in this version, so this setting does not start or authorize model calls."
+          "markdownDescription": "Saved daily budget for future Desk model serving. Local status costs nothing and still counts toward each peer's granted call limit. This setting does not authorize model calls."
         },
         "mysti.desk.minRetentionClass": {
           "scope": "machine",

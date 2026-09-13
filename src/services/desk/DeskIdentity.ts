@@ -539,6 +539,13 @@ export class DeskIdentity {
 
   /** Sign on behalf of this device. The private key never leaves this class. */
   async sign(bytesUtf8: string): Promise<string> {
+    return this.signBytes(Buffer.from(bytesUtf8, 'utf8'));
+  }
+
+  /** Sign binary protocol digests without exporting the device's private key. */
+  async signBytes(bytes: Uint8Array): Promise<string> {
+    // Snapshot before awaiting the vault: the caller must not change what is signed.
+    const message = Buffer.from(bytes);
     await this.ensure();
     const priv = _secretsOf(this).privateKey;
     if (!priv) {
@@ -547,7 +554,7 @@ export class DeskIdentity {
       // an unsigned or stale-key request is worse than a legible error.
       throw new DeskIdentityError('stored-identity-corrupt', 'Desk device key is unavailable for signing');
     }
-    return crypto.sign(null, Buffer.from(bytesUtf8, 'utf8'),
+    return crypto.sign(null, message,
       _importPrivate(priv, 'stored-identity-corrupt')).toString('base64');
   }
 

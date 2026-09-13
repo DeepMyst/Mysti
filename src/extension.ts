@@ -56,6 +56,7 @@ import { McpConfigManager } from './services/McpConfigManager';
 import { PerfTracker } from './utils/PerfTracker';
 import { randomUUID } from 'crypto';
 import { DeskIdentity } from './services/desk/DeskIdentity';
+import { registerDeskLocalStatus } from './services/registerDeskLocalStatus';
 import { DeskPairing } from './managers/DeskPairing';
 import { DeskPeerBook } from './managers/DeskPeerBook';
 import { DeskPairingFlow } from './managers/DeskPairingFlow';
@@ -374,11 +375,8 @@ export async function activate(context: vscode.ExtensionContext) {
   // --------------------------------------------------------------------------
   // Desk (Plan 21 / Plan 26) — cross-machine teamwork, off by default.
   //
-  // Constructed unconditionally but INERT unless `mysti.desk.enabled` is on:
-  // the objects hold no timer, open no socket and read nothing until a message
-  // arrives. Gating construction on the setting instead would mean a toggle
-  // needs a window reload to take effect, and a security feature that needs a
-  // reload is one people leave off.
+  // Pairing is lazy. Local status serving additionally requires desk.serve
+  // and workspace trust, and its listener follows configuration and disposal.
   // --------------------------------------------------------------------------
   const deskIdentity = new DeskIdentity({
     // `vscode.SecretStorage` returns Thenable, which is not assignable to
@@ -402,6 +400,7 @@ export async function activate(context: vscode.ExtensionContext) {
     now: () => Date.now(),
     newId: () => randomUUID().replace(/-/g, ''),
   });
+  registerDeskLocalStatus(context, deskIdentity, deskPeerBook);
   const deskFlow = new DeskPairingFlow({
     pairing: deskPairing,
     peerBook: deskPeerBook,

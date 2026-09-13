@@ -280,14 +280,16 @@ export interface DeskTransport {
   ): Promise<{ status: number; body: unknown }>;
 }
 
-export interface DeskClientDeps {
+export type DeskClientDeps = {
   transport: DeskTransport;
-  /** base64 PKCS#8 Ed25519 private key — this device's identity. */
-  privateKey: string;
   now(): number;
   /** Caller-minted, per-request; the callee's dedupe key (§3.5). */
   newCallId(): string;
-}
+} & ({ privateKey: string; sign?: never } | {
+  /** Secret-storage backed signer; the client never receives the device key. */
+  sign(bytesUtf8: string): Promise<string>;
+  privateKey?: never;
+});
 
 export interface CallOptions {
   url: string;
@@ -455,7 +457,7 @@ export class DeskClient {
   async call(opts: CallOptions): Promise<DeskCallOutcome> {
     let req: PreparedRequest;
     try {
-      const prepared = this._prepare(opts);
+      const prepared = await this._prepare(opts);
       if ('error' in prepared) { return failure(prepared.error); }
       req = prepared.req;
     } catch {
@@ -510,7 +512,7 @@ export class DeskClient {
    * an enumeration probe against someone else's grant table. It also spends a
    * rate-limit slot on the callee for a request we already know is malformed.
    */
-  private _prepare(opts: CallOptions): { req: PreparedRequest } | { error: DeskClientError } {
+  private async _prepare(opts: CallOptions): Promise<{ req: PreparedRequest } | { error: DeskClientError }> {
     if (typeof opts.url !== 'string' || !isPeerUrl(opts.url)) { return { error: 'bad-url' }; }
 
     const bearer = opts.bearer;
@@ -556,7 +558,9 @@ export class DeskClient {
 
     let signed: SignedEnvelope;
     try {
-      signed = sign(envelope, this._deps.privateKey);
+      signed = this._deps.sign
+        ? { envelope, signature: await this._deps.sign(canonicalize(envelope)) }
+        : sign(envelope, this._deps.privateKey);
     } catch {
       // Narrow on purpose: only a key or serialization fault reads as
       // 'sign-failed', so that token still means what an operator thinks.

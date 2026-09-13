@@ -70,22 +70,24 @@ the exact-archive and minimum-editor/platform gates.
 
 ## Desk scope and two-machine acceptance
 
-Pairing, identity, grants and revocation are integrated. The native vocabulary
-publishes only `status` and `locate`; consult/review/assign/handoff/followup are
-excluded. Desk's HTTP transport and remote dispatcher are not connected to the
-production entry points. Cross-machine task execution is therefore unavailable
-in this candidate. The dispatcher's pure import boundary is independently tested;
-it does not prove deployment or connectivity.
+Pairing, identity, grants and revocation are integrated. The production
+[local status commands](DESK_LOCAL_STATUS.md) connect `DeskClient`, the loopback
+HTTP transport, identity signing, peer grants and the sealed dispatcher.
+Serving requires both machine settings and workspace trust. Each temporary
+connection is bound to a pinned recipient, with signed requests and responses,
+replay deduplication, limits and lifecycle shutdown. Only owner-chosen status
+is served. Workspace indexing and the dispatcher's pure `locate` implementation
+are not connected to this production path; no source is read or disclosed.
 
-The settings and pairing UI now describe this limitation, and the grant form no
-longer offers consultation or review. Pairing saves identity and permissions;
-the serving setting does not start a listener in this version. The latest focused
-Desk review passed 299 tests, including grant rendering and dispatch/import
-boundaries. This correction does not wire remote execution.
+Cross-machine transport and task execution remain unavailable. Consultation,
+review, assignment, handoff and followup remain absent from the executable
+surface. Settings, rail and pairing copy distinguish local status from these
+remaining capabilities. Local HTTP tests use generated identities and in-memory
+stores; they do not establish acceptance across editor profiles or machines.
 
 The local Desk scope/transport/pairing suite passes 1,284 tests in 17 files.
 A two-machine result has not been produced. Before enabling remote task execution,
-wire the authenticated transport with explicit lifecycle ownership, then test
+implement the cross-machine transport and serving path, then test
 pairing both directions, grant expiry/revocation, scope and secret egress checks,
 replay rejection, disconnect/Stop, restart recovery and a real returned result.
 Record which machine executes each step. A local loopback fixture is insufficient.
