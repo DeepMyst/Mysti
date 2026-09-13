@@ -103,7 +103,8 @@ describe('Mysti Canvas — real VS Code host', function () {
     const endpoint = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);
     assert.match(endpoint[0], /^\d+$/, 'the editor did not publish a CDP port');
     assert.ok(endpoint[1]?.startsWith('/devtools/browser/'), 'the editor did not publish a CDP endpoint');
-    browser = await chromium.connectOverCDP(`ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`);
+    // The minimum editor's Electron 27 cannot manage contexts through CDP.
+    browser = await chromium.connectOverCDP(`ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`, { noDefaults: true });
     for (const context of browser.contexts()) {
       for (const page of context.pages()) {
         page.on('console', message => {

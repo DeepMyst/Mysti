@@ -78,7 +78,9 @@ describe('Mysti Chat — real VS Code host and loopback provider', function () {
     await fetch(`${endpointUrl}/__fixture/reset`, { method: 'POST' });
     await vscode.extensions.getExtension('DeepMyst.mysti')!.activate();
     const endpoint = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);
-    browser = await chromium.connectOverCDP(`ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`);
+    // Inspect the editor's existing context without changing its download or
+    // emulation settings. Electron 27 does not implement context management.
+    browser = await chromium.connectOverCDP(`ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`, { noDefaults: true });
     await vscode.commands.executeCommand('mysti.openChat');
     await until(async () => (await chatFrames()).length > 0, 'Chat webview did not open');
     sidebar = (await chatFrames())[0];

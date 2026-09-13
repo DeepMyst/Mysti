@@ -1,2 +1,2 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Integrity manifests hash checked-out bytes. Keep text identical on every OS.
+* text=auto eol=lf

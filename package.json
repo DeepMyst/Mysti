@@ -2218,7 +2218,7 @@
     "dompurify": "^3.4.14",
     "marked": "^15.0.0",
     "mermaid": "11.17.2",
-    "playwright": "^1.58.2",
+    "playwright": "1.60.0",
     "prismjs": "^1.29.0",
     "ws": "^8.19.0"
   },
