@@ -107,4 +107,13 @@ const canvasWebviewConfig = {
   }
 };
 
-module.exports = [extensionConfig, canvasWebviewConfig];
+const deskWorkerConfig = {
+  ...extensionConfig,
+  name: 'deskIrohWorker',
+  entry: './src/services/deskIrohWorker.ts',
+  output: { ...extensionConfig.output, filename: 'deskIrohWorker.js' },
+  node: { __dirname: false, __filename: false },
+  module: { rules: [tsRule('deskIrohWorker', { declaration: false, declarationMap: false })] },
+};
+
+module.exports = [extensionConfig, canvasWebviewConfig, deskWorkerConfig];

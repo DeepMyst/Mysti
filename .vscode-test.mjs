@@ -57,7 +57,8 @@ export default defineConfig({
     '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=0',
   ],
-  env: { MYSTI_TEST_USER_DATA_DIR: userDataDir, MYSTI_TEST_VSIX_PATH: vsixPath, MYSTI_TEST_OLLAMA_ENDPOINT: ollamaEndpoint },
+  env: { MYSTI_TEST_USER_DATA_DIR: userDataDir, MYSTI_TEST_VSIX_PATH: vsixPath, MYSTI_TEST_OLLAMA_ENDPOINT: ollamaEndpoint,
+    MYSTI_TEST_DESK_NATIVE: process.env.MYSTI_TEST_DESK_NATIVE },
   // A scratch folder so the canvas has a real workspace to write `.mysti/canvas`
   // into; created by the test's own setup.
   workspaceFolder: './out-vscode-test/fixture-workspace',

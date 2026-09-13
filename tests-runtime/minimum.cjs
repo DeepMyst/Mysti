@@ -9,6 +9,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { DeskWorkspaceLookup } = require('../src/services/DeskWorkspaceLookup');
+const { bindDeskIroh } = require('../src/services/DeskIrohNative');
 const { compile, compilePartial } = require('../src/canvas/doc/PageCompiler');
 const { emit } = require('../src/canvas/doc/DocEmitter');
 const { applyOp } = require('../src/canvas/doc/DocPatch');
@@ -38,6 +39,9 @@ function compileOk(source) {
 async function main() {
   // Fail closed if the CI execution step accidentally retains the build Node.
   assert.equal(process.versions.node, '18.17.1', 'Execute this bundle with the minimum editor runtime');
+  await assert.rejects(() => bindDeskIroh(new Proxy({}, { get() { throw new Error('native binding must not be touched'); } }),
+    'https://relay.example.test/'), /configuration unsupported/);
+  report.checks.push('desk-iroh-minimum-runtime-refuses-before-native-access');
 
   const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-minimum-desk-')));
   try {

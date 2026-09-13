@@ -747,7 +747,7 @@ export class DeskClient {
 }
 
 /**
- * `http:`/`https:` only — a peer address is never a file or data URL — and
+ * HTTP(S), or an exact authenticated iroh endpoint identifier — never a file or data URL — and
  * never one carrying userinfo.
  *
  * Credentials in the URL are refused because the channel credential is the
@@ -761,6 +761,7 @@ export class DeskClient {
  * wiring that resolves a peer row owns that check.
  */
 function isPeerUrl(raw: string): boolean {
+  if (/^iroh:\/\/[a-f0-9]{64}\/desk$/.test(raw)) { return true; }
   let u: URL;
   try {
     u = new URL(raw);

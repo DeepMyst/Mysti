@@ -64,3 +64,4 @@ out-test/
 # VS Code integration tests
 out-vscode-test/
 .vscode-test/
+resources/desk-native/

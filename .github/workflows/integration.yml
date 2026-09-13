@@ -29,6 +29,8 @@ jobs:
             version: '1.86.0'
     env:
       MYSTI_TEST_VSCODE_VERSION: ${{ matrix.version }}
+      MYSTI_TEST_VSIX_PATH: ${{ github.workspace }}/mysti-desk.vsix
+      MYSTI_TEST_DESK_NATIVE: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -40,10 +42,28 @@ jobs:
       - name: Install
         run: npm ci
 
+      # Build and install the actual host's native archive. The minimum Linux
+      # editor gets the same native payload and must refuse it before loading.
+      - name: Package Desk for this platform
+        run: npm run package:desk -- --out mysti-desk.vsix
+      - name: Check the exact platform archive
+        run: npm run check:package -- mysti-desk.vsix
+      - name: Prepare editor tests
+        run: |
+          npm exec --no -- tsc -p tsconfig.vscode-test.json
+          node scripts/prepare-vscode-fixture.js
+
       - name: Test (Linux — needs a display server)
         if: runner.os == 'Linux'
-        run: xvfb-run -a npm run test:vscode
+        run: xvfb-run -a npm exec --no -- vscode-test
 
       - name: Test (macOS / Windows)
         if: runner.os != 'Linux'
-        run: npm run test:vscode
+        run: npm exec --no -- vscode-test
+
+      - name: Upload accepted Desk platform archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysti-desk-${{ matrix.os }}-${{ matrix.version }}
+          path: mysti-desk.vsix
+          if-no-files-found: error

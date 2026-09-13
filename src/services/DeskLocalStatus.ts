@@ -36,6 +36,7 @@ interface Connection {
 }
 
 interface Session {
+  ownPublicKey: string;
   verb: 'status' | 'locate';
   lookup?: DeskLookupSnapshot;
   peerId: string;
@@ -178,6 +179,7 @@ export class DeskLocalStatus {
       audience: peerId, expiresAt: Math.min(now + SESSION_MS, grant.expiresAt, peer.expiresAt),
     };
     this._sessions.set(hash(bearer), {
+      ownPublicKey: own.publicKey,
       verb, lookup,
       peerId, publicKey: peer.publicKey, challenge: connection.challenge,
       expiresAt: connection.expiresAt, calls: new Map(),
@@ -190,7 +192,7 @@ export class DeskLocalStatus {
     if (!this._canServe()) { return undefined; }
     const session = this._sessions.get(hash(bearer));
     const now = this._deps.now();
-    if (!session || session.expiresAt <= now) { return undefined; }
+    if (!session || session.expiresAt <= now || this._deps.identity.current()?.publicKey !== session.ownPublicKey) { return undefined; }
     // This resolver runs before the carrier reads/parses a body. Malformed
     // frames and cached retries consume channel capacity too, independently
     // of the grant's debit and unique-call rate limit. Clock rollback cannot
@@ -224,6 +226,7 @@ export class DeskLocalStatus {
     const current = async () => envelope.verb !== 'locate' || !session.lookup || await session.lookup.isCurrent();
     const epoch = this._epoch;
     const live = () => this._canServe() && this._epoch === epoch
+      && this._deps.identity.current()?.publicKey === session.ownPublicKey
       && [...this._sessions.values()].includes(session) && session.expiresAt > this._deps.now()
       && !this._deps.peerBook.isRevoked(peerId)
       && this._deps.peerBook.getPeerById(peerId)?.publicKey === peer.publicKey
@@ -273,6 +276,19 @@ export class DeskLocalStatus {
   async locate(link: string, token: string, kind: 'symbol' | 'path'): Promise<DeskCallOutcome> {
     if (!validateCall('locate', { token, kind }).ok) { return { ok: false, error: 'bad-args' }; }
     return this._call(link, 'locate', { token, kind });
+  }
+
+  /** The native owner may carry a local channel, never create remote authority. */
+  sharedConnection(link: string, verb: 'status' | 'locate'): Connection | null {
+    const connection = parseConnection(link, this._deps.now(), verb === 'locate' ? LOOKUP_PREFIX : LINK_PREFIX);
+    if (!connection || !this._canServe()) { return null; }
+    const session = this._sessions.get(hash(connection.bearer));
+    const peer = session && this._deps.peerBook.getPeerById(session.peerId);
+    if (!session || session.verb !== verb || session.challenge !== connection.challenge || !peer
+      || session.expiresAt <= this._deps.now() || peer.expiresAt <= this._deps.now()
+      || this._deps.peerBook.isRevoked(peer.peerId) || peer.publicKey !== session.publicKey
+      || this._deps.identity.current()?.publicKey !== session.ownPublicKey) { return null; }
+    return connection;
   }
 
   private async _call(link: string, verb: 'status' | 'locate', args: Record<string, unknown>): Promise<DeskCallOutcome> {

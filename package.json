@@ -111,6 +111,26 @@
     },
     "commands": [
       {
+        "command": "mysti.deskShareRemoteStatus",
+        "title": "Desk: Share cross-machine status",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.deskCheckRemoteStatus",
+        "title": "Desk: Check cross-machine status",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.deskShareRemoteLookup",
+        "title": "Desk: Share cross-machine workspace lookup",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.deskLocateRemote",
+        "title": "Desk: Look up cross-machine workspace",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.deskShareLocalStatus",
         "title": "Desk: Share local status",
         "category": "Mysti"
@@ -1900,13 +1920,19 @@
           "scope": "machine",
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Desk (off by default).** Manage pairing and use the Desk local status and workspace lookup commands between paired editor profiles on this computer. Cross-machine requests and task execution are not available. Machine-scoped: a cloned repository can never turn this on."
+          "markdownDescription": "**Desk (off by default).** Manage pairing and exchange signed status or scoped workspace coordinates. Local commands work on this computer; cross-machine commands require a Desk platform build and an explicit relay URL. Remote task execution is unavailable. Machine-scoped: a cloned repository can never turn this on."
         },
         "mysti.desk.serve": {
           "scope": "machine",
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Serve Desk locally (off by default).** With Desk enabled and workspace trust granted, starts a loopback listener. Explicit sharing commands issue temporary links for a paired profile on this computer: either an owner-chosen status or coordinates from a scoped workspace snapshot. No model calls. Turning this off closes the listener and invalidates its links."
+          "markdownDescription": "**Serve Desk (off by default).** With Desk enabled and workspace trust granted, starts a loopback listener. Explicit sharing commands issue temporary status or scoped-coordinate links for a paired recipient. Cross-machine sharing also requires a Desk platform build and relay URL; no native endpoint starts until you share. No model calls. Turning this off closes serving and invalidates its links."
+        },
+        "mysti.desk.relayUrl": {
+          "scope": "machine",
+          "type": "string",
+          "default": "",
+          "markdownDescription": "HTTPS root URL of your self-hosted or paid Desk relay, including the trailing slash. Set in User Settings on both paired machines. Empty disables cross-machine access. Requires a Desk platform build and an editor with Node 20.3 or newer; Intel macOS is unsupported. A relay connects only after an explicit cross-machine share/check/lookup command. No public relay or discovery fallback is used."
         },
         "mysti.desk.servingBudgetUsdPerDay": {
           "scope": "machine",
@@ -2210,6 +2236,9 @@
     "typecheck": "tsc --noEmit",
     "check:package": "node scripts/check-package-shape.js",
     "package": "vsce package --dependencies",
+    "prepackage": "node scripts/package-desk.js --universal",
+    "prepackage:pre-release": "node scripts/package-desk.js --universal",
+    "package:desk": "node scripts/package-desk.js",
     "package:pre-release": "vsce package --pre-release --dependencies",
     "test:watch": "vitest",
     "sync-agents": "node scripts/sync-agents.js",
@@ -2219,6 +2248,7 @@
     "pretest:vscode": "npm run compile:release"
   },
   "devDependencies": {
+    "@number0/iroh": "1.1.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.10.0",
     "@types/vscode": "1.86.0",

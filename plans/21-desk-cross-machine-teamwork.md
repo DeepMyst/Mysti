@@ -1252,6 +1252,15 @@ word now. The seamlessness bar is "share a link / mention an agent" — pairing 
   measured ~70% end-to-end direct rate is why relay is the availability floor). Tailnet demotes
   to an opportunistic fast path (cross-tailnet sharing requires recipient tailnet-admin — real
   friction). Do not ship on n0's free rate-limited relays; self-host or pay.
+  **Implementation refinement (2026-09-13):** the pinned device signs a short-lived
+  native endpoint descriptor instead of exporting its long-term private key into
+  the FFI. The recipient verifies that signature against its existing device pin
+  before dialing, then verifies the native responder ID before sending a query.
+  This preserves the pairing/grant authority and keeps the vault outside the
+  bounded native child process. See `docs/DESK_CROSS_MACHINE.md` for implemented
+  platform packaging and commands; approved relay and two-machine acceptance
+  are still required. Local native/runtime probes do not establish relay-first
+  routing, hole punching, or direct-path upgrade behavior.
 - **D2 — ONE merged risk-tiered card, gated on contextual surprise** (new peer / new data class /
   new scope), replacing stacked spend+disclosure cards; warm repeats ride the approved-disclosure
   cache; non-blocking verbs land in an inbox. The card renders the RAW draft bytes (never the

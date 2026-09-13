@@ -2,8 +2,10 @@
 
 Desk can exchange signed availability between paired editor profiles on the
 same computer, and can share exact workspace coordinates through a separate
-explicit command. This is the loopback transport tier. Cross-machine transport,
-consultation, review and task execution are not integrated.
+explicit command. This is the loopback transport tier. Matching platform builds
+also provide [cross-machine commands](DESK_CROSS_MACHINE.md), whose relay and
+two-machine acceptance remain open. Consultation, review and task execution
+are not integrated.
 
 ## Local status
 

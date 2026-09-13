@@ -81,7 +81,12 @@ intersect machine, workspace and peer scopes, exclude private/linked paths, and
 refuse changed scopes or files, including cached replies. Only the local sharing
 command reads source for indexing; no source text is returned.
 
-Cross-machine transport and task execution remain unavailable. Consultation,
+Matching native platform builds provide explicit
+[cross-machine status and lookup commands](DESK_CROSS_MACHINE.md), with process
+isolation, signed transport links and the existing grant/scope checks. The
+universal build retains local Desk. Approved relay and two-machine acceptance
+remain open; local encrypted protocol and packaged-runtime evidence are recorded
+separately. Consultation,
 review, assignment, handoff and followup remain absent from the executable
 surface. Settings, rail and pairing copy distinguish local status/lookup from these
 remaining capabilities. Local HTTP tests use generated identities and in-memory
@@ -89,7 +94,7 @@ stores; they do not establish acceptance across editor profiles or machines.
 
 Local signed HTTP and temporary-workspace tests cover the production lookup path.
 A two-machine result has not been produced. Before enabling remote task execution,
-implement the cross-machine transport and serving path, then test
+complete the cross-machine status/lookup acceptance and separately implement task authority, then test
 pairing both directions, grant expiry/revocation, scope and secret egress checks,
 replay rejection, disconnect/Stop, restart recovery and a real returned result.
 Record which machine executes each step. A local loopback fixture is insufficient.

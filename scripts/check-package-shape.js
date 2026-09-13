@@ -97,6 +97,7 @@ const LARGE_ASSET_ALLOWLIST = [
   // build and visual testing is dead on arrival. Browser BINARIES are not
   // shipped - the user runs `npx playwright install chromium`.
   [/^node_modules\/playwright(-core)?\//,         'playwright runtime (webpack external, see .vscodeignore)'],
+  [/^resources\/desk-native\/binding\.node$/,    'pinned iroh 1.1.0 binding in a matching Desk platform VSIX; assertion H verifies integrity and target'],
 ];
 
 // Everything Node resolves without a node_modules lookup. Kept explicit rather
@@ -239,6 +240,8 @@ function loadArchive(vsixPath) {
     return {
       files,
       source: `archive ${vsixPath}`,
+      target: /\bTargetPlatform="([^"]+)"/.exec(zip.read('extension.vsixmanifest').toString('utf8'))?.[1] ?? null,
+      readBuffer: rel => zip.read(`extension/${rel}`),
       // Read out of the ARCHIVE, so the check is valid against an artifact this
       // machine did not build.
       readText: rel => zip.read(`extension/${rel}`).toString('utf8'),
@@ -252,6 +255,7 @@ function loadArchive(vsixPath) {
   return {
     files,
     source: '`vsce ls` (dependency-resolving mode) against the working tree',
+    readBuffer: rel => fs.readFileSync(path.join(REPO_ROOT, rel)),
     readText: rel => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8'),
   };
 }
@@ -410,7 +414,27 @@ function inspectArchive(archive, manifest) {
   assertNoDeclarations(archive.files);
   assertRuntimeRequiresResolve(archive, present);
   assertLargeAssetsAllowlisted(archive.files);
+  assertDeskNative(archive, present);
   return { failures: [...failures], notes: [...notes] };
+}
+
+function assertDeskNative(archive, present) {
+  const names = archive.files.filter(f => f.rel.startsWith('resources/desk-native/')).map(f => f.rel).sort();
+  if (!names.length) { notes.push('H: universal build has no native Desk runtime.'); return; }
+  try {
+    if (names.join(',') !== 'resources/desk-native/binding.node,resources/desk-native/manifest.json'
+      || !present.has('dist/deskIrohWorker.js') || !present.has('resources/iroh-LICENSE-MIT')) { throw new Error('native package files incomplete'); }
+    const metadata = JSON.parse(archive.readText('resources/desk-native/manifest.json'));
+    const targets = { 'darwin-arm64': 'darwin-arm64', 'linux-x64': 'linux-x64-gnu', 'win32-x64': 'win32-x64-msvc' };
+    if (!targets[metadata.target] || metadata.version !== '1.1.0'
+      || metadata.package !== `@number0/iroh-${targets[metadata.target]}`
+      || (archive.target !== undefined && archive.target !== metadata.target)) { throw new Error('native binary does not match the VSIX target'); }
+    const data = archive.readBuffer('resources/desk-native/binding.node');
+    if (data.length > 32 * 1024 * 1024 || require('crypto').createHash('sha256').update(data).digest('hex') !== metadata.sha256) {
+      throw new Error('native binary integrity mismatch');
+    }
+    notes.push(`H: Desk ${metadata.target} native runtime, worker, license and integrity match the archive.`);
+  } catch (error) { fail('H (Desk native target and integrity)', error.message); }
 }
 
 /** Collect `require("<literal>")` call expressions. AST only - no string literals. */

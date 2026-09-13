@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createRequire } from 'module';
+import { createHash } from 'crypto';
 
 interface Archive {
+  target?: string | null;
+  readBuffer?(rel: string): Buffer;
   files: Array<{ rel: string; size: number }>;
   readText(rel: string): string;
 }
@@ -15,6 +18,7 @@ const { inspectArchive } = createRequire(import.meta.url)('../../scripts/check-p
 
 function archive(contents: Record<string, string>): Archive {
   return {
+    readBuffer: rel => Buffer.from(contents[rel]),
     files: Object.entries(contents).map(([rel, value]) => ({ rel, size: Buffer.byteLength(value) })),
     readText: rel => {
       if (!(rel in contents)) { throw new Error(`Missing ${rel}`); }
@@ -25,6 +29,22 @@ function archive(contents: Record<string, string>): Archive {
 const manifest = { main: './dist/extension.js' };
 
 describe('package shape inspects the artifact contents', () => {
+  it.each(['valid', 'universal', 'wrong-target', 'changed-binary', 'missing-worker', 'missing-license'] as const)(
+    'verifies Desk native packaging: %s', change => {
+      const data = 'synthetic-native-payload';
+      const contents: Record<string, string> = {
+        'dist/extension.js': '', 'dist/deskIrohWorker.js': '', 'resources/iroh-LICENSE-MIT': 'fixture license',
+        'resources/desk-native/binding.node': change === 'changed-binary' ? 'different payload' : data,
+        'resources/desk-native/manifest.json': JSON.stringify({ target: 'darwin-arm64', package: '@number0/iroh-darwin-arm64',
+          version: '1.1.0', sha256: createHash('sha256').update(data).digest('hex') }),
+      };
+      if (change === 'missing-worker') { delete contents['dist/deskIrohWorker.js']; }
+      if (change === 'missing-license') { delete contents['resources/iroh-LICENSE-MIT']; }
+      const built = archive(contents); built.target = change === 'universal' ? null : change === 'wrong-target' ? 'linux-x64' : 'darwin-arm64';
+      const result = inspectArchive(built, manifest);
+      expect(result.failures.some(f => f.assertion === 'H (Desk native target and integrity)')).toBe(change !== 'valid');
+    },
+  );
   it('accepts host-provided modules, Node builtins and intentional optional externals', () => {
     const result = inspectArchive(archive({ 'dist/extension.js':
       'require("vscode"); require("node:fs/promises"); require("bufferutil"); require("utf-8-validate");',
