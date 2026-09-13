@@ -139,7 +139,6 @@ jobs:
     env:
       MYSTI_TEST_VSCODE_VERSION: ${{ matrix.version }}
       MYSTI_TEST_VSIX_PATH: ${{ github.workspace }}/mysti-ci.vsix
-      TMPDIR: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -160,6 +159,8 @@ jobs:
           npm exec --no -- tsc -p tsconfig.vscode-test.json
           node scripts/prepare-vscode-fixture.js
       - name: Test installed extension
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: xvfb-run -a npm exec --no -- vscode-test
       - name: Upload Canvas screenshots
         if: always()
