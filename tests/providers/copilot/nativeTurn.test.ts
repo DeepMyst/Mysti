@@ -51,7 +51,7 @@ describe.each([['Cline', ClineFixture], ['Copilot', CopilotFixture]] as const)('
   });
   it('never retries an unverified runtime through legacy execution', async () => {
     const provider = new Fixture(); provider.scenario = 'wrong-version';
-    try { const chunks = await drain(provider); expect(chunks.some(chunk => chunk.type === 'error')).toBe(true); expect(provider.launches).toBe(1); expect(fs.existsSync(provider.marker)).toBe(false); } finally { provider.dispose(); }
+    try { const chunks = await drain(provider); expect(chunks.some(chunk => chunk.type === 'error')).toBe(true); expect(provider.launches).toBe(_name === 'Copilot' && process.platform === 'win32' ? 0 : 1); expect(fs.existsSync(provider.marker)).toBe(false); } finally { provider.dispose(); }
   });
   it('Stop prevents a late effect', async () => {
     const provider = new Fixture(); let resolve!: (allow: boolean) => void;

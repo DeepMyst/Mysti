@@ -43,7 +43,7 @@ describe('OpenClaw explicit managed configuration', () => {
     const before = fs.readFileSync(configFile, 'utf8');
     const result = await internal._readOwnedRuntimeConfig(new AbortController().signal);
     expect(result.baseConfig).toMatchObject({ agents: { defaults: { model: 'anthropic/configured' } } });
-    expect(result.cliPath).toBe(fs.realpathSync(executable)); expect(result.installedRoot).toBe(fs.realpathSync(directory));
+    expect(result.cliPath).toBe(fs.realpathSync.native(executable)); expect(result.installedRoot).toBe(fs.realpathSync.native(directory));
     expect(result.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(result.fingerprint).not.toContain('fixture-secret');
     expect(fs.readFileSync(configFile, 'utf8')).toBe(before);
@@ -54,7 +54,7 @@ describe('OpenClaw explicit managed configuration', () => {
     const link = path.join(directory, 'openclaw'); fs.symlinkSync(executable, link);
     vi.mocked(provider.discoverCli).mockResolvedValue({ found: true, path: link });
     const result = await internal._readOwnedRuntimeConfig(new AbortController().signal);
-    expect(result.cliPath).toBe(fs.realpathSync(executable)); expect(result.installedRoot).toBe(fs.realpathSync(directory));
+    expect(result.cliPath).toBe(fs.realpathSync.native(executable)); expect(result.installedRoot).toBe(fs.realpathSync.native(directory));
   });
 
   it('invalidates runtime identity when host model or environment credentials change', async () => {

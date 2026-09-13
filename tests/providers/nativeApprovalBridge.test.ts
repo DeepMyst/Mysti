@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -29,8 +30,8 @@ describe.each([
   ['Hermes', () => new TestableHermesProvider()],
   ['Kimi', () => new TestableKimiProvider()],
 ] as const)('%s real ACP fixture approvals', (_name, createProvider) => {
-  const cleanups: Array<() => void> = [];
-  afterEach(() => { vi.useRealTimers(); for (const cleanup of cleanups.splice(0)) { cleanup(); } vi.restoreAllMocks(); });
+  const cleanups: Array<() => Promise<void>> = [];
+  afterEach(async () => { vi.useRealTimers(); for (const cleanup of cleanups.splice(0)) { await cleanup(); } vi.restoreAllMocks(); });
 
   function harness(closeAfter = '') {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-acp-test-'));
@@ -47,9 +48,24 @@ describe.each([
     });
     vi.spyOn(provider as unknown as { buildPromptAsync(): Promise<string> }, 'buildPromptAsync').mockResolvedValue('fixture');
     const suspend = vi.spyOn(provider, 'suspendProcess');
-    cleanups.push(() => {
+    const owned: ChildProcess[] = [];
+    const closed: Promise<void>[] = [];
+    const internal = provider as unknown as { _spawnCliProcess(...args: unknown[]): ChildProcess };
+    const spawn = internal._spawnCliProcess.bind(provider);
+    vi.spyOn(internal, '_spawnCliProcess').mockImplementation((...args) => {
+      const child = spawn(...args);
+      owned.push(child);
+      closed.push(new Promise(resolve => child.once('close', () => resolve())));
+      return child;
+    });
+    cleanups.push(async () => {
       provider.dispose();
       Object.defineProperty(vscode.workspace, 'workspaceFolders', { value: originalFolders });
+      for (const child of owned) {
+        if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); }
+      }
+      // Windows holds a child's working directory until its handles close.
+      await Promise.all(closed);
       fs.rmSync(directory, { recursive: true, force: true });
     });
     const send = (panelId: string) => collect(provider.sendMessage('fixture', [], settings, null, undefined, panelId));

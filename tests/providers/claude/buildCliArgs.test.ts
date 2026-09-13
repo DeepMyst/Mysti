@@ -225,10 +225,9 @@ describe('ClaudeCodeProvider.buildCliArgs', () => {
       const args = provider.buildCliArgs(defaultSettings({ model: 'claude-opus-4-6[1m]' }), session);
       const modelIdx = args.indexOf('--model');
       expect(args[modelIdx + 1]).toBe('claude-opus-4-6[1m]');
-      // Brackets pass the relaxed gate; quoting (not stripping) handles glob-safety.
-      for (const arg of args) {
-        expect(SHELL_UNSAFE_ARG.test(arg)).toBe(false);
-      }
+      // Check the model under the simulated POSIX policy. Resource paths still
+      // use the real host filesystem and may contain Windows separators.
+      expect(SHELL_UNSAFE_ARG.test(args[modelIdx + 1])).toBe(false);
     });
 
     it('should leave bracket-free models untouched on Windows', () => {

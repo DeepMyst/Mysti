@@ -35,7 +35,8 @@ describe('processStream inactivity watchdog (Plan 18 4.2)', () => {
         autonomousMode: false,
         suspended: false,
         process: {
-          pid: 4242,
+          // Exercise the handle fallback without targeting a real Windows PID.
+          pid: undefined,
           exitCode: null,
           signalCode: null,
           kill,

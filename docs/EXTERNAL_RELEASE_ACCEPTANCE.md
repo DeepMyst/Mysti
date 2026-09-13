@@ -1,6 +1,6 @@
 # Remaining external acceptance
 
-Reviewed 2026-09-12. These checks require the exact candidate commit/archive and
+Updated 2026-09-13. These checks require the exact candidate commit/archive and
 an environment not supplied by the local isolated review. They are release gates,
 not results inferred from unit tests or source presence.
 
@@ -11,23 +11,30 @@ tests, the Node 18.17.1 bundled-runtime fixture, package shape, and installed-VS
 checks on minimum VS Code 1.86.0 and stable Linux. The packaged jobs consume the
 same uploaded archive without rebuilding it. No workflow was weakened.
 
-After the candidate branch is published for review, require its exact-commit
+The review branch is now published with user authorization. Require its exact-commit
 results: `gates (<OS>)`, `test (<OS>)`, `lint`, `bundled runtime (Node 18.17.1)`,
 `package shape`, `packaged VS Code (1.86.0)`, `packaged VS Code (stable)`, and the
 `VS Code host (<OS>, <version>)` matrix. Inspect repository rules/branch protection
 separately: workflow YAML does not establish that checks are required for merge.
-No branch publication or repository-rule change was performed in this review.
+The user also authorized the prepared repository rule once all 15 checks pass;
+activation remains pending that condition.
 
 The 2026-09-12 remote inspection confirmed that `main` is unprotected, no active
-rules apply to it, and the candidate has no hosted runs. The only repository
+rules apply to it, and the candidate then had no hosted runs. The only repository
 ruleset is disabled. The integration workflow now also runs on candidate pushes
 so the source editor matrix can test the exact branch commit before integration.
 The [hosted CI procedure](HOSTED_CI_ACCEPTANCE.md) records the findings, the 15
 required check names and a prepared, unapplied repository ruleset.
 
 The local minimum-editor macOS SIGTRAP predates extension activation and remains
-unresolved. The standalone reproduction and runtime-only distinction are recorded
-in [maintenance](MAINTENANCE.md). A newer editor pass does not close that issue.
+unresolved. A fresh isolated installed-archive attempt on 2026-09-13 reproduced
+it on macOS 15.6 with Electron 27.2.3. Its main-thread stack includes CoreGraphics
+state restoration and AppKit drawing. Separate extension-disabled probes with a
+native title bar or GPU disabled exited with SIGSEGV; those are distinct crash
+observations, not a confirmed common cause or a workaround. No normal profile
+was modified. The original reproduction and runtime-only distinction are recorded
+in [maintenance](MAINTENANCE.md). Linux minimum-editor CI now passes, but does not
+close this macOS gate.
 
 ## Installed provider and chat acceptance
 

@@ -3,6 +3,7 @@
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
+import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -318,7 +319,7 @@ describe('single-shot process ownership', () => {
   it('an asynchronous closed stdin pipe settles the issuing child without an unhandled error', async () => {
     const { spawn: realSpawn } = await vi.importActual<typeof import('child_process')>('child_process');
     const proc = realSpawn(process.execPath, ['-e',
-      "require('node:fs').closeSync(0); process.stdout.write('ready'); setInterval(() => {}, 1000);",
+      `require(${JSON.stringify(path.resolve(__dirname, '../../fixtures/closeStdin.cjs'))})(() => process.stdout.write('ready')); setInterval(() => {}, 1000);`,
     ], { stdio: ['pipe', 'pipe', 'pipe'] });
     const exited = new Promise<void>(resolve => proc.once('close', () => resolve()));
     try {

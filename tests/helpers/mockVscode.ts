@@ -3,6 +3,8 @@
  * Provides the minimum surface area needed by BaseCliProvider and subclasses.
  */
 
+import * as nodePath from 'node:path';
+
 const configValues: Record<string, unknown> = {};
 
 /** Records every `config.update(key, value)` call made by code under test. */
@@ -258,7 +260,7 @@ export const Uri = {
   file: (path: string) => ({ fsPath: path, scheme: 'file', path }),
   parse: (uri: string) => ({ fsPath: uri, scheme: 'file', path: uri, toString: () => uri }),
   joinPath: (base: { fsPath?: string; path?: string }, ...segments: string[]) => {
-    const joined = [base?.fsPath ?? base?.path ?? '', ...segments].join('/');
+    const joined = nodePath.join(base?.fsPath ?? base?.path ?? '', ...segments);
     return { fsPath: joined, scheme: 'file', path: joined, toString: () => joined };
   },
 };

@@ -9,17 +9,21 @@ import type { Settings, StreamChunk } from '../../../src/types';
 
 const fixture = path.resolve(__dirname, '../../fixtures/codex/appServer.mjs');
 const children: ChildProcess[] = [];
+const closed: Promise<void>[] = [];
 const dirs: string[] = [];
 const clients: CodexAppServer[] = [];
 afterEach(async () => {
   for (const client of clients.splice(0)) { client.dispose(); }
   for (const child of children.splice(0)) { child.kill('SIGKILL'); }
+  // Windows retains a child's working directory until its handles close.
+  await Promise.all(closed.splice(0));
   for (const dir of dirs.splice(0)) { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 function setup(mode = 'command', handler?: NativeApprovalHandler, settings: Pick<Settings, 'mode' | 'accessLevel'> = { mode: 'default', accessLevel: 'ask-permission' }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-codex-protocol-')); dirs.push(dir);
   const marker = path.join(dir, 'effect');
   const child = spawn(process.execPath, [fixture, mode, marker], { stdio: ['pipe', 'pipe', 'pipe'], cwd: dir }); children.push(child);
+  closed.push(new Promise(resolve => child.once('close', () => resolve())));
   const controller = new AbortController();
   let current = true;
   const client = new CodexAppServer({ process: child, panelId: 'panel', signal: controller.signal, handler, settings, isCurrent: () => current, terminate: () => { child.kill('SIGKILL'); } }); clients.push(client);

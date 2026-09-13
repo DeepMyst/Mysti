@@ -22,6 +22,32 @@ Raw responses are retained locally under
 `out-test/release-evidence/hosted-ci-20260912/`. No push, workflow dispatch,
 merge, publication or repository-rule mutation was performed by this inspection.
 
+## Authorized publication and remediation: 2026-09-13
+
+The user authorized publishing `codex/mysti-hosted-ci-review-2026-09-12` and
+activating the prepared rule after all 15 checks pass on the exact candidate.
+The branch is published. Rule activation remains conditional on that evidence.
+
+The first hosted run found an invalid job-level `runner.temp` expression; the
+value now resolves in the installed-editor step. Windows checkout line endings
+also changed integrity hashes, so tracked text now uses LF on every platform.
+Playwright is pinned to 1.60.0 and the editor CDP connection uses `noDefaults`
+to support the minimum editor's older browser protocol.
+
+The [source editor matrix at 239a24f](https://github.com/DeepMyst/Mysti/actions/runs/34748373724)
+passed all four Linux/macOS/Windows stable and Linux minimum-editor jobs. The
+[matching CI run](https://github.com/DeepMyst/Mysti/actions/runs/34748373736)
+passed all three build gates, lint and the minimum bundled runtime, but failed
+unit/browser tests. These partial results do not satisfy the required rule.
+
+The follow-up corrects Windows fixture paths and process cleanup, plus a real
+workspace-alias bug in local approval paths. New-file targets also retain their
+resolved parent path for secret and instruction-file checks. CI uses two unit
+test workers and runs the Canvas timing suite separately so concurrent browsers
+do not compete with its frame-time measurements. All performance assertions
+remain blocking with their original thresholds. The next push must validate
+these changes and produce its own package and installed-editor results.
+
 ## Candidate checks
 
 Both workflows run on pushes and pull requests. A push run tests the pushed
@@ -52,9 +78,9 @@ When job names or matrix entries change, update both this file and the active
 required-check configuration so merges do not wait for obsolete check names.
 
 Local validation parsed both workflow files, expanded their matrices and matched
-all 15 unique names against the proposed rule. It also verified that the only
-workflow behavior change is integration's push filter, with existing job
-dependencies, blocking failures and permissions preserved. `git diff --check`
+all 15 unique names against the proposed rule. The initial review verified the integration push-filter change. Subsequent
+hosted remediation is recorded above; job dependencies, blocking failures and
+permissions are preserved. `git diff --check`
 passed. The optional actionlint binary could not be downloaded because the
 release-asset host failed TLS certificate verification; actionlint and hosted
 execution are not claimed as passed.

@@ -43,6 +43,30 @@ describe('MystiLocalTools', () => {
     fs.rmSync(outside, { recursive: true, force: true });
   });
 
+  it('keeps approval paths relative when the workspace root is an alias', async () => {
+    const alias = path.join(outside, 'workspace-alias');
+    fs.symlinkSync(root, alias, 'junction');
+    const aliased = new MystiLocalTools({ getWorkspaceRoot: () => alias });
+    const canonicalRoot = await fs.promises.realpath(root);
+    for (const name of ['src/a.ts', 'src/new.ts']) {
+      const expected = { ok: true, abs: path.join(canonicalRoot, name), relPosix: name };
+      expect(await aliased.resolveWriteTarget(name)).toEqual(expected);
+      expect(await aliased.resolveWriteTarget(path.join(canonicalRoot, name))).toEqual(expected);
+    }
+    expect((await aliased.resolveWriteTarget('.env')).ok).toBe(false);
+    expect((await aliased.resolveWriteTarget('.mysti/agents/personas/new.md')).ok).toBe(false);
+  });
+
+  it('blocks new secret and instruction files through an internal directory alias', async () => {
+    for (const target of ['.ssh', '.mysti/agents/personas']) {
+      fs.mkdirSync(path.join(root, target), { recursive: true });
+      const alias = path.join(root, 'ordinary-folder');
+      fs.symlinkSync(path.join(root, target), alias, 'junction');
+      expect((await tools.resolveWriteTarget('ordinary-folder/new-file')).ok).toBe(false);
+      fs.unlinkSync(alias);
+    }
+  });
+
   // ── read ──
 
   it('reads a file with line numbers', async () => {

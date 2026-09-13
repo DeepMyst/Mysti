@@ -39,8 +39,8 @@ describe('OpenCode isolated native policy', () => {
     const env = openCodeIsolatedEnv({ PATH: '/bin', ANTHROPIC_API_KEY: 'inert-key', OPENAI_API_KEY: 'unselected-key', OPENCODE_PERMISSION: '{"*":"allow"}', OPENCODE_CONFIG_CONTENT: '{}', OPENCODE_TEST_HOME: '/other', NODE_OPTIONS: '--require=evil', BUN_OPTIONS: 'evil', npm_config_userconfig: '/private' }, '/fixture', config, 'anthropic');
     expect(env.ANTHROPIC_API_KEY).toBe('inert-key'); expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.NODE_OPTIONS).toBeUndefined(); expect(env.BUN_OPTIONS).toBeUndefined(); expect(env.OPENCODE_TEST_HOME).toBeUndefined();
-    expect(env.XDG_DATA_HOME).toBe('/fixture/data'); expect(env.XDG_CONFIG_HOME).toBe('/fixture/config');
-    expect(env.npm_config_userconfig).toBe('/fixture/empty.npmrc'); expect(env.npm_config_offline).toBe('true');
+    expect(env.XDG_DATA_HOME).toBe(path.join('/fixture', 'data')); expect(env.XDG_CONFIG_HOME).toBe(path.join('/fixture', 'config'));
+    expect(env.npm_config_userconfig).toBe(path.join('/fixture', 'empty.npmrc')); expect(env.npm_config_offline).toBe('true');
     expect(JSON.parse(env.OPENCODE_PERMISSION!)).toEqual(config.permission);
     expect(env.OPENCODE_SERVER_PASSWORD).toHaveLength(64);
     expect(openCodeIsolatedEnv({}, '/fixture', config, 'anthropic').OPENCODE_SERVER_PASSWORD).not.toBe(env.OPENCODE_SERVER_PASSWORD);
@@ -53,7 +53,7 @@ describe('OpenCode isolated native policy', () => {
     await expect(assertOpenCodeAuthorityAbsent([external])).rejects.toThrow('cannot isolate');
   });
   it('checks system and managed authority outside isolated XDG directories', () => {
-    expect(openCodeExternalAuthorityPaths({}, 'darwin', '/user', 'fixture')).toEqual(['/user/.opencode', '/Library/Application Support/opencode', '/Library/Managed Preferences/fixture/ai.opencode.managed.plist', '/Library/Managed Preferences/ai.opencode.managed.plist']);
+    expect(openCodeExternalAuthorityPaths({}, 'darwin', '/user', 'fixture')).toEqual([path.join('/user', '.opencode'), '/Library/Application Support/opencode', path.join('/Library/Managed Preferences', 'fixture', 'ai.opencode.managed.plist'), '/Library/Managed Preferences/ai.opencode.managed.plist']);
   });
   it('fails clearly before allocating native state when model/auth is unsupported', async () => {
     const context = { settings, session: createOpenCodeSession(), cwd: '/work', env: {}, cliPath: '/inert', signal: new AbortController().signal };

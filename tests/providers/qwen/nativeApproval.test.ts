@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import * as path from 'node:path';
 import { decodeQwenPermission } from '../../../src/providers/qwen/QwenNativeApproval';
 
 function request(name = 'run_shell_command', kind = 'execute', input: object = { command: 'printf approved > marker' }) {
@@ -6,7 +7,7 @@ function request(name = 'run_shell_command', kind = 'execute', input: object = {
 }
 describe('Qwen exact native approval inputs', () => {
   it('carries the exact native command and its effective working directory', () => {
-    expect(decodeQwenPermission(request(), '/workspace')?.input).toEqual({ command: 'printf approved > marker', directory: '/workspace' });
+    expect(decodeQwenPermission(request(), '/workspace')?.input).toEqual({ command: 'printf approved > marker', directory: path.resolve('/workspace') });
   });
   it.each([
     request('agent'), request('run_shell_command', 'read'), request('run_shell_command', 'execute', {}),

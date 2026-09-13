@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 /** Provider ownership at the managed runtime boundary; no model or external gateway is contacted. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TestableOpenClawProvider } from '../../helpers/providerFactory';
@@ -106,8 +107,8 @@ describe('OpenClaw provider managed turn ownership', () => {
     expect(openRun.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
     expect(start.mock.calls[0][0]).toMatchObject({
       baseConfig: { agents: { defaults: { model: 'anthropic/fixture-model' } } },
-      pluginPath: '/mock/extension/resources/openclaw-policy',
-      preloadPath: '/mock/extension/resources/openclaw-policy/runtime-preload.mjs',
+      pluginPath: path.resolve('/mock/extension/resources/openclaw-policy'),
+      preloadPath: path.resolve('/mock/extension/resources/openclaw-policy/runtime-preload.mjs'),
     });
     expect(chunks.filter(chunk => chunk.type === 'done')).toHaveLength(1);
   });

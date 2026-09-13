@@ -122,7 +122,7 @@ describe('OpenClaw managed runtime config boundary', () => {
         'openai/gpt-test': { params: { temperature: 0.2 }, streaming: false, agentRuntime: { id: 'openclaw' } },
         'anthropic/*': { agentRuntime: { id: 'openclaw' } },
       }, heartbeat: { every: '0m' },
-    }, list: [{ id: 'main', default: true, runtime: { type: 'embedded' }, workspace: options.workspaceDir, agentDir: '/owned/state/agents/main/agent' }] });
+    }, list: [{ id: 'main', default: true, runtime: { type: 'embedded' }, workspace: options.workspaceDir, agentDir: path.join('/owned/state', 'agents/main/agent') }] });
     expect(config.models).toMatchObject({ providers: { openai: { apiKey: 'inert-key', agentRuntime: { id: 'openclaw' }, models: [{ agentRuntime: { id: 'openclaw' } }] } } });
     expect(config.auth).toEqual(options.baseConfig.auth);
     expect(config.gateway).toMatchObject({ bind: 'loopback', port: 33133, auth: { token: 'owned-token', mode: 'token' }, reload: { mode: 'off' } });
@@ -131,7 +131,7 @@ describe('OpenClaw managed runtime config boundary', () => {
     expect(config.hooks).toEqual({ enabled: false, internal: { enabled: false } });
     expect(config.plugins).toEqual({ enabled: true, allow: ['mysti-policy'], slots: { memory: 'none' }, load: { paths: [options.pluginPath] }, entries: {
       'mysti-policy': { enabled: true, hooks: { allowConversationAccess: true, allowPromptInjection: false }, config: { broker: options.broker } },
-      'memory-wiki': { enabled: false, config: { vault: { path: '/owned/state/wiki' } } },
+      'memory-wiki': { enabled: false, config: { vault: { path: path.join('/owned/state', 'wiki') } } },
     } });
     expect(config.tools).toEqual({ allow: ['read', 'write', 'edit', 'exec'], deny: ['process', 'apply_patch'], exec: { host: 'gateway', security: 'full', ask: 'off' } });
     expect(JSON.stringify(options.baseConfig)).toBe(before);

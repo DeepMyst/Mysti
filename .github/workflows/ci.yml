@@ -61,7 +61,11 @@ jobs:
       - name: Install Chromium for the browser suites
         run: npm exec --no -- playwright install --with-deps chromium
       - name: Test
-        run: npm test
+        run: npm test -- --maxWorkers 2 --exclude tests/webview/canvasPerfBrowser.test.ts
+      # Frame-time comparisons need the runner's browser capacity to themselves.
+      # Keep the original assertions blocking, outside concurrent browser suites.
+      - name: Canvas performance
+        run: npm test -- tests/webview/canvasPerfBrowser.test.ts
 
   lint:
     name: lint

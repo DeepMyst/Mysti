@@ -1,6 +1,7 @@
 const readline = require('node:readline');
 const fs = require('node:fs');
 const path = require('node:path');
+const closeStdin = require('./closeStdin.cjs');
 const [directory, panel, closeAfter] = process.argv.slice(2);
 let promptId;
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
@@ -20,8 +21,7 @@ if (closeAfter) {
       const result = message.method === 'initialize'
         ? { protocolVersion: 1 } : { sessionId: 'fixture-session' };
       if (message.method === closeAfter) {
-        fs.closeSync(0);
-        send({ jsonrpc: '2.0', id: message.id, result });
+        closeStdin(() => send({ jsonrpc: '2.0', id: message.id, result }));
         setInterval(() => {}, 30000);
         return;
       }

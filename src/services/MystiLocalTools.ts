@@ -187,8 +187,16 @@ export class MystiLocalTools {
     // `real` = realpath of the TARGET when it exists (so a symlink resolves to
     // its true path) — the secret-file filter must run on this, not the lexical
     // abs, or `notes.txt -> .env` bypasses it (re-review MEDIUM).
-    const real = probe === abs ? realProbe : abs;
-    return { abs, root: realRoot, real };
+    const real = path.resolve(realProbe, path.relative(probe, abs));
+    // Keep the target and root in the same spelling. On Windows a temp path
+    // may use an 8.3 alias while realpath expands it; mixing the two produces
+    // bogus ../ paths in approval cards and secret-file checks.
+    let relative = path.relative(root, abs);
+    const escapes = (value: string) => value === '..' || value.startsWith('..' + path.sep) || path.isAbsolute(value);
+    if (escapes(relative)) { relative = path.relative(realRoot, abs); }
+    if (escapes(relative)) { return null; }
+    const canonicalAbs = path.resolve(realRoot, relative);
+    return { abs: canonicalAbs, root: realRoot, real };
   }
 
   /** Workspace-relative POSIX path (for secret-file matching, stable across OS). */
@@ -337,7 +345,7 @@ export class MystiLocalTools {
         // the fuel a backtracking pattern needs (review [1]).
         const probe = lines[i].length > GREP_PROBE_CHARS ? lines[i].slice(0, GREP_PROBE_CHARS) : lines[i];
         if (re.test(probe)) {
-          const rel = path.relative(root, f);
+          const rel = path.relative(root, f).split(path.sep).join('/');
           hits.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, GREP_LINE_CLAMP)}`);
         }
       }

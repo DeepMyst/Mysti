@@ -31,7 +31,7 @@ const WORKSPACE = '/repo';
 
 /** In-memory tree: absolute path -> file contents. Directories are implied. */
 function fakeFs(files: Record<string, string>): NativeCommandFs {
-  const norm = (p: string) => p.replace(/\/+$/, '');
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
   return {
     readdirSync(dir) {
       const base = norm(dir) + '/';

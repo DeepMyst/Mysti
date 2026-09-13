@@ -20,6 +20,8 @@ import { OpenRouterProvider } from '../../src/providers/openrouter/OpenRouterPro
 import { KimiCodeProvider } from '../../src/providers/kimi/KimiCodeProvider';
 import type { OpenRouterClient } from '../../src/services/OpenRouterClient';
 
+import * as path from 'node:path';
+
 // Mock extension context for provider constructors
 export function createMockContext(): vscode.ExtensionContext {
   return {
@@ -35,8 +37,8 @@ export function createMockContext(): vscode.ExtensionContext {
       update: () => Promise.resolve(),
       keys: () => [],
     },
-    extensionPath: '/mock/extension',
-    extensionUri: vscode.Uri.file('/mock/extension'),
+    extensionPath: path.resolve('/mock/extension'),
+    extensionUri: vscode.Uri.file(path.resolve('/mock/extension')),
     storagePath: '/mock/storage',
     globalStoragePath: '/mock/global-storage',
     logPath: '/mock/logs',

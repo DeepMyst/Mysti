@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { spawn } from 'node:child_process';
@@ -66,7 +67,7 @@ describe('ACP permission choices', () => {
 
   it('handles an asynchronous EPIPE and ends only the child whose stdin closed', async () => {
     const child = spawn(process.execPath, ['-e',
-      "require('node:fs').closeSync(0); process.stdout.write('ready'); setTimeout(() => {}, 30000);",
+      `require(${JSON.stringify(path.resolve(__dirname, '../../fixtures/closeStdin.cjs'))})(() => process.stdout.write('ready')); setTimeout(() => {}, 30000);`,
     ], { stdio: ['pipe', 'pipe', 'ignore'] });
     const exited = new Promise<void>(resolve => child.once('close', () => resolve()));
     try {

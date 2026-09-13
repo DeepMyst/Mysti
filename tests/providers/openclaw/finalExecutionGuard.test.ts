@@ -4,11 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const execute = promisify(execFile);
 const project = path.resolve(__dirname, '../../..');
-const preload = path.join(project, 'resources/openclaw-policy/runtime-preload.mjs');
+const preload = pathToFileURL(path.join(project, 'resources/openclaw-policy/runtime-preload.mjs')).href;
 const fixture = path.join(project, 'tests/fixtures/openclaw/finalExecutionAgent.mjs');
 const installedRoot = process.env.MYSTI_TEST_OPENCLAW_ROOT || '/usr/local/lib/node_modules/openclaw';
 const installed = fs.existsSync(path.join(installedRoot, 'dist/agent-tools.before-tool-call-59sE70R-.js'));

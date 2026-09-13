@@ -1,5 +1,5 @@
 /** Inert configuration fixtures only. Never starts Codex or reads an auth store. */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -8,7 +8,9 @@ import {
 } from '../../../src/providers/codex/CodexNativeConfig';
 
 const roots: string[] = [];
+const hostPlatform = process.platform;
 afterEach(async () => {
+  Object.defineProperty(process, 'platform', { value: hostPlatform, configurable: true });
   vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
 });
@@ -40,6 +42,9 @@ function nativeConfig(): { config: Record<string, unknown>; layers: unknown[] } 
 }
 
 describe('Codex native configuration authority', () => {
+  // These fixtures inspect POSIX policy layers. The native Windows boundary
+  // is exercised separately below; it rejects before looking at any files.
+  beforeEach(() => { Object.defineProperty(process, 'platform', { value: 'linux', configurable: true }); });
   it('accepts ordinary model, provider, auth method and project trust settings without reading auth files', async () => {
     const item = await fixture(`model = "a-model" # ordinary model selection
 model_reasoning_effort = 'high'
@@ -166,6 +171,12 @@ requires_openai_auth = false
     await expect(captureCodexNativeConfig(item.cwd, environment, { ...item.inspection, userConfigDirectory: 'relative' }))
       .rejects.toThrow('must be absolute');
   });
+});
+
+it('rejects Windows native configuration before inspecting the filesystem', async () => {
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  await expect(captureCodexNativeConfig('not-an-existing-workspace', {}))
+    .rejects.toThrow('Windows native configuration and process ownership are not supported yet');
 });
 
 describe('Codex native effective configuration attestation', () => {
