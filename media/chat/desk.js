@@ -107,7 +107,7 @@
     if (peers.length === 0) {
       return (
         '<div class="desk-empty">' +
-          '<span class="desk-empty-text">Desk pairing — no teammates yet. Pair another profile to share local status.</span>' +
+          '<span class="desk-empty-text">Desk pairing — no teammates yet. Pair another profile to share local status or scoped workspace coordinates.</span>' +
           '<button type="button" class="desk-btn desk-btn-link" data-desk-action="invite">Invite</button>' +
         '</div>'
       );
@@ -118,7 +118,7 @@
         '<span class="desk-title">Paired teammates</span>' +
         '<button type="button" class="desk-btn desk-btn-link" data-desk-action="invite">Invite</button>' +
       '</div>' +
-      '<p class="desk-empty-text">Use the Desk local status commands with paired profiles on this computer. Cross-machine requests are not available yet.</p>' +
+      '<p class="desk-empty-text">Use the Desk local status and workspace lookup commands with paired profiles on this computer. Cross-machine requests are not available yet.</p>' +
       '<ul class="desk-roster">' + peers.map(renderPeerRow).join('') + '</ul>' +
       renderIdentity(state.identity)
     );
@@ -252,7 +252,7 @@
     return (
       '<div class="desk-grant">' +
         '<h3 class="desk-grant-title">Save pairing permissions</h3>' +
-        '<p class="desk-grant-note">Status works through the Desk local status commands on this computer. Locate permissions are saved for future use; cross-machine requests, consultation, and review are not available.</p>' +
+        '<p class="desk-grant-note">Status and scoped locate work through the Desk local commands on this computer. Workspace lookup requires an explicit sharing link and matching scope settings. Cross-machine requests, consultation, and review are not available.</p>' +
         '<div class="desk-grant-rows">' +
           known.map(function (v) {
             var on = granted ? granted.indexOf(v.id) !== -1 : v.on;

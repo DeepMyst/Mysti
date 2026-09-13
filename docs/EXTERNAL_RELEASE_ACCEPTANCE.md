@@ -71,21 +71,23 @@ the exact-archive and minimum-editor/platform gates.
 ## Desk scope and two-machine acceptance
 
 Pairing, identity, grants and revocation are integrated. The production
-[local status commands](DESK_LOCAL_STATUS.md) connect `DeskClient`, the loopback
+[local status and workspace lookup commands](DESK_LOCAL_STATUS.md) connect `DeskClient`, the loopback
 HTTP transport, identity signing, peer grants and the sealed dispatcher.
 Serving requires both machine settings and workspace trust. Each temporary
 connection is bound to a pinned recipient, with signed requests and responses,
-replay deduplication, limits and lifecycle shutdown. Only owner-chosen status
-is served. Workspace indexing and the dispatcher's pure `locate` implementation
-are not connected to this production path; no source is read or disclosed.
+replay deduplication, limits and lifecycle shutdown. Separate explicit commands
+share owner-chosen status or exact workspace coordinates. Lookup snapshots
+intersect machine, workspace and peer scopes, exclude private/linked paths, and
+refuse changed scopes or files, including cached replies. Only the local sharing
+command reads source for indexing; no source text is returned.
 
 Cross-machine transport and task execution remain unavailable. Consultation,
 review, assignment, handoff and followup remain absent from the executable
-surface. Settings, rail and pairing copy distinguish local status from these
+surface. Settings, rail and pairing copy distinguish local status/lookup from these
 remaining capabilities. Local HTTP tests use generated identities and in-memory
 stores; they do not establish acceptance across editor profiles or machines.
 
-The local Desk scope/transport/pairing suite passes 1,284 tests in 17 files.
+Local signed HTTP and temporary-workspace tests cover the production lookup path.
 A two-machine result has not been produced. Before enabling remote task execution,
 implement the cross-machine transport and serving path, then test
 pairing both directions, grant expiry/revocation, scope and secret egress checks,

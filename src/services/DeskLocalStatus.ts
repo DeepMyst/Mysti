@@ -7,6 +7,9 @@ import { dispatch } from './desk/DeskDispatch';
 import type { DeskStatus } from './desk/DeskDispatch';
 import { DeskIndex } from './desk/DeskIndex';
 import { EMPTY_SCOPE } from './desk/DeskScope';
+import { validateCall } from './desk/DeskContract';
+import { screenOutbound } from './desk/DeskRedactor';
+import type { DeskWorkspaceLookup, DeskLookupSnapshot } from './DeskWorkspaceLookup';
 import { DeskHttpServer } from './DeskHttpServer';
 import type { DeskHttpHandle } from './DeskHttpServer';
 import { DeskClient } from './DeskClient';
@@ -18,6 +21,7 @@ const MAX_SESSIONS = 32;
 const MAX_CALLS = 128;
 const CHANNEL_REQUESTS_PER_MINUTE = 32;
 const LINK_PREFIX = 'desk://local-status/';
+const LOOKUP_PREFIX = 'desk://local-lookup/';
 const emptyIndex = DeskIndex.build(EMPTY_SCOPE, { paths: [], readText: () => null });
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -32,6 +36,8 @@ interface Connection {
 }
 
 interface Session {
+  verb: 'status' | 'locate';
+  lookup?: DeskLookupSnapshot;
   peerId: string;
   publicKey: string;
   challenge: string;
@@ -52,9 +58,9 @@ export interface DeskLocalStatusDeps {
 
 /**
  * Production T0 composition: one expiring channel per pinned recipient, signed
- * requests/replies, and status only. It owns no workspace reader or model tools.
+ * requests/replies, and owner-selected status or workspace coordinates.
  * The channel descriptor is transferred by the local human, never persisted.
- * Cross-machine transport and scoped workspace indexing remain separate work.
+ * Workspace snapshots are prepared only by an explicit local sharing command.
  */
 export class DeskLocalStatus {
   private _server?: DeskHttpServer;
@@ -127,13 +133,40 @@ export class DeskLocalStatus {
   /** Rotates this recipient's previous link. No bearer is saved in the peer book. */
   async share(peerId: string, availability: DeskStatus['availability']): Promise<string> {
     if (!['available', 'busy', 'dnd', 'offline'].includes(availability)) { throw new Error('Invalid Desk status'); }
+    const link = await this._share(peerId, 'status');
+    this._availability = availability;
+    return link;
+  }
+
+  /** Sharing a workspace is separate from publishing availability. */
+  async shareLookup(peerId: string, workspace: DeskWorkspaceLookup): Promise<string> {
+    return this._share(peerId, 'locate', workspace);
+  }
+
+  /** Configuration/workspace changes revoke snapshots without widening status links. */
+  invalidateLookups(): void {
+    ++this._lookupEpoch;
+    for (const [key, session] of this._sessions) {
+      if (session.verb === 'locate') { this._sessions.delete(key); }
+    }
+  }
+
+  private _lookupEpoch = 0;
+
+  private async _share(peerId: string, verb: 'status' | 'locate', workspace?: DeskWorkspaceLookup): Promise<string> {
     await this.refresh();
     const own = this._deps.identity.current();
     const peer = this._deps.peerBook.getPeerById(peerId);
     const grant = this._deps.peerBook.getGrant(peerId);
-    if (!this._canServe() || !this._handle || !own || !peer || !grant?.verbs.includes('status')) {
-      throw new Error('Enable Desk serving in a trusted window and pair a peer with status permission');
+    if (!this._canServe() || !this._handle || !own || !peer || !grant?.verbs.includes(verb)) {
+      throw new Error('Enable Desk serving in a trusted window with a live peer grant');
     }
+    const epoch = this._epoch, lookupEpoch = this._lookupEpoch;
+    const live = () => this._canServe() && this._epoch === epoch && this._lookupEpoch === lookupEpoch
+      && !this._deps.peerBook.isRevoked(peerId) && grant.expiresAt > this._deps.now() && peer.expiresAt > this._deps.now()
+      && this._deps.peerBook.getPeerById(peerId)?.publicKey === peer.publicKey;
+    const lookup = verb === 'locate' ? await workspace?.prepare(grant.scope, live) : undefined;
+    if (!live() || !this._deps.peerBook.getGrant(peerId) || (verb === 'locate' && !lookup)) { throw new Error('Desk sharing changed'); }
     const now = this._deps.now();
     for (const [key, session] of this._sessions) {
       if (session.expiresAt <= now || session.peerId === peerId) { this._sessions.delete(key); }
@@ -145,12 +178,12 @@ export class DeskLocalStatus {
       audience: peerId, expiresAt: Math.min(now + SESSION_MS, grant.expiresAt, peer.expiresAt),
     };
     this._sessions.set(hash(bearer), {
+      verb, lookup,
       peerId, publicKey: peer.publicKey, challenge: connection.challenge,
       expiresAt: connection.expiresAt, calls: new Map(),
       windowStartedAt: now, requestsRemaining: CHANNEL_REQUESTS_PER_MINUTE,
     });
-    this._availability = availability;
-    return LINK_PREFIX + Buffer.from(JSON.stringify(connection)).toString('base64url');
+    return (verb === 'locate' ? LOOKUP_PREFIX : LINK_PREFIX) + Buffer.from(JSON.stringify(connection)).toString('base64url');
   }
 
   private _sessionFor(bearer: string): Session | undefined {
@@ -186,36 +219,46 @@ export class DeskLocalStatus {
     const envelope = signed.envelope;
     if (envelope.deadlineMs > 10_000 || envelope.issuedAt + envelope.deadlineMs <= now) { return denied; }
     const fingerprint = hash(canonicalize(signed));
-    const prior = session.calls.get(envelope.callId);
-    if (prior) { return prior.hash === fingerprint ? prior.result : denied; }
-    if (!grant || session.calls.size >= MAX_CALLS || !this._deps.peerBook.checkRate(peerId, now).allowed) { return denied; }
+    // Check again after awaiting a cached reply: revocation or scope changes
+    // during signing must also discard an already-computed coordinate result.
+    const current = async () => envelope.verb !== 'locate' || !session.lookup || await session.lookup.isCurrent();
     const epoch = this._epoch;
     const live = () => this._canServe() && this._epoch === epoch
       && [...this._sessions.values()].includes(session) && session.expiresAt > this._deps.now()
       && !this._deps.peerBook.isRevoked(peerId)
       && this._deps.peerBook.getPeerById(peerId)?.publicKey === peer.publicKey
       && envelope.issuedAt + envelope.deadlineMs > this._deps.now();
+    const prior = session.calls.get(envelope.callId);
+    if (prior) {
+      if (prior.hash !== fingerprint || !await current()) { return denied; }
+      const cached = await prior.result;
+      return await current() && live() ? cached : denied;
+    }
+    if (!grant || session.calls.size >= MAX_CALLS || !this._deps.peerBook.checkRate(peerId, now).allowed) { return denied; }
     const result = (async () => {
-      // Check the verb before spending; locate is intentionally not wired here.
-      const permitted = envelope.verb === 'status' && grant.verbs.includes('status');
+      const permitted = envelope.verb === session.verb && grant.verbs.includes(session.verb);
+      if (permitted && !await current()) { return denied; }
       if (permitted && !await this._deps.peerBook.trySpend(peerId, 0)) { return denied; }
       // getGrant() would reject the final permitted call after its atomic debit.
       // Recheck revocation, identity, expiry and lifecycle separately instead.
       if (!live()) { return denied; }
-      const served = permitted ? dispatch('status', envelope.args, {
-        scope: EMPTY_SCOPE, index: emptyIndex, grant,
+      const served = permitted ? dispatch(envelope.verb, envelope.args, {
+        scope: session.lookup?.scope ?? EMPTY_SCOPE, index: session.lookup?.index ?? emptyIndex, grant,
         status: { availability: this._availability, focus: null }, now: this._deps.now(),
       }) : { ok: false, error: 'unknown verb' };
+      const screened = screenOutbound(served);
+      const safe = screened.ok ? served : { ok: false, error: 'withheld' };
       const response = {
         protocol: 'mysti.desk/1', callId: envelope.callId, verb: envelope.verb,
-        ...served,
-        ...(served.error ? { error: served.error === 'unknown verb' ? 'unknown-verb' : 'bad-args' } : {}),
+        ...safe,
+        ...(safe.error ? { error: safe.error === 'unknown verb' ? 'unknown-verb'
+          : safe.error === 'withheld' ? 'withheld' : 'bad-args' } : {}),
         complete: true, policy: { withheld: [], redactions: 0 },
       };
       const digest = createHash('sha256').update(session.challenge).update(envelope.callId)
         .update(canonicalize(response)).digest();
       const sig = await this._deps.identity.signBytes(digest);
-      if (!live()) { return denied; }
+      if (!await current() || !live()) { return denied; }
       return { ...response, sig: 'ed25519:' + Buffer.from(sig, 'base64').toString('base64url') };
     })().catch(() => denied);
     session.calls.set(envelope.callId, { hash: fingerprint, result });
@@ -224,8 +267,17 @@ export class DeskLocalStatus {
 
   /** Only a human-pasted link can select an endpoint; pinned identity is mandatory. */
   async check(link: string): Promise<DeskCallOutcome> {
+    return this._call(link, 'status', {});
+  }
+
+  async locate(link: string, token: string, kind: 'symbol' | 'path'): Promise<DeskCallOutcome> {
+    if (!validateCall('locate', { token, kind }).ok) { return { ok: false, error: 'bad-args' }; }
+    return this._call(link, 'locate', { token, kind });
+  }
+
+  private async _call(link: string, verb: 'status' | 'locate', args: Record<string, unknown>): Promise<DeskCallOutcome> {
     if (!this._allowed()) { return { ok: false, error: 'desk-disabled' }; }
-    const connection = parseConnection(link, this._deps.now());
+    const connection = parseConnection(link, this._deps.now(), verb === 'locate' ? LOOKUP_PREFIX : LINK_PREFIX);
     if (!connection) { return { ok: false, error: 'invalid-local-link' }; }
     try {
       const own = await this._deps.identity.ensure();
@@ -249,7 +301,7 @@ export class DeskLocalStatus {
           finally { this._outbound.delete(controller); opts.signal.removeEventListener('abort', abort); }
         } },
       });
-      const result = await client.call({ ...connection, verb: 'status', args: {}, deadlineMs: 5000, peerPublicKey: peer.publicKey });
+      const result = await client.call({ ...connection, verb, args, deadlineMs: 5000, peerPublicKey: peer.publicKey });
       if (!live()) { return { ok: false, error: 'desk-disabled' }; }
       if (result.ok) { await this._deps.peerBook.touchOutbound(peer.peerId); }
       if (!live()) { return { ok: false, error: 'desk-disabled' }; }
@@ -258,9 +310,9 @@ export class DeskLocalStatus {
   }
 }
 
-function parseConnection(link: string, now: number): Connection | null {
-  if (typeof link !== 'string' || link.length > 2048 || !link.startsWith(LINK_PREFIX)) { return null; }
-  const encoded = link.slice(LINK_PREFIX.length);
+function parseConnection(link: string, now: number, prefix: string): Connection | null {
+  if (typeof link !== 'string' || link.length > 2048 || !link.startsWith(prefix)) { return null; }
+  const encoded = link.slice(prefix.length);
   if (!/^[A-Za-z0-9_-]+$/.test(encoded)) { return null; }
   try {
     const c = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Connection;

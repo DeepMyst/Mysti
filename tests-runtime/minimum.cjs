@@ -5,6 +5,10 @@
 // the embedded runtime in the minimum supported editor, VS Code 1.86.0.
 // This exercises bundled runtime paths; real editor/UI coverage is separate.
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { DeskWorkspaceLookup } = require('../src/services/DeskWorkspaceLookup');
 const { compile, compilePartial } = require('../src/canvas/doc/PageCompiler');
 const { emit } = require('../src/canvas/doc/DocEmitter');
 const { applyOp } = require('../src/canvas/doc/DocPatch');
@@ -34,6 +38,21 @@ function compileOk(source) {
 async function main() {
   // Fail closed if the CI execution step accidentally retains the build Node.
   assert.equal(process.versions.node, '18.17.1', 'Execute this bundle with the minimum editor runtime');
+
+  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-minimum-desk-')));
+  try {
+    await fs.mkdir(path.join(workspaceRoot, '.mysti'));
+    await fs.mkdir(path.join(workspaceRoot, 'src'));
+    await fs.writeFile(path.join(workspaceRoot, '.mysti/desk-share.json'), '{"allow":["src"]}');
+    await fs.writeFile(path.join(workspaceRoot, 'src/example.ts'), 'function MinimumDesk() {}');
+    const reader = new DeskWorkspaceLookup({ root: workspaceRoot, ceiling: () => ['src'], active: () => true });
+    const snapshot = await reader.prepare(['src'], () => true);
+    assert.deepEqual(snapshot.index.lookup('MinimumDesk', 'symbol'), [{ path: 'src/example.ts', line: 1, symbol: 'MinimumDesk' }]);
+    assert.equal(await snapshot.isCurrent(), true);
+    await fs.writeFile(path.join(workspaceRoot, '.mysti/desk-share.json'), '{"allow":[]}');
+    assert.equal(await snapshot.isCurrent(), false);
+    report.checks.push('desk-workspace-descriptor-read-and-scope-invalidation');
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 
   assert.ok(PAGE_SCAFFOLDS.length > 0, 'At least one shipped scaffold must be exercised');
   for (const scaffold of PAGE_SCAFFOLDS) {

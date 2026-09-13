@@ -19,7 +19,7 @@ installation and Marketplace publication have not been performed.
 | 9. Installed accounts | Hermes/Kimi/Continue are absent from PATH; account-backed checks remain open. |
 | 10. Editor lifecycle | OpenClaw zombie-group cleanup and Cursor lifecycle fixed. Real-editor chat testing found and fixed Stop disappearing after token one. Loopback chat and Canvas acceptance are part of the final archive gate. |
 | 11. CI and editor minimum | All 15 required checks passed on `c9a3f35`, including installed archives on minimum/stable Linux editors; the exact-context main ruleset is active. Every later candidate needs fresh exact-commit checks. Minimum macOS 1.86.0 still crashes before activation (SIGSEGV by default, SIGTRAP with GPU disabled). |
-| 12. Desk | Pairing/grants plus signed local status are connected to production commands and lifecycle. Local status uses temporary recipient-specific loopback links. Scoped locate remains a pure dispatcher implementation; production workspace indexing and cross-machine transport/acceptance remain open. |
+| 12. Desk | Pairing/grants, signed local status and scoped workspace lookup are connected to production commands and lifecycle. Separate temporary loopback links bind status or an explicitly prepared workspace snapshot to one recipient. Scope/file changes invalidate lookup and cached replies. Cross-machine transport and manual editor/machine acceptance remain open. |
 | 13. Panel | Product claim corrected to independent answers shown together. No synthesis pass is claimed. |
 | 14. Capabilities/docs | Execution types and prompt-history behavior explicitly declared; documentation aligned with reachable provider paths. |
 | 15. Persistence | Journal ordering/tail handling and Canvas recovery preservation fixed. Migration, future-schema refusal and failure fixtures pass; real-profile downgrade acceptance is open. |
@@ -30,7 +30,7 @@ installation and Marketplace publication have not been performed.
 See [provider approval evidence](APPROVAL_ACCEPTANCE_MATRIX.md),
 [external acceptance gates](EXTERNAL_RELEASE_ACCEPTANCE.md),
 [persistence recovery and downgrade](PERSISTENCE_RECOVERY.md), and
-[dependency/build exceptions](MAINTENANCE.md), and [Desk local status](DESK_LOCAL_STATUS.md).
+[dependency/build exceptions](MAINTENANCE.md), and [Desk local status and lookup](DESK_LOCAL_STATUS.md).
 
 ## Artifact and rollback discipline
 

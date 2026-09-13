@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as crypto from 'crypto';
 import * as http from 'http';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { DeskWorkspaceLookup } from '../../src/services/DeskWorkspaceLookup';
 import { DeskIdentity } from '../../src/services/desk/DeskIdentity';
 import { DeskPeerBook } from '../../src/managers/DeskPeerBook';
 import { DeskLocalStatus } from '../../src/services/DeskLocalStatus';
@@ -37,7 +41,7 @@ async function fixture(maxCalls = 100) {
 }
 
 function decode(link: string): Record<string, string> {
-  return JSON.parse(Buffer.from(link.slice('desk://local-status/'.length), 'base64url').toString('utf8'));
+  return JSON.parse(Buffer.from(link.slice(link.lastIndexOf('/') + 1), 'base64url').toString('utf8'));
 }
 function change(link: string, patch: Record<string, unknown>): string {
   return 'desk://local-status/' + Buffer.from(JSON.stringify({ ...decode(link), ...patch })).toString('base64url');
@@ -52,6 +56,130 @@ async function wire(f: Awaited<ReturnType<typeof fixture>>, link: string, patch:
   });
   return { send, body };
 }
+
+async function lookupWorkspace() {
+  const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mysti-desk-http-')));
+  cleanup.push(() => fs.promises.rm(root, { recursive: true, force: true }));
+  await fs.promises.mkdir(path.join(root, '.mysti'));
+  await fs.promises.mkdir(path.join(root, 'src'));
+  await fs.promises.writeFile(path.join(root, '.mysti/desk-share.json'), '{"allow":["src"]}');
+  await fs.promises.writeFile(path.join(root, 'src/example.ts'), 'export function SharedThing() {}\nconst privateValue = "fixture-only";');
+  const flags = { ceiling: ['src'], active: true };
+  return { root, flags, reader: new DeskWorkspaceLookup({ root, ceiling: () => flags.ceiling, active: () => flags.active }) };
+}
+
+describe('production Desk explicit local workspace lookup over HTTP', () => {
+  it('returns only signed coordinates and charges one zero-cost call', async () => {
+    const f = await fixture(); const workspace = await lookupWorkspace();
+    const link = await f.a.runtime.shareLookup(f.bKey.peerId, workspace.reader);
+    expect(link.startsWith('desk://local-lookup/')).toBe(true);
+    expect(await f.b.runtime.locate(link, 'SharedThing', 'symbol')).toEqual({ ok: true, verified: true,
+      payload: { hits: [{ path: 'src/example.ts', line: 1, symbol: 'SharedThing' }] } });
+    expect(f.a.peerBook.callsUsed(f.bKey.peerId)).toBe(1);
+    expect(f.a.peerBook.spentTodayAll()).toBe(0);
+    expect(JSON.stringify(decode(link))).not.toContain(workspace.root);
+    const opens = vi.spyOn(fs.promises, 'open');
+    expect(await f.b.runtime.locate(link, 'Shared', 'symbol')).toMatchObject({ ok: true, payload: { hits: [] } });
+    expect(await f.b.runtime.locate(link, 'example.ts', 'path')).toMatchObject({ ok: true, payload: { hits: [{ path: 'src/example.ts', line: 0 }] } });
+    expect(opens.mock.calls.every(([name]) => String(name).endsWith('desk-share.json'))).toBe(true);
+    opens.mockRestore();
+  });
+
+  it('never upgrades a status link to workspace authority, even with a locate grant', async () => {
+    const f = await fixture(); const link = await f.a.runtime.share(f.bKey.peerId, 'busy');
+    const w = await wire(f, link, { verb: 'locate', args: { token: 'example', kind: 'path' } });
+    expect((await w.send()).body).toMatchObject({ ok: false, error: 'unknown-verb' });
+    expect(f.a.peerBook.callsUsed(f.bKey.peerId)).toBe(0);
+    expect((await f.b.runtime.locate(link.replace('local-status/', 'local-lookup/'), 'example', 'path')).ok).toBe(false);
+  });
+
+  it('serves and deduplicates the last granted lookup without another debit', async () => {
+    const f = await fixture(1); const workspace = await lookupWorkspace();
+    const link = await f.a.runtime.shareLookup(f.bKey.peerId, workspace.reader);
+    const w = await wire(f, link, { verb: 'locate', args: { token: 'SharedThing', kind: 'symbol' } });
+    const [first, second] = await Promise.all([w.send(), w.send()]);
+    expect(first.body).toMatchObject({ ok: true }); expect(second).toEqual(first);
+    expect(await w.send()).toEqual(first);
+    expect(f.a.peerBook.callsUsed(f.bKey.peerId)).toBe(1);
+    expect((await f.b.runtime.locate(link, 'example', 'path')).ok).toBe(false);
+  });
+
+  it.each(['scope', 'source', 'ceiling', 'workspace', 'configuration', 'revoke'] as const)('refuses cached lookup and new calls after %s changes', async change => {
+    const f = await fixture(); const workspace = await lookupWorkspace();
+    const link = await f.a.runtime.shareLookup(f.bKey.peerId, workspace.reader);
+    const w = await wire(f, link, { verb: 'locate', args: { token: 'SharedThing', kind: 'symbol' } });
+    expect((await w.send()).body).toMatchObject({ ok: true });
+    if (change === 'scope') { await fs.promises.writeFile(path.join(workspace.root, '.mysti/desk-share.json'), '{"allow":[]}'); }
+    if (change === 'source') { await fs.promises.writeFile(path.join(workspace.root, 'src/example.ts'), 'function Changed() {}'); }
+    if (change === 'ceiling') { workspace.flags.ceiling = []; }
+    if (change === 'workspace') { workspace.flags.active = false; }
+    if (change === 'configuration') { f.a.runtime.invalidateLookups(); }
+    if (change === 'revoke') { await f.a.peerBook.revoke(f.bKey.peerId); }
+    expect((await w.send()).body).not.toMatchObject({ ok: true });
+    expect((await f.b.runtime.locate(link, 'SharedThing', 'symbol')).ok).toBe(false);
+    expect(f.a.peerBook.callsUsed(f.bKey.peerId)).toBe(1);
+  });
+
+  it('discards coordinates if the scope changes while signing the reply', async () => {
+    const f = await fixture(); const workspace = await lookupWorkspace();
+    const link = await f.a.runtime.shareLookup(f.bKey.peerId, workspace.reader);
+    const sign = f.a.identity.signBytes.bind(f.a.identity);
+    vi.spyOn(f.a.identity, 'signBytes').mockImplementationOnce(async bytes => {
+      workspace.flags.ceiling = []; return sign(bytes);
+    });
+    expect((await f.b.runtime.locate(link, 'SharedThing', 'symbol')).ok).toBe(false);
+  });
+
+  it('refuses an expired lookup session', async () => {
+    const f = await fixture(); const workspace = await lookupWorkspace();
+    const link = await f.a.runtime.shareLookup(f.bKey.peerId, workspace.reader); f.advance(600_001);
+    expect((await f.b.runtime.locate(link, 'SharedThing', 'symbol')).ok).toBe(false);
+  });
+
+  it('invalidates preparation if the owner changes workspace configuration mid-build', async () => {
+    const f = await fixture(); const workspace = await lookupWorkspace();
+    const prepare = workspace.reader.prepare.bind(workspace.reader);
+    vi.spyOn(workspace.reader, 'prepare').mockImplementation(async (...args) => {
+      const snapshot = await prepare(...args); f.a.runtime.invalidateLookups(); return snapshot;
+    });
+    await expect(f.a.runtime.shareLookup(f.bKey.peerId, workspace.reader)).rejects.toThrow();
+  });
+
+  it('does not prepare a workspace for a peer without locate permission', async () => {
+    const f = await fixture(); const workspace = await lookupWorkspace();
+    const grant = f.a.peerBook.getGrant(f.bKey.peerId)!;
+    vi.spyOn(f.a.peerBook, 'getGrant').mockReturnValue({ ...grant, verbs: ['status'] });
+    const prepare = vi.spyOn(workspace.reader, 'prepare');
+    await expect(f.a.runtime.shareLookup(f.bKey.peerId, workspace.reader)).rejects.toThrow();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it('checks cached request deadlines after asynchronous snapshot validation', async () => {
+    const f = await fixture(); const workspace = await lookupWorkspace();
+    const prepare = workspace.reader.prepare.bind(workspace.reader);
+    let expire = false;
+    vi.spyOn(workspace.reader, 'prepare').mockImplementation(async (...args) => {
+      const snapshot = await prepare(...args); const current = snapshot.isCurrent;
+      snapshot.isCurrent = async () => {
+        const result = await current(); if (expire) { f.advance(5001); } return result;
+      };
+      return snapshot;
+    });
+    const link = await f.a.runtime.shareLookup(f.bKey.peerId, workspace.reader);
+    const w = await wire(f, link, { verb: 'locate', args: { token: 'SharedThing', kind: 'symbol' } });
+    expect((await w.send()).body).toMatchObject({ ok: true }); expire = true;
+    expect((await w.send()).body).toEqual({ ok: false, error: 'denied' });
+  });
+
+  it('refuses a credential-shaped filename at egress', async () => {
+    const f = await fixture(); const workspace = await lookupWorkspace();
+    // Synthetic detector fixture, never a real credential.
+    const name = 'AKIA' + 'A'.repeat(16);
+    await fs.promises.writeFile(path.join(workspace.root, 'src', name + '.ts'), 'function Ordinary() {}');
+    const link = await f.a.runtime.shareLookup(f.bKey.peerId, workspace.reader);
+    expect((await f.b.runtime.locate(link, name, 'path')).ok).toBe(false);
+  });
+});
 
 describe('production Desk local status over real loopback HTTP', () => {
   it('serves a pinned, verified owner status without exporting a private key or reading files', async () => {

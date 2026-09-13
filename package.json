@@ -121,6 +121,16 @@
         "category": "Mysti"
       },
       {
+        "command": "mysti.deskShareLocalLookup",
+        "title": "Desk: Share local workspace lookup",
+        "category": "Mysti"
+      },
+      {
+        "command": "mysti.deskLocateLocal",
+        "title": "Desk: Look up shared workspace",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.deskPair",
         "title": "Desk: Pair with a teammate",
         "category": "Mysti"
@@ -610,7 +620,7 @@
         "mysti.updates.notifyNewModels": {
           "type": "boolean",
           "default": true,
-          "description": "Show a notification when a backend publishes a model you have not seen before, with a one-click button to select it for that agent. Detection only — Mysti never switches your model on its own."
+          "description": "Show a notification when a backend publishes a model you have not seen before, with a one-click button to select it for that agent. Detection only \u2014 Mysti never switches your model on its own."
         },
         "mysti.updates.checkCliUpdates": {
           "type": "boolean",
@@ -1890,13 +1900,13 @@
           "scope": "machine",
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Desk (off by default).** Manage pairing and use the Desk local status commands between paired editor profiles on this computer. Cross-machine requests and task execution are not available. Machine-scoped: a cloned repository can never turn this on."
+          "markdownDescription": "**Desk (off by default).** Manage pairing and use the Desk local status and workspace lookup commands between paired editor profiles on this computer. Cross-machine requests and task execution are not available. Machine-scoped: a cloned repository can never turn this on."
         },
         "mysti.desk.serve": {
           "scope": "machine",
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Serve local status (off by default).** With Desk enabled and workspace trust granted, starts a loopback listener. Use **Desk: Share local status** to publish an owner-chosen status through a temporary link for a paired profile on this computer. Only status is served; no files or model calls. Turning this off closes the listener and invalidates its links."
+          "markdownDescription": "**Serve Desk locally (off by default).** With Desk enabled and workspace trust granted, starts a loopback listener. Explicit sharing commands issue temporary links for a paired profile on this computer: either an owner-chosen status or coordinates from a scoped workspace snapshot. No model calls. Turning this off closes the listener and invalidates its links."
         },
         "mysti.desk.servingBudgetUsdPerDay": {
           "scope": "machine",
@@ -2013,6 +2023,16 @@
             "REIMAGINE"
           ],
           "description": "Creative range for Stitch variants: REFINE (conservative), EXPLORE (balanced), REIMAGINE (radical)"
+        },
+        "mysti.desk.shareCeiling": {
+          "scope": "machine",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "maxItems": 128,
+          "markdownDescription": "Workspace-relative path prefixes permitted for **Desk: Share local workspace lookup**. Set in User Settings. The effective scope intersects this ceiling, `.mysti/desk-share.json` (`{\"allow\":[\"src\"]}`), and the recipient\u2019s locate grant. Empty means nothing is shared. `*` allows all eligible workspace paths; hidden, private, generated, linked and non-regular files are excluded or refused. Only exact symbol/path coordinates are shared. Changes invalidate existing lookup snapshots."
         }
       }
     },

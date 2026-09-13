@@ -236,11 +236,10 @@ describe('no setting is declared and read by nothing (Plan 27 §24 Tier A)', () 
     'mysti.canvas.stitchVariantCount',
     'mysti.desk.bind',
     'mysti.desk.maxDeskCalls',
-    'mysti.desk.shareCeiling',
     'mysti.activeMode.showActivityFeed',
   ];
 
-  it('the eight Tier A settings stay deleted', () => {
+  it('the unused Tier A settings stay deleted', () => {
     const back = DELETED.filter((k) => k in props);
     expect(
       back,
@@ -354,7 +353,7 @@ describe('authority-shaped namespaces are machine-scoped OR clamped (structural,
     { name: 'mysti.agents.*', re: /^mysti\.agents\./, min: 30 },
     { name: 'mysti.autonomous.*', re: /^mysti\.autonomous\./, min: 7 },
     { name: 'mysti.mysti.*', re: /^mysti\.mysti\./, min: 10 },
-    { name: 'mysti.desk.*', re: /^mysti\.desk\./, min: 4 },  // 7 -> 4: bind / maxDeskCalls / shareCeiling were declared-and-unread (Plan 27 §24 Tier A).
+    { name: 'mysti.desk.*', re: /^mysti\.desk\./, min: 5 },  // shareCeiling now gates the explicit workspace lookup command.
     // Plan 27 §21.6c #10 (lane N-2): suffix shapes. Until these existed the
     // "a fifth one fails HERE" property held only inside the nine above;
     // `mysti.visualTest.url` was caught by its namespace, not by being a URL.

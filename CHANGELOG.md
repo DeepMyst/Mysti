@@ -12,7 +12,7 @@ All notable changes to the Mysti extension will be documented in this file.
 - Gemini, Qwen, Cline and OpenCode use isolated ACP sessions with explicit tool restrictions. Copilot is limited to read/search because the reviewed native runtime bypasses approval for some writes and shell operations. OpenCode shell execution is unavailable in this transport.
 - Cursor and Continue reject restricted turns before launch until they have an enforceable native approval path. Their fully unrestricted modes remain available. A tool notification requiring approval stops the turn; the operation may already have executed. This supersedes 0.5.1's process-pause description.
 - Provider capabilities distinguish native execution, proposed tools and no tools. HTTP providers and Cursor replay prompt history. `/panel` is described as independent answers shown together; it does not add a synthesis pass.
-- Desk pairing and grants now support local status commands between paired editor instances on the same computer. Temporary recipient-specific links require signed requests and replies, honor grant expiry/revocation and call limits, and stop working when serving is disabled. Cross-machine transport, workspace lookup and remote task execution remain unimplemented.
+- Desk pairing and grants now support local status commands between paired editor instances on the same computer. Temporary recipient-specific links require signed requests and replies, honor grant expiry/revocation and call limits, and stop working when serving is disabled. Separate workspace lookup commands now prepare a bounded coordinate snapshot within machine, workspace and peer scopes. Scope/file changes invalidate lookup links and cached replies. Cross-machine transport and remote task execution remain unimplemented.
 
 ### Fixed
 
@@ -68,7 +68,7 @@ pass on top of the features listed under *Added* below.
 
 ### Removed
 
-- **Eight settings that were declared and read by nothing** — `mysti.canvas.autoSave`, `mysti.canvas.defaultVariantCount`, `mysti.canvas.stitchDeviceType`, `mysti.canvas.stitchVariantCount`, `mysti.desk.bind`, `mysti.desk.maxDeskCalls`, `mysti.desk.shareCeiling`, `mysti.activeMode.showActivityFeed`. None had a read site anywhere in the extension, so changing them never did anything; they only appeared in the Settings UI and implied a control that did not exist. If you have one in your `settings.json`, VS Code will flag it as unknown and you can delete the line — no behaviour changes either way. A test now pins the deletions and catches the next declared-but-unread setting at the moment it is added.
+- **Eight settings that were declared and read by nothing** — `mysti.canvas.autoSave`, `mysti.canvas.defaultVariantCount`, `mysti.canvas.stitchDeviceType`, `mysti.canvas.stitchVariantCount`, `mysti.desk.bind`, `mysti.desk.maxDeskCalls`, `mysti.desk.shareCeiling`, `mysti.activeMode.showActivityFeed`. None had a read site anywhere in the extension, so changing them never did anything; they only appeared in the Settings UI and implied a control that did not exist. The unused settings remain unknown; `mysti.desk.shareCeiling` has since been restored with a production reader for explicit local workspace lookup, defaulting to an empty scope. A test now pins the deletions and catches the next declared-but-unread setting at the moment it is added.
 
 ### Packaging & process
 
