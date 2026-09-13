@@ -31,7 +31,7 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 function makeWebview() {
   return {
     cspSource: 'vscode-resource://test',
-    asWebviewUri: (uri: { fsPath: string }) => ({ toString: () => 'vscode-resource://authority' + uri.fsPath }),
+    asWebviewUri: (uri: { fsPath: string }) => ({ toString: () => 'vscode-resource://authority' + uri.fsPath.replace(/\\/g, '/') }),
   } as never;
 }
 const extensionUri = { fsPath: repoRoot, path: repoRoot } as never;

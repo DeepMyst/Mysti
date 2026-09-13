@@ -45,7 +45,7 @@ describe('structural: every render site is sanitized', () => {
   it('emits the renderer resource before chat with a nonce and a fresh asset URI', () => {
     const webview = {
       cspSource: 'vscode-resource://test',
-      asWebviewUri: (uri: vscode.Uri) => ({ toString: () => 'vscode-resource://test' + uri.fsPath }),
+      asWebviewUri: (uri: vscode.Uri) => ({ toString: () => 'vscode-resource://test' + uri.fsPath.replace(/\\/g, '/') }),
     } as vscode.Webview;
     const html = getWebviewContent(webview, { fsPath: ROOT, path: ROOT } as vscode.Uri, '1.2.3');
     const dom = new JSDOM(html);

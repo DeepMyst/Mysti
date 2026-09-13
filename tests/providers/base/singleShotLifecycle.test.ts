@@ -1,3 +1,4 @@
+import { withClosableStdin } from '../../helpers/closableStdin';
 /**
  * Mysti - AI Coding Agent
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
@@ -318,9 +319,9 @@ describe('single-shot process ownership', () => {
 
   it('an asynchronous closed stdin pipe settles the issuing child without an unhandled error', async () => {
     const { spawn: realSpawn } = await vi.importActual<typeof import('child_process')>('child_process');
-    const proc = realSpawn(process.execPath, ['-e',
+    const proc = withClosableStdin(realSpawn(process.execPath, ['-e',
       `require(${JSON.stringify(path.resolve(__dirname, '../../fixtures/closeStdin.cjs'))})(() => process.stdout.write('ready')); setInterval(() => {}, 1000);`,
-    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    ], { stdio: ['ignore', 'pipe', 'pipe', 'pipe'] }));
     const exited = new Promise<void>(resolve => proc.once('close', () => resolve()));
     try {
       await new Promise<void>((resolve, reject) => {

@@ -30,7 +30,7 @@ function makeWebview() {
   return {
     cspSource: 'https://test-csp.example',
     asWebviewUri: (uri: { fsPath: string }) => ({
-      toString: () => 'vscode-resource://authority' + uri.fsPath
+      toString: () => 'vscode-resource://authority' + uri.fsPath.replace(/\\/g, '/')
     })
   } as any;
 }
@@ -104,8 +104,8 @@ describe('getVisualTestDashboardContent loader', () => {
 
   it('points the external tags at the media/vt-dashboard assets via asWebviewUri', () => {
     const html = getVisualTestDashboardContent(makeWebview(), extensionUri, '1.2.3');
-    expect(html).toContain('vscode-resource://authority' + path.join(mediaDir, 'vt-dashboard.css'));
-    expect(html).toContain('vscode-resource://authority' + path.join(mediaDir, 'vt-dashboard.js'));
+    expect(html).toContain('vscode-resource://authority' + path.join(mediaDir, 'vt-dashboard.css').replace(/\\/g, '/'));
+    expect(html).toContain('vscode-resource://authority' + path.join(mediaDir, 'vt-dashboard.js').replace(/\\/g, '/'));
   });
 
   it('uses cspSource for img-src and embeds the version in __MYSTI_VT_BOOT__', () => {

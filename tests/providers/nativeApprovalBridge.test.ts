@@ -1,4 +1,5 @@
-import type { ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { withClosableStdin } from '../helpers/closableStdin';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -51,9 +52,13 @@ describe.each([
     const owned: ChildProcess[] = [];
     const closed: Promise<void>[] = [];
     const internal = provider as unknown as { _spawnCliProcess(...args: unknown[]): ChildProcess };
-    const spawn = internal._spawnCliProcess.bind(provider);
     vi.spyOn(internal, '_spawnCliProcess').mockImplementation((...args) => {
-      const child = spawn(...args);
+      // Run the inert Node fixture directly. A Windows cmd.exe wrapper would
+      // retain another copy of the pipe and prevent observing its closure.
+      const cliArgs = args[0] as string[];
+      const child = closeAfter
+        ? withClosableStdin(spawn(process.execPath, cliArgs, { cwd: directory, stdio: ['ignore', 'pipe', 'pipe', 'pipe'] }))
+        : spawn(process.execPath, cliArgs, { cwd: directory, stdio: ['pipe', 'pipe', 'pipe'] });
       owned.push(child);
       closed.push(new Promise(resolve => child.once('close', () => resolve())));
       return child;

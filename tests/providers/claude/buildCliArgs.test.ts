@@ -215,7 +215,7 @@ describe('ClaudeCodeProvider.buildCliArgs', () => {
       expect(args[modelIdx + 1]).toBe('claude-opus-4-6[1m]');
       // The relaxed shell-mode gate no longer treats brackets as unsafe.
       for (const arg of args) {
-        expect(SHELL_UNSAFE_ARG.test(arg)).toBe(false);
+        expect((provider as unknown as { _isUnsafeShellArg(value: string): boolean })._isUnsafeShellArg(arg), arg).toBe(false);
       }
     });
 

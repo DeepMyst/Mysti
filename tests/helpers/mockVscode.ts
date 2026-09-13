@@ -261,7 +261,8 @@ export const Uri = {
   parse: (uri: string) => ({ fsPath: uri, scheme: 'file', path: uri, toString: () => uri }),
   joinPath: (base: { fsPath?: string; path?: string }, ...segments: string[]) => {
     const joined = nodePath.join(base?.fsPath ?? base?.path ?? '', ...segments);
-    return { fsPath: joined, scheme: 'file', path: joined, toString: () => joined };
+    const uriPath = joined.replace(/\\/g, '/');
+    return { fsPath: joined, scheme: 'file', path: uriPath, toString: () => uriPath };
   },
 };
 

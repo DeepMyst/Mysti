@@ -1,3 +1,4 @@
+import { withClosableStdin } from '../../helpers/closableStdin';
 import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
@@ -66,9 +67,9 @@ describe('ACP permission choices', () => {
   });
 
   it('handles an asynchronous EPIPE and ends only the child whose stdin closed', async () => {
-    const child = spawn(process.execPath, ['-e',
+    const child = withClosableStdin(spawn(process.execPath, ['-e',
       `require(${JSON.stringify(path.resolve(__dirname, '../../fixtures/closeStdin.cjs'))})(() => process.stdout.write('ready')); setTimeout(() => {}, 30000);`,
-    ], { stdio: ['pipe', 'pipe', 'ignore'] });
+    ], { stdio: ['ignore', 'pipe', 'pipe', 'pipe'] }));
     const exited = new Promise<void>(resolve => child.once('close', () => resolve()));
     try {
       await new Promise<void>((resolve, reject) => {
@@ -76,6 +77,7 @@ describe('ACP permission choices', () => {
         child.stdout.once('data', () => { child.removeListener('error', reject); resolve(); });
       });
       expect(child.stdin.writable).toBe(true);
+      const initialCloseListeners = child.stdin.listenerCount('close');
       respondToAcpApproval({
         id: 91, params: { toolCall: { kind: 'read' }, options: [{ optionId: 'yes', kind: 'allow_once' }] },
         settings: { mode: 'default', accessLevel: 'full-access' },
@@ -84,7 +86,7 @@ describe('ACP permission choices', () => {
       await exited;
       expect(child.killed).toBe(true);
       expect(child.stdin.listenerCount('error')).toBe(0);
-      expect(child.stdin.listenerCount('close')).toBe(0);
+      expect(child.stdin.listenerCount('close')).toBe(initialCloseListeners);
     } finally {
       child.kill();
       await exited;

@@ -6,12 +6,12 @@ const [directory, panel, closeAfter] = process.argv.slice(2);
 let promptId;
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 if (closeAfter) {
-  // Read fd 0 without creating a libuv stdin handle, then close it before
+  // Read the closable extra pipe without a libuv stream, then close it before
   // replying. The child stays alive with stdout open to expose parent EPIPE.
   let buffered = '';
   const bytes = Buffer.alloc(4096);
   for (;;) {
-    const size = fs.readSync(0, bytes, 0, bytes.length, null);
+    const size = fs.readSync(3, bytes, 0, bytes.length, null);
     if (!size) { process.exit(0); }
     buffered += bytes.toString('utf8', 0, size);
     let end;

@@ -162,13 +162,16 @@ describe.skipIf(process.platform === 'win32')('OpenClaw managed runtime owned pr
     vi.stubEnv('MYSTI_INERT_MODEL_CREDENTIAL', 'old-inert-value');
     getEnrichedEnv();
     vi.stubEnv('MYSTI_INERT_MODEL_CREDENTIAL', 'fresh-inert-value');
-    const handle = await OpenClawManagedRuntime.start(options);
+    // This checks PATH and fresh environment propagation, not startup latency.
+    // Cold hosted workers may need more than three seconds for both processes;
+    // the separate silent-start test still verifies the exact 500ms deadline.
+    const handle = await OpenClawManagedRuntime.start({ ...options, startupTimeoutMs: 10_000 });
     handles.push(handle);
     const records = await readJournal(journal);
     expect(records).toHaveLength(2);
     expect(records[1].preloaded).toBe(true);
     expect(records[1].env.MYSTI_INERT_MODEL_CREDENTIAL).toBe('fresh-inert-value');
-  });
+  }, 15_000);
 
   it('preloads both native schema validation and gateway, authenticates readiness, and removes private state on idempotent disposal', async () => {
     const { options, journal } = await fixture();

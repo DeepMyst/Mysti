@@ -25,6 +25,8 @@ class FixtureProvider extends AcpNativeProvider {
   readonly config = { name: 'inert-acp', displayName: 'Inert ACP', models: [], defaultModel: '' };
   readonly capabilities: ProviderCapabilities = { supportsStreaming: true, supportsThinking: false, supportsToolUse: true, supportsNativeApproval: true, supportsSessions: false, supportsPersistentProcess: true };
   readonly events: string[] = [];
+  readonly children: ChildProcess[] = [];
+  readonly closed: Promise<void>[] = [];
   readonly prepared = deferred<AcpNativeLaunchContext>();
   readonly cleanupStarted = deferred<void>();
   readonly pipeClosePending = deferred<void>();
@@ -70,6 +72,8 @@ class FixtureProvider extends AcpNativeProvider {
   protected override _spawnCliProcess(_args: string[], _cwd: string, env: NodeJS.ProcessEnv, cliPath: string): ChildProcess {
     this.launches.push({ path: cliPath, env }); this.events.push('spawn');
     const child = spawn(process.execPath, [fixture, this.dir, this.scenario], { cwd: this.dir, env: {}, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.children.push(child);
+    this.closed.push(new Promise(resolve => child.once('close', () => resolve())));
     if (this.releasePipeClose) {
       const emit = child.emit.bind(child);
       child.emit = (event, ...args) => {
@@ -101,7 +105,14 @@ const envKey = 'MYSTI_ACP_CAPTURE_FIXTURE';
 let savedEnv: string | undefined;
 beforeEach(() => { clearMockConfig(); savedEnv = process.env[envKey]; });
 afterEach(async () => {
-  for (const provider of providers.splice(0)) { provider.dispose(); if (provider.dir) { await fs.rm(provider.dir, { recursive: true, force: true }); } }
+  for (const provider of providers.splice(0)) {
+    provider.dispose();
+    for (const child of provider.children) {
+      if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); }
+    }
+    await Promise.all(provider.closed);
+    if (provider.dir) { await fs.rm(provider.dir, { recursive: true, force: true }); }
+  }
   if (savedEnv === undefined) { delete process.env[envKey]; } else { process.env[envKey] = savedEnv; }
   vi.restoreAllMocks();
   vi.useRealTimers();

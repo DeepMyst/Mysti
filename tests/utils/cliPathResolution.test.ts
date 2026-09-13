@@ -159,8 +159,8 @@ describe('discovery prefers PATH over the hard-coded guesses', () => {
       ...process.env,
       PATH: [onPathBin, guessBin, process.env.PATH ?? ''].join(path.delimiter),
     });
-    expect(resolved).toBe(preferred);
-    expect(resolved).not.toBe(stale);
+    expect(fs.realpathSync.native(resolved!)).toBe(fs.realpathSync.native(preferred));
+    expect(fs.realpathSync.native(resolved!)).not.toBe(fs.realpathSync.native(stale));
   });
 
   /** Reversing PATH reverses the winner — it really is PATH doing the work. */
@@ -174,8 +174,8 @@ describe('discovery prefers PATH over the hard-coded guesses', () => {
       fs.chmodSync(file, 0o755);
     }
     const sys = process.env.PATH ?? '';
-    expect(await resolveCommandOnPath(name, { ...process.env, PATH: [onPathBin, guessBin, sys].join(path.delimiter) })).toBe(a);
-    expect(await resolveCommandOnPath(name, { ...process.env, PATH: [guessBin, onPathBin, sys].join(path.delimiter) })).toBe(b);
+    expect(fs.realpathSync.native((await resolveCommandOnPath(name, { ...process.env, PATH: [onPathBin, guessBin, sys].join(path.delimiter) }))!)).toBe(fs.realpathSync.native(a));
+    expect(fs.realpathSync.native((await resolveCommandOnPath(name, { ...process.env, PATH: [guessBin, onPathBin, sys].join(path.delimiter) }))!)).toBe(fs.realpathSync.native(b));
   });
 });
 
