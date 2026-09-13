@@ -10,6 +10,14 @@ do not edit its version field to force an older extension to accept it.
 | Workspace `.mysti/canvas/<id>/artifact.json` | Valid previous data is backed up as `artifact.json.bak`. Restore validates that backup, preserves the current primary in `artifact.json.corrupt` (or a unique suffixed copy), then promotes the backup atomically. A failed recovery copy or promotion leaves the primary intact. |
 | Workspace `.mysti/compaction/<panel>/history.jsonl` | Invalid lines are retained on disk and skipped on read. An incomplete final line is separated before the next append. Appends and clears serialize per journal within one store instance; this is not cross-process locking. |
 
+Canvas saves use a temporary file followed by an atomic rename. On Windows,
+`EPERM`, `EACCES` and `EBUSY` at that rename are retried up to five times, with
+775 ms total scheduled delay. The previous file stays intact while retrying;
+there is no unlink or copy fallback. Persistent errors still fail the save and
+remove only the temporary file. Fault-injection tests cover temporary locks,
+permanent locks, preservation of both primary and backup, and errors that
+must not be retried. This does not provide locking between separate writers.
+
 Before changing extension versions, close all editor windows using these stores
 and preserve the complete workspace `.mysti` directory plus the editor profile's
 extension global state. Keep recovery copies private: transcripts and tool

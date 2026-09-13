@@ -899,7 +899,21 @@ export class ArtifactStore {
     const tmpPath = `${filePath}.${process.pid}.${_tmpCounter++}.tmp`;
     try {
       await fs.writeFile(tmpPath, data, 'utf-8');
-      await fs.rename(tmpPath, filePath);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await fs.rename(tmpPath, filePath);
+          break;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          // Windows readers/scanners can briefly deny replacement even after
+          // our write handle closes. Retry the SAME atomic rename, never
+          // unlink the last good destination or fall back to a partial copy.
+          // Six attempts wait at most 775 ms; permanent errors still surface.
+          if (process.platform !== 'win32' || attempt >= 5
+            || !['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '')) { throw error; }
+          await new Promise(resolve => setTimeout(resolve, 25 * 2 ** attempt));
+        }
+      }
     } catch (err) {
       await fs.rm(tmpPath, { force: true }).catch(() => { /* best effort */ });
       throw err;

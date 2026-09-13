@@ -67,6 +67,54 @@ describe('ArtifactStore', () => {
     }
   }
 
+  describe('Windows atomic replacement', () => {
+    async function lockedSave(code: string, failures: number, platform: NodeJS.Platform) {
+      const artifact = await savedArtifact('previous');
+      const target = artifactFile(artifact.id);
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      const rename = asyncFs.rename;
+      let attempts = 0;
+      const mock = vi.spyOn(asyncFs, 'rename').mockImplementation(async (from, to) => {
+        if (to === target && ++attempts <= failures) {
+          // Every retry must leave the previous complete artifact readable.
+          expect(readJson(target).name).toBe('previous');
+          throw Object.assign(new Error('simulated rename lock'), { code });
+        }
+        return rename(from, to);
+      });
+      Object.defineProperty(process, 'platform', { value: platform });
+      artifact.name = 'replacement';
+      let error: unknown;
+      try { await store.save(artifact); } catch (caught) { error = caught; }
+      finally { mock.mockRestore(); Object.defineProperty(process, 'platform', descriptor); }
+      return { artifact, attempts, error, target };
+    }
+
+    it.each(['EPERM', 'EACCES', 'EBUSY'])('retries a transient %s while preserving the old primary', async code => {
+      const result = await lockedSave(code, 2, 'win32');
+      expect(result.error).toBeUndefined();
+      expect(result.attempts).toBe(3);
+      expect(readJson(result.target).name).toBe('replacement');
+      expect(readJson(backupFile(result.artifact.id)).name).toBe('previous');
+    });
+
+    it('surfaces a permanent lock after bounded retries and removes only the temporary file', async () => {
+      const result = await lockedSave('EPERM', Infinity, 'win32');
+      expect(result.error).toMatchObject({ code: 'EPERM' });
+      expect(result.attempts).toBe(6);
+      expect(readJson(result.target).name).toBe('previous');
+      expect(readJson(backupFile(result.artifact.id)).name).toBe('previous');
+      expect(fs.readdirSync(path.dirname(result.target)).some(name => name.endsWith('.tmp'))).toBe(false);
+    });
+
+    it.each([['ENOSPC', 'win32'], ['EPERM', 'linux']] as const)('does not retry %s on %s', async (code, platform) => {
+      const result = await lockedSave(code, Infinity, platform);
+      expect(result.error).toMatchObject({ code });
+      expect(result.attempts).toBe(1);
+      expect(readJson(result.target).name).toBe('previous');
+    });
+  });
+
   describe('createArtifact', () => {
     it('defaults a new artifact to screens (app/website) at the desktop frame', () => {
       const a = store.createArtifact({ name: 'My App' });

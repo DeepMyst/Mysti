@@ -12,7 +12,7 @@ All notable changes to the Mysti extension will be documented in this file.
 - Gemini, Qwen, Cline and OpenCode use isolated ACP sessions with explicit tool restrictions. Copilot is limited to read/search because the reviewed native runtime bypasses approval for some writes and shell operations. OpenCode shell execution is unavailable in this transport.
 - Cursor and Continue reject restricted turns before launch until they have an enforceable native approval path. Their fully unrestricted modes remain available. A tool notification requiring approval stops the turn; the operation may already have executed. This supersedes 0.5.1's process-pause description.
 - Provider capabilities distinguish native execution, proposed tools and no tools. HTTP providers and Cursor replay prompt history. `/panel` is described as independent answers shown together; it does not add a synthesis pass.
-- Desk pairing and grants remain available. Remote task execution is not connected to production entry points and is excluded from this candidate's claims.
+- Desk pairing and grants now support local status commands between paired editor instances on the same computer. Temporary recipient-specific links require signed requests and replies, honor grant expiry/revocation and call limits, and stop working when serving is disabled. Cross-machine transport, workspace lookup and remote task execution remain unimplemented.
 
 ### Fixed
 
@@ -22,6 +22,8 @@ All notable changes to the Mysti extension will be documented in this file.
 - Chat keeps Stop visible after the first streamed token. The composer stays in its active-turn state until completion, failure or cancellation, preserving Escape and queued follow-ups during streaming.
 - Chat requests initial state after its message listener is ready, preventing a fast host from losing the first state update during sidebar or tab startup.
 - History clears serialize with appends. Partial journal tails no longer swallow the next valid record, and existing symlinks are refused. Canvas backup restore preserves the primary before replacement and fails if that recovery copy cannot be made.
+- Canvas atomic saves retry transient Windows rename failures within a bounded interval. They preserve the previous file throughout and still report persistent failures.
+- Canvas display/layout helpers no longer import migration and the JSX compiler into the browser bundle, reducing it from 355,782 to 183,372 bytes and clearing webpack size warnings without raising thresholds.
 - Coordinator budgets have their own per-run owner. Source and browser lint warnings are resolved without relaxing the rules.
 
 Conversation and Canvas schemas remain at version 1. Keep data snapshots and the

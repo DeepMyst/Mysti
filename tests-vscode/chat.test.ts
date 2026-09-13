@@ -57,6 +57,15 @@ describe('Mysti Chat — real VS Code host and loopback provider', function () {
       })));
       throw error;
     }
+    // A fresh profile can show onboarding when its discovery snapshot has no
+    // ready provider, even though the configured loopback service is now up.
+    // Complete that ordinary UI flow before exercising the composer. Never
+    // force clicks through the wizard or hide it by mutating the DOM.
+    const wizard = frame.locator('#setup-wizard');
+    if (await wizard.isVisible()) {
+      await wizard.locator('.wizard-skip-btn').click();
+      await wizard.waitFor({ state: 'hidden' });
+    }
   }
 
   async function send(frame: Frame, marker: string): Promise<RequestRecord> {
