@@ -14,6 +14,7 @@ vi.mock('../../../src/providers/codex/CodexNativeConfig', () => ({ captureCodexN
 const fixture = path.resolve(__dirname, '../../fixtures/codex/appServer.mjs');
 const dirs: string[] = [];
 const providers: FixtureProvider[] = [];
+const childClosures: Promise<void>[] = [];
 class FixtureProvider extends CodexProvider {
   mode = 'command';
   launches: string[][] = [];
@@ -27,7 +28,9 @@ class FixtureProvider extends CodexProvider {
   seedPreviousUsage(): void { (this._getSession('panel') as import('../../../src/providers/codex/CodexProvider').CodexSessionState).lastUsageStats = { input_tokens: 999, output_tokens: 55 }; }
   protected override _spawnCliProcess(args: string[]): ChildProcess {
     this.launches.push(args);
-    return spawn(process.execPath, [fixture, this.mode, this.marker], { cwd: this.dir, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [fixture, this.mode, this.marker], { cwd: this.dir, stdio: ['pipe', 'pipe', 'pipe'] });
+    childClosures.push(new Promise(resolve => child.once('close', () => resolve())));
+    return child;
   }
   protected override async prepareAttachments(attachments: Attachment[] | undefined): Promise<() => Promise<void>> {
     await this.preparation; this.prepared = attachments;
@@ -41,7 +44,12 @@ async function drain(provider: FixtureProvider, s = settings(), panel = 'panel',
   return chunks;
 }
 beforeEach(() => { clearMockConfig(); config.capture.mockClear(); config.validate.mockClear(); });
-afterEach(() => { for (const provider of providers.splice(0)) { provider.dispose(); } for (const dir of dirs.splice(0)) { fs.rmSync(dir, { recursive: true, force: true }); } });
+afterEach(async () => {
+  for (const provider of providers.splice(0)) { provider.dispose(); }
+  // Disposal requests termination; Windows retains the child's cwd until close.
+  await Promise.all(childClosures.splice(0));
+  for (const dir of dirs.splice(0)) { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 describe('Codex public native turn lifecycle', () => {
   it('runs only app-server, delivers native approval, and releases attachments before final done', async () => {
     const provider = new FixtureProvider(); provider.setNativeApprovalHost({ handlerForPanel: () => async () => true });

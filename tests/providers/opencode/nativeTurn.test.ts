@@ -15,6 +15,7 @@ import type { Attachment, Settings, StreamChunk } from '../../../src/types';
 useAcpNativeWorkspace();
 const fixture = path.resolve(__dirname, '../../fixtures/opencode/acp.mjs');
 const providers: FixtureProvider[] = [];
+const childClosures: Promise<void>[] = [];
 class FixtureProvider extends OpenCodeProvider {
   mode = 'write';
   launches: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
@@ -34,7 +35,9 @@ class FixtureProvider extends OpenCodeProvider {
   }
   protected override _spawnCliProcess(args: string[], _cwd: string, env?: NodeJS.ProcessEnv): ChildProcess {
     this.launches.push({ args, env });
-    return spawn(process.execPath, [fixture, this.mode, this.marker, this.trace], { cwd: this.dir, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [fixture, this.mode, this.marker, this.trace], { cwd: this.dir, stdio: ['pipe', 'pipe', 'pipe'] });
+    childClosures.push(new Promise(resolve => child.once('close', () => resolve())));
+    return child;
   }
   protected override async prepareAttachments(_attachments: Attachment[] | undefined): Promise<() => Promise<void>> {
     return async () => { this.cleanupCount++; };
@@ -55,7 +58,10 @@ beforeEach(() => {
   vi.spyOn(promises, 'lstat').mockRejectedValue(Object.assign(new Error('inert authority absent'), { code: 'ENOENT' }));
 });
 afterEach(async () => {
-  for (const provider of providers.splice(0)) { provider.dispose(); await promises.rm(provider.dir, { recursive: true, force: true }); }
+  const finished = providers.splice(0);
+  for (const provider of finished) { provider.dispose(); }
+  await Promise.all(childClosures.splice(0));
+  for (const provider of finished) { await promises.rm(provider.dir, { recursive: true, force: true }); }
   vi.restoreAllMocks();
 });
 

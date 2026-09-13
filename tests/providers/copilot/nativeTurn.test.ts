@@ -13,22 +13,36 @@ import type { Settings, StreamChunk } from '../../../src/types';
 useAcpNativeWorkspace();
 const fixture = path.resolve(__dirname, '../../fixtures/copilot/acp.mjs');
 const dirs: string[] = [];
+const childClosures: Promise<void>[] = [];
 const settings = (provider: string): Settings => ({ provider, mode: 'default', accessLevel: 'ask-permission', model: '', thinkingLevel: 'none', contextMode: 'auto' });
 const rootForCase = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-acp-provider-')); dirs.push(dir); return dir; };
 class ClineFixture extends ClineProvider {
   readonly dir = rootForCase(); readonly marker = path.join(this.dir, 'effect'); launches = 0; scenario = 'normal';
   constructor() { super(createMockContext()); }
   protected override _prepareAcpLaunch(context: AcpNativeLaunchContext) { return super._prepareAcpLaunch({ ...context, cwd: this.dir, env: { PATH: process.env.PATH, CLINE_API_KEY: 'fixture-only' } }); }
-  protected override _spawnCliProcess(args: string[]): ChildProcess { this.launches++; expect(args).toContain('--acp'); return spawn(process.execPath, [fixture, 'cline', this.scenario, this.marker], { cwd: this.dir, stdio: ['pipe', 'pipe', 'pipe'] }); }
+  protected override _spawnCliProcess(args: string[]): ChildProcess {
+    this.launches++; expect(args).toContain('--acp');
+    const child = spawn(process.execPath, [fixture, 'cline', this.scenario, this.marker], { cwd: this.dir, stdio: ['pipe', 'pipe', 'pipe'] });
+    childClosures.push(new Promise(resolve => child.once('close', () => resolve())));
+    return child;
+  }
 }
 class CopilotFixture extends CopilotProvider {
   readonly dir = rootForCase(); readonly marker = path.join(this.dir, 'effect'); launches = 0; scenario = 'normal';
   constructor() { super(createMockContext()); }
   protected override _prepareAcpLaunch(context: AcpNativeLaunchContext) { return super._prepareAcpLaunch({ ...context, cwd: this.dir, env: { PATH: process.env.PATH, COPILOT_PROVIDER_BASE_URL: 'http://127.0.0.1:1' } }); }
-  protected override _spawnCliProcess(args: string[]): ChildProcess { this.launches++; expect(args).toContain('--acp'); return spawn(process.execPath, [fixture, 'copilot', this.scenario, this.marker], { cwd: this.dir, stdio: ['pipe', 'pipe', 'pipe'] }); }
+  protected override _spawnCliProcess(args: string[]): ChildProcess {
+    this.launches++; expect(args).toContain('--acp');
+    const child = spawn(process.execPath, [fixture, 'copilot', this.scenario, this.marker], { cwd: this.dir, stdio: ['pipe', 'pipe', 'pipe'] });
+    childClosures.push(new Promise(resolve => child.once('close', () => resolve())));
+    return child;
+  }
 }
 async function drain(provider: ClineFixture | CopilotFixture) { const chunks: StreamChunk[] = []; for await (const chunk of provider.sendMessage('/allow-all on', [], settings(provider.id), null, undefined, 'panel')) { chunks.push(chunk); } return chunks; }
-afterEach(() => { for (const dir of dirs.splice(0)) { fs.rmSync(dir, { recursive: true, force: true }); } });
+afterEach(async () => {
+  await Promise.all(childClosures.splice(0));
+  for (const dir of dirs.splice(0)) { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 describe.each([['Cline', ClineFixture], ['Copilot', CopilotFixture]] as const)('%s public native turn', (_name, Fixture) => {
   it('enforces its verified operation boundary before any effect', async () => {
     const provider = new Fixture(); let resolve!: (allow: boolean) => void;

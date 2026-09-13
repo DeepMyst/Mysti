@@ -104,9 +104,18 @@ describe('getResolutionEnv', () => {
 
 describe('resolveCommandOnPath', () => {
   it('resolves a real command to an absolute path', async () => {
-    const resolved = await resolveCommandOnPath(process.platform === 'win32' ? 'where' : 'sh');
+    // Exercise the real locator with a known executable and a bounded search
+    // path. A runner's unrelated tool directories are not part of this contract.
+    const systemPaths = process.platform === 'win32'
+      ? [path.join(process.env.SystemRoot || 'C:\\Windows', 'System32')]
+      : ['/usr/bin', '/bin'];
+    const resolved = await resolveCommandOnPath(path.basename(process.execPath), {
+      ...process.env,
+      PATH: [path.dirname(process.execPath), ...systemPaths].join(path.delimiter),
+    });
     expect(resolved).toBeTruthy();
     expect(path.isAbsolute(resolved!)).toBe(true);
+    expect(fs.realpathSync.native(resolved!)).toBe(fs.realpathSync.native(process.execPath));
   });
 
   it('returns null for a command that does not exist', async () => {

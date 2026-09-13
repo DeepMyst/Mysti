@@ -18,6 +18,7 @@ vi.mock('../../../src/providers/qwen/QwenNativeConfig', async importOriginal => 
 useAcpNativeWorkspace();
 const fixture = path.resolve(__dirname, '../../fixtures/qwen/acpNative.mjs');
 const providers: Array<QwenCodeProvider | GeminiProvider> = []; const dirs: string[] = [];
+const childClosures: Promise<void>[] = [];
 function setup(flavor: 'qwen' | 'gemini') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-family-turn-')); dirs.push(dir);
   const marker = path.join(dir, 'marker'); const launches: string[][] = []; let scenario = 'edit';
@@ -25,7 +26,10 @@ function setup(flavor: 'qwen' | 'gemini') {
   class FixtureProvider extends Provider {
     override getCliPath(): string { return '/inert/native-cli'; }
     protected override _spawnCliProcess(args: string[]): ChildProcess {
-      launches.push(args); return spawn(process.execPath, [fixture, flavor, scenario, marker], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] });
+      launches.push(args);
+      const child = spawn(process.execPath, [fixture, flavor, scenario, marker], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] });
+      childClosures.push(new Promise(resolve => child.once('close', () => resolve())));
+      return child;
     }
   }
   const provider = new FixtureProvider(createMockContext()); providers.push(provider);
@@ -35,7 +39,11 @@ function setup(flavor: 'qwen' | 'gemini') {
   return { provider, settings, marker, launches, drain, scenario: (value: string) => { scenario = value; } };
 }
 beforeEach(() => { clearMockConfig(); validation.capture.mockClear(); });
-afterEach(() => { for (const provider of providers.splice(0)) { provider.dispose(); } for (const dir of dirs.splice(0)) { fs.rmSync(dir, { recursive: true, force: true }); } });
+afterEach(async () => {
+  for (const provider of providers.splice(0)) { provider.dispose(); }
+  await Promise.all(childClosures.splice(0));
+  for (const dir of dirs.splice(0)) { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 describe.each(['qwen', 'gemini'] as const)('%s public native turn ownership', flavor => {
   it('keeps the file absent while the captured host decides, then applies exactly once', async () => {
     const test = setup(flavor); let allow!: (value: boolean) => void; let request: NativeApprovalRequest | undefined;
