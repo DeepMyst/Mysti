@@ -17,14 +17,17 @@ results: `gates (<OS>)`, `test (<OS>)`, `lint`, `bundled runtime (Node 18.17.1)`
 `VS Code host (<OS>, <version>)` matrix. Inspect repository rules/branch protection
 separately: workflow YAML does not establish that checks are required for merge.
 The user also authorized the prepared repository rule once all 15 checks pass;
-activation remains pending that condition.
+all 15 passed on `2bbf025`, and live ruleset `23154008` now enforces them on
+`main` with strict checks and no bypass actors. Both hosted packaged-editor jobs
+passed against the same verified VSIX. See the run links and artifact checksum
+in [hosted CI acceptance](HOSTED_CI_ACCEPTANCE.md).
 
 The 2026-09-12 remote inspection confirmed that `main` is unprotected, no active
 rules apply to it, and the candidate then had no hosted runs. The only repository
 ruleset is disabled. The integration workflow now also runs on candidate pushes
 so the source editor matrix can test the exact branch commit before integration.
 The [hosted CI procedure](HOSTED_CI_ACCEPTANCE.md) records the findings, the 15
-required check names and a prepared, unapplied repository ruleset.
+required check names and the subsequently activated repository ruleset.
 
 The local minimum-editor macOS SIGTRAP predates extension activation and remains
 unresolved. A fresh isolated installed-archive attempt on 2026-09-13 reproduced

@@ -1,5 +1,36 @@
 # Hosted CI and required checks
 
+## Verified gate: 2026-09-13
+
+All 15 required checks passed on published commit
+`2bbf0253fe3ad2a0eed80d3d66a215ba39d60db8`:
+[CI run 34749280777](https://github.com/DeepMyst/Mysti/actions/runs/34749280777)
+and [integration run 34749280803](https://github.com/DeepMyst/Mysti/actions/runs/34749280803).
+Both were first-attempt push runs on that exact commit. All three platform
+unit/performance jobs and all four source editor jobs passed. The two packaged
+editor jobs passed against the same uploaded archive.
+
+With the user's authorization, ruleset
+[23154008 — Mysti required CI](https://github.com/DeepMyst/Mysti/rules/23154008)
+was activated only after those results. Independent API reads confirmed active
+enforcement, the exact 15 contexts below from app `15368`, strict status checks,
+no bypass actors and `main` reporting protected. The pre-existing disabled Copilot
+review ruleset was preserved. Two failed creation responses were followed by
+read-only checks for an existing rule before another creation attempt.
+
+The hosted `mysti-vsix` artifact (ID `10314659198`) contains `mysti-ci.vsix`:
+8,078,300 bytes; SHA-256
+`515538ae4d2a086ec9e2cc295d155e5a0dc1a7d4ca82e6c0f7a7735bb4fcfe50`.
+Its 311 ZIP entries include platform-specific dependency differences from the
+separately tested local macOS archive. Preserve each archive's own identity.
+Local evidence, the downloaded archive and live rule responses are under
+`out-test/release-evidence/CONTINUATION_20260913/`.
+
+This closes hosted CI and required-rule acceptance for the recorded candidate.
+A later commit needs its own CI evidence. Minimum macOS editor startup, actual
+provider accounts, unavailable provider modes and Desk remote execution remain
+in [external acceptance](EXTERNAL_RELEASE_ACCEPTANCE.md).
+
 ## Remote inspection: 2026-09-12
 
 Read-only GitHub API requests at 14:35 UTC established:
@@ -26,7 +57,8 @@ merge, publication or repository-rule mutation was performed by this inspection.
 
 The user authorized publishing `codex/mysti-hosted-ci-review-2026-09-12` and
 activating the prepared rule after all 15 checks pass on the exact candidate.
-The branch is published. Rule activation remains conditional on that evidence.
+The branch is published. The condition was subsequently met and activation is
+verified above.
 
 The first hosted run found an invalid job-level `runner.temp` expression; the
 value now resolves in the installed-editor step. Windows checkout line endings
@@ -45,8 +77,8 @@ workspace-alias bug in local approval paths. New-file targets also retain their
 resolved parent path for secret and instruction-file checks. CI uses two unit
 test workers and runs the Canvas timing suite separately so concurrent browsers
 do not compete with its frame-time measurements. All performance assertions
-remain blocking with their original thresholds. The next push must validate
-these changes and produce its own package and installed-editor results.
+remain blocking with their original thresholds. The successful runs recorded above validate these changes and supply the
+separate hosted package and installed-editor results.
 
 ## Candidate checks
 
@@ -85,7 +117,7 @@ passed. The optional actionlint binary could not be downloaded because the
 release-asset host failed TLS certificate verification; actionlint and hosted
 execution are not claimed as passed.
 
-## Completing this gate
+## Rechecking the gate for another candidate
 
 1. After publication is authorized, push the prepared candidate branch. Record
    its full SHA. Wait for both workflows on that exact push and inspect all 15
