@@ -1,6 +1,6 @@
 # Persistence recovery and downgrade review
 
-The 2026-09-12 candidate retains conversation and Canvas schema version 1.
+The reviewed candidate retains conversation and Canvas schema version 1.
 Unversioned supported data still migrates on load. A future schema is refused;
 do not edit its version field to force an older extension to accept it.
 
@@ -33,8 +33,16 @@ including assets, when moving a recovered artifact.
 For a downgrade, retain the exact prior VSIX and restore only a matching data
 snapshot while the editor is closed. Schema version 1 alone does not prove every
 older release preserves every optional field. Exercise the intended prior
-release against copies first. No user profile or production data was changed
-for this review, and a real-profile downgrade has not been demonstrated.
+release against copies first. The 2026-09-14 synthetic review executed the actual
+`v0.4.0` conversation manager against in-memory fixtures. Direct load/save retained
+the tested message fields but removed the container's `schemaVersion`. Importing
+an exported conversation dropped `segments`, `provider`, `model` and `checkpoint`. That
+release also accepted a synthetic future schema and rewrote it on a title change;
+it predates the current refusal guard. Do not point v0.4.0 at newer live state.
+Use its matching saved snapshot in a separate profile. These three source-level
+cases do not establish old-renderer behavior, Canvas/journal compatibility or a
+real-editor downgrade. No normal user profile or production data was read or changed,
+and real-profile downgrade acceptance remains open.
 
 The local persistence gate covers journal append/clear ordering, incomplete
 tails, symlink refusal, schema migration, newer-schema refusal, corrupt-data

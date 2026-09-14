@@ -42,7 +42,7 @@ describe('structural: every render site is sanitized', () => {
     expect(indexHtml.indexOf('{{markdownRendererJsUri}}')).toBeLessThan(indexHtml.indexOf('{{chatJsUri}}'));
   });
 
-  it('emits the renderer resource before chat with a nonce and a fresh asset URI', () => {
+  it.each(['markdownRenderer', 'messageRenderer'])('emits %s before chat with a nonce and a fresh asset URI', renderer => {
     const webview = {
       cspSource: 'vscode-resource://test',
       asWebviewUri: (uri: vscode.Uri) => ({ toString: () => 'vscode-resource://test' + uri.fsPath.replace(/\\/g, '/') }),
@@ -51,15 +51,15 @@ describe('structural: every render site is sanitized', () => {
     const dom = new JSDOM(html);
     try {
       const scripts = [...dom.window.document.querySelectorAll('script[src]')];
-      const rendererIndex = scripts.findIndex(script => script.getAttribute('src')?.includes('/markdownRenderer.js?'));
+      const rendererIndex = scripts.findIndex(script => script.getAttribute('src')?.includes('/' + renderer + '.js?'));
       const chatIndex = scripts.findIndex(script => script.getAttribute('src')?.includes('/chat.js?'));
       expect(rendererIndex).toBeGreaterThan(-1);
       expect(rendererIndex).toBeLessThan(chatIndex);
       expect(scripts[rendererIndex].getAttribute('nonce')).toHaveLength(32);
       expect(scripts[rendererIndex].getAttribute('src')).toContain(
-        '?v=' + fs.statSync(path.join(ROOT, 'media/chat/markdownRenderer.js')).mtimeMs,
+        '?v=' + fs.statSync(path.join(ROOT, 'media/chat', renderer + '.js')).mtimeMs,
       );
-      expect(html).not.toContain('{{markdownRendererJsUri}}');
+      expect(html).not.toContain('{{' + renderer + 'JsUri}}');
     } finally { dom.window.close(); }
   });
 

@@ -1,18 +1,23 @@
+import * as QUnit from 'qunit';
+import { test, timeout } from './acceptance';
 /** Real editor chat acceptance through a loopback Ollama fixture; no model account. */
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { chromium, type Browser, type Frame } from 'playwright';
+import { chromium, type Browser, type Frame, type Locator } from 'playwright';
 
 interface RequestRecord { marker: string; prompt: string; closed: boolean }
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
-describe('Mysti Chat — real VS Code host and loopback provider', function () {
-  this.timeout(90_000);
+QUnit.module('Mysti Chat — real VS Code host and loopback provider', hooks => {
+  timeout(hooks, 90_000);
   let browser: Browser;
   let endpointUrl: string;
   let sidebar: Frame;
+  let testFailed = false;
+  QUnit.testStart(() => { testFailed = false; });
+  QUnit.log(result => { if (!result.result) { testFailed = true; } });
   async function requests(): Promise<RequestRecord[]> {
     const response = await fetch(`${endpointUrl}/__fixture/requests`);
     assert.strictEqual(response.status, 200);
@@ -41,6 +46,16 @@ describe('Mysti Chat — real VS Code host and loopback provider', function () {
     return frames;
   }
 
+  async function click(frame: Frame, target: string | Locator): Promise<void> {
+    await frame.page().bringToFront();
+    // Editor notifications can cover a webview's composer, especially after
+    // opening its second panel. Use the real workbench dismiss command before
+    // the ordinary pointer action, so Playwright still checks hit targeting.
+    await vscode.commands.executeCommand('notifications.hideToasts');
+    await frame.page().locator('.notifications-toasts.visible').waitFor({ state: 'hidden' });
+    await (typeof target === 'string' ? frame.locator(target) : target).click();
+  }
+
   async function selectOllama(frame: Frame): Promise<void> {
     await frame.locator('#init-loading-overlay').waitFor({ state: 'hidden' });
     // The fresh profile selects Ollama. Wait for the host's initial state;
@@ -63,7 +78,7 @@ describe('Mysti Chat — real VS Code host and loopback provider', function () {
     // force clicks through the wizard or hide it by mutating the DOM.
     const wizard = frame.locator('#setup-wizard');
     if (await wizard.isVisible()) {
-      await wizard.locator('.wizard-skip-btn').click();
+      await click(frame, wizard.locator('.wizard-skip-btn'));
       await wizard.waitFor({ state: 'hidden' });
     }
   }
@@ -71,15 +86,14 @@ describe('Mysti Chat — real VS Code host and loopback provider', function () {
   async function send(frame: Frame, marker: string): Promise<RequestRecord> {
     // A native click focuses the actual editor webview before composing. A
     // programmatic fill alone can leave macOS's first click as activation only.
-    await frame.page().bringToFront();
-    await frame.locator('#message-input').click();
+    await click(frame, '#message-input');
     await frame.locator('#message-input').fill(`MYSTI_FIXTURE:${marker}`);
-    await frame.locator('#send-btn').click();
+    await click(frame, '#send-btn');
     await until(async () => (await requests()).some(request => request.marker === marker), `No provider request for ${marker}`);
     return (await requests()).find(request => request.marker === marker)!;
   }
 
-  before(async () => {
+  hooks.before(async () => {
     const profile = process.env.MYSTI_TEST_USER_DATA_DIR;
     assert.ok(profile, 'chat acceptance requires the fresh profile created by .vscode-test.mjs');
     endpointUrl = process.env.MYSTI_TEST_OLLAMA_ENDPOINT!;
@@ -104,45 +118,74 @@ describe('Mysti Chat — real VS Code host and loopback provider', function () {
     await selectOllama(sidebar);
   });
 
-  afterEach(async function () {
-    if (this.currentTest?.state !== 'failed' || !sidebar) { return; }
-    console.log('[Mysti chat acceptance failure]', await sidebar.evaluate(() => ({
-      trace: (window as unknown as { __mystiAcceptanceTrace?: unknown[] }).__mystiAcceptanceTrace?.slice(-30),
-      agent: document.getElementById('agent-name')?.textContent,
-      messages: document.getElementById('messages')?.textContent?.slice(-1500),
-      input: (document.getElementById('message-input') as HTMLTextAreaElement)?.value,
-    })));
+  hooks.afterEach(async function () {
+    try {
+      if (testFailed && sidebar && !sidebar.isDetached()) {
+        console.log('[Mysti chat acceptance failure]', await sidebar.evaluate(() => ({
+          trace: (window as unknown as { __mystiAcceptanceTrace?: unknown[] }).__mystiAcceptanceTrace?.slice(-30),
+          agent: document.getElementById('agent-name')?.textContent,
+          messages: document.getElementById('messages')?.textContent?.slice(-1500),
+          input: (document.getElementById('message-input') as HTMLTextAreaElement)?.value,
+        })));
+      }
+    } finally {
+      if (browser && endpointUrl) {
+        const frames = await chatFrames();
+        try {
+          if (testFailed) {
+            for (const frame of frames) {
+              if (await frame.locator('#stop-btn').isVisible()) { await click(frame, '#stop-btn'); }
+            }
+          }
+          // Successful cases must settle themselves; do not let fixture reset
+          // turn an unfinished request into an apparently successful test.
+          await until(async () => (await requests()).every(request => request.closed), 'Chat case left a provider connection open');
+          for (const frame of frames) {
+            await until(async () => await frame.locator('#send-btn').isVisible() && await frame.locator('#send-btn').isEnabled(), 'Chat case left its composer busy');
+          }
+        } finally {
+          // Even when a failed pointer action prevents Stop, release every
+          // held fixture response so that the next case cannot inherit it.
+          const response = await fetch(`${endpointUrl}/__fixture/reset`, { method: 'POST' });
+          assert.strictEqual(response.status, 200);
+          for (const frame of frames) {
+            if (frame.isDetached()) { continue; }
+            await until(async () => await frame.locator('#send-btn').isVisible() && await frame.locator('#send-btn').isEnabled(), 'Fixture cleanup did not release the composer');
+          }
+        }
+      }
+    }
   });
 
-  after(async () => {
+  hooks.after(async () => {
     if (endpointUrl) { await fetch(`${endpointUrl}/__fixture/reset`, { method: 'POST' }); }
     await browser?.close();
   });
 
-  it('streams a normal response through the chat webview', async () => {
+  test('streams a normal response through the chat webview', async () => {
     await send(sidebar, 'first');
     await until(async () => (await sidebar.locator('#messages').innerText()).includes('Fixture answer first.'), 'Streamed answer was not rendered');
     await until(async () => await sidebar.locator('#send-btn').isEnabled(), 'The completed turn did not release Send');
   });
 
-  it('replays history and Stop closes the active HTTP stream', async () => {
+  test('replays history and Stop closes the active HTTP stream', async () => {
     const request = await send(sidebar, 'hold-stop');
     assert.ok(request.prompt.includes('Fixture answer first.'), 'prior assistant history was omitted');
     await until(async () => (await sidebar.locator('#messages').innerText()).includes('Fixture answer hold-stop.'), 'Partial answer was not rendered');
     assert.strictEqual(await isClosed(request.marker), false);
-    await sidebar.locator('#stop-btn').click();
+    await click(sidebar, '#stop-btn');
     await until(() => isClosed(request.marker), 'Stop left the provider connection open');
   });
 
-  it('restores a saved conversation through the history picker', async () => {
-    await sidebar.locator('#new-conversation-btn').click();
+  test('restores a saved conversation through the history picker', async () => {
+    await click(sidebar, '#new-conversation-btn');
     await until(async () => !(await sidebar.locator('#messages').innerText()).includes('Fixture answer first.'), 'New conversation retained the old timeline');
-    await sidebar.locator('#history-btn').click();
-    await sidebar.locator('.history-item').filter({ hasText: 'MYSTI_FIXTURE:first' }).click();
+    await click(sidebar, '#history-btn');
+    await click(sidebar, sidebar.locator('.history-item').filter({ hasText: 'MYSTI_FIXTURE:first' }));
     await until(async () => (await sidebar.locator('#messages').innerText()).includes('Fixture answer first.'), 'History did not restore the saved answer');
   });
 
-  it('keeps two panels independent when one stream is stopped', async () => {
+  test('keeps two panels independent when one stream is stopped', async () => {
     const first = await send(sidebar, 'hold-sidebar');
     await vscode.commands.executeCommand('mysti.openInNewTab');
     await until(async () => (await chatFrames()).some(frame => frame !== sidebar), 'Second chat panel did not open');
@@ -151,14 +194,14 @@ describe('Mysti Chat — real VS Code host and loopback provider', function () {
     const second = await send(tab, 'hold-tab');
     assert.strictEqual(await isClosed(first.marker), false, 'Opening another panel cancelled the first');
     assert.strictEqual(await isClosed(second.marker), false);
-    await tab.locator('#stop-btn').click();
+    await click(tab, '#stop-btn');
     await until(() => isClosed(second.marker), 'Second panel Stop left its stream open');
     assert.strictEqual(await isClosed(first.marker), false, 'Second panel Stop cancelled the first panel');
-    await sidebar.locator('#stop-btn').click();
+    await click(sidebar, '#stop-btn');
     await until(() => isClosed(first.marker), 'First panel Stop left its stream open');
   });
 
-  it('recovers from a provider error without leaving the composer locked', async () => {
+  test('recovers from a provider error without leaving the composer locked', async () => {
     await send(sidebar, 'service-error');
     await until(async () => (await sidebar.locator('#messages').innerText()).includes('Fixture service unavailable'), 'Provider failure was not shown');
     await until(async () => await sidebar.locator('#send-btn').isVisible(), 'Provider failure left Send hidden');

@@ -1,13 +1,15 @@
+import * as QUnit from 'qunit';
+import { test, timeout } from './acceptance';
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fork } from 'child_process';
 import * as vscode from 'vscode';
 
-describe('Mysti Desk — packaged native runtime in the actual editor', function () {
-  this.timeout(15_000);
+QUnit.module('Mysti Desk — packaged native runtime in the actual editor', hooks => {
+  timeout(hooks, 15_000);
 
-  it('registers cross-machine commands while relay access defaults to disabled', async () => {
+  test('registers cross-machine commands while relay access defaults to disabled', async () => {
     const extension = vscode.extensions.getExtension('DeepMyst.mysti')!;
     await extension.activate();
     const commands = await vscode.commands.getCommands(true);
@@ -17,15 +19,12 @@ describe('Mysti Desk — packaged native runtime in the actual editor', function
     assert.strictEqual(vscode.workspace.getConfiguration('mysti').get('desk.relayUrl'), '');
   });
 
-  it('starts the exact packaged worker or refuses the minimum runtime before native access', async function () {
+  const nativePresent = fs.existsSync(path.join(vscode.extensions.getExtension('DeepMyst.mysti')!.extensionUri.fsPath, 'resources/desk-native/manifest.json'));
+  const nativeTest = nativePresent || process.env.MYSTI_TEST_DESK_NATIVE === '1' ? test : QUnit.skip;
+  nativeTest('starts the exact packaged worker or refuses the minimum runtime before native access', async function () {
     const extension = vscode.extensions.getExtension('DeepMyst.mysti')!;
     const root = extension.extensionUri.fsPath;
-    // The universal VSIX intentionally has no native runtime. Platform archive
-    // jobs must supply the binary; missing it there is an error, not a skip.
-    if (!fs.existsSync(path.join(root, 'resources/desk-native/manifest.json'))) {
-      assert.notStrictEqual(process.env.MYSTI_TEST_DESK_NATIVE, '1', 'The platform archive is missing its native runtime');
-      this.skip(); return;
-    }
+    assert.ok(nativePresent, 'The platform archive is missing its native runtime');
     const env: NodeJS.ProcessEnv = { ELECTRON_RUN_AS_NODE: '1' };
     for (const key of ['SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR']) {
       if (process.env[key]) { env[key] = process.env[key]; }

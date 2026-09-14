@@ -27,10 +27,12 @@ import { canvasDirectiveToToolCall, isCanvasDirectiveError } from '../canvas/can
 import { CanvasBridge, CANVAS_PENDING_RUN } from '../canvas/CanvasBridge';
 import type { CanvasBridgeSession } from '../canvas/CanvasBridge';
 import { CanvasHistory } from '../canvas/CanvasHistory';
-import { CanvasLiveness, type LivenessJobHandle } from '../canvas/CanvasLiveness';
+import { CanvasLiveness } from '../canvas/CanvasLiveness';
+import { CanvasTurnJobs } from '../canvas/CanvasTurnJobs';
+import { CanvasMcpSession } from '../canvas/CanvasMcpSession';
 import { mintViewToken } from '../canvas/protocol';
 import type { CanvasHostMessage, CapChip } from '../canvas/protocol';
-import { coordinatorToolSchemas, modelSupportsToolCalls, toolCallToDirective, normalizeCanvasToolName, canvasToolRefusal, sanitizeMcpInputSchema, searchMcpTools, type McpToolInfo } from '../services/coordinatorTools';
+import { coordinatorToolSchemas, modelSupportsToolCalls, normalizeCanvasToolName, canvasToolRefusal, sanitizeMcpInputSchema, type McpToolInfo } from '../services/coordinatorTools';
 import { SkillIndex, type IndexedArtifact } from '../services/SkillIndex';
 import { SkillTelemetry, type RunOutcome } from '../services/SkillTelemetry';
 import { SkillStaging } from '../services/SkillStaging';
@@ -43,11 +45,10 @@ import { MystiSandbox } from '../services/MystiSandbox';
 import { validateCapabilityManifest, undeclaredNetworkUse } from '../services/CapabilityManifest';
 import { isSafeAgentId } from '../managers/agentMarkdown';
 import { SKILL_STAGING_DIR } from '../services/MystiLocalTools';
-import { parseToolArgs } from '../utils/toolCallAccumulator';
 import { CoordinatorTurnRunner } from '../coordinator/CoordinatorTurnRunner';
-import { CoordinatorRunBudget, resolveCoordinatorRunLimits, READ_ONLY_BATCH_CONCURRENCY } from '../coordinator/CoordinatorRunBudget';
-import { runBounded } from '../utils/boundedConcurrency';
-import { selectToolBatch } from '../utils/toolBatching';
+import { CoordinatorToolDispatcher } from '../coordinator/CoordinatorToolDispatcher';
+import { CoordinatorLocalExecGate } from '../coordinator/CoordinatorLocalExecGate';
+import { CoordinatorRunBudget, resolveCoordinatorRunLimits } from '../coordinator/CoordinatorRunBudget';
 import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
 import { MystiLocalTools } from '../services/MystiLocalTools';
 import { MystiMemoryStore } from '../services/MystiMemoryStore';
@@ -350,35 +351,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _canvasCaps: CapChip[] = [];
   /** Coordinator runs currently able to receive canvas steering, per panel. */
   private readonly _canvasSteeringRuns = new Set<string>();
-  /**
-   * Panels whose chat turn is streaming right now — the only window in which a
-   * canvas turn job may be opened, so a late/detached write can never leave a
-   * ghost artboard and a spinner behind with nothing to close them.
-   */
-  private readonly _canvasTurnPanels = new Set<string>();
-  /**
-   * One liveness job per streaming chat turn that has actually touched the
-   * canvas, keyed by panel.
-   *
-   * `openJob` used to have exactly ONE production call site — inside
-   * `_runMystiCanvasTool`, the in-process coordinator lane. Every other canvas
-   * write path (the fenced ```canvas-op``` channel that serves 13 CLI backends,
-   * and the MCP lane Claude Code uses) reached the executor without opening a
-   * job, so the webview's job map stayed empty: `agentStatusModel` returned
-   * `idle`/`busy:false`, and the ghost artboard, the elapsed timer and the Stop
-   * button were inert while artboards changed under the human's eyes.
-   *
-   * Bracketing the TURN rather than each op is deliberate. A submit is
-   * synchronous, so an open/close around one would emit `started` and `done` in
-   * the same tick and show nothing; what the human is asking is "is the agent
-   * still working", and the honest answer on a CLI lane is "its turn is still
-   * streaming" — which is also the only thing Stop can truthfully act on.
-   */
-  private readonly _canvasTurnJobs = new Map<string, LivenessJobHandle>();
+  /** Owns the streaming window and liveness jobs for CLI/MCP canvas edits. */
+  private readonly _canvasTurns = new CanvasTurnJobs({
+    openJob: spec => this._canvasLiveness?.openJob(spec),
+    cancelPanel: panelId => {
+      this._cancelledPanels.add(panelId);
+      this._providerManager.cancelRequest(panelId);
+      this._postToPanel(panelId, { type: 'requestCancelled' });
+    },
+  });
   // Live MCP path: in-extension HTTP server + per-CLI session registration.
   private _canvasToolServer: CanvasToolServer | null = null;
-  private _canvasMcpHttp: CanvasMcpHttpServer | null = null;
   private readonly _canvasLinker = new CanvasSessionLinker();
+  private readonly _canvasMcpSession = new CanvasMcpSession({
+    artifactId: () => this._canvasArtifact?.id ?? null,
+    originPanel: () => this._canvasChatOrigin,
+    createServer: artifactId => this._canvasToolServer ? this._createCanvasMcpServer(artifactId) : null,
+    link: (panelId, endpoint) => {
+      const config = this._canvasLinker.link(panelId, endpoint);
+      this._providerManager.setCanvasMcpConfig(panelId, config);
+    },
+    unlink: panelId => {
+      this._canvasLinker.unlink(panelId);
+      this._providerManager.setCanvasMcpConfig(panelId, null);
+    },
+    onError: error => console.warn('[Mysti] Canvas MCP session failed:', error),
+  });
   private _canvasSaveTimer: NodeJS.Timeout | null = null;
   // Visual test dashboard tracking
   private _vtDashboardPanelId: string | null = null;
@@ -4719,7 +4717,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Plan 22 §3.4 tier 1 — the window in which this turn may open a canvas
       // liveness job. Opened here and closed at BOTH exits of the stream loop,
       // so a job can never outlive the turn that owns it.
-      this._canvasTurnPanels.add(panelId);
+      this._canvasTurns.begin(panelId);
       // Normalized (see _normalizeTurnUsage). `null` means the backend could not
       // measure this turn's CONTEXT FILL — never treat it as a measured zero.
       let lastUsage: UsageStats | null = null;
@@ -5341,7 +5339,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             // Mark session idle after response completes
             this._lifecycleManager.markIdle(panelId);
-            this._endCanvasTurn(panelId);
+            this._canvasTurns.end(panelId);
             break;
           }
         }
@@ -5350,11 +5348,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // its generator, a cancel between chunks). Closing here as well is what
       // makes "a ghost can only disappear via a terminal event" true for this
       // lane too — an unclosed job is a spinner that outlives its work.
-      this._endCanvasTurn(panelId);
+      this._canvasTurns.end(panelId);
     } catch (error) {
       this._lifecycleManager.markIdle(panelId);
       const rawErr = error instanceof Error ? error.message : String(error);
-      this._endCanvasTurn(panelId, rawErr);
+      this._canvasTurns.end(panelId, rawErr);
       // A spawn ENOENT lands here, not on the stream — the same card applies.
       if (!this._postProviderFailure(panelId, settings.provider, rawErr)) {
         this._postToPanel(panelId, {
@@ -8301,7 +8299,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // work tracked in Plan 05 / plans/18 Wave 4 log, not a hook one-liner;
       // without the hook the tool is simply not advertised to the model.
       this._canvasToolServer = new CanvasToolServer({ resolveContext: () => this._canvasToolContext({ transport: 'mcp' }), mediaService });
-      await this._linkCanvasMcpServer(artifact.id);
+      await this._canvasMcpSession.relink(artifact.id);
     })();
 
     // (webview html is set by the artifact-load block above once the project's
@@ -8329,15 +8327,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     panel.onDidDispose(() => {
       this._canvasBrowserManager.close(panelId).catch(() => {});
       this._canvasDevServerManager.stop(panelId).catch(() => {});
-      this._canvasMcpHttp?.stop().catch(() => {});
+      void this._canvasMcpSession.close();
       // Flush any pending save so the design survives the panel closing.
       if (this._canvasSaveTimer) { clearTimeout(this._canvasSaveTimer); this._canvasSaveTimer = null; }
       if (this._canvasStore && this._canvasArtifact) {
         this._canvasStore.save(this._canvasArtifact).catch(() => {});
-      }
-      if (this._canvasChatOrigin) {
-        this._canvasLinker.unlink(this._canvasChatOrigin);
-        this._providerManager.setCanvasMcpConfig(this._canvasChatOrigin, null);
       }
       this._canvasBridge?.dispose();
       this._canvasBridge = null;
@@ -8346,7 +8340,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Handles minted by the dead liveness instance: drop them so a turn that
       // is still streaming does not later close a job that no longer exists,
       // and so a re-opened canvas starts from an empty map.
-      this._canvasTurnJobs.clear();
+      this._canvasTurns.clearCanvas();
       this._canvasHistory = null;
       // The token dies with the view: a message from a webview that outlived
       // its panel authenticates against an empty expected token, and
@@ -8363,7 +8357,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Every fenced-lane key dies with the canvas it was minted against.
       this._canvasOpNonces.clear();
       this._canvasToolServer = null;
-      this._canvasMcpHttp = null;
       this._panelStates.delete(panelId);
       // Plan 27 §21.6c #11: release the per-open context key, as the chat tab does.
       this._contextManager.clearPanelContext(panelId);
@@ -8546,69 +8539,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // otherwise-non-gating mode) when a model is pinned — otherwise every shell
     // command is confirmed, even in full access (Plan 19 §3.4 layer 6).
     const modelPinned = !!(cfg.get<string>('mysti.coordinatorModel', '') || '').trim();
+    const gate = new CoordinatorLocalExecGate(modelPinned, {
+      classifyAction: kind => this._classifyToolAction(kind),
+      classifyRisk: action => PermissionManager.classifyRisk(action),
+      shouldGate: kind => this._shouldGateToolUse(settings, kind),
+      toolDetails: tool => this._permissionToolDetails(tool),
+      request: request => this.requestPermissionInline(
+        request.action, request.title, request.description, request.details,
+        panelId, toolId, ownerKey, request.forceInteractive,
+      ),
+      confirmRemoteEffect: command => this._confirmRemoteEffectCommand(command),
+    });
     const ctx: LocalExecContext = {
       enabled: this._mystiLocalExecEnabled(settings),
       workspaceTrusted: vscode.workspace.isTrusted,
       bashNetwork: cfg.get<string>('mysti.bashNetwork', 'off') === 'on',
       bashTimeoutMs: undefined,
-      gate: async (info) => {
-        const action = this._classifyToolAction(info.kind);
-        const riskLevel = PermissionManager.classifyRisk(action);
-        const modeGates = this._shouldGateToolUse(settings, info.kind);
-        if (info.kind === 'bash') {
-          // Remote-effect / deploy (push, publish, deploy, ssh…) can't be undone
-          // by a checkpoint → a MODAL, default-DENY confirmation (Phase 3),
-          // always, never auto-run.
-          if (info.remoteEffect) {
-            return this._confirmRemoteEffectCommand(info.command || '');
-          }
-          // Auto-run (no card) ONLY for a genuinely safe, NON-compound, SANDBOXED
-          // command, and only when the mode wouldn't gate AND a capable model is
-          // pinned. Everything else ALWAYS shows an interactive card — which
-          // autonomous-aggressive cannot silently approve (forceInteractive).
-          const mayAutoRun = !modeGates && modelPinned && !!info.safe && !info.compound && !!info.sandboxed;
-          if (mayAutoRun) { return true; }
-          const netDesc = info.network ? 'NETWORK ENABLED (can reach the internet)' : 'no network';
-          return this.requestPermissionInline(
-            'bash-command',
-            'Mysti wants to run a command',
-            info.sandboxed
-              ? `Mysti (coordinator) will run this command in a sandbox (${netDesc}, writes limited to the workspace):`
-              : 'Mysti (coordinator) will run this UNSANDBOXED read-only command (no OS sandbox on this platform):',
-            { command: info.command, workingDirectory: '.', riskLevel },
-            panelId, toolId, ownerKey, /* forceInteractive */ true,
-          );
-        }
-        // write/edit/patch: honor the access the user already granted — modes
-        // that don't gate this op (accept-edits / full-access) approve without a card.
-        if (!modeGates) { return true; }
-        if (info.kind === 'patch') {
-          return this.requestPermissionInline(
-            'multi-file-edit',
-            'Mysti wants to apply a multi-file patch',
-            `Mysti (coordinator) will change ${info.files?.length ?? 0} file(s): ${(info.files || []).slice(0, 8).join(', ')}${(info.files?.length || 0) > 8 ? '…' : ''}`,
-            { files: (info.files || []).map(f => ({ path: f, action: 'edit' as const })), linesAdded: info.linesAdded, linesRemoved: info.linesRemoved, riskLevel },
-            panelId, toolId, ownerKey,
-          );
-        }
-        const verb = info.kind === 'write' ? (info.exists ? 'overwrite' : 'create') : 'edit';
-        // Plan 27 §21.6c #3: the card draws its diff from `toolInput`, and the
-        // coordinator's own write/edit used to post only line COUNTS — the
-        // user approved "edit 3 lines" blind. Shape the gate info as the
-        // Write/Edit tool call a CLI backend would have made and run it
-        // through the SAME size-capped path (H-1): a 64 KB budget, long
-        // strings truncated with a marker, the object never half-sent.
-        const toolCall = info.kind === 'write'
-          ? { name: 'Write', input: { file_path: info.relPath, content: info.content } }
-          : { name: 'Edit', input: { file_path: info.relPath, old_string: info.oldString, new_string: info.newString, ...(info.replaceAll ? { replace_all: true } : {}) } };
-        return this.requestPermissionInline(
-          action,
-          `Mysti wants to ${verb} a file`,
-          `Mysti (coordinator) will ${verb} ${info.relPath}`,
-          { filePath: info.relPath, fileName: (info.relPath || '').split('/').pop(), linesAdded: info.linesAdded, linesRemoved: info.linesRemoved, riskLevel, ...this._permissionToolDetails(toolCall) },
-          panelId, toolId, ownerKey,
-        );
-      },
+      gate: info => gate.check(info),
       checkpoint: async (label) => { try { return !!(await this._checkpointManager.snapshot(label)); } catch { return false; } },
     };
     try {
@@ -9678,11 +9625,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // with its base prompt.
       console.warn('[Mysti] coordinator: agent context failed, continuing without it:', error);
     }
-    // Per-RUN connect-card dedupe (review round-7 #8/#10): a run-LOCAL set, not
-    // the shared instance field — so a background job dedupes correctly and one
-    // run can never suppress or reset another concurrent run's connect cards.
-    const connectSeen = new Set<string>();
-
     // Plan 19 P4 (native tool-calling): offer OpenAI-style function `tools`
     // ALONGSIDE the text-directive protocol, but ONLY when the resolved
     // coordinator model is on the conservative allowlist. Unknown/free models
@@ -9748,34 +9690,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // read-only. Off by default; one review per run (it costs a delegation).
     const crossReviewMode = planMode ? 'off' : vscode.workspace.getConfiguration('mysti').get<string>('mysti.crossReview', 'off');
     let crossReviewRuns = 0;
-    // P2.5: bound how many facts the model can persist per run (anti-spam).
-    let rememberCount = 0;
     // Per-run cache of the workspace scan (build/test commands) — computed at
     // most once, reused by the verification step (review nit #4).
     let scanCache: { testCommands?: string[]; buildCommands?: string[] } | null | undefined;
-    // ── Plan 24 Phase 3 merge detector (RECORD-ONLY; never blocks a call).
-    // `seenToolSigs` catches the model re-reading what it already read this
-    // run; the lone-read tracking catches two consecutive turns that each
-    // carried exactly one read-only call — those two round-trips could have
-    // been one had the model emitted both together. Both feed the Boost ledger
-    // so the reducer can be tuned against real traffic instead of guesses.
-    const seenToolSigs = new Set<string>();
-    let redundantToolCalls = 0;
-    let mergeableRoundTrips = 0;
-    let prevTurnWasLoneRead = false;
-    const noteToolSig = (kind: string, input: unknown): void => {
-      let sig: string;
-      try { sig = `${kind}:${JSON.stringify(input)}`; } catch { return; }
-      if (seenToolSigs.has(sig)) { redundantToolCalls++; } else { seenToolSigs.add(sig); }
-    };
     let naturalEnd = false;
     let exhausted = false;
-    // Plan 20 Phase 1 telemetry: did the model consult the catalog, and did that
-    // correlate with the run finishing? Artifact ids only — never queries or
-    // content — and recorded only when the catalog was actually available.
-    // Declared out here so the `finally` can still see them.
-    let skillSearches = 0;
-    const skillViewed: string[] = [];
     // Plan 19: EXECUTION kinds (write/edit/bash/patch) are added to the scanner
     // only when local execution is enabled; the MCP tool kind only when a live
     // toolset handshake succeeded; the connect kind only when DeepMyst is wired.
@@ -9798,7 +9717,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // resolves a binding via CanvasWorkspace and refuses when unbound.
       ...MYSTI_CANVAS_KINDS,
     ];
-    let prevWasLoneRead = false;
+    const toolDispatcher = new CoordinatorToolDispatcher(budget, {
+      isCancelled,
+      nextToolId: prefix => `mysti-${prefix}-${runId}-${delegId++}`,
+      output: runOutput,
+      fenceResult: (kind, result) => this._fenceLocalToolResult(kind, result, nonce, delegateNonce),
+      batchReadOnlyPrefix: () => this._boostManager?.batchReadOnlyPrefix() ?? false,
+      readLocal: directive => this._runMystiLocalTool(directive),
+      executeLocal: (directive, toolId) => this._runMystiLocalExec(directive, settings, panelId, toolId, cancelKey),
+      remember: fact => this._memory().remember(fact, 'model'),
+      connect: service => { void this._emitConnectionCard(panelId, service); },
+      publish: id => this._runMystiPublish(id, panelId),
+      runSkill: directive => this._runMystiSkillRun(directive, settings, panelId),
+      lookupSkill: directive => this._runMystiSkillLookup(directive),
+      executeMcp: (directive, toolId, description) => this._runMystiMcpTool(directive, mcpToolset!.client, panelId, toolId, cancelKey, description),
+      noteMcpUsage: tool => this._bumpMcpUsage(tool),
+      executeVisual: (directive, toolId) => this._runMystiVisual(directive, settings, panelId, toolId, cancelKey),
+      noteVisualResult: res => this._postToPanel(panelId, {
+        type: 'visualTestMiniStatus',
+        payload: res.ok
+          ? { type: 'visual_test_screenshot', status: 'capturing', message: `Looked at ${res.observation?.url || 'the app'}` }
+          : { type: 'visual_test_error', status: 'failed', message: res.output.slice(0, 200) },
+      } as never),
+      canvasToolLabel: tool => this._canvasToolLabel(tool),
+      executeCanvas: (directive, toolId) => this._runMystiCanvasTool(directive, panelId, runId, toolId),
+    }, mcpToolset?.tools);
     const turnRunner = new CoordinatorTurnRunner({
       nonce: delegateNonce, scanKinds, maxTurns: gov.maxTurns,
       reasoningEffort: effort, tools: coordTools,
@@ -9814,8 +9757,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       output: runOutput,
       onTurnText: text => this._announceRefusedCapability(panelId, text, delegateNonce, scanKinds),
       beforeTurn: () => {
-        prevWasLoneRead = prevTurnWasLoneRead;
-        prevTurnWasLoneRead = false;
+        toolDispatcher.beginTurn();
         // Human steering remains host-fenced data, drained before each stream.
         const steering = this._drainCanvasSteering(runId);
         if (steering) {
@@ -9844,414 +9786,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         const turnText = turn.text;
-        let directive = turn.directive;
-        const turnToolCalls = turn.toolCalls;
-
-        // ── Native tool-calling (Plan 19 P4): a capable model may drive the
-        // SAME op set through OpenAI-style function calls instead of text tags.
-        // Only reachable when coordTools was offered (allowlisted model). The
-        // call is converted to a MystiDirective so the EXACT gated dispatch below
-        // runs it — a native call is never more trusted than a text directive.
-        // Precedence: a text directive the scanner already captured wins
-        // (first-seen), so this fires only when the scanner found none. One call
-        // per turn: a model that emitted several has the extras dropped and
-        // re-issues them next turn (tools are offered every turn).
-        if (!directive && turnToolCalls && turnToolCalls.length) {
-          // Convert every call up front so we can choose batch vs single.
-          const convs = turnToolCalls.map(c => ({ name: c.name, conv: toolCallToDirective(c.name, parseToolArgs(c.arguments)) }));
-
-          // ── Phase 5: bounded-parallel READ-ONLY batch. A capable model often
-          // emits several tool_calls at once (parallel tool-calling). When EVERY
-          // call is a read-only local tool (read/ls/grep/diag — no gate, no write
-          // race, no interactive-card collision), run them together (cap 3) and
-          // feed ALL results back in ONE turn instead of dropping the extras. Any
-          // mutating/gated call (or a lone call) falls through to the serial
-          // one-at-a-time path below — every write/exec/delegate stays gated.
-          // ── Plan 24 Phase 3: decide how much of this batch runs together.
-          // The stock rule is all-or-nothing, so ONE mutating call sends every
-          // read in the batch back for another round-trip. With Boost on the
-          // leading read-only RUN goes now and the model re-issues from the
-          // first mutating call onward.
-          //
-          // Deliberately the PREFIX and not the whole batch: a mutating call
-          // needs its own permission card, and cards are interactive and
-          // ordered, so batching them would mean racing gates. The prefix is
-          // read-only by construction, so this widens throughput without
-          // widening authority — Boost never raises what may run.
-          const batchDecision = selectToolBatch(
-            convs.map(c => ('error' in c.conv ? null : (c.conv as MystiDirective).kind)),
-            (k) => this._isReadOnlyLocalKind(k as MystiDirective['kind']),
-            this._boostManager?.batchReadOnlyPrefix() ?? false,
-          );
-          if (batchDecision.batchSize > 0) {
-            const batchConvs = convs.slice(0, batchDecision.batchSize);
-            if (budget.remaining('localTools') === 0) {
-              messages.push({ role: 'assistant', content: turnText });
-              messages.push({ role: 'user', content: `Local tool budget exhausted (${gov.maxLocalTools} calls). Answer with what you have, or delegate the remaining investigation to an agent.` });
-              continue;
-            }
-            const remaining = budget.remaining('localTools');
-            const runList = batchConvs.slice(0, remaining).map(c => c.conv as Extract<MystiDirective, { kind: 'read' | 'ls' | 'grep' | 'diag' }>);
-            budget.consume('localTools', runList.length);
-            // Post every card first (all show as running), then run bounded-
-            // parallel, then resolve + fence IN ORDER for deterministic replay.
-            const jobs = runList.map(d => {
-              const toolId = `mysti-local-${runId}-${delegId++}`;
-              const input = this._localToolCardInput(d);
-              runOutput.postToolUse({ id: toolId, name: d.kind, input });
-              return { d, toolId, input };
-            });
-            // Honor Stop per-tool (matching the serial path): once cancelled, the
-            // remaining jobs short-circuit instead of scanning the repo — a big
-            // parallel-grep batch must not keep running for seconds after Stop.
-            const outcomes = await runBounded(jobs, READ_ONLY_BATCH_CONCURRENCY, async (j) =>
-              isCancelled()
-                ? { j, res: { ok: false, output: '(cancelled by user)' } }
-                : { j, res: await this._runMystiLocalTool(j.d) });
-            const fenced: string[] = [];
-            for (const { j, res } of outcomes) {
-              runOutput.postToolResult({ id: j.toolId, name: j.d.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
-              runOutput.recordTool(j.toolId, j.d.kind, j.input, res.output, !res.ok);
-              noteToolSig(j.d.kind, j.input);
-              fenced.push(this._fenceLocalToolResult(j.d.kind, res.output, nonce, delegateNonce));
-            }
-            if (isCancelled()) { break; }
-            // Two different reasons for an un-run call, and conflating them
-            // tells the model the wrong thing to do next: a budget stop means
-            // "stop asking", a deferred mutating remainder means "reissue it".
-            const budgetTrimmed = batchConvs.length - runList.length;
-            const deferred = convs.length - batchConvs.length;
-            const notes: string[] = [];
-            if (budgetTrimmed > 0) {
-              notes.push(`${budgetTrimmed} further tool call(s) were not run — the local tool budget was reached. Ask again if still needed.`);
-            }
-            if (deferred > 0) {
-              notes.push(`${deferred} further tool call(s) were not run because they are not read-only; reissue them now and they will be run one at a time.`);
-            }
-            const trimNote = notes.length ? `\n\n(${notes.join(' ')})` : '';
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: fenced.join('\n\n') + trimNote });
-            continue;
-          }
-
-          // Single-call path (unchanged): first call this turn; a model that
-          // emitted extras (or a mutating mix) re-issues the rest next turn.
-          const first = convs[0];
-          if ('error' in first.conv) {
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: `Tool call error: ${first.conv.error} Reissue with corrected arguments, or answer directly.` });
-            continue;
-          }
-          directive = first.conv;
-        }
-
-        // ── Remember (P2.5): persist a durable cross-backend project fact. No
-        // CLI, no model round-trip beyond the ack; bounded per run so it can't
-        // be spammed. The fact is UNTRUSTED model output — stored as source
-        // 'model' and only ever re-injected inside a nonce fence.
-        if (directive && directive.kind === 'remember') {
-          const toolId = `mysti-mem-${runId}-${delegId++}`;
-          runOutput.postToolUse({ id: toolId, name: 'remember', input: { fact: directive.fact } });
-          if (rememberCount >= 8) {
-            runOutput.postToolResult({ id: toolId, name: 'remember', output: '(memory budget reached this run)', status: 'failed' });
-            runOutput.recordTool(toolId, 'remember', { fact: directive.fact }, '(memory budget reached this run)', true);
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: 'Memory budget reached this run — continue with the request.' });
-            continue;
-          }
-          rememberCount++;
-          this._memory().remember(directive.fact, 'model');
-          const out = `Remembered: ${directive.fact.slice(0, 140)}`;
-          runOutput.postToolResult({ id: toolId, name: 'remember', output: out, status: 'completed' });
-          runOutput.recordTool(toolId, 'remember', { fact: directive.fact }, out, false);
-          messages.push({ role: 'assistant', content: turnText });
-          messages.push({ role: 'user', content: 'Noted for future sessions. Continue with the user\'s request.' });
-          continue;
-        }
-
-        // ── Local read-only tool (read/ls/grep/diag): in-process, no CLI spawn,
-        // separate budget, never charged against delegations. Plan 17 P0.1.
-        if (directive && (directive.kind === 'read' || directive.kind === 'ls' || directive.kind === 'grep' || directive.kind === 'diag')) {
-          const toolId = `mysti-local-${runId}-${delegId++}`;
-          const input = this._localToolCardInput(directive);
-          if (!budget.consume('localTools')) {
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: `Local tool budget exhausted (${gov.maxLocalTools} calls). Answer with what you have, or delegate the remaining investigation to an agent.` });
-            continue;
-          }
-          runOutput.postToolUse({ id: toolId, name: directive.kind, input });
-          const res = await this._runMystiLocalTool(directive);
-          // Resolve the card either way — Stop must not leave an eternal spinner
-          // (review [5]); the result already exists, so showing it is strictly
-          // better than a stuck 'running' card that vanishes on reload.
-          runOutput.postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
-          runOutput.recordTool(toolId, directive.kind, input, res.output, !res.ok);
-          noteToolSig(directive.kind, input);
-          // Exactly one read-only call this turn: if the PREVIOUS turn was the
-          // same shape, those two round-trips could have been one.
-          if (prevWasLoneRead) { mergeableRoundTrips++; }
-          prevTurnWasLoneRead = true;
-          if (isCancelled()) { break; }
-          messages.push({ role: 'assistant', content: turnText });
-          messages.push({ role: 'user', content: this._fenceLocalToolResult(directive.kind, res.output, nonce, delegateNonce) });
-          continue;
-        }
-
-        // ── Local EXECUTION (write/edit): the coordinator's OWN gated mutation
-        // (Plan 19 Phase 0). Only reachable when execEnabled (the scanner never
-        // parses these kinds otherwise). Routes through MystiLocalExec: the SAME
-        // permission gate + a pre-write checkpoint; the (untrusted) result is
-        // nonce-fenced back like any other local tool. Separate tighter budget.
-        if (directive && (directive.kind === 'write' || directive.kind === 'edit' || directive.kind === 'bash' || directive.kind === 'patch')) {
-          const toolId = `mysti-exec-${runId}-${delegId++}`;
-          const input: Record<string, unknown> = directive.kind === 'write'
-            ? { path: directive.path }
-            : directive.kind === 'edit'
-              ? { path: directive.path, replace: directive.replaceAll ? 'all' : 'first' }
-              : directive.kind === 'bash'
-                ? { command: directive.command }
-                : { patch: directive.patchText.slice(0, 200) };
-          if (!budget.consume('localExec')) {
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: `Local edit budget exhausted (${gov.maxLocalExec} writes/edits this run). Finish with what you have, or delegate the remaining changes to a coding agent.` });
-            continue;
-          }
-          runOutput.postToolUse({ id: toolId, name: directive.kind, input });
-          const res = await this._runMystiLocalExec(directive, settings, panelId, toolId, cancelKey);
-          runOutput.postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
-          runOutput.recordTool(toolId, directive.kind, input, res.output, !res.ok);
-          if (isCancelled()) { break; }
-          messages.push({ role: 'assistant', content: turnText });
-          messages.push({ role: 'user', content: this._fenceLocalToolResult(directive.kind, res.output, nonce, delegateNonce) });
-          continue;
-        }
-
-        // ── Connect (Plan 19 Phase 6): the coordinator detected a capability gap
-        // and offers an in-chat "Connect <service>" button. SAFE — it grants no
-        // authority (just an OAuth link the user must click); reuses the entire
-        // existing connect flow (_emitConnectionCard → connect card → OAuth).
-        // Only reachable when connectEnabled (the tag isn't parsed otherwise).
-        if (directive && directive.kind === 'connect') {
-          const service = directive.service;
-          if (!connectSeen.has(service)) {
-            connectSeen.add(service);
-            void this._emitConnectionCard(panelId, service);
-          }
-          messages.push({ role: 'assistant', content: turnText });
-          messages.push({ role: 'user', content: `A "Connect ${service}" button was shown to the user. In one short sentence, tell them to click it to connect ${service}; then continue or finish. Do NOT emit another connect for ${service}.` });
-          continue;
-        }
-
-        // ── Publish a staged capability (Plan 20 Phase 3). The ONE act a
-        // checkpoint does not undo: it turns bytes on disk into an entry the
-        // model can call every turn. Runs the ladder, then TWO forced cards.
-        if (directive && directive.kind === 'publish') {
-          const toolId = `mysti-publish-${runId}-${delegId++}`;
-          runOutput.postToolUse({ id: toolId, name: 'publish', input: { id: directive.id } });
-          const res = await this._runMystiPublish(directive.id, panelId);
-          runOutput.postToolResult({ id: toolId, name: 'publish', output: res.output, status: res.ok ? 'completed' : 'failed' });
-          runOutput.recordTool(toolId, 'publish', { id: directive.id }, res.output, !res.ok);
-          if (isCancelled()) { break; }
-          messages.push({ role: 'assistant', content: turnText });
-          messages.push({ role: 'user', content: this._fenceLocalToolResult('publish', res.output, nonce, delegateNonce) });
-          continue;
-        }
-
-        // ── Invoke a registered capability (Plan 20 Phase 4). A NARROWING of
-        // bash: host-owned command shape, schema-validated args passed by file.
-        if (directive && directive.kind === 'skillrun') {
-          const toolId = `mysti-skillrun-${runId}-${delegId++}`;
-          runOutput.postToolUse({ id: toolId, name: 'skillrun', input: { tool: directive.tool, args: directive.args } });
-          if (!budget.consume('localExec')) {
-            const msg = `Capability budget reached (${gov.maxLocalExec} per run).`;
-            runOutput.postToolResult({ id: toolId, name: 'skillrun', output: msg, status: 'failed' });
-            runOutput.recordTool(toolId, 'skillrun', { tool: directive.tool }, msg, true);
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: `${msg} Finish with what you have.` });
-            continue;
-          }
-          const res = await this._runMystiSkillRun(directive, settings, panelId);
-          runOutput.postToolResult({ id: toolId, name: 'skillrun', output: res.output, status: res.ok ? 'completed' : 'failed' });
-          runOutput.recordTool(toolId, 'skillrun', { tool: directive.tool }, res.output, !res.ok);
-          if (isCancelled()) { break; }
-          messages.push({ role: 'assistant', content: turnText });
-          messages.push({ role: 'user', content: this._fenceLocalToolResult(`skillrun:${directive.tool.replace(/[^A-Za-z0-9_]/g, '').slice(0, 48)}`, res.output, nonce, delegateNonce) });
-          continue;
-        }
-
-        // ── Agent catalog: find or read a skill/persona/role (Plan 20 Phase 1).
-        // READ-ONLY and UNGATED: searches metadata already on disk and reads a
-        // file the user already has. Charged against the local-tool budget so a
-        // model cannot loop on it. Every result is fenced — a persona body is
-        // reference material, not an instruction, and only integrity-verified
-        // bundled content is ever treated otherwise (Phase 0, invariant I1).
-        if (directive && directive.kind === 'skill') {
-          const toolId = `mysti-skill-${runId}-${delegId++}`;
-          runOutput.postToolUse({ id: toolId, name: 'skill', input: directive.id ? { id: directive.id, part: directive.part } : { query: directive.query } });
-          if (!budget.consume('localTools')) {
-            const msg = `Local tool budget exhausted (${gov.maxLocalTools} calls).`;
-            runOutput.postToolResult({ id: toolId, name: 'skill', output: msg, status: 'failed' });
-            runOutput.recordTool(toolId, 'skill', {}, msg, true);
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: `${msg} Answer with what you have.` });
-            continue;
-          }
-          if (directive.id) { skillViewed.push(directive.id); } else { skillSearches++; }
-          const res = await this._runMystiSkillLookup(directive);
-          runOutput.postToolResult({ id: toolId, name: 'skill', output: res.output, status: res.ok ? 'completed' : 'failed' });
-          runOutput.recordTool(toolId, 'skill', directive.id ? { id: directive.id } : { query: directive.query }, res.output, !res.ok);
-          messages.push({ role: 'assistant', content: turnText });
-          messages.push({ role: 'user', content: this._fenceLocalToolResult('skill', res.output, nonce, delegateNonce) });
-          continue;
-        }
-
-        // ── Look up a connected tool's argument schema (Plan 20 Phase 5).
-        // READ-ONLY and UNGATED: it searches metadata for tools the user already
-        // connected and calls nothing. It exists because only the few most-used
-        // tools carry a full schema in the always-present tool array — without a
-        // way to fetch the rest, the model is back to guessing argument names,
-        // which costs the user an approval card per wrong guess.
-        if (directive && directive.kind === 'findtool') {
-          const toolId = `mysti-findtool-${runId}-${delegId++}`;
-          runOutput.postToolUse({ id: toolId, name: 'findtool', input: { query: directive.query } });
-          const matches = mcpToolset ? searchMcpTools(mcpToolset.tools, directive.query) : [];
-          const output = !mcpToolset
-            ? 'External tools are not enabled.'
-            : matches.length === 0
-              ? `No connected tool matches "${directive.query}". Connected: ${mcpToolset.tools.map(t => t.name).slice(0, 40).join(', ')}`
-              : matches.map(t => [
-                `${t.name}${t.description ? ` — ${t.description}` : ''}`,
-                t.inputSchema
-                  ? `arguments: ${JSON.stringify(t.inputSchema)}`
-                  : 'arguments: (this server published no schema — infer from the description)',
-              ].join('\n')).join('\n\n');
-          runOutput.postToolResult({ id: toolId, name: 'findtool', output, status: 'completed' });
-          runOutput.recordTool(toolId, 'findtool', { query: directive.query }, output, false);
-          messages.push({ role: 'assistant', content: turnText });
-          // Schemas come from third-party servers, so they re-enter fenced like
-          // any other untrusted result — a description is not an instruction.
-          messages.push({ role: 'user', content: this._fenceLocalToolResult('findtool', output, nonce, delegateNonce) });
-          continue;
-        }
-
-        // ── External MCP tool call (Plan 19 Phase 6): call one of the user's
-        // CONNECTED external tools. GATED like exec (an un-undoable network side
-        // effect) via _runMystiMcpTool → a mandatory permission card; the result
-        // re-enters the model UNTRUSTED + nonce-fenced. Serial only (NOT batched).
-        if (directive && directive.kind === 'mcptool') {
-          const toolId = `mysti-mcp-${runId}-${delegId++}`;
-          runOutput.postToolUse({ id: toolId, name: 'mcptool', input: { tool: directive.tool, args: directive.args } });
-          if (!mcpToolset) {
-            runOutput.postToolResult({ id: toolId, name: 'mcptool', output: 'External tools are not enabled.', status: 'failed' });
-            runOutput.recordTool(toolId, 'mcptool', { tool: directive.tool }, 'External tools are not enabled.', true);
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: 'External tools are not available. Answer without them or delegate.' });
-            continue;
-          }
-          if (budget.remaining('mcpCalls') === 0) {
-            runOutput.postToolResult({ id: toolId, name: 'mcptool', output: `External tool budget reached (${gov.maxMcpCalls} calls).`, status: 'failed' });
-            runOutput.recordTool(toolId, 'mcptool', { tool: directive.tool }, `External tool budget reached (${gov.maxMcpCalls} calls).`, true);
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: `External tool budget reached (${gov.maxMcpCalls} calls this run). Finish with what you have.` });
-            continue;
-          }
-          // Reject a model-invented tool name BEFORE any call — only the
-          // discovered, connected tools are callable.
-          if (!mcpToolset.tools.some(t => t.name === directive.tool)) {
-            runOutput.postToolResult({ id: toolId, name: 'mcptool', output: `No such tool "${directive.tool}".`, status: 'failed' });
-            runOutput.recordTool(toolId, 'mcptool', { tool: directive.tool }, `No such tool "${directive.tool}".`, true);
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: `No connected tool "${directive.tool}". Available: ${mcpToolset.tools.map(t => t.name).slice(0, 40).join(', ')} — or answer without it.` });
-            continue;
-          }
-          budget.consume('mcpCalls');
-          const res = await this._runMystiMcpTool(
-            directive, mcpToolset.client, panelId, toolId, cancelKey,
-            mcpToolset.tools.find(t => t.name === directive.tool)?.description,
-          );
-          if (res.ok) { this._bumpMcpUsage(directive.tool); }
-          runOutput.postToolResult({ id: toolId, name: 'mcptool', output: res.output, status: res.ok ? 'completed' : 'failed' });
-          runOutput.recordTool(toolId, 'mcptool', { tool: directive.tool }, res.output, !res.ok);
-          if (isCancelled()) { break; }
-          messages.push({ role: 'assistant', content: turnText });
-          messages.push({ role: 'user', content: this._fenceLocalToolResult(`mcptool:${String(directive.tool).replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 48)}`, res.output, nonce, delegateNonce) });
-          continue;
-        }
-
-        // ── Visual observation (`look` / `act`): render the running app and
-        // report what is actually on screen. A READ — it never writes a file and
-        // never calls a model, so there is no second agent to gate. Anything the
-        // coordinator decides to fix afterwards goes through its own already-
-        // gated write/edit/bash tools. Only reachable when the capability is on
-        // (the tag isn't parsed otherwise). Serial, and deliberately NOT added to
-        // _isReadOnlyLocalKind — a look can raise an interactive permission card,
-        // which must never land inside the parallel read-only batch.
-        if (directive && (directive.kind === 'look' || directive.kind === 'act')) {
-          const toolId = `mysti-visual-${runId}-${delegId++}`;
-          const input: Record<string, unknown> = directive.kind === 'look'
-            ? { path: directive.path || '(current page)', ...(directive.selector ? { selector: directive.selector } : {}) }
-            : { actions: directive.actions.length };
-          if (!budget.consume('visualLooks')) {
-            runOutput.postToolUse({ id: toolId, name: directive.kind, input });
-            const msg = `Visual budget reached (${gov.maxVisualLooks} looks this run).`;
-            runOutput.postToolResult({ id: toolId, name: directive.kind, output: msg, status: 'failed' });
-            runOutput.recordTool(toolId, directive.kind, input, msg, true);
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: `${msg} Finish with what you have.` });
-            continue;
-          }
-          runOutput.postToolUse({ id: toolId, name: directive.kind, input });
-          const res = await this._runMystiVisual(directive, settings, panelId, toolId, cancelKey);
-          runOutput.postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
-          runOutput.recordTool(toolId, directive.kind, input, res.output, !res.ok);
-          // Mirror progress into the chat panel's mini status bar.
-          this._postToPanel(panelId, {
-            type: 'visualTestMiniStatus',
-            payload: res.ok
-              ? { type: 'visual_test_screenshot', status: 'capturing', message: `Looked at ${res.observation?.url || 'the app'}` }
-              : { type: 'visual_test_error', status: 'failed', message: res.output.slice(0, 200) },
-          } as never);
-          if (isCancelled()) { break; }
-          messages.push({ role: 'assistant', content: turnText });
-          // The page is attacker-controlled content — console text, DOM, alt
-          // attributes. It re-enters the model nonce-redacted and UNTRUSTED-fenced
-          // exactly like a delegate result or a file read.
-          messages.push({ role: 'user', content: this._fenceLocalToolResult(directive.kind, res.output, nonce, delegateNonce) });
-          continue;
-        }
-
-        // ── Canvas edit (Plan 22 Phase 1): the coordinator's own design lane.
-        // Dispatched IN-PROCESS against the artifact store — deliberately NOT
-        // through McpClient, because `isDeepMystHost` treats loopback as
-        // DeepMyst and would hand the `dm_` bearer to the local canvas server.
-        // Two encodings, one dispatcher: a native `canvas_*` tool_call is
-        // converted to this same directive by `toolCallToDirective`, and a
-        // whole artboard arrives as `<canvaspage:…>` because it cannot fit a
-        // tool call. Neither encoding is more trusted than the other, and the
-        // result re-enters the model UNTRUSTED + nonce-fenced.
-        if (directive && (directive.kind === 'canvas' || directive.kind === 'canvaspage')) {
-          const toolId = `mysti-canvas-${runId}-${delegId++}`;
-          const label = directive.kind === 'canvas' ? this._canvasToolLabel(directive.tool) : 'canvas:write_page';
-          const input: Record<string, unknown> = directive.kind === 'canvas'
-            ? { tool: directive.tool, args: directive.args }
-            : { page: directive.pageId, title: directive.title, bytes: directive.source.length };
-          runOutput.postToolUse({ id: toolId, name: 'canvas', input });
-          if (!budget.consume('canvasCalls')) {
-            const out = `Canvas edit budget reached (${gov.maxCanvasCalls} edits this run).`;
-            runOutput.postToolResult({ id: toolId, name: 'canvas', output: out, status: 'failed' });
-            runOutput.recordTool(toolId, 'canvas', input, out, true);
-            messages.push({ role: 'assistant', content: turnText });
-            messages.push({ role: 'user', content: `${out} Summarize what you built and stop editing.` });
-            continue;
-          }
-          const res = await this._runMystiCanvasTool(directive, panelId, runId, toolId);
-          runOutput.postToolResult({ id: toolId, name: 'canvas', output: res.output, status: res.ok ? 'completed' : 'failed' });
-          runOutput.recordTool(toolId, 'canvas', input, res.output, !res.ok);
-          if (isCancelled()) { break; }
-          messages.push({ role: 'assistant', content: turnText });
-          messages.push({ role: 'user', content: this._fenceLocalToolResult(label, res.output, nonce, delegateNonce) });
-          continue;
-        }
+        const dispatch = await toolDispatcher.dispatch(turn, messages);
+        if (isCancelled() || dispatch.kind === 'cancelled') { break; }
+        if (dispatch.kind === 'handled') { continue; }
+        const directive = dispatch.directive;
 
         if (directive && budget.remaining('delegations') === 0) {
           // Governor: out of delegations. Ask for a final answer next turn.
@@ -10479,7 +10017,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           : errorMsg ? 'error'
           : exhausted ? 'turn-limit'
           : 'completed';
-        try { this._skillTelemetry().record(skillSearches, skillViewed, outcome); } catch { /* never break a run for telemetry */ }
+        try { this._skillTelemetry().record(toolDispatcher.skillSearches, toolDispatcher.skillViewed, outcome); } catch { /* never break a run for telemetry */ }
       }
       if (bg) {
         this._jobAbortControllers.delete(jobId!);
@@ -10589,8 +10127,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       roundTrips: turnRunner.roundTrips,
       delegations: budget.used('delegations'),
       // Plan 24 Phase 3, record-only: what the round-trip reducer could have saved.
-      redundantToolCalls,
-      mergeableRoundTrips,
+      redundantToolCalls: toolDispatcher.redundantToolCalls,
+      mergeableRoundTrips: toolDispatcher.mergeableRoundTrips,
     });
     if (bg) {
       const job = this._backgroundJobManager.markDone(jobId!, answer, Date.now());
@@ -11390,11 +10928,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Execute a local read-only directive via MystiLocalTools (Plan 17 P0.1). */
-  /** True for the read-only local tool kinds that are safe to batch in parallel. */
-  private _isReadOnlyLocalKind(kind: MystiDirective['kind']): kind is 'read' | 'ls' | 'grep' | 'diag' {
-    return kind === 'read' || kind === 'ls' || kind === 'grep' || kind === 'diag';
-  }
-
   private async _runMystiLocalTool(d: Extract<MystiDirective, { kind: 'read' | 'ls' | 'grep' | 'diag' }>): Promise<{ ok: boolean; output: string }> {
     try {
       switch (d.kind) {
@@ -11405,16 +10938,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     } catch (error) {
       return { ok: false, output: `${d.kind}: failed — ${error instanceof Error ? error.message : error}` };
-    }
-  }
-
-  /** Tool-card input payload for a local directive (shown in the card header/body). */
-  private _localToolCardInput(d: Extract<MystiDirective, { kind: 'read' | 'ls' | 'grep' | 'diag' }>): Record<string, unknown> {
-    switch (d.kind) {
-      case 'read': return { path: d.path, ...(d.startLine ? { lines: `${d.startLine}-${d.endLine ?? ''}` } : {}) };
-      case 'ls': return { path: d.path };
-      case 'grep': return { pattern: d.pattern, ...(d.include ? { path: d.include } : {}) };
-      case 'diag': return { target: d.target };
     }
   }
 
@@ -11980,7 +11503,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // per-artifact bearer token — but it only ever fires DURING the bound
     // chat's turn, so that turn is what "is Mysti working" is really about.
     // Opening here is what gives that lane the same ghost/timer/Stop the
-    // coordinator lane has had; `_openCanvasTurnJob` refuses outside a live
+    // coordinator lane has had; `CanvasTurnJobs.open` refuses outside a live
     // turn, so a stray call cannot leak a spinner.
     //
     // Declared by the caller rather than inferred from a missing `panelId`:
@@ -11988,7 +11511,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // adding a template must not be reported as the agent working.
     if (opts?.transport === 'mcp' && this._canvasChatOrigin) {
       const bound = this._canvasChatOrigin;
-      this._openCanvasTurnJob(bound, `${getProviderDisplayName(this._getPanelProvider(bound))} · editing the canvas`);
+      this._canvasTurns.open(bound, `${getProviderDisplayName(this._getPanelProvider(bound))} · editing the canvas`);
     }
     return {
       artifact: this._canvasArtifact, store: this._canvasStore, executor: this._canvasExecutor,
@@ -12048,60 +11571,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _canvasBoundTo(panelId: string): boolean {
     return !!this._canvasPanelId && !!this._canvasArtifact
       && (this._canvasChatOrigin === null || this._canvasChatOrigin === panelId);
-  }
-
-  /**
-   * Open (once) the liveness job for a streaming chat turn that just wrote to
-   * the canvas. See {@link _canvasTurnJobs} for why this brackets the turn.
-   *
-   * Refuses outside a live turn: with no `_endCanvasTurn` coming, a job would
-   * leave a ghost artboard, a running clock and a Stop button on the board
-   * forever — the exact leaked-spinner state the terminal-event rule exists to
-   * make unreachable.
-   */
-  private _openCanvasTurnJob(panelId: string, label: string, pageId?: string): void {
-    if (!this._canvasLiveness || !this._canvasTurnPanels.has(panelId)) { return; }
-    if (this._canvasTurnJobs.has(panelId)) { return; }
-    const handle = this._canvasLiveness.openJob({
-      runId: 'chat-' + panelId,
-      jobId: this._canvasTurnJobId(panelId),
-      label,
-      ...(pageId ? { pageId } : {}),
-    });
-    this._canvasTurnJobs.set(panelId, handle);
-  }
-
-  /** The deterministic job id for a panel's turn job, so Stop can route back. */
-  private _canvasTurnJobId(panelId: string): string {
-    return `canvas-turn-${panelId}`;
-  }
-
-  /** Close this panel's turn job (if any) and leave the turn window. */
-  private _endCanvasTurn(panelId: string, error?: string): void {
-    this._canvasTurnPanels.delete(panelId);
-    const handle = this._canvasTurnJobs.get(panelId);
-    if (!handle) { return; }
-    this._canvasTurnJobs.delete(panelId);
-    try {
-      if (error) { handle.fail(error); } else { handle.done(); }
-    } catch { /* a dead panel must never break the send path */ }
-  }
-
-  /**
-   * The webview's Stop, routed to the thing actually producing the job.
-   *
-   * A canvas turn job is produced by a CLI backend's stream, and the only way
-   * to stop that is to cancel the panel's request. Aborting the liveness
-   * handle alone would hide the ghost while the agent kept writing.
-   */
-  private _cancelCanvasTurnJob(jobId: string): void {
-    for (const [panelId, handle] of this._canvasTurnJobs) {
-      if (handle.jobId !== jobId && this._canvasTurnJobId(panelId) !== jobId) { continue; }
-      this._cancelledPanels.add(panelId);
-      this._providerManager.cancelRequest(panelId);
-      this._postToPanel(panelId, { type: 'requestCancelled' });
-      return;
-    }
   }
 
   /**
@@ -12435,7 +11904,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // The agent has started rewriting the design: open this turn's liveness
       // job BEFORE the write, so the ghost artboard, the elapsed timer and Stop
       // exist for the whole of it rather than appearing after the fact.
-      this._openCanvasTurnJob(
+      this._canvasTurns.open(
         panelId,
         `${getProviderDisplayName(this._getPanelProvider(panelId))} · editing the canvas`,
         typeof r.op.targetPageId === 'string' ? r.op.targetPageId : undefined,
@@ -12521,7 +11990,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       scheduleSave: () => this._scheduleCanvasSave(),
       steeringRunIds: () => [...this._canvasSteeringRuns],
       steeringReachable: () => this._canvasSteeringReachable(),
-      onCancelJob: (jobId) => this._cancelCanvasTurnJob(jobId),
+      onCancelJob: (jobId) => this._canvasTurns.cancel(jobId),
       onExport: () => this._exportCanvas(),
       onPresent: (pageId) => this._presentCanvas(pageId),
       onAddScaffold: (scaffold) => { this._addCanvasScaffold(scaffold); },
@@ -12622,43 +12091,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  /**
-   * Stop the previous canvas MCP server, mint a fresh one bound to `artifactId`,
-   * and re-link the origin chat panel to the NEW token.
-   *
-   * Called on canvas open and on every design switch — a switch used to leave
-   * the old server (and its token) running, which is precisely the "token
-   * follows the user into their next design" failure the binding exists to
-   * prevent.
-   */
-  private async _linkCanvasMcpServer(artifactId: string): Promise<void> {
-    if (!this._canvasToolServer) { return; }
-    const previous = this._canvasMcpHttp;
-    this._canvasMcpHttp = null;
-    if (previous) { await previous.stop().catch(() => {}); }
-
-    let server: CanvasMcpHttpServer;
-    try {
-      server = this._createCanvasMcpServer(artifactId);
-    } catch {
-      return;
-    }
-    this._canvasMcpHttp = server;
-    try {
-      const handle = await server.start();
-      // A newer switch (or a panel dispose) won while we were starting.
-      if (this._canvasMcpHttp !== server) { await server.stop().catch(() => {}); return; }
-      const origin = this._canvasChatOrigin;
-      if (origin) {
-        const cfg = this._canvasLinker.link(origin, { url: handle.url, token: handle.token });
-        this._providerManager.setCanvasMcpConfig(origin, cfg);
-        console.log('[Mysti] Canvas MCP server at', handle.url, '→ linked to panel', origin, 'for design', artifactId);
-      }
-    } catch (err) {
-      console.warn('[Mysti] Canvas MCP server failed to start:', err);
-    }
-  }
-
   private async _switchCanvasArtifact(panelId: string, artifactId: string | null, name?: string): Promise<void> {
     const store = this._canvasStore;
     const executor = this._canvasExecutor;
@@ -12712,7 +12144,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     // CANVAS-SEC-2: a new design means a new token. Without this the CLI's
     // existing bearer keeps working against a design it was never issued for.
-    await this._linkCanvasMcpServer(next.id);
+    await this._canvasMcpSession.relink(next.id);
     this._canvasBridge?.hello();
   }
 
@@ -14158,6 +13590,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
     this._panelStates.clear();
+    this._canvasTurns.dispose();
+    void this._canvasMcpSession.dispose();
 
     // Clear tracking maps
     this._lastUserMessage.clear();

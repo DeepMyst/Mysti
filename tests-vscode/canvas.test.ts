@@ -1,3 +1,5 @@
+import * as QUnit from 'qunit';
+import { test, timeout } from './acceptance';
 /**
  * Mysti - AI Coding Agent
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
@@ -74,11 +76,11 @@ function workspaceRoot(): string {
   return folder.uri.fsPath;
 }
 
-describe('Mysti Canvas — real VS Code host', function () {
-  this.timeout(120_000);
+QUnit.module('Mysti Canvas — real VS Code host', hooks => {
+  timeout(hooks, 120_000);
   let browser: Browser | undefined;
 
-  before(async () => {
+  hooks.before(async () => {
     const ext = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(ext, `extension ${EXTENSION_ID} not found — is package.json's publisher/name unchanged?`);
     console.log(`[Mysti test] VS Code ${vscode.version}, Node ${process.versions.node}, extension ${ext.extensionPath}`);
@@ -116,7 +118,7 @@ describe('Mysti Canvas — real VS Code host', function () {
     }
   });
 
-  after(async () => {
+  hooks.after(async () => {
     // For connectOverCDP this disconnects our client; the test runner owns the
     // editor process and must still receive the Mocha result before it exits.
     await browser?.close();
@@ -138,13 +140,13 @@ describe('Mysti Canvas — real VS Code host', function () {
     assert.fail('the Canvas document was not found in the actual editor webview frames');
   }
 
-  it('activates and registers the canvas commands', async () => {
+  test('activates and registers the canvas commands', async () => {
     const commands = await vscode.commands.getCommands(true);
     assert.ok(commands.includes('mysti.openCanvas'), 'mysti.openCanvas is not registered');
     assert.ok(commands.includes('mysti.canvasDiagnostics'), 'mysti.canvasDiagnostics is not registered');
   });
 
-  it('opens the canvas panel', async () => {
+  test('opens the canvas panel', async () => {
     await vscode.commands.executeCommand('mysti.openCanvas');
     const diag = await waitFor(d => d.panelOpen, 'the canvas panel to open');
     assert.ok(diag.viewTokenSet, 'no view token was minted — every client message would be refused');
@@ -152,7 +154,7 @@ describe('Mysti Canvas — real VS Code host', function () {
     assert.ok(diag.bridgeReady, 'the protocol bridge was never constructed');
   });
 
-  it('loads an artifact host-side', async () => {
+  test('loads an artifact host-side', async () => {
     const diag = await waitFor(d => d.artifactId !== null, 'an artifact to load');
     assert.ok(diag.artifactId, 'no artifact id');
   });
@@ -163,7 +165,7 @@ describe('Mysti Canvas — real VS Code host', function () {
    * parsed, `canvas/ready` reached the extension, `canvas/hello` came back, the
    * view token matched, and the client painted.
    */
-  it('the WEBVIEW confirms it rendered — the handshake completes end to end', async () => {
+  test('the WEBVIEW confirms it rendered — the handshake completes end to end', async () => {
     const diag = await waitFor(
       d => d.rendered !== null,
       'the webview to confirm a render (this is the "Loading your designs…" failure)',
@@ -179,7 +181,7 @@ describe('Mysti Canvas — real VS Code host', function () {
     );
   });
 
-  it('a design created in the panel persists to .mysti/canvas', async () => {
+  test('a design created in the panel persists to .mysti/canvas', async () => {
     const before = await vscode.commands.executeCommand<CanvasDiagnostics>('mysti.canvasDiagnostics');
     assert.ok(before);
 
@@ -213,7 +215,7 @@ describe('Mysti Canvas — real VS Code host', function () {
    * frame ran. Inspect visible content and interact with an input in the actual
    * sandboxed frame to prove the shipped runtime and mount handshake completed.
    */
-  it('mounts an interactive artboard under the real host CSP', async () => {
+  test('mounts an interactive artboard under the real host CSP', async () => {
     const diag = await waitFor(d => d.pages > 0, 'an artboard to exist');
     assert.ok(diag.pages > 0, 'no artboard to mount');
 
@@ -274,7 +276,7 @@ describe('Mysti Canvas — real VS Code host', function () {
    * store distinguishes ABSENT from CORRUPT precisely so a real design is never
    * silently replaced by a blank one.
    */
-  it('reloads the persisted design on a second open', async () => {
+  test('reloads the persisted design on a second open', async () => {
     const first = await waitFor(d => d.pages > 0, 'a saved artboard');
     const artifactId = first.artifactId;
     const canvasTab = vscode.window.tabGroups.all.flatMap(group => group.tabs)

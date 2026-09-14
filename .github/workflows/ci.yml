@@ -101,6 +101,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '18.17.1'
+      - name: Verify editor runner on the minimum Node runtime
+        run: node scripts/check-editor-runner.cjs
       - name: Exercise the minimum supported runtime
         run: node out-test/runtime/minimum.cjs
 
@@ -165,7 +167,7 @@ jobs:
       - name: Test installed extension
         env:
           TMPDIR: ${{ runner.temp }}
-        run: xvfb-run -a npm exec --no -- vscode-test
+        run: xvfb-run -a node scripts/run-editor-tests.mjs
       - name: Upload Canvas screenshots
         if: always()
         uses: actions/upload-artifact@v4

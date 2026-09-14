@@ -10,7 +10,6 @@
  * panel CSP, `vscode-resource` asset URIs, panel widths. This is the layer that
  * can see them.
  */
-import { defineConfig } from '@vscode/test-cli';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -41,8 +40,7 @@ writeFileSync(join(userDataDir, 'User', 'settings.json'), JSON.stringify({
   'mysti.defaultProvider': 'ollama',
 }));
 
-export default defineConfig({
-  files: 'out-vscode-test/**/*.test.js',
+export default {
   version,
   // VS Code needs a development extension to start its test runner. For an
   // archive test, that is a separate inert driver: Mysti must load from the
@@ -62,5 +60,4 @@ export default defineConfig({
   // A scratch folder so the canvas has a real workspace to write `.mysti/canvas`
   // into; created by the test's own setup.
   workspaceFolder: './out-vscode-test/fixture-workspace',
-  mocha: { ui: 'bdd', timeout: 120_000, color: false, parallel: false },
-});
+};

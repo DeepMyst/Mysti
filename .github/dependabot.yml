@@ -29,8 +29,8 @@ updates:
           - "@typescript-eslint/*"
           - vitest
           - "@vscode/test-*"
-          - mocha
-          - "@types/mocha"
+          - qunit
+          - "@types/qunit"
       runtime:
         patterns:
           - "*"
@@ -43,7 +43,7 @@ updates:
           - "@typescript-eslint/*"
           - vitest
           - "@vscode/test-*"
-          - mocha
+          - qunit
     ignore:
       # These declarations describe the oldest supported editor, not the newest
       # development toolchain. Raise them with engines.vscode and the host matrix.

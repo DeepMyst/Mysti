@@ -46,7 +46,11 @@ Its loopback Ollama fixture starts before editor activation, avoiding a negative
 startup availability probe. Chat checks exercise streaming, Stop after token one,
 history restoration, concurrent panels and recovery from HTTP errors. The driver
 focuses the native webview before composing so macOS click-to-activate does not
-consume the Send click. The suite never needs a model account.
+consume the Send click. Before pointer actions it dismisses editor notification
+toasts through the workbench command, retaining normal hit-target checks. Each
+case must settle its provider connections and composers; failure cleanup releases
+held fixture streams so later cases do not inherit them. The suite never needs
+a model account.
 The Canvas test inspects the editor's actual nested webview through a loopback
 debugging connection. It uses Zoom In to reach interactive scale before checking
 visible content and editing an input inside the sandboxed artboard; a narrow
@@ -119,6 +123,14 @@ Stable 1.136.2 reached the workbench and remained alive for the 25-second contro
 All owned process groups were stopped. This narrows the diagnostic; it does not
 identify the minimum editor's crash cause or provide a workaround.
 
+The 2026-09-14 allocator probe also tested the app bundle's LaunchServices
+`MallocNanoZone=0` setting, which direct executable launches may omit. Minimum
+1.86.0 still failed before the workbench with that setting, with and without GPU
+rendering; stable 1.136.2 passed the 25-second control. The fresh-profile default
+control also failed. All four owned process groups stopped, without sandbox
+initialization errors. The allocator hypothesis did not produce a workaround.
+
+
 To reproduce the runtime-only gate, build with the development Node:
 `node scripts/build-runtime-fixture.js`. Then run
 `node out-test/runtime/minimum.cjs` with Node 18.17.1. It bundles its dependencies
@@ -145,13 +157,12 @@ For an update:
 Do not publish as part of a dependency bot update. Publishing requires the release
 review below.
 
-### Dependency audit evidence and exceptions (2026-09-12)
+### Dependency audit evidence and exceptions (2026-09-14)
 
-The reconciled lock installs cleanly with Node 22.20.0 and npm 10.9.3. The
-full audit reports three development entries: `@vscode/test-cli`, `mocha` and
-`serialize-javascript` (two moderate, one high). `npm audit --omit=dev` reports
-zero. Re-run both audits when updating the graph; these counts are dated
-evidence, not a permanent claim.
+The reconciled lock installs cleanly with Node 22.20.0 and npm 10.9.3. Both
+`npm audit` and `npm audit --omit=dev` report zero vulnerabilities after replacing
+the editor's Mocha runner. Re-run both audits when updating the graph; these
+counts are dated evidence, not a permanent claim.
 
 Vitest 4.1.11 fixes the [UI/API access advisory](https://github.com/vitest-dev/vitest/security/advisories/GHSA-5xrq-8626-4rwp)
 and [mock redirect traversal](https://github.com/vitest-dev/vitest/security/advisories/GHSA-82fw-gwwq-j7x9).
@@ -171,25 +182,22 @@ program creation with this resolved version. Dependency maintainers own the
 override; remove it when the supported parser dependency resolves a patched
 minimatch without it, and repeat typed-project discovery plus the lint checks.
 
-The test CLI runs under development Node, but its Mocha runner executes inside
-the editor. Mocha 10.8.2 supports the minimum editor's Node 18.17.1; Mocha 11
-requires at least 18.18 and Mocha 12 requires a newer major runtime. The
-`@vscode/test-cli` override keeps its in-editor Mocha aligned with the direct
-dependency. Its diff 5.2.2 uses the patched backport, removing the previous
-diff exception. Recheck this override when either package or the minimum editor
-changes. Do not raise the production editor minimum solely to update a test tool.
+The editor suite now uses QUnit 2.26.0 through the official
+`@vscode/test-electron` launcher. [QUnit 2.x supports Node 10 and later](https://qunitjs.com/intro/); its core
+runs on the minimum editor's Node 18.17.1 without the serializer dependency.
+`@vscode/test-cli`, Mocha, their overrides and the development serializer audit
+exception are removed. The replacement remains serial and retains the same 14
+acceptance cases, timeouts and assertions. A universal archive explicitly skips
+its absent native payload; platform archives require it.
 
-The current residual audit chain is development-only:
-`@vscode/test-cli → mocha → serialize-javascript@6.0.2`. The serializer has
-[crafted-object code execution](https://github.com/advisories/GHSA-5c6j-r48x-rmvq)
-and [CPU exhaustion](https://github.com/advisories/GHSA-qj8w-gfj5-8c6v) advisories.
-Mocha loads it in its optional parallel worker pool. Our editor tests explicitly
-run serially, and none of these packages ships in the VSIX. The release maintainer
-owns this exception: keep parallel execution disabled and remove the exception
-when a compatible patched serializer is available or the runner is replaced.
-The registry still has no patched 6.x release; current serializer 7.1.1 requires
-Node 20, so overriding it into the minimum editor would
-violate its declared runtime support.
+`node scripts/run-editor-tests.mjs` is the launch entry after compiling editor
+tests. It force-installs the selected archive in the private extensions directory
+and uses the configured fresh profile. `scripts/check-editor-runner.cjs` exercises
+14 actual child-process cases, including thrown/rejected assertions, failing
+setup/teardown, timeout, uncaught errors and empty/unfinished suites. CI runs
+those checks on development Node and exactly Node 18.17.1. A runner failure must
+fail the editor job; a successful fixture does not replace installed-archive
+acceptance.
 
 The 2026-09-12 source/media lint pass has zero errors and zero warnings, without
 relaxing rules. Missing braces and duplicate function-scoped declarations were
@@ -271,9 +279,9 @@ them in reviewable feature increments with these acceptance criteria:
 
 | Increment | Completion criteria |
 | --- | --- |
-| Extract coordinator run orchestration | Model streams live in `CoordinatorTurnRunner`; `CoordinatorRunBudget` now owns immutable settings snapshots, separate tool/delegation counters and batch reservations. Permission and tool dispatch still need a separate run service. |
-| Extract Canvas host integration | Canvas session ownership, tool dispatch and view lifecycle have narrow ports; all browser and real-editor Canvas tests continue to pass. |
-| Split the chat renderer | Markdown/diagrams and sub-agent cards are extracted behind explicit ports with browser/CSP coverage. Continue with cohesive message/timeline features while preserving the existing state contract. |
+| Extract coordinator run orchestration | Model streams, budgets, tool dispatch and local execution approval policy now have separate owners. Native/text convergence, read batching, cancellation, replay and run-local telemetry have focused coverage. Delegation strategy and higher-level orchestration remain in the host. |
+| Extract Canvas host integration | `CanvasTurnJobs` and `CanvasMcpSession` own turn liveness and MCP server/registration lifetimes. Latest-switch and close/start races have deferred-promise tests. Canvas tool dispatch and the remaining view lifecycle are further increments; browser and real-editor coverage remain required. |
+| Split the chat renderer | Markdown/diagrams, sub-agent cards, restored messages and main tool cards have explicit rendering ports. Preserve interleaved stream/history ordering and the existing state contract as further timeline and interaction features move out of the shell. |
 | Consolidate remaining interaction state | Questions, native approval cards, pending plans and queued continuations have explicit owners. Move remaining host-owned interaction lifecycles into independently testable services as they change. |
 | Validate native provider contracts | Hermes/Kimi have blocking ACP approval paths with transport and host tests. Remaining adapters need equivalent native enforcement and recorded live smoke results for approval timing and process termination. |
 | Strengthen persistence evolution | Migration and corruption fixtures, ordered journal mutations, and backup restore failure paths pass. See [recovery and downgrade guidance](PERSISTENCE_RECOVERY.md); real-profile downgrade acceptance remains open. |

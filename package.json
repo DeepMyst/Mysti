@@ -2244,24 +2244,23 @@
     "sync-agents": "node scripts/sync-agents.js",
     "sync-agents:force": "node scripts/sync-agents.js --force",
     "perf:sizes": "node scripts/perf-sizes.js",
-    "test:vscode": "tsc -p tsconfig.vscode-test.json && node ./scripts/prepare-vscode-fixture.js && vscode-test",
+    "test:vscode": "tsc -p tsconfig.vscode-test.json && node ./scripts/prepare-vscode-fixture.js && node ./scripts/run-editor-tests.mjs",
     "pretest:vscode": "npm run compile:release"
   },
   "devDependencies": {
     "@number0/iroh": "1.1.0",
-    "@types/mocha": "^10.0.10",
     "@types/node": "^20.10.0",
+    "@types/qunit": "^2.19.14",
     "@types/vscode": "1.86.0",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
-    "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
     "esbuild": "^0.28.2",
     "eslint": "^8.54.0",
     "jsdom": "^29.1.1",
-    "mocha": "^10.8.2",
+    "qunit": "2.26.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.2",
     "vite": "^7.3.6",
@@ -2285,9 +2284,6 @@
   "overrides": {
     "@typescript-eslint/typescript-estree": {
       "minimatch": "9.0.9"
-    },
-    "@vscode/test-cli": {
-      "mocha": "$mocha"
     }
   }
 }

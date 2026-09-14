@@ -50,6 +50,7 @@ import { CanvasJobRouter } from '../../src/managers/CanvasJobRouter';
 import { CanvasOpExecutor } from '../../src/managers/CanvasOpExecutor';
 import { CanvasOpParser } from '../../src/managers/CanvasOpParser';
 import { CanvasLiveness } from '../../src/canvas/CanvasLiveness';
+import { CanvasSessionLinker } from '../../src/managers/CanvasSessionLinker';
 import { clearMockConfig, setMockConfig, setMockConfigInspect, Uri } from '../helpers/mockVscode';
 import type { CanvasArtifact, CanvasJobEvent, Settings } from '../../src/types';
 import { createModelRegistryStub } from '../helpers/modelRegistryStub';
@@ -200,6 +201,7 @@ function createHarness(): Harness {
     provider, root, store, executor, artifact, jobEvents, setCanvasMcpConfig, cancelRequest, router,
     dispose() {
       provider._channelBridge?.dispose?.();
+      void provider._canvasMcpSession.dispose();
       permissionManager.dispose();
       fs.rmSync(root, { recursive: true, force: true });
     },
@@ -517,20 +519,34 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
     });
 
     it('switching designs stops the old server and unlinks the old token', async () => {
-      const stop = vi.fn(async () => undefined);
       h.provider._canvasToolServer = { connect: async () => undefined } as any;
-      h.provider._canvasMcpHttp = { stop, artifactId: h.artifact.id } as any;
+      h.provider._canvasLinker = new CanvasSessionLinker({ tmpDir: h.root });
+      const unlink = vi.spyOn(h.provider._canvasLinker, 'unlink');
+      const old = {
+        start: vi.fn(async () => ({ url: 'http://127.0.0.1/old', token: 'old-fixture-token' })),
+        stop: vi.fn(async () => undefined),
+      };
+      const next = {
+        start: vi.fn(async () => ({ url: 'http://127.0.0.1/next', token: 'next-fixture-token' })),
+        stop: vi.fn(async () => undefined),
+      };
+      const create = vi.spyOn(h.provider, '_createCanvasMcpServer')
+        .mockReturnValueOnce(old).mockReturnValueOnce(next);
+      await h.provider._canvasMcpSession.relink(h.artifact.id);
       const other = h.store.createArtifact({ name: 'Marketing', kind: 'deck' });
       await h.store.save(other);
 
       await h.provider._switchCanvasArtifact('canvas-panel', other.id);
 
       expect(h.provider._canvasArtifact?.id).toBe(other.id);
-      expect(stop).toHaveBeenCalled();
-      // The new server (if one was minted) must be bound to the NEW design.
-      const next = h.provider._canvasMcpHttp;
-      if (next) { expect(next.artifactId).toBe(other.id); }
-      await h.provider._canvasMcpHttp?.stop?.();
+      expect(old.stop).toHaveBeenCalledOnce();
+      expect(unlink).toHaveBeenCalledExactlyOnceWith('chat-A');
+      expect(create).toHaveBeenLastCalledWith(other.id);
+      expect(next.start).toHaveBeenCalledOnce();
+      expect(h.setCanvasMcpConfig.mock.calls.map(call => call[1] === null)).toEqual([false, true, false]);
+      await h.provider._canvasMcpSession.close();
+      expect(next.stop).toHaveBeenCalledOnce();
+      expect(h.setCanvasMcpConfig).toHaveBeenLastCalledWith('chat-A', null);
     });
   });
   // ────────────────────────────────────────────────────────────────────
@@ -564,7 +580,7 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
     it('opens a job for the fenced lane, so the board can report a running agent', () => {
       const nonce = nonced();
       // The turn window `_handleSendMessage` opens around the stream loop.
-      h.provider._canvasTurnPanels.add('chat-A');
+      h.provider._canvasTurns.begin('chat-A');
       h.provider._consumeCanvasOps(fenced(insertPage(nonce)), 'chat-A');
 
       expect(h.artifact.pages).toHaveLength(1);
@@ -576,7 +592,7 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
 
     it('opens exactly one job for a turn, however many ops it emits', () => {
       const nonce = nonced();
-      h.provider._canvasTurnPanels.add('chat-A');
+      h.provider._canvasTurns.begin('chat-A');
       h.provider._consumeCanvasOps(fenced(insertPage(nonce)), 'chat-A');
       h.provider._consumeCanvasOps(fenced(insertPage(nonce)), 'chat-A');
       expect(h.artifact.pages).toHaveLength(2);
@@ -585,21 +601,22 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
 
     it('closes the job when the turn ends — a ghost can only die on a terminal event', () => {
       const nonce = nonced();
-      h.provider._canvasTurnPanels.add('chat-A');
+      h.provider._canvasTurns.begin('chat-A');
       h.provider._consumeCanvasOps(fenced(insertPage(nonce)), 'chat-A');
       expect(h.provider._canvasLiveness.jobIds()).toHaveLength(1);
 
-      h.provider._endCanvasTurn('chat-A');
+      h.provider._canvasTurns.end('chat-A');
       expect(h.provider._canvasLiveness.jobIds()).toHaveLength(0);
       expect(h.jobEvents.filter(e => e.type === 'done')).toHaveLength(1);
-      expect(h.provider._canvasTurnPanels.has('chat-A')).toBe(false);
+      h.provider._canvasTurns.open('chat-A', 'Late write');
+      expect(h.provider._canvasLiveness.jobIds()).toHaveLength(0);
     });
 
     it('reports a failed turn as an error, not a completion', () => {
       const nonce = nonced();
-      h.provider._canvasTurnPanels.add('chat-A');
+      h.provider._canvasTurns.begin('chat-A');
       h.provider._consumeCanvasOps(fenced(insertPage(nonce)), 'chat-A');
-      h.provider._endCanvasTurn('chat-A', 'stream died');
+      h.provider._canvasTurns.end('chat-A', 'stream died');
       const errors = h.jobEvents.filter(e => e.type === 'error');
       expect(errors).toHaveLength(1);
       expect(errors[0].error).toContain('stream died');
@@ -607,7 +624,7 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
 
     it('refuses to open a job outside a live turn, so no spinner can leak', () => {
       const nonce = nonced();
-      // No `_canvasTurnPanels` entry: a detached/late write has nothing that
+      // No active canvas turn: a detached/late write has nothing that
       // will ever close a job for it.
       h.provider._consumeCanvasOps(fenced(insertPage(nonce)), 'chat-A');
       expect(h.artifact.pages).toHaveLength(1);
@@ -616,7 +633,7 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
     });
 
     it('opens a job for the MCP lane too — its context resolves during the bound turn', () => {
-      h.provider._canvasTurnPanels.add('chat-A');
+      h.provider._canvasTurns.begin('chat-A');
       // The MCP transport declares itself; its binding is the bearer token.
       expect(h.provider._canvasToolContext({ transport: 'mcp' })).not.toBeNull();
       expect(started()).toHaveLength(1);
@@ -624,7 +641,7 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
     });
 
     it('does not report a HUMAN scaffold as the agent working', () => {
-      h.provider._canvasTurnPanels.add('chat-A');
+      h.provider._canvasTurns.begin('chat-A');
       // `_addCanvasScaffold` resolves a context with no panel and no transport.
       expect(h.provider._canvasToolContext()).not.toBeNull();
       expect(started()).toHaveLength(0);
@@ -632,14 +649,14 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
 
     it('Stop reaches the producer: cancelling a turn job cancels the chat request', () => {
       const nonce = nonced();
-      h.provider._canvasTurnPanels.add('chat-A');
+      h.provider._canvasTurns.begin('chat-A');
       h.provider._consumeCanvasOps(fenced(insertPage(nonce)), 'chat-A');
 
-      h.provider._cancelCanvasTurnJob('canvas-turn-chat-A');
+      h.provider._canvasTurns.cancel('canvas-turn-chat-A');
       expect(h.cancelRequest).toHaveBeenCalledWith('chat-A');
       // An unrelated job id must not stop anybody's chat.
       h.cancelRequest.mockClear();
-      h.provider._cancelCanvasTurnJob('some-other-job');
+      h.provider._canvasTurns.cancel('some-other-job');
       expect(h.cancelRequest).not.toHaveBeenCalled();
     });
 

@@ -92,6 +92,8 @@ function boot(): Harness {
   // The page reads these on load; absent ones must not stop the script.
   win.eval(fs.readFileSync(path.join(ROOT, 'media', 'chat', 'markdownRenderer.js'), 'utf8'));
   win.eval(fs.readFileSync(path.join(ROOT, 'media', 'chat', 'subAgentCards.js'), 'utf8'));
+  win.eval(fs.readFileSync(path.join(ROOT, 'media', 'chat', 'toolCards.js'), 'utf8'));
+  win.eval(fs.readFileSync(path.join(ROOT, 'media', 'chat', 'messageRenderer.js'), 'utf8'));
   win.eval(CHAT_JS);
 
   const receive = (message: unknown) => {

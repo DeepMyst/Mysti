@@ -51,6 +51,8 @@ function createHarness() {
     _subAgentQuestions: questions,
     _nativeApprovalRegistration: { dispose: vi.fn() },
     _nativeApprovalCards: { dispose: vi.fn() },
+    _canvasTurns: { dispose: vi.fn() },
+    _canvasMcpSession: { dispose: vi.fn(async () => undefined) },
     _pendingPlanSelections: new Set<string>(),
     _panelStates: panels,
     _lastUserMessage: new Map(),

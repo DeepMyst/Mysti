@@ -55,11 +55,11 @@ jobs:
 
       - name: Test (Linux — needs a display server)
         if: runner.os == 'Linux'
-        run: xvfb-run -a npm exec --no -- vscode-test
+        run: xvfb-run -a node scripts/run-editor-tests.mjs
 
       - name: Test (macOS / Windows)
         if: runner.os != 'Linux'
-        run: npm exec --no -- vscode-test
+        run: node scripts/run-editor-tests.mjs
 
       - name: Upload accepted Desk platform archive
         uses: actions/upload-artifact@v4

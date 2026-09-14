@@ -261,16 +261,12 @@ describe('renderThinkingZone (unified thinking zone)', () => {
 
 describe('formatToolSummary (kind-first)', () => {
   function summarize(toolCall: unknown): string {
-    const src = extractFunction(html, 'formatToolSummary');
-    const run = new Function(
-      'cleanPathsInString', 'makeRelativePath', 'toolCall',
-      `${src}\nreturn formatToolSummary(toolCall);`
-    );
-    return run(
-      (s: string) => `clean(${s})`,
-      (p: string) => `rel(${p})`,
-      toolCall
-    );
+    const globals = { window: {} as { MystiToolCards?: { create(ports: unknown): { summary(tool: unknown): string } } } };
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, '../../media/chat/toolCards.js'), 'utf8'), globals);
+    return globals.window.MystiToolCards!.create({
+      cleanPathsInString: (s: string) => `clean(${s})`,
+      makeRelativePath: (p: string) => `rel(${p})`,
+    }).summary(toolCall);
   }
 
   it('should key off kind FIRST: search kind wins over the raw-name path fallback', () => {
@@ -474,9 +470,9 @@ describe('renderMessageFooter', () => {
 
 describe('normalizeMessageThinking', () => {
   function normalize(thinking: unknown): { style: string; content: string } | null {
-    const src = extractFunction(html, 'normalizeMessageThinking');
-    const run = new Function('thinking', `${src}\nreturn normalizeMessageThinking(thinking);`);
-    return run(thinking);
+    const context = vm.createContext({});
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../../media/chat/messageRenderer.js'), 'utf8'), context);
+    return context.MystiMessageRenderer.normalizeMessageThinking(thinking);
   }
 
   it('should replay legacy plain-string thinking as one complete block', () => {

@@ -127,7 +127,9 @@ function composeHtml(replyOnReady = false): string {
   html = html.replace(bootTag, () => `${stub}${bootTag}`);
   html = html
     .replace('<script nonce="n" src="{{markdownRendererJsUri}}"></script>', () => `<script>${read('media/chat/markdownRenderer.js')}</script>`)
+    .replace('<script nonce="n" src="{{messageRendererJsUri}}"></script>', () => `<script>${read('media/chat/messageRenderer.js')}</script>`)
     .replace('<script nonce="n" src="{{subAgentCardsJsUri}}"></script>', () => `<script>${read('media/chat/subAgentCards.js')}</script>`)
+    .replace('<script nonce="n" src="{{toolCardsJsUri}}"></script>', () => `<script>${read('media/chat/toolCards.js')}</script>`)
     .replace('<script nonce="n" src="{{chatJsUri}}"></script>', () => `<script>${read('media/chat/chat.js')}</script>`)
     .replace('<script nonce="n" src="{{deskJsUri}}"></script>', () => `<script>${read('media/chat/desk.js')}</script>`);
 
@@ -304,6 +306,70 @@ describe('chat webview boots', () => {
     }
     expect(await page!.$('#popup-autonomy-select')).not.toBeNull();
   });
+});
+
+describe('restored messages in the actual chat page', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('preserves replay order, saved attribution and opaque copy/rewind IDs without attachment markup injection', async () => {
+    const pg = await newPanelPage();
+    const errors: string[] = [];
+    pg.on('pageerror', error => errors.push(String(error)));
+    const messageId = '\"><img class="spoof" src="missing" onerror="window.__messageSpoof=true">';
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jJ5sAAAAASUVORK5CYII=';
+    try {
+      await pg.evaluate(({ id, image }) => {
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'conversationChanged', payload: {
+          id: 'history', provider: 'brainstorm', model: 'legacy-model', messages: [
+            { id: 'user-' + id, role: 'user', content: 'Saved prompt', attachments: [
+              { type: 'image', mimeType: 'image/png', base64Data: image, fileName: 'valid.png' },
+              { type: 'image', mimeType: 'image/png" onerror="window.__messageSpoof=true', base64Data: image, fileName: id },
+              { type: 'image', mimeType: 'image/png', base64Data: 'x" onerror="window.__messageSpoof=true', fileName: id },
+              { type: 'file', fileName: 'notes.md' },
+            ] },
+            { id, role: 'assistant', provider: 'mysti', model: 'saved-model', thinking: { style: 'streamed', content: 'flat reasoning must not duplicate' },
+              toolCalls: [{ id: '__proto__', name: 'Read', kind: 'read', input: { path: 'first.txt' }, status: 'completed' },
+                { id: 'constructor', name: 'Read', kind: 'read', input: { path: 'second.txt' }, status: 'completed' }],
+              segments: [{ type: 'text', content: '**Before**' }, { type: 'thinking', content: 'First thought. ' },
+                { type: 'tool', toolCallId: '__proto__' }, { type: 'text', content: 'Between' },
+                { type: 'thinking', content: 'More reasoning.' }, { type: 'tool', toolCallId: 'constructor' },
+                { type: 'tool', toolCallId: 'toString' }, { type: 'text', content: 'After' }] },
+            { id: 'legacy', role: 'assistant', thinking: 'Old reasoning.', content: 'Legacy answer' },
+          ],
+        } } }));
+      }, { id: messageId, image: png });
+      const assistant = pg.locator('.message.assistant').first();
+      expect(await assistant.locator('.message-model-info').innerText()).toBe('Mysti · saved model');
+      expect(await pg.locator('.message.assistant').last().locator('.message-model-info').innerText()).toBe('Brainstorm · legacy model');
+      expect(await assistant.locator('.message-body').evaluate(body => [...body.children].map(node => node.classList.contains('tool-call')
+        ? 'tool:' + (node as HTMLElement).dataset.id : node.classList.contains('thinking-zone') ? 'thinking' : node.textContent?.trim())))
+        .toEqual(['Before', 'thinking', 'tool:__proto__', 'Between', 'tool:constructor', 'After']);
+      expect(await assistant.locator('.thinking-preview').innerText()).toBe('First thought.');
+      await assistant.locator('.thinking-zone').click();
+      expect(await assistant.locator('.thinking-rest').innerText()).toBe('More reasoning.');
+      expect(await pg.locator('.message.assistant').last().locator('.thinking-preview').innerText()).toBe('Old reasoning.');
+      expect(await pg.locator('.message-attachment-img').count()).toBe(1);
+      expect(await pg.locator('.message-attachment-label').count()).toBe(3);
+      expect(await pg.locator('.spoof, .message [onerror]').count()).toBe(0);
+      expect(await pg.evaluate(() => (window as unknown as { __messageSpoof?: boolean }).__messageSpoof)).toBeUndefined();
+
+      await assistant.hover();
+      await assistant.locator('.message-copy-btn').click();
+      const user = pg.locator('.message.user');
+      await user.hover();
+      await user.locator('.message-rewind-btn').click();
+      expect(await pg.locator('#rewind-menu [data-action="rewind"]').isDisabled()).toBe(true);
+      await pg.evaluate(id => window.dispatchEvent(new MessageEvent('message', { data: { type: 'checkpointCreated', payload: { messageId: 'user-' + id, commit: 'a'.repeat(40) } } })), messageId);
+      expect(await pg.locator('#rewind-menu [data-action="rewind"]').isDisabled()).toBe(false);
+      await pg.locator('#rewind-menu [data-action="rewind"]').click();
+      await user.hover();
+      await user.locator('.message-rewind-btn').click();
+      await pg.locator('#rewind-menu [data-action="fork"]').click();
+      const sent = await pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string; payload?: unknown }> }).__posted);
+      expect(sent).toContainEqual(expect.objectContaining({ type: 'copyMessageMarkdown', payload: { messageId } }));
+      expect(sent).toContainEqual(expect.objectContaining({ type: 'rewindToCheckpoint', payload: { messageId: 'user-' + messageId, commit: 'a'.repeat(40) } }));
+      expect(sent).toContainEqual(expect.objectContaining({ type: 'forkConversation', payload: { messageId: 'user-' + messageId } }));
+      expect(errors).toEqual([]);
+    } finally { await pg.context().close(); }
+  }, 30_000);
 });
 
 describe('Plan 28 Phase 1 — the trust pill drives everything', () => {
