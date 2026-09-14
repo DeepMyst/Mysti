@@ -48,9 +48,13 @@ QUnit.module('Mysti Chat — real VS Code host and loopback provider', hooks => 
 
   async function click(frame: Frame, target: string | Locator): Promise<void> {
     await frame.page().bringToFront();
-    // Editor notifications can cover a webview's composer, especially after
-    // opening its second panel. Use the real workbench dismiss command before
-    // the ordinary pointer action, so Playwright still checks hit targeting.
+    // Stable VS Code can open its built-in Chat in the secondary sidebar
+    // after startup and cover the second Mysti panel's composer. Establish the
+    // test layout through the workbench command, keeping Mysti's primary
+    // sidebar and editor tab visible. Normal pointer hit testing still applies.
+    await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar');
+    await frame.page().locator('[id="workbench.parts.auxiliarybar"]').waitFor({ state: 'hidden' });
+    // Notifications are a separate workbench overlay over the same controls.
     await vscode.commands.executeCommand('notifications.hideToasts');
     await frame.page().locator('.notifications-toasts.visible').waitFor({ state: 'hidden' });
     await (typeof target === 'string' ? frame.locator(target) : target).click();

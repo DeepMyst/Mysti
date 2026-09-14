@@ -46,8 +46,9 @@ Its loopback Ollama fixture starts before editor activation, avoiding a negative
 startup availability probe. Chat checks exercise streaming, Stop after token one,
 history restoration, concurrent panels and recovery from HTTP errors. The driver
 focuses the native webview before composing so macOS click-to-activate does not
-consume the Send click. Before pointer actions it dismisses editor notification
-toasts through the workbench command, retaining normal hit-target checks. Each
+consume the Send click. Before pointer actions it closes the built-in auxiliary
+sidebar and dismisses notification toasts through workbench commands, retaining
+both Mysti panels and normal hit-target checks. Each
 case must settle its provider connections and composers; failure cleanup releases
 held fixture streams so later cases do not inherit them. The suite never needs
 a model account.
