@@ -20,6 +20,9 @@ const complete = () => {
 };
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const frame = JSON.parse(line);
+  if (frame.method === 'initialize' && mode === 'startup-crash') { process.exit(23); }
+  if (frame.method === 'initialize' && mode === 'startup-invalid') { send([]); continue; }
+  if (frame.method === 'initialize' && mode === 'startup-wait') { fs.writeFileSync(`${marker}.ready`, 'initializing'); continue; }
   if (frame.method === 'initialize') { send({ id: frame.id, result: { userAgent: `codex-app-server/${mode === 'version' ? '0.154.0' : '0.153.4'} (test)`, platformFamily: 'unix', platformOs: 'linux', codexHome: '/unused' } }); }
   if (frame.method === 'config/read') { send({ id: frame.id, result: { config: {}, layers: [] } }); }
   if (frame.method === 'configRequirements/read') { send({ id: frame.id, result: { requirements: null } }); }

@@ -1,6 +1,6 @@
 # Remaining external acceptance
 
-Updated 2026-09-13. These checks require the exact candidate commit/archive and
+Updated 2026-09-14. These checks require the exact candidate commit/archive and
 an environment not supplied by the local isolated review. They are release gates,
 not results inferred from unit tests or source presence.
 
@@ -54,6 +54,14 @@ Claude is 2.0.71, which does not substitute for the pinned 2.1.266 proof. Codex
 0.153.4 remains inconclusive: startup attempts to initialize normal-profile
 installation metadata before its stdio transport while the isolated probe denies
 that access. No account-backed acceptance is inferred from that startup failure.
+
+The 2026-09-14 follow-up closes the isolated Codex startup failure/Stop checks:
+four installed-runtime cases confirm invalid-configuration exit reporting,
+independent cancellation and cleanup at the unchanged 30-second deadline.
+Startup RPCs now retain the actual failure cause; public-provider tests cover
+failure/recovery and cancellation without a spurious error. Successful native
+initialization/configuration and real account turns remain pending. The PATH and
+package-metadata check still finds the same missing or mismatched runtimes.
 
 In disposable workspaces and fresh editor profiles, verify a streamed turn, Stop
 during preparation/execution/approval, two concurrent panels, switching and

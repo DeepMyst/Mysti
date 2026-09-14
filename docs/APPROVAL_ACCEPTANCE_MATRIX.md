@@ -1,6 +1,6 @@
 # Approval acceptance matrix
 
-Reviewed 2026-09-11. Native acceptance uses an inert local model and isolated
+Reviewed 2026-09-14 (Codex startup follow-up). Native acceptance uses an inert local model and isolated
 state. No provider account or real model service was exercised. “Fixture” means
 Mysti's protocol/lifecycle is tested, not that an installed CLI universally asks
 for permission. Authenticated editor acceptance remains separate.
@@ -8,7 +8,7 @@ for permission. Authenticated editor acceptance remains separate.
 | Provider | Installed operation evidence | Unverified or unavailable scope |
 | --- | --- | --- |
 | Claude | Earlier pinned 2.1.266 file/shell allow, denial, restricted modes and Stop | Binary no longer at its recorded location; current rerun skips it. Account/editor acceptance pending. |
-| Codex | App-server protocol and lifecycle fixtures; installed startup examined | Startup probe inconclusive; authenticated real operation acceptance pending. |
+| Codex | App-server protocol/lifecycle fixtures; installed 0.153.4 startup failure, Stop, independent-process cancellation and 30-second deadline cleanup | Successful native initialization/configuration still inconclusive under profile isolation; authenticated real operation acceptance pending. |
 | Gemini | 0.58.0 native reads, writes/replacement, host veto, denied shell, Stop | Shell/delegation deliberately unavailable. |
 | Qwen | 0.23.0 native read/edit/shell, denial, read-only, Stop, inherited allow-rule override | Broader tools/delegation unavailable. |
 | Cline | 3.0.61 actual command/write, denial, read-only and Stop through public send | Saved-login, images, usage and broader native tools unavailable. |
@@ -25,6 +25,16 @@ The item-8 checkpoint ran 14 test files: 158 tests passed, one test/file skipped
 operations within one test. Evidence is retained in
 `out-test/release-evidence/item8-native-matrix.log`. This checkpoint preceded the documented OpenClaw group-cleanup correction.
 It does not establish authenticated acceptance.
+
+The 2026-09-14 Codex follow-up preserves startup failure details instead of
+replacing them with a generic closure error. All 175 focused tests pass, including
+public-provider failure/recovery and Stop during initialization. Four installed
+runtime cases used OS isolation with all networking and user-state access denied:
+invalid configuration, cancellation of each of two independent processes, and
+the unchanged 30-second initialization deadline. Every owned process group was
+confirmed absent. No model turn was submitted; successful initialization and
+account acceptance remain open. Evidence is retained in
+`out-test/release-evidence/PROVIDER_ACCEPTANCE_20260914/`.
 
 Delegation coverage includes actual denial of unsupported native delegation,
 plus Mysti child-run protocol fixtures covering captured parent authority,

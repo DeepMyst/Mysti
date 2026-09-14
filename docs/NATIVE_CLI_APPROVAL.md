@@ -135,13 +135,23 @@ native configuration normalization and authenticated Codex execution are not yet
 verified. The protocol fixture and pinned source checks do not replace this
 acceptance step.
 
+The 2026-09-14 installed-runtime follow-up verifies failure handling under the
+same profile isolation: invalid configuration reports the process exit, Stop
+settles pending initialization without an error stream, stopping one of two
+processes leaves the other pending, and the unchanged 30-second deadline
+terminates a stalled process. All four process groups were confirmed absent.
+Mysti now preserves transport/process failure details for pending startup RPCs;
+public-provider tests also verify a later turn can recover. These checks submit
+no model turn and do not establish successful native configuration or account
+acceptance.
+
 Authenticated provider accounts, installed-editor behavior, and hosted
 cross-platform acceptance remain separate release work. Revoking pending
 permission requests does not undo an already approved command. The shared CLI
 process cleanup is not an OS sandbox and does not establish containment of an
-approved program that detaches descendants or survives a parent crash. The
-earlier unexplained OpenClaw macOS cleanup `EPERM` remains a separate open
-runtime reliability finding.
+approved program that detaches descendants or survives a parent crash. OpenClaw's
+separate cleanup boundary and remaining platform/account acceptance are recorded
+in its [native policy](OPENCLAW_NATIVE_POLICY.md).
 
 Protocol references: [Claude permissions](https://code.claude.com/docs/en/permissions),
 [Claude SDK approvals](https://code.claude.com/docs/en/agent-sdk/user-input), and

@@ -88,11 +88,46 @@ describe('Codex public native turn lifecycle', () => {
     expect(provider.launches).toHaveLength(1); expect(chunks.some(chunk => chunk.type === 'error')).toBe(true);
     expect(provider.cleanupCount).toBe(1); expect(fs.existsSync(provider.marker)).toBe(false);
   });
+  it.each([
+    ['startup-crash', 'Codex app-server exited before the turn completed (23).'],
+    ['startup-invalid', 'Codex app-server protocol failed: Invalid protocol frame'],
+  ])('reports the cause of %s and allows a later independent turn', async (mode, message) => {
+    const provider = new FixtureProvider(); provider.mode = mode;
+    const handler = vi.fn(async () => true);
+    provider.setNativeApprovalHost({ handlerForPanel: () => handler });
+    const failed = await drain(provider);
+    expect(failed.filter(chunk => chunk.type === 'error')).toEqual([{ type: 'error', content: message }]);
+    expect(provider.launches).toHaveLength(1);
+    expect(handler).not.toHaveBeenCalled();
+    expect(fs.existsSync(provider.marker)).toBe(false);
+    expect(provider.cleanupCount).toBe(1);
+    expect(failed.at(-1)).toEqual({ type: 'done' });
+
+    provider.mode = 'command';
+    const recovered = await drain(provider);
+    expect(provider.launches).toHaveLength(2);
+    expect(recovered.some(chunk => chunk.type === 'error')).toBe(false);
+    expect(fs.readFileSync(provider.marker, 'utf8')).toBe('effect\n');
+    expect(handler).toHaveBeenCalledOnce();
+    expect(provider.cleanupCount).toBe(2);
+  });
   it('Stop revokes a pending card and cannot run a late accepted command', async () => {
     const provider = new FixtureProvider(); let allow!: (value: boolean) => void; let request: NativeApprovalRequest | undefined;
     provider.setNativeApprovalHost({ handlerForPanel: () => value => { request = value; return new Promise(resolve => { allow = resolve; }); } });
     const pending = drain(provider); await vi.waitFor(() => expect(request).toBeDefined());
     provider.cancelCurrentRequest('panel'); allow(true); await pending;
     expect(request?.signal.aborted).toBe(true); expect(fs.existsSync(provider.marker)).toBe(false); expect(provider.cleanupCount).toBe(1);
+  });
+  it('Stop during initialization releases the turn without reporting a startup failure', async () => {
+    const provider = new FixtureProvider(); provider.mode = 'startup-wait';
+    const pending = drain(provider);
+    await vi.waitFor(() => expect(fs.existsSync(`${provider.marker}.ready`)).toBe(true));
+    provider.cancelCurrentRequest('panel');
+    const chunks = await pending;
+    expect(chunks.some(chunk => chunk.type === 'error')).toBe(false);
+    expect(chunks.filter(chunk => chunk.type === 'done')).toEqual([{ type: 'done' }]);
+    expect(provider.cleanupCount).toBe(1);
+    expect(provider.launches).toHaveLength(1);
+    expect(fs.existsSync(provider.marker)).toBe(false);
   });
 });

@@ -328,11 +328,12 @@ export class CodexAppServer {
     if (this._failed || this._ended) { return; }
     this._failed = true;
     this._chunks.push({ type: 'error', content: message });
-    this._finish(); this._options.terminate();
+    // Startup awaits RPCs before consuming stream(), so preserve the cause there too.
+    this._finish(new Error(message)); this._options.terminate();
   }
-  private _finish(): void {
+  private _finish(error = new Error('Codex app-server closed.')): void {
     this._ended = true; clearInterval(this._clock); this._approvals.dispose();
-    for (const pending of this._pending.values()) { clearTimeout(pending.timer); pending.reject(new Error('Codex app-server closed.')); }
+    for (const pending of this._pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this._pending.clear(); this._wake?.(); this._wake = undefined;
   }
   async *stream(): AsyncGenerator<StreamChunk> {
