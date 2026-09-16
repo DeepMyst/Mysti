@@ -3,7 +3,8 @@
  *
  * An instance owns live tool input and card identity. Restored cards use the
  * same builder but never enter the live lookup, so reused IDs cannot mutate
- * history. The host owns message segments and edit/Todo side effects.
+ * history. Live frames are accepted only between begin() and end(). The host
+ * owns message segments and edit/Todo side effects.
  */
 (function(global) {
   'use strict';
@@ -22,6 +23,7 @@
     const cleanPathsInString = value => ports.cleanPathsInString(text(value));
     const makeRelativePath = value => ports.makeRelativePath(text(value));
     let disposed = false;
+    let accepting = false;
 
     function formatToolSummary(toolCall) {
       if (!toolCall) { return ''; }
@@ -202,7 +204,7 @@
       return !!messages && messages.contains(record.element);
     }
     function use(toolCall) {
-      if (disposed || !isRecord(toolCall) || typeof toolCall.id !== 'string' || !toolCall.id) { return; }
+      if (disposed || !accepting || !isRecord(toolCall) || typeof toolCall.id !== 'string' || !toolCall.id) { return; }
       let record = records.get(toolCall.id);
       if (record && !current(record)) { records.delete(toolCall.id); record = undefined; }
       if (record) {
@@ -227,7 +229,7 @@
       ports.scroll();
     }
     function result(toolCall) {
-      if (disposed || !isRecord(toolCall) || typeof toolCall.id !== 'string') { return; }
+      if (disposed || !accepting || !isRecord(toolCall) || typeof toolCall.id !== 'string') { return; }
       const record = records.get(toolCall.id);
       if (!record || !current(record)) { records.delete(toolCall.id); return; }
       if (record.terminal) { return; }
@@ -239,9 +241,16 @@
       // terminal events never duplicate an edit report or Todo update.
       ports.onResult({ toolCall, element: record.element, name: record.name || text(toolCall.name), input: record.input });
     }
-    function reset() { records.clear(); }
-    function dispose() { if (!disposed) { disposed = true; reset(); } }
-    return { build: toolCall => buildRecord(toolCall).element, summary, use, result, reset, dispose };
+    function begin() {
+      if (disposed) { return; }
+      records.clear();
+      accepting = true;
+    }
+    // A terminal event closes intake as well as forgetting IDs. Otherwise a
+    // delayed start frame would create a fresh spinner after Stop/completion.
+    function end() { accepting = false; records.clear(); }
+    function dispose() { if (!disposed) { disposed = true; end(); } }
+    return { build: toolCall => buildRecord(toolCall).element, summary, use, result, begin, end, reset: end, dispose };
   }
   global.MystiToolCards = Object.freeze({ create });
 })(typeof window !== 'undefined' ? window : globalThis);

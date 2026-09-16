@@ -44,7 +44,7 @@ export type LocalExecKind = 'write' | 'edit' | 'bash' | 'patch';
 export interface LocalExecResult {
   ok: boolean;
   output: string;
-  /** True when the op was refused by the permission gate (vs a validation error). */
+  /** True when authorization was refused or the owning run stopped (vs a validation error). */
   denied?: boolean;
 }
 
@@ -87,6 +87,10 @@ export interface LocalExecGateInfo {
 
 /** Per-call capability snapshot + gate/checkpoint closures (dependency-injected). */
 export interface LocalExecContext {
+  /** Live run ownership; checked again after asynchronous approval/preparation. */
+  isCancelled?: () => boolean;
+  /** Abort an already running sandbox process when its owner stops. */
+  signal?: AbortSignal;
   /** `mysti.mysti.localExecution === 'on'` (and not a plan/read-only tier). */
   enabled: boolean;
   /** `vscode.workspace.isTrusted` — no local mutation in an untrusted workspace. */
@@ -151,6 +155,7 @@ export class MystiLocalExec {
     if (blocked) { return blocked; }
 
     const target = await this._tools.resolveWriteTarget(relPath);
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     if (!target.ok) { return { ok: false, output: `write: ${target.output}` }; }
 
     const bytes = Buffer.byteLength(content, 'utf8');
@@ -170,11 +175,14 @@ export class MystiLocalExec {
       linesAdded: newLines, linesRemoved: exists ? prevLines : 0,
       content,
     });
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     if (!approved) { return { ok: false, output: `write to "${target.relPosix}" was denied.`, denied: true }; }
 
     await ctx.checkpoint(`mysti write ${target.relPosix}`);
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     try {
       await fs.promises.mkdir(path.dirname(target.abs), { recursive: true });
+      if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
       await fs.promises.writeFile(target.abs, content, 'utf8');
     } catch (e) {
       return { ok: false, output: `write: failed to write "${relPath}": ${e instanceof Error ? e.message : e}` };
@@ -188,6 +196,7 @@ export class MystiLocalExec {
     if (blocked) { return blocked; }
 
     const target = await this._tools.resolveWriteTarget(relPath);
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     if (!target.ok) { return { ok: false, output: `edit: ${target.output}` }; }
     if (!fs.existsSync(target.abs)) {
       return { ok: false, output: `edit: "${relPath}" does not exist — use write to create it.` };
@@ -211,6 +220,7 @@ export class MystiLocalExec {
       return { ok: false, output: `edit: no change (old_string and new_string are identical) in "${relPath}".` };
     }
 
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     const before = current.split('\n').length;
     const after = updated.split('\n').length;
     const approved = await ctx.gate({
@@ -218,9 +228,11 @@ export class MystiLocalExec {
       linesAdded: Math.max(0, after - before), linesRemoved: Math.max(0, before - after),
       oldString, newString, replaceAll,
     });
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     if (!approved) { return { ok: false, output: `edit to "${target.relPosix}" was denied.`, denied: true }; }
 
     await ctx.checkpoint(`mysti edit ${target.relPosix}`);
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     try {
       await fs.promises.writeFile(target.abs, updated, 'utf8');
     } catch (e) {
@@ -297,26 +309,37 @@ export class MystiLocalExec {
       }
     }
 
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     const files = [...pending.keys()].map(a => relOf.get(a) || a);
     const approved = await ctx.gate({ kind: 'patch', relPath: `${files.length} file(s)`, files, linesAdded: added + updated + moved, linesRemoved: deleted });
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     if (!approved) { return { ok: false, output: `patch touching ${files.length} file(s) was denied.`, denied: true }; }
 
     const rewindable = !!(await ctx.checkpoint(`mysti patch: ${files.slice(0, 4).join(', ')}${files.length > 4 ? '…' : ''}`));
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
 
     // Apply WRITES (add/update/move-dest) BEFORE REMOVALS (delete/move-source),
     // so a Move never deletes its source before the dest write lands; abort on
     // the first fs error rather than pressing on into an inconsistent state
     // (validation was exhaustive, so this is rare — review #6).
     const entries = [...pending.entries()];
+    let applied = 0;
+    const cancelledPatch = () => this._cancelled(applied > 0
+      ? (rewindable ? ' Use "rewind" to undo the partial patch.' : ' Undo the partial patch manually (no checkpoint was taken).') : '');
     try {
       for (const [abs, content] of entries) {
         if (content === null) { continue; }
+        if (ctx.isCancelled?.() || ctx.signal?.aborted) { return cancelledPatch(); }
         await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+        if (ctx.isCancelled?.() || ctx.signal?.aborted) { return cancelledPatch(); }
         await fs.promises.writeFile(abs, content, 'utf8');
+        applied++;
       }
       for (const [abs, content] of entries) {
         if (content !== null) { continue; }
+        if (ctx.isCancelled?.() || ctx.signal?.aborted) { return cancelledPatch(); }
         await fs.promises.rm(abs, { recursive: true, force: true });
+        applied++;
       }
     } catch (e) {
       const undo = rewindable ? ' Use "rewind" to undo the partial change.' : ' (no checkpoint was taken — undo manually.)';
@@ -368,14 +391,16 @@ export class MystiLocalExec {
     // and requires safe + non-compound + sandboxed (review #1); a remote-effect
     // command gets a modal default-DENY instead (Phase 3).
     const approved = await ctx.gate({ kind: 'bash', command: cmd, sandboxed, safe: screen.safe, compound: screen.compound, remoteEffect: isRemoteEffectCommand(cmd), network: !!ctx.bashNetwork });
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     if (!approved) { return { ok: false, output: `bash: "${cmd}" was denied.`, denied: true }; }
 
     // (5) A command may write files; snapshot first so it can be rewound.
     await ctx.checkpoint(`mysti bash: ${cmd.slice(0, 60)}`);
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
 
     // (6) Run inside the sandbox.
-    const res = await this._sandbox.run(cmd, { cwd: root, network: !!ctx.bashNetwork, timeoutMs: ctx.bashTimeoutMs });
-    return { ok: res.code === 0 && !res.timedOut, output: this._formatBashOutput(cmd, res) };
+    const res = await this._sandbox.run(cmd, { cwd: root, network: !!ctx.bashNetwork, timeoutMs: ctx.bashTimeoutMs, signal: ctx.signal });
+    return { ok: res.code === 0 && !res.timedOut && !res.cancelled && !res.cleanupIncomplete, ...(res.cancelled ? { denied: true } : {}), output: this._formatBashOutput(cmd, res) };
   }
 
   /**
@@ -446,16 +471,16 @@ export class MystiLocalExec {
 
     // Arguments travel in a host-written file. The directory is host-owned and
     // outside the artifact, so a script cannot pre-place or rewrite one.
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     const runDir = path.join(root, '.mysti', 'run');
-    await fs.promises.mkdir(runDir, { recursive: true });
     const argsFile = path.join(runDir, `${randomUUID()}.json`);
-    await fs.promises.writeFile(argsFile, JSON.stringify(validated.value), 'utf8');
 
     try {
       const interpreterPath = await this._sandbox.resolveInterpreter(spec.interpreter);
       if (!interpreterPath) {
         return { ok: false, output: `skillrun: "${spec.interpreter}" is not installed on this machine.` };
       }
+      if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
       const command = `${shellQuote(interpreterPath)} ${shellQuote(scriptReal)} ${shellQuote(argsFile)}`;
 
       // The gate always runs. `safe:false` + `compound:false` means this can
@@ -470,16 +495,24 @@ export class MystiLocalExec {
         remoteEffect: false,
         network: !!spec.network,
       });
+      if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
       if (!approved) { return { ok: false, output: `skillrun: "${spec.name}" was denied.`, denied: true }; }
 
       await ctx.checkpoint(`mysti skillrun: ${spec.name}`);
+      if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
+      await fs.promises.mkdir(runDir, { recursive: true });
+      if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
+      await fs.promises.writeFile(argsFile, JSON.stringify(validated.value), 'utf8');
+      if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
       const res = await this._sandbox.run(command, {
         cwd: root,
         network: !!spec.network,
         timeoutMs: spec.timeoutMs ?? ctx.bashTimeoutMs,
+        signal: ctx.signal,
       });
       return {
-        ok: res.code === 0 && !res.timedOut,
+        ok: res.code === 0 && !res.timedOut && !res.cancelled && !res.cleanupIncomplete,
+        ...(res.cancelled ? { denied: true } : {}),
         output: redactSecrets(this._formatBashOutput(`${spec.name} ${JSON.stringify(validated.value)}`, res)),
       };
     } finally {
@@ -487,21 +520,27 @@ export class MystiLocalExec {
     }
   }
 
-  private _formatBashOutput(command: string, res: { code: number | null; stdout: string; stderr: string; sandboxed: boolean; timedOut: boolean }): string {
-    const head = res.timedOut
+  private _formatBashOutput(command: string, res: { code: number | null; stdout: string; stderr: string; sandboxed: boolean; timedOut: boolean; cancelled?: boolean; cleanupIncomplete?: boolean }): string {
+    const head = res.cancelled ? `$ ${command}\n[cancelled]` : res.timedOut
       ? `$ ${command}\n[timed out]`
       : `$ ${command}\n[exit ${res.code ?? 'null'}${res.sandboxed ? '' : ', UNSANDBOXED allowlisted host'}]`;
     const out = (res.stdout || '').trimEnd();
     const err = (res.stderr || '').trimEnd();
     const parts = [head];
+    if (res.cleanupIncomplete) { parts.push("[cleanup incomplete: process-tree termination could not be confirmed; inspect the running commands before retrying]"); }
     if (out) { parts.push(out); }
     if (err) { parts.push(`stderr:\n${err}`); }
     if (!out && !err && !res.timedOut) { parts.push('(no output)'); }
     return parts.join('\n');
   }
 
+  private _cancelled(detail = ''): LocalExecResult {
+    return { ok: false, denied: true, output: `Local execution was cancelled.${detail}` };
+  }
+
   /** Fail closed unless enabled AND the workspace is trusted. */
   private _guard(ctx: LocalExecContext): LocalExecResult | null {
+    if (ctx.isCancelled?.() || ctx.signal?.aborted) { return this._cancelled(); }
     if (!ctx.enabled) {
       return { ok: false, output: 'Local execution is disabled. Ask the user to enable it (the "mysti.mysti.localExecution" setting) — or delegate this change to a coding agent instead.' };
     }

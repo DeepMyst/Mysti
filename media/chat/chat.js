@@ -4312,7 +4312,7 @@
             handleRewindComplete(message.payload);
             break;
           case 'responseStarted':
-            toolCards.reset();
+            toolCards.begin();
             subAgentCards.stop();
             // Who is answering this turn, as the extension resolved it — the
             // agent it routed to and the model that agent will really run
@@ -4347,7 +4347,7 @@
             }
             break;
           case 'responseComplete':
-            toolCards.reset();
+            toolCards.end();
             // Perf: post the per-response chunk-cost summary + heap sample
             // ("done" report). No-op (single boolean check) when disabled.
             if (perfState.enabled) { postMessageWithPanelId(perfBuildReport()); }
@@ -4430,7 +4430,7 @@
             updateSavingsChip(message.payload);
             break;
           case 'requestCancelled':
-            toolCards.reset();
+            toolCards.end();
             subAgentCards.stop();
             hideLoading();
             // Resolve any still-running tool cards in the active streaming
@@ -11872,7 +11872,7 @@
       }
 
       function clearMessages() {
-        toolCards.reset();
+        toolCards.end();
         subAgentCards.reset();
         messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Mysti" class="welcome-logo" /><h2>Welcome to Mysti</h2><p>Your AI coding team. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div><div class="welcome-spread"><h3>Spread the Word</h3><div class="about-links spread-links"><a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> Star on GitHub</a><a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti&ssr=false#review-details" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.254.008.045-.236 2.101-.574.028.166-.978 4.607z"/><circle cx="8" cy="4.5" r="1"/></svg> Rate on Marketplace</a><a id="share-on-x" href="#" class="spread-link" title="Share on X / Twitter"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Share on X</a></div></div></div>';
         renderWelcomeSuggestions();

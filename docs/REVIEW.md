@@ -1,6 +1,7 @@
 Mysti repository review — 2026-09-08
 
-This is a historical snapshot. For subsequent approval and release findings, see
+This is a historical snapshot. For the current review and remaining work, see
+[the review checklist](REVIEW_CHECKLIST.md). For subsequent approval and release findings, see
 [the approval matrix](APPROVAL_ACCEPTANCE_MATRIX.md) and
 [remaining external acceptance](EXTERNAL_RELEASE_ACCEPTANCE.md). The `/panel` catalog
 now describes its implemented independent-answer output; it does not promise synthesis.

@@ -1,6 +1,9 @@
 # Remaining external acceptance
 
-Updated 2026-09-14. These checks require the exact candidate commit/archive and
+Updated 2026-09-16. The [current review checklist](REVIEW_CHECKLIST.md) tracks
+implementation fixes and the next code item. The last verified baseline
+`b15eefbb` passed all 15 required checks and five archive reviews; every new
+candidate still requires its own exact-commit evidence. These checks require the exact candidate commit/archive and
 an environment not supplied by the local isolated review. They are release gates,
 not results inferred from unit tests or source presence.
 
@@ -49,7 +52,7 @@ Claude binary is also unavailable at its recorded test location. Account-backed
 checks remain pending for every provider; isolated fake-model proofs are in the
 [approval matrix](APPROVAL_ACCEPTANCE_MATRIX.md).
 
-The latest PATH check still finds no Hermes, Kimi or Continue command. Installed
+The September 16 PATH and package-metadata check still finds no Hermes, Kimi or Continue command. Installed
 Claude is 2.0.71, which does not substitute for the pinned 2.1.266 proof. Codex
 0.153.4 remains inconclusive: startup attempts to initialize normal-profile
 installation metadata before its stdio transport while the isolated probe denies

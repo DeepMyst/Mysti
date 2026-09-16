@@ -62,6 +62,7 @@ function createHarness() {
     _panelAutonomyLevel: new Map(),
     _mystiRunGen: new Map(),
     _mystiAbortControllers: new Map(),
+    _mystiExecutionAborts: new Map(),
     _vtNonces: new Map(),
     _vtScanners: new Map(),
     _autonomousManager: { isActive: () => false },

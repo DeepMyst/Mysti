@@ -411,6 +411,43 @@ describe('Plan 28 Phase 1 — the trust pill drives everything', () => {
 });
 
 describe('Plan 28 Phase 2 — the composer stays live', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE).each(['requestCancelled', 'responseComplete', 'conversationChanged'])(
+    'ignores late tool starts and results after %s until the next response starts', async terminal => {
+      const pg = await newPanelPage();
+      const fire = (message: Record<string, unknown>) => pg.evaluate(data => {
+        window.dispatchEvent(new MessageEvent('message', { data }));
+      }, message);
+      try {
+        await fire({ type: 'responseStarted', payload: { provider: 'ollama' } });
+        await fire({ type: 'toolUse', payload: { id: 'same-id', name: 'Read', input: { path: 'before.ts' } } });
+        if (terminal !== 'requestCancelled') {
+          await fire({ type: 'toolResult', payload: { id: 'same-id', status: 'completed', output: 'before' } });
+        }
+        await fire({ type: terminal, payload: terminal === 'conversationChanged'
+          ? { messages: [{ id: 'restored', role: 'assistant', content: 'Saved', toolCalls: [{ id: 'same-id', name: 'Read', input: {}, status: 'completed' }] }] }
+          : { message: { id: 'done', role: 'assistant', content: 'Done' } } });
+        const before = await pg.locator('.tool-call').evaluateAll(cards => cards.map(card => card.outerHTML));
+        const input = { file_path: 'after.ts', old_string: 'old', new_string: 'new' };
+        await fire({ type: 'toolUse', payload: { id: 'same-id', name: 'Edit', input } });
+        await fire({ type: 'toolResult', payload: { id: 'same-id', status: 'completed', output: 'late edit' } });
+        await fire({ type: 'toolUse', payload: { id: 'late-todo', name: 'TodoWrite', input: { todos: [{ content: 'Late todo', status: 'in_progress' }] } } });
+        await fire({ type: 'toolResult', payload: { id: 'late-todo', status: 'completed' } });
+        expect(await pg.locator('.tool-call').evaluateAll(cards => cards.map(card => card.outerHTML))).toEqual(before);
+        expect(await pg.locator('.tool-call.running, .edit-report-card, .todo-list').count()).toBe(0);
+        expect(await pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string }> }).__posted
+          .filter(message => message.type === 'getFileLineNumber'))).toEqual([]);
+
+        await fire({ type: 'responseStarted', payload: { provider: 'ollama' } });
+        await fire({ type: 'toolUse', payload: { id: 'same-id', name: 'Edit', input } });
+        await fire({ type: 'toolResult', payload: { id: 'same-id', status: 'completed', output: 'edited' } });
+        expect(await pg.locator('.tool-call').count()).toBe(before.length + 1);
+        expect(await pg.locator('.edit-report-card').count()).toBe(1);
+        expect(await pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string }> }).__posted
+          .filter(message => message.type === 'getFileLineNumber'))).toHaveLength(1);
+      } finally { await pg.context().close(); }
+    }, 20000,
+  );
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('keeps Stop available after the first streamed token', async () => {
     const pg = await newPanelPage();
     try {

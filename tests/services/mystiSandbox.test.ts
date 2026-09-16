@@ -4,13 +4,22 @@
  * tests only run where an OS sandbox exists (macOS Seatbelt / Linux bwrap);
  * elsewhere they skip (Windows / Linux-without-bwrap have no primitive).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import { MystiSandbox } from '../../src/services/MystiSandbox';
+import * as childProcess from 'child_process';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
+import { MystiSandbox, type SandboxResult } from '../../src/services/MystiSandbox';
 import { screenBashCommand, isRemoteEffectCommand } from '../../src/managers/SafetyClassifier';
+
+vi.mock('child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
+const realSpawn = vi.mocked(childProcess.spawn).getMockImplementation()!;
 
 describe('screenBashCommand', () => {
   it('hard-blocks destructive/irreversible commands', () => {
@@ -272,5 +281,304 @@ describe('MystiSandbox', () => {
       fs.rmSync(ws, { recursive: true, force: true });
       try { fs.rmSync(escapeTarget, { force: true }); } catch { /* expected: never created */ }
     }
+  });
+});
+
+// Exercise the real process owner with fixed Node fixtures. Replacing only the
+// OS sandbox plan avoids querying credential directories or running arbitrary
+// shell input; the detached spawn, abort, timeout and tree cleanup are real on
+// every platform, including Windows' taskkill path.
+describe('MystiSandbox process ownership', () => {
+  type Plan = { file: string; args: string[]; sandboxed: boolean };
+  type PlanPort = { _buildSpawn(command: string, cwd: string, network: boolean, scratch: string | null): Plan };
+  const source = `
+    const fs = require('node:fs');
+    const { spawn } = require('node:child_process');
+    const [mode, marker] = process.argv.slice(2);
+    process.on('SIGTERM', () => {});
+    if (mode === 'leaf') {
+      fs.writeFileSync(marker + '.leaf', String(process.pid));
+      let count = 0;
+      setInterval(() => fs.writeFileSync(marker + '.heartbeat', String(++count)), 15);
+    } else if (mode === 'single') {
+      fs.writeFileSync(marker + '.ready', JSON.stringify({ parent: process.pid }));
+      setInterval(() => {}, 1000);
+    } else if (mode === 'finish') {
+      console.log('finished normally');
+    } else {
+      const child = spawn(process.execPath, [__filename, 'leaf', marker], { detached: mode === 'escaped', stdio: ['ignore', 'inherit', 'inherit'] });
+      child.on('error', error => { console.error(error); process.exit(2); });
+      const ready = setInterval(() => {
+        if (!fs.existsSync(marker + '.leaf')) return;
+        clearInterval(ready);
+        console.log('fixture tree ready');
+        fs.writeFileSync(marker + '.ready', JSON.stringify({ parent: process.pid, leaf: child.pid }));
+        if (mode === 'orphan' || mode === 'escaped') process.exit(0);
+      }, 5);
+    }
+  `;
+
+  function fixture() {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-owned-process-'));
+    const script = path.join(workspace, 'fixture.cjs');
+    fs.writeFileSync(script, source);
+    const sandbox = new MystiSandbox();
+    const available = vi.spyOn(sandbox, 'available').mockReturnValue(process.platform === 'darwin');
+    const scratchDirectories: string[] = [];
+    const plan = vi.spyOn(sandbox as unknown as PlanPort, '_buildSpawn').mockImplementation((command, _cwd, _network, scratch) => {
+      if (scratch) { scratchDirectories.push(scratch); }
+      return { file: process.execPath, args: [script, command, path.join(workspace, command)], sandboxed: false };
+    });
+    return {
+      sandbox, workspace, plan, scratchDirectories,
+      dispose() { plan.mockRestore(); available.mockRestore(); fs.rmSync(workspace, { recursive: true, force: true }); },
+    };
+  }
+
+  async function until(check: () => boolean, message: string, timeoutMs = 5000): Promise<void> {
+    const untilAt = Date.now() + timeoutMs;
+    while (!check()) {
+      if (Date.now() >= untilAt) { throw new Error(message); }
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
+  }
+
+  function live(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      // A Linux orphan can briefly remain as a zombie until init reaps it;
+      // it cannot execute or retain the output descriptors being tested here.
+      if (process.platform === 'linux') {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        if (/\) Z /.test(stat)) { return false; }
+      }
+      return true;
+    } catch { return false; }
+  }
+
+  async function ready(workspace: string, mode: string): Promise<{ parent: number; leaf?: number }> {
+    const filename = path.join(workspace, mode + '.ready');
+    let ids: { parent: number; leaf?: number } | undefined;
+    await until(() => {
+      try { ids = JSON.parse(fs.readFileSync(filename, 'utf8')); return !!ids; }
+      catch { return false; }
+    }, 'controlled process did not become ready');
+    return ids!;
+  }
+
+  async function ended(pending: Promise<SandboxResult>): Promise<SandboxResult> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([pending, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('sandbox did not wait for and complete process closure')), 5000);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+
+  function cleanupOwned(ids: { parent: number; leaf?: number } | undefined): void {
+    if (!ids) { return; }
+    // Failure cleanup is restricted to PIDs created by this fixture. Killing a
+    // leaf directly also closes inherited pipes if the implementation regresses.
+    for (const pid of [ids.leaf, ids.parent]) {
+      if (pid && live(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    }
+  }
+
+  it('does not build a spawn plan or create scratch state when aborted before start', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      expect(await f.sandbox.run('tree', { cwd: f.workspace, signal: controller.signal }))
+        .toMatchObject({ code: null, cancelled: true, timedOut: false });
+      expect(f.plan).not.toHaveBeenCalled();
+      expect(f.scratchDirectories).toEqual([]);
+      expect(fs.readdirSync(f.workspace)).toEqual(['fixture.cjs']);
+    } finally { f.dispose(); }
+  });
+
+  it('kills an active owned descendant on Stop while an independent sibling keeps running', async () => {
+    const f = fixture();
+    const owner = new AbortController();
+    const sibling = new AbortController();
+    const removeListener = vi.spyOn(owner.signal, 'removeEventListener');
+    let ids: Awaited<ReturnType<typeof ready>> | undefined;
+    let siblingIds: Awaited<ReturnType<typeof ready>> | undefined;
+    const pending = f.sandbox.run('tree', { cwd: f.workspace, signal: owner.signal, timeoutMs: 10_000 });
+    const siblingPending = f.sandbox.run('single', { cwd: f.workspace, signal: sibling.signal, timeoutMs: 10_000 });
+    try {
+      [ids, siblingIds] = await Promise.all([ready(f.workspace, 'tree'), ready(f.workspace, 'single')]);
+      expect(live(ids.leaf!)).toBe(true);
+      owner.abort();
+      const result = await ended(pending);
+      expect(result).toMatchObject({ code: null, cancelled: true, timedOut: false });
+      expect(result.stdout).toContain('fixture tree ready');
+      await until(() => !live(ids!.parent) && !live(ids!.leaf!), 'owned process tree survived Stop');
+      expect(live(siblingIds.parent)).toBe(true);
+      expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
+      if (process.platform === 'darwin') { expect(fs.existsSync(f.scratchDirectories[0])).toBe(false); }
+      sibling.abort();
+      expect(await ended(siblingPending)).toMatchObject({ cancelled: true });
+      await until(() => !live(siblingIds!.parent), 'sibling did not stop with its own controller');
+    } finally {
+      owner.abort(); sibling.abort(); cleanupOwned(ids); cleanupOwned(siblingIds);
+      await Promise.all([ended(pending), ended(siblingPending)]);
+      removeListener.mockRestore(); f.dispose();
+    }
+  });
+
+  it('kills descendants on timeout and cleans private scratch only after process closure', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    let ids: Awaited<ReturnType<typeof ready>> | undefined;
+    const pending = f.sandbox.run('tree', { cwd: f.workspace, signal: controller.signal, timeoutMs: 2000 });
+    try {
+      ids = await ready(f.workspace, 'tree');
+      const result = await ended(pending);
+      expect(result).toMatchObject({ code: null, timedOut: true });
+      expect(result.cancelled).not.toBe(true);
+      expect(result.stdout).toContain('fixture tree ready');
+      await until(() => !live(ids!.parent) && !live(ids!.leaf!), 'owned descendant survived timeout');
+      for (const scratch of f.scratchDirectories) { expect(fs.existsSync(scratch)).toBe(false); }
+    } finally { controller.abort(); cleanupOwned(ids); await ended(pending); f.dispose(); }
+  });
+
+  it.skipIf(process.platform === 'win32')('stops a POSIX group whose root exited while descendants retain its output pipes', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    let ids: Awaited<ReturnType<typeof ready>> | undefined;
+    let finished = false;
+    const pending = f.sandbox.run('orphan', { cwd: f.workspace, signal: controller.signal, timeoutMs: 10_000 }).then(result => { finished = true; return result; });
+    try {
+      ids = await ready(f.workspace, 'orphan');
+      await until(() => !live(ids!.parent), 'fixture leader did not exit');
+      expect(live(ids.leaf!)).toBe(true);
+      expect(finished).toBe(false);
+      controller.abort();
+      expect(await ended(pending)).toMatchObject({ code: null, cancelled: true, timedOut: false });
+      await until(() => !live(ids!.leaf!), 'orphaned group survived cancellation');
+    } finally { controller.abort(); cleanupOwned(ids); await ended(pending); f.dispose(); }
+  });
+
+  it('removes cancellation listeners on normal completion and ignores a later abort', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+    try {
+      const result = await f.sandbox.run('finish', { cwd: f.workspace, signal: controller.signal, timeoutMs: 5000 });
+      expect(result).toMatchObject({ code: 0, timedOut: false, stdout: 'finished normally\n' });
+      expect(result.cancelled).not.toBe(true);
+      expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
+      controller.abort();
+      expect(result.cancelled).not.toBe(true);
+      for (const scratch of f.scratchDirectories) { expect(fs.existsSync(scratch)).toBe(false); }
+    } finally { removeListener.mockRestore(); f.dispose(); }
+  });
+
+  it.skipIf(process.platform === 'win32')('bounds Stop when a POSIX descendant escapes its group and preserves scratch honestly', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    let ids: Awaited<ReturnType<typeof ready>> | undefined;
+    const pending = f.sandbox.run('escaped', { cwd: f.workspace, signal: controller.signal, timeoutMs: 10_000 });
+    try {
+      ids = await ready(f.workspace, 'escaped');
+      await until(() => !live(ids!.parent), 'fixture leader did not exit');
+      expect(live(ids.leaf!)).toBe(true);
+      controller.abort();
+      const result = await ended(pending);
+      expect(result).toMatchObject({ code: null, cancelled: true, timedOut: false, cleanupIncomplete: true });
+      expect(result.stderr).toContain('descendants may still be running');
+      // The owner must neither guess the detached leaf's PID nor claim to have
+      // killed it. This fixture, which created that PID, performs its cleanup.
+      expect(live(ids.leaf!)).toBe(true);
+      for (const scratch of f.scratchDirectories) { expect(fs.existsSync(scratch)).toBe(true); }
+    } finally {
+      controller.abort(); cleanupOwned(ids); await ended(pending);
+      if (ids?.leaf) { await until(() => !live(ids!.leaf!), 'fixture failed to clean escaped child'); }
+      for (const scratch of f.scratchDirectories) { fs.rmSync(scratch, { recursive: true, force: true }); }
+      f.dispose();
+    }
+  });
+
+  it.each(['abort', 'timeout'] as const)('bounds Windows dead-root pipe teardown on %s without targeting unrelated PIDs', async reason => {
+    const f = fixture();
+    const originalPlatform = process.platform;
+    const controller = new AbortController();
+    const fake = Object.assign(new EventEmitter(), {
+      pid: 424242, exitCode: 0, signalCode: null,
+      stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(), unref: vi.fn(),
+    });
+    const siblingPipe = new PassThrough();
+    const spawn = vi.mocked(childProcess.spawn).mockClear().mockReturnValueOnce(fake as unknown as childProcess.ChildProcess);
+    const kill = vi.spyOn(process, 'kill');
+    vi.useFakeTimers();
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      let completed = false;
+      const pending = f.sandbox.run('tree', { cwd: f.workspace, signal: controller.signal, timeoutMs: 20 })
+        .then(result => { completed = true; return result; });
+      if (reason === 'abort') { controller.abort(); }
+      else { await vi.advanceTimersByTimeAsync(20); }
+      await vi.advanceTimersByTimeAsync(999);
+      expect(completed).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toMatchObject({ code: null, cleanupIncomplete: true, timedOut: reason === 'timeout' });
+      expect((await pending).cancelled).toBe(reason === 'abort' ? true : undefined);
+      expect((await pending).stderr).toContain('cleanup incomplete');
+      expect(fake.stdout.destroyed).toBe(true);
+      expect(fake.stderr.destroyed).toBe(true);
+      expect(fake.unref).toHaveBeenCalledTimes(1);
+      expect(siblingPipe.destroyed).toBe(false);
+      expect(fake.kill).not.toHaveBeenCalled();
+      expect(kill).not.toHaveBeenCalled();
+      expect(spawn).toHaveBeenCalledTimes(1); // No taskkill for an already dead root.
+      expect(vi.getTimerCount()).toBe(0);
+      fake.emit('close', 0); // A late close cannot erase the failure result.
+      expect((await pending).cleanupIncomplete).toBe(true);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      vi.useRealTimers(); spawn.mockReset().mockImplementation(realSpawn); kill.mockRestore(); siblingPipe.destroy(); f.dispose();
+    }
+  });
+
+  it('settles a no-PID spawn error even if no close event arrives', async () => {
+    const f = fixture();
+    const fake = Object.assign(new EventEmitter(), {
+      pid: undefined, exitCode: null, signalCode: null,
+      stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(), unref: vi.fn(),
+    });
+    const spawn = vi.mocked(childProcess.spawn).mockClear().mockReturnValueOnce(fake as unknown as childProcess.ChildProcess);
+    vi.useFakeTimers();
+    try {
+      const pending = f.sandbox.run('tree', { cwd: f.workspace, timeoutMs: 20 });
+      fake.emit('error', new Error('ENOENT fixture'));
+      const result = await pending;
+      expect(result).toMatchObject({ code: null, timedOut: false });
+      expect(result.cleanupIncomplete).not.toBe(true);
+      expect(result.stderr).toContain('ENOENT fixture');
+      expect(fake.stdout.destroyed).toBe(true);
+      expect(fake.stderr.destroyed).toBe(true);
+      expect(fake.kill).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      for (const scratch of f.scratchDirectories) { expect(fs.existsSync(scratch)).toBe(false); }
+    } finally { vi.useRealTimers(); spawn.mockReset().mockImplementation(realSpawn); f.dispose(); }
+  });
+
+  it('settles failed process creation through close and releases listener and scratch state', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+    f.plan.mockImplementation((_command, _cwd, _network, scratch) => {
+      if (scratch) { f.scratchDirectories.push(scratch); }
+      return { file: path.join(f.workspace, 'does-not-exist'), args: [], sandboxed: false };
+    });
+    try {
+      const result = await f.sandbox.run('missing', { cwd: f.workspace, signal: controller.signal, timeoutMs: 5000 });
+      expect(result.code).not.toBe(0);
+      expect(result).toMatchObject({ timedOut: false });
+      expect(result.stderr).toMatch(/ENOENT/);
+      expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
+      for (const scratch of f.scratchDirectories) { expect(fs.existsSync(scratch)).toBe(false); }
+    } finally { removeListener.mockRestore(); f.dispose(); }
   });
 });

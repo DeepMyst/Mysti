@@ -1133,6 +1133,13 @@ export interface CollaboratorChunk {
   responseText?: string;
   /** Present on collab_complete/collab_error: whether the collaborator failed. */
   hasError?: boolean;
+  /**
+   * Pool-observed authority for a possible side effect, independent of later
+   * tool notifications. Monotonic within one dispatch, including follow-ups;
+   * true forbids replay/reroute even if the transport failed before reporting
+   * the tool. Present on terminal chunks; consumers must retain any true value.
+   */
+  mayHaveSideEffects?: boolean;
   /** Present on collab_error/collab_skipped: the structured failure reason. */
   failure?: CollaboratorFailure;
   /** Present on collab_skipped: install/auth hint for the user. */

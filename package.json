@@ -910,7 +910,7 @@
           "minimum": 1,
           "maximum": 16,
           "scope": "machine",
-          "markdownDescription": "Max sub-agent **delegations** per Mysti-agent run (doubled at high effort). The coordinator's own read-only tools (read/ls/grep/diag) have a separate budget and never consume delegation slots. Machine-scoped so a workspace cannot raise your per-run spend ceiling (consistent with the coordinator-model settings)."
+          "markdownDescription": "Max sub-agent **delegations**, including cross-vendor reviews, per Mysti-agent run (doubled at high effort). The coordinator's own read-only tools (read/ls/grep/diag) have a separate budget and never consume delegation slots. Machine-scoped so a workspace cannot raise your per-run spend ceiling (consistent with the coordinator-model settings)."
         },
         "mysti.mysti.maxTurns": {
           "type": "number",
@@ -938,7 +938,7 @@
             "After a delegation edits files, a DIFFERENT-vendor agent reviews the change read-only and its findings are fed back to the coordinator (advisory \u2014 never blocks)."
           ],
           "default": "off",
-          "markdownDescription": "**Cross-vendor review** (the coordinator-only superpower): after a delegation modifies files, Mysti dispatches a *different-vendor* backend (e.g. Anthropic wrote it \u2192 OpenAI or Google reviews it) in READ-ONLY mode to catch bugs the writer's own model would miss \u2014 decorrelated blind spots no single-vendor agent gets. `advisory` runs one review per run and feeds findings back to the coordinator; `off` (default) disables it. Costs one extra read-only delegation; requires \u22652 different-vendor backends installed."
+          "markdownDescription": "**Cross-vendor review** (the coordinator-only superpower): after a delegation modifies files, Mysti dispatches a *different-vendor* backend (e.g. Anthropic wrote it \u2192 OpenAI or Google reviews it) in READ-ONLY mode to catch bugs the writer's own model would miss \u2014 decorrelated blind spots no single-vendor agent gets. `advisory` runs one review per run and feeds findings back to the coordinator; `off` (default) disables it. Uses one remaining delegation slot and skips review when the limit is reached; requires \u22652 different-vendor backends installed."
         },
         "mysti.mysti.verify": {
           "scope": "machine",

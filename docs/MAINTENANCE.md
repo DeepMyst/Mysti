@@ -194,8 +194,14 @@ its absent native payload; platform archives require it.
 `node scripts/run-editor-tests.mjs` is the launch entry after compiling editor
 tests. It force-installs the selected archive in the private extensions directory
 and uses the configured fresh profile. `scripts/check-editor-runner.cjs` exercises
-14 actual child-process cases, including thrown/rejected assertions, failing
-setup/teardown, timeout, uncaught errors and empty/unfinished suites. CI runs
+28 actual child-process cases, including thrown/rejected assertions, failing
+setup/teardown, timeout, uncaught errors, empty/unfinished suites, focus/filter
+selection, missing or duplicate cases and unauthorized skips. The reviewed
+14-case identity manifest prevents a focused or renamed subset from silently
+passing acceptance. Only the named native Desk case may skip in a universal
+archive; native-required jobs reject that skip. Installation invokes the exact
+downloaded editor executable with literal arguments and no shell, preserving
+Windows paths containing spaces and metacharacters. CI runs
 those checks on development Node and exactly Node 18.17.1. A runner failure must
 fail the editor job; a successful fixture does not replace installed-archive
 acceptance.
@@ -271,6 +277,15 @@ No local automated run establishes authenticated provider compatibility or a
 multi-machine Desk workflow by itself. Capture those results explicitly before
 claiming production readiness for those capabilities.
 
+Local coordinator execution now carries a run-wide abort signal through
+approval, checkpoint, capability and sandbox paths. Stop prevents subsequent
+effects after awaited preparation and terminates the owned process group/tree.
+It cannot undo filesystem operations already started. If descendants escape a
+POSIX group or a Windows parent exits before tree termination, bounded cleanup
+returns an explicit failure and preserves scratch state; it does not claim those
+processes stopped. Stronger containment for that orphan case remains follow-up
+work, with actual platform acceptance required.
+
 ## Next architectural increments
 
 The current hardening adds independently testable chat interaction state and
@@ -280,7 +295,7 @@ them in reviewable feature increments with these acceptance criteria:
 
 | Increment | Completion criteria |
 | --- | --- |
-| Extract coordinator run orchestration | Model streams, budgets, tool dispatch and local execution approval policy now have separate owners. Native/text convergence, read batching, cancellation, replay and run-local telemetry have focused coverage. Delegation strategy and higher-level orchestration remain in the host. |
+| Extract coordinator run orchestration | Model streams, tool dispatch, delegation strategy and the model/tool/delegation loop now have separate owners. `CoordinatorDelegationRunner` owns backend availability, tier/fold state, safe reroute, verification and cross-review; `CoordinatorRunOrchestrator` owns cancellation handoffs, error/natural/capped completion and the single final-answer rescue. Reviews consume the shared delegation budget, diagnostics failures are unavailable, and native approval evidence prevents reroute after a possible effect. Host composition, actual permission/checkpoint effects and final persistence remain host-owned. |
 | Extract Canvas host integration | `CanvasTurnJobs` and `CanvasMcpSession` own turn liveness and MCP server/registration lifetimes. Latest-switch and close/start races have deferred-promise tests. Canvas tool dispatch and the remaining view lifecycle are further increments; browser and real-editor coverage remain required. |
 | Split the chat renderer | Markdown/diagrams, sub-agent cards, restored messages and main tool cards have explicit rendering ports. Preserve interleaved stream/history ordering and the existing state contract as further timeline and interaction features move out of the shell. |
 | Consolidate remaining interaction state | Questions, native approval cards, pending plans and queued continuations have explicit owners. Move remaining host-owned interaction lifecycles into independently testable services as they change. |

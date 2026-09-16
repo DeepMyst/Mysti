@@ -69,6 +69,9 @@ interface NativeChildApprovalScope {
   dispose(): void;
 }
 
+/** Per-dispatch evidence survives child disposal and never resets on a retry. */
+interface CollaboratorEffects { mayHaveSideEffects: boolean }
+
 /**
  * CollaboratorPool (Plan 14 Phase 0) — one shared, bounded dispatch primitive
  * for running N agents as collaborators/advisors/critics/reviewers.
@@ -111,10 +114,6 @@ export class CollaboratorPool {
    */
   private _closedRuns: Set<string> = new Set();
   private static readonly _closedRunsCap = 256;
-  /** Child panels where a gated WRITE was approved this run — a later crash/
-   * timeout on such an attempt must NOT retry (double-apply risk). Pruned in
-   * disposeRun. */
-  private _approvedWriteChildren: Set<string> = new Set();
 
   constructor(providerManager: PoolProviderManager) {
     this._providerManager = providerManager;
@@ -223,7 +222,6 @@ export class CollaboratorPool {
       } catch (err) {
         console.warn(`[Mysti] CollaboratorPool: disposeRun failed for ${childPanelId}:`, err);
       }
-      this._approvedWriteChildren.delete(childPanelId);
     }
     this._runChildProviders.delete(runId);
   }
@@ -302,6 +300,7 @@ export class CollaboratorPool {
     spec: CollaboratorSpec,
     options: CollaboratorDispatchOptions
   ): AsyncGenerator<CollaboratorChunk> {
+    const effects: CollaboratorEffects = { mayHaveSideEffects: false };
     const base = {
       collaboratorId: spec.collaboratorId,
       agentId: spec.agentId,
@@ -324,6 +323,7 @@ export class CollaboratorPool {
         type: 'collab_skipped',
         failure: 'not-installed',
         hasError: true,
+        mayHaveSideEffects: false,
         hint: status.installCommand ? `Install with: ${status.installCommand}` : 'See provider documentation.',
       };
       return;
@@ -334,13 +334,14 @@ export class CollaboratorPool {
         type: 'collab_skipped',
         failure: 'not-authenticated',
         hasError: true,
+        mayHaveSideEffects: false,
         hint: `${spec.label || spec.agentId} is installed but not authenticated. Sign in, then retry.`,
       };
       return;
     }
 
     // --- Dispatch with timeout + retry ---
-    const { responseText, hasError, failure } = yield* this._dispatchWithRetry(spec, options, base);
+    const { responseText, hasError, failure } = yield* this._dispatchWithRetry(spec, options, base, effects);
 
     yield {
       ...base,
@@ -348,13 +349,15 @@ export class CollaboratorPool {
       responseText,
       hasError,
       failure,
+      mayHaveSideEffects: effects.mayHaveSideEffects,
     };
   }
 
   private async *_dispatchWithRetry(
     spec: CollaboratorSpec,
     options: CollaboratorDispatchOptions,
-    base: Pick<CollaboratorChunk, 'collaboratorId' | 'agentId' | 'role' | 'label'>
+    base: Pick<CollaboratorChunk, 'collaboratorId' | 'agentId' | 'role' | 'label'>,
+    effects: CollaboratorEffects,
   ): AsyncGenerator<CollaboratorChunk, { responseText: string; hasError: boolean; failure?: CollaboratorFailure }> {
     let attempt = 0;
     let lastFailure: CollaboratorFailure | undefined;
@@ -376,16 +379,6 @@ export class CollaboratorPool {
       }
 
       const childPanelId = this._childPanelId(options, spec, attempt);
-      if (attempt === 0) {
-        // W4 review: stable P0.2e collaboratorIds mean successive delegations
-        // to the same agent REUSE these childPanelIds — the approved-write
-        // flag is per-DISPATCH state, not per-run, or one approved write
-        // would make every later delegation's transient failure terminal.
-        // Clear every attempt variant (retry ids are reused too).
-        for (let a = 0; a <= SUBAGENT_MAX_RETRIES; a++) {
-          this._approvedWriteChildren.delete(this._childPanelId(options, spec, a));
-        }
-      }
       this._rememberChild(options.runId, childPanelId);
       // Record for end-of-run disposal (retained beyond completion).
       this._recordRunChild(options.runId, childPanelId, spec.agentId);
@@ -421,7 +414,7 @@ export class CollaboratorPool {
           : options.settings.mode,
       };
 
-      const outcome = yield* this._streamOnce(spec, options, base, childPanelId, childSettings);
+      const outcome = yield* this._streamOnce(spec, options, base, childPanelId, childSettings, effects);
       this._forgetChild(options.runId, childPanelId);
 
       if (!outcome.hasError) {
@@ -436,7 +429,7 @@ export class CollaboratorPool {
       // Plan 18 (1.3/M4b): so is any attempt where a gated write was already
       // APPROVED — re-running the prompt from scratch could apply the write
       // twice. Surface the failure instead.
-      if (this._approvedWriteChildren.has(childPanelId)) {
+      if (effects.mayHaveSideEffects) {
         return outcome;
       }
       attempt++;
@@ -454,7 +447,8 @@ export class CollaboratorPool {
     options: CollaboratorDispatchOptions,
     base: Pick<CollaboratorChunk, 'collaboratorId' | 'agentId' | 'role' | 'label'>,
     childPanelId: string,
-    childSettings: Settings
+    childSettings: Settings,
+    effects: CollaboratorEffects,
   ): AsyncGenerator<CollaboratorChunk, { responseText: string; hasError: boolean; failure?: CollaboratorFailure }> {
     let responseText = '';
     let hasError = false;
@@ -469,7 +463,7 @@ export class CollaboratorPool {
     };
 
     try {
-      nativeApprovals = this._registerNativeApprovals(spec, options, childPanelId);
+      nativeApprovals = this._registerNativeApprovals(spec, options, childPanelId, effects);
       const stream = this._providerManager.sendMessageToProvider(
         spec.agentId,
         spec.prompt,
@@ -493,7 +487,8 @@ export class CollaboratorPool {
         } else if (chunk.type === 'tool_use' && chunk.toolCall) {
           // Native providers have already awaited the registered pre-execution
           // gate. Their subsequent tool notification must not ask a second time.
-          const allowed = nativeApprovals ? true : yield* this._gateToolUse(spec, options, base, childPanelId, chunk.toolCall);
+          this._noteToolEffects(spec, options, chunk.toolCall, effects);
+          const allowed = nativeApprovals ? true : yield* this._gateToolUse(spec, options, base, childPanelId, chunk.toolCall, effects);
           if (!allowed) {
             hasError = true;
             failure = 'denied';
@@ -504,7 +499,7 @@ export class CollaboratorPool {
           yield { ...base, type: 'collab_tool_result', toolCall: chunk.toolCall };
         } else if (chunk.type === 'ask_user_question' && chunk.askUserQuestion) {
           nativeApprovals?.dispose();
-          const followUp = yield* this._relayQuestion(spec, options, base, childPanelId, childSettings, chunk, responseText);
+          const followUp = yield* this._relayQuestion(spec, options, base, childPanelId, childSettings, chunk, responseText, effects);
           responseText = followUp.responseText;
           if (followUp.hasError) {
             hasError = true;
@@ -516,12 +511,12 @@ export class CollaboratorPool {
         } else if (chunk.type === 'auth_error') {
           hasError = true;
           failure = 'not-authenticated';
-          yield { ...base, type: 'collab_error', failure, content: chunk.content || 'Authentication required', hasError: true };
+          yield { ...base, type: 'collab_error', failure, content: chunk.content || 'Authentication required', hasError: true, mayHaveSideEffects: effects.mayHaveSideEffects };
           break;
         } else if (chunk.type === 'error') {
           hasError = true;
           failure = 'stream-error';
-          yield { ...base, type: 'collab_error', failure, content: chunk.content, hasError: true };
+          yield { ...base, type: 'collab_error', failure, content: chunk.content, hasError: true, mayHaveSideEffects: effects.mayHaveSideEffects };
           break;
         }
         // 'done' / 'session_active' / other transport chunks: completion is the
@@ -530,7 +525,7 @@ export class CollaboratorPool {
     } catch (err) {
       hasError = true;
       failure = timedOut ? 'timeout' : 'crashed';
-      yield { ...base, type: 'collab_error', failure, content: err instanceof Error ? err.message : 'Unknown error', hasError: true };
+      yield { ...base, type: 'collab_error', failure, content: err instanceof Error ? err.message : 'Unknown error', hasError: true, mayHaveSideEffects: effects.mayHaveSideEffects };
     } finally {
       nativeApprovals?.dispose();
     }
@@ -539,7 +534,7 @@ export class CollaboratorPool {
       hasError = true;
       failure = 'denied';
       for (const denied of nativeApprovals.denied) {
-        yield { ...base, type: 'collab_tool_denied', toolCall: denied.toolCall, content: denied.reason };
+        yield { ...base, type: 'collab_tool_denied', toolCall: denied.toolCall, content: denied.reason, mayHaveSideEffects: effects.mayHaveSideEffects };
       }
       this._providerManager.cancelRequest(childPanelId);
     } else if (nativeApprovals?.cancelled && !timedOut) {
@@ -551,13 +546,13 @@ export class CollaboratorPool {
     if (timedOut && !hasError) {
       hasError = true;
       failure = 'timeout';
-      yield { ...base, type: 'collab_error', failure, content: `Collaborator timed out after ${Math.round(timeoutMs / 1000)}s`, hasError: true };
+      yield { ...base, type: 'collab_error', failure, content: `Collaborator timed out after ${Math.round(timeoutMs / 1000)}s`, hasError: true, mayHaveSideEffects: effects.mayHaveSideEffects };
     }
 
     if (!hasError && responseText.trim().length === 0) {
       hasError = true;
       failure = 'empty-response';
-      yield { ...base, type: 'collab_error', failure, content: 'Collaborator returned no output', hasError: true };
+      yield { ...base, type: 'collab_error', failure, content: 'Collaborator returned no output', hasError: true, mayHaveSideEffects: effects.mayHaveSideEffects };
     }
 
     return { responseText, hasError, failure };
@@ -633,6 +628,7 @@ export class CollaboratorPool {
     spec: CollaboratorSpec,
     options: CollaboratorDispatchOptions,
     childPanelId: string,
+    effects: CollaboratorEffects,
   ): NativeChildApprovalScope | undefined {
     if (!this._providerManager.getProviderInstance?.(spec.agentId)?.capabilities.supportsNativeApproval) { return undefined; }
     const register = this._providerManager.setNativeApprovalHandlerForPanel;
@@ -668,7 +664,7 @@ export class CollaboratorPool {
       // Native approval is a real pre-execution decision. Once a non-read
       // action may have run, a later transport failure cannot retry the prompt.
       if (policy.mayHaveSideEffects) {
-        this._approvedWriteChildren.add(childPanelId.replace(/-followup$/, ''));
+        effects.mayHaveSideEffects = true;
       }
       return true;
     };
@@ -744,21 +740,34 @@ export class CollaboratorPool {
     options: CollaboratorDispatchOptions,
     base: Pick<CollaboratorChunk, 'collaboratorId' | 'agentId' | 'role' | 'label'>,
     childPanelId: string,
-    toolCall: NonNullable<StreamChunk['toolCall']>
+    toolCall: NonNullable<StreamChunk['toolCall']>,
+    effects: CollaboratorEffects,
   ): AsyncGenerator<CollaboratorChunk, boolean> {
     if (this._providerManager.getProviderInstance?.(spec.agentId)?.capabilities.toolExecution === 'proposal-only') { return true; }
     const policy = this._toolPolicy(spec, options, toolCall);
     if (policy.decision === 'allow') {
-      if (policy.mayHaveSideEffects) { this._approvedWriteChildren.add(childPanelId.replace(/-followup$/, '')); }
       return true;
     }
     yield {
       ...base, type: 'collab_tool_denied', toolCall,
+      mayHaveSideEffects: effects.mayHaveSideEffects,
       content: `Stopped ${spec.label || spec.agentId}: ${toolCall.name} was reported without native approval. The operation may already have executed. ${policy.decision === 'deny' ? policy.reason : ''}`.trim(),
     };
     this._forgetChild(options.runId, childPanelId);
     this._providerManager.cancelRequest(childPanelId);
     return false;
+  }
+
+  /** Legacy notifications may arrive after execution, including forbidden tools. */
+  private _noteToolEffects(
+    spec: CollaboratorSpec,
+    options: CollaboratorDispatchOptions,
+    toolCall: NonNullable<StreamChunk['toolCall']>,
+    effects: CollaboratorEffects,
+  ): void {
+    if (this._providerManager.getProviderInstance?.(spec.agentId)?.capabilities.toolExecution === 'proposal-only') { return; }
+    const policy = this._toolPolicy(spec, options, toolCall);
+    if (policy.decision !== 'allow' || policy.mayHaveSideEffects) { effects.mayHaveSideEffects = true; }
   }
 
   /**
@@ -774,7 +783,8 @@ export class CollaboratorPool {
     childPanelId: string,
     childSettings: Settings,
     questionChunk: StreamChunk,
-    priorText: string
+    priorText: string,
+    effects: CollaboratorEffects,
   ): AsyncGenerator<CollaboratorChunk, { responseText: string; hasError: boolean; failure?: CollaboratorFailure }> {
     let responseText = priorText;
 
@@ -826,7 +836,7 @@ export class CollaboratorPool {
     let nativeApprovals: NativeChildApprovalScope | undefined;
     let followUpTimedOut = false;
     try {
-      nativeApprovals = this._registerNativeApprovals(spec, options, followUpPanelId);
+      nativeApprovals = this._registerNativeApprovals(spec, options, followUpPanelId, effects);
       const followUpStream = this._providerManager.sendMessageToProvider(
         spec.agentId,
         followUpPrompt,
@@ -850,24 +860,25 @@ export class CollaboratorPool {
         } else if (chunk.type === 'thinking' && chunk.content) {
           yield { ...base, type: 'collab_thinking', content: chunk.content };
         } else if (chunk.type === 'tool_use' && chunk.toolCall) {
-          const allowed = nativeApprovals ? true : yield* this._gateToolUse(spec, options, base, followUpPanelId, chunk.toolCall);
+          this._noteToolEffects(spec, options, chunk.toolCall, effects);
+          const allowed = nativeApprovals ? true : yield* this._gateToolUse(spec, options, base, followUpPanelId, chunk.toolCall, effects);
           if (!allowed) { hasError = true; failure = 'denied'; break; }
           yield { ...base, type: 'collab_tool_use', toolCall: chunk.toolCall };
         } else if (chunk.type === 'tool_result' && chunk.toolCall) {
           yield { ...base, type: 'collab_tool_result', toolCall: chunk.toolCall };
         } else if (chunk.type === 'error') {
           hasError = true; failure = 'stream-error';
-          yield { ...base, type: 'collab_error', failure, content: chunk.content, hasError: true };
+          yield { ...base, type: 'collab_error', failure, content: chunk.content, hasError: true, mayHaveSideEffects: effects.mayHaveSideEffects };
           break;
         }
       }
       if (followUpTimedOut) {
         hasError = true; failure = 'timeout';
-        yield { ...base, type: 'collab_error', failure, content: 'Follow-up response timed out.', hasError: true };
+        yield { ...base, type: 'collab_error', failure, content: 'Follow-up response timed out.', hasError: true, mayHaveSideEffects: effects.mayHaveSideEffects };
       }
     } catch (err) {
       hasError = true; failure = 'crashed';
-      yield { ...base, type: 'collab_error', failure, content: err instanceof Error ? err.message : 'Unknown error', hasError: true };
+      yield { ...base, type: 'collab_error', failure, content: err instanceof Error ? err.message : 'Unknown error', hasError: true, mayHaveSideEffects: effects.mayHaveSideEffects };
     } finally {
       nativeApprovals?.dispose();
       this._forgetChild(options.runId, followUpPanelId);
@@ -877,7 +888,7 @@ export class CollaboratorPool {
       hasError = true;
       failure = 'denied';
       for (const denied of nativeApprovals.denied) {
-        yield { ...base, type: 'collab_tool_denied', toolCall: denied.toolCall, content: denied.reason };
+        yield { ...base, type: 'collab_tool_denied', toolCall: denied.toolCall, content: denied.reason, mayHaveSideEffects: effects.mayHaveSideEffects };
       }
       this._providerManager.cancelRequest(followUpPanelId);
     } else if (nativeApprovals?.cancelled && !followUpTimedOut) {

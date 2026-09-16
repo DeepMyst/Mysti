@@ -330,7 +330,91 @@ describe('CollaboratorPool native approvals through ProviderManager', () => {
     expect(h.decisions[0].decision).toBe('allow');
     expect(h.calls).toHaveLength(1);
     expect(completions(chunks)[0].failure).toBe('crashed');
+    expect(completions(chunks)[0].mayHaveSideEffects).toBe(true);
+    expect(chunks.find(chunk => chunk.type === 'collab_error')?.mayHaveSideEffects).toBe(true);
+    expect(chunks.some(chunk => chunk.type === 'collab_tool_use')).toBe(false);
     expect(chunks.some(chunk => chunk.type === 'collab_retry')).toBe(false);
+  });
+
+  it.each(['Task', 'Agent', 'WebFetch', 'Bash'])('reports an approved %s effect before any execution notification arrives', async name => {
+    const h = harness(async function* (turn) {
+      expect(await turn.ask(name)).toBe('allow');
+      yield { type: 'error', content: 'lost transport after approval' };
+    });
+    const chunks = await collectCollabChunks(h.pool.dispatch([collabSpec('a', 'hermes', { access: 'gated-write' })], collabOptions({ onGate: async () => true })));
+    expect(h.calls).toHaveLength(1);
+    expect(chunks.some(chunk => chunk.type === 'collab_tool_use')).toBe(false);
+    expect(chunks.filter(chunk => chunk.type === 'collab_error' || chunk.type === 'collab_complete'))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'collab_error', failure: 'stream-error', mayHaveSideEffects: true }),
+        expect.objectContaining({ type: 'collab_complete', failure: 'stream-error', mayHaveSideEffects: true }),
+      ]));
+  });
+
+  it.each(['read', 'denied', 'hard-denied'])('does not claim execution authority for a %s native request', async kind => {
+    const h = harness(async function* (turn) {
+      await turn.ask(kind === 'read' ? 'Read' : 'Write', kind === 'hard-denied' ? 'deny' : 'ask');
+      yield { type: 'text', content: 'finished' };
+    });
+    const chunks = await collectCollabChunks(h.pool.dispatch([collabSpec('a', 'hermes', { access: 'gated-write' })], collabOptions({ onGate: async () => kind === 'read' })));
+    expect(completions(chunks)[0].mayHaveSideEffects).toBe(false);
+  });
+
+  it('retains approved-effect evidence through Stop and run disposal while a later gate is pending', async () => {
+    const arrived = deferred<void>();
+    const answer = deferred<boolean>();
+    const h = harness(async function* (turn) {
+      expect(await turn.ask('Write')).toBe('allow');
+      expect(await turn.ask('Bash')).toBe('cancelled');
+      yield { type: 'done' };
+    });
+    const pending = collectCollabChunks(h.pool.dispatch([collabSpec('a', 'hermes', { access: 'gated-write' })], collabOptions({
+      onGate: (_spec, tool) => {
+        if (tool.name === 'Write') { return Promise.resolve(true); }
+        arrived.resolve();
+        return answer.promise;
+      },
+    })));
+    await arrived.promise;
+    h.pool.disposeRun('run-1');
+    answer.resolve(true);
+    const chunks = await pending;
+    expect(completions(chunks)[0]).toMatchObject({ failure: 'cancelled', mayHaveSideEffects: true });
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('retains effect evidence on an approved-action timeout without replaying the task', async () => {
+    vi.useFakeTimers();
+    const arrived = deferred<void>();
+    const h = harness(async function* (turn) {
+      expect(await turn.ask('Write')).toBe('allow');
+      arrived.resolve();
+      await new Promise<void>(() => {});
+      yield { type: 'done' };
+    });
+    const pending = collectCollabChunks(h.pool.dispatch([collabSpec('a', 'hermes', { access: 'gated-write', timeoutMs: 20 })], collabOptions({ onGate: async () => true })));
+    await arrived.promise;
+    await vi.advanceTimersByTimeAsync(25);
+    const chunks = await pending;
+    expect(completions(chunks)[0]).toMatchObject({ failure: 'timeout', mayHaveSideEffects: true });
+    expect(h.calls).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('resets effect evidence for a later dispatch that reuses the stable child identity', async () => {
+    let attempt = 0;
+    const h = harness(async function* (turn) {
+      if (attempt++ === 0) { await turn.ask('Write'); }
+      throw new Error('transport failure');
+    });
+    const spec = collabSpec('a', 'hermes', { access: 'gated-write' });
+    const options = collabOptions({ onGate: async () => true });
+    const first = await collectCollabChunks(h.pool.dispatch([spec], options));
+    const second = await collectCollabChunks(h.pool.dispatch([spec], options));
+    expect(completions(first)[0].mayHaveSideEffects).toBe(true);
+    expect(completions(second)[0].mayHaveSideEffects).toBe(false);
+    expect(second.some(chunk => chunk.type === 'collab_retry')).toBe(true);
+    expect(h.calls).toHaveLength(3);
   });
 
   it('registers question follow-ups and attributes their approved writes to the original retry attempt', async () => {
@@ -351,6 +435,8 @@ describe('CollaboratorPool native approvals through ProviderManager', () => {
     expect(gate).toHaveBeenCalledTimes(1);
     expect(h.decisions).toEqual([{ panelId: h.calls[1], decision: 'allow' }]);
     expect(completions(chunks)[0].failure).toBe('crashed');
+    expect(completions(chunks)[0].mayHaveSideEffects).toBe(true);
+    expect(chunks.find(chunk => chunk.type === 'collab_error')?.mayHaveSideEffects).toBe(true);
     expect(chunks.some(chunk => chunk.type === 'collab_retry')).toBe(false);
     expect(h.suspend).not.toHaveBeenCalled();
   });

@@ -35,6 +35,7 @@ import { spawn, type SpawnOptions } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { killProcessTree } from '../utils/processKill';
 
 export interface SandboxResult {
   code: number | null;
@@ -43,6 +44,10 @@ export interface SandboxResult {
   /** Whether the command actually ran under an OS sandbox. */
   sandboxed: boolean;
   timedOut: boolean;
+  /** The owning run stopped before this command completed. */
+  cancelled?: boolean;
+  /** Teardown could not confirm closure; surviving descendants may remain. */
+  cleanupIncomplete?: boolean;
 }
 
 export interface SandboxRunOpts {
@@ -50,6 +55,8 @@ export interface SandboxRunOpts {
   /** Allow network egress (default false). */
   network?: boolean;
   timeoutMs?: number;
+  /** Run ownership, including cancellation after an approval/checkpoint wait. */
+  signal?: AbortSignal;
 }
 
 /** The contract MystiLocalExec depends on (so tests can inject a fake). */
@@ -88,6 +95,7 @@ const SANDBOX_DENIED_READ_DIRS = [
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_CHARS = 30_000;
+const CLOSE_GRACE_MS = 1000;
 
 export class MystiSandbox implements SandboxRunner {
   /** Whether a real OS sandbox is available on this platform. */
@@ -98,6 +106,9 @@ export class MystiSandbox implements SandboxRunner {
   }
 
   async run(command: string, opts: SandboxRunOpts): Promise<SandboxResult> {
+    if (opts.signal?.aborted) {
+      return { code: null, stdout: '', stderr: '', sandboxed: false, timedOut: false, cancelled: true };
+    }
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const network = !!opts.network;
     // Real path so the profile's subpath rule matches writes under a symlinked
@@ -117,6 +128,7 @@ export class MystiSandbox implements SandboxRunner {
     if (process.platform === 'darwin' && this.available()) {
       try { scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-bash-'))); } catch { scratch = null; }
     }
+    let preserveScratch = false;
     try {
       const plan = this._buildSpawn(command, cwd, network, scratch);
       // Scrub the extension host's secrets from the shell env — the coordinator
@@ -126,9 +138,11 @@ export class MystiSandbox implements SandboxRunner {
       // sandboxed command cannot borrow the user's ssh-agent.
       const env = this._scrubEnv(process.env);
       if (scratch) { env.TMPDIR = scratch; env.TMP = scratch; env.TEMP = scratch; }
-      return await this._exec(plan.file, plan.args, cwd, env, timeoutMs, plan.sandboxed);
+      const result = await this._exec(plan.file, plan.args, cwd, env, timeoutMs, plan.sandboxed, opts.signal);
+      preserveScratch = !!result.cleanupIncomplete;
+      return result;
     } finally {
-      if (scratch) { try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* best-effort */ } }
+      if (scratch && !preserveScratch) { try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* best-effort */ } }
     }
   }
 
@@ -221,36 +235,86 @@ export class MystiSandbox implements SandboxRunner {
     return lines.join('\n');
   }
 
-  private _exec(file: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number, sandboxed: boolean): Promise<SandboxResult> {
+  private _exec(file: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number, sandboxed: boolean, signal?: AbortSignal): Promise<SandboxResult> {
     return new Promise<SandboxResult>((resolve) => {
       let stdout = '';
       let stderr = '';
       let timedOut = false;
+      let cancelled = false;
+      let cleanupIncomplete = false;
       let settled = false;
-      const opts: SpawnOptions = { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] };
+      let stopping: Promise<void> | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let closeTimer: ReturnType<typeof setTimeout> | undefined;
+      // Only a detached POSIX spawn owns the negative-pid process group. Never
+      // signal the extension host's shared group; Windows uses taskkill /T.
+      const opts: SpawnOptions = { cwd, env, detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] };
       let child: ReturnType<typeof spawn>;
       const finish = (code: number | null) => {
         if (settled) { return; }
         settled = true;
         clearTimeout(timer);
-        resolve({ code, stdout: this._cap(stdout), stderr: this._cap(stderr), sandboxed, timedOut });
+        timer = undefined;
+        clearTimeout(closeTimer);
+        closeTimer = undefined;
+        signal?.removeEventListener('abort', onAbort);
+        resolve({ code: timedOut || cancelled || cleanupIncomplete ? null : code, stdout: this._cap(stdout), stderr: this._cap(stderr), sandboxed, timedOut, ...(cancelled ? { cancelled: true } : {}), ...(cleanupIncomplete ? { cleanupIncomplete: true } : {}) });
       };
-      const timer = setTimeout(() => {
-        timedOut = true;
-        try { child?.kill('SIGKILL'); } catch { /* already gone */ }
-        finish(null);
-      }, timeoutMs);
+      const stop = (reason: 'cancelled' | 'timeout') => {
+        if (settled || stopping) { return; }
+        cancelled = reason === 'cancelled';
+        timedOut = reason === 'timeout';
+        clearTimeout(timer);
+        timer = undefined;
+        // A Windows root may already have exited, or a POSIX descendant may
+        // have escaped the owned process group while retaining our pipes. Do
+        // not guess another PID or hang forever waiting for an unknown tree.
+        closeTimer = setTimeout(() => {
+          if (settled) { return; }
+          cleanupIncomplete = true;
+          stderr = 'sandbox: cleanup incomplete — process closure could not be confirmed; descendants may still be running. The sandbox temporary directory, if created, was preserved.\n' + stderr;
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          finish(null);
+        }, CLOSE_GRACE_MS);
+        // Kill the group even when its leader exited: descendants may still
+        // hold stdout/stderr open. The shared helper intentionally skips dead
+        // root processes, which would leave this particular group orphaned.
+        if (process.platform !== 'win32' && typeof child.pid === 'number') {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+            stopping = Promise.resolve();
+            return;
+          } catch { /* no group remains, or fall back to the owned child */ }
+        }
+        stopping = killProcessTree(child, 250, { initialSignal: 'SIGKILL', label: 'coordinator sandbox' });
+      };
+      const onAbort = () => stop('cancelled');
+      if (signal?.aborted) { cancelled = true; finish(null); return; }
       try {
         child = spawn(file, args, opts);
       } catch (e) {
-        clearTimeout(timer);
-        resolve({ code: null, stdout: '', stderr: `sandbox: failed to spawn — ${e instanceof Error ? e.message : e}`, sandboxed, timedOut: false });
+        stderr = `sandbox: failed to spawn — ${e instanceof Error ? e.message : e}`;
+        finish(null);
         return;
       }
       child.stdout?.on('data', (d: Buffer) => { if (stdout.length < MAX_OUTPUT_CHARS * 2) { stdout += d.toString(); } });
       child.stderr?.on('data', (d: Buffer) => { if (stderr.length < MAX_OUTPUT_CHARS * 2) { stderr += d.toString(); } });
-      child.on('error', (e) => { stderr += `\n${e instanceof Error ? e.message : e}`; finish(null); });
-      child.on('close', (code) => finish(code));
+      child.on('error', (e) => {
+        stderr += `\n${e instanceof Error ? e.message : e}`;
+        if (child.pid === undefined) {
+          // No process was created, so no descendant can retain the scratch.
+          child.stdout?.destroy(); child.stderr?.destroy(); finish(null);
+        }
+      });
+      // close, unlike exit, means inherited output pipes have also closed.
+      // Prefer confirmed closure and Windows tree termination; the watchdog
+      // reports unconfirmed cleanup without deleting the private temp dir.
+      child.on('close', (code) => { void Promise.resolve(stopping).then(() => finish(code)); });
+      timer = setTimeout(() => stop('timeout'), timeoutMs);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) { onAbort(); }
     });
   }
 

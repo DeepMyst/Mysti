@@ -44,6 +44,7 @@ function createHarness() {
       listRunning: (panelId: string) => [...jobs.values()].filter(job => job.panelId === panelId),
     },
     _mystiAbortControllers: new Map(),
+    _mystiExecutionAborts: new Map(),
     _mystiActiveDelegationRuns: new Map(),
     _cancelledPanels: new Set(),
     _subAgentQuestions: new SubAgentQuestionBroker(),

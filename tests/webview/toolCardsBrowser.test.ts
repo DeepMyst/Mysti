@@ -57,6 +57,7 @@ describe('main tool cards under the shipped chat CSP', () => {
             cleanPathsInString: value => value, makeRelativePath: value => value,
             onResult: () => {}, scroll: () => {}
           });
+          window.cards.begin();
           messages.addEventListener('click', function(e) { ${clicks} });
         </script></body></html>` });
     });

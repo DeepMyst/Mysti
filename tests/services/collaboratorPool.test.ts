@@ -291,6 +291,8 @@ describe('CollaboratorPool', () => {
       expect(resumeSpy).not.toHaveBeenCalled();
       const complete = chunks.find(c => c.type === 'collab_complete');
       expect(complete!.failure).toBe('denied');
+      expect(complete!.mayHaveSideEffects).toBe(true);
+      expect(chunks.find(c => c.type === 'collab_tool_denied')?.mayHaveSideEffects).toBe(true);
     });
 
     it('stops a notification-only write without invoking the host hook', async () => {
@@ -669,6 +671,7 @@ describe('CollaboratorPool web-request policy (Plan 18 F5)', () => {
 
     expect(gateAsked).toBe(false);
     expect(chunks.some(c => c.type === 'collab_tool_use')).toBe(true);
+    expect(chunks.find(c => c.type === 'collab_complete')?.mayHaveSideEffects).toBe(true);
   });
 });
 

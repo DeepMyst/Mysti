@@ -39,7 +39,7 @@ vi.mock('../../src/managers/PlanOptionManager', () => ({
 
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { PermissionManager } from '../../src/managers/PermissionManager';
-import { clearMockConfig, Uri } from '../helpers/mockVscode';
+import { clearMockConfig, setMockConfig, Uri } from '../helpers/mockVscode';
 import type { Settings, StreamChunk, WebviewMessage } from '../../src/types';
 import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 
@@ -474,6 +474,105 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
     };
   }
 
+  function delegatedTurn() {
+    let turn = 0;
+    const seen: Array<Array<{ role: string; content: string }>> = [];
+    const c = coordinator(async function* (...args: unknown[]) {
+      const messages = args[0] as Array<{ role: string; content: string }>;
+      seen.push(structuredClone(messages));
+      if (turn++ === 0) {
+        const nonce = messages.map(message => message.content).join('\n').match(/<delegate:([A-Za-z0-9]{6,})\s+agent/)?.[1];
+        yield { text: `<delegate:${nonce} agent="claude-code">implement the change</delegate>` };
+      } else { yield { text: 'Finished.' }; }
+    });
+    c.provider._availableMystiBackends = () => ['claude-code', 'openai-codex'];
+    c.provider._projectContextManager.scanWorkspace = vi.fn(async () => ({}));
+    return { ...c, seen };
+  }
+
+  it.each([1, 2])('enforces the shared delegation cap including cross-review (cap %s)', async cap => {
+    setMockConfig('mysti.maxDelegations', cap);
+    setMockConfig('mysti.crossReview', 'advisory');
+    setMockConfig('mysti.verify', 'off');
+    const c = delegatedTurn();
+    c.provider._runMystiDelegation = vi.fn(async () => ({ text: 'Changed a.ts', hasError: false, wrote: true }));
+    await c.run();
+    expect(c.provider._runMystiDelegation).toHaveBeenCalledTimes(cap);
+    const receipt = h.sidebarMessages.find(message => message.type === 'responseComplete')?.payload?.usage;
+    expect(receipt.delegations).toBe(cap);
+    const cards = getAssistantPersistCall(h)[6].toolCalls;
+    expect(cards.map((card: any) => card.name)).toEqual(cap === 1 ? ['delegate'] : ['delegate', 'review']);
+    if (cap === 2) {
+      const args = c.provider._runMystiDelegation.mock.calls[1];
+      expect(args[0]).toBe('openai-codex');
+      expect(args[9]).toBeUndefined(); // Review does not fold attachments.
+      expect(args[11]).toBe(true); // Host grants only the review-only spec.
+      expect(c.seen[1].at(-1)?.content).toContain('Cross-vendor review');
+    }
+  });
+
+  it('preserves native approval effects from terminal pool chunks and never reroutes a lost notification', async () => {
+    const c = delegatedTurn();
+    const dispatch = vi.spyOn(c.provider._collaboratorPool, 'dispatch').mockImplementation(async function* () {
+      yield { type: 'collab_error', hasError: true, failure: 'stream-error', content: 'transport lost' };
+      yield { type: 'collab_complete', hasError: true, mayHaveSideEffects: true };
+    } as any);
+    await c.run();
+    expect(dispatch).toHaveBeenCalledOnce();
+    const cards = getAssistantPersistCall(h)[6].toolCalls;
+    expect(cards).toHaveLength(1);
+    expect(cards[0].status).toBe('failed');
+    expect(cards[0].output).not.toContain('rerouting');
+    expect(h.sidebarMessages.find(message => message.type === 'responseComplete')?.payload?.usage.delegations).toBe(1);
+  });
+
+  it('reports a failed diagnostics query as unavailable in the actual coordinator replay', async () => {
+    const c = delegatedTurn();
+    c.provider._runMystiDelegation = vi.fn(async () => ({ text: 'Changed a.ts', hasError: false, wrote: true }));
+    vi.spyOn(c.provider._mystiLocalTools, 'diag').mockRejectedValue(new Error('diagnostics unavailable'));
+    c.provider._projectContextManager.scanWorkspace = vi.fn(async () => ({}));
+    await c.run();
+    const feedback = c.seen[1].at(-1)?.content ?? '';
+    expect(feedback).toContain('Editor diagnostics: unavailable');
+    expect(feedback).not.toContain('clean (no errors/warnings)');
+  });
+
+  it('aborts the run-owned local effect after Stop and keeps cancellation sticky without touching a sibling', async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    let localSignal!: AbortSignal;
+    let cancelled!: () => boolean;
+    const c = coordinator(async function* (...args: unknown[]) {
+      const messages = args[0] as Array<{ content: string }>;
+      const nonce = messages.map(message => message.content).join('\n').match(/<delegate:([A-Za-z0-9]{6,})\s+agent/)?.[1];
+      yield { text: `<bash:${nonce}>npm test</bash>` };
+    });
+    c.provider._mystiLocalExecEnabled = () => true;
+    c.provider._runMystiLocalExec = vi.fn(async (...args: any[]) => {
+      cancelled = args[5];
+      localSignal = args[6];
+      expect(localSignal.aborted).toBe(false);
+      markStarted();
+      await new Promise<void>(resolve => localSignal.addEventListener('abort', () => resolve(), { once: true }));
+      return { ok: false, output: 'Local execution was cancelled.' };
+    });
+    const sibling = new AbortController();
+    c.provider._mystiExecutionAborts.set('sibling-job', sibling);
+    const work = c.run();
+    await started;
+    c.provider._abortMystiDirect('sidebar');
+    // The transient UI flag can be cleared before slow process cleanup settles.
+    c.provider._cancelledPanels.clear();
+    expect(localSignal.aborted).toBe(true);
+    expect(cancelled()).toBe(true);
+    expect(sibling.signal.aborted).toBe(false);
+    await work;
+    expect(c.provider._mystiExecutionAborts.has('sidebar')).toBe(false);
+    expect(c.provider._mystiExecutionAborts.get('sibling-job')).toBe(sibling);
+    expect(h.sidebarMessages.some(message => message.type === 'responseComplete')).toBe(false);
+    expect(h.sidebarMessages.some(message => message.type === 'requestCancelled')).toBe(true);
+  });
+
   it.each(['event', 'throw'] as const)('turns a credential %s into an action card and preserves the incomplete answer', async transport => {
     const signals: AbortSignal[] = [];
     const c = coordinator(async function* (...args: unknown[]) {
@@ -568,6 +667,37 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
     expect(stream).toHaveBeenCalledTimes(outcome === 'superseded' ? 1 : 0);
     expect(h.persistedCalls.filter(call => call[1] === 'assistant')).toHaveLength(assistantCalls);
     expect(h.sidebarMessages.filter(message => message.type === 'responseComplete')).toHaveLength(completionCount);
+  });
+
+  it('keeps preflight Stop sticky when a retry UI action clears the transient flag', async () => {
+    const stream = vi.fn(async function* () { yield { text: 'Must not start.' }; });
+    const c = coordinator(stream);
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    let resolveModel!: (model: string) => void;
+    c.resolveCoordinatorModel.mockImplementationOnce(() => {
+      entered();
+      return new Promise<string>(resolve => { resolveModel = resolve; });
+    });
+    const close = vi.fn(async () => undefined);
+    vi.spyOn(c.provider, '_mystiMcpToolset').mockResolvedValue({ tools: [], client: { close } });
+    c.provider._brainstormManager.cancelSession = vi.fn();
+    c.provider._providerManager.getAllProviderIds = () => [];
+    c.provider._mentionRouter.cancelSubAgents = vi.fn();
+    const work = c.run();
+    await waiting;
+    const owner = c.provider._mystiExecutionAborts.get('sidebar');
+    expect(owner).toBeDefined();
+    await c.provider._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
+    await c.provider._handleMessage({ type: 'retrySubAgent', panelId: 'sidebar', payload: { agentId: 'claude-code' } });
+    expect(c.provider._cancelledPanels.has('sidebar')).toBe(false);
+    expect(owner.signal.aborted).toBe(true);
+    resolveModel('obsolete-model');
+    await work;
+    expect(stream).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+    expect(c.provider._mystiExecutionAborts.has('sidebar')).toBe(false);
+    expect(h.sidebarMessages.some(message => message.type === 'responseComplete')).toBe(false);
   });
 
   it('persists partial text after Stop and never publishes a clean completion', async () => {

@@ -10,6 +10,8 @@ interface Cards {
   summary(tool: unknown): string;
   use(tool: unknown): void;
   result(tool: unknown): void;
+  begin(): void;
+  end(): void;
   reset(): void;
   dispose(): void;
 }
@@ -29,6 +31,7 @@ function harness() {
   dom.window.eval(source);
   const factory = (dom.window as unknown as { MystiToolCards: { create(ports: unknown): Cards } }).MystiToolCards;
   const cards = factory.create(ports);
+  cards.begin();
   return { cards, factory, ports, document, messages, body, getStreamingBody, scroll, onResult,
     card: (index = 0) => body.querySelectorAll<HTMLElement>('.tool-call')[index] };
 }
@@ -139,6 +142,7 @@ describe('main tool-card owner', () => {
     h.cards.reset();
     h.cards.result({ id: 'call', status: 'failed' });
     expect(h.onResult).not.toHaveBeenCalled();
+    h.cards.begin();
     h.cards.use(tool());
     h.cards.result({ id: 'call', status: 'completed' });
     expect(h.body.querySelectorAll('.tool-call')).toHaveLength(2);
@@ -158,6 +162,7 @@ describe('main tool-card owner', () => {
   it('isolates instances sharing one message container', () => {
     const h = harness();
     const second = h.factory.create(h.ports);
+    second.begin();
     h.cards.use(tool());
     second.use(tool());
     h.cards.result({ id: 'call', status: 'failed' });
@@ -172,10 +177,42 @@ describe('main tool-card owner', () => {
     h.cards.use(tool());
     h.cards.dispose();
     h.cards.dispose();
+    h.cards.begin();
     h.cards.result({ id: 'call', status: 'completed' });
     h.cards.use(tool('late'));
     expect(h.onResult).not.toHaveBeenCalled();
     expect(h.body.querySelectorAll('.tool-call')).toHaveLength(1);
+  });
+
+  it.each(['end', 'reset'] as const)('%s closes intake until an explicit new turn while restored cards remain usable', terminal => {
+    const h = harness();
+    h.cards.use(tool());
+    h.cards[terminal]();
+    const stopped = h.card().outerHTML;
+    h.cards.use(tool('call', { path: '/workspace/late.ts' }));
+    h.cards.use(tool('late-new-id'));
+    h.cards.result({ id: 'call', status: 'completed', output: 'late output' });
+    expect(h.body.querySelectorAll('.tool-call')).toHaveLength(1);
+    expect(h.card().outerHTML).toBe(stopped);
+    expect(h.getStreamingBody).toHaveBeenCalledOnce();
+    expect(h.onResult).not.toHaveBeenCalled();
+    const restored = h.cards.build({ ...tool('history'), status: 'completed', output: 'saved' });
+    expect(restored.textContent).toContain('saved');
+    h.cards.begin();
+    h.cards.use(tool());
+    h.cards.result({ id: 'call', status: 'completed' });
+    expect(h.body.querySelectorAll('.tool-call')).toHaveLength(2);
+    expect(h.onResult).toHaveBeenCalledOnce();
+  });
+
+  it('starts with closed intake but supports standalone restored cards and summaries', () => {
+    const h = harness();
+    const cards = h.factory.create(h.ports);
+    cards.use(tool());
+    cards.result({ id: 'call', status: 'completed' });
+    expect(h.body.querySelectorAll('.tool-call')).toHaveLength(0);
+    expect(cards.summary(tool())).toBe('a.ts');
+    expect(cards.build({ ...tool(), status: 'completed' }).classList.contains('completed')).toBe(true);
   });
 
   it('keeps truncation disclosure and bounds displayed output without changing the host result', () => {
