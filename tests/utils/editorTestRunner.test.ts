@@ -13,7 +13,9 @@ describe('the editor acceptance runner', () => {
   it('runs sequential hooks and propagates assertion, async, setup, teardown, timeout and uncaught failures', () => {
     const output = execFileSync(process.execPath, ['scripts/check-editor-runner.cjs'], { cwd: root, encoding: 'utf8', timeout: 15_000 });
     expect(output).toContain('28 checks passed');
-  });
+  // Allow the child budget plus reporting overhead; individual failure probes
+  // retain their existing deadlines, including the intentional timeout case.
+  }, 20_000);
 
   it('passes spaces, quotes and shell metacharacters literally to a real CLI subprocess', async () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti editor cli '));
@@ -32,6 +34,24 @@ describe('the editor acceptance runner', () => {
     expect(cliScript('C:\\VS Code\\Code.exe', 'win32')).toBe('C:\\VS Code\\resources\\app\\out\\cli.js');
     expect(cliScript('/Applications/Visual Studio Code.app/Contents/MacOS/Electron', 'darwin')).toBe('/Applications/Visual Studio Code.app/Contents/Resources/app/out/cli.js');
     expect(cliScript('/opt/VS Code/code', 'linux')).toBe('/opt/VS Code/resources/app/out/cli.js');
+  });
+
+  it.each(['', '7debcd0e2a\\'])('reads the Windows archive wrapper to locate its %s CLI without running a shell', folder => {
+    // The versioned form is the literal bin/code.cmd layout in the official
+    // Windows 1.138.0 archive; Code.exe itself remains at the archive root.
+    const executable = 'C:\\Review Folder & literal\\Code.exe';
+    const read = vi.fn(() => `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%~dp0..\\Code.exe" "%~dp0..\\${folder}resources\\app\\out\\cli.js" %*\r\n`);
+    expect(cliScript(executable, 'win32', read)).toBe(`C:\\Review Folder & literal\\${folder}resources\\app\\out\\cli.js`);
+    expect(read).toHaveBeenCalledExactlyOnceWith('C:\\Review Folder & literal\\bin\\code.cmd', 'utf8');
+  });
+
+  it('uses the Insiders wrapper and rejects unknown or escaping Windows CLI paths', () => {
+    const read = vi.fn(() => '"%~dp0..\\Code - Insiders.exe" "%~dp0..\\7debcd0e2a\\resources\\app\\out\\cli.js" %*');
+    expect(cliScript('C:\\Editor\\Code - Insiders.exe', 'win32', read)).toBe('C:\\Editor\\7debcd0e2a\\resources\\app\\out\\cli.js');
+    expect(read).toHaveBeenCalledWith('C:\\Editor\\bin\\code-insiders.cmd', 'utf8');
+    for (const script of ['..\\resources\\app\\out\\cli.js', 'other\\cli.js', 'resources\\app\\out\\cli.js" & calc & "']) {
+      expect(() => cliScript('C:\\Editor\\Code.exe', 'win32', () => `"%~dp0..\\Code.exe" "%~dp0..\\${script}" %*`)).toThrow('Unsupported editor CLI wrapper');
+    }
   });
 
   const config = () => ({

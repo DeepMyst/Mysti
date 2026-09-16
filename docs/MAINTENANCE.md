@@ -201,7 +201,13 @@ selection, missing or duplicate cases and unauthorized skips. The reviewed
 passing acceptance. Only the named native Desk case may skip in a universal
 archive; native-required jobs reject that skip. Installation invokes the exact
 downloaded editor executable with literal arguments and no shell, preserving
-Windows paths containing spaces and metacharacters. CI runs
+Windows paths containing spaces and metacharacters. The Windows CLI entry is
+resolved from the editor's shipped wrapper, including versioned resource
+directories used by VS Code 1.138; do not assume a fixed resource path. Test
+editor launches disable renderer backgrounding and occluded-window throttling
+so pointer actionability checks can observe frames even when another desktop
+window covers the test editor. Clicks, assertions and case deadlines remain
+unchanged. CI runs
 those checks on development Node and exactly Node 18.17.1. A runner failure must
 fail the editor job; a successful fixture does not replace installed-archive
 acceptance.

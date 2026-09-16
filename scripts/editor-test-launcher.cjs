@@ -1,9 +1,28 @@
 /* Development-Node launcher; only editor-test-runner.cjs runs in the old editor. */
 const path = require('node:path');
+const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 
-function cliScript(executable, platform = process.platform) {
-  const paths = platform === 'win32' ? path.win32 : path;
+function cliScript(executable, platform = process.platform, readFile = fs.readFileSync) {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  if (platform === 'win32') {
+    // Windows 1.138 keeps Code.exe at the archive root but nests application
+    // files under a commit directory. Read the downloaded editor's own wrapper
+    // to select its active CLI, including when older commit folders remain.
+    // The wrapper is data only: the CLI still receives literal argv, shell:false.
+    const wrapper = paths.join(paths.dirname(executable), 'bin',
+      paths.basename(executable) === 'Code - Insiders.exe' ? 'code-insiders.cmd' : 'code.cmd');
+    let source;
+    try { source = readFile(wrapper, 'utf8'); }
+    catch (error) {
+      if (error.code !== 'ENOENT') { throw error; }
+    }
+    if (source !== undefined) {
+      const match = source.match(/^"%~dp0\.\.\\Code(?: - Insiders)?\.exe"\s+"%~dp0\.\.\\((?:[0-9a-f]{10}\\)?resources\\app\\out\\cli\.js)"\s+%\*\s*$/im);
+      if (!match) { throw new Error(`Unsupported editor CLI wrapper: ${wrapper}`); }
+      return paths.join(paths.dirname(executable), match[1]);
+    }
+  }
   return platform === 'darwin'
     ? paths.resolve(paths.dirname(executable), '../Resources/app/out/cli.js')
     : paths.join(paths.dirname(executable), 'resources', 'app', 'out', 'cli.js');

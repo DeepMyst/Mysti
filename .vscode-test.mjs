@@ -54,6 +54,11 @@ export default {
     '--use-mock-keychain',
     '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=0',
+    // Keep frame scheduling active when another native window covers the
+    // test editor. Playwright still waits for visibility, stability and normal
+    // pointer hit testing; an occluded renderer must be able to perform them.
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
   ],
   env: { MYSTI_TEST_USER_DATA_DIR: userDataDir, MYSTI_TEST_VSIX_PATH: vsixPath, MYSTI_TEST_OLLAMA_ENDPOINT: ollamaEndpoint,
     MYSTI_TEST_DESK_NATIVE: process.env.MYSTI_TEST_DESK_NATIVE },
