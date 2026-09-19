@@ -39,6 +39,7 @@ import type { UsageConvention } from '../services/TokenAccounting';
 import type { ProviderManager } from './ProviderManager';
 import type { ConversationManager } from './ConversationManager';
 import type { SmartCompactor, HistoryAppend } from './SmartCompactor';
+import { captureCompactionInput } from './CompactionInput';
 
 /**
  * Boost overlay seam (Plan 24). Structural on purpose — BoostManager satisfies
@@ -236,12 +237,20 @@ export class CompactionManager {
     settings: Settings,
     conversation: Conversation,
     panelId: string,
+    isCurrent: () => boolean = () => true,
   ): Promise<CompactionResult> {
     const startTime = Date.now();
+    const refused = (): CompactionResult => ({ success: false, beforeTokens: 0, afterTokens: 0,
+      strategy: 'client-summarize', duration: Date.now() - startTime,
+      error: 'Compaction cancelled because the request or conversation changed.' });
+    if (!isCurrent()) { return refused(); }
+    const input = captureCompactionInput(conversation, isCurrent);
     console.log(`[Mysti] CompactionManager: Executing client-side summarization for panel ${panelId}`);
+    // Authorized attempts, including failed/in-flight summaries, retain the
+    // cooldown so a high-fill conversation cannot repeatedly spend on retries.
     this._lastCompactionTime.set(panelId, Date.now());
 
-    const messages = conversation.messages;
+    const messages = input.messages;
     if (messages.length <= COMPACTION_MESSAGES_TO_PRESERVE) {
       return {
         success: false,
@@ -262,6 +271,7 @@ export class CompactionManager {
 
     // Send summarization request to the active provider
     let summaryContent = '';
+    let completed = false;
     try {
       const stream = providerManager.sendMessage(
         summaryPrompt,
@@ -273,6 +283,11 @@ export class CompactionManager {
       );
 
       for await (const chunk of stream) {
+        if (!isCurrent()) { return refused(); }
+        if (chunk.type === 'error' || chunk.type === 'auth_error') {
+          return { ...refused(), error: chunk.content?.trim() || 'The provider could not complete the compaction summary.' };
+        }
+        if (chunk.type === 'done') { completed = true; break; }
         if (chunk.type === 'text' && chunk.content) {
           summaryContent += chunk.content;
         }
@@ -288,6 +303,9 @@ export class CompactionManager {
       };
     }
 
+    // Successful provider contracts terminate with done. EOF alone can be an
+    // interrupted request, so partial text must never replace durable history.
+    if (!completed) { return { ...refused(), error: 'The provider ended before completing the compaction summary.' }; }
     if (!summaryContent.trim()) {
       return {
         success: false,
@@ -311,7 +329,9 @@ export class CompactionManager {
       timestamp: Date.now(),
     };
 
-    // Update conversation: replace messages array
+    // No await between admission and replacement. Concurrent compactions share
+    // the captured source array; once one commits, every other one is stale.
+    if (!input.canCommit()) { return refused(); }
     conversation.messages = [summaryMessage, ...toPreserve];
 
     return {
@@ -488,15 +508,17 @@ export class CompactionManager {
     settings: Settings,
     conversation: Conversation,
     panelId: string,
+    isCurrent: () => boolean = () => true,
   ): Promise<CompactionResult | null> {
     if (!this.isSmartActive() || !this._smart) { return null; }
-    this._lastCompactionTime.set(panelId, Date.now());
+    if (isCurrent()) { this._lastCompactionTime.set(panelId, Date.now()); }
     return this._smart.summarize({
       panelId,
       conversation,
       providerModel: settings.model,
       cheapModel: this._cheapModel,
       minSummaryTokens: this._minSummaryTokens,
+      isCurrent,
     });
   }
 

@@ -28,7 +28,9 @@
  */
 
 import * as fs from 'fs/promises';
+import * as syncFs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 import type {
   CacheWarmth,
@@ -60,6 +62,7 @@ import type { DeepMystGatewayClient } from '../services/DeepMystGatewayClient';
 import type { SavingsLedger } from './SavingsLedger';
 import { HistoryStore, safePanelSegment } from '../services/HistoryStore';
 import { RetrievalCoordinator } from './RetrievalCoordinator';
+import { captureCompactionInput } from './CompactionInput';
 
 /** Min gap between parallel-retrieval runs per panel, to bound scorer cost. */
 const RETRIEVAL_COOLDOWN_MS = 20_000;
@@ -314,7 +317,11 @@ export interface SummarizeParams {
   cheapModel: string;
   minSummaryTokens: number;
   signal?: AbortSignal;
+  /** Captured request authority; defaults still protect against changed history. */
+  isCurrent?: () => boolean;
 }
+
+interface CompactionMemory { exists: boolean; content: string }
 
 export class SmartCompactor {
   private readonly _cacheState = new Map<string, CacheState>();
@@ -545,36 +552,51 @@ export class SmartCompactor {
    * can fall back to the existing client-summarize path.
    */
   async summarize(p: SummarizeParams): Promise<CompactionResult | null> {
-    const messages = p.conversation.messages;
+    const { panelId, conversation, providerModel, cheapModel, minSummaryTokens, signal, isCurrent: ownsRequest } = p;
+    const start = Date.now();
+    const isCurrent = () => !signal?.aborted && (ownsRequest?.() ?? true);
+    const refused = (error = 'Compaction cancelled because the request or conversation changed.'): CompactionResult => ({
+      success: false, beforeTokens: 0, afterTokens: 0, strategy: 'client-summarize',
+      duration: Date.now() - start, error,
+    });
+    if (!isCurrent()) { return refused(); }
+    const input = captureCompactionInput(conversation, isCurrent);
+    const messages = input.messages;
     if (messages.length <= COMPACTION_MESSAGES_TO_PRESERVE) { return null; }
 
-    const start = Date.now();
     const boundary = SmartCompactor._preserveBoundary(messages);
     const toSummarize = messages.slice(0, boundary);
     const toPreserve = messages.slice(boundary);
 
-    const existingMemory = await this._readMemory(p.panelId);
+    // Resolve the workspace once. An old waiter must never write into whichever
+    // workspace happens to be selected when the gateway eventually returns.
+    const memoryFile = this._memoryFile(panelId);
+    let memory: CompactionMemory;
+    try { memory = await this._readCompactionMemory(memoryFile); }
+    catch (error) { return refused(`Could not read compaction memory: ${error instanceof Error ? error.message : String(error)}`); }
+    if (!input.canCommit()) { return refused(); }
+    const existingMemory = memory.content;
     // First compaction (no prior memory) does a full build; later compactions ask
     // for section PATCHES against the existing memory (cheaper output + no drift on
     // unchanged sections). Either way we degrade gracefully below.
     const bootstrap = !existingMemory.trim();
     const prompt = bootstrap
-      ? this._buildMemoryPrompt(existingMemory, toSummarize, p.minSummaryTokens)
+      ? this._buildMemoryPrompt(existingMemory, toSummarize, minSummaryTokens)
       : this._buildPatchPrompt(existingMemory, toSummarize);
 
     const result = await this._gateway.chatCompletion({
-      model: p.cheapModel,
-      maxTokens: Math.max(1024, Math.ceil(p.minSummaryTokens * 1.2)),
+      model: cheapModel,
+      maxTokens: Math.max(1024, Math.ceil(minSummaryTokens * 1.2)),
       messages: [
         { role: 'system', content: 'You maintain a compact, structured working memory for a coding assistant. Be faithful and concise.' },
         { role: 'user', content: prompt },
       ],
-      signal: p.signal,
+      signal,
     });
+    if (!input.canCommit()) { return refused(); }
 
     if (result.failed || !result.text.trim()) {
       console.warn(`[Mysti] SmartCompactor: gateway summarize failed (${result.error ?? 'empty'}) — falling back`);
-      this._turnsSinceCompaction.set(p.panelId, 0); // the caller will client-summarize — close the epoch
       return null;
     }
 
@@ -606,30 +628,21 @@ export class SmartCompactor {
       const hasKnownSection = order.some(s => (MEMORY_SECTION_ORDER as readonly string[]).includes(s));
       if (!hasKnownSection || degenerate) {
         console.warn('[Mysti] SmartCompactor: summary not structured or degenerate — falling back');
-        this._turnsSinceCompaction.set(p.panelId, 0);
         return null;
       }
     } else if (degenerate) {
       console.warn('[Mysti] SmartCompactor: patched memory degenerate — falling back');
-      this._turnsSinceCompaction.set(p.panelId, 0);
       return null;
     }
     if (patched) {
       console.log('[Mysti] SmartCompactor: applied delta-patch memory update');
     }
-    await this._writeMemory(p.panelId, updatedMemory);
-    // This compaction closes the current epoch — feed its turn count to the
-    // measured-N EWMA used by the next economic decision.
-    this._noteEpoch(p.panelId);
-
     const summaryMessage: Message = {
       id: `compaction-summary-${Date.now()}`,
       role: 'system',
       content: `[Conversation Summary]\n${updatedMemory}`,
       timestamp: Date.now(),
     };
-    p.conversation.messages = [summaryMessage, ...toPreserve];
-
     // Record realized cheap-model savings: what the same summarization would have
     // cost on the active model vs. what the gateway actually billed. The input
     // estimate is the ACTUAL prompt size (memory + scaffold + slice), not the
@@ -639,7 +652,24 @@ export class SmartCompactor {
     // Output-token estimate is the ACTUAL generation (patch array on the delta
     // path, full memory on bootstrap) — used only when the gateway doesn't return
     // real counts. `afterTokens` (final memory size) is reported for display below.
-    this._recordCheapModelSaving(p.providerModel, p.cheapModel, estimateTokens(prompt), estimateTokens(result.text), result.costUsd, result.inputTokens, result.outputTokens);
+    try {
+      const committed = await this._writeMemory(memoryFile, memory, updatedMemory, input.canCommit, () => {
+        // Atomic with the memory promotion from this extension's perspective:
+        // no await lets a successor append history between admission and commit.
+        conversation.messages = [summaryMessage, ...toPreserve];
+        this._noteEpoch(panelId);
+        try {
+          this._recordCheapModelSaving(providerModel, cheapModel, estimateTokens(prompt), estimateTokens(result.text), result.costUsd, result.inputTokens, result.outputTokens);
+        } catch (error) {
+          // Optional accounting cannot turn a committed history/memory change
+          // into a reported failure that encourages a destructive retry.
+          console.warn(`[Mysti] SmartCompactor: savings accounting failed after commit: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      });
+      if (!committed) { return refused('Compaction cancelled because the request, conversation or memory changed.'); }
+    } catch (error) {
+      return refused(`Could not save compaction memory: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     return {
       success: true,
@@ -701,14 +731,51 @@ export class SmartCompactor {
     }
   }
 
-  private async _writeMemory(panelId: string, content: string): Promise<void> {
-    const file = this._memoryFile(panelId);
-    if (!file) { return; }
+  private async _readCompactionMemory(file: string | null): Promise<CompactionMemory> {
+    if (!file) { return { exists: false, content: '' }; }
+    try {
+      return { exists: true, content: await fs.readFile(file, 'utf8') };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return { exists: false, content: '' }; }
+      throw error;
+    }
+  }
+
+  private async _writeMemory(
+    file: string | null, expected: CompactionMemory, content: string,
+    canCommit: () => boolean, commit: () => void,
+  ): Promise<boolean> {
+    if (!canCommit()) { return false; }
+    if (!file) { commit(); return true; }
+    const staged = path.join(path.dirname(file), `.memory-${randomUUID()}.tmp`);
+    let owned = false;
     try {
       await fs.mkdir(path.dirname(file), { recursive: true });
-      await fs.writeFile(file, content, 'utf8');
-    } catch (err) {
-      console.warn(`[Mysti] SmartCompactor: failed to write memory: ${err instanceof Error ? err.message : String(err)}`);
+      if (!canCommit()) { return false; }
+      const handle = await fs.open(staged, 'wx', 0o600);
+      owned = true;
+      try { await handle.writeFile(content, 'utf8'); }
+      finally { await handle.close(); }
+      if (!canCommit()) { return false; }
+
+      // Synchronous optimistic commit: another extension request cannot run
+      // between this content check, atomic rename and history/ledger mutation.
+      // This is not an interprocess lock against arbitrary external OS writers.
+      let current: CompactionMemory;
+      try { current = { exists: true, content: syncFs.readFileSync(file, 'utf8') }; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
+        current = { exists: false, content: '' };
+      }
+      if (current.exists !== expected.exists || current.content !== expected.content || !canCommit()) { return false; }
+      syncFs.renameSync(staged, file);
+      owned = false;
+      commit();
+      return true;
+    } finally {
+      // Never remove a filename whose exclusive open failed (including a
+      // collision), or any other compaction's staged output.
+      if (owned) { await fs.unlink(staged).catch(() => undefined); }
     }
   }
 

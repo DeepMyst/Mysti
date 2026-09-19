@@ -378,8 +378,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _canvasTurns = new CanvasTurnJobs({
     openJob: spec => this._canvasLiveness?.openJob(spec),
     cancelPanel: panelId => {
+      this._cancelQueuedChannelTurn(panelId);
       this._cancelledPanels.add(panelId);
       this._providerManager.cancelRequest(panelId);
+      this._abortMystiDirect(panelId);
       this._postToPanel(panelId, { type: 'requestCancelled' });
     },
   });
@@ -426,6 +428,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _mcpToolsCache?: { at: number; tools: McpToolInfo[] };
   // Per-panel cancel tracking for isolated cancellation
   private _cancelledPanels: Set<string> = new Set();
+  /** Captured ordinary stream cleanup, retired synchronously on panel handoff. */
+  private _ordinaryRequestRetirements?: Map<string, (preserveRunning: boolean) => void>;
   // Perf (Plan 03 Phase 1): panels whose webview has not yet posted `uiReady`.
   // Guards `panel.timeToUsable` against duplicate/stale `uiReady` messages.
   private _pendingUiReadyPanels: Set<string> = new Set();
@@ -1142,6 +1146,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
 
+    // Re-resolution replaces the view owner even if the old dispose arrives later.
+    if (this._panelStates.has(this._sidebarId)) {
+      this._cancelQueuedChannelTurn(this._sidebarId);
+      this._providerManager.cancelRequest(this._sidebarId);
+      this._abortMystiDirect(this._sidebarId);
+    }
     // Register sidebar in panel states
     const currentConversation = this._conversationManager.getCurrentConversation();
     this._panelStates.set(this._sidebarId, {
@@ -1168,8 +1178,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // view's late dispose event.
     webviewView.onDidDispose(() => {
       if (this._panelStates.get(this._sidebarId)?.webview === webviewView.webview) {
-        this._panelStates.delete(this._sidebarId);
         this._cancelQueuedChannelTurn(this._sidebarId);
+        this._panelStates.delete(this._sidebarId);
         this._providerManager.cancelRequest(this._sidebarId);
         this._abortMystiDirect(this._sidebarId);
         for (const job of this._backgroundJobManager.listRunning(this._sidebarId)) {
@@ -2184,6 +2194,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
             });
           } else if (result.success) {
+            this._cancelQueuedChannelTurn(panelId);
             this._providerManager.disposePersistentProcess(panelId);
             this._providerManager.clearSession(panelId);
             this._postToPanel(panelId, {
@@ -2958,6 +2969,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (imported) {
               const impPanelState = this._panelStates.get(impPanelId);
               if (impPanelState) {
+                this._cancelQueuedChannelTurn(impPanelId);
+                this._providerManager.cancelRequest(impPanelId);
+                this._abortMystiDirect(impPanelId);
                 impPanelState.currentConversationId = imported.id;
               }
               this._postToPanel(impPanelId, {
@@ -3921,7 +3935,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._postToPanel(panelId, { type: 'responseComplete', payload: { message: assistantMessage } });
   }
 
-  private _cancelQueuedChannelTurn(panelId: string): void {
+  private _cancelQueuedChannelTurn(panelId: string, preserveRunning = false): void {
+    // Retire the captured ordinary owner before a successor can begin. Other
+    // lanes retain their existing lifecycle; this map never owns their jobs.
+    this._ordinaryRequestRetirements?.get(panelId)?.(preserveRunning);
     this._delayedChannelTurns.cancelPanel(panelId);
     this._channelBridge.clearQueuedMessages(panelId);
   }
@@ -3936,7 +3953,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     },
     panelId: string
   ) {
-    this._cancelQueuedChannelTurn(panelId);
+    // Keep the old running flag until the replacement branch cancels its provider.
+    this._cancelQueuedChannelTurn(panelId, true);
     // The timer-to-send handoff must remain busy while setup awaits context.
     // A later inbound message belongs in the queue, not a competing send.
     const finishPreparation = this._delayedChannelTurns.reservePreparation(panelId);
@@ -3960,6 +3978,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     finishPreparation: () => void
   ) {
     const isChannelCurrent = this._delayedChannelTurns.capture(panelId);
+    const capturedPanel = this._panelStates.get(panelId);
+    const capturedConversationId = capturedPanel?.currentConversationId;
+    const ownsTurn = () => !!capturedPanel && isChannelCurrent()
+      && this._panelStates.get(panelId) === capturedPanel
+      && capturedPanel.currentConversationId === capturedConversationId;
+    const acceptsTurn = () => ownsTurn() && !this._cancelledPanels.has(panelId);
+    let ordinaryOwned = false;
+    let ordinarySettled = false;
+    let ordinaryTerminal = false;
+    const retireOrdinary = (preserveRunning: boolean) => settleOrdinary(undefined, preserveRunning);
+    const settleOrdinary = (error?: string, preserveRunning = false) => {
+      if (!ordinaryOwned || ordinarySettled) { return; }
+      ordinarySettled = true;
+      if (this._ordinaryRequestRetirements?.get(panelId) === retireOrdinary) {
+        this._ordinaryRequestRetirements.delete(panelId);
+      }
+      if (!ownsTurn()) { return; }
+      if (!preserveRunning) { this._runningPanels.delete(panelId); }
+      this._lifecycleManager.markIdle(panelId);
+      this._canvasTurns.end(panelId, error);
+    };
+    if (!ownsTurn()) { return; }
     // Bump the panel's send generation FIRST (review [4]/[11]): any Mysti run
     // still in flight for this panel is now superseded and self-terminates at
     // its next checkpoint, regardless of the 50ms cancel-flag window below.
@@ -3969,6 +4009,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._pendingPlanSelections.delete(panelId);
     this._pendingPlans.clearPanel(panelId);
     const isPlanCurrent = this._pendingPlans.capture(panelId);
+    const acceptsPlan = () => acceptsTurn() && isPlanCurrent();
 
     // P0.7b (Plan 10 step 4): a repo's .vscode/settings.json must not silently
     // RAISE Mysti's authority (access level / auto-edit mode). Clamp the runtime
@@ -4031,6 +4072,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Brief yield to let the cancelled for-await loop exit before we start a new one
       await new Promise(resolve => setTimeout(resolve, 50));
     }
+
+    // Another send/Stop/view replacement may have won during the yield above.
+    // In particular, an obsolete send must not clear its successor's Stop flag.
+    if (!ownsTurn()) { return; }
 
     // Perf (Plan 03 Phase 1): formalized send-path timing. The mark is
     // panel-scoped so concurrent sends on different panels don't clobber
@@ -4223,6 +4268,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
+      // Own ordinary preparation before its first await as well as the stream.
+      ordinaryOwned = true;
+      (this._ordinaryRequestRetirements ??= new Map()).set(panelId, retireOrdinary);
+
       // Get agent configuration for this conversation
       const agentConfig = conversationId
         ? this._conversationManager.getAgentConfig(conversationId)
@@ -4245,12 +4294,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         collaborationBlock = await this._runMentionCollaboration(
           collabMentions, mentions || [], content, context, settings, conversation, panelId
         );
+        if (!acceptsTurn()) { return; }
       }
 
       if (legacyMentions.length > 0) {
         legacyRan = true;
         // M2: Enforce maximum mentions per message
         const { MAX_MENTIONS_PER_MESSAGE } = await import('../constants');
+        if (!acceptsTurn()) { return; }
         const agentMentionCount = legacyMentions.filter(m => m.type === 'agent').length;
         let effectiveMentions = legacyMentions;
         if (agentMentionCount > MAX_MENTIONS_PER_MESSAGE) {
@@ -4279,6 +4330,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
 
         for await (const chunk of mentionStream) {
+          if (!ownsTurn()) { return; }
           if (this._cancelledPanels.has(panelId)) { break; }
           console.log('[Mysti] Mention chunk:', chunk.type, chunk.agentId || '');
 
@@ -4380,6 +4432,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               if (!(await this._gateSubAgentToolUse(chunk, settings, panelId))) {
                 break;
               }
+              if (!acceptsTurn()) { return; }
               this._postToPanel(panelId, {
                 type: 'subAgentToolUse',
                 payload: { agentId: chunk.agentId, toolCall: chunk.toolCall }
@@ -4470,6 +4523,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         console.log('[Mysti] Mention processing complete');
 
+        // A replacement owns both the UI and the conversation now.
+        if (!ownsTurn()) { return; }
         // If cancelled during mention processing, stop
         if (this._cancelledPanels.has(panelId)) {
           this._postToPanel(panelId, { type: 'requestCancelled' });
@@ -4517,6 +4572,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
+      if (!ownsTurn()) { return; }
       // Plan 14: guard the collab-only / mention-free send path — if the user hit
       // Stop during the collaboration run, don't then spawn the main agent. (The
       // legacy MentionRouter branch has its own guard; this covers the rest.)
@@ -4646,7 +4702,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Tell the backend the `look` tag exists (and mint this turn's nonce).
       // Returns '' whenever the capability would not work, so the convention
       // never leaks into a setup that cannot honour it.
-      const visualSnippet = await this._visualPromptSnippet(panelId, effectiveSettings).catch(() => '');
+      const visualSnippet = await this._visualPromptSnippet(panelId, effectiveSettings, acceptsTurn).catch(() => '');
+      if (!acceptsTurn()) { return; }
       const fullSystemContext = [projectInstructions, channelContext, autoMemory, deepMystConnect, canvasSnippet, visualSnippet].filter(Boolean).join('\n\n');
 
       if (fullSystemContext) {
@@ -4668,11 +4725,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // adds no latency for non-smart sends and never blocks a send on failure.
       try {
         const retrieved = await this._compactionManager.retrieveContext(panelId, content);
+        if (!acceptsTurn()) { return; }
         if (retrieved) {
           enrichedContent += retrieved;
           console.log(`[Mysti] Smart retrieval: injected ${retrieved.length} chars of cherry-picked context`);
         }
       } catch { /* retrieval is never allowed to block a send */ }
+      if (!acceptsTurn()) { return; }
 
       // ── Plan 24 Phase 5: cold-resume interception.
       // Resuming a big session after it has gone idle past the cache TTL
@@ -4697,7 +4756,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             conversation,
             { input_tokens: activity?.fill ?? 0, output_tokens: 0 },
             contextWindow,
+            acceptsTurn,
           );
+          if (!acceptsTurn()) { return; }
           coldResumeIntercepted = true;
           // Turn-only note (never persisted), matching the retrieval convention
           // above: the model is told why its history just got shorter.
@@ -4711,7 +4772,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       PerfTracker.measure('send.contextBuilt', _sendStartMark);
       // Stop, closing the panel or a replacement send can happen during any
       // asynchronous preparation above. Never start that obsolete request.
-      if (!isChannelCurrent() || !this._panelStates.has(panelId)) { return; }
+      if (!acceptsTurn()) { return; }
       const stream = this._providerManager.sendMessage(
         enrichedContent,
         enrichedContext,
@@ -4787,7 +4848,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       finishPreparation();
       let _firstChunkSeen = false;
       let _firstTextChunkSent = false;
-      for await (const chunk of stream) {
+      ordinaryStream: for await (const chunk of stream) {
+        // Generation, view and conversation authority must survive every yield.
+        if (ordinaryTerminal || !acceptsTurn()) { break; }
         if (!_firstChunkSeen) {
           _firstChunkSeen = true;
           // Extension-side TTFT: send entry → first stream chunk received.
@@ -4796,9 +4859,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             PerfTracker.sample('send.ttftExtension', ttftExtMs);
           }
         }
-        // Check if THIS panel's request was cancelled
-        if (this._cancelledPanels.has(panelId)) {break;}
-
         switch (chunk.type) {
           case 'text': {
             assistantContent += chunk.content || '';
@@ -4848,6 +4908,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   undefined,
                   true,
                 );
+                if (!acceptsTurn()) { return; }
                 if (!approved) {
                   this._postToPanel(panelId, {
                     type: 'channelAction',
@@ -4858,12 +4919,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
                 if (action.type === 'send') {
                   const ok = await this._channelBridge.executeSend(action);
+                  if (!acceptsTurn()) { return; }
                   this._postToPanel(panelId, {
                     type: 'channelAction',
                     payload: { action: 'send', channel: action.channel, to: action.to, success: ok }
                   });
                 } else {
                   const ok = await this._channelBridge.executeAsk(action, panelId);
+                  if (!acceptsTurn()) { return; }
                   this._postToPanel(panelId, {
                     type: 'channelAction',
                     payload: { action: 'ask', channel: action.channel, to: action.to, askId: action.askId, success: ok }
@@ -4885,7 +4948,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (placeholders.has(service)) { continue; }
                 if (!this._connectServicesThisResponse.has(service)) {
                   this._connectServicesThisResponse.add(service);
-                  void this._emitConnectionCard(panelId, service);
+                  void this._emitConnectionCard(panelId, service, acceptsTurn);
                 }
               }
             }
@@ -5001,6 +5064,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
 
           case 'error':
+            ordinaryTerminal = true;
             // Gate 4: a missing CLI gets a card with an Install button; anything
             // else keeps the plain error.
             if (!this._postProviderFailure(panelId, effectiveSettings.provider, chunk.content ?? '')) {
@@ -5009,9 +5073,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 payload: chunk.content
               });
             }
-            break;
+            settleOrdinary(chunk.content || 'Provider error');
+            break ordinaryStream;
 
           case 'auth_error':
+            ordinaryTerminal = true;
             this._postToPanel(panelId, {
               type: 'authError',
               payload: {
@@ -5020,7 +5086,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 providerName: chunk.providerName
               }
             });
-            break;
+            settleOrdinary(chunk.content || 'Provider authentication error');
+            break ordinaryStream;
 
           case 'session_active':
             this._lifecycleManager.registerSession(panelId, settings.provider, chunk.sessionId || null);
@@ -5092,7 +5159,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               const toolCallId = chunk.askUserQuestion.toolCallId;
               const questionData = chunk.askUserQuestion;
               const timeoutHandle = setTimeout(() => {
-                this._handleSemiAutonomousQuestionTimeout(panelId, questionData);
+                if (this._semiAutoQuestionTimeouts.get(toolCallId) === timeoutHandle) {
+                  this._semiAutoQuestionTimeouts.delete(toolCallId);
+                }
+                if (!acceptsTurn() || this._pendingAskUserQuestions.get(panelId) !== toolCallId) { return; }
+                void this._handleSemiAutonomousQuestionTimeout(panelId, questionData);
               }, questionTimeout * 1000);
               this._semiAutoQuestionTimeouts.set(toolCallId, timeoutHandle);
             }
@@ -5180,6 +5251,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
             });
 
+            // Done is one-way, including if iterator.return or later optional
+            // post-processing fails. A replacement may start during its awaits.
+            ordinaryTerminal = true;
+
             // Track successful response for engagement (review prompts + badges)
             this._engagementManager.trackSuccessfulResponse();
 
@@ -5193,7 +5268,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
 
             // Mark panel as no longer running and drain queued channel messages
-            if (isChannelCurrent()) {
+            if (ownsTurn()) {
               this._runningPanels.delete(panelId);
               const queued = this._channelBridge.drainQueuedMessages(panelId);
               if (queued.length > 0) {
@@ -5247,7 +5322,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               );
               if (compactionEval.act) {
                 // Run compaction asynchronously (don't block the response flow)
-                this._executeCompaction(panelId, settings, updatedConversation, lastUsage, contextWindow);
+                void this._executeCompaction(panelId, settings, updatedConversation, lastUsage, contextWindow, acceptsTurn);
               } else {
                 this._compactionManager.recordUsage(panelId, lastUsage, contextWindow);
               }
@@ -5289,7 +5364,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // and suggestion pass below and blocks autonomous continuation
             // until the user (or autonomous auto-select) picks.
             if (pendingExitPlan && !this._delayedChannelTurns.has(panelId)) {
-              await this._handleExitPlanMode(pendingExitPlan.planFilePath, assistantMessage, panelId, isPlanCurrent);
+              await this._handleExitPlanMode(pendingExitPlan.planFilePath, assistantMessage, panelId, acceptsPlan);
+              if (!acceptsTurn()) { return; }
               pendingExitPlan = null;
             }
 
@@ -5297,13 +5373,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (!this._pendingAskUserQuestions.has(panelId) && !this._pendingPlanSelections.has(panelId)
               && !this._delayedChannelTurns.has(panelId)) {
               // Run classification and suggestions fully async (non-blocking) for faster perceived response
-              this._generateSuggestionsAsync(assistantMessage, panelId);
+              void this._generateSuggestionsAsync(assistantMessage, panelId, acceptsTurn);
 
               const mystiConfig = vscode.workspace.getConfiguration('mysti');
               const planDetectionEnabled = mystiConfig.get('planDetection.enabled', true);
               if (planDetectionEnabled) {
-                this._detectAndSendPlanOptions(assistantMessage, panelId, isPlanCurrent).then(hasInteractiveElements => {
-                  if (hasInteractiveElements) {
+                this._detectAndSendPlanOptions(assistantMessage, panelId, acceptsPlan).then(hasInteractiveElements => {
+                  if (hasInteractiveElements && acceptsTurn()) {
                     this.postMessage({ type: 'clearSuggestions' } as WebviewMessage, panelId);
                   }
                 });
@@ -5334,7 +5410,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   autonomousMode: true,
                 };
                 setTimeout(() => {
-                  if (!isPlanCurrent() || !this._panelStates.has(panelId)
+                  if (!acceptsPlan() || !this._panelStates.has(panelId)
                     || this._cancelledPanels.has(panelId) || !this._autonomousManager.isActive()) {
                     return;
                   }
@@ -5359,10 +5435,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
             }
 
-            // Mark session idle after response completes
-            this._lifecycleManager.markIdle(panelId);
-            this._canvasTurns.end(panelId);
-            break;
+            settleOrdinary();
+            break ordinaryStream;
           }
         }
       }
@@ -5370,11 +5444,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // its generator, a cancel between chunks). Closing here as well is what
       // makes "a ghost can only disappear via a terminal event" true for this
       // lane too — an unclosed job is a spinner that outlives its work.
-      this._canvasTurns.end(panelId);
+      settleOrdinary();
     } catch (error) {
-      this._lifecycleManager.markIdle(panelId);
+      if (!acceptsTurn() || ordinaryTerminal) { return; }
       const rawErr = error instanceof Error ? error.message : String(error);
-      this._canvasTurns.end(panelId, rawErr);
+      if (ordinaryOwned) { settleOrdinary(rawErr); }
+      else {
+        this._lifecycleManager.markIdle(panelId);
+        this._canvasTurns.end(panelId, rawErr);
+      }
       // A spawn ENOENT lands here, not on the stream — the same card applies.
       if (!this._postProviderFailure(panelId, settings.provider, rawErr)) {
         this._postToPanel(panelId, {
@@ -5382,6 +5460,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           payload: rawErr || 'An unknown error occurred'
         });
       }
+    } finally {
+      // This only releases the captured ordinary turn. Invalidation already
+      // retired its Canvas owner synchronously; never touch a successor here.
+      settleOrdinary();
     }
   }
 
@@ -5399,8 +5481,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async _handleManualCompact(panelId: string): Promise<void> {
     const panelState = this._panelStates.get(panelId);
-    const conversation = panelState?.currentConversationId
-      ? this._conversationManager.getConversation(panelState.currentConversationId)
+    const conversationId = panelState?.currentConversationId;
+    const isChannelCurrent = this._delayedChannelTurns.capture(panelId);
+    // This explicit human action starts after any previous Stop. A future Stop
+    // invalidates its captured scope; do not clear or inherit the old flag.
+    const isCurrent = () => !!panelState
+      && this._panelStates.get(panelId) === panelState
+      && panelState.currentConversationId === conversationId
+      && isChannelCurrent();
+    if (!isCurrent()) { return; }
+    const conversation = conversationId
+      ? this._conversationManager.getConversation(conversationId)
       : null;
 
     const config = vscode.workspace.getConfiguration('mysti');
@@ -5442,7 +5533,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       ?? { input_tokens: 0, output_tokens: 0 };
 
     console.log(`[Mysti] Manual compaction requested for panel ${panelId}`);
-    await this._executeCompaction(panelId, settings, conversation, usage, contextWindow);
+    await this._executeCompaction(panelId, settings, conversation, usage, contextWindow, isCurrent);
   }
 
   private async _executeCompaction(
@@ -5451,7 +5542,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     conversation: Conversation | null,
     usage: UsageStats,
     contextWindow: number,
+    isCurrent: () => boolean = () => true,
   ): Promise<void> {
+    if (!isCurrent()) { return; }
     const strategy = this._compactionManager.getStrategy(settings.provider, this._providerManager);
     // Every prompt bucket, cache-creation included (see TokenAccounting) —
     // otherwise the "before" figure the user is shown omits exactly the tokens
@@ -5482,7 +5575,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       //   2. the session id — so the next turn re-sends the compacted messages
       //      (effectiveConversation is only the conversation when sessionId is null).
       if (this._compactionManager.isSmartActive() && conversation) {
-        const smart = await this._compactionManager.executeSmartSummarization(settings, conversation, panelId);
+        const smart = await this._compactionManager.executeSmartSummarization(settings, conversation, panelId, isCurrent);
+        if (!isCurrent()) { return; }
         if (smart && smart.success) {
           this._providerManager.disposePersistentProcess(panelId);
           this._providerManager.clearSessionForProvider(settings.provider, panelId);
@@ -5503,6 +5597,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           console.log(`[Mysti] Smart compaction (reseed): ${smart.beforeTokens} -> ${smart.afterTokens} tokens; session reset for ${settings.provider}`);
           return;
         }
+        if (smart) {
+          this._postToPanel(panelId, {
+            type: 'compactionStatus',
+            payload: { status: 'error', strategy: 'client-summarize', beforeTokens: smart.beforeTokens,
+              afterTokens: smart.afterTokens, contextWindow, threshold: this._compactionManager.getThreshold(),
+              error: smart.error || 'Compaction could not commit its result.' } as CompactionEvent,
+          });
+          return;
+        }
         // smart returned null (gateway down, not enough messages) → fall through.
       }
 
@@ -5517,6 +5620,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         let afterTokens: number | undefined;
         const summaryParts: string[] = [];
         for await (const chunk of stream) {
+          if (!isCurrent()) { return; }
           if (chunk.type === 'text' && chunk.content) {
             summaryParts.push(chunk.content);
           }
@@ -5528,6 +5632,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
           }
         }
+        if (!isCurrent()) { return; }
         const summary = summaryParts.join('').trim();
 
         this._postToPanel(panelId, {
@@ -5572,7 +5677,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           settings,
           conversation,
           panelId,
+          isCurrent,
         );
+        if (!isCurrent()) { return; }
 
         this._postToPanel(panelId, {
           type: 'compactionStatus',
@@ -5595,6 +5702,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
     } catch (error) {
+      if (!isCurrent()) { return; }
       console.error('[Mysti] Compaction failed:', error);
       this._postToPanel(panelId, {
         type: 'compactionStatus',
@@ -6483,7 +6591,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private async _generateSuggestionsAsync(lastMessage: Message, panelId?: string) {
+  private async _generateSuggestionsAsync(lastMessage: Message, panelId?: string, isCurrent: () => boolean = () => true) {
+    if (!isCurrent()) { return; }
     // Don't generate suggestions if this panel's request was cancelled
     if (panelId && this._cancelledPanels.has(panelId)) {return;}
 
@@ -6512,6 +6621,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         conversation,
         lastMessage
       );
+      if (!isCurrent()) { return; }
 
       if (panelId) {
         this._postToPanel(panelId, {
@@ -6525,6 +6635,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
     } catch (error) {
+      if (!isCurrent()) { return; }
       console.error('[Mysti] Suggestion generation failed:', error);
       if (panelId) {
         this._postToPanel(panelId, { type: 'suggestionsError' });
@@ -8089,18 +8200,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Without this the tag was documented NOWHERE — which is why the old
    * ```visual-test``` path had never once been invoked by a model.
    */
-  private async _visualPromptSnippet(panelId: string, settings: Settings): Promise<string> {
+  private async _visualPromptSnippet(panelId: string, settings: Settings, isCurrent: () => boolean = () => true): Promise<string> {
     // Clearing the nonce is part of returning '' — a leftover token from an
     // earlier turn would keep parsing `<look:…>` tags after the capability was
     // turned off.
-    const off = (): string => { this._vtNonces.delete(panelId); return ''; };
+    const off = (): string => { if (isCurrent()) { this._vtNonces.delete(panelId); } return ''; };
+    if (!isCurrent()) { return ''; }
 
     const caps = this._mystiVisualEnabled(settings);
     if (!caps.look) { return off(); }
 
     const preview = resolveVisualLook({ requester: 'model' }, await this._visualPolicyDeps(settings, `mysti:${panelId}`));
+    if (!isCurrent()) { return ''; }
     if (isBlocked(preview)) { return off(); }
     const probe = await this._getVisualSessions().probe(preview.config.browser);
+    if (!isCurrent()) { return ''; }
     if (!probe.module || !probe.browser) { return off(); }
 
     const n = this._rotateBackendVisualNonce(panelId);
@@ -11093,10 +11207,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * a "Link <service>" button. Best-effort and non-blocking — never throws into
    * the stream loop.
    */
-  private async _emitConnectionCard(panelId: string, service: string): Promise<void> {
+  private async _emitConnectionCard(panelId: string, service: string, isCurrent: () => boolean = () => true): Promise<void> {
     try {
+      if (!isCurrent()) { return; }
       const signedIn = !!this._deepMystAuth?.isSignedIn();
-      if (signedIn && (await this._isServiceLinked(service))) {
+      const linked = signedIn && await this._isServiceLinked(service);
+      if (!isCurrent()) { return; }
+      if (linked) {
         this._postToPanel(panelId, {
           type: 'connectionAlready',
           payload: { service }
@@ -12070,8 +12187,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Cleanup on dispose
     panel.onDidDispose(() => {
-      this._panelStates.delete(panelId);
       this._cancelQueuedChannelTurn(panelId);
+      this._panelStates.delete(panelId);
       this._cancelPendingSubAgentQuestions(panelId);
       this._lastUserMessage.delete(panelId);
       this._lastMentionContext.delete(panelId);
@@ -13263,6 +13380,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   public dispose(): void {
+    for (const retire of this._ordinaryRequestRetirements?.values() ?? []) { retire(false); }
+    this._ordinaryRequestRetirements?.clear();
     for (const controller of this._mystiExecutionAborts.values()) { controller.abort(); }
     this._mystiExecutionAborts.clear();
     console.log('[Mysti] ChatViewProvider: Disposing and cleaning up resources');
