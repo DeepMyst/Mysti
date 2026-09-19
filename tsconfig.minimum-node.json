@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "types": ["node", "vscode"],
+    "noEmit": true
+  },
+  "files": [
+    "src/extension.ts",
+    "src/services/deskIrohWorker.ts",
+    "types/minimum-node/globals.d.ts",
+    "tests-runtime/minimum-node-types.ts"
+  ],
+  "include": []
+}

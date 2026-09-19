@@ -6,6 +6,11 @@ with the [approval matrix](APPROVAL_ACCEPTANCE_MATRIX.md) and the provider's nat
 contract before choosing a mode. Model examples below are configuration examples,
 not a guarantee that an account or installed CLI exposes those models.
 
+Install commands for exact-version native bridges target the verified contract.
+Newer upstream releases need approval/startup compatibility review before Mysti
+offers them as updates. Current release and acceptance gaps are tracked in
+[the reliability checklist](RELIABILITY_GOAL.md).
+
 ## Provider overview
 
 | Provider | Agent transport | Execution boundary |
@@ -68,8 +73,8 @@ Explicit Mysti Canvas MCP tools remain available. See the
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.claudeCodePath` | `claude` | Path to the supported Claude CLI executable |
-| `mysti.claudeModel` | `sonnet` | Default model |
-| `mysti.thinkingLevel` | `none` | Thinking level (none, low, medium, high) |
+| `mysti.claudeCodeModel` | empty | Custom model override; otherwise use the selected model |
+| `mysti.defaultThinkingLevel` | `none` | Thinking level (none, low, medium, high) |
 
 ---
 
@@ -89,16 +94,17 @@ npm install -g @openai/codex@0.153.4
 ### Authentication
 
 ```bash
-codex auth login
+codex login
 ```
 
 Or set `OPENAI_API_KEY` environment variable.
 
 ### Supported Models
 
-- GPT-5.2
-- GPT-5.2 Thinking
-- GPT-5
+Use the model picker, which merges the bundled fallback list with native model
+discovery. The fallback includes GPT-6 Astra and GPT-5.6 Sol, Terra and Luna;
+account availability still governs access. Retired automatic suggestions are
+filtered from discovery and saved caches. Explicit custom model IDs remain usable.
 
 ### Unique Features
 
@@ -117,7 +123,7 @@ Windows support and authenticated/editor acceptance remain pending. See the
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.codexPath` | `codex` | Path to Codex CLI executable |
-| `mysti.codexModel` | `gpt-5.2` | Default model |
+| `mysti.codexModel` | empty | Custom model override; otherwise use the selected model |
 
 ---
 
@@ -134,18 +140,23 @@ npm install -g @google/gemini-cli@0.58.0
 ### Authentication
 
 ```bash
-gemini auth login
+gemini
 ```
+
+Use a Gemini Code Assist Standard or Enterprise sign-in, an API key through
+`GEMINI_API_KEY` / `GOOGLE_API_KEY`, or Vertex AI. Personal Google AI and free
+account access moved to Antigravity CLI on June 18, 2026; it is a separate product
+and is not the Gemini bridge. See [Google's service-transition announcement](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/).
 
 ### Supported Models
 
-- Gemini 3 Deep Think
-- Gemini 2.5 Pro
+Use the picker or an explicit custom model ID. The bundled default is
+`gemini-3.8-flash`; API-key discovery can refresh the available catalogue.
 
 ### Unique Features
 
 - **Fast Responses**: Generally the fastest response times
-- **Thinking Support**: Deep thinking mode available
+- **Usage reporting**: The native transport reports token usage when available
 - **Google Integration**: Works well with Google Cloud and Firebase projects
 
 The **0.58.0** ACP bridge permits file reads, writes and replacements. Shell and delegation are disabled because this version omits their complete approval inputs. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
@@ -155,7 +166,7 @@ The **0.58.0** ACP bridge permits file reads, writes and replacements. Shell and
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.geminiPath` | `gemini` | Path to Gemini CLI executable |
-| `mysti.geminiModel` | `gemini-3-deep-think` | Default model |
+| `mysti.geminiModel` | empty | Custom model override; otherwise use the selected model |
 
 ---
 
@@ -192,7 +203,7 @@ The **3.0.61** ACP bridge uses private local state and native permission request
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.clinePath` | `cline` | Path to Cline CLI executable |
-| `mysti.clineModel` | `claude-3-5-sonnet` | Default model |
+| `mysti.clineModel` | empty | Custom model override; otherwise use the selected model |
 
 ---
 
@@ -240,7 +251,7 @@ The **1.0.83** ACP transport permits only read/search operations. It disables fi
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.copilotPath` | `copilot` | Path to Copilot CLI executable |
-| `mysti.copilotModel` | `claude-sonnet-4-5` | Default model |
+| `mysti.copilotModel` | empty | Custom model override; otherwise use the selected model |
 
 ---
 
@@ -283,7 +294,7 @@ Or set `CURSOR_API_KEY` environment variable.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.cursorPath` | `agent` | Path to Cursor CLI executable |
-| `mysti.cursorModel` | `auto` | Default model |
+| `mysti.cursorModel` | empty | Custom model override; otherwise use the selected model or `auto` |
 
 ---
 
@@ -360,6 +371,14 @@ Set `mysti.opencodeModel` to an explicit `provider/model` ID. The bridge support
 
 Shell commands, delegation, plugins, MCP, custom tools, formatters and native session resume are unavailable in this bridge.
 
+Startup is refused if `.opencode`, `opencode.json`, or `opencode.jsonc` exists in
+the workspace or any ancestor, including ancestors reached through symlinks.
+Empty files/directories and dangling links also block startup. Use an environment
+without these paths and without inherited user/system OpenCode configuration:
+this native version can load that configuration despite its isolation flags.
+See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for the exact startup
+checks and their limits.
+
 ### Settings
 
 | Setting | Default | Description |
@@ -412,7 +431,7 @@ The bridge disables hooks, extensions, skills, MCP, background execution and del
 
 ## Ollama
 
-Local LLM inference — run AI models on your own machine with no cloud dependency.
+HTTP access to an Ollama server, using localhost by default.
 
 ### Installation
 
@@ -424,7 +443,8 @@ ollama pull llama3
 
 ### Authentication
 
-No authentication needed — runs entirely locally.
+The adapter expects an endpoint that does not require authentication. Where the
+model runs and what data leaves your machine depend on the configured server.
 
 ### Supported Models
 
@@ -432,16 +452,16 @@ Any model available in the Ollama library: Llama 3, Mistral, CodeLlama, Phi, Gem
 
 ### Unique Features
 
-- **Fully Local**: No internet connection required after model download
-- **Privacy**: Your code never leaves your machine
-- **No Subscription**: Free to use with any compatible model
-- **Fast Inference**: Hardware-accelerated on Apple Silicon, NVIDIA GPUs
+- **Model discovery**: Lists models exposed by the configured server
+- **Streaming**: Text and model-provided thinking, with final token usage
+- **Tool proposals**: Displays requested tools without executing them
+- **Cancellation**: Stop closes the owned HTTP request; server-side cancellation depends on the server
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.ollamaPath` | `ollama` | Path to Ollama CLI executable |
+| `mysti.ollamaEndpoint` | `http://localhost:11434` | Ollama HTTP API endpoint |
 | `mysti.ollamaModel` | `` | Custom model |
 
 ---
@@ -456,7 +476,7 @@ Follow the installation guide at [localai.io](https://localai.io).
 
 ### Authentication
 
-No authentication needed — runs entirely locally.
+Set `mysti.localaiApiKey` if the configured server requires a bearer API key.
 
 ### Supported Models
 
@@ -466,14 +486,16 @@ Supports a wide range of self-hosted models. See LocalAI documentation for compa
 
 - **Self-Hosted**: Run on your own infrastructure
 - **Full Control**: Configure models, resources, and access as needed
-- **On-Premise**: Meets compliance requirements for data residency
+- **Streaming**: Text, model-provided thinking and reported or explicitly estimated usage
+- **Tool proposals**: Reassembles streamed arguments without executing tools
 - **No Subscription**: Free and open source
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.localaiPath` | `localai` | Path to LocalAI CLI executable |
+| `mysti.localaiEndpoint` | `http://localhost:8080` | LocalAI HTTP API endpoint |
+| `mysti.localaiApiKey` | empty | Bearer API key when required by the server |
 | `mysti.localaiModel` | `` | Custom model |
 
 ---
@@ -540,8 +562,8 @@ External acceptance limits in the approval matrix still apply.
 | Gemini | history | none | yes |
 | Hermes | native | none | yes |
 | Kimi Code | native | streamed | yes |
-| LocalAI | history | none | yes |
-| Ollama | history | none | yes |
+| LocalAI | history | streamed | yes |
+| Ollama | history | streamed | yes |
 | OpenClaw | native | complete blocks | no |
 | OpenCode | history | complete blocks | yes |
 | OpenRouter | history | streamed | yes |

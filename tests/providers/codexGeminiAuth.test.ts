@@ -83,7 +83,12 @@ describe('Codex + Gemini OAuth auth detection', () => {
     });
 
     it('is NOT authenticated with nothing present', async () => {
-      expect((await new TestableCodexProvider().getAuthConfig()).isAuthenticated).toBe(false);
+      const provider = new TestableCodexProvider();
+      expect((await provider.getAuthConfig()).isAuthenticated).toBe(false);
+      const status = await provider.checkAuthentication();
+      expect(status.authenticated).toBe(false);
+      expect(provider.getAuthCommand()).toBe('codex login');
+      expect(status.error).toContain('"codex login"');
     });
   });
 
@@ -135,7 +140,11 @@ describe('Codex + Gemini OAuth auth detection', () => {
     });
 
     it('is NOT authenticated with nothing present', async () => {
-      expect((await new TestableGeminiProvider().checkAuthentication()).authenticated).toBe(false);
+      const result = await new TestableGeminiProvider().checkAuthentication();
+      expect(result.authenticated).toBe(false);
+      expect(result.error).toContain('Gemini Code Assist Standard or Enterprise license');
+      expect(result.error).toContain('GEMINI_API_KEY / GOOGLE_API_KEY or Vertex AI');
+      expect(result.error).toContain('Antigravity CLI');
     });
 
     // Plan 18 4.8 — these branches consult exactly the env vars the scrub list

@@ -14,6 +14,7 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import { getProviderNpmPackage, getProviderSelfUpdateCommand } from '../providers/base/ProviderManifest';
+import { getVerifiedNativeCliVersion } from '../providers/base/NativeCliVersions';
 import {
   CLI_UPDATE_CHECK_TTL_MS,
   CLI_UPDATE_PROBE_TIMEOUT_MS,
@@ -28,9 +29,8 @@ export interface CliUpdateInfo {
   installed: string;
   latest: string;
   /**
-   * The newest version this machine can actually INSTALL — equal to `latest`
-   * unless the latest release's `engines.node` excludes the running Node, in
-   * which case it is the newest release that does not.
+   * The update target supported by both this machine and Mysti's native bridge.
+   * It can lag `latest` because of the Node engine or a verified protocol pin.
    *
    * The two really do diverge: openclaw 2026.9.2 requires Node >=22.22.3, and
    * on a Node 22.20.0 machine `npm i -g openclaw@latest` fails in a preinstall
@@ -39,6 +39,8 @@ export interface CliUpdateInfo {
   installable: string;
   /** True when `installable` is behind `latest` because of the Node engine. */
   blockedByNodeEngine: boolean;
+  /** True when a newer upstream release has no verified native contract yet. */
+  blockedByNativeBridge?: boolean;
   /** The engine range that excluded `latest`, for explaining the gap. */
   requiredNode?: string;
   /** Epoch ms of the check that produced this entry. */
@@ -53,6 +55,8 @@ interface CachedCheck {
   installable?: string;
   /** `engines.node` of `latest`, when it excludes the running Node. */
   requiredNode?: string;
+  /** Pin whose package metadata was checked; old caches cannot attest a pin. */
+  verifiedVersion?: string;
 }
 
 /** Minimal view of CliDiscoveryService — just the installed-version lookup. */
@@ -230,9 +234,9 @@ export function compareVersions(a: ParsedVersion, b: ParsedVersion): number {
 }
 
 /**
- * CliUpdateService — answers "is this backend's CLI behind npm?" and nothing
- * else. It NEVER installs: the update command is built by the caller from the
- * in-repo package name and run in a visible terminal on an explicit click.
+ * CliUpdateService — finds updates compatible with Mysti's native contract and
+ * the local Node engine. It never installs: commands run in a visible terminal
+ * only after an explicit update action.
  *
  * Why this matters for model releases: a new model is frequently gated on a CLI
  * version, not just on the provider's catalogue. gpt-6-astra needs Codex CLI
@@ -315,6 +319,10 @@ export class CliUpdateService implements vscode.Disposable {
       }
       const installed = parseVersion(status.version);
       const latest = parseVersion(cached.latest, true);
+      const verified = getVerifiedNativeCliVersion(status.providerId);
+      if (verified && (cached.verifiedVersion !== verified || cached.installable !== verified)) {
+        continue;
+      }
       // Unknown on either side => stay quiet. Never guess "outdated".
       if (!installed || !latest) {
         continue;
@@ -335,7 +343,8 @@ export class CliUpdateService implements vscode.Disposable {
           installed: `${installed.major}.${installed.minor}.${installed.patch}${installed.prerelease ? '-' + installed.prerelease : ''}`,
           latest: cached.latest,
           installable,
-          blockedByNodeEngine: installable !== cached.latest,
+          blockedByNodeEngine: installable !== cached.latest && !!cached.requiredNode,
+          ...(verified ? { blockedByNativeBridge: verified !== cached.latest } : {}),
           requiredNode: cached.requiredNode,
           checkedAt: cached.checkedAt,
         });
@@ -350,6 +359,16 @@ export class CliUpdateService implements vscode.Disposable {
    * no registry response and no user/model text reaches this string.
    */
   public getUpdateCommand(providerId: string): string | undefined {
+    const verified = getVerifiedNativeCliVersion(providerId);
+    if (verified) {
+      const installed = parseVersion(this._versions.peekStatus(providerId)?.version);
+      if (installed && compareVersions(installed, parseVersion(verified, true)!) >= 0) { return undefined; }
+      const cached = this._cache.get(providerId);
+      if (cached && (cached.verifiedVersion !== verified || cached.installable !== verified)) { return undefined; }
+      const packageName = getProviderNpmPackage(providerId);
+      return getProviderSelfUpdateCommand(providerId)
+        ?? (packageName ? `npm install -g ${packageName}@${verified}` : undefined);
+    }
     // A provider with its own updater uses it: for Claude Code the npm package
     // and the binary on PATH can be two different installs, so `npm i -g` there
     // updates a copy nothing runs.
@@ -421,6 +440,27 @@ export class CliUpdateService implements vscode.Disposable {
 
     const latest = head.version.trim().replace(/^v/i, '');
     const entry: CachedCheck = { latest, checkedAt: Date.now() };
+
+    const verified = getVerifiedNativeCliVersion(providerId);
+    if (verified) {
+      entry.verifiedVersion = verified;
+      entry.installable = '';
+      let supported = latest === verified ? head : undefined;
+      if (!supported && compareVersions(parseVersion(verified, true)!, parsed) <= 0) {
+        try {
+          supported = parseNpmViewEntries(await this._execNpmView(
+            npmPath, packageName, ['version', 'engines.node'], verified,
+          )).find(candidate => candidate.version === verified);
+        } catch { /* unavailable metadata cannot authorize an update target */ }
+      }
+      if (supported && satisfiesNodeRange(process.versions.node, supported.engines)) {
+        entry.installable = verified;
+      }
+      if (!satisfiesNodeRange(process.versions.node, head.engines)) { entry.requiredNode = head.engines; }
+      this._cache.set(providerId, entry);
+      await this._persistCache();
+      return;
+    }
 
     // If the newest release excludes this machine's Node, find the newest one
     // that does not — otherwise Mysti offers an update that cannot be installed.
@@ -509,7 +549,9 @@ export class CliUpdateService implements vscode.Disposable {
 
   private _isStale(providerId: string): boolean {
     const cached = this._cache.get(providerId);
-    return !cached || (Date.now() - cached.checkedAt) > CLI_UPDATE_CHECK_TTL_MS;
+    const verified = getVerifiedNativeCliVersion(providerId);
+    return !cached || (!!verified && cached.verifiedVersion !== verified)
+      || (Date.now() - cached.checkedAt) > CLI_UPDATE_CHECK_TTL_MS;
   }
 
   private _delay(ms: number): Promise<void> {

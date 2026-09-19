@@ -113,6 +113,60 @@ describe('ModelRegistryService', () => {
     clearMockConfig();
   });
 
+  it.each([
+    ['openai-codex', 'gpt-5.3-codex-spark', 'gpt-5.6-sol'],
+    ['google-gemini', 'gemini-3-pro-preview', 'gemini-3.8-flash'],
+  ])('keeps retired %s suggestions out of cached and refreshed lists while preserving custom IDs', async (providerId, retiredId, currentId) => {
+    const ctx = makeContext();
+    const retired = { id: retiredId, name: 'Retired' };
+    const current = { id: currentId, name: 'Current' };
+    await ctx.globalState.update(MODEL_REGISTRY_CACHE_KEY, {
+      [providerId]: { models: [retired, current], fetchedAt: Date.now() },
+    });
+    const discovered = vi.fn(async () => [retired, current, { id: 'gateway-model', name: 'Gateway' }]);
+    const source = makeSource({ [providerId]: { models: [retired, current], defaultModel: currentId } }, {
+      [providerId]: makeProvider(providerId, discovered),
+    });
+    const registry = new ModelRegistryService(ctx.context);
+    registry.setProviderSource(source);
+    const read = () => registry.getModels(providerId, { revalidate: false }).models;
+    expect(read().map(model => model.id)).toEqual([currentId]);
+    await registry.refresh(providerId);
+    expect(read().map(model => model.id)).toEqual([currentId, 'gateway-model']);
+    const cached = ctx.globalState.get<Record<string, { models: ModelInfo[] }>>(MODEL_REGISTRY_CACHE_KEY)!;
+    expect(cached[providerId].models.some(model => model.id === retiredId)).toBe(false);
+    await registry.addCustomModel(providerId, retiredId);
+    setMockConfig('customModels', { [providerId]: [retiredId] });
+    await registry.addCustomModel(providerId, 'private-alias');
+    setMockConfig('customModels', { [providerId]: [retiredId, 'private-alias'] });
+    await registry.refresh(providerId);
+    expect(read()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: retiredId, source: 'custom' }),
+      expect.objectContaining({ id: 'private-alias', source: 'custom' }),
+      expect.objectContaining({ id: currentId }),
+    ]));
+    const revived = new ModelRegistryService(ctx.context);
+    revived.setProviderSource(source);
+    expect(revived.getModels(providerId, { revalidate: false }).models.find(model => model.id === retiredId)?.source).toBe('custom');
+    await registry.removeCustomModel(providerId, retiredId);
+    setMockConfig('customModels', { [providerId]: ['private-alias'] });
+    expect(read().some(model => model.id === retiredId)).toBe(false);
+    registry.dispose(); revived.dispose();
+  });
+
+  it('scopes retirement to the vendor provider and filters curated entries without a discovery cache', () => {
+    const retired = { id: 'gpt-5.3-codex-spark', name: 'A private alias' };
+    const registry = new ModelRegistryService(makeContext().context);
+    registry.setProviderSource(makeSource({
+      'openai-codex': { models: [retired], defaultModel: 'gpt-5.6-sol' },
+      localai: { models: [retired], defaultModel: retired.id },
+    }));
+    expect(registry.getModels('openai-codex', { revalidate: false }).models).toEqual([]);
+    expect(registry.getModels('localai', { revalidate: false }).models[0]?.id).toBe(retired.id);
+    expect(registry.getModels('constructor', { revalidate: false }).models).toEqual([]);
+    registry.dispose();
+  });
+
   // -------------------------------------------------------------------------
   // Behavior-neutral baseline (Phase 1)
   // -------------------------------------------------------------------------

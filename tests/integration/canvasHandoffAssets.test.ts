@@ -168,9 +168,6 @@ describe('canvas handoff — assets and the open design', () => {
     }));
     await store.save(artifact);
 
-    provider._canvasStore = store;
-    provider._canvasExecutor = new CanvasOpExecutor(store, new CanvasJobRouter(() => {}));
-    provider._canvasArtifact = artifact;
     provider._canvasPanelId = 'canvas-panel';
     provider._canvasViewToken = 'tok-1';
     provider._panelStates.set('canvas-panel', {
@@ -180,6 +177,14 @@ describe('canvas handoff — assets and the open design', () => {
       currentConversationId: null,
       isSidebar: false,
     });
+
+    provider._canvasBridge = provider._createCanvasBridge('canvas-panel');
+    provider._canvasArtifactSession = provider._createCanvasArtifactSession(
+      'canvas-panel', store, new CanvasOpExecutor(store, new CanvasJobRouter(() => {})),
+      provider._canvasBridge, provider._panelStates.get('canvas-panel').panel.webview,
+    );
+    await provider._canvasArtifactSession.initialize();
+    artifact = provider._canvasArtifact;
 
     for (const k of ['showOpenDialog', 'createWebviewPanel']) {
       originalWindow[k] = (vscode.window as any)[k];
@@ -193,7 +198,9 @@ describe('canvas handoff — assets and the open design', () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await provider._canvasArtifactSession.close();
+    provider._canvasBridge.dispose();
     for (const [k, v] of Object.entries(originalWindow)) {
       if (v === undefined) { delete (vscode.window as any)[k]; }
       else { (vscode.window as any)[k] = v; }

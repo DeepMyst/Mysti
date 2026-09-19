@@ -97,12 +97,6 @@ export class GeminiProvider extends AcpNativeProvider {
         contextWindow: 1048576
       },
       {
-        id: 'gemini-3-pro-preview',
-        name: 'Gemini 3 Pro (Preview)',
-        description: 'Most intelligent, best for complex multimodal tasks',
-        contextWindow: 1048576
-      },
-      {
         id: 'gemini-3-flash-preview',
         name: 'Gemini 3 Flash (Preview)',
         description: 'Fast multimodal understanding with strong reasoning',
@@ -301,7 +295,7 @@ export class GeminiProvider extends AcpNativeProvider {
 
     return {
       authenticated: false,
-      error: 'Not authenticated. Please run "gemini" and sign in with your Google account, or set the GEMINI_API_KEY environment variable.'
+      error: 'Not authenticated. Run "gemini" to sign in with a Gemini Code Assist Standard or Enterprise license, or configure GEMINI_API_KEY / GOOGLE_API_KEY or Vertex AI. Personal Google AI and free accounts now use Antigravity CLI.'
     };
   }
 
@@ -310,7 +304,7 @@ export class GeminiProvider extends AcpNativeProvider {
   }
 
   getInstallCommand(): string {
-    return 'npm install -g @google/gemini-cli';
+    return `npm install -g @google/gemini-cli@${GEMINI_ACP_VERSION}`;
   }
 
   protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {

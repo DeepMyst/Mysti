@@ -2,8 +2,9 @@
 import * as path from 'path';
 import { isRecord } from '../../utils/valueGuards';
 import type { ToolCall } from '../../types';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 
-export const QWEN_ACP_VERSION = '0.23.0';
+export const QWEN_ACP_VERSION = VERIFIED_NATIVE_CLI_VERSIONS['qwen-code'];
 export const QWEN_ACP_TOOLS = ['read_file', 'edit', 'notebook_edit', 'run_shell_command'] as const;
 
 // Pinned 0.23.0 registry. --core-tools does not restrict synthetic tools, so

@@ -90,13 +90,23 @@ therefore part of the approval boundary, independently of the protocol bridge.
   so this bridge requires BYOK and forces GitHub offline mode. Native safe reads
   still bypass host approval.
 - **OpenCode:** private XDG state, a fixed primary agent and explicit model isolate
-  saved login/configuration. Project configuration, plugins, MCP, skills,
-  formatters, LSP, sharing, snapshots and updates are disabled. Global `.opencode`
-  and managed authority outside that isolation prevent startup. Native background
+  saved login/configuration. The V1 configuration disables project configuration,
+  plugins, MCP, skills, formatters, LSP, sharing, snapshots and updates. Actual
+  1.18.29 testing exposed a second Core V2 loader that imports project plugins
+  even with `--pure`. Mysti therefore rejects `opencode.json`, `opencode.jsonc`
+  and `.opencode` in the workspace and all lexical/canonical ancestors, in
+  addition to global `.opencode` and managed authority. It checks metadata
+  without reading configuration contents, checks again before process launch and
+  before the prompt, and rejects workspace symlink retargeting. These checks are
+  not OS confinement against concurrent external configuration changes.
+  Native background
   dependency checks use private npm configuration, offline mode and disabled
   lifecycle scripts. The internal ACP HTTP server binds loopback with a fresh
   password. Shell is removed from the executable map: this release otherwise
   skips its permission callback for commands consisting only of redirections.
+  A private pre-execution-hook experiment gates those commands, but its active
+  shell descendant survived Stop. That prototype is test-only; shell restoration
+  requires owned execution and verified teardown.
 
 OpenCode 1.18.29 emits a redundant `fs/write_text_file` UI request after approval
 even when the client advertises that capability as false. Mysti returns

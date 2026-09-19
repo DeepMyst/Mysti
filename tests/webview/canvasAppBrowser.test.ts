@@ -187,8 +187,13 @@ describe('overlay panes at narrow widths (real browser)', () => {
   }> {
     await freshApp();
     await page!.setViewportSize({ width, height: 900 });
-    // Two frames: the ResizeObserver measurement, then the layout write.
-    await page!.waitForTimeout(120);
+    // The shortcut depends on the CURRENT responsive mode. A fixed delay can
+    // send it while the old wide panes are still open, closing them just before
+    // the delayed ResizeObserver finally publishes the narrow layout.
+    await page!.waitForFunction(
+      () => document.getElementById('app')?.classList.contains('layout-narrow'),
+      undefined, { timeout: 5_000 },
+    );
     await page!.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page!.keyboard.press('Backslash');
     await page!.waitForTimeout(120);

@@ -162,7 +162,7 @@ jobs:
       # extension under test. Do not rebuild it from this checkout.
       - name: Prepare editor tests
         run: |
-          npm exec --no -- tsc -p tsconfig.vscode-test.json
+          npm run typecheck:editor
           node scripts/prepare-vscode-fixture.js
       - name: Test installed extension
         env:

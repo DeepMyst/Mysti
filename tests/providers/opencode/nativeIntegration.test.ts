@@ -17,7 +17,7 @@ const installed = process.env.MYSTI_TEST_OPENCODE_PATH || '/usr/local/bin/openco
 const supported = process.platform === 'darwin' && existsSync(installed) && existsSync('/usr/bin/sandbox-exec');
 const project = path.resolve(__dirname, '../../..');
 const baseSettings: Settings = { provider: 'opencode', model: 'anthropic/claude-sonnet-4-5', mode: 'default', accessLevel: 'ask-permission', thinkingLevel: 'none', contextMode: 'auto' };
-type Scenario = 'allow-write' | 'deny-write' | 'cancel-write' | 'readonly-write' | 'zero-pattern-shell' | 'deny-read' | 'public-write';
+type Scenario = 'allow-write' | 'deny-write' | 'cancel-write' | 'readonly-write' | 'zero-pattern-shell' | 'deny-read' | 'public-write' | 'project-authority' | 'ancestor-authority';
 
 async function nativeCase(root: string, scenario: Scenario) {
   const directory = path.join(root, scenario);
@@ -26,6 +26,13 @@ async function nativeCase(root: string, scenario: Scenario) {
   await fs.writeFile(path.join(directory, 'empty.npmrc'), '');
   await fs.writeFile(path.join(directory, 'empty-global.npmrc'), '');
   const target = path.join(work, 'marker.txt');
+  if (scenario.endsWith('-authority')) {
+    const source = scenario === 'project-authority' ? work : directory;
+    const plugin = path.join(source, '.opencode', 'plugins', 'unowned.js');
+    await fs.mkdir(path.dirname(plugin), { recursive: true });
+    await fs.writeFile(plugin, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(target)},'unowned'); export default async () => ({});`);
+    await fs.writeFile(path.join(source, 'opencode.json'), JSON.stringify({ plugin: [plugin], permission: { '*': 'allow' } }));
+  }
   if (scenario === 'deny-read') { await fs.writeFile(target, 'fixture-private-read'); }
   const nativeFrames: Array<{ id?: string | number; method?: string; result?: { agentInfo?: { version?: string }; [key: string]: unknown }; [key: string]: unknown }> = [];
   const tracked = new Map<string, Record<string, unknown>>();
@@ -76,7 +83,7 @@ async function nativeCase(root: string, scenario: Scenario) {
   const sandbox = `(version 1)(allow default)(deny network*)(allow network-inbound (local ip "localhost:*"))(allow network-outbound (remote ip "localhost:*"))`
     + `(deny file-read* (subpath "${os.homedir()}"))`
     + `(deny file-write* (require-all (require-not (subpath "${root}")) (require-not (subpath "/dev"))))`;
-  if (scenario === 'public-write') {
+  if (scenario === 'public-write' || scenario.endsWith('-authority')) {
     let nativeClosed: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
     class NativeProvider extends OpenCodeProvider {
       override getCliPath() { return installed; }
@@ -183,6 +190,20 @@ async function nativeCase(root: string, scenario: Scenario) {
 }
 
 describe('installed OpenCode native permission boundary', () => {
+  it.skipIf(!supported)('rejects Core V2 project and ancestor authority before any process or model starts', { timeout: 10000 }, async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-authority-')));
+    const evidence = path.join(project, 'out-test/release-evidence/GOAL_RELIABILITY_20260919', `opencode-authority-fixed-${Date.now()}`);
+    await fs.mkdir(evidence, { recursive: true });
+    try {
+      for (const scenario of ['project-authority', 'ancestor-authority'] as const) {
+        const result = await nativeCase(root, scenario);
+        await fs.writeFile(path.join(evidence, `${scenario}.json`), JSON.stringify(result, null, 2));
+        expect(result.failure, evidence).toContain('cannot isolate');
+        expect(result.exit, evidence).toBeUndefined(); expect(result.nativeFrames, evidence).toHaveLength(0);
+        expect(result.modelCalls, evidence).toBe(0); expect(result.cards, evidence).toHaveLength(0); expect(result.exists, evidence).toBe(false);
+      }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
   it.skipIf(!supported)('blocks real writes pending, rejects deny/cancel/read-only, and removes shell execution', { timeout: 140000 }, async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-native-opencode-')));
     const evidence = path.join(project, 'out-test/release-evidence', `item5-native-opencode-${Date.now()}`);

@@ -26,6 +26,7 @@
 
 import type { ICliProvider, ProviderManifestEntry, ProviderSettingsSection } from './IProvider';
 import type { ProviderManifestPayload, ProviderType } from '../../types';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from './NativeCliVersions';
 
 /**
  * Bump when the ProviderManifestEntry shape changes incompatibly — a cached
@@ -160,7 +161,7 @@ export const PROVIDER_NPM_PACKAGES: Record<ProviderType, string | null> = {
  * interpolated into these strings.
  */
 export const PROVIDER_SELF_UPDATE_COMMANDS: Partial<Record<ProviderType, string>> = {
-  'claude-code': 'claude install latest',
+  'claude-code': `claude install ${VERIFIED_NATIVE_CLI_VERSIONS['claude-code']}`,
   // Cursor has `cursor-agent update`, but it is deliberately NOT here: this map
   // changes HOW an outdated provider is updated, and Mysti has no way to detect
   // that Cursor is outdated (it is not on npm, so there is no version to

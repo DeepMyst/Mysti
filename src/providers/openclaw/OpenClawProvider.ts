@@ -15,6 +15,7 @@ import * as os from 'os';
 import { createHash, randomUUID } from 'crypto';
 import type { ChildProcess } from 'child_process';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 import { OpenClawGateway } from './OpenClawGateway';
 import { OpenClawManagedRuntime, type OpenClawManagedRuntimeHandle } from './OpenClawManagedRuntime';
 import { OpenClawPolicyBroker, type OpenClawBrokerLease } from './OpenClawPolicyBroker';
@@ -340,7 +341,7 @@ export class OpenClawProvider extends BaseCliProvider {
   }
 
   getInstallCommand(): string {
-    return 'npm install -g openclaw@2026.6.34 && openclaw onboard --install-daemon';
+    return `npm install -g openclaw@${VERIFIED_NATIVE_CLI_VERSIONS.openclaw} && openclaw onboard --install-daemon`;
   }
 
   getInstallMethods(): import('../../types').InstallMethod[] {
@@ -348,14 +349,14 @@ export class OpenClawProvider extends BaseCliProvider {
       {
         id: 'npm',
         label: 'npm (recommended)',
-        command: 'npm install -g openclaw@2026.6.34',
+        command: `npm install -g openclaw@${VERIFIED_NATIVE_CLI_VERSIONS.openclaw}`,
         platform: 'all',
         priority: 1
       },
       {
         id: 'onboard',
         label: 'Full setup with daemon',
-        command: 'npm install -g openclaw@2026.6.34 && openclaw onboard --install-daemon',
+        command: `npm install -g openclaw@${VERIFIED_NATIVE_CLI_VERSIONS.openclaw} && openclaw onboard --install-daemon`,
         platform: 'all',
         priority: 2
       }
@@ -426,7 +427,7 @@ export class OpenClawProvider extends BaseCliProvider {
 
   /** The installed agent CLI has no supported per-turn native approval bridge. */
   protected buildCliArgs(_settings: Settings, _session: PanelSessionState): string[] {
-    throw new Error('OpenClaw agent execution requires the owned native approval runtime (OpenClaw 2026.6.34, embedded Pi). Unguarded CLI fallback is disabled.');
+    throw new Error(`OpenClaw agent execution requires the owned native approval runtime (OpenClaw ${VERIFIED_NATIVE_CLI_VERSIONS.openclaw}, embedded Pi). Unguarded CLI fallback is disabled.`);
   }
 
   /**
@@ -741,10 +742,10 @@ export class OpenClawProvider extends BaseCliProvider {
   private async _readOwnedRuntimeConfig(signal: AbortSignal): Promise<OwnedRuntimeConfig> {
     const discovery = await this.discoverCli();
     if (signal.aborted) { throw new Error('OpenClaw setup cancelled.'); }
-    if (!discovery.found) { throw new Error('Install OpenClaw 2026.6.34 to use the owned native approval runtime.'); }
+    if (!discovery.found) { throw new Error(`Install OpenClaw ${VERIFIED_NATIVE_CLI_VERSIONS.openclaw} to use the owned native approval runtime.`); }
     let cliPath: string;
     try { cliPath = await fs.promises.realpath(discovery.path); }
-    catch { throw new Error('Set the OpenClaw CLI path to the installed OpenClaw 2026.6.34 openclaw.mjs entry point.'); }
+    catch { throw new Error(`Set the OpenClaw CLI path to the installed OpenClaw ${VERIFIED_NATIVE_CLI_VERSIONS.openclaw} openclaw.mjs entry point.`); }
     const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!workspaceDir || !path.isAbsolute(workspaceDir)) {
       throw new Error('Open a local workspace before starting the OpenClaw native approval runtime.');
@@ -787,7 +788,7 @@ export class OpenClawProvider extends BaseCliProvider {
     (session as OpenClawSessionState).openClawSessionKey = `agent:main:mysti-${randomUUID()}`;
     const runtime: OwnedRuntime = {
       fingerprint: config.fingerprint, controller: new AbortController(), ready: false,
-      broker: new OpenClawPolicyBroker({ version: '2026.6.34',
+      broker: new OpenClawPolicyBroker({ version: VERIFIED_NATIVE_CLI_VERSIONS.openclaw,
         targetHash: '2f8ba157e5660c32b85826eb3269a59b8add55062e31ed3d6d1528dd1017ad4b' }),
       started: Promise.resolve(),
     };

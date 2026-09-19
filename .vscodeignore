@@ -32,6 +32,8 @@ out-vscode-test/**
 tests-vscode/**
 tests-runtime/**
 tsconfig.vscode-test.json
+tsconfig.minimum-node.json
+types/**
 .vscode-test.mjs
 .github/**
 .nvmrc

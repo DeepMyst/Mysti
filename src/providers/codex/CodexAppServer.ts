@@ -7,8 +7,9 @@ import type { Settings, StreamChunk, ToolCall, UsageStats } from '../../types';
 import type { NativeApprovalHandler } from '../base/IProvider';
 import { NativeApprovalScope } from '../base/NativeApprovalScope';
 import { shouldGateToolUse } from '../../utils/permissionClassifier';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 
-export const CODEX_APP_SERVER_VERSION = '0.153.4';
+export const CODEX_APP_SERVER_VERSION = VERIFIED_NATIVE_CLI_VERSIONS['openai-codex'];
 type JsonObject = Record<string, unknown>;
 const object = (value: unknown): value is JsonObject => !!value && typeof value === 'object' && !Array.isArray(value);
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length < 8192;

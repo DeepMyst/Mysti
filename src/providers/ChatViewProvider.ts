@@ -30,6 +30,7 @@ import { CanvasHistory } from '../canvas/CanvasHistory';
 import { CanvasLiveness } from '../canvas/CanvasLiveness';
 import { CanvasTurnJobs } from '../canvas/CanvasTurnJobs';
 import { CanvasMcpSession } from '../canvas/CanvasMcpSession';
+import { CanvasArtifactSession } from '../canvas/CanvasArtifactSession';
 import { mintViewToken } from '../canvas/protocol';
 import type { CanvasHostMessage, CapChip } from '../canvas/protocol';
 import { coordinatorToolSchemas, modelSupportsToolCalls, normalizeCanvasToolName, canvasToolRefusal, sanitizeMcpInputSchema, type McpToolInfo } from '../services/coordinatorTools';
@@ -332,13 +333,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _canvasDevServerManager: DevServerManager = new DevServerManager();
   private _canvasPanelId: string | null = null;
   private _canvasChatOrigin: string | null = null;
-  private _canvasSessionToken: object | null = null;
-  private _canvasSwitchToken: object | null = null;
+  private _canvasArtifactSession: CanvasArtifactSession | null = null;
   // Plan 05 — chat→canvas bridge: the live artifact backing the open canvas, the
   // op executor/router that mutate it, and the per-turn fenced-`canvas-op` parser.
-  private _canvasArtifact: CanvasArtifact | null = null;
-  private _canvasStore: ArtifactStore | null = null;
-  private _canvasExecutor: CanvasOpExecutor | null = null;
+  private get _canvasArtifact(): CanvasArtifact | null { return this._canvasArtifactSession?.snapshot?.artifact ?? null; }
+  private get _canvasStore(): ArtifactStore | null {
+    const session = this._canvasArtifactSession;
+    return session && !session.closed ? session.store : null;
+  }
+  private get _canvasExecutor(): CanvasOpExecutor | null {
+    const session = this._canvasArtifactSession;
+    return session && !session.closed ? session.executor : null;
+  }
   private _canvasJobRouter: CanvasJobRouter | null = null;
   private _canvasOpParser: CanvasOpParser | null = null;
   // Plan 22 §3.4 — the typed protocol seam. `_canvasHistory` owns the undo
@@ -346,7 +352,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // `_canvasLiveness` owns the per-run steering inbox + agent cursor, and
   // `_canvasBridge` is the ONE front door for webview traffic: every client
   // message is authenticated against `_canvasViewToken` before it is narrowed.
-  private _canvasHistory: CanvasHistory | null = null;
+  private get _canvasHistory(): CanvasHistory | null { return this._canvasArtifactSession?.snapshot?.history ?? null; }
   private _canvasLiveness: CanvasLiveness | null = null;
   private _canvasBridge: CanvasBridge | null = null;
   private _canvasViewToken = '';
@@ -382,7 +388,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     },
     onError: error => console.warn('[Mysti] Canvas MCP session failed:', error),
   });
-  private _canvasSaveTimer: NodeJS.Timeout | null = null;
   // Visual test dashboard tracking
   private _vtDashboardPanelId: string | null = null;
   private _vtDashboardChatOrigin: string | null = null;
@@ -8211,17 +8216,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
 
     panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
-    const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
 
     // Plan 05 — chat→canvas bridge: a live artifact backs the canvas; the chat
     // agent edits it through the MCP tools / fenced `canvas-op` blocks.
     const canvasStore = new ArtifactStore();
-    this._canvasStore = canvasStore;
-    const sessionToken = {};
-    const initialSwitch = {};
-    this._canvasSessionToken = sessionToken;
-    this._canvasSwitchToken = initialSwitch;
-    const ownsSession = () => this._canvasSessionToken === sessionToken;
     // Plan 22 §3.4: the per-view auth envelope. Minted HERE, before any HTML
     // exists, and checked on every arriving client message — a view that never
     // received a token can never speak, which is the fail-closed half of the
@@ -8236,7 +8234,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // never the whole-artifact repaint this used to send per applied op.
       bridge.onJobEvent(event);
     });
-    this._canvasExecutor = new CanvasOpExecutor(canvasStore, this._canvasJobRouter);
+    const executor = new CanvasOpExecutor(canvasStore, this._canvasJobRouter);
+    const artifactSession = this._createCanvasArtifactSession(panelId, canvasStore, executor, bridge, panel.webview);
+    this._canvasArtifactSession = artifactSession;
+    const ownsSession = () => this._canvasArtifactSession === artifactSession && !artifactSession.closed;
     this._canvasOpParser = new CanvasOpParser();
     this._canvasLiveness = new CanvasLiveness({
       router: this._canvasJobRouter,
@@ -8247,53 +8248,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // artifact from .mysti/canvas/; when none exists, start a genuinely empty
     // artifact named after the workspace (the empty state offers templates) —
     // never placeholder pages. The webview html is set once this resolves.
-    const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
     void (async () => {
-      let artifact: CanvasArtifact | null = null;
-      try {
-        const summaries = await canvasStore.list();
-        if (!ownsSession()) { return; }
-        if (this._canvasSwitchToken === initialSwitch && summaries.length) {
-          artifact = await canvasStore.load(summaries[0].id);
-        }
-      } catch (err) {
-        // Plan 22 Phase 0 gave ArtifactStore a typed corrupt-vs-absent error for
-        // exactly this moment. Swallowing it silently replaced a design that
-        // still exists on disk with a blank canvas — the user would see an empty
-        // board and reasonably conclude their work was gone. Absent is normal;
-        // corrupt is worth saying out loud, and never destructive (we only ever
-        // read here, and a later save writes under a NEW id).
-        const detail = err instanceof Error ? err.message : String(err);
-        console.warn('[Mysti] Canvas: could not load the most recent design:', detail);
-        void vscode.window.showWarningMessage(
-          `Mysti Canvas could not open your most recent design (${detail}). Starting an empty canvas — your saved file was not modified.`,
-        );
-      }
-      if (!artifact) {
-        artifact = buildEmptyCanvasArtifact(workspaceName ? `${workspaceName} designs` : undefined);
-      }
-
-      // Panel may have been disposed while loading.
+      await artifactSession.initialize();
       if (!ownsSession()) { return; }
-      if (this._canvasSwitchToken === initialSwitch) {
-        this._canvasArtifact = artifact;
-        // The undo cursor + version timeline for THIS design. Constructed with
-        // the artifact because it ingests the op log; every canvas mutation
-        // pushes `history.status()` at the view, which is the only reason its
-        // undo/redo buttons are ever enabled (the view keeps no mirror).
-        this._canvasHistory = new CanvasHistory(artifact, this._canvasExecutor!, { jobId: `canvas-${panelId}` });
-
-        // Plan 22 §3.3 "boot splits": the shell renders SYNCHRONOUSLY off the
-        // loaded artifact. Capability probing (up to four `listMcpConnections()`
-        // round-trips) used to gate `panel.webview.html`, so a slow hub made the
-        // canvas render nothing at all; it now patches chips in over `canvas/caps`.
-        panel.webview.html = getCanvasContent(panel.webview, this._extensionUri, version, artifact, [], {
-          viewToken: this._canvasViewToken,
-          assetBaseUri: this._canvasAssetBaseUri(panel.webview, canvasStore, artifact.id),
-        });
-        // A `canvas/ready` that raced the artifact load is answered now.
-        bridge.onSessionReady();
-      }
 
       // Real capability status (DeepMyst hub connections + local keys) → media
       // generation routing + truthful top-bar chips (Plan 05 §9 / Phase 6).
@@ -8316,7 +8273,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._canvasToolServer = new CanvasToolServer({ resolveContext: () => this._canvasToolContext({ transport: 'mcp' }), mediaService });
       // A design switch can finish while capabilities are loading. Connect the
       // current design, never the artifact captured by the initial load.
-      if (this._canvasArtifact) { await this._canvasMcpSession.relink(this._canvasArtifact.id); }
+      await artifactSession.refreshTransport();
     })();
 
     // (webview html is set by the artifact-load block above once the project's
@@ -8343,16 +8300,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Cleanup on dispose
     panel.onDidDispose(() => {
       if (!ownsSession()) { return; }
-      this._canvasSessionToken = null;
-      this._canvasSwitchToken = null;
+      // Close invalidates pending loads/switches before any teardown awaits.
+      void artifactSession.close();
+      this._canvasArtifactSession = null;
       this._canvasBrowserManager.close(panelId).catch(() => {});
       this._canvasDevServerManager.stop(panelId).catch(() => {});
-      void this._canvasMcpSession.close();
-      // Flush any pending save so the design survives the panel closing.
-      if (this._canvasSaveTimer) { clearTimeout(this._canvasSaveTimer); this._canvasSaveTimer = null; }
-      if (this._canvasStore && this._canvasArtifact) {
-        this._canvasStore.save(this._canvasArtifact).catch(() => {});
-      }
       this._canvasBridge?.dispose();
       this._canvasBridge = null;
       this._canvasLiveness?.dispose();
@@ -8361,7 +8313,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // is still streaming does not later close a job that no longer exists,
       // and so a re-opened canvas starts from an empty map.
       this._canvasTurns.clearCanvas();
-      this._canvasHistory = null;
       // The token dies with the view: a message from a webview that outlived
       // its panel authenticates against an empty expected token, and
       // `acceptCanvasClientMessage` fails closed on that.
@@ -8369,9 +8320,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._canvasCaps = [];
       this._canvasPanelId = null;
       this._canvasChatOrigin = null;
-      this._canvasArtifact = null;
-      this._canvasStore = null;
-      this._canvasExecutor = null;
       this._canvasJobRouter = null;
       this._canvasOpParser = null;
       // Every fenced-lane key dies with the canvas it was minted against.
@@ -11811,6 +11759,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._postToPanel(this._canvasPanelId, stamped);
   }
 
+  /** The host supplies view/MCP effects; this owner alone selects and saves designs. */
+  private _createCanvasArtifactSession(
+    panelId: string, store: ArtifactStore, executor: CanvasOpExecutor,
+    bridge: CanvasBridge, webview?: vscode.Webview,
+  ): CanvasArtifactSession {
+    const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
+    const viewToken = this._canvasViewToken;
+    const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
+    const session: CanvasArtifactSession = new CanvasArtifactSession(store, executor, {
+      createEmpty: buildEmptyCanvasArtifact,
+      createHistory: (artifact, capturedExecutor) => new CanvasHistory(artifact, capturedExecutor, { jobId: `canvas-${panelId}` }),
+      render: ({ artifact }) => {
+        if (!ownsSession() || !webview) { return; }
+        // Asset bases are read once at boot. Replace the shell on a design
+        // switch so every asset points into the new design's directory.
+        webview.html = getCanvasContent(webview, this._extensionUri, version, artifact, [], {
+          viewToken, assetBaseUri: this._canvasAssetBaseUri(webview, store, artifact.id),
+        });
+      },
+      ready: reason => {
+        if (!ownsSession()) { return; }
+        if (reason === 'initial') { bridge.onSessionReady(); }
+        else { bridge.hello(); }
+      },
+      relink: artifactId => ownsSession() ? this._canvasMcpSession.relink(artifactId) : Promise.resolve(),
+      closeTransport: () => this._canvasArtifactSession === session ? this._canvasMcpSession.close() : Promise.resolve(),
+      onError: (stage, error) => {
+        if (stage === 'initial-load') {
+          if (!ownsSession()) { return; }
+          const detail = error instanceof Error ? error.message : String(error);
+          console.warn('[Mysti] Canvas: could not load the most recent design:', detail);
+          void vscode.window.showWarningMessage(
+            `Mysti Canvas could not open your most recent design (${detail}). Starting an empty canvas — your saved file was not modified.`,
+          );
+        } else {
+          console.warn(`[Mysti] Canvas ${stage} failed:`, error);
+          if (stage === 'save') {
+            const detail = error instanceof Error ? error.message : String(error);
+            void vscode.window.showWarningMessage(
+              `Mysti Canvas could not save your design (${detail}). Your latest changes may not be on disk.`,
+            );
+          }
+        }
+      },
+    }, workspaceName ? `${workspaceName} designs` : undefined);
+    const ownsSession = () => this._canvasArtifactSession === session && !session.closed;
+    return session;
+  }
+
   /**
    * The bridge's view of the live canvas, or `null` while the artifact is still
    * loading. Fails CLOSED: with no artifact there is no session, and every
@@ -11946,68 +11943,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _switchCanvasArtifact(panelId: string, artifactId: string | null, name?: string): Promise<void> {
-    const store = this._canvasStore;
-    const executor = this._canvasExecutor;
-    if (!store || !executor || this._canvasPanelId !== panelId) { return; }
-    const sessionToken = this._canvasSessionToken;
-    const switchToken = {};
-    this._canvasSwitchToken = switchToken;
-    const ownsSwitch = () => this._canvasPanelId === panelId
-      && this._canvasSessionToken === sessionToken && this._canvasSwitchToken === switchToken
-      && this._canvasStore === store && this._canvasExecutor === executor;
-    let next: CanvasArtifact | null = null;
-    if (artifactId) {
-      next = await store.load(artifactId).catch(() => null);
-    } else {
-      const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
-      next = buildEmptyCanvasArtifact(name || (workspaceName ? `${workspaceName} designs` : undefined));
-    }
-    if (!next || !ownsSwitch()) { return; }
-    // Flush the outgoing design before letting go of it.
-    if (this._canvasSaveTimer) { clearTimeout(this._canvasSaveTimer); this._canvasSaveTimer = null; }
-    if (this._canvasArtifact) { await store.save(this._canvasArtifact).catch(() => {}); }
-    if (!ownsSwitch()) { return; }
-    this._canvasArtifact = next;
-    this._canvasHistory = new CanvasHistory(next, executor, { jobId: `canvas-${panelId}` });
-    // R4-4: `assetBaseUri` is baked into the shell ONCE, for whichever design
-    // was open when the panel rendered, and the webview binds its `asset://`
-    // resolver from it at construction (`makeAssetResolver` validates the
-    // artifact-id segment and then DROPS it). Without re-rendering, every image
-    // in the new design resolves into the PREVIOUS design's assets directory,
-    // where it does not exist — silently, in previews and live frames alike,
-    // and a panel reload "fixes" it, which makes the bug look intermittent.
-    //
-    // The shell is re-rendered rather than the base being re-sent over
-    // `canvas/hello` because the base is read once at boot; a switch replaces
-    // every artboard anyway (different pages, different ports), so no live
-    // state that survives the switch is lost. The reloaded view asks for
-    // `canvas/hello` itself, so the state transfer below is belt-and-braces.
-    //
-    // Guarded and non-fatal on purpose: the relink below is the control that
-    // revokes the previous design's MCP bearer token (CANVAS-SEC-2), so a
-    // rendering failure must never be able to skip it.
-    const webview = this._panelStates.get(panelId)?.panel?.webview;
-    if (webview) {
-      try {
-        const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
-        // Caps ride `canvas/hello` (and the later `canvas/caps` push), exactly
-        // as they do on a cold open — the shell renders with none.
-        webview.html = getCanvasContent(
-          webview, this._extensionUri, version, next, [],
-          {
-            viewToken: this._canvasViewToken,
-            assetBaseUri: this._canvasAssetBaseUri(webview, store, next.id),
-          },
-        );
-      } catch (err) {
-        console.warn('[Mysti] Canvas: could not re-render the shell for the new design:', err);
-      }
-    }
-    // CANVAS-SEC-2: a new design means a new token. Without this the CLI's
-    // existing bearer keeps working against a design it was never issued for.
-    await this._canvasMcpSession.relink(next.id);
-    if (!ownsSwitch()) { return; }
-    this._canvasBridge?.hello();
+    if (this._canvasPanelId !== panelId) { return; }
+    await this._canvasArtifactSession?.select(artifactId, name);
   }
 
   /**
@@ -12090,12 +12027,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Debounced persist of the canvas artifact to .mysti/canvas/<id>/artifact.json. */
   private _scheduleCanvasSave(): void {
-    if (this._canvasSaveTimer) { clearTimeout(this._canvasSaveTimer); }
-    this._canvasSaveTimer = setTimeout(() => {
-      if (this._canvasStore && this._canvasArtifact) {
-        this._canvasStore.save(this._canvasArtifact).catch(err => console.log('[Mysti] Canvas save failed:', err));
-      }
-    }, 800);
+    this._canvasArtifactSession?.scheduleSave();
   }
 
   /**
@@ -12456,7 +12388,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         providerLabel: getProviderDisplayName(u.providerId) || u.providerId,
         packageName: u.packageName,
         installed: u.installed,
-        latest: u.latest,
+        latest: u.installable,
         command
       });
       return acc;

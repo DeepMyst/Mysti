@@ -22,6 +22,7 @@ const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js');
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
+const { readHttpLines, readServerSentData } = require('../src/utils/httpStream');
 
 const report = { node: process.versions.node, electron: process.versions.electron, checks: [] };
 
@@ -39,6 +40,30 @@ function compileOk(source) {
 async function main() {
   // Fail closed if the CI execution step accidentally retains the build Node.
   assert.equal(process.versions.node, '18.17.1', 'Execute this bundle with the minimum editor runtime');
+  const bytes = new TextEncoder().encode(': keepalive\r\ndata:{"text":"مرحبا 👋"}\r\n\r\ndata: [DONE]');
+  const streamed = new Response(new ReadableStream({
+    start(controller) {
+      for (const byte of bytes) { controller.enqueue(Uint8Array.of(byte)); }
+      controller.close();
+    },
+  }));
+  const events = [];
+  for await (const data of readServerSentData(streamed.body, new AbortController().signal)) { events.push(data); }
+  assert.deepEqual(events, ['{"text":"مرحبا 👋"}', '[DONE]']);
+  report.checks.push('http-sse-native-fetch-streams-fragmented-unicode-and-eof');
+
+  let cancelled = false;
+  const unfinished = new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new TextEncoder().encode('first\n')); },
+    cancel() { cancelled = true; },
+  }));
+  const lines = readHttpLines(unfinished.body, new AbortController().signal);
+  assert.deepEqual(await lines.next(), { done: false, value: 'first' });
+  await lines.return();
+  assert.equal(cancelled, true);
+  assert.equal(unfinished.body.locked, false);
+  report.checks.push('http-reader-abandonment-cancels-and-releases-lock');
+
   await assert.rejects(() => bindDeskIroh(new Proxy({}, { get() { throw new Error('native binding must not be touched'); } }),
     'https://relay.example.test/'), /configuration unsupported/);
   report.checks.push('desk-iroh-minimum-runtime-refuses-before-native-access');

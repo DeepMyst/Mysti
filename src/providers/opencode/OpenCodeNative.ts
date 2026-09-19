@@ -7,9 +7,10 @@ import type { Settings, ToolCall, UsageStats } from '../../types';
 import type { AcpNativeLaunch, AcpNativeLaunchContext, AcpObject } from '../base/AcpNativeTypes';
 import { isRecord } from '../../utils/valueGuards';
 import { toolKind } from '../../utils/toolNames';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 
 /** Audited against upstream tag v1.18.29, commit 16747470f976aca3d362ad730bcd3fe82ecc2c9a. */
-export const OPENCODE_ACP_VERSION = '1.18.29';
+export const OPENCODE_ACP_VERSION = VERIFIED_NATIVE_CLI_VERSIONS.opencode;
 export const OPENCODE_HOST_AGENT = 'mysti-host';
 export const OPENCODE_ENV_AUTH: Readonly<Record<string, readonly string[]>> = Object.freeze({
   anthropic: ['ANTHROPIC_API_KEY'], openai: ['OPENAI_API_KEY'],
@@ -55,6 +56,18 @@ export function openCodeExternalAuthorityPaths(env: NodeJS.ProcessEnv, platform 
   return paths;
 }
 
+/** Core V2 discovers these even when V1 project configuration/pure flags deny it. */
+export async function openCodeWorkspaceAuthorityPaths(cwd: string): Promise<string[]> {
+  const roots = new Set<string>();
+  for (const initial of [path.resolve(cwd), await fs.realpath(cwd)]) {
+    for (let directory = initial;; directory = path.dirname(directory)) {
+      roots.add(directory);
+      if (path.dirname(directory) === directory) { break; }
+    }
+  }
+  return [...roots].flatMap(directory => ['opencode.json', 'opencode.jsonc', '.opencode'].map(name => path.join(directory, name)));
+}
+
 export async function assertOpenCodeAuthorityAbsent(paths: readonly string[]): Promise<void> {
   for (const candidate of paths) {
     try { await fs.lstat(candidate); } catch (error) {
@@ -75,6 +88,7 @@ export function openCodeIsolatedEnv(parent: NodeJS.ProcessEnv, directory: string
     env[key] = path.join(directory, subdir);
   }
   Object.assign(env, {
+    TMPDIR: directory, TEMP: directory, TMP: directory,
     OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_PERMISSION: JSON.stringify(config.permission),
     OPENCODE_PURE: 'true', OPENCODE_DISABLE_PROJECT_CONFIG: 'true', OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true',
     OPENCODE_DISABLE_EXTERNAL_SKILLS: 'true', OPENCODE_DISABLE_CLAUDE_CODE: 'true',
@@ -101,9 +115,14 @@ export async function prepareOpenCodeNativeLaunch(context: AcpNativeLaunchContex
   if (!keys || !keys.some(key => context.env[key]?.trim())) {
     throw new Error(`OpenCode native approvals require ${keys?.join(' or ') ?? 'a supported provider API key'} in the extension environment for ${provider}. Native OpenCode login stores and custom providers are not used.`);
   }
-  const authority = openCodeExternalAuthorityPaths(context.env);
-  await assertOpenCodeAuthorityAbsent(authority);
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-acp-'));
+  const canonicalCwd = await fs.realpath(context.cwd);
+  const externalAuthority = openCodeExternalAuthorityPaths(context.env);
+  const assertUnchanged = async () => {
+    if (await fs.realpath(context.cwd) !== canonicalCwd) { throw new Error('OpenCode native workspace changed during startup.'); }
+    await assertOpenCodeAuthorityAbsent([...externalAuthority, ...await openCodeWorkspaceAuthorityPaths(context.cwd)]);
+  };
+  await assertUnchanged();
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-acp-')));
   try {
     await fs.chmod(directory, 0o700);
     await fs.writeFile(path.join(directory, 'empty.npmrc'), '', { mode: 0o600 });
@@ -126,7 +145,7 @@ export async function prepareOpenCodeNativeLaunch(context: AcpNativeLaunchContex
         const mode = options.find(option => option.id === 'mode');
         if (!mode || mode.currentValue !== OPENCODE_HOST_AGENT) { throw new Error('OpenCode did not select the fixed Mysti permission agent.'); }
       },
-      assertUnchanged: () => assertOpenCodeAuthorityAbsent(authority),
+      assertUnchanged,
       cleanup: () => fs.rm(directory, { recursive: true, force: true }),
     };
   } catch (error) {

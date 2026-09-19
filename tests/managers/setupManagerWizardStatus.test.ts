@@ -22,6 +22,7 @@ import { SetupManager, type WizardStatusResult } from '../../src/managers/SetupM
 import { CliDiscoveryService } from '../../src/services/CliDiscoveryService';
 import type { ICliProvider } from '../../src/providers/base/IProvider';
 import { clearConfigurationListeners } from '../helpers/mockVscode';
+import { TestableCodexProvider } from '../helpers/providerFactory';
 
 interface FakeProvider {
   provider: ICliProvider;
@@ -93,6 +94,27 @@ describe('SetupManager wizard status (Plan 03 Phase 3a)', () => {
     service?.dispose();
     clearConfigurationListeners();
     vi.restoreAllMocks();
+  });
+
+  it('offers the supported Codex login command and matching manual instructions in the wizard', async () => {
+    const codex = fakeProvider('openai-codex', { authenticated: false });
+    const provider = new TestableCodexProvider();
+    // Exercise real command/setup metadata without discovery or credential access.
+    vi.spyOn(provider, 'discoverCli').mockImplementation(codex.discoverCli);
+    vi.spyOn(provider, 'checkAuthentication').mockImplementation(codex.checkAuthentication);
+    codex.provider = provider;
+    const h = buildHarness([codex]);
+    service = h.service;
+
+    const status = await h.setupManager.getWizardStatus();
+    expect(status.providers.find(p => p.providerId === 'openai-codex')).toMatchObject({
+      installed: true,
+      authenticated: false,
+      authCommand: 'codex login',
+      authInstructions: expect.arrayContaining([
+        'Option 1: Run "codex login" to sign in with ChatGPT account',
+      ]),
+    });
   });
 
   it('getWizardStatus reads through the discovery cache — no re-probe on cache hit', async () => {

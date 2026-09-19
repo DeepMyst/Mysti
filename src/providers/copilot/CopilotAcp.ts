@@ -6,6 +6,7 @@ import type { Settings, ToolCall } from '../../types';
 import { isRecord } from '../../utils/valueGuards';
 import { clampEffort } from '../../utils/effort';
 import type { AcpNativeLaunch, AcpNativeLaunchContext, AcpObject } from '../base/AcpNativeTypes';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 
 const TOOLS = ['view', 'grep', 'glob'];
 export function copilotAcpArgs(settings: Readonly<Settings>, model?: string): string[] {
@@ -103,7 +104,7 @@ export async function prepareCopilotAcpLaunch(context: AcpNativeLaunchContext, m
     env.USE_TGREP = 'false';
     return {
       args: copilotAcpArgs(context.settings, model), env,
-      expectedAgentInfo: { name: 'Copilot', version: '1.0.83' },
+      expectedAgentInfo: { name: 'Copilot', version: VERIFIED_NATIVE_CLI_VERSIONS['github-copilot'] },
       // Autopilot changes native permissions. Keep all host access tiers manual.
       mode: context.settings.accessLevel === 'read-only' || ['quick-plan', 'detailed-plan'].includes(context.settings.mode) ? 'https://agentclientprotocol.com/protocol/session-modes#plan' : 'https://agentclientprotocol.com/protocol/session-modes#agent',
       images: true, decodePermission: decodeCopilotPermission,

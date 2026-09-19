@@ -76,14 +76,11 @@ export class CodexProvider extends BaseCliProvider {
     displayName: 'OpenAI Codex',
     models: [
       {
-        // Released 2026-09-03. Codex CLI added support in v0.153.1 but keeps it
-        // OUT of its own model picker (Trusted Access Programme on-ramp), so it
-        // will never arrive by discovery — this curated entry is the only way it
-        // reaches the dropdown. Deliberately NOT the defaultModel: selecting it
-        // without Trusted Access, or on a CLI older than 0.153.1, fails.
+        // Available in the bundled native picker since 0.153.4. Account model
+        // availability still governs use; this fallback is not an entitlement.
         id: 'gpt-6-astra',
         name: 'GPT-6 Astra',
-        description: 'Flagship reasoning + coding model. Requires Trusted Access and Codex CLI 0.153.1+',
+        description: 'Flagship reasoning and coding model; availability depends on your account',
         contextWindow: 1050000,
         releasedAt: '2026-09-03'
       },
@@ -105,19 +102,14 @@ export class CodexProvider extends BaseCliProvider {
         description: 'Fastest and most affordable — the successor to GPT-5.4 mini',
         contextWindow: 1100000
       },
-      // The two below have no published context window. Leaving it undefined
+      // This entry has no published context window. Leaving it undefined
       // falls back to 200k, which only makes compaction fire EARLIER than
       // needed — the safe direction. Overstating a window instead overflows the
       // model and hard-fails the turn, so never guess upward here.
       {
         id: 'gpt-5.5',
         name: 'GPT-5.5',
-        description: 'Previous-generation flagship'
-      },
-      {
-        id: 'gpt-5.3-codex-spark',
-        name: 'GPT-5.3 Codex Spark',
-        description: 'Text-only research preview tuned for real-time coding'
+        description: 'Previous flagship; ChatGPT sign-in support ends October 14, 2026'
       }
     ],
     defaultModel: 'gpt-5.6-sol'
@@ -230,7 +222,7 @@ export class CodexProvider extends BaseCliProvider {
       }
       return {
         authenticated: false,
-        error: 'Not authenticated. Please run "codex auth login" to sign in with your ChatGPT account, or set OPENAI_API_KEY environment variable.'
+        error: 'Not authenticated. Please run "codex login" to sign in with your ChatGPT account, or set OPENAI_API_KEY environment variable.'
       };
     }
 
@@ -254,7 +246,7 @@ export class CodexProvider extends BaseCliProvider {
   }
 
   getAuthCommand(): string {
-    return 'codex auth login';
+    return 'codex login';
   }
 
   getInstallCommand(): string {

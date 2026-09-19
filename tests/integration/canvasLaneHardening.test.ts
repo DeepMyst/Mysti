@@ -79,10 +79,10 @@ interface Harness {
   setCanvasMcpConfig: ReturnType<typeof vi.fn>;
   cancelRequest: ReturnType<typeof vi.fn>;
   router: CanvasJobRouter;
-  dispose(): void;
+  dispose(): Promise<void>;
 }
 
-function createHarness(): Harness {
+async function createHarness(): Promise<Harness> {
   const extensionContext = createMockExtensionContext();
   const permissionManager = new PermissionManager('ask-permission');
   const noop = {} as any;
@@ -189,19 +189,28 @@ function createHarness(): Harness {
     isSidebar: false,
   });
 
-  provider._canvasStore = store;
-  provider._canvasExecutor = executor;
   provider._canvasJobRouter = router;
-  provider._canvasArtifact = artifact;
   provider._canvasPanelId = 'canvas-panel';
-  provider._canvasSessionToken = {};
   provider._canvasChatOrigin = 'chat-A';
   provider._canvasOpParser = new CanvasOpParser();
   provider._canvasLiveness = new CanvasLiveness({ router });
+  provider._canvasBridge = provider._createCanvasBridge('canvas-panel');
+  provider._canvasArtifactSession = provider._createCanvasArtifactSession(
+    'canvas-panel', store, executor, provider._canvasBridge,
+  );
+  const list = vi.spyOn(store, 'list').mockResolvedValue([{
+    id: artifact.id, name: artifact.name, kind: artifact.kind, pageCount: 0, updatedAt: artifact.updatedAt,
+  }]);
+  const load = vi.spyOn(store, 'load').mockResolvedValue(artifact);
+  await provider._canvasArtifactSession.initialize();
+  list.mockRestore();
+  load.mockRestore();
 
   return {
     provider, root, store, executor, artifact, jobEvents, setCanvasMcpConfig, cancelRequest, router,
-    dispose() {
+    async dispose() {
+      await provider._canvasArtifactSession?.close();
+      provider._canvasBridge?.dispose();
       provider._channelBridge?.dispose?.();
       void provider._canvasMcpSession.dispose();
       permissionManager.dispose();
@@ -213,9 +222,9 @@ function createHarness(): Harness {
 describe('Plan 22 canvas lanes in ChatViewProvider', () => {
   let h: Harness;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearMockConfig();
-    h = createHarness();
+    h = await createHarness();
   });
   afterEach(() => h.dispose());
 
@@ -505,18 +514,19 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
       expect(server._bindingHolds()).toBe(true);
     });
 
-    it('revokes the binding once the host serves a different design', () => {
+    it('revokes the binding once the host serves a different design', async () => {
       h.provider._canvasToolServer = { connect: async () => undefined } as any;
       const server: any = h.provider._createCanvasMcpServer(h.artifact.id);
-      const other = h.store.createArtifact({ name: 'Marketing', kind: 'deck' });
-      h.provider._canvasArtifact = other;
+      const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
+      await h.provider._switchCanvasArtifact('canvas-panel', null, 'Marketing');
+      relink.mockRestore();
       expect(server._bindingHolds()).toBe(false);
     });
 
-    it('fails CLOSED when no design is open at all', () => {
+    it('fails CLOSED when no design is open at all', async () => {
       h.provider._canvasToolServer = { connect: async () => undefined } as any;
       const server: any = h.provider._createCanvasMcpServer(h.artifact.id);
-      h.provider._canvasArtifact = null;
+      await h.provider._canvasArtifactSession.close();
       expect(server._bindingHolds()).toBe(false);
     });
 
@@ -561,6 +571,73 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
 
     afterEach(() => { vi.restoreAllMocks(); });
 
+    it('reselecting the live design cannot discard its unsaved edits or undo history', async () => {
+      const history = h.provider._canvasHistory;
+      h.artifact.name = 'Unsaved rename';
+      h.provider._scheduleCanvasSave();
+      const load = vi.spyOn(h.store, 'load');
+      const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
+      await h.provider._switchCanvasArtifact('canvas-panel', h.artifact.id);
+      expect(h.provider._canvasArtifact).toBe(h.artifact);
+      expect(h.provider._canvasArtifact.name).toBe('Unsaved rename');
+      expect(h.provider._canvasHistory).toBe(history);
+      expect(load).not.toHaveBeenCalled();
+      expect(relink).not.toHaveBeenCalled();
+    });
+
+    it('a failed outgoing save keeps the edited design and tells the user why switching stopped', async () => {
+      const current = h.provider._canvasArtifactSession.snapshot;
+      current.artifact.name = 'Unsaved edits';
+      h.provider._scheduleCanvasSave();
+      vi.spyOn(h.store, 'save').mockRejectedValueOnce(new Error('disk full'));
+      const warning = vi.spyOn(mockWindow, 'showWarningMessage');
+      const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
+      await h.provider._switchCanvasArtifact('canvas-panel', null, 'Replacement');
+      expect(h.provider._canvasArtifactSession.snapshot).toBe(current);
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('could not save your design (disk full)'));
+      expect(relink).not.toHaveBeenCalled();
+    });
+
+    it.each(['missing', 'failed'] as const)('recovers the cold-open design after a %s explicit choice', async outcome => {
+      await h.provider._canvasArtifactSession.close();
+      h.provider._canvasArtifactSession = null;
+      h.provider._canvasPanelId = null;
+      const listing = deferred<Awaited<ReturnType<ArtifactStore['list']>>>();
+      let disposePanel!: () => void;
+      const window = mockWindow as typeof mockWindow & { createWebviewPanel?: (...args: unknown[]) => unknown };
+      const previous = window.createWebviewPanel;
+      window.createWebviewPanel = () => ({
+        webview: { html: '', postMessage: async () => true, onDidReceiveMessage: () => ({ dispose() {} }) },
+        onDidDispose: (callback: () => void) => { disposePanel = callback; },
+      });
+      vi.spyOn(ArtifactStore.prototype, 'list').mockReturnValueOnce(listing.promise).mockResolvedValue([]);
+      vi.spyOn(ArtifactStore.prototype, 'load').mockImplementation(id => id === h.artifact.id
+        ? Promise.resolve(h.artifact)
+        : outcome === 'missing' ? Promise.resolve(null) : Promise.reject(new Error('unreadable')));
+      vi.spyOn(ArtifactStore.prototype, 'save').mockResolvedValue(undefined);
+      const render = vi.spyOn(canvasContent, 'getCanvasContent').mockReturnValue('recovered shell');
+      vi.spyOn(h.provider, '_canvasAssetBaseUri').mockReturnValue(undefined);
+      vi.spyOn(h.provider, '_buildCanvasCapabilityRegistry').mockResolvedValue(null);
+      const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
+      try {
+        const panelId = h.provider.openCanvas(undefined, 'chat-A');
+        await h.provider._switchCanvasArtifact(panelId, 'unavailable');
+        listing.resolve([{
+          id: h.artifact.id, name: h.artifact.name, kind: h.artifact.kind,
+          pageCount: 0, updatedAt: h.artifact.updatedAt,
+        }]);
+        await h.provider._canvasArtifactSession.initialize();
+        await vi.waitFor(() => expect(relink).toHaveBeenCalledExactlyOnceWith(h.artifact.id));
+        expect(h.provider._canvasArtifact).toBe(h.artifact);
+        expect(render).toHaveBeenCalledOnce();
+        expect(h.provider._panelStates.get(panelId).panel.webview.html).toBe('recovered shell');
+        disposePanel();
+      } finally {
+        if (previous) { window.createWebviewPanel = previous; }
+        else { delete window.createWebviewPanel; }
+      }
+    });
+
     it('keeps the latest selection when an earlier artifact load finishes last', async () => {
       const slow = deferred<CanvasArtifact>();
       const older = h.store.createArtifact({ name: 'Older selection', kind: 'deck' });
@@ -588,9 +665,10 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
       const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
       const first = h.provider._switchCanvasArtifact('canvas-panel', older.id);
       await saving.promise;
-      await h.provider._switchCanvasArtifact('canvas-panel', latest.id);
-      const history = h.provider._canvasHistory;
+      const second = h.provider._switchCanvasArtifact('canvas-panel', latest.id);
       saved.resolve();
+      await second;
+      const history = h.provider._canvasHistory;
       await first;
       expect(h.provider._canvasArtifact).toBe(latest);
       expect(h.provider._canvasHistory).toBe(history);
@@ -603,13 +681,12 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
       const save = vi.spyOn(h.store, 'save').mockResolvedValue(undefined);
       const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
       const switching = h.provider._switchCanvasArtifact('canvas-panel', 'next');
-      h.provider._canvasSessionToken = null;
+      await h.provider._canvasArtifactSession.close();
       h.provider._canvasPanelId = null;
-      h.provider._canvasArtifact = null;
       loaded.resolve(h.artifact);
       await switching;
       expect(h.provider._canvasArtifact).toBeNull();
-      expect(save).not.toHaveBeenCalled();
+      expect(save).toHaveBeenCalledExactlyOnceWith(h.artifact, expect.any(Function));
       expect(relink).not.toHaveBeenCalled();
     });
 
@@ -617,19 +694,22 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
       const saving = deferred<void>();
       const saved = deferred<void>();
       const stale = h.store.createArtifact({ name: 'Stale selection', kind: 'deck' });
-      const reopened = h.store.createArtifact({ name: 'Reopened design', kind: 'deck' });
       vi.spyOn(h.store, 'load').mockResolvedValue(stale);
       vi.spyOn(h.store, 'save').mockImplementation(() => { saving.resolve(); return saved.promise; });
       const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
       const switching = h.provider._switchCanvasArtifact('canvas-panel', stale.id);
       await saving.promise;
-      h.provider._canvasSessionToken = {};
+      const closing = h.provider._canvasArtifactSession.close();
       h.provider._canvasPanelId = reusePanelId ? 'canvas-panel' : 'reopened-panel';
-      h.provider._canvasArtifact = reopened;
-      const reopenedHistory = { marker: 'reopened history' };
-      h.provider._canvasHistory = reopenedHistory;
+      h.provider._canvasArtifactSession = h.provider._createCanvasArtifactSession(
+        h.provider._canvasPanelId, h.store, h.executor, h.provider._canvasBridge,
+      );
+      vi.spyOn(h.store, 'list').mockResolvedValue([]);
+      await h.provider._canvasArtifactSession.initialize();
+      const reopened = h.provider._canvasArtifact;
+      const reopenedHistory = h.provider._canvasHistory;
       saved.resolve();
-      await switching;
+      await Promise.all([switching, closing]);
       expect(h.provider._canvasArtifact).toBe(reopened);
       expect(h.provider._canvasHistory).toBe(reopenedHistory);
       expect(relink).not.toHaveBeenCalled();
@@ -644,8 +724,7 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
       vi.spyOn(h.store, 'save').mockResolvedValue(undefined);
       vi.spyOn(h.provider._canvasMcpSession, 'relink')
         .mockImplementationOnce(() => { linking.resolve(); return linked.promise; }).mockResolvedValue(undefined);
-      const hello = vi.fn();
-      h.provider._canvasBridge = { hello };
+      const hello = vi.spyOn(h.provider._canvasBridge, 'hello');
       const first = h.provider._switchCanvasArtifact('canvas-panel', older.id);
       await linking.promise;
       await h.provider._switchCanvasArtifact('canvas-panel', latest.id);
@@ -657,6 +736,8 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
     });
 
     it('relinks the selected design when initial capability loading finishes after a switch', async () => {
+      await h.provider._canvasArtifactSession.close();
+      h.provider._canvasArtifactSession = null;
       const probing = deferred<void>();
       const capabilities = deferred<null>();
       let disposePanel!: () => void;
@@ -673,10 +754,10 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
       vi.spyOn(h.provider, '_buildCanvasCapabilityRegistry').mockImplementation(() => { probing.resolve(); return capabilities.promise; });
       const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
       h.provider._canvasPanelId = null;
-      h.provider._canvasArtifact = null;
       try {
         const panelId = h.provider.openCanvas(undefined, 'chat-A');
         await probing.promise;
+        expect(h.provider._panelStates.get(panelId).panel.webview.html).toBe('fixture shell');
         await h.provider._switchCanvasArtifact(panelId, null, 'User-selected design');
         const selected = h.provider._canvasArtifact;
         relink.mockClear();
@@ -684,15 +765,79 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
         await vi.waitFor(() => expect(relink).toHaveBeenCalledExactlyOnceWith(selected.id));
         expect(h.provider._canvasArtifact).toBe(selected);
         disposePanel();
-        expect(h.provider._canvasSessionToken).toBeNull();
-        expect(h.provider._canvasSwitchToken).toBeNull();
+        expect(h.provider._canvasArtifactSession).toBeNull();
       } finally {
         if (previous) { window.createWebviewPanel = previous; }
         else { delete window.createWebviewPanel; }
       }
     });
 
+    it('a closed initial loader cannot publish into a reopened view with the same panel ID', async () => {
+      await h.provider._canvasArtifactSession.close();
+      h.provider._canvasArtifactSession = null;
+      h.provider._canvasPanelId = null;
+      const pending = deferred<[]>();
+      const views: Array<{ html: string }> = [];
+      const disposals: Array<() => void> = [];
+      const window = mockWindow as typeof mockWindow & { createWebviewPanel?: (...args: unknown[]) => unknown };
+      const previous = window.createWebviewPanel;
+      window.createWebviewPanel = () => {
+        const webview = { html: '', postMessage: async () => true, onDidReceiveMessage: () => ({ dispose() {} }) };
+        views.push(webview);
+        return { webview, onDidDispose: (callback: () => void) => { disposals.push(callback); } };
+      };
+      vi.spyOn(Date, 'now').mockReturnValue(1234);
+      vi.spyOn(ArtifactStore.prototype, 'list').mockReturnValueOnce(pending.promise).mockResolvedValue([]);
+      vi.spyOn(ArtifactStore.prototype, 'save').mockResolvedValue(undefined);
+      const render = vi.spyOn(canvasContent, 'getCanvasContent').mockReturnValue('new view shell');
+      vi.spyOn(h.provider, '_canvasAssetBaseUri').mockReturnValue(undefined);
+      const capabilities = vi.spyOn(h.provider, '_buildCanvasCapabilityRegistry').mockResolvedValue(null);
+      const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
+      try {
+        const panelId = h.provider.openCanvas(undefined, 'chat-A');
+        const oldOwner = h.provider._canvasArtifactSession;
+        const initializing = oldOwner.initialize();
+        disposals[0]();
+        expect(oldOwner.closed).toBe(true);
+        expect(h.provider.openCanvas(undefined, 'chat-A')).toBe(panelId);
+        await vi.waitFor(() => expect(relink).toHaveBeenCalledOnce());
+        const selected = h.provider._canvasArtifactSession.snapshot;
+        pending.resolve([]);
+        await initializing;
+        expect(h.provider._canvasArtifactSession.snapshot).toBe(selected);
+        expect(views.map(view => view.html)).toEqual(['', 'new view shell']);
+        expect(render).toHaveBeenCalledOnce();
+        expect(capabilities).toHaveBeenCalledOnce();
+        expect(relink).toHaveBeenCalledOnce();
+        disposals[1]();
+      } finally {
+        if (previous) { window.createWebviewPanel = previous; }
+        else { delete window.createWebviewPanel; }
+      }
+    });
+
+    it('a shell rendering failure cannot bypass the selected design MCP relink', async () => {
+      await h.provider._canvasArtifactSession.close();
+      const webview = { html: '' };
+      const render = vi.spyOn(canvasContent, 'getCanvasContent').mockReturnValue('initial shell');
+      vi.spyOn(h.provider, '_canvasAssetBaseUri').mockReturnValue(undefined);
+      h.provider._canvasArtifactSession = h.provider._createCanvasArtifactSession(
+        'canvas-panel', h.store, h.executor, h.provider._canvasBridge, webview,
+      );
+      await h.provider._canvasArtifactSession.initialize();
+      const previous = h.provider._canvasArtifact;
+      const hello = vi.spyOn(h.provider._canvasBridge, 'hello');
+      const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
+      render.mockImplementation(() => { throw new Error('shell failed'); });
+      await h.provider._switchCanvasArtifact('canvas-panel', null, 'New design');
+      expect(h.provider._canvasArtifact.id).not.toBe(previous.id);
+      expect(relink).toHaveBeenCalledExactlyOnceWith(h.provider._canvasArtifact.id);
+      expect(hello).toHaveBeenCalledOnce();
+    });
+
     it('invalidates an outstanding switch through actual panel disposal and reopening', async () => {
+      await h.provider._canvasArtifactSession.close();
+      h.provider._canvasArtifactSession = null;
       const saving = deferred<void>();
       const saved = deferred<void>();
       const disposals: Array<() => void> = [];
@@ -712,14 +857,13 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
       vi.spyOn(h.provider, '_buildCanvasCapabilityRegistry').mockResolvedValue(null);
       const relink = vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
       h.provider._canvasPanelId = null;
-      h.provider._canvasArtifact = null;
       try {
         const panelId = h.provider.openCanvas(undefined, 'chat-A');
         await vi.waitFor(() => expect(relink).toHaveBeenCalledOnce());
         const switching = h.provider._switchCanvasArtifact(panelId, null, 'Stale selection');
         await saving.promise;
         disposals[0]();
-        expect(h.provider._canvasSessionToken).toBeNull();
+        expect(h.provider._canvasArtifactSession).toBeNull();
         expect(h.provider.openCanvas(undefined, 'chat-A')).toBe(panelId);
         await vi.waitFor(() => expect(relink).toHaveBeenCalledTimes(2));
         const current = {
@@ -892,9 +1036,9 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
 describe('Plan 22 end-to-end journeys through ChatViewProvider', () => {
   let h: Harness;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearMockConfig();
-    h = createHarness();
+    h = await createHarness();
   });
   afterEach(() => h.dispose());
 

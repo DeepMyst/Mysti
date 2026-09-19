@@ -93,6 +93,7 @@ export abstract class AcpNativeProvider extends BaseCliProvider {
         }
       }
       if (!current()) { return; }
+      await launch.assertUnchanged?.();
       await gitPolicy.assertUnchanged();
       if (!current()) { return; }
       child = this._spawnCliProcess(args, cwd, gitPolicy.applyEnv(launch.env ?? env), launch.cliPath ?? cliPath);

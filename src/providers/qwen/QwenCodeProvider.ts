@@ -263,7 +263,7 @@ export class QwenCodeProvider extends AcpNativeProvider {
   }
 
   getInstallCommand(): string {
-    return 'npm install -g @qwen-code/qwen-code@latest';
+    return `npm install -g @qwen-code/qwen-code@${QWEN_ACP_VERSION}`;
   }
 
   // --- Session ---

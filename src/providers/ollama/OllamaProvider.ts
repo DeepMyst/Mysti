@@ -12,6 +12,8 @@
  */
 
 import * as vscode from 'vscode';
+import { randomUUID } from 'node:crypto';
+import { readHttpLines } from '../../utils/httpStream';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import { toolKind } from '../../utils/toolNames';
 import { clampEffort } from '../../utils/effort';
@@ -121,7 +123,7 @@ export class OllamaProvider extends BaseCliProvider {
 
   readonly capabilities: ProviderCapabilities = {
     supportsStreaming: true,
-    supportsThinking: false,
+    supportsThinking: true,
     supportsToolUse: true,
     toolExecution: 'proposal-only',
     supportsSessions: true,
@@ -131,7 +133,7 @@ export class OllamaProvider extends BaseCliProvider {
     supportsAutoInstall: false,
     supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
-    thinkingStyle: 'none',
+    thinkingStyle: 'streamed',
     thinkingLevelEffective: false,
     effortLevels: OLLAMA_EFFORT_LEVELS,  // `think` graded strings (reasoning models)
     effortDefault: 'medium',
@@ -356,15 +358,20 @@ export class OllamaProvider extends BaseCliProvider {
     const keepAlive = config.get<string>('ollamaKeepAlive', '5m');
     const timeout = config.get<number>('ollamaRequestTimeout', 120000);
 
-    // Set up cancellation
-    session.abortController = new AbortController();
-    const timeoutId = setTimeout(() => session.abortController?.abort(), timeout);
+    // Capture this turn's controller: an older timeout/finally cannot cancel its replacement.
+    session.abortController?.abort();
+    const controller = new AbortController();
+    session.abortController = controller;
+    session.cancelled = false;
+    session.lastUsageStats = null;
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
       // Build prompt using inherited method
       const fullPrompt = await this.buildPromptAsync(
         content, context, conversation, settings, persona, agentConfig, attachments,
       );
+      controller.signal.throwIfAborted();
 
       // Build request body
       const body: Record<string, unknown> = {
@@ -377,9 +384,11 @@ export class OllamaProvider extends BaseCliProvider {
       if (contextLength > 0) {
         (body.options as Record<string, unknown>).num_ctx = contextLength;
       }
-      // Reasoning effort → Ollama `think` (top-level graded string). Reasoning
-      // models accept low/medium/high/max; non-reasoning models ignore it.
-      const ollamaEffort = clampEffort(settings.effortLevel, OLLAMA_EFFORT_LEVELS);
+      // GPT-OSS only accepts low/medium/high; other supported models also accept max.
+      // https://docs.ollama.com/capabilities/thinking
+      const effortLevels = /^(?:library\/)?gpt-oss(?::|$)/i.test(model)
+        ? OLLAMA_EFFORT_LEVELS.filter(level => level !== 'max') : OLLAMA_EFFORT_LEVELS;
+      const ollamaEffort = clampEffort(settings.effortLevel, effortLevels);
       if (ollamaEffort) {
         body.think = ollamaEffort;
       }
@@ -390,11 +399,13 @@ export class OllamaProvider extends BaseCliProvider {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: session.abortController.signal,
+        signal: controller.signal,
       });
 
+      controller.signal.throwIfAborted();
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
+        controller.signal.throwIfAborted();
         yield { type: 'error', content: `Ollama error (${response.status}): ${errorText || response.statusText}` };
         yield { type: 'done' };
         return;
@@ -406,75 +417,56 @@ export class OllamaProvider extends BaseCliProvider {
         return;
       }
 
-      // Read NDJSON stream
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) { break; }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop()!;
-
-        for (const line of lines) {
-          if (!line.trim()) { continue; }
-
-          try {
-            const chunk = JSON.parse(line);
-
-            // Handle tool calls.
-            // Tool-card resolution strategy (Plan 02 Phase 3): Ollama never
-            // executes tools, so no tool_result is EVER emitted — and we must
-            // NOT fabricate one. The manifest declares emitsToolResults: false
-            // and the webview auto-resolves running tool cards for such
-            // providers when the response completes.
-            if (chunk.message?.tool_calls && Array.isArray(chunk.message.tool_calls)) {
-              for (const toolCall of chunk.message.tool_calls) {
-                const fn = toolCall.function;
-                if (fn) {
-                  yield {
-                    type: 'tool_use',
-                    toolCall: {
-                      id: `ollama-tool-${Date.now()}`,
-                      name: fn.name || '',
-                      input: fn.arguments || {},
-                      status: 'running',
-                      kind: toolKind(fn.name || ''),
-                    }
-                  };
-                }
-              }
-              continue;
+      let usage: OllamaSessionState['lastUsageStats'] = null;
+      let completed = false;
+      for await (const line of readHttpLines(response.body, controller.signal)) {
+        if (!line.trim()) { continue; }
+        let chunk;
+        try { chunk = JSON.parse(line); }
+        catch { throw new Error('Ollama returned malformed NDJSON data'); }
+        if (chunk.error) {
+          throw new Error(typeof chunk.error === 'string' ? chunk.error : chunk.error.message || 'Ollama stream error');
+        }
+        // Tool calls are proposals, never evidence of execution. Each proposal
+        // receives a distinct ID even when several arrive in the same frame.
+        if (Array.isArray(chunk.message?.tool_calls)) {
+          for (const toolCall of chunk.message.tool_calls) {
+            const fn = toolCall.function;
+            if (typeof fn?.name !== 'string' || !fn.name) { continue; }
+            const input = fn.arguments ?? {};
+            if (!input || typeof input !== 'object' || Array.isArray(input)) {
+              throw new Error(`Ollama returned invalid arguments for tool ${fn.name}`);
             }
-
-            // Handle text content
-            if (chunk.message?.content) {
-              yield { type: 'text', content: chunk.message.content };
-            }
-
-            // Handle completion
-            if (chunk.done === true) {
-              session.lastUsageStats = {
-                input_tokens: chunk.prompt_eval_count || 0,
-                output_tokens: chunk.eval_count || 0,
-              };
-              console.log('[Mysti] Ollama: Stream complete, usage:', session.lastUsageStats);
-            }
-          } catch (parseErr) {
-            console.log('[Mysti] Ollama: Failed to parse NDJSON line:', line.substring(0, 200));
+            controller.signal.throwIfAborted();
+            yield {
+              type: 'tool_use',
+              toolCall: {
+                id: `ollama-tool-${randomUUID()}`, name: fn.name,
+                input, status: 'running', kind: toolKind(fn.name),
+              },
+            };
           }
         }
+        if (typeof chunk.message?.thinking === 'string' && chunk.message.thinking) {
+          controller.signal.throwIfAborted();
+          yield { type: 'thinking', content: chunk.message.thinking };
+        }
+        if (typeof chunk.message?.content === 'string' && chunk.message.content) {
+          controller.signal.throwIfAborted();
+          yield { type: 'text', content: chunk.message.content };
+        }
+        if (chunk.done === true) {
+          usage = { input_tokens: chunk.prompt_eval_count || 0, output_tokens: chunk.eval_count || 0 };
+          completed = true;
+          break;
+        }
       }
-
-      const storedUsage = session.lastUsageStats;
-      session.lastUsageStats = null;
-      yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
+      controller.signal.throwIfAborted();
+      if (!completed) { throw new Error('Ollama stream ended before completion'); }
+      yield usage ? { type: 'done', usage } : { type: 'done' };
 
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
+      if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
         yield { type: 'error', content: 'Request cancelled or timed out' };
       } else {
         yield this.handleError(error);
@@ -482,27 +474,26 @@ export class OllamaProvider extends BaseCliProvider {
       yield { type: 'done' };
     } finally {
       clearTimeout(timeoutId);
-      // Plan 18 (2.4 audit): ABORT on the way out — a consumer that abandons
-      // this generator (Stop, new message, collaborator teardown) otherwise
-      // leaks the connection and the local model keeps generating (GPU burn)
-      // to completion. Aborting an already-finished request is a no-op.
-      session.abortController?.abort();
-      session.abortController = null;
+      controller.abort();
+      if (session.abortController === controller) { session.abortController = null; }
     }
   }
 
   // --- Cancellation ---
 
   cancelCurrentRequest(panelId?: string): void {
-    if (panelId) {
-      const session = this._panelSessions.get(panelId) as OllamaSessionState | undefined;
-      if (session?.abortController) {
-        console.log('[Mysti] Ollama: Cancelling request for panel:', panelId);
-        session.abortController.abort();
-        session.abortController = null;
-      }
+    for (const [key, state] of this._panelSessions) {
+      if (panelId && key !== panelId) { continue; }
+      const session = state as OllamaSessionState;
+      session.abortController?.abort();
+      session.abortController = null;
     }
     super.cancelCurrentRequest(panelId);
+  }
+
+  dispose(): void {
+    this.cancelCurrentRequest();
+    super.dispose();
   }
 
   /**
@@ -516,16 +507,10 @@ export class OllamaProvider extends BaseCliProvider {
   }
 
   clearSession(panelId?: string): void {
-    super.clearSession(panelId);
-    if (panelId) {
-      const session = this._panelSessions.get(panelId) as OllamaSessionState | undefined;
-      if (session) {
-        session.lastUsageStats = null;
-        if (session.abortController) {
-          session.abortController.abort();
-          session.abortController = null;
-        }
-      }
+    this.cancelCurrentRequest(panelId);
+    for (const [key, state] of this._panelSessions) {
+      if (!panelId || key === panelId) { (state as OllamaSessionState).lastUsageStats = null; }
     }
+    super.clearSession(panelId);
   }
 }

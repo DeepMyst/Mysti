@@ -33,5 +33,7 @@ describe('LocalAIProvider stream conformance', () => {
   it('declares emitsToolResults: false — webview auto-resolves tool cards', () => {
     const provider = new LocalAIProvider(createMockContext());
     expect(provider.capabilities.emitsToolResults).toBe(false);
+    expect(provider.capabilities.supportsThinking).toBe(true);
+    expect(provider.capabilities.thinkingStyle).toBe('streamed');
   });
 });

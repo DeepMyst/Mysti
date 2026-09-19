@@ -33,5 +33,7 @@ describe('OllamaProvider stream conformance', () => {
   it('declares emitsToolResults: false — webview auto-resolves tool cards', () => {
     const provider = new OllamaProvider(createMockContext());
     expect(provider.capabilities.emitsToolResults).toBe(false);
+    expect(provider.capabilities.supportsThinking).toBe(true);
+    expect(provider.capabilities.thinkingStyle).toBe('streamed');
   });
 });

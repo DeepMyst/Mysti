@@ -6,6 +6,7 @@ import type { ToolCall } from '../../types';
 import { isRecord } from '../../utils/valueGuards';
 import { toolKind } from '../../utils/toolNames';
 import type { AcpNativeLaunch, AcpNativeLaunchContext, AcpObject } from '../base/AcpNativeTypes';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 
 const TOOLS: Readonly<Record<string, { name: string; kind: string }>> = {
   read_file: { name: 'Read', kind: 'read' }, read_files: { name: 'Read', kind: 'read' },
@@ -75,7 +76,7 @@ export async function prepareClineAcpLaunch(context: AcpNativeLaunchContext, mod
     env.CLINE_SESSION_BACKEND_MODE = 'local';
     return {
       args: ['--acp', '--auto-approve', 'false'], env,
-      expectedAgentInfo: { name: 'cline', version: '3.0.61' },
+      expectedAgentInfo: { name: 'cline', version: VERIFIED_NATIVE_CLI_VERSIONS.cline },
       mode: context.settings.accessLevel === 'read-only' || ['quick-plan', 'detailed-plan'].includes(context.settings.mode) ? 'plan' : 'act',
       model, images: false, decodePermission: decodeClinePermission,
       validateSession(result) {

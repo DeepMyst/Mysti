@@ -115,7 +115,7 @@ Authentication, model availability and usage charges depend on the selected prov
 | **Claude Code** | Deep reasoning, complex refactoring, thorough analysis |
 | **Codex** | Quick iterations, familiar OpenAI style |
 | **Gemini** | Fast responses, Google ecosystem integration |
-| **GitHub Copilot** | Multi-model access (Claude, GPT-5, Gemini) via GitHub subscription |
+| **GitHub Copilot** | Read/search through a configured BYOK endpoint |
 | **Cline** | Plan/Act mode, structured task completion |
 | **Cursor** | Auto model selection, multi-model with Claude, GPT-5, Gemini |
 | **OpenClaw** | Real-time WebSocket streaming, configurable thinking levels |
@@ -351,22 +351,24 @@ Use a VS Code version supported by `engines.vscode` in [package.json](package.js
 and configure a supported backend. Check that backend's authentication and usage
 requirements; subscription access and API access may differ.
 
-| CLI Tool | Subscription | Install |
+| Backend | Authentication | Install |
 |----------|--------------|---------|
-| **Claude Code** (recommended) | Anthropic API or Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
-| **Gemini CLI** | Google AI API or Gemini Advanced | `npm install -g @google/gemini-cli` |
-| **Codex CLI** | OpenAI API | `npm install -g @openai/codex` |
-| **Cline** | Depends on model provider | `npm install -g cline` |
+| **Claude Code** (recommended) | Anthropic API or Claude Pro/Max | `npm install -g @anthropic-ai/claude-code@2.1.266` |
+| **GitHub Copilot CLI** | BYOK endpoint, model and API key; subscription login unsupported | `npm install -g @github/copilot@1.0.83` |
+| **Gemini CLI** | API key, Vertex AI or Code Assist Standard/Enterprise sign-in | `npm install -g @google/gemini-cli@0.58.0` |
+| **Codex CLI** | Supported ChatGPT sign-in or OpenAI API | `npm install -g @openai/codex@0.153.4` |
+| **Cline** | `CLINE_API_KEY` in the extension environment | `npm install -g cline@3.0.61` |
 | **Cursor** | Cursor subscription | macOS/Linux: `curl https://cursor.com/install -fsS \| bash` · Windows: `irm 'https://cursor.com/install?win32=true' \| iex` |
-| **OpenClaw** | OpenClaw account | `npm install -g openclaw@latest && openclaw onboard --install-daemon` |
-| **OpenCode** | Provider API keys (Anthropic, OpenAI, etc.) | `npm i -g opencode-ai@latest` |
-| **Qwen Code** | Qwen OAuth or API keys | `npm install -g @qwen-code/qwen-code@latest` |
+| **OpenClaw** | Configured provider/model and matching credentials; POSIX runtime | `npm install -g openclaw@2026.6.34` |
+| **OpenCode** | Provider API keys (Anthropic, OpenAI, etc.) | `npm i -g opencode-ai@1.18.29` |
+| **Qwen Code** | Qwen OAuth or API keys | `npm install -g @qwen-code/qwen-code@0.23.0` |
 | **Ollama** | Local (no subscription needed) | [Install from ollama.com](https://ollama.com) |
 | **LocalAI** | Local (no subscription needed) | [Docker / binaries](https://localai.io/basics/getting_started/) |
 
 Configure **one** supported backend to get started. Brainstorm uses **two**
 available agents. HTTP providers such as OpenRouter do not require a provider CLI.
+Pinned CLI versions match Mysti's verified native approval contracts; see
+[provider support and limits](docs/PROVIDERS.md) before updating independently.
 
 ---
 
@@ -381,39 +383,56 @@ ext install DeepMyst.mysti
 
 **Option B:** [Install from VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti)
 
-### 2. Install a CLI Tool
+### 2. Configure a Backend
+
+Choose one supported backend. For a CLI backend, install its verified version:
 
 ```bash
 # Claude Code (recommended)
-npm install -g @anthropic-ai/claude-code
+npm install -g @anthropic-ai/claude-code@2.1.266
 claude auth login
 
-# Or GitHub Copilot CLI (access Claude, GPT-5, Gemini via GitHub)
-npm install -g @github/copilot
-copilot  # then use /login command
+# Or Codex
+npm install -g @openai/codex@0.153.4
+codex login
+
+# Or GitHub Copilot CLI (BYOK, read/search only)
+npm install -g @github/copilot@1.0.83
+# Configure COPILOT_PROVIDER_BASE_URL and its model/API key in the extension environment.
 
 # Or Gemini CLI
-npm install -g @google/gemini-cli
-gemini auth login
+npm install -g @google/gemini-cli@0.58.0
+gemini
+
+# Or Cline
+npm install -g cline@3.0.61
+# Set CLINE_API_KEY in the extension environment.
 
 # Or Cursor (macOS/Linux; on Windows PowerShell: irm 'https://cursor.com/install?win32=true' | iex)
 curl https://cursor.com/install -fsS | bash
 agent login
 
-# Or OpenClaw
-npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+# Or OpenClaw (POSIX)
+npm install -g openclaw@2026.6.34
+# Configure agents.defaults.model and matching provider credentials in OpenClaw.
 
 # Or OpenCode
-npm i -g opencode-ai@latest
-opencode auth login
+npm i -g opencode-ai@1.18.29
+# Set the selected provider's API key in the extension environment.
+# Set mysti.opencodeModel to an explicit provider/model ID.
 
 # Or Qwen Code
-npm install -g @qwen-code/qwen-code@latest
+npm install -g @qwen-code/qwen-code@0.23.0
 qwen  # then type /auth
 ```
 
-For Brainstorm Mode, install any two CLI tools.
+Copilot requires BYOK configuration; GitHub tokens and subscription logins are
+unsupported, and writes and shell commands are disabled. OpenCode uses provider
+API keys rather than saved CLI logins and refuses startup when its configuration
+exists in the workspace or an ancestor. See [provider setup and limits](docs/PROVIDERS.md).
+
+HTTP backends do not require a provider CLI. Configure two available agents for
+Brainstorm Mode.
 
 ### 3. Open Mysti
 
@@ -483,7 +502,7 @@ Stay in control of what the AI can do:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.defaultProvider` | `claude-code` | Primary AI provider |
-| `mysti.claudePath` | `claude` | Path to Claude CLI |
+| `mysti.claudeCodePath` | `claude` | Path to Claude CLI |
 | `mysti.codexPath` | `codex` | Path to Codex CLI |
 | `mysti.geminiPath` | `gemini` | Path to Gemini CLI |
 | `mysti.copilotPath` | `copilot` | Path to Copilot CLI |
@@ -492,8 +511,8 @@ Stay in control of what the AI can do:
 | `mysti.openclawPath` | `openclaw` | Path to OpenClaw CLI |
 | `mysti.opencodePath` | `opencode` | Path to OpenCode CLI |
 | `mysti.qwenCodePath` | `qwen` | Path to Qwen Code CLI |
-| `mysti.ollamaPath` | `ollama` | Path to Ollama CLI |
-| `mysti.localaiPath` | `localai` | Path to LocalAI CLI |
+| `mysti.ollamaEndpoint` | `http://localhost:11434` | Ollama HTTP endpoint |
+| `mysti.localaiEndpoint` | `http://localhost:8080` | LocalAI HTTP endpoint |
 
 ### Brainstorm Settings
 
@@ -502,7 +521,7 @@ Stay in control of what the AI can do:
 | `mysti.brainstorm.agents` | `["claude-code", "openai-codex"]` | Which 2 agents to use |
 | `mysti.brainstorm.strategy` | `quick` | Strategy: `quick`, `debate`, `red-team`, `perspectives`, `delphi` |
 | `mysti.brainstorm.autoConverge` | `true` | Auto-exit when agents converge |
-| `mysti.brainstorm.maxDiscussionRounds` | `3` | Maximum discussion rounds |
+| `mysti.brainstorm.maxDiscussionRounds` | `2` | Maximum discussion rounds |
 
 ### Autonomous Settings
 

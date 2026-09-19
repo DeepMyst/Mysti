@@ -37,6 +37,8 @@ class FixtureProvider extends AcpNativeProvider {
   failPreparation = false;
   failDiscovery = false;
   failAttachmentCleanup = false;
+  authorityCheck?: () => Promise<void>;
+  beforePromptBuilt?: () => Promise<void>;
   cliPath = '/inert/original';
   scenario = 'normal';
   dir = '';
@@ -51,13 +53,14 @@ class FixtureProvider extends AcpNativeProvider {
   protected buildCliArgs(_settings: Settings, _session: PanelSessionState) { throw new Error('Legacy execution must be unreachable'); }
   protected getThinkingTokens() { return undefined; }
   protected parseStreamLine(): StreamChunk | null { return null; }
-  protected override async buildPromptAsync(content: string) { return content; }
+  protected override async buildPromptAsync(content: string) { await this.beforePromptBuilt?.(); return content; }
   seedUsage() { (this._getSession('panel') as PanelSessionState & { lastUsageStats: UsageStats }).lastUsageStats = { input_tokens: 999, output_tokens: 999 }; }
   protected async _prepareAcpLaunch(context: AcpNativeLaunchContext): Promise<AcpNativeLaunch> {
     this.prepared.resolve(context); await this.preparation;
     if (this.failPreparation) { throw new Error('Native preflight rejected'); }
     return {
       args: ['native-only'], expectedAgentInfo: { name: 'fixture', version: '1.0.0' },
+      assertUnchanged: this.authorityCheck,
       decodePermission(params) {
         const tool = params.toolCall as { toolCallId: string; rawInput: Record<string, unknown> };
         return { id: tool.toolCallId, name: 'Edit', input: tool.rawInput, status: 'running' };
@@ -157,6 +160,19 @@ describe('shared ACP public provider lifecycle', () => {
     expect(provider.events).toEqual(['spawn', 'child-exit', 'attachment-cleanup', 'launch-cleanup-start']);
     cleanup.resolve(); await pending;
     expect(provider.events).toEqual(['spawn', 'child-exit', 'attachment-cleanup', 'launch-cleanup-start', 'launch-cleanup-end', 'done']);
+  });
+
+  it('rechecks native authority after asynchronous prompt setup before spawning a child', async () => {
+    const provider = await harness();
+    const authority = path.join(provider.dir, 'unowned-configuration');
+    provider.beforePromptBuilt = () => fs.writeFile(authority, 'unowned');
+    provider.authorityCheck = async () => {
+      await fs.access(authority); throw new Error('Native authority changed before spawn');
+    };
+    const chunks = await collect(provider);
+    expect(provider.launches).toHaveLength(0);
+    expect(chunks.some(chunk => chunk.type === 'error' && chunk.content?.includes('authority changed'))).toBe(true);
+    expect(provider.events).toEqual(['attachment-cleanup', 'launch-cleanup-start', 'launch-cleanup-end', 'done']);
   });
 
   it('releases native state even if attachment cleanup throws', async () => {

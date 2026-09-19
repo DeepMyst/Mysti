@@ -2,13 +2,16 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertOpenCodeAuthorityAbsent, decodeOpenCodePermission, openCodeExternalAuthorityPaths, openCodeIsolatedEnv, openCodeNativeConfig, prepareOpenCodeNativeLaunch, validateOpenCodeConfigUpdate } from '../../../src/providers/opencode/OpenCodeNative';
+import { assertOpenCodeAuthorityAbsent, decodeOpenCodePermission, openCodeExternalAuthorityPaths, openCodeWorkspaceAuthorityPaths, openCodeIsolatedEnv, openCodeNativeConfig, prepareOpenCodeNativeLaunch, validateOpenCodeConfigUpdate } from '../../../src/providers/opencode/OpenCodeNative';
 import { createOpenCodeSession } from '../../helpers/sessionFactory';
 import type { Settings } from '../../../src/types';
 
 const settings: Settings = { mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission', contextMode: 'auto', model: 'anthropic/claude-sonnet-4-5', provider: 'opencode' };
 const dirs: string[] = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) { await fs.rm(dir, { recursive: true, force: true }); } });
+// Junctions preserve directory/dangling-link semantics on Windows without
+// requiring Developer Mode or the symbolic-link creation privilege.
+const directoryLink = (target: string, link: string) => fs.symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
 const tool = (kind: string, rawInput: object, extra = {}) => ({ toolCallId: 'call', kind, rawInput, status: 'pending', ...extra });
 const request = (kind: string, rawInput: object) => ({ toolCall: tool(kind, rawInput) });
 
@@ -40,6 +43,7 @@ describe('OpenCode isolated native policy', () => {
     expect(env.ANTHROPIC_API_KEY).toBe('inert-key'); expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.NODE_OPTIONS).toBeUndefined(); expect(env.BUN_OPTIONS).toBeUndefined(); expect(env.OPENCODE_TEST_HOME).toBeUndefined();
     expect(env.XDG_DATA_HOME).toBe(path.join('/fixture', 'data')); expect(env.XDG_CONFIG_HOME).toBe(path.join('/fixture', 'config'));
+    expect([env.TMPDIR, env.TEMP, env.TMP]).toEqual(['/fixture', '/fixture', '/fixture']);
     expect(env.npm_config_userconfig).toBe(path.join('/fixture', 'empty.npmrc')); expect(env.npm_config_offline).toBe('true');
     expect(JSON.parse(env.OPENCODE_PERMISSION!)).toEqual(config.permission);
     expect(env.OPENCODE_SERVER_PASSWORD).toHaveLength(64);
@@ -49,11 +53,49 @@ describe('OpenCode isolated native policy', () => {
   it('rejects external configuration including dangling symlinks without reading it', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-oc-policy-')); dirs.push(dir);
     await assertOpenCodeAuthorityAbsent([path.join(dir, 'missing')]);
-    const external = path.join(dir, 'config'); await fs.symlink(path.join(dir, 'missing'), external);
+    const external = path.join(dir, 'config'); await directoryLink(path.join(dir, 'missing'), external);
+    expect((await fs.lstat(external)).isSymbolicLink()).toBe(true);
+    await expect(fs.stat(external)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(assertOpenCodeAuthorityAbsent([external])).rejects.toThrow('cannot isolate');
   });
   it('checks system and managed authority outside isolated XDG directories', () => {
     expect(openCodeExternalAuthorityPaths({}, 'darwin', '/user', 'fixture')).toEqual([path.join('/user', '.opencode'), '/Library/Application Support/opencode', path.join('/Library/Managed Preferences', 'fixture', 'ai.opencode.managed.plist'), '/Library/Managed Preferences/ai.opencode.managed.plist']);
+  });
+  it.each(['opencode.json', 'opencode.jsonc', '.opencode'])('rejects ancestor %s before allocating native authority', async name => {
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-oc-ancestor-'))); dirs.push(dir);
+    const work = path.join(dir, 'work'); await fs.mkdir(work);
+    await directoryLink(path.join(dir, 'missing'), path.join(dir, name));
+    const context = { settings, session: createOpenCodeSession(), cwd: work, env: { ANTHROPIC_API_KEY: 'inert-fixture' }, cliPath: '/inert', signal: new AbortController().signal };
+    await expect(prepareOpenCodeNativeLaunch(context, settings.model)).rejects.toThrow('cannot isolate');
+    expect(await openCodeWorkspaceAuthorityPaths(work)).toContain(path.join(dir, name));
+  });
+  it('checks both lexical and symlink-resolved workspace ancestors', async () => {
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-oc-symlink-'))); dirs.push(dir);
+    await fs.mkdir(path.join(dir, 'real', 'work'), { recursive: true }); await fs.mkdir(path.join(dir, 'alias'));
+    await directoryLink(path.join(dir, 'real', 'work'), path.join(dir, 'alias', 'work'));
+    const paths = await openCodeWorkspaceAuthorityPaths(path.join(dir, 'alias', 'work'));
+    expect(paths).toContain(path.join(dir, 'real', '.opencode')); expect(paths).toContain(path.join(dir, 'alias', '.opencode'));
+  });
+  it('rechecks newly added authority before native startup and retains pure shell denial', async () => {
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-oc-recheck-'))); dirs.push(dir);
+    const launch = await prepareOpenCodeNativeLaunch({ settings, session: createOpenCodeSession(), cwd: dir, env: { ANTHROPIC_API_KEY: 'inert-fixture' }, cliPath: '/inert', signal: new AbortController().signal }, settings.model);
+    try {
+      expect(launch.args).toContain('--pure'); expect(launch.env?.OPENCODE_PURE).toBe('true');
+      expect(JSON.parse(launch.env!.OPENCODE_CONFIG_CONTENT!).plugin).toEqual([]);
+      await fs.writeFile(path.join(dir, 'opencode.jsonc'), '{}');
+      await expect(launch.assertUnchanged!()).rejects.toThrow('cannot isolate');
+    } finally { await launch.cleanup!(); }
+  });
+  it('rejects a retargeted workspace symlink before a later startup phase', async () => {
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-oc-retarget-'))); dirs.push(dir);
+    const first = path.join(dir, 'first'); const second = path.join(dir, 'second'); const alias = path.join(dir, 'work');
+    await fs.mkdir(first); await fs.mkdir(second); await directoryLink(first, alias);
+    const launch = await prepareOpenCodeNativeLaunch({ settings, session: createOpenCodeSession(), cwd: alias, env: { ANTHROPIC_API_KEY: 'inert-fixture' }, cliPath: '/inert', signal: new AbortController().signal }, settings.model);
+    try {
+      await fs.rm(alias, { recursive: true }); await directoryLink(second, alias);
+      expect((await fs.stat(first)).isDirectory()).toBe(true);
+      await expect(launch.assertUnchanged!()).rejects.toThrow('workspace changed');
+    } finally { await launch.cleanup!(); }
   });
   it('fails clearly before allocating native state when model/auth is unsupported', async () => {
     const context = { settings, session: createOpenCodeSession(), cwd: '/work', env: {}, cliPath: '/inert', signal: new AbortController().signal };

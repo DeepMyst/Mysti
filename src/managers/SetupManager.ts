@@ -856,7 +856,7 @@ export class SetupManager {
       'openai-codex': {
         docsUrl: 'https://platform.openai.com/docs/guides/codex',
         authInstructions: [
-          'Option 1: Run "codex auth login" to sign in with ChatGPT account',
+          'Option 1: Run "codex login" to sign in with ChatGPT account',
           'Option 2: Set OPENAI_API_KEY environment variable',
           'Requires ChatGPT Plus/Pro subscription or API credits'
         ]

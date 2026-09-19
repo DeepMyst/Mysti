@@ -12,6 +12,9 @@
  */
 
 import * as vscode from 'vscode';
+import { randomUUID } from 'node:crypto';
+import { readServerSentData } from '../../utils/httpStream';
+import { ToolCallAccumulator, parseToolArgsChecked } from '../../utils/toolCallAccumulator';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import { toolKind } from '../../utils/toolNames';
 import { clampEffort } from '../../utils/effort';
@@ -103,7 +106,7 @@ export class LocalAIProvider extends BaseCliProvider {
 
   readonly capabilities: ProviderCapabilities = {
     supportsStreaming: true,
-    supportsThinking: false,
+    supportsThinking: true,
     supportsToolUse: true,
     toolExecution: 'proposal-only',
     supportsSessions: true,
@@ -111,7 +114,7 @@ export class LocalAIProvider extends BaseCliProvider {
     supportsAutoInstall: false,
     supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
-    thinkingStyle: 'none',
+    thinkingStyle: 'streamed',
     thinkingLevelEffective: false,
     effortLevels: LOCALAI_EFFORT_LEVELS,  // reasoning_effort (low/medium/high)
     effortDefault: 'medium',
@@ -357,21 +360,27 @@ export class LocalAIProvider extends BaseCliProvider {
     const apiKey = this._getApiKey();
     const timeout = config.get<number>('localaiRequestTimeout', 120000);
 
-    // Set up cancellation
-    session.abortController = new AbortController();
-    const timeoutId = setTimeout(() => session.abortController?.abort(), timeout);
+    // Capture this turn's controller: an older timeout/finally cannot cancel its replacement.
+    session.abortController?.abort();
+    const controller = new AbortController();
+    session.abortController = controller;
+    session.cancelled = false;
+    session.lastUsageStats = null;
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
       // Build prompt using inherited method
       const fullPrompt = await this.buildPromptAsync(
         content, context, conversation, settings, persona, agentConfig, attachments,
       );
+      controller.signal.throwIfAborted();
 
       // Build OpenAI-compatible request body
       const body: Record<string, unknown> = {
         model,
         messages: [{ role: 'user', content: fullPrompt }],
         stream: true,
+        stream_options: { include_usage: true },
         temperature,
       };
       if (maxTokens > 0) {
@@ -396,11 +405,13 @@ export class LocalAIProvider extends BaseCliProvider {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        signal: session.abortController.signal,
+        signal: controller.signal,
       });
 
+      controller.signal.throwIfAborted();
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
+        controller.signal.throwIfAborted();
         yield { type: 'error', content: `LocalAI error (${response.status}): ${errorText || response.statusText}` };
         yield { type: 'done' };
         return;
@@ -412,93 +423,66 @@ export class LocalAIProvider extends BaseCliProvider {
         return;
       }
 
-      // Read SSE stream (OpenAI format: "data: {...}\n\n")
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+      let usage: LocalAISessionState['lastUsageStats'] = null;
       let totalOutputTokens = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) { break; }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop()!;
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) { continue; }
-
-          // SSE format: "data: {...}" or "data: [DONE]"
-          if (!trimmed.startsWith('data: ')) { continue; }
-
-          const data = trimmed.slice(6); // Remove "data: " prefix
-
-          if (data === '[DONE]') {
-            continue;
-          }
-
-          try {
-            const chunk = JSON.parse(data);
-            const choice = chunk.choices?.[0];
-            if (!choice) { continue; }
-
-            const delta = choice.delta;
-
-            // Handle text content
-            if (delta?.content) {
-              totalOutputTokens++;
-              yield { type: 'text', content: delta.content };
-            }
-
-            // Handle tool calls.
-            // Tool-card resolution strategy (Plan 02 Phase 3): LocalAI never
-            // executes tools, so no tool_result is EVER emitted — and we must
-            // NOT fabricate one. The manifest declares emitsToolResults: false
-            // and the webview auto-resolves running tool cards for such
-            // providers when the response completes.
-            if (delta?.tool_calls && Array.isArray(delta.tool_calls)) {
-              for (const toolCall of delta.tool_calls) {
-                const fn = toolCall.function;
-                if (fn?.name) {
-                  yield {
-                    type: 'tool_use',
-                    toolCall: {
-                      id: toolCall.id || `localai-tool-${Date.now()}`,
-                      name: fn.name,
-                      input: fn.arguments ? JSON.parse(fn.arguments) : {},
-                      status: 'running',
-                      kind: toolKind(fn.name),
-                    }
-                  };
-                }
-              }
-            }
-
-            // Capture usage from the final chunk if available
-            if (chunk.usage) {
-              session.lastUsageStats = {
-                input_tokens: chunk.usage.prompt_tokens || 0,
-                output_tokens: chunk.usage.completion_tokens || 0,
-              };
-            }
-          } catch (parseErr) {
-            console.log('[Mysti] LocalAI: Failed to parse SSE data:', data.substring(0, 200));
+      let completed = false;
+      const toolCalls = new ToolCallAccumulator();
+      const toolIds = new Map<number, string>();
+      const turnId = randomUUID();
+      for await (const data of readServerSentData(response.body, controller.signal)) {
+        if (data.trim() === '[DONE]') { completed = true; break; }
+        let chunk;
+        try { chunk = JSON.parse(data); }
+        catch { throw new Error('LocalAI returned malformed SSE data'); }
+        if (chunk.error) {
+          throw new Error(typeof chunk.error === 'string' ? chunk.error : chunk.error.message || 'LocalAI stream error');
+        }
+        // Usage-only chunks deliberately have an empty choices array.
+        if (chunk.usage) {
+          usage = { input_tokens: chunk.usage.prompt_tokens || 0, output_tokens: chunk.usage.completion_tokens || 0 };
+        }
+        const choice = chunk.choices?.[0];
+        const delta = choice?.delta;
+        if (typeof delta?.content === 'string' && delta.content) {
+          totalOutputTokens++;
+          controller.signal.throwIfAborted();
+          yield { type: 'text', content: delta.content };
+        }
+        if (typeof delta?.reasoning === 'string' && delta.reasoning) {
+          controller.signal.throwIfAborted();
+          yield { type: 'thinking', content: delta.reasoning };
+        }
+        if (Array.isArray(delta?.tool_calls)) {
+          for (const call of delta.tool_calls) {
+            const index = typeof call.index === 'number' ? call.index : 0;
+            if (typeof call.id === 'string' && call.id) { toolIds.set(index, call.id); }
+            else if (!toolIds.has(index)) { toolIds.set(index, `localai-tool-${turnId}-${index}`); }
+            toolCalls.add([{ ...call, id: toolIds.get(index) }]);
           }
         }
+        if (typeof choice?.finish_reason === 'string' && choice.finish_reason) { completed = true; }
       }
-
-      // Use captured usage or estimate from token count
-      // The fallback COUNTS streamed deltas — it is an estimate, not a report.
-      // Flag it so ledgers/telemetry never absorb it as a measured figure.
-      const usage = session.lastUsageStats
-        || { input_tokens: 0, output_tokens: totalOutputTokens, estimated: true };
-      session.lastUsageStats = null;
-      yield { type: 'done', usage };
+      controller.signal.throwIfAborted();
+      if (!completed) { throw new Error('LocalAI stream ended before completion'); }
+      // OpenAI-style arguments arrive in fragments. Emit each complete proposal
+      // once at the response boundary; never invent a tool execution result.
+      for (const call of toolCalls.finalize()) {
+        const parsed = parseToolArgsChecked(call.arguments);
+        if (parsed.status !== 'ok' && parsed.status !== 'empty') {
+          throw new Error(`LocalAI returned ${parsed.status} arguments for tool ${call.name}`);
+        }
+        controller.signal.throwIfAborted();
+        yield {
+          type: 'tool_use',
+          toolCall: { id: call.id, name: call.name, input: parsed.args, status: 'running', kind: toolKind(call.name) },
+        };
+      }
+      controller.signal.throwIfAborted();
+      // Delta counts are only an estimate, never measured usage.
+      yield { type: 'done', usage: usage || { input_tokens: 0, output_tokens: totalOutputTokens, estimated: true } };
 
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
+      if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
         yield { type: 'error', content: 'Request cancelled or timed out' };
       } else {
         yield this.handleError(error);
@@ -506,25 +490,26 @@ export class LocalAIProvider extends BaseCliProvider {
       yield { type: 'done' };
     } finally {
       clearTimeout(timeoutId);
-      // Plan 18 (2.4 audit): abort on the way out — generator abandonment
-      // otherwise leaks the SSE connection. No-op if already finished.
-      session.abortController?.abort();
-      session.abortController = null;
+      controller.abort();
+      if (session.abortController === controller) { session.abortController = null; }
     }
   }
 
   // --- Cancellation ---
 
   cancelCurrentRequest(panelId?: string): void {
-    if (panelId) {
-      const session = this._panelSessions.get(panelId) as LocalAISessionState | undefined;
-      if (session?.abortController) {
-        console.log('[Mysti] LocalAI: Cancelling request for panel:', panelId);
-        session.abortController.abort();
-        session.abortController = null;
-      }
+    for (const [key, state] of this._panelSessions) {
+      if (panelId && key !== panelId) { continue; }
+      const session = state as LocalAISessionState;
+      session.abortController?.abort();
+      session.abortController = null;
     }
     super.cancelCurrentRequest(panelId);
+  }
+
+  dispose(): void {
+    this.cancelCurrentRequest();
+    super.dispose();
   }
 
   getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number } | null {
@@ -535,16 +520,10 @@ export class LocalAIProvider extends BaseCliProvider {
   }
 
   clearSession(panelId?: string): void {
-    super.clearSession(panelId);
-    if (panelId) {
-      const session = this._panelSessions.get(panelId) as LocalAISessionState | undefined;
-      if (session) {
-        session.lastUsageStats = null;
-        if (session.abortController) {
-          session.abortController.abort();
-          session.abortController = null;
-        }
-      }
+    this.cancelCurrentRequest(panelId);
+    for (const [key, state] of this._panelSessions) {
+      if (!panelId || key === panelId) { (state as LocalAISessionState).lastUsageStats = null; }
     }
+    super.clearSession(panelId);
   }
 }

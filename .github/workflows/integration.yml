@@ -50,7 +50,7 @@ jobs:
         run: npm run check:package -- mysti-desk.vsix
       - name: Prepare editor tests
         run: |
-          npm exec --no -- tsc -p tsconfig.vscode-test.json
+          npm run typecheck:editor
           node scripts/prepare-vscode-fixture.js
 
       - name: Test (Linux — needs a display server)

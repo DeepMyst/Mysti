@@ -226,11 +226,18 @@ blocking; bundle size alone is not a startup-time measurement. VSCE's file
 count warning includes the deliberately external Playwright runtime; package
 shape and installed-package resolution remain required.
 
-Source Node declarations still target Node 20. The old 18.17 declarations conflict
-with current TypeScript Buffer definitions and omit the fetch globals used here;
-a direct downgrade is not sufficient. They can therefore admit APIs missing in
-the minimum editor. Minimum-runtime and real-editor checks remain required; a
-separate compatible type-check project is follow-up work.
+`npm run typecheck` checks the main source project and both shipped Node entry
+graphs against pinned Node 18.17 declarations. The separate minimum project uses
+TypeScript 5.6.3 to accommodate the contemporary Buffer definitions and the exact
+Undici declarations bundled in Node 18.17.1 for its fetch globals. It rejects
+newer Node declarations and browser globals, verifies declaration hashes, and
+compiles controls for supported and unsupported APIs. See
+[`types/minimum-node/README.md`](../types/minimum-node/README.md) for provenance
+and scope. Project scripts select each compiler explicitly; use
+`npm run typecheck:editor` for the editor tests because npm's aliased compiler
+can own the bare `tsc` command. These declaration checks do not establish runtime
+behavior or third-party compatibility; exact Node 18.17.1 and real-editor checks
+remain required.
 
 ### Vendored browser assets
 

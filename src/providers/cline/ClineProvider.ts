@@ -19,6 +19,7 @@ import type { PanelSessionState } from "../base/BaseCliProvider";
 import { AcpNativeProvider } from "../base/AcpNativeProvider";
 import type { AcpNativeLaunchContext, AcpNativeLaunch } from "../base/AcpNativeTypes";
 import { prepareClineAcpLaunch } from "./ClineAcp";
+import { VERIFIED_NATIVE_CLI_VERSIONS } from "../base/NativeCliVersions";
 import type {
 	CliDiscoveryResult,
 	AuthConfig,
@@ -258,7 +259,7 @@ export class ClineProvider extends AcpNativeProvider {
 	}
 
 	getInstallCommand(): string {
-		return "npm install -g cline@3.0.61";
+		return `npm install -g cline@${VERIFIED_NATIVE_CLI_VERSIONS.cline}`;
 	}
 
 	protected buildCliArgs(_settings: Settings, _session: PanelSessionState): string[] {

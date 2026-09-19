@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { isRetiredProviderModel } from '../providers/base/ProviderModelLifecycle';
 import type { ModelInfo, ModelEntry, ProviderModelState } from '../types';
 import { validateModelName } from '../utils/validation';
 import {
@@ -177,6 +178,7 @@ export class ModelRegistryService {
     const merged = new Map<string, ModelEntry>();
 
     for (const m of curated) {
+      if (isRetiredProviderModel(providerId, m.id)) { continue; }
       merged.set(m.id, { ...m, source: 'curated' });
     }
 
@@ -184,6 +186,7 @@ export class ModelRegistryService {
     // unless seeded). Discovered overrides curated for the same id.
     if (cached) {
       for (const m of cached.models) {
+        if (isRetiredProviderModel(providerId, m.id)) { continue; }
         const existing = merged.get(m.id);
         merged.set(m.id, { ...existing, ...m, source: 'discovered' });
       }
@@ -349,6 +352,7 @@ export class ModelRegistryService {
     if (!Array.isArray(discovered) || discovered.length === 0) {
       return;
     }
+    discovered = discovered.filter(model => !isRetiredProviderModel(providerId, model.id));
 
     // Fresh result: persist {models, fetchedAt} (source recorded at merge time)
     // and notify consumers. The list is capped (R7: bounded globalState growth)

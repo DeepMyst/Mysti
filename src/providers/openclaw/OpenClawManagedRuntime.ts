@@ -9,6 +9,7 @@ import { pathToFileURL } from 'url';
 import WebSocket from 'ws';
 import { killProcessTree } from '../../utils/processKill';
 import { getEnrichedEnv } from '../../utils/platform';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 
 type JsonObject = Record<string, unknown>;
 export interface OpenClawManagedRuntimeOptions {
@@ -194,7 +195,7 @@ function helloProbe(url: string, token: string, signal: AbortSignal, timeoutMs: 
         const methods = object(payload.features).methods;
         const scopes = object(payload.auth).scopes;
         if (frame.ok !== true || payload.type !== 'hello-ok' || ![3, 4].includes(payload.protocol as number) ||
-            object(payload.server).version !== '2026.6.34' || !Array.isArray(methods) ||
+            object(payload.server).version !== VERIFIED_NATIVE_CLI_VERSIONS.openclaw || !Array.isArray(methods) ||
             !methods.includes('agent') || !methods.includes('sessions.abort') ||
             object(payload.auth).role !== 'operator' || !Array.isArray(scopes) || !scopes.includes('operator.write')) {
           finish(false, new Error('Owned OpenClaw gateway rejected the required version/protocol handshake'));
@@ -226,8 +227,8 @@ export class OpenClawManagedRuntime {
     }
     const root = await fs.realpath(options.installedRoot);
     const metadata = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')) as JsonObject;
-    if (metadata.name !== 'openclaw' || metadata.version !== '2026.6.34') {
-      throw new Error('OpenClaw managed runtime requires verified OpenClaw 2026.6.34');
+    if (metadata.name !== 'openclaw' || metadata.version !== VERIFIED_NATIVE_CLI_VERSIONS.openclaw) {
+      throw new Error(`OpenClaw managed runtime requires verified OpenClaw ${VERIFIED_NATIVE_CLI_VERSIONS.openclaw}`);
     }
     if (await fs.realpath(options.cliPath) !== await fs.realpath(path.join(root, 'openclaw.mjs'))) {
       throw new Error('OpenClaw CLI must resolve to the verified installation entrypoint');

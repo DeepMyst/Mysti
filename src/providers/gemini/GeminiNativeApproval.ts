@@ -2,8 +2,9 @@
 import * as path from 'path';
 import { isRecord } from '../../utils/valueGuards';
 import type { ToolCall, UsageStats } from '../../types';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 
-export const GEMINI_ACP_VERSION = '0.58.0';
+export const GEMINI_ACP_VERSION = VERIFIED_NATIVE_CLI_VERSIONS['google-gemini'];
 
 /** Final prompt totals; per-model quota entries are already included in these. */
 export function decodeGeminiUsage(result: Readonly<Record<string, unknown>>): UsageStats | undefined {

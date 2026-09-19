@@ -185,11 +185,22 @@ describe('ArtifactStore', () => {
       expect(await store.load(a.id)).toBeNull();
     });
 
-    it('no-ops gracefully when no workspace root is available', async () => {
+    it('rejects saving without a workspace instead of acknowledging an unwritten design', async () => {
       const rootless = new ArtifactStore({ getRoot: () => null });
       const a = rootless.createArtifact({ name: 'Homeless' });
-      await expect(rootless.save(a)).resolves.toBeUndefined();
+      a.updatedAt = 123;
+      await expect(rootless.save(a)).rejects.toThrow('Open a workspace folder');
+      expect(a.updatedAt).toBe(123);
       expect(await rootless.load(a.id)).toBeNull();
+    });
+
+    it.each(['', '../escape', 'nested/design'])('rejects saving an invalid identifier %j without writing outside the store', async id => {
+      const a = store.createArtifact({ name: 'Invalid' });
+      a.id = id;
+      a.updatedAt = 123;
+      await expect(store.save(a)).rejects.toThrow('invalid identifier');
+      expect(a.updatedAt).toBe(123);
+      expect(fs.readdirSync(root)).toEqual([]);
     });
   });
 

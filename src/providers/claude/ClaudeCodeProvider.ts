@@ -47,6 +47,7 @@ import { clampEffort } from '../../utils/effort';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
 import { ClaudeApprovalTransport, CLAUDE_NATIVE_TOOLS, CLAUDE_NATIVE_VERSIONS, CLAUDE_NATIVE_POLICY } from './ClaudeApproval';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 
 /**
  * Extended per-panel session state for Claude Code provider.
@@ -320,7 +321,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   getInstallCommand(): string {
-    return 'npm install -g @anthropic-ai/claude-code@2.1.266';
+    return `npm install -g @anthropic-ai/claude-code@${VERIFIED_NATIVE_CLI_VERSIONS['claude-code']}`;
   }
 
   // ============================================================================

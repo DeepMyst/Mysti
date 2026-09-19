@@ -16,6 +16,7 @@ import type { PanelSessionState } from '../base/BaseCliProvider';
 import { AcpNativeProvider } from '../base/AcpNativeProvider';
 import type { AcpNativeLaunchContext, AcpNativeLaunch } from '../base/AcpNativeTypes';
 import { prepareCopilotAcpLaunch, copilotAcpArgs } from './CopilotAcp';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -213,7 +214,7 @@ export class CopilotProvider extends AcpNativeProvider {
   }
 
   getInstallCommand(): string {
-    return 'npm install -g @github/copilot@1.0.83';
+    return `npm install -g @github/copilot@${VERIFIED_NATIVE_CLI_VERSIONS['github-copilot']}`;
   }
 
   protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {

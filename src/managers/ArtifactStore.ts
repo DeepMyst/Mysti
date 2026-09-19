@@ -363,12 +363,16 @@ export interface ArtifactStoreOptions {
  * - `index.json` is a listing CACHE, rebuilt from disk whenever it disagrees.
  */
 export class ArtifactStore {
+  // A new view constructs a new store while the previous view may still be
+  // saving. Share in-process mutation ordering, keyed by the absolute artifact
+  // file; independent workspaces/designs retain independent write queues.
+  private static readonly _pendingWrites = new Map<string, Promise<unknown>>();
   private _getRoot: () => string | null;
   private _designSpec = new DesignSpecManager();
   /**
-   * Serializes read-modify-write cycles on `index.json` within this process, so
-   * two concurrent saves cannot drop each other's row. Cross-process races stay
-   * possible and stay harmless — {@link list} rebuilds from disk.
+   * Serializes read-modify-write cycles on `index.json` within this instance.
+   * Other instances/processes can race this cache; {@link list} rebuilds rows
+   * from the authoritative artifact files when the cache disagrees.
    */
   private _indexOps: Promise<void> = Promise.resolve();
 
@@ -423,24 +427,65 @@ export class ArtifactStore {
     return path.join(canvasDir, artifactId);
   }
 
-  async save(artifact: CanvasArtifact): Promise<void> {
+  /**
+   * Resolves only after persistence; unavailable destinations are failures.
+   * A live session can supply its mutation revision so the entire dirty flush
+   * occupies one queue slot. Readers/delete/restore must not pass between its
+   * revisions. The getter must be synchronous and have no side effects.
+   */
+  async save(artifact: CanvasArtifact, currentRevision?: () => number): Promise<void> {
     const dir = this.artifactDir(artifact.id);
-    if (!dir) { return; }
-    artifact.updatedAt = Date.now();
-    await fs.mkdir(dir, { recursive: true });
+    if (!dir) {
+      throw new Error(ArtifactStore._isSafeArtifactId(artifact.id)
+        ? 'Open a workspace folder before saving Canvas designs.'
+        : 'Cannot save a Canvas design with an invalid identifier.');
+    }
     const filePath = path.join(dir, ARTIFACT_FILE);
-
-    // Snapshot the CURRENT good file before overwriting it. Done first so a
-    // crash mid-save leaves either the old primary or a usable .bak.
-    await this._refreshBackup(dir, filePath);
-
     // `schemaVersion` first for human readability, re-assigned afterwards so a
-    // stale stamp riding on the in-memory object can never win.
-    const payload: JsonRecord = { schemaVersion: ARTIFACT_SCHEMA_VERSION, ...artifact };
-    payload.schemaVersion = ARTIFACT_SCHEMA_VERSION;
-    await ArtifactStore._writeFileAtomic(filePath, JSON.stringify(payload, null, 2));
+    // stale stamp riding on the in-memory object can never win. Capture bytes
+    // and summary NOW: a queued write must not borrow a later mutation of the
+    // live artifact while waiting for the previous store instance to finish.
+    const capture = () => {
+      artifact.updatedAt = Date.now();
+      const revision = currentRevision?.();
+      const payload: JsonRecord = { schemaVersion: ARTIFACT_SCHEMA_VERSION, ...artifact };
+      payload.schemaVersion = ARTIFACT_SCHEMA_VERSION;
+      return { revision, serialized: JSON.stringify(payload, null, 2), summary: summaryOf(artifact) };
+    };
+    let snapshot = capture();
+    return ArtifactStore._queueArtifactWrite(filePath, async () => {
+      await fs.mkdir(dir, { recursive: true });
+      for (;;) {
+        // Back up the previous completed write, not a competing writer's old head.
+        await this._refreshBackup(dir, filePath);
+        await ArtifactStore._writeFileAtomic(filePath, snapshot.serialized);
+        await this._updateIndexEntry(snapshot.summary, filePath);
+        if (!currentRevision || snapshot.revision === currentRevision()) { return; }
+        snapshot = capture();
+      }
+    });
+  }
 
-    await this._updateIndexEntry(artifact, filePath);
+  private static _queueArtifactWrite<T>(filePath: string, write: () => Promise<T>): Promise<T> {
+    const key = path.resolve(filePath);
+    const previous = this._pendingWrites.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => { /* a failed mutation cannot poison a retry */ }).then(write);
+    const tracked = next.finally(() => {
+      if (this._pendingWrites.get(key) === tracked) { this._pendingWrites.delete(key); }
+    });
+    // Registration is synchronous, before the first filesystem operation.
+    this._pendingWrites.set(key, tracked);
+    return tracked;
+  }
+
+  private static async _waitForWrites(matches: (filePath: string) => boolean): Promise<void> {
+    for (;;) {
+      const pending = [...this._pendingWrites].filter(([filePath]) => matches(filePath)).map(([, writing]) => writing);
+      if (!pending.length) { return; }
+      await Promise.allSettled(pending);
+      // Include a replacement mutation queued while the earlier one was pending.
+      // Failure means read the last good disk state, not a permanently stuck queue.
+    }
   }
 
   /**
@@ -456,6 +501,7 @@ export class ArtifactStore {
     const dir = this.artifactDir(artifactId);
     if (!dir) { return null; }
     const filePath = path.join(dir, ARTIFACT_FILE);
+    await ArtifactStore._waitForWrites(file => file === path.resolve(filePath));
     const res = await this._readAndValidate(filePath);
     if (res.ok) { return res.artifact; }
 
@@ -489,30 +535,34 @@ export class ArtifactStore {
   async restoreFromBackup(artifactId: string): Promise<CanvasArtifact | null> {
     const dir = this.artifactDir(artifactId);
     if (!dir) { return null; }
-    const bakPath = path.join(dir, ARTIFACT_BACKUP_FILE);
-    const res = await this._readAndValidate(bakPath);
-    if (!res.ok) {
-      console.log(`[Mysti] ArtifactStore: no usable backup for ${artifactId} (${res.problem})`);
-      return null;
-    }
     const filePath = path.join(dir, ARTIFACT_FILE);
-    try {
-      // Preserve the primary before replacement; a failed recovery copy must
-      // leave it untouched. Repeated restores retain earlier recovery copies.
-      try {
-        await fs.copyFile(filePath, path.join(dir, ARTIFACT_CORRUPT_FILE), fsSync.constants.COPYFILE_EXCL);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') { throw error; }
-        await fs.copyFile(filePath, path.join(dir, `${ARTIFACT_CORRUPT_FILE}.${crypto.randomUUID()}`), fsSync.constants.COPYFILE_EXCL);
+    return ArtifactStore._queueArtifactWrite(filePath, async () => {
+      // Use private validation inside this queue: public load/list wait on the
+      // pending mutation, which would make this operation wait on itself.
+      const bakPath = path.join(dir, ARTIFACT_BACKUP_FILE);
+      const res = await this._readAndValidate(bakPath);
+      if (!res.ok) {
+        console.log(`[Mysti] ArtifactStore: no usable backup for ${artifactId} (${res.problem})`);
+        return null;
       }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
-      // A missing primary needs no recovery copy.
-    }
-    await ArtifactStore._writeFileAtomic(filePath, res.raw);
-    await this._updateIndexEntry(res.artifact, filePath);
-    console.log(`[Mysti] ArtifactStore: restored ${artifactId} from backup`);
-    return res.artifact;
+      try {
+        // Preserve the primary before replacement; a failed recovery copy must
+        // leave it untouched. Repeated restores retain earlier recovery copies.
+        try {
+          await fs.copyFile(filePath, path.join(dir, ARTIFACT_CORRUPT_FILE), fsSync.constants.COPYFILE_EXCL);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') { throw error; }
+          await fs.copyFile(filePath, path.join(dir, `${ARTIFACT_CORRUPT_FILE}.${crypto.randomUUID()}`), fsSync.constants.COPYFILE_EXCL);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
+        // A missing primary needs no recovery copy.
+      }
+      await ArtifactStore._writeFileAtomic(filePath, res.raw);
+      await this._updateIndexEntry(summaryOf(res.artifact), filePath);
+      console.log(`[Mysti] ArtifactStore: restored ${artifactId} from backup`);
+      return res.artifact;
+    });
   }
 
   /**
@@ -531,6 +581,9 @@ export class ArtifactStore {
   async list(): Promise<ArtifactSummary[]> {
     const canvasDir = this._canvasDir();
     if (!canvasDir) { return []; }
+    // The closing view's first save may not have created its directory yet.
+    // Wait before listing so reopening cannot mistake that design for absence.
+    await ArtifactStore._waitForWrites(file => path.dirname(path.dirname(file)) === path.resolve(canvasDir));
     let entries: fsSync.Dirent[];
     try {
       entries = await fs.readdir(canvasDir, { withFileTypes: true });
@@ -595,18 +648,20 @@ export class ArtifactStore {
   async delete(artifactId: string): Promise<void> {
     const dir = this.artifactDir(artifactId);
     if (!dir) { return; }
-    try {
-      await fs.rm(dir, { recursive: true, force: true });
-    } catch (err) {
-      console.log('[Mysti] ArtifactStore: delete failed:', err);
-    }
-    await this._queueIndexOp(async () => {
+    return ArtifactStore._queueArtifactWrite(path.join(dir, ARTIFACT_FILE), async () => {
       try {
-        const index = await this._readIndex();
-        if (index.delete(artifactId)) { await this._writeIndex(index); }
+        await fs.rm(dir, { recursive: true, force: true });
       } catch (err) {
-        console.log('[Mysti] ArtifactStore: index prune failed (non-fatal):', err);
+        console.log('[Mysti] ArtifactStore: delete failed:', err);
       }
+      await this._queueIndexOp(async () => {
+        try {
+          const index = await this._readIndex();
+          if (index.delete(artifactId)) { await this._writeIndex(index); }
+        } catch (err) {
+          console.log('[Mysti] ArtifactStore: index prune failed (non-fatal):', err);
+        }
+      });
     });
   }
 
@@ -1036,13 +1091,13 @@ export class ArtifactStore {
   }
 
   /** Upsert one row after a save/restore. Best-effort — `list()` self-heals. */
-  private async _updateIndexEntry(artifact: CanvasArtifact, filePath: string): Promise<void> {
+  private async _updateIndexEntry(summary: ArtifactSummary, filePath: string): Promise<void> {
     if (!this._canvasDir()) { return; }
     await this._queueIndexOp(async () => {
       try {
         const stat = await fs.stat(filePath);
         const entries = await this._readIndex();
-        entries.set(artifact.id, { ...summaryOf(artifact), mtimeMs: stat.mtimeMs, size: stat.size });
+        entries.set(summary.id, { ...summary, mtimeMs: stat.mtimeMs, size: stat.size });
         await this._writeIndex(entries);
       } catch (err) {
         console.log('[Mysti] ArtifactStore: index update failed (non-fatal):', err);

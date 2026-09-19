@@ -6,13 +6,14 @@ import type { NativeApprovalRequests } from '../base/NativeApprovalRequests';
 import { classifyToolAction, isNeverGatedAction, shouldGateToolUse } from '../../utils/permissionClassifier';
 import { toolKind } from '../../utils/toolNames';
 import { isRecord } from '../../utils/valueGuards';
+import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 
 /** Explicit tool surface: delegated/background runtimes have no turn ownership proof. */
 export const CLAUDE_NATIVE_TOOLS = [
   'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'NotebookEdit',
   'WebFetch', 'WebSearch', 'TodoWrite', 'EnterPlanMode', 'ExitPlanMode',
 ] as const;
-export const CLAUDE_NATIVE_VERSIONS = new Set(['2.1.266']);
+export const CLAUDE_NATIVE_VERSIONS = new Set<string>([VERIFIED_NATIVE_CLI_VERSIONS['claude-code']]);
 export const CLAUDE_NATIVE_POLICY = { disableAllHooks: true, permissions: { ask: ['*'] } } as const;
 const SUPPORTED_TOOLS = new Set<string>(CLAUDE_NATIVE_TOOLS);
 const MAX_REQUESTS = 4096;
