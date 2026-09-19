@@ -42,6 +42,13 @@ vi.mock('../../src/managers/PlanOptionManager', () => ({
   },
 }));
 
+vi.mock('../../src/managers/AgentLoader', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/managers/AgentLoader')>();
+  return { ...actual, AgentLoader: class extends actual.AgentLoader {
+    constructor(context: ConstructorParameters<typeof actual.AgentLoader>[0]) { super(context, []); }
+  } };
+});
+
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { PermissionManager } from '../../src/managers/PermissionManager';
 import { SlashCommandManager } from '../../src/managers/SlashCommandManager';
@@ -158,6 +165,8 @@ async function createHarness(): Promise<Harness> {
     checkpointManager: undefined as any
   });
 
+  await provider._agentInitPromise;
+
   // A real canvas session, wired the way openCanvas wires one.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-lane-'));
   const store = new ArtifactStore({ getRoot: () => root });
@@ -209,10 +218,11 @@ async function createHarness(): Promise<Harness> {
   return {
     provider, root, store, executor, artifact, jobEvents, setCanvasMcpConfig, cancelRequest, router,
     async dispose() {
+      await provider._agentInitPromise;
       await provider._canvasArtifactSession?.close();
       provider._canvasBridge?.dispose();
       provider._channelBridge?.dispose?.();
-      void provider._canvasMcpSession.dispose();
+      await provider._canvasMcpSession.dispose();
       permissionManager.dispose();
       fs.rmSync(root, { recursive: true, force: true });
     },
@@ -972,7 +982,7 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
     it('opens a job for the MCP lane too — its context resolves during the bound turn', () => {
       h.provider._canvasTurns.begin('chat-A');
       // The MCP transport declares itself; its binding is the bearer token.
-      expect(h.provider._canvasToolContext({ transport: 'mcp' })).not.toBeNull();
+      expect(h.provider._canvasToolContext({ kind: 'mcp' })).not.toBeNull();
       expect(started()).toHaveLength(1);
       expect(started()[0].jobId).toBe('canvas-turn-chat-A');
     });
@@ -980,7 +990,7 @@ describe('Plan 22 canvas lanes in ChatViewProvider', () => {
     it('does not report a HUMAN scaffold as the agent working', () => {
       h.provider._canvasTurns.begin('chat-A');
       // `_addCanvasScaffold` resolves a context with no panel and no transport.
-      expect(h.provider._canvasToolContext()).not.toBeNull();
+      expect(h.provider._canvasToolContext({ kind: 'human' })).not.toBeNull();
       expect(started()).toHaveLength(0);
     });
 
@@ -1132,7 +1142,7 @@ describe('Plan 22 end-to-end journeys through ChatViewProvider', () => {
       // package.json's defaults: ask-permission + default mode ⇒ 'staged'.
       setMockConfig('accessLevel', 'ask-permission');
       setMockConfig('defaultMode', 'default');
-      expect(h.provider._canvasToolContext()!.approvalMode).toBe('staged');
+      expect(h.provider._canvasToolContext({ kind: 'mcp' })!.approvalMode).toBe('staged');
 
       h.provider._addCanvasScaffold('login');
 
@@ -1158,5 +1168,156 @@ describe('Plan 22 end-to-end journeys through ChatViewProvider', () => {
       expect(h.artifact.pages).toHaveLength(0);
       expect(h.jobEvents.some(e => e.type === 'op_error')).toBe(true);
     });
+  });
+});
+
+
+// Real host lifetime proof; the historical broken-behavior witnesses remain in
+// out-test/release-evidence/CANVAS_TOOL_SESSION_20260920 unchanged.
+async function delayedCanvasToolHarness() {
+  clearMockConfig();
+  const h = await createHarness();
+  await h.provider._canvasArtifactSession.close();
+  h.provider._canvasArtifactSession = null; h.provider._canvasPanelId = null;
+  let resolve!: (value: Array<{ id: string; name?: string }>) => void;
+  const listing = new Promise<Awaited<ReturnType<ArtifactStore['list']>>>(done => {
+    resolve = values => done(values.map(value => ({ id: value.id, name: value.name ?? h.artifact.name,
+      kind: h.artifact.kind, pageCount: h.artifact.pages.length, updatedAt: h.artifact.updatedAt })));
+  });
+  const disposers: Array<() => void> = [];
+  const window = mockWindow as typeof mockWindow & { createWebviewPanel?: (...args: unknown[]) => unknown }; const previous = window.createWebviewPanel;
+  window.createWebviewPanel = () => ({
+    reveal: vi.fn(),
+    webview: { html: '', postMessage: async () => true, onDidReceiveMessage: () => ({ dispose() {} }) },
+    onDidDispose: (callback: () => void) => { disposers.push(callback); },
+  });
+  vi.spyOn(ArtifactStore.prototype, 'list').mockReturnValueOnce(listing).mockResolvedValue([]);
+  vi.spyOn(ArtifactStore.prototype, 'load').mockResolvedValue(h.artifact);
+  vi.spyOn(ArtifactStore.prototype, 'save').mockResolvedValue(undefined);
+  vi.spyOn(canvasContent, 'getCanvasContent').mockReturnValue('owned shell');
+  vi.spyOn(h.provider, '_canvasAssetBaseUri').mockReturnValue(undefined);
+  const capabilities = vi.spyOn(h.provider, '_buildCanvasCapabilityRegistry').mockResolvedValue(null);
+  vi.spyOn(h.provider._canvasMcpSession, 'relink').mockResolvedValue(undefined);
+  return { h, resolve, disposers, capabilities, restore: async () => {
+    resolve([]); vi.useRealTimers(); window.createWebviewPanel = previous;
+    await h.dispose(); vi.restoreAllMocks(); clearMockConfig();
+  } };
+}
+
+describe('CanvasToolSession through the actual host', () => {
+  it('rejects Stop during delayed open even after the transient panel flag clears', async () => {
+    const t = await delayedCanvasToolHarness(); vi.useFakeTimers();
+    try {
+      const abort = new AbortController();
+      const pending = t.h.provider._runMystiCanvasTool({ kind: 'canvas', tool: 'open', args: {} }, 'chat-A', 'run-old', 'job-old', () => false, abort.signal);
+      t.h.provider._cancelledPanels.add('chat-A'); abort.abort(); t.h.provider._cancelledPanels.delete('chat-A');
+      expect(await pending).toEqual({ ok: false, output: 'Canvas tool cancelled.' });
+      t.resolve([{ id: t.h.artifact.id, name: t.h.artifact.name }]);
+      await t.h.provider._canvasArtifactSession.initialize();
+      const next = await t.h.provider._runMystiCanvasTool({ kind: 'canvas', tool: 'open', args: {} }, 'chat-A', 'run-new', 'job-new');
+      expect(next.ok).toBe(true);
+    } finally { await t.restore(); }
+  });
+
+  it('rejects a replaced coordinator generation through the captured callback', async () => {
+    const t = await delayedCanvasToolHarness(); vi.useFakeTimers();
+    try {
+      let ownsRun = true;
+      const pending = t.h.provider._runMystiCanvasTool({ kind: 'canvas', tool: 'open', args: {} }, 'chat-A', 'run-old', 'job-old', () => !ownsRun, new AbortController().signal);
+      ownsRun = false; t.resolve([{ id: t.h.artifact.id }]); await vi.advanceTimersByTimeAsync(50);
+      expect(await pending).toMatchObject({ ok: false, output: expect.stringContaining('cancelled') });
+    } finally { await t.restore(); }
+  });
+
+  it('rejects a reopened owner even when panel and artifact IDs are identical', async () => {
+    const t = await delayedCanvasToolHarness(); vi.useFakeTimers();
+    try {
+      const pending = t.h.provider._runMystiCanvasTool({ kind: 'canvas', tool: 'open', args: {} }, 'chat-A', 'run-old', 'job-old');
+      const first = t.h.provider._canvasArtifactSession; const panelId = t.h.provider._canvasPanelId;
+      t.disposers[0](); expect(first.closed).toBe(true);
+      expect(t.h.provider.openCanvas(undefined, 'chat-A')).toBe(panelId);
+      const second = t.h.provider._canvasArtifactSession; await second.initialize();
+      second.snapshot.artifact.id = t.h.artifact.id; second.snapshot.artifact.name = 'Replacement owner';
+      await vi.advanceTimersByTimeAsync(50);
+      const result = await pending;
+      expect(result.ok).toBe(false); expect(result.output).not.toContain('Replacement owner'); expect(second.closed).toBe(false);
+      expect((await t.h.provider._runMystiCanvasTool({ kind: 'canvas', tool: 'list_pages', args: {} }, 'chat-A', 'run-new', 'job-new')).ok).toBe(true);
+    } finally { await t.restore(); }
+  });
+
+  it('rejects a competing chat during a cold open without rebinding or exposing the design', async () => {
+    const t = await delayedCanvasToolHarness(); vi.useFakeTimers();
+    try {
+      const first = t.h.provider._runMystiCanvasTool({ kind: 'canvas', tool: 'open', args: {} }, 'chat-A', 'run-A', 'job-A');
+      const second = await t.h.provider._runMystiCanvasTool({ kind: 'canvas', tool: 'open', args: {} }, 'chat-B', 'run-B', 'job-B');
+      expect(second.ok).toBe(false); expect(second.output).toContain('different chat'); expect(second.output).not.toContain(t.h.artifact.name);
+      expect(t.h.provider._canvasChatOrigin).toBe('chat-A');
+      t.resolve([{ id: t.h.artifact.id }]); await vi.advanceTimersByTimeAsync(50);
+      expect((await first).ok).toBe(true);
+    } finally { await t.restore(); }
+  });
+
+  it('does not open a view for a pre-aborted request', async () => {
+    const t = await delayedCanvasToolHarness();
+    try {
+      const open = vi.spyOn(t.h.provider, 'openCanvas'); const abort = new AbortController(); abort.abort();
+      const result = await t.h.provider._runMystiCanvasTool({ kind: 'canvas', tool: 'open', args: {} }, 'chat-A', 'run', 'job', () => false, abort.signal);
+      expect(result.ok).toBe(false); expect(open).not.toHaveBeenCalled(); expect(t.h.provider._canvasArtifactSession).toBeNull();
+    } finally { await t.restore(); }
+  });
+
+  it('returns success when the artifact is ready without waiting for capability discovery', async () => {
+    const t = await delayedCanvasToolHarness(); vi.useFakeTimers();
+    let finishCapabilities!: (value: null) => void;
+    t.capabilities.mockReturnValue(new Promise(done => { finishCapabilities = done; }));
+    try {
+      const pending = t.h.provider._runMystiCanvasTool({ kind: 'canvas', tool: 'canvas_open', args: {} }, 'chat-A', 'run', 'job');
+      t.resolve([{ id: t.h.artifact.id }]); await vi.advanceTimersByTimeAsync(50);
+      expect((await pending).ok).toBe(true); expect(t.capabilities).toHaveBeenCalledOnce();
+    } finally { finishCapabilities(null); await t.restore(); }
+  });
+
+  it('returns an ordinary failure after close while the initial list remains pending', async () => {
+    const t = await delayedCanvasToolHarness(); vi.useFakeTimers();
+    try {
+      const pending = t.h.provider._runMystiCanvasTool({ kind: 'canvas', tool: 'open', args: {} }, 'chat-A', 'run', 'job');
+      t.disposers[0](); await vi.advanceTimersByTimeAsync(50);
+      expect(await pending).toMatchObject({ ok: false, output: expect.stringContaining('closed or changed') });
+      expect(t.h.provider._canvasArtifactSession).toBeNull();
+    } finally { await t.restore(); }
+  });
+});
+
+
+describe('Canvas tool terminals through the actual liveness and job router', () => {
+  let h: Harness;
+  beforeEach(async () => { clearMockConfig(); setMockConfig('accessLevel', 'full-access'); setMockConfig('defaultMode', 'default'); h = await createHarness(); });
+  afterEach(async () => { await h.dispose(); vi.restoreAllMocks(); clearMockConfig(); });
+
+  it.each(['applied', 'staged', 'refused', 'conversion-error', 'cancelled'] as const)('emits one terminal for %s without leaving a live job', async outcome => {
+    if (outcome === 'staged') { setMockConfig('accessLevel', 'ask-permission'); }
+    if (outcome === 'cancelled') {
+      const liveness: CanvasLiveness = h.provider._canvasLiveness;
+      const original = liveness.openJob.bind(liveness);
+      vi.spyOn(liveness, 'openJob').mockImplementation(spec => {
+        const job = original(spec); liveness.cancel(job.jobId); return job;
+      });
+    }
+    const directive = outcome === 'conversion-error'
+      ? { kind: 'canvaspage', source: '' }
+      : { kind: 'canvas', tool: outcome === 'refused' ? 'unknown_canvas_tool' : 'add_page', args: { name: 'One' } };
+    const result = await h.provider._runMystiCanvasTool(directive, 'chat-A', 'terminal-run', 'terminal-job');
+    expect(result.ok).toBe(outcome === 'applied' || outcome === 'staged');
+    expect(h.artifact.pages).toHaveLength(outcome === 'applied' ? 1 : 0);
+    const events = h.jobEvents.filter(event => event.jobId === 'terminal-job');
+    expect(events.filter(event => event.type === 'started')).toHaveLength(1);
+    const terminal = events.filter(event => event.type === 'done' || event.type === 'error');
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].type).toBe(outcome === 'refused' || outcome === 'conversion-error' ? 'error' : 'done');
+    if (outcome === 'cancelled') { expect(terminal[0]).toMatchObject({ result: { cancelled: true } }); }
+    expect(h.router.activeCount()).toBe(0);
+    expect(h.provider._canvasLiveness.jobsForRun('terminal-run')).toEqual([]);
+    expect(h.router.cancel('terminal-job')).toBe(false);
+    expect(h.jobEvents.filter(event => event.jobId === 'terminal-job' && (event.type === 'done' || event.type === 'error'))).toHaveLength(1);
   });
 });

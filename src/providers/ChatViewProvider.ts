@@ -23,7 +23,6 @@ import { settleWithin } from '../utils/settleWithin';
 import { clampEffort } from '../utils/effort';
 import { MystiTagScanner, type MystiDirective, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_SKILL_KINDS, MYSTI_CAPABILITY_KINDS, MYSTI_CONNECT_KINDS, MYSTI_VISUAL_KINDS, MYSTI_VISUAL_ACT_KINDS, MYSTI_CANVAS_KINDS } from '../utils/mystiDelegateParser';
 import { resolveCanvasApproval } from '../canvas/resolveCanvasApproval';
-import { canvasDirectiveToToolCall, isCanvasDirectiveError } from '../canvas/canvasDirective';
 import { CanvasBridge, CANVAS_PENDING_RUN } from '../canvas/CanvasBridge';
 import type { CanvasBridgeSession } from '../canvas/CanvasBridge';
 import { CanvasHistory } from '../canvas/CanvasHistory';
@@ -31,9 +30,10 @@ import { CanvasLiveness } from '../canvas/CanvasLiveness';
 import { CanvasTurnJobs } from '../canvas/CanvasTurnJobs';
 import { CanvasMcpSession } from '../canvas/CanvasMcpSession';
 import { CanvasArtifactSession } from '../canvas/CanvasArtifactSession';
+import { CanvasToolSession, type CanvasContextAuthority, type CanvasToolView } from '../canvas/CanvasToolSession';
 import { mintViewToken } from '../canvas/protocol';
 import type { CanvasHostMessage, CapChip } from '../canvas/protocol';
-import { coordinatorToolSchemas, modelSupportsToolCalls, normalizeCanvasToolName, canvasToolRefusal, sanitizeMcpInputSchema, type McpToolInfo } from '../services/coordinatorTools';
+import { coordinatorToolSchemas, modelSupportsToolCalls, sanitizeMcpInputSchema, type McpToolInfo } from '../services/coordinatorTools';
 import { SkillIndex, type IndexedArtifact } from '../services/SkillIndex';
 import { SkillTelemetry, type RunOutcome } from '../services/SkillTelemetry';
 import { SkillStaging } from '../services/SkillStaging';
@@ -116,7 +116,7 @@ import { CanvasToolServer } from '../services/CanvasToolServer';
 import { CanvasMcpHttpServer } from '../services/CanvasMcpHttpServer';
 import { CanvasSessionLinker } from '../managers/CanvasSessionLinker';
 import { listScaffolds } from '../managers/CanvasScaffolds';
-import { canvasToolPayload, dispatchCanvasTool } from '../managers/CanvasToolDispatch';
+import { dispatchCanvasTool } from '../managers/CanvasToolDispatch';
 import type { CanvasToolContext } from '../managers/CanvasToolDispatch';
 import {
   collectArtifactAssetRefs,
@@ -334,6 +334,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _canvasPanelId: string | null = null;
   private _canvasChatOrigin: string | null = null;
   private _canvasArtifactSession: CanvasArtifactSession | null = null;
+  private readonly _canvasTools = new CanvasToolSession({
+    currentView: () => this._captureCanvasToolView(),
+    openView: origin => { this.openCanvas(undefined, origin); return this._captureCanvasToolView(); },
+    approvalFor: origin => resolveCanvasApproval(this._getSettingsForPanel(origin ?? 'default')),
+    toolLabel: tool => this._canvasToolLabel(tool),
+    openMcpTurn: view => {
+      const bound = view.originPanelId;
+      if (bound && view.isCurrent()) {
+        this._canvasTurns.open(bound, `${getProviderDisplayName(this._getPanelProvider(bound))} · editing the canvas`);
+      }
+    },
+  });
   // Plan 05 — chat→canvas bridge: the live artifact backing the open canvas, the
   // op executor/router that mutate it, and the per-turn fenced-`canvas-op` parser.
   private get _canvasArtifact(): CanvasArtifact | null { return this._canvasArtifactSession?.snapshot?.artifact ?? null; }
@@ -8270,7 +8282,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // an HTML string, and there is no vision bridge). Wiring it is feature
       // work tracked in Plan 05 / plans/18 Wave 4 log, not a hook one-liner;
       // without the hook the tool is simply not advertised to the model.
-      this._canvasToolServer = new CanvasToolServer({ resolveContext: () => this._canvasToolContext({ transport: 'mcp' }), mediaService });
+      this._canvasToolServer = new CanvasToolServer({ resolveContext: () => this._canvasToolContext({ kind: 'mcp' }), mediaService });
       // A design switch can finish while capabilities are loading. Connect the
       // current design, never the artifact captured by the initial load.
       await artifactSession.refreshTransport();
@@ -9471,6 +9483,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // foreground runs post to the live chat and use the panel's cancel state.
     const bg = !!jobId;
     const cancelKey = bg ? jobId! : panelId;
+    const canvasApprovalFloor = resolveCanvasApproval(settings);
     const runId = crypto.randomUUID();
     const executionAbort = new AbortController();
     // Ownership: capture the panel's current send generation. A newer send bumps
@@ -9731,7 +9744,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             : { type: 'visual_test_error', status: 'failed', message: res.output.slice(0, 200) },
         } as never),
         canvasToolLabel: tool => this._canvasToolLabel(tool),
-        executeCanvas: (directive, toolId) => this._runMystiCanvasTool(directive, panelId, runId, toolId),
+        executeCanvas: (directive, toolId) => this._runMystiCanvasTool(directive, panelId, runId, toolId, isCancelled, executionAbort.signal, canvasApprovalFloor),
       }, mcpToolset?.tools);
       const delegationRunner = new CoordinatorDelegationRunner(budget, {
         backends, verify: verifyMode !== 'off', crossReview: crossReviewMode !== 'off',
@@ -11289,47 +11302,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * from {@link resolveCanvasApproval}, the one function the prompt builder
    * reads too, so the model can never be told something the UI contradicts.
    */
-  private _canvasToolContext(opts?: { runId?: string; jobId?: string; panelId?: string; transport?: 'mcp'; approvalMode?: CanvasApprovalMode }): CanvasToolContext | null {
-    if (!this._canvasArtifact || !this._canvasStore || !this._canvasExecutor) { return null; }
-    // CANVAS-LANE-04: the canvas directive kinds are added to EVERY coordinator
-    // run's scanner unconditionally, justified in-code by "dispatch resolves a
-    // binding … and refuses when unbound". It did not: `_canvasBoundTo` was
-    // consulted only in the `open` fast path, so a second chat panel (or a
-    // background `bg:` job) could read and DELETE artboards from a design it
-    // was never granted. Callers that know their panel pass it, and an unbound
-    // panel gets `null` — which the existing "No canvas is open" refusal
-    // already covers. The MCP transport omits it deliberately: its binding is
-    // the per-artifact bearer token (see `_createCanvasMcpServer`).
-    if (opts?.panelId !== undefined && !this._canvasBoundTo(opts.panelId)) { return null; }
-    // The MCP transport (Claude Code) carries no `panelId` — its binding is the
-    // per-artifact bearer token — but it only ever fires DURING the bound
-    // chat's turn, so that turn is what "is Mysti working" is really about.
-    // Opening here is what gives that lane the same ghost/timer/Stop the
-    // coordinator lane has had; `CanvasTurnJobs.open` refuses outside a live
-    // turn, so a stray call cannot leak a spinner.
-    //
-    // Declared by the caller rather than inferred from a missing `panelId`:
-    // `_addCanvasScaffold` also resolves a context with no panel, and a HUMAN
-    // adding a template must not be reported as the agent working.
-    if (opts?.transport === 'mcp' && this._canvasChatOrigin) {
-      const bound = this._canvasChatOrigin;
-      this._canvasTurns.open(bound, `${getProviderDisplayName(this._getPanelProvider(bound))} · editing the canvas`);
-    }
+  private _canvasToolContext(authority: CanvasContextAuthority): CanvasToolContext | null {
+    return this._canvasTools.context(authority);
+  }
+
+  private _canvasBoundTo(panelId: string): boolean {
+    return this._canvasTools.boundTo(panelId);
+  }
+
+  /** Capture the current view once; repeated IDs never substitute another owner. */
+  private _captureCanvasToolView(): CanvasToolView | null {
+    const artifacts = this._canvasArtifactSession;
+    const panelId = this._canvasPanelId;
+    if (!artifacts || !panelId || artifacts.closed) { return null; }
+    const bridge = this._canvasBridge;
+    const liveness = this._canvasLiveness;
+    const isCurrent = () => this._canvasArtifactSession === artifacts && this._canvasPanelId === panelId && !artifacts.closed;
     return {
-      artifact: this._canvasArtifact, store: this._canvasStore, executor: this._canvasExecutor,
-      jobId: opts?.jobId ?? 'mcp',
-      runId: opts?.runId ?? 'mcp',
-      // E2E-2: `approvalMode` is settings-derived for every AGENT lane — that
-      // is what staging is for. A caller may override it only to declare that
-      // the gesture is the HUMAN's own (`_addCanvasScaffold`), which is the
-      // same reason `CanvasBridge._onSubmit` hardcodes `'auto'`: parking a
-      // person's own click behind their own Accept button is nonsense.
-      approvalMode: opts?.approvalMode
-        ?? resolveCanvasApproval(this._getSettingsForPanel(this._canvasChatOrigin ?? 'default')),
-      // Plan 22 §3.4: `checkpoint` is the one tool that needs the undo/version
-      // cursor. Passing it here is what turns "canvas_checkpoint" from an
-      // honest error into a real named restore point.
-      ...(this._canvasHistory ? { history: this._canvasHistory } : {}),
+      artifacts, panelId, originPanelId: this._canvasChatOrigin, isCurrent,
+      ...(liveness ? { liveness } : {}),
+      publish: snapshot => {
+        if (!isCurrent() || artifacts.snapshot !== snapshot) { return; }
+        bridge?.pushOps();
+        if (isCurrent() && artifacts.snapshot === snapshot) { bridge?.pushHistory(); }
+      },
     };
   }
 
@@ -11369,11 +11365,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._addCanvasScaffold(id);
   }
 
-  /** True when this chat panel is bound to an open canvas. */
-  private _canvasBoundTo(panelId: string): boolean {
-    return !!this._canvasPanelId && !!this._canvasArtifact
-      && (this._canvasChatOrigin === null || this._canvasChatOrigin === panelId);
-  }
 
   /**
    * Whether anything on the bound chat lane drains the canvas steering inbox.
@@ -11406,116 +11397,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * (it creates `.mysti/canvas/<id>/`), so it is not gated.
    */
   private async _runMystiCanvasTool(
-    d: Extract<MystiDirective, { kind: 'canvas' | 'canvaspage' }>,
+    directive: Extract<MystiDirective, { kind: 'canvas' | 'canvaspage' }>,
     panelId: string,
     runId: string,
     jobId: string,
+    isCancelled: () => boolean = () => this._cancelledPanels.has(panelId),
+    signal: AbortSignal = new AbortController().signal,
+    approvalFloor: CanvasApprovalMode = resolveCanvasApproval(this._getSettingsForPanel(panelId)),
   ): Promise<{ ok: boolean; output: string }> {
-    // CANVAS-LANE-06: canonicalize BEFORE branching. `normalizeCanvasToolName`
-    // ran only on the native `tool_calls` lane, so the always-on text lane
-    // compared the model's spelling to the bare literal `'open'` — and
-    // `<canvas:N tool="canvas_open">`, the exact spelling the refusal message
-    // hands the model, missed. A model with no native tool calling could
-    // therefore never open a canvas: it burned `gov.maxTurns` retrying the name
-    // it was just told to use.
-    const toolName = d.kind === 'canvas' ? normalizeCanvasToolName(d.tool) : 'write_page_jsx';
-
-    // CANVAS-LANE-05: `canvas_undo` was advertised natively (with a description
-    // telling the model to PREFER it over a corrective edit) and served by
-    // nothing. It is refused by design — Plan 22 §3.5: undo/redo is one shared
-    // stack, so an agent undo can revert the HUMAN's last transaction.
-    const refusal = d.kind === 'canvas' ? canvasToolRefusal(toolName) : undefined;
-    if (refusal) { return { ok: false, output: refusal }; }
-
-    if (d.kind === 'canvas' && toolName === 'open') {
-      if (!this._canvasBoundTo(panelId)) { this.openCanvas(undefined, panelId); }
-      // openCanvas resolves its artifact asynchronously; wait briefly so the
-      // model's very next tool call sees a canvas instead of racing the boot.
-      for (let i = 0; i < 40 && !this._canvasArtifact; i++) {
-        await new Promise(r => setTimeout(r, 50));
-      }
-      const a = this._canvasArtifact;
-      if (!a) { return { ok: false, output: 'The canvas did not finish opening. Try canvas_open once more.' }; }
-      // CANVAS-LANE-04: `openCanvas` early-returns when a canvas is already
-      // open (it focuses it) WITHOUT rebinding, so a second chat panel's
-      // `canvas_open` used to answer `ok:true` — and leak the other chat's
-      // design name and page count — while every subsequent tool refused. Say
-      // what is actually true instead of half-succeeding.
-      if (!this._canvasBoundTo(panelId)) {
-        return { ok: false, output: 'A canvas is already open and bound to a different chat. Ask the user to switch to that chat, or to close the canvas first — this chat cannot edit it.' };
-      }
-      return { ok: true, output: JSON.stringify({ ok: true, artifact: a.name, kind: a.kind, format: a.format?.formatId, pages: a.pages.length }) };
-    }
-
-    const ctx = this._canvasToolContext({ runId, jobId, panelId });
-    if (!ctx) {
-      return { ok: false, output: 'No canvas is open for this chat. Call canvas_open first — every other canvas tool needs a canvas bound to this panel.' };
-    }
-
-    // Plan 22 §3.4 tier 1 — liveness with ZERO model cooperation. Opening the
-    // job is what puts a dashed ghost artboard, a live elapsed timer and a
-    // working Cancel on the board while the tool runs; the model said nothing
-    // about progress and never has to.
-    const targetPage = typeof d === 'object' && 'pageId' in d && typeof d.pageId === 'string'
-      ? d.pageId
-      : (d.kind === 'canvas' && typeof d.args?.pageId === 'string' ? d.args.pageId : undefined);
-    const job = this._canvasLiveness?.openJob({
-      runId,
-      jobId,
-      label: d.kind === 'canvas' ? `Canvas · ${this._canvasToolLabel(toolName).slice('canvas:'.length)}` : 'Canvas · writing an artboard',
-      ...(targetPage ? { pageId: targetPage } : {}),
+    return this._canvasTools.run(directive, {
+      kind: 'coordinator', panelId, runId, jobId, isCancelled, signal, approvalFloor,
     });
-
-    try {
-      // A whole artboard rides the text directive; normalize it onto the same
-      // dispatcher the native tool calls use, so there is ONE write path.
-      const call = canvasDirectiveToToolCall(d);
-      if (isCanvasDirectiveError(call)) { job?.fail(call.error); return { ok: false, output: call.error }; }
-      const { tool: name, args } = call;
-
-      // A labelled ghost highlight on the node being edited, drawn by the same
-      // overlay that draws human selection.
-      if (typeof args.pageId === 'string' && args.pageId) {
-        job?.cursor(args.pageId, typeof args.mid === 'string' ? args.mid : undefined);
-      }
-
-      const res = dispatchCanvasTool(name, args, ctx);
-      if (!res.ok) {
-        const error = res.error ?? `canvas tool "${name}" failed`;
-        job?.fail(error);
-        return { ok: false, output: error };
-      }
-
-      // Push the change to the open canvas panel immediately — this is the
-      // mid-turn live update, not an end-of-turn repaint. Plan 22 §3.4: an
-      // op-level DELTA plus a history push, never the whole artifact.
-      if (res.op !== undefined) {
-        this._pushCanvasUpdate();
-        this._scheduleCanvasSave();
-      }
-      // Receipts the model does not directly await (a pin refusal, a parked op,
-      // a rebase) fold into the run's steering inbox rather than reaching nobody.
-      if (res.receipt) { this._canvasLiveness?.noteReceipt(runId, res.receipt); }
-
-      // WRITE tools return a compact receipt (op id, status, page, version) so
-      // the model learns whether its edit LANDED without the full value echoed
-      // back. `ok` means the artifact actually changed.
-      //
-      // E2E-3: this used to build its own payload expression, whose
-      // `res.op !== undefined` branch dropped `data`, `dropped` and `error` on
-      // the floor — so a whole-artboard rewrite whose pinned cells the differ
-      // refused was reported to the model as a plain `ok:true, applied`. The
-      // agent then believed text it never wrote was on the artboard. The tool
-      // contract's own receipt builder is the ONE shape both transports send
-      // (`CanvasMcpBridge` uses it too), and it is what carries `dropped`.
-      const payload = canvasToolPayload(res, ctx.approvalMode);
-      job?.done();
-      return { ok: true, output: JSON.stringify(payload) };
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      job?.fail(detail);
-      return { ok: false, output: detail };
-    }
   }
 
   /**
@@ -12046,7 +11938,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * from settings.
    */
   private _addCanvasScaffold(scaffold: string): void {
-    const ctx = this._canvasToolContext({ approvalMode: 'auto' });
+    const ctx = this._canvasToolContext({ kind: 'human' });
     if (!ctx || !scaffold) { return; }
     // Routes through the executor → op_applied event → re-render + save (router sink).
     const res = dispatchCanvasTool('scaffold_page', { scaffold }, ctx);
