@@ -3,8 +3,8 @@ type HttpBody = { getReader(): ReadableStreamDefaultReader<Uint8Array> };
 /** Bound incomplete frames from a broken server (UTF-16 code units, at most 8 MiB). */
 export const MAX_HTTP_FRAME_CHARS = 4 * 1024 * 1024;
 
-/** Decode UTF-8 across reads, including a final unterminated line. */
-export async function* readHttpLines(body: HttpBody, signal: AbortSignal): AsyncGenerator<string> {
+/** Decode UTF-8 across reads, including a final unterminated line. onChunk observes raw reads for idle deadlines. */
+export async function* readHttpLines(body: HttpBody, signal: AbortSignal, onChunk?: () => void): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true });
   let buffer = '';
@@ -14,6 +14,7 @@ export async function* readHttpLines(body: HttpBody, signal: AbortSignal): Async
       signal.throwIfAborted();
       const { done, value } = await reader.read();
       signal.throwIfAborted();
+      if (!done) { onChunk?.(); }
       buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
       // SSE permits LF, CRLF and CR. A CR split from its LF is still one delimiter.
       if (skipLF && buffer.length) {
@@ -47,10 +48,10 @@ export async function* readHttpLines(body: HttpBody, signal: AbortSignal): Async
 }
 
 /** Assemble SSE data fields; tolerate an EOF after the final data frame. */
-export async function* readServerSentData(body: HttpBody, signal: AbortSignal): AsyncGenerator<string> {
+export async function* readServerSentData(body: HttpBody, signal: AbortSignal, onChunk?: () => void): AsyncGenerator<string> {
   let data: string[] = [];
   let size = 0;
-  for await (const line of readHttpLines(body, signal)) {
+  for await (const line of readHttpLines(body, signal, onChunk)) {
     if (!line) {
       if (data.length) { yield data.join('\n'); data = []; size = 0; }
       continue;

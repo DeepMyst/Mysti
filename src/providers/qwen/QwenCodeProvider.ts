@@ -312,13 +312,16 @@ export class QwenCodeProvider extends AcpNativeProvider {
         : configuredHome.startsWith('~/') || configuredHome.startsWith('~\\')
           ? path.join(os.homedir(), configuredHome.slice(2)) : path.resolve(context.cwd, configuredHome);
     const policyFile = path.join(this._extensionContext.extensionPath, 'resources', 'qwen-policy', 'settings.json');
-    const capture = await captureNativeFamilyConfig({ ...context, env: nativeEnv, flavor: 'qwen', version: QWEN_ACP_VERSION, policyFiles: [policyFile] });
-    const env = { ...nativeEnv, QWEN_CODE_SYSTEM_SETTINGS_PATH: policyFile,
+    const inheritedSystemSettingsPaths = [nativeEnv.QWEN_CODE_SYSTEM_SETTINGS_PATH, nativeEnv.QWEN_CODE_SYSTEM_DEFAULTS_PATH]
+      .filter((file): file is string => Boolean(file));
+    const env: NodeJS.ProcessEnv = { ...nativeEnv, QWEN_CODE_SYSTEM_SETTINGS_PATH: policyFile,
       QWEN_CODE_SYSTEM_DEFAULTS_PATH: policyFile, QWEN_CODE_SIMPLE: '0', QWEN_CODE_SAFE_MODE: '0',
-      QWEN_CODE_NO_RELAUNCH: '1',
-      // cli-entry.js otherwise prefers a mutable managed installation before
-      // importing the verified npm payload. A null pin disables that lookup.
-      QWEN_CODE_MANAGED_NPM_PIN: JSON.stringify({ bootstrap: capture.cliPath, version: null, updateRoot: path.dirname(capture.cliPath) }) };
+      QWEN_CODE_NO_RELAUNCH: '1' };
+    const capture = await captureNativeFamilyConfig({ ...context, env, flavor: 'qwen', version: QWEN_ACP_VERSION,
+      policyFiles: [policyFile], inheritedSystemSettingsPaths });
+    // cli-entry.js otherwise prefers a mutable managed installation before
+    // importing the verified npm payload. A null pin disables that lookup.
+    env.QWEN_CODE_MANAGED_NPM_PIN = JSON.stringify({ bootstrap: capture.cliPath, version: null, updateRoot: path.dirname(capture.cliPath) });
     let inputTokens = 0; let outputTokens = 0;
     return {
       cliPath: capture.cliPath, args, env,

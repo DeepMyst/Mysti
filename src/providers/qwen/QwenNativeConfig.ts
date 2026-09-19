@@ -6,14 +6,38 @@ import { createHash } from 'crypto';
 import { isRecord } from '../../utils/valueGuards';
 
 type Flavor = 'qwen' | 'gemini';
+// Qwen Code 0.23.0 AuthType values; extend only with a reviewed runtime contract.
+const QWEN_PROVIDER_PROTOCOLS = new Set(['openai', 'qwen-oauth', 'gemini', 'vertex-ai', 'anthropic']);
+const NATIVE_CONFIG_SELECTORS = new Set(['QWEN_HOME', 'GEMINI_CLI_HOME',
+  'QWEN_CODE_SYSTEM_SETTINGS_PATH', 'QWEN_CODE_SYSTEM_DEFAULTS_PATH', 'GEMINI_CLI_SYSTEM_SETTINGS_PATH', 'GEMINI_CLI_SYSTEM_DEFAULTS_PATH']);
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 
 /** Do not inherit interpreter preload/startup code or private native host hooks. */
 export function nativeFamilyEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = { ...source };
   for (const key of Object.keys(env)) {
-    if (['NODE_OPTIONS', 'NODE_PATH', 'NODE_COMPILE_CACHE', 'CLI_VERSION', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'BUN_OPTIONS', 'BASH_ENV', 'ENV', 'ZDOTDIR', 'ZSH_ENV', 'KSH_ENV'].includes(key)
-      || /^(?:QWEN|GEMINI)_/.test(key) && /(?:GUARD|PARENT|CAPABILITY|DAEMON|COMMAND|ENTRY|SIMPLE|SAFE_MODE|HOOK|PRELOAD|SANDBOX|IDE_|RELAUNCH|LAUNCHER|MANAGED_NPM|STARTUP_VERSION|COMPILE_CACHE|CODE_CLI$)/.test(key)) { delete env[key]; }
+    // Windows child environments are case-insensitive. Remove every spelling
+    // before adding host-owned values, including simultaneous casing aliases.
+    const normalized = key.toUpperCase();
+    if (['QWEN_AGENT_EXECUTION_BACKEND', 'GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES',
+      'NODE_OPTIONS', 'NODE_PATH', 'NODE_COMPILE_CACHE', 'CLI_VERSION', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'BUN_OPTIONS', 'BASH_ENV', 'ENV', 'ZDOTDIR', 'ZSH_ENV', 'KSH_ENV'].includes(normalized)
+      || /^(?:QWEN|GEMINI)_/.test(normalized) && /(?:GUARD|PARENT|CAPABILITY|DAEMON|COMMAND|ENTRY|SIMPLE|SAFE_MODE|HOOK|PRELOAD|SANDBOX|IDE_|RELAUNCH|LAUNCHER|MANAGED_NPM|STARTUP_VERSION|COMPILE_CACHE|CODE_CLI$)/.test(normalized)) { delete env[key]; }
+  }
+  if (process.platform === 'win32') {
+    const selectors = new Map<string, string>();
+    for (const key of Object.keys(env)) {
+      const normalized = key.toUpperCase();
+      if (!NATIVE_CONFIG_SELECTORS.has(normalized)) { continue; }
+      const value = env[key];
+      if (value !== undefined) {
+        if (selectors.has(normalized) && selectors.get(normalized) !== value) {
+          throw new Error('Native approval setup refused: conflicting native configuration environment aliases.');
+        }
+        selectors.set(normalized, value);
+      }
+      delete env[key];
+    }
+    for (const [key, value] of selectors) { env[key] = value; }
   }
   // Do not accept executable external-account authentication providers. The
   // native SDK only enables credential_source.executable when this flag is set.
@@ -30,6 +54,8 @@ export function nativeFamilyEnvironment(source: NodeJS.ProcessEnv): NodeJS.Proce
 export async function captureNativeFamilyConfig(options: {
   flavor: Flavor; cwd: string; env: NodeJS.ProcessEnv; cliPath: string;
   version: string; policyFiles: string[];
+  /** Preserve checks of inherited settings paths after host-owned overrides. */
+  inheritedSystemSettingsPaths?: string[];
 }): Promise<{ cliPath: string; assertUnchanged(): Promise<void> }> {
   const { flavor, cwd, env } = options;
   const label = flavor === 'qwen' ? 'Qwen Code' : 'Gemini CLI';
@@ -122,7 +148,14 @@ export async function captureNativeFamilyConfig(options: {
     try { parsed = JSON.parse(data); } catch { return error('native settings must be plain JSON for policy verification'); }
     if (!isRecord(parsed)) { return error('native settings must be an object'); }
     const allowed = new Set(['$version', 'model', 'modelProviders', 'security', 'general', 'ui', 'permissions']);
+    if (flavor === 'qwen') { allowed.add('providerProtocol'); }
     if (Object.keys(parsed).some(key => !allowed.has(key))) { return error('native settings contain unsupported customization; use an isolated provider configuration'); }
+    if (flavor === 'qwen' && Object.prototype.hasOwnProperty.call(parsed, 'providerProtocol')) {
+      const protocols = parsed.providerProtocol;
+      if (!isRecord(protocols) || Object.values(protocols).some(protocol => typeof protocol !== 'string' || !QWEN_PROVIDER_PROTOCOLS.has(protocol))) {
+        return error('native providerProtocol must map provider IDs to supported protocol names');
+      }
+    }
     if (isRecord(parsed.security) && Object.keys(parsed.security).some(key => !['auth', 'folderTrust'].includes(key))) {
       return error('native security customization cannot be verified');
     }
@@ -136,7 +169,16 @@ export async function captureNativeFamilyConfig(options: {
         }
       }
     }
-    rejectExecutableAuth(parsed.model); rejectExecutableAuth(parsed.modelProviders);
+    rejectExecutableAuth(parsed.model);
+    if (flavor === 'qwen' && isRecord(parsed.modelProviders)) {
+      for (const [providerId, models] of Object.entries(parsed.modelProviders)) {
+        // In the verified schema these keys are provider IDs, not executable
+        // setting names. Keep scanning every nested model/auth field, and keep
+        // the existing strict check for entries outside the ModelConfig[] shape.
+        if (Array.isArray(models)) { rejectExecutableAuth(models, 1); }
+        else { rejectExecutableAuth({ [providerId]: models }); }
+      }
+    } else { rejectExecutableAuth(parsed.modelProviders); }
     if (isRecord(parsed.security)) { rejectExecutableAuth(parsed.security.auth); }
     if (isRecord(parsed.general) && Object.keys(parsed.general).some(key => !['language', 'theme', 'enableAutoUpdate', 'preventSystemSleep'].includes(key))) {
       return error('native startup customization cannot be verified');
@@ -160,7 +202,8 @@ export async function captureNativeFamilyConfig(options: {
       : `/etc/${flavor === 'qwen' ? 'qwen-code' : 'gemini-cli'}`;
   const prefix = flavor === 'qwen' ? 'QWEN_CODE' : 'GEMINI_CLI';
   for (const file of new Set([path.join(systemDir, 'settings.json'), path.join(systemDir, 'system-defaults.json'),
-    env[`${prefix}_SYSTEM_SETTINGS_PATH`], env[`${prefix}_SYSTEM_DEFAULTS_PATH`]].filter((item): item is string => Boolean(item)))) {
+    env[`${prefix}_SYSTEM_SETTINGS_PATH`], env[`${prefix}_SYSTEM_DEFAULTS_PATH`],
+    ...(options.inheritedSystemSettingsPaths || [])].filter((item): item is string => Boolean(item)))) {
     if (options.policyFiles.includes(file)) { continue; }
     await capture(file, () => error('managed native settings would conflict with the host policy'));
   }

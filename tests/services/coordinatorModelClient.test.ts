@@ -464,3 +464,64 @@ describe('CoordinatorModelClient — native tool-calling (Plan 19 P4)', () => {
     expect(seen['noncapable/mystery-model']).toBeUndefined();            // non-capable → no tools
   });
 });
+
+
+describe('CoordinatorModelClient gateway terminal integrity', () => {
+  it.each(['', '   '])('normalizes a blank gateway error (%j) after a tool proposal', async error => {
+    const gw = stubGateway({ streamChat: () => mkStream([
+      { toolCalls: [{ id: 'inert', name: 'ls', arguments: '{}' }] }, { error }, { done: true },
+    ]) });
+    const events = [];
+    for await (const event of make({ gw }).stream([])) { events.push(event); }
+    expect(events.at(-1)).toEqual({ error: 'DeepMyst gateway stream error' });
+    expect(events.some(event => event.done)).toBe(false);
+  });
+
+  it.each([
+    { text: 'Partial answer' },
+    { toolCalls: [{ id: 'inert', name: 'ls', arguments: '{}' }] },
+  ])('does not synthesize success when an owning gateway attempt silently ends: %j', async partial => {
+    const streamChat = vi.fn(() => mkStream([partial]));
+    const events = [];
+    for await (const event of make({ gw: stubGateway({ streamChat }) }).stream([])) { events.push(event); }
+    expect(events.at(-1)).toEqual({ error: 'DeepMyst gateway stream ended before completion' });
+    expect(events.some(event => event.done)).toBe(false);
+    expect(streamChat).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+it.each(['model', 'costUsd', 'reasoning', 'text', 'usage'] as const)(
+  'checks gateway Stop after %s attribution before further content or tools', async boundary => {
+    const caller = new AbortController();
+    const streamChat = vi.fn(() => mkStream([
+      { costUsd: 0.1 },
+      { reasoning: 'thinking', text: 'visible', usage: { inputTokens: 5 }, toolCalls: [{ id: 'inert', name: 'ls', arguments: '{}' }] },
+      { done: true },
+    ]));
+    const stream = make({ gw: stubGateway({ streamChat }) }).stream([], { signal: caller.signal });
+    for (;;) {
+      const event = await stream.next();
+      expect(event.done).toBe(false);
+      if (event.value?.[boundary] !== undefined) { break; }
+    }
+    caller.abort(new Error('fixture Stop'));
+    const tail = [];
+    for await (const event of stream) { tail.push(event); }
+    expect(tail).toEqual([{ error: 'fixture Stop' }]);
+    expect(streamChat).toHaveBeenCalledTimes(1);
+  },
+);
+
+
+it('never starts a fallback when Stop has a retryable-looking reason before ownership', async () => {
+  const caller = new AbortController();
+  const streamChat = vi.fn(() => mkStream([{ model: 'resolved-free' }, { done: true }]));
+  const stream = make({ gw: stubGateway({ streamChat }) }).stream([], { signal: caller.signal });
+  expect((await stream.next()).value).toEqual({ model: 'resolved-free' });
+  caller.abort(new Error('HTTP 503'));
+  const tail = [];
+  for await (const event of stream) { tail.push(event); }
+  expect(tail).toEqual([{ error: 'HTTP 503' }]);
+  expect(streamChat).toHaveBeenCalledTimes(1);
+});

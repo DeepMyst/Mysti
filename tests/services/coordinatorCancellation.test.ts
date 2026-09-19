@@ -305,3 +305,34 @@ it('keeps the DeepMyst idle deadline while reading a stalled HTTP error body', a
   expect(getEventListeners(caller.signal, 'abort')).toEqual([]);
   expect(vi.getTimerCount()).toBe(0);
 });
+
+
+it('resets the Gateway idle deadline on raw fragments before an SSE event is complete', async () => {
+  const caller = new AbortController();
+  let feed!: ReadableStreamDefaultController<Uint8Array>;
+  const cancel = vi.fn();
+  vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      feed = controller;
+      init.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), { once: true });
+    }, cancel,
+  }))));
+  const client = new DeepMystGatewayClient(() => 'dm_test', () => 'http://127.0.0.1');
+  const stream = client.streamChat({ model: 'test', messages: [], timeoutMs: 100, signal: caller.signal });
+  const pending = stream.next();
+  await vi.advanceTimersByTimeAsync(0);
+  for (const fragment of ['data: {"choices":', '[{"delta":', '{"content":"alive"}}]}']) {
+    await vi.advanceTimersByTimeAsync(80);
+    feed.enqueue(Buffer.from(fragment));
+    await vi.advanceTimersByTimeAsync(0);
+  }
+  // More than twice the idle timeout elapsed, with no complete SSE event yet.
+  expect(vi.getTimerCount()).toBe(1);
+  await vi.advanceTimersByTimeAsync(80);
+  feed.enqueue(Buffer.from('\n\n'));
+  expect((await pending).value).toEqual({ text: 'alive' });
+  await stream.return(undefined);
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(getEventListeners(caller.signal, 'abort')).toEqual([]);
+  expect(vi.getTimerCount()).toBe(0);
+});

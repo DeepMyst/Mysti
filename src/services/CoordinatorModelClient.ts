@@ -405,6 +405,7 @@ export class CoordinatorModelClient {
     // stickiness is fresh; expired ⇒ back to the cheapest entry.
     const sticky = this._stickyStart(models.length);
     for (let i = sticky; i < models.length; i++) {
+      if (opts.signal?.aborted) { yield { error: requestError(opts.signal.reason) }; return; }
       const isLast = i === models.length - 1;
       let sawText = false;
       let streamErr: string | undefined;
@@ -420,48 +421,54 @@ export class CoordinatorModelClient {
       // model that actually supports them so a non-capable fallback can't 400 on
       // an unsupported field and break a run the text protocol would've survived.
       const modelTools = modelSupportsToolCalls(models[i]) ? opts.tools : undefined;
-      for await (const ev of this._gateway.streamChat({ model: models[i], messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._streamTimeoutMs, tools: modelTools })) {
-        if (ev.error) { streamErr = ev.error; break; }
-        if (ev.model) { resolvedModel = ev.model; yield { model: ev.model }; }
-        if (ev.reasoning) { yield { reasoning: ev.reasoning }; }
-        if (ev.costUsd !== undefined) { attemptCost = ev.costUsd; }
-        if (ev.text) {
-          if (!sawText) {
-            sawText = true;
-            this._stampSticky(i);
-            if (!resolvedModel) { yield { model: models[i] }; }
-            if (attemptCost !== undefined) { yield { costUsd: attemptCost }; attemptCost = undefined; }
+      try {
+        for await (const ev of this._gateway.streamChat({ model: models[i], messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._streamTimeoutMs, tools: modelTools })) {
+          opts.signal?.throwIfAborted();
+          if (ev.error !== undefined) { streamErr = ev.error.trim() || 'DeepMyst gateway stream error'; break; }
+          if (ev.model) { resolvedModel = ev.model; opts.signal?.throwIfAborted(); yield { model: ev.model }; }
+          if (ev.reasoning) { opts.signal?.throwIfAborted(); yield { reasoning: ev.reasoning }; }
+          if (ev.costUsd !== undefined) { attemptCost = ev.costUsd; }
+          if (ev.text) {
+            if (!sawText) {
+              sawText = true;
+              this._stampSticky(i);
+              if (!resolvedModel) { opts.signal?.throwIfAborted(); yield { model: models[i] }; }
+              if (attemptCost !== undefined) { opts.signal?.throwIfAborted(); yield { costUsd: attemptCost }; attemptCost = undefined; }
+            }
+            opts.signal?.throwIfAborted(); yield { text: ev.text };
           }
-          yield { text: ev.text };
-        }
-        if (ev.usage) { yield { usage: coordinatorUsage(ev.usage) }; }
-        if (ev.toolCalls && ev.toolCalls.length) {
-          // A finalized tool_call set means THIS attempt OWNS the turn (mirrors
-          // first-text ownership at L297): stamp sticky + surface the held cost,
-          // and — via sawText — never fail over to the next chain model
-          // afterwards. Without this, a retryable error AFTER the toolCalls were
-          // emitted would `continue` to the next model and merge two models into
-          // one turn, or a to-be-abandoned attempt's toolCalls would still reach
-          // the consumer and get dispatched (review round-5 #4/#6).
-          if (!sawText) {
-            sawText = true;
-            this._stampSticky(i);
-            if (!resolvedModel) { yield { model: models[i] }; }
-            if (attemptCost !== undefined) { yield { costUsd: attemptCost }; attemptCost = undefined; }
+          if (ev.usage) { opts.signal?.throwIfAborted(); yield { usage: coordinatorUsage(ev.usage) }; }
+          if (ev.toolCalls && ev.toolCalls.length) {
+            // A finalized tool_call set means THIS attempt OWNS the turn (mirrors
+            // first-text ownership at L297): stamp sticky + surface the held cost,
+            // and — via sawText — never fail over to the next chain model
+            // afterwards. Without this, a retryable error AFTER the toolCalls were
+            // emitted would `continue` to the next model and merge two models into
+            // one turn, or a to-be-abandoned attempt's toolCalls would still reach
+            // the consumer and get dispatched (review round-5 #4/#6).
+            if (!sawText) {
+              sawText = true;
+              this._stampSticky(i);
+              if (!resolvedModel) { opts.signal?.throwIfAborted(); yield { model: models[i] }; }
+              if (attemptCost !== undefined) { opts.signal?.throwIfAborted(); yield { costUsd: attemptCost }; attemptCost = undefined; }
+            }
+            opts.signal?.throwIfAborted(); yield { toolCalls: ev.toolCalls };
           }
-          yield { toolCalls: ev.toolCalls };
+          if (ev.finishReason) { opts.signal?.throwIfAborted(); yield { finishReason: ev.finishReason }; }
+          if (ev.done) {
+            if (!resolvedModel && !sawText) { opts.signal?.throwIfAborted(); yield { model: models[i] }; }
+            if (attemptCost !== undefined) { opts.signal?.throwIfAborted(); yield { costUsd: attemptCost }; } // owns the (possibly empty) answer
+            opts.signal?.throwIfAborted(); yield { done: true };
+            return;
+          }
         }
-        if (ev.finishReason) { yield { finishReason: ev.finishReason }; }
-        if (ev.done) {
-          if (!resolvedModel && !sawText) { yield { model: models[i] }; }
-          if (attemptCost !== undefined) { yield { costUsd: attemptCost }; } // owns the (possibly empty) answer
-          yield { done: true };
-          return;
-        }
+      } catch (error) {
+        streamErr = requestError(error);
       }
       if (sawText) {
-        // Text already streamed — surface a late error, else complete.
-        yield streamErr ? { error: streamErr } : { done: true };
+        // Only the transport's explicit done event completes a turn. In
+        // particular, a dropped tool-only stream must not become dispatchable.
+        yield { error: streamErr || 'DeepMyst gateway stream ended before completion' };
         return;
       }
       // Nothing streamed. Transient error and another model remains → advance.

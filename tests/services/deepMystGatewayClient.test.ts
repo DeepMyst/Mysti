@@ -51,7 +51,7 @@ describe('DeepMystGatewayClient.streamChat — native tool_calls (Plan 19 P4)', 
     expect(out.some(e => e.done)).toBe(true);
   });
 
-  it('flushes accumulated tool_calls even on a clean close without [DONE]', async () => {
+  it('rejects accumulated tool_calls on a clean close without [DONE]', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => sseResponse([
       JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'ls', arguments: '{}' } }] } }] }),
       // no finish_reason, no [DONE] — connection just closes
@@ -59,8 +59,8 @@ describe('DeepMystGatewayClient.streamChat — native tool_calls (Plan 19 P4)', 
     const client = makeClient();
     const out: any[] = [];
     for await (const ev of client.streamChat({ model: 'claude-haiku-4-5', messages: [] })) { out.push(ev); }
-    expect(out.find(e => e.toolCalls)?.toolCalls).toEqual([{ id: 'call_1', name: 'ls', arguments: '{}' }]);
-    expect(out.some(e => e.done)).toBe(true);
+    expect(out.some(e => e.toolCalls || e.done)).toBe(false);
+    expect(out.at(-1)?.error).toMatch(/completion marker/);
   });
 
   it('includes tools + tool_choice in the request body only when tools are provided', async () => {

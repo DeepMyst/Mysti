@@ -320,14 +320,18 @@ export class GeminiProvider extends AcpNativeProvider {
   protected override async _prepareAcpLaunch(context: AcpNativeLaunchContext): Promise<AcpNativeLaunch> {
     const args = this.buildCliArgs(context.settings, context.session);
     const nativeEnv = nativeFamilyEnvironment(context.env);
+    nativeEnv.GEMINI_CLI_HOME = path.resolve(context.cwd, nativeEnv.GEMINI_CLI_HOME || os.homedir());
     const policyDir = path.join(this._extensionContext.extensionPath, 'resources', 'gemini-policy');
     const policyFile = path.join(policyDir, 'settings.json');
-    const capture = await captureNativeFamilyConfig({ ...context, flavor: 'gemini', version: GEMINI_ACP_VERSION,
-      policyFiles: [policyFile, path.join(policyDir, 'host.toml'), path.join(policyDir, 'readonly.toml')] });
+    const inheritedSystemSettingsPaths = [nativeEnv.GEMINI_CLI_SYSTEM_SETTINGS_PATH, nativeEnv.GEMINI_CLI_SYSTEM_DEFAULTS_PATH]
+      .filter((file): file is string => Boolean(file));
+    const env = { ...nativeEnv, GEMINI_CLI_SYSTEM_SETTINGS_PATH: policyFile,
+      GEMINI_CLI_SYSTEM_DEFAULTS_PATH: policyFile, GEMINI_CLI_NO_RELAUNCH: '1' };
+    const capture = await captureNativeFamilyConfig({ ...context, env, flavor: 'gemini', version: GEMINI_ACP_VERSION,
+      policyFiles: [policyFile, path.join(policyDir, 'host.toml'), path.join(policyDir, 'readonly.toml')], inheritedSystemSettingsPaths });
     return {
       cliPath: capture.cliPath, args,
-      env: { ...nativeEnv, GEMINI_CLI_SYSTEM_SETTINGS_PATH: policyFile,
-        GEMINI_CLI_SYSTEM_DEFAULTS_PATH: policyFile, GEMINI_CLI_NO_RELAUNCH: '1' },
+      env,
       expectedAgentInfo: { name: 'gemini-cli', version: GEMINI_ACP_VERSION },
       mode: 'default', images: true, decodePermission: decodeGeminiPermission, decodeUsage: decodeGeminiUsage,
       validateUpdate: update => {

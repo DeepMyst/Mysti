@@ -32,7 +32,8 @@
 import type { GatewayCompletion } from '../types';
 import { applyCacheBreakpoints, readCacheTokens } from './PromptCache';
 import { createAbortScope } from '../utils/abortScope';
-import { ToolCallAccumulator, type AccumulatedToolCall, type ToolCallDelta } from '../utils/toolCallAccumulator';
+import { ToolCallAccumulator, parseToolArgsChecked, type AccumulatedToolCall, type ToolCallDelta } from '../utils/toolCallAccumulator';
+import { MAX_HTTP_FRAME_CHARS, readServerSentData } from '../utils/httpStream';
 
 export interface GatewayChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -206,7 +207,6 @@ export class DeepMystGatewayClient {
     const disarmIdle = () => { if (idleTimer) { clearTimeout(idleTimer); idleTimer = undefined; } };
 
     const abortScope = createAbortScope([params.signal, idle.signal]);
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let res: Response | undefined;
     try {
       armIdle();
@@ -252,91 +252,86 @@ export class DeepMystGatewayClient {
       // Real billed cost (P0.8): the gateway sets X-DeepMyst-Cost-USD on the
       // response head when it can price the call — surface it when present.
       const costUsd = parseFloatHeader(res.headers.get('x-deepmyst-cost-usd'));
-      if (costUsd !== undefined) { yield { costUsd }; }
+      if (costUsd !== undefined) { abortScope.signal.throwIfAborted(); yield { costUsd }; }
 
-      reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let sentModel = false;
-      // Truncation guard: a clean SSE close that emitted text but NEVER sent
-      // [DONE] or a finish_reason (e.g. a Render worker recycle / early generator
-      // end) is almost certainly a cut-off answer, not a complete one.
-      let sawText = false;
-      let sawTerminal = false; // observed [DONE] or any finish_reason
-      // Plan 19 P4: accumulate native tool_call deltas; emit once at the boundary.
       const toolAcc = new ToolCallAccumulator();
-      let emittedTools = false;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) { break; }
-          armIdle(); // a chunk arrived — reset the idle watchdog (never kill a live stream)
-          buffer += decoder.decode(value, { stream: true });
-          let nl: number;
-          while ((nl = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.slice(0, nl).trim();
-            buffer = buffer.slice(nl + 1);
-            if (!line.startsWith('data:')) { continue; }
-            const data = line.slice(5).trim();
-            if (data === '[DONE]') {
-              if (!emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
-              yield { done: true };
-              return;
-            }
-            const parsed = parseSseData(data);
-            if (parsed.error) { yield { error: parsed.error }; return; }
-            // Surface the concrete model the router resolved to, once.
-            if (parsed.model && !sentModel) { sentModel = true; yield { model: parsed.model }; }
-            if (parsed.text) { sawText = true; yield { text: parsed.text }; }
-            if (parsed.reasoning) { yield { reasoning: parsed.reasoning }; }
-            if (parsed.toolCallDeltas) { toolAcc.add(parsed.toolCallDeltas); }
-            if (parsed.usage) { yield { usage: parsed.usage }; }
-            if (parsed.finishReason) {
-              sawTerminal = true;
-              if (parsed.finishReason === 'tool_calls' && !emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
-              yield { finishReason: parsed.finishReason };
-            }
-          }
+      const identities = new Map<number, { id?: string; name?: string }>();
+      let toolChars = 0;
+      let completed = false;
+      let finishReason: string | undefined;
+      let sentModel = false;
+      for await (const data of readServerSentData(res.body, abortScope.signal, armIdle)) {
+        abortScope.signal.throwIfAborted();
+        if (data.trim() === '[DONE]') { completed = true; break; }
+        const parsed = parseSseData(data);
+        if (parsed.error !== undefined) { throw new Error(parsed.error); }
+        if (finishReason && (parsed.text || parsed.reasoning || parsed.toolCallDeltas?.length)) {
+          throw new Error('DeepMyst gateway returned content after its terminal response');
         }
-        // Flush a final data frame that arrived without a trailing newline (abrupt
-        // close without [DONE]) so its last delta isn't silently dropped.
-        const tail = buffer.trim();
-        if (tail.startsWith('data:')) {
-          const data = tail.slice(5).trim();
-          if (data === '[DONE]') {
-            sawTerminal = true;
-          } else if (data) {
-            const parsed = parseSseData(data);
-            if (parsed.error) { yield { error: parsed.error }; return; }
-            // Mirror the main loop (review [20]): an abrupt close can carry the
-            // final usage/finish_reason/reasoning in this frame — don't drop them.
-            if (parsed.model && !sentModel) { sentModel = true; yield { model: parsed.model }; }
-            if (parsed.reasoning) { yield { reasoning: parsed.reasoning }; }
-            if (parsed.text) { sawText = true; yield { text: parsed.text }; }
-            if (parsed.toolCallDeltas) { toolAcc.add(parsed.toolCallDeltas); }
-            if (parsed.usage) { yield { usage: parsed.usage }; }
-            if (parsed.finishReason) { sawTerminal = true; yield { finishReason: parsed.finishReason }; }
+        if (parsed.model && !sentModel) { sentModel = true; abortScope.signal.throwIfAborted(); yield { model: parsed.model }; }
+        if (parsed.text) { abortScope.signal.throwIfAborted(); yield { text: parsed.text }; }
+        if (parsed.reasoning) { abortScope.signal.throwIfAborted(); yield { reasoning: parsed.reasoning }; }
+        if (parsed.toolCallDeltas) {
+          toolChars += JSON.stringify(parsed.toolCallDeltas).length;
+          if (toolChars > MAX_HTTP_FRAME_CHARS) { throw new Error('DeepMyst gateway tool calls exceed the size limit'); }
+          for (const call of parsed.toolCallDeltas) {
+            const index = call.index ?? 0;
+            const identity = identities.get(index) ?? {};
+            if (call.id !== undefined) {
+              if (!call.id || (identity.id !== undefined && identity.id !== call.id)) {
+                throw new Error('DeepMyst gateway changed a tool call identity');
+              }
+              identity.id = call.id;
+            }
+            if (call.function?.name !== undefined) {
+              if (!call.function.name || (identity.name !== undefined && identity.name !== call.function.name)) {
+                throw new Error('DeepMyst gateway changed a tool call name');
+              }
+              identity.name = call.function.name;
+            }
+            identities.set(index, identity);
           }
+          toolAcc.add(parsed.toolCallDeltas);
         }
-      } catch (err) {
-        yield { error: errMessage(err) };
-        return;
+        if (parsed.usage) { abortScope.signal.throwIfAborted(); yield { usage: parsed.usage }; }
+        if (parsed.finishReason) {
+          if (finishReason && finishReason !== parsed.finishReason) { throw new Error('DeepMyst gateway changed its finish reason'); }
+          // Usage-only frames may repeat the same terminal reason.
+          finishReason = parsed.finishReason;
+        }
       }
-      // Clean close with text but no [DONE]/finish_reason ⇒ likely truncated: flag
-      // 'length' so the consumer auto-continues rather than accepting the partial
-      // reply as final. No text at all ⇒ nothing to continue (keep prior behavior).
-      if (!emittedTools && toolAcc.hasAny()) { yield { toolCalls: toolAcc.finalize() }; }
-      if (sawText && !sawTerminal) { yield { finishReason: 'length' }; }
+      abortScope.signal.throwIfAborted();
+      if (!completed) { throw new Error('DeepMyst gateway stream ended before its completion marker'); }
+      if (finishReason === 'error' || finishReason === 'content_filter') {
+        throw new Error(`DeepMyst gateway response ended with ${finishReason}`);
+      }
+      if (toolAcc.hasAny() && finishReason !== 'tool_calls') {
+        throw new Error('DeepMyst gateway tool calls did not finish completely');
+      }
+      if (finishReason === 'tool_calls' && !toolAcc.hasAny()) { throw new Error('DeepMyst gateway completed tool calls without any calls'); }
+      const ids = new Set<string>();
+      for (const identity of identities.values()) {
+        if (!identity.id || !identity.name || ids.has(identity.id)) {
+          throw new Error('DeepMyst gateway returned incomplete or duplicate tool identities');
+        }
+        ids.add(identity.id);
+      }
+      const calls = toolAcc.finalize();
+      if (calls.some(call => !['ok', 'empty'].includes(parseToolArgsChecked(call.arguments).status))) {
+        throw new Error('DeepMyst gateway returned incomplete or invalid tool arguments');
+      }
+      if (finishReason) { abortScope.signal.throwIfAborted(); yield { finishReason }; }
+      // The complete batch is validated before any proposal escapes. EOF,
+      // truncation or an in-band error must never turn partial JSON into {}.
+      if (calls.length) { abortScope.signal.throwIfAborted(); yield { toolCalls: calls }; }
+      abortScope.signal.throwIfAborted();
       yield { done: true };
+    } catch (err) {
+      yield { error: errMessage(err) };
     } finally {
       disarmIdle();
       abortScope.dispose();
-      if (reader) {
-        void reader.cancel().catch(() => {});
-        try { reader.releaseLock(); } catch { /* already released */ }
-      } else if (res?.body) {
-        void res.body.cancel().catch(() => {});
-      }
+      if (res?.body && !res.body.locked) { void res.body.cancel().catch(() => {}); }
     }
   }
 }
@@ -348,46 +343,77 @@ export class DeepMystGatewayClient {
  * silently reported as complete.
  */
 function parseSseData(data: string): GatewayStreamEvent {
-  let json: {
-    error?: { message?: string; code?: number | string; type?: string } | string;
-    model?: string;
-    choices?: Array<{ delta?: { content?: string; reasoning?: string; tool_calls?: ToolCallDelta[] } }>;
-    usage?: {
-      prompt_tokens?: number;
-      completion_tokens?: number;
-      prompt_tokens_details?: { cached_tokens?: number };
-      cache_creation_input_tokens?: number;
-    };
-  };
-  try { json = JSON.parse(data); } catch { return {}; }
-  if (json.error) {
-    if (typeof json.error === 'string') { return { error: json.error }; }
-    const msg = json.error.message || 'gateway stream error';
-    // Preserve the numeric status code (some providers put the human phrase in
-    // `message` and the 429/5xx code in `code`) so digit-based retry matching
-    // still fires when the message alone is code-less (e.g. "Too Many Requests").
-    const code = json.error.code;
-    return { error: code !== undefined && code !== null ? `${msg} (${code})` : msg };
+  let json: unknown;
+  try { json = JSON.parse(data); } catch { throw new Error('DeepMyst gateway returned malformed SSE data'); }
+  if (!isRecord(json)) { throw new Error('DeepMyst gateway returned an invalid stream frame'); }
+  if (json.error !== undefined && json.error !== null) {
+    const error = json.error;
+    const msg = (typeof error === 'string' ? error : isRecord(error) && typeof error.message === 'string' ? error.message : '').trim()
+      || 'DeepMyst gateway stream error';
+    // Preserve status codes for the coordinator's existing retry classifier.
+    const code = isRecord(error) ? error.code : undefined;
+    return { error: typeof code === 'string' || typeof code === 'number' ? `${msg} (${code})` : msg };
   }
-  const choice = (json.choices?.[0] ?? {}) as { delta?: { content?: string; reasoning?: string; tool_calls?: ToolCallDelta[] }; finish_reason?: string | null };
-  const delta = choice.delta;
+  if (json.choices !== undefined && !Array.isArray(json.choices)) { throw new Error('DeepMyst gateway returned invalid stream choices'); }
+  const choice = (json.choices as unknown[] | undefined)?.[0];
+  if (choice !== undefined && !isRecord(choice)) { throw new Error('DeepMyst gateway returned an invalid stream choice'); }
+  const delta = isRecord(choice) ? choice.delta : undefined;
+  if (delta !== undefined && delta !== null && !isRecord(delta)) { throw new Error('DeepMyst gateway returned an invalid stream delta'); }
   const out: GatewayStreamEvent = {};
-  if (typeof json.model === 'string' && json.model) { out.model = json.model; }
-  if (delta?.content) { out.text = delta.content; }
-  if (typeof delta?.reasoning === 'string' && delta.reasoning) { out.reasoning = delta.reasoning; }
-  if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length) { out.toolCallDeltas = delta.tool_calls; }
-  if (json.usage) {
-    // cached_tokens is a SUBSET of prompt_tokens — reported alongside, never
-    // summed into it. Unread before this, so coordinator cache hits were
-    // invisible to the ledger, the savings chip and the warmth decision.
+  if (json.model !== undefined) {
+    if (typeof json.model !== 'string' || !json.model) { throw new Error('DeepMyst gateway returned an invalid model'); }
+    out.model = json.model;
+  }
+  if (isRecord(delta)) {
+    for (const field of ['content', 'reasoning']) {
+      if (delta[field] !== undefined && delta[field] !== null && typeof delta[field] !== 'string') {
+        throw new Error(`DeepMyst gateway returned invalid ${field}`);
+      }
+    }
+    if (delta.content) { out.text = delta.content as string; }
+    if (delta.reasoning) { out.reasoning = delta.reasoning as string; }
+    if (delta.tool_calls !== undefined) { out.toolCallDeltas = validateToolDeltas(delta.tool_calls); }
+  }
+  if (json.usage !== undefined && json.usage !== null) {
+    if (!isRecord(json.usage)) { throw new Error('DeepMyst gateway returned invalid usage'); }
+    // cached_tokens is a subset of prompt_tokens, never added to it.
     out.usage = {
-      inputTokens: json.usage.prompt_tokens,
-      outputTokens: json.usage.completion_tokens,
+      inputTokens: nonnegativeNumber(json.usage.prompt_tokens),
+      outputTokens: nonnegativeNumber(json.usage.completion_tokens),
       ...readCacheTokens(json.usage),
     };
   }
-  if (typeof choice.finish_reason === 'string' && choice.finish_reason) { out.finishReason = choice.finish_reason; }
+  const terminal = isRecord(choice) ? choice.finish_reason : undefined;
+  if (terminal !== undefined && terminal !== null) {
+    if (typeof terminal !== 'string' || !['stop', 'length', 'tool_calls', 'content_filter', 'error'].includes(terminal)) {
+      throw new Error('DeepMyst gateway returned an invalid finish reason');
+    }
+    out.finishReason = terminal;
+  }
   return out;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function nonnegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function validateToolDeltas(value: unknown): ToolCallDelta[] {
+  if (!Array.isArray(value)) { throw new Error('DeepMyst gateway returned invalid tool calls'); }
+  for (const call of value) {
+    if (!isRecord(call) || (call.index !== undefined && (!Number.isInteger(call.index) || Number(call.index) < 0))
+      || (call.id !== undefined && typeof call.id !== 'string')
+      || (call.type !== undefined && call.type !== 'function')
+      || (call.function !== undefined && (!isRecord(call.function)
+        || (call.function.name !== undefined && typeof call.function.name !== 'string')
+        || (call.function.arguments !== undefined && typeof call.function.arguments !== 'string')))) {
+      throw new Error('DeepMyst gateway returned an invalid tool call delta');
+    }
+  }
+  return value as ToolCallDelta[];
 }
 
 interface GatewayChatResponse {
@@ -411,7 +437,7 @@ interface GatewayChatResponse {
  * message — restoring the transient signal the retry classifier looks for.
  */
 function errMessage(err: unknown): string {
-  const base = err instanceof Error ? err.message : String(err);
+  const base = (err instanceof Error ? err.message : String(err)).trim() || 'DeepMyst gateway stream error';
   const cause = (err as { cause?: { code?: string; message?: string } } | null)?.cause;
   const extra = cause?.code || cause?.message;
   return extra && !base.includes(String(extra)) ? `${base}: ${extra}` : base;
