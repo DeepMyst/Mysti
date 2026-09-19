@@ -40,7 +40,7 @@ describe('OpenRouterClient', () => {
       const res = await client.chatCompletion({ model: 'x:free', messages: [{ role: 'user', content: 'hi' }] });
       expect(res.failed).toBeFalsy();
       expect(res.text).toBe('hello from free model');
-      expect(res.costUsd).toBe(0);
+      expect(res.costUsd).toBeUndefined();
       expect(res.inputTokens).toBe(10);
     });
 

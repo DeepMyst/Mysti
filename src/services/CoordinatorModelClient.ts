@@ -88,6 +88,8 @@ interface ClientUsage {
   /** SUBSET of inputTokens (OpenAI convention) — see PromptCache.readCacheTokens. */
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  /** OpenRouter cache writes, like cache reads, are included in the prompt total. */
+  cacheCreationIncluded?: boolean;
 }
 
 /**
@@ -102,7 +104,7 @@ interface ClientUsage {
 function coordinatorUsage(u: ClientUsage): NonNullable<CoordinatorStreamEvent['usage']> {
   const normalized = normalizeUsage(
     {
-      input_tokens: u.inputTokens ?? 0,
+      input_tokens: Math.max(0, (u.inputTokens ?? 0) - (u.cacheCreationIncluded ? u.cacheCreationTokens ?? 0 : 0)),
       output_tokens: u.outputTokens ?? 0,
       ...(u.cacheReadTokens ? { cache_read_input_tokens: u.cacheReadTokens } : {}),
       ...(u.cacheCreationTokens ? { cache_creation_input_tokens: u.cacheCreationTokens } : {}),
@@ -312,11 +314,16 @@ export class CoordinatorModelClient {
     opts: { maxTokens?: number; signal?: AbortSignal } = {},
   ): Promise<CoordinatorCompletion> {
     if (this._useOpenRouter()) {
-      const model = await this.resolveCoordinatorModel();
-      const r = await this._openRouter.chatCompletion({ model, messages, maxTokens: opts.maxTokens, signal: opts.signal });
-      return r.failed
-        ? { text: '', failed: true, viaFallback: false, error: r.error || 'OpenRouter failed' }
-        : { text: r.text, failed: false, viaFallback: false, costUsd: r.costUsd };
+      try {
+        const model = await waitForCaller(() => this.resolveCoordinatorModel(), opts.signal);
+        opts.signal?.throwIfAborted();
+        const r = await this._openRouter.chatCompletion({ model, messages, maxTokens: opts.maxTokens, signal: opts.signal });
+        return r.failed
+          ? { text: '', failed: true, viaFallback: false, error: r.error || 'OpenRouter failed' }
+          : { text: r.text, failed: false, viaFallback: false, costUsd: r.costUsd, model: r.model || model };
+      } catch (error) {
+        return { text: '', failed: true, viaFallback: false, error: requestError(error) };
+      }
     }
     if (!this._isSignedIn()) {
       return { text: '', failed: true, viaFallback: false, error: MYSTI_SIGNIN_MESSAGE };
@@ -361,8 +368,13 @@ export class CoordinatorModelClient {
       // from the primary, but only attach them when THIS model is tool-capable
       // so a non-capable model never 400s on an unsupported `tools` field
       // (review round-5 #5/#9).
-      const orModel = await this.resolveCoordinatorModel();
-      yield* this._drain(this._openRouter.streamChat({ model: orModel, messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._streamTimeoutMs, tools: modelSupportsToolCalls(orModel) ? opts.tools : undefined }));
+      try {
+        const orModel = await waitForCaller(() => this.resolveCoordinatorModel(), opts.signal);
+        opts.signal?.throwIfAborted();
+        yield* this._drain(this._openRouter.streamChat({ model: orModel, messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._streamTimeoutMs, tools: modelSupportsToolCalls(orModel) ? opts.tools : undefined }));
+      } catch (error) {
+        yield { error: requestError(error) };
+      }
       return;
     }
     if (!this._isSignedIn()) {
@@ -465,12 +477,13 @@ export class CoordinatorModelClient {
   }
 
   /** Normalize an OpenRouter/gateway stream into CoordinatorStreamEvents. */
-  private async *_drain(source: AsyncGenerator<{ text?: string; reasoning?: string; usage?: ClientUsage; done?: boolean; error?: string; finishReason?: string; costUsd?: number; toolCalls?: AccumulatedToolCall[] }>): AsyncGenerator<CoordinatorStreamEvent> {
+  private async *_drain(source: AsyncGenerator<{ text?: string; reasoning?: string; usage?: ClientUsage; done?: boolean; error?: string; finishReason?: string; costUsd?: number; model?: string; toolCalls?: AccumulatedToolCall[] }>): AsyncGenerator<CoordinatorStreamEvent> {
     let sawText = false;
     let sawToolCalls = false;
     let streamErr: string | undefined;
     for await (const ev of source) {
-      if (ev.error) { streamErr = ev.error; break; }
+      if (ev.error !== undefined) { streamErr = ev.error.trim() || 'OpenRouter stream error'; break; }
+      if (ev.model) { yield { model: ev.model }; }
       if (ev.reasoning) { yield { reasoning: ev.reasoning }; }
       if (ev.text) { sawText = true; yield { text: ev.text }; }
       if (ev.usage) { yield { usage: coordinatorUsage(ev.usage) }; }
@@ -519,4 +532,26 @@ export class CoordinatorModelClient {
     }
     return /\b429\b|\b5\d{2}\b|\b40[04]\b|rate.?limit|temporarily rate|too many requests|quota|mid.?stream|stream interrupted|provider (returned|error)|no (allowed )?(providers|endpoints)|overloaded|unavailable|timed? ?out|timeout|econnreset|econnrefused|enotfound|eai_again|epipe|socket hang|other side closed|fetch failed|terminated|network error|connection (reset|closed|error)|(model|it) (was )?not found|no such model|(invalid|unknown|unsupported) model|not a valid model/i.test(err);
   }
+}
+
+/** Cancel one catalogue waiter without cancelling discovery shared by other callers. */
+async function waitForCaller<T>(start: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  const pending = start();
+  if (!signal) { return pending; }
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => { cleanup(); reject(signal.reason); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    // Always observe both outcomes, including late settlement after this caller Stops.
+    pending.then(value => {
+      cleanup();
+      if (signal.aborted) { reject(signal.reason); } else { resolve(value); }
+    }, error => { cleanup(); reject(error); });
+    if (signal.aborted) { onAbort(); }
+  });
+}
+
+function requestError(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).trim() || 'Request cancelled or failed';
 }

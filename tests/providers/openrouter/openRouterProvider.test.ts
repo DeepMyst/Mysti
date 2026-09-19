@@ -96,7 +96,7 @@ describe('OpenRouterProvider', () => {
       expect(chunks.some(c => c.type === 'thinking' && c.content === 'thinking...')).toBe(true);
       const done = chunks.find(c => c.type === 'done');
       expect(done).toBeDefined();
-      expect(done!.usage).toEqual({ input_tokens: 12, output_tokens: 4 });
+      expect(done!.usage).toEqual({ input_tokens: 12, output_tokens: 4, normalized: true });
     });
 
     it('maps a stream error event to an error chunk (no done)', async () => {

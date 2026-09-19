@@ -43,6 +43,7 @@ import type {
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
 import { OpenRouterClient, OPENROUTER_BASE_URL, OPENROUTER_FREE_ROUTER } from '../../services/OpenRouterClient';
+import { normalizeUsage } from '../../services/TokenAccounting';
 import { clampEffort } from '../../utils/effort';
 import type { EffortLevel } from '../../types';
 import * as vscode from 'vscode';
@@ -52,8 +53,6 @@ const OPENROUTER_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high'];
 
 export interface OpenRouterSessionState extends PanelSessionState {
   abortController: AbortController | null;
-  /** Usage from OpenRouter's final SSE frame, buffered until the `done` chunk. */
-  lastUsage?: UsageStats | null;
 }
 
 export class OpenRouterProvider extends BaseCliProvider {
@@ -95,7 +94,7 @@ export class OpenRouterProvider extends BaseCliProvider {
     sessionKind: 'prompt-history',
     emitsToolResults: false,
     emitsUsage: true,
-    usageConvention: 'auto',   // OpenRouter fronts every vendor; Anthropic models there report disjoint buckets.
+    usageConvention: 'auto', // Reported usage is normalized before emission, independent of model vendor.
     modelSelection: 'full',
   };
 
@@ -238,91 +237,74 @@ export class OpenRouterProvider extends BaseCliProvider {
     _providerManager?: unknown,
     agentConfig?: AgentConfiguration,
   ): AsyncGenerator<StreamChunk> {
-    if (!this._getApiKey()) {
-      yield {
-        type: 'auth_error',
-        content: 'OpenRouter API key not configured. Set mysti.openrouter.apiKey in settings or the OPENROUTER_API_KEY environment variable.',
-        authCommand: this.getAuthCommand(),
-        providerName: this.displayName,
-      };
-      return;
-    }
-
     const session = this._getSession(panelId) as OpenRouterSessionState;
-    const prompt = await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig);
-    const model = this._getEffectiveModel(settings) || this.config.defaultModel;
-
-    session.abortController = new AbortController();
-    let sawText = false;
-    let errored = false;
-
-    // Reasoning effort → OpenRouter `reasoning.effort` (solid tier set is
-    // low/medium/high; xhigh/max clamp to high).
-    const effort = clampEffort(settings.effortLevel, OPENROUTER_EFFORT_LEVELS) as
-      'low' | 'medium' | 'high' | undefined;
+    session.abortController?.abort();
+    const controller = new AbortController();
+    session.abortController = controller;
+    let usage: UsageStats | undefined;
+    let completed = false;
+    let finishReason: string | undefined;
 
     try {
+      if (!this._getApiKey()) {
+        yield {
+          type: 'auth_error',
+          content: 'OpenRouter API key not configured. Set mysti.openrouter.apiKey in settings or the OPENROUTER_API_KEY environment variable.',
+          authCommand: this.getAuthCommand(),
+          providerName: this.displayName,
+        };
+        return;
+      }
+      const prompt = await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig);
+      controller.signal.throwIfAborted();
+      const model = this._getEffectiveModel(settings) || this.config.defaultModel;
+      const effort = clampEffort(settings.effortLevel, OPENROUTER_EFFORT_LEVELS) as
+        'low' | 'medium' | 'high' | undefined;
       const stream = this._client.streamChat({
         model,
         messages: [{ role: 'user', content: prompt }],
         reasoningEffort: effort,
-        signal: session.abortController.signal,
+        signal: controller.signal,
       });
 
       for await (const ev of stream) {
-        if (session.abortController.signal.aborted) {
-          break;
+        controller.signal.throwIfAborted();
+        if (ev.error !== undefined) { throw new Error(ev.error.trim() || 'Stream error'); }
+        if (ev.toolCalls?.length) { throw new Error('This chat backend cannot execute tool calls.'); }
+        if (ev.text) { yield { type: 'text', content: ev.text }; }
+        if (ev.reasoning) { controller.signal.throwIfAborted(); yield { type: 'thinking', content: ev.reasoning }; }
+        if (ev.usage && ev.usage.inputTokens !== undefined && ev.usage.outputTokens !== undefined) {
+          usage = normalizeUsage({
+            input_tokens: Math.max(0, ev.usage.inputTokens - (ev.usage.cacheCreationIncluded ? ev.usage.cacheCreationTokens ?? 0 : 0)),
+            output_tokens: ev.usage.outputTokens,
+            ...(ev.usage.cacheReadTokens !== undefined ? { cache_read_input_tokens: ev.usage.cacheReadTokens } : {}),
+            ...(ev.usage.cacheCreationTokens !== undefined ? { cache_creation_input_tokens: ev.usage.cacheCreationTokens } : {}),
+          }, 'openai');
         }
-        if (ev.error) {
-          errored = true;
-          yield { type: 'error', content: `OpenRouter: ${ev.error}` };
-          break;
-        }
-        if (ev.text) {
-          sawText = true;
-          yield { type: 'text', content: ev.text };
-        }
-        if (ev.reasoning) {
-          yield { type: 'thinking', content: ev.reasoning };
-        }
-        if (ev.usage) {
-          // Buffer usage until the done chunk (emitted below).
-          session.lastUsage = { input_tokens: ev.usage.inputTokens ?? 0, output_tokens: ev.usage.outputTokens ?? 0 };
-        }
+        if (ev.finishReason) { finishReason = ev.finishReason; }
+        if (ev.done) { completed = true; break; }
       }
+      controller.signal.throwIfAborted();
+      if (!completed) { throw new Error('Stream ended before completion.'); }
+      if (finishReason === 'length') { throw new Error('Response reached the output token limit before completion.'); }
+      if (finishReason && finishReason !== 'stop') { throw new Error(`Response ended with ${finishReason}.`); }
+      yield usage ? { type: 'done', usage } : { type: 'done' };
     } catch (err) {
-      errored = true;
-      yield { type: 'error', content: err instanceof Error ? err.message : String(err) };
-    } finally {
-      // Plan 18 (2.4 audit): abort on the way out — generator abandonment
-      // otherwise leaks the SSE connection (billable on paid models). No-op
-      // if the stream already finished.
-      session.abortController?.abort();
-      session.abortController = null;
-    }
-
-    if (!errored) {
-      // Exactly-one-done stream contract; attach usage when OpenRouter reported it.
-      yield session.lastUsage
-        ? { type: 'done', usage: session.lastUsage }
-        : { type: 'done' };
-      // A blank response (no text, no error) — surface a hint rather than silence.
-      if (!sawText) {
-        console.warn('[Mysti] OpenRouter: model returned no text (possibly rate-limited or an unsupported model).');
+      // Stop/replacement/disposal already owns the UI transition. Do not publish
+      // stale output or an internal error from the abandoned request.
+      if (!controller.signal.aborted) {
+        yield { type: 'error', content: `OpenRouter: ${err instanceof Error ? err.message : String(err)}` };
       }
+    } finally {
+      controller.abort();
+      if (session.abortController === controller) { session.abortController = null; }
     }
   }
 
   override cancelCurrentRequest(panelId?: string): void {
-    if (panelId) {
-      const session = this._getSession(panelId) as OpenRouterSessionState;
-      session.abortController?.abort();
-      session.abortController = null;
-      return;
-    }
-    // No panel id — abort every active OpenRouter request.
-    for (const s of this._panelSessions.values()) {
-      const session = s as OpenRouterSessionState;
+    for (const [key, state] of this._panelSessions) {
+      if (panelId && key !== panelId) { continue; }
+      const session = state as OpenRouterSessionState;
       session.abortController?.abort();
       session.abortController = null;
     }
@@ -331,5 +313,10 @@ export class OpenRouterProvider extends BaseCliProvider {
   override dispose(): void {
     this.cancelCurrentRequest();
     super.dispose();
+  }
+
+  override clearSession(panelId?: string): void {
+    this.cancelCurrentRequest(panelId);
+    super.clearSession(panelId);
   }
 }

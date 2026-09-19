@@ -33,7 +33,9 @@ import type { GatewayCompletion } from '../types';
 import type { GatewayChatParams } from './DeepMystGatewayClient';
 import { applyCacheBreakpoints, readCacheTokens } from './PromptCache';
 import { createAbortScope } from '../utils/abortScope';
-import { ToolCallAccumulator, type AccumulatedToolCall, type ToolCallDelta } from '../utils/toolCallAccumulator';
+import { readServerSentData, MAX_HTTP_FRAME_CHARS } from '../utils/httpStream';
+import { isRecord } from '../utils/valueGuards';
+import { ToolCallAccumulator, parseToolArgsChecked, type AccumulatedToolCall, type ToolCallDelta } from '../utils/toolCallAccumulator';
 
 /** Fixed OpenRouter API base — deliberately not a workspace setting (key safety). */
 export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
@@ -71,6 +73,11 @@ export interface OpenRouterClientOptions {
   sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
+export interface OpenRouterCompletion extends GatewayCompletion {
+  /** The cache-creation count is already included in inputTokens. */
+  cacheCreationIncluded?: boolean;
+}
+
 export class OpenRouterClient {
   private readonly _getApiKey: () => string | undefined;
   private readonly _maxConcurrent: number;
@@ -105,7 +112,7 @@ export class OpenRouterClient {
    * `{ failed: true }` on any failure (no key, 429-exhausted, non-2xx, network)
    * so the caller can degrade gracefully or fall back to a paid model.
    */
-  public async chatCompletion(params: GatewayChatParams): Promise<GatewayCompletion> {
+  public async chatCompletion(params: GatewayChatParams): Promise<OpenRouterCompletion> {
     const key = this._getApiKey();
     if (!key) {
       return { text: '', failed: true, error: 'No OpenRouter API key configured' };
@@ -141,7 +148,6 @@ export class OpenRouterClient {
 
     const timeoutMs = params.timeoutMs ?? 120_000;
     const abortScope = createAbortScope([params.signal], timeoutMs);
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let res: Response | undefined;
     try {
       try {
@@ -165,8 +171,6 @@ export class OpenRouterClient {
             messages: applyCacheBreakpoints(params.messages, params.model),
             max_tokens: params.maxTokens ?? 2048,
             stream: true,
-            // Ask OpenRouter to emit a final usage frame (prompt/completion tokens).
-            stream_options: { include_usage: true },
             // Reasoning effort — OpenRouter translates effort→token budget for
             // budget-based models (Anthropic/Gemini). Omitted when unset.
             ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
@@ -175,7 +179,7 @@ export class OpenRouterClient {
           signal: abortScope.signal,
         });
       } catch (err) {
-        yield { error: err instanceof Error ? err.message : String(err) };
+        yield { error: streamError(err) };
         return;
       }
 
@@ -189,103 +193,110 @@ export class OpenRouterClient {
         return;
       }
 
-      reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      // Truncation guard (mirrors DeepMystGatewayClient): if the body closes
-      // cleanly having emitted text but WITHOUT [DONE] or any finish_reason, the
-      // generation was cut short — surface a synthetic 'length' so the coordinator
-      // loop continues rather than accepting the truncated text as the final answer.
-      let sawText = false;
-      let sawTerminal = false;
-      // Plan 19 P4: accumulate native tool_call deltas; emit once at the boundary.
       const toolAcc = new ToolCallAccumulator();
-      let emittedTools = false;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
+      const toolIdentities = new Map<number, { id?: string; name?: string }>();
+      let toolChars = 0;
+      let completed = false;
+      let finishReason: string | undefined;
+      let model: string | undefined;
+      for await (const data of readServerSentData(res.body, abortScope.signal)) {
+        abortScope.signal.throwIfAborted();
+        if (data.trim() === '[DONE]') { completed = true; break; }
+        let frame: unknown;
+        try { frame = JSON.parse(data); }
+        catch { throw new Error('OpenRouter returned malformed SSE data'); }
+        if (!isRecord(frame)) { throw new Error('OpenRouter returned an invalid stream frame'); }
+        if ((frame.error !== undefined && frame.error !== null)) { throw new Error(responseError(frame.error)); }
+        if (frame.model !== undefined) {
+          if (typeof frame.model !== 'string' || !frame.model) { throw new Error('OpenRouter returned an invalid model'); }
+          if (frame.model !== model) { model = frame.model; yield { model }; }
+        }
+        if (frame.choices !== undefined && !Array.isArray(frame.choices)) {
+          throw new Error('OpenRouter returned invalid stream choices');
+        }
+        const choice = (frame.choices as unknown[] | undefined)?.[0];
+        if (choice !== undefined && !isRecord(choice)) { throw new Error('OpenRouter returned an invalid stream choice'); }
+        const delta = isRecord(choice) ? choice.delta : undefined;
+        if ((delta !== undefined && delta !== null) && !isRecord(delta)) { throw new Error('OpenRouter returned an invalid stream delta'); }
+        if (isRecord(delta)) {
+          for (const field of ['content', 'reasoning']) {
+            if ((delta[field] !== undefined && delta[field] !== null) && typeof delta[field] !== 'string') { throw new Error(`OpenRouter returned invalid ${field}`); }
           }
-          buffer += decoder.decode(value, { stream: true });
-          let nl: number;
-          while ((nl = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.slice(0, nl).trim();
-            buffer = buffer.slice(nl + 1);
-            if (!line.startsWith('data:')) {
-              continue; // SSE comments (': OPENROUTER PROCESSING') and blank lines
+          const reasoning = visibleReasoning(delta);
+          if (finishReason && (delta.content || reasoning || (Array.isArray(delta.tool_calls) && delta.tool_calls.length))) {
+            throw new Error('OpenRouter returned content after its terminal response');
+          }
+          if (delta.content) { abortScope.signal.throwIfAborted(); yield { text: delta.content as string }; }
+          if (reasoning) { abortScope.signal.throwIfAborted(); yield { reasoning }; }
+          if (delta.tool_calls !== undefined) {
+            const calls = validateToolDeltas(delta.tool_calls);
+            toolChars += JSON.stringify(calls).length;
+            if (toolChars > MAX_HTTP_FRAME_CHARS) { throw new Error('OpenRouter tool calls exceed the size limit'); }
+            for (const call of calls) {
+              const index = call.index ?? 0;
+              const identity = toolIdentities.get(index) ?? {};
+              if (call.id !== undefined) {
+                if (!call.id || (identity.id !== undefined && identity.id !== call.id)) { throw new Error('OpenRouter changed a tool call identity'); }
+                identity.id = call.id;
+              }
+              if (call.function?.name !== undefined) {
+                if (!call.function.name || (identity.name !== undefined && identity.name !== call.function.name)) { throw new Error('OpenRouter changed a tool call name'); }
+                identity.name = call.function.name;
+              }
+              toolIdentities.set(index, identity);
             }
-            const data = line.slice(5).trim();
-            if (data === '[DONE]') {
-              if (!emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
-              yield { done: true };
-              return;
-            }
-            let json: OpenRouterStreamChunk & { error?: { message?: string } | string };
-            try {
-              json = JSON.parse(data);
-            } catch {
-              continue;
-            }
-            // In-band error frame (OpenRouter emits these mid-stream instead of an
-            // HTTP status) — surface it so a failed generation isn't reported clean.
-            if (json.error) {
-              yield { error: typeof json.error === 'string' ? json.error : (json.error.message || 'OpenRouter stream error') };
-              return;
-            }
-            const delta = json.choices?.[0]?.delta;
-            if (delta?.content) {
-              sawText = true;
-              yield { text: delta.content };
-            }
-            if (typeof delta?.reasoning === 'string' && delta.reasoning) {
-              yield { reasoning: delta.reasoning };
-            }
-            if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length) { toolAcc.add(delta.tool_calls); }
-            if (json.usage) {
-              // `cached_tokens` is a SUBSET of prompt_tokens (OpenAI convention) —
-              // reported separately so the caller can normalize, never added.
-              // Nothing read it before, so every coordinator cache hit was
-              // invisible to the ledger and to the cache-warmth decision.
-              yield {
-                usage: {
-                  inputTokens: json.usage.prompt_tokens,
-                  outputTokens: json.usage.completion_tokens,
-                  ...readCacheTokens(json.usage),
-                },
-              };
-            }
-            const fr = json.choices?.[0]?.finish_reason;
-            if (typeof fr === 'string' && fr) {
-              sawTerminal = true;
-              if (fr === 'tool_calls' && !emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
-              yield { finishReason: fr };
-            }
+            toolAcc.add(calls);
           }
         }
-      } catch (err) {
-        yield { error: err instanceof Error ? err.message : String(err) };
-        return;
+        if ((frame.usage !== undefined && frame.usage !== null)) {
+          if (!isRecord(frame.usage)) { throw new Error('OpenRouter returned invalid usage'); }
+          abortScope.signal.throwIfAborted();
+          yield { usage: readOpenRouterUsage(frame.usage) };
+          const costUsd = nonnegativeNumber(frame.usage.cost);
+          if (costUsd !== undefined) { abortScope.signal.throwIfAborted(); yield { costUsd }; }
+        }
+        const terminal = isRecord(choice) ? choice.finish_reason : undefined;
+        if ((terminal !== undefined && terminal !== null)) {
+          if (typeof terminal !== 'string' || !['stop', 'length', 'tool_calls', 'content_filter', 'error'].includes(terminal)) {
+            throw new Error('OpenRouter returned an invalid finish reason');
+          }
+          if (finishReason && finishReason !== terminal) { throw new Error('OpenRouter changed its finish reason'); }
+          // The final usage frame legitimately repeats the same reason.
+          finishReason = terminal;
+        }
       }
-      if (!emittedTools && toolAcc.hasAny()) { yield { toolCalls: toolAcc.finalize() }; }
-      // Clean close without [DONE] (which returns above) or a finish_reason: if we
-      // streamed text, treat it as an incomplete generation, not a clean finish.
-      if (sawText && !sawTerminal) {
-        yield { finishReason: 'length' };
+      abortScope.signal.throwIfAborted();
+      if (!completed) { throw new Error('OpenRouter stream ended before its completion marker'); }
+      if (finishReason === 'error' || finishReason === 'content_filter') {
+        throw new Error(`OpenRouter response ended with ${finishReason}`);
       }
+      if (toolAcc.hasAny() && finishReason !== 'tool_calls') {
+        throw new Error('OpenRouter tool calls did not finish completely');
+      }
+      if (finishReason === 'tool_calls' && !toolAcc.hasAny()) { throw new Error('OpenRouter completed tool calls without any calls'); }
+      const ids = new Set<string>();
+      for (const identity of toolIdentities.values()) {
+        if (!identity.id || !identity.name || ids.has(identity.id)) { throw new Error('OpenRouter returned incomplete or duplicate tool identities'); }
+        ids.add(identity.id);
+      }
+      const calls = toolAcc.finalize();
+      if (calls.some(call => !['ok', 'empty'].includes(parseToolArgsChecked(call.arguments).status))) {
+        throw new Error('OpenRouter returned incomplete or invalid tool arguments');
+      }
+      if (finishReason) { abortScope.signal.throwIfAborted(); yield { finishReason }; }
+      // No proposals escape until the entire response has completed successfully.
+      if (calls.length) { abortScope.signal.throwIfAborted(); yield { toolCalls: calls }; }
+      abortScope.signal.throwIfAborted();
       yield { done: true };
+    } catch (err) {
+      yield { error: streamError(err) };
     } finally {
       abortScope.dispose();
-      if (reader) {
-        void reader.cancel().catch(() => {});
-        try { reader.releaseLock(); } catch { /* already released */ }
-      } else if (res?.body) {
-        void res.body.cancel().catch(() => {});
-      }
+      if (res?.body && !res.body.locked) { void res.body.cancel().catch(() => {}); }
     }
   }
 
-  private async _doChatWithRetry(params: GatewayChatParams, key: string): Promise<GatewayCompletion> {
+  private async _doChatWithRetry(params: GatewayChatParams, key: string): Promise<OpenRouterCompletion> {
     const timeoutMs = params.timeoutMs ?? 60_000;
     const body = {
       model: params.model,
@@ -330,20 +341,27 @@ export class OpenRouterClient {
           return { text: '', failed: true, error: `HTTP ${res.status}` };
         }
 
-        const data = await res.json() as OpenRouterChatResponse;
-        const text = data?.choices?.[0]?.message?.content ?? '';
-        const usage = data?.usage;
-        const cacheTokens = readCacheTokens(usage);
+        const data: unknown = await res.json();
+        abortScope.signal.throwIfAborted();
+        if (!isRecord(data)) { throw new Error('OpenRouter returned an invalid response'); }
+        if ((data.error !== undefined && data.error !== null)) { throw new Error(responseError(data.error)); }
+        const choice = Array.isArray(data.choices) ? data.choices[0] : undefined;
+        if (!isRecord(choice) || !isRecord(choice.message) || typeof choice.message.content !== 'string') {
+          throw new Error('OpenRouter returned no completion text');
+        }
+        if ((choice.finish_reason !== undefined && choice.finish_reason !== null) && choice.finish_reason !== 'stop') {
+          throw new Error(`OpenRouter response ended with ${String(choice.finish_reason)}`);
+        }
+        const usage = isRecord(data.usage) ? data.usage : {};
+        const costUsd = nonnegativeNumber(usage.cost);
         return {
-          text: typeof text === 'string' ? text : '',
-          inputTokens: usage?.prompt_tokens,
-          outputTokens: usage?.completion_tokens,
-          ...cacheTokens,
-          // Free models are free; no cost header to reconcile.
-          costUsd: 0,
+          text: choice.message.content,
+          ...readOpenRouterUsage(usage),
+          ...(costUsd !== undefined ? { costUsd } : {}),
+          ...(typeof data.model === 'string' ? { model: data.model } : {}),
         };
       } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
+        const error = redactSecrets(err instanceof Error ? err.message : String(err));
         console.warn(`[Mysti] OpenRouter chat failed: ${error}`);
         return { text: '', failed: true, error };
       } finally {
@@ -485,34 +503,14 @@ export interface OpenRouterStreamEvent {
   text?: string;
   reasoning?: string;
   done?: boolean;
-  usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number };
+  model?: string;
+  costUsd?: number;
+  usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; cacheCreationIncluded?: boolean };
   error?: string;
   /** OpenAI finish_reason ('length' ⇒ max_tokens truncation). */
   finishReason?: string;
   /** Plan 19 P4: finalized native tool calls for this turn (emitted once). */
   toolCalls?: AccumulatedToolCall[];
-}
-
-interface OpenRouterChatResponse {
-  choices?: Array<{ message?: { content?: string } }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-    prompt_tokens_details?: { cached_tokens?: number };
-    cache_creation_input_tokens?: number;
-  };
-}
-
-interface OpenRouterStreamChunk {
-  choices?: Array<{ delta?: { content?: string; reasoning?: string; tool_calls?: ToolCallDelta[] }; finish_reason?: string | null }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    /** cached_tokens here is a SUBSET of prompt_tokens, never an addition. */
-    prompt_tokens_details?: { cached_tokens?: number };
-    cache_creation_input_tokens?: number;
-  };
 }
 
 interface OpenRouterModelsResponse {
@@ -605,4 +603,62 @@ function isAllowedHost(urlStr: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** OpenRouter reports normalized token totals, including cache subsets. */
+function readOpenRouterUsage(usage: Record<string, unknown>): NonNullable<OpenRouterStreamEvent['usage']> {
+  const details = isRecord(usage.prompt_tokens_details) ? usage.prompt_tokens_details : {};
+  const cache = readCacheTokens(usage);
+  const includedCreation = nonnegativeNumber(details.cache_write_tokens);
+  const cacheCreationTokens = includedCreation ?? cache.cacheCreationTokens;
+  return {
+    inputTokens: nonnegativeNumber(usage.prompt_tokens),
+    outputTokens: nonnegativeNumber(usage.completion_tokens),
+    ...cache,
+    ...(cacheCreationTokens !== undefined ? { cacheCreationTokens } : {}),
+    ...(includedCreation !== undefined ? { cacheCreationIncluded: true } : {}),
+  };
+}
+
+function nonnegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function responseError(value: unknown): string {
+  const message = typeof value === 'string' ? value
+    : isRecord(value) && typeof value.message === 'string' ? value.message : '';
+  return message.trim() || 'OpenRouter response error';
+}
+
+function streamError(error: unknown): string {
+  return redactSecrets(error instanceof Error ? error.message : String(error)).trim() || 'OpenRouter request failed';
+}
+
+/** Display readable reasoning only; signed/encrypted replay needs a separate history contract. */
+function visibleReasoning(delta: Record<string, unknown>): string {
+  if ((delta.reasoning_details !== undefined && delta.reasoning_details !== null) && !Array.isArray(delta.reasoning_details)) {
+    throw new Error('OpenRouter returned invalid reasoning details');
+  }
+  if (typeof delta.reasoning === 'string' && delta.reasoning) { return delta.reasoning; }
+  return (delta.reasoning_details as unknown[] | undefined ?? []).map(detail => {
+    if (!isRecord(detail)) { throw new Error('OpenRouter returned an invalid reasoning detail'); }
+    const value = detail.type === 'reasoning.text' ? detail.text : detail.type === 'reasoning.summary' ? detail.summary : undefined;
+    if ((value !== undefined && value !== null) && typeof value !== 'string') { throw new Error('OpenRouter returned invalid reasoning text'); }
+    return typeof value === 'string' ? value : '';
+  }).join('');
+}
+
+function validateToolDeltas(value: unknown): ToolCallDelta[] {
+  if (!Array.isArray(value)) { throw new Error('OpenRouter returned invalid tool calls'); }
+  for (const call of value) {
+    if (!isRecord(call) || (call.index !== undefined && (!Number.isInteger(call.index) || Number(call.index) < 0))
+      || (call.id !== undefined && typeof call.id !== 'string')
+      || (call.type !== undefined && call.type !== 'function')
+      || (call.function !== undefined && (!isRecord(call.function)
+        || (call.function.name !== undefined && typeof call.function.name !== 'string')
+        || (call.function.arguments !== undefined && typeof call.function.arguments !== 'string')))) {
+      throw new Error('OpenRouter returned an invalid tool call delta');
+    }
+  }
+  return value as ToolCallDelta[];
 }
