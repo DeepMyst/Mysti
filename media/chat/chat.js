@@ -11037,6 +11037,7 @@
       function handlePlanOptionSelect(option, messageId, executionMode, customInstructions) {
         var container = document.querySelector('.plan-options-container[data-message-id="' + messageId + '"]');
         var originalQuery = container ? container.getAttribute('data-original-query') : '';
+        var syntheticPlanId = container ? container.getAttribute('data-synthetic-plan-id') || '' : '';
 
         // Mark as selected
         var cards = document.querySelectorAll('.plan-option-card');
@@ -11053,6 +11054,7 @@
             selectedPlan: option,
             originalQuery: originalQuery,
             messageId: messageId,
+            syntheticPlanId: syntheticPlanId,
             executionMode: executionMode,
             customInstructions: customInstructions || ''
           }

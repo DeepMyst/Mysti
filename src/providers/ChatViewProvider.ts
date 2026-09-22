@@ -2304,15 +2304,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
 
-      case 'planOptionSelected':
+      case 'planOptionSelected': {
+        // Only the exact plan this panel still has pending may run, with the
+        // host-held plan text: a card from a stopped or superseded turn must not
+        // switch the mode or send into the current one.
+        const selection = this._pendingPlans.claim(msg.panelId, msg.payload);
+        if (!selection) {
+          this._postToPanel(msg.panelId, { type: 'systemNotice', scope: 'notice', payload: { message: 'That plan is no longer pending, so it was not run.' } });
+          break;
+        }
         // Clear suggestions before handling plan selection
         this._postToPanel(msg.panelId, { type: 'clearSuggestions', scope: 'notice' });
 
-        await this._handlePlanOptionSelected(
-          msg.payload as PlanSelectionResult,
-          msg.panelId
-        );
+        await this._handlePlanOptionSelected(selection, msg.panelId);
         break;
+      }
 
       case 'questionAnswered':
         // Clear suggestions before handling question answers

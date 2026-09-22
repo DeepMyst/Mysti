@@ -308,6 +308,59 @@ describe('chat plan selection ownership', () => {
     expect(harness.sent).toHaveBeenCalledWith(expect.objectContaining({ content: 'query-b' }), 'b');
   });
 
+  const planIdFor = (panelId: string, messageId: string): string => {
+    const call = harness.posted.mock.calls.filter(([id, message]) => id === panelId
+      && message.type === 'planOptions' && message.payload.messageId === messageId).at(-1);
+    return call![1].payload.syntheticPlanId;
+  };
+  const clickPlan = (panelId: string, payload: Record<string, unknown>) => harness.provider._handleMessage({
+    type: 'planOptionSelected', panelId,
+    payload: { selectedPlan: plan, messageId: 'old-message', originalQuery: 'query-a', executionMode: 'edit-automatically', customInstructions: '', ...payload },
+  } as WebviewMessage);
+
+  it.each([
+    { name: 'Stop', type: 'cancelRequest', payload: undefined },
+    { name: 'New Conversation', type: 'newConversation', payload: undefined },
+    { name: 'Clear Session', type: 'clearSession', payload: undefined },
+    { name: 'a conversation switch', type: 'switchConversation', payload: { id: 'other' } },
+  ])('an old plan card clicked after $name neither changes the mode nor sends', async ({ type, payload }) => {
+    await harness.detect('a', 'old-message');
+    const syntheticPlanId = planIdFor('a', 'old-message');
+    await harness.provider._handleMessage({ type, panelId: 'a', payload } as WebviewMessage);
+    await clickPlan('a', { syntheticPlanId });
+    await clickPlan('a', {}); // The shape the webview sent before plan identity existed.
+    expect(harness.updateSettings).not.toHaveBeenCalled();
+    expect(harness.sent).not.toHaveBeenCalled();
+  });
+
+  it('an old plan card cannot execute or consume the newer turn plan', async () => {
+    await harness.detect('a', 'old-message');
+    const oldId = planIdFor('a', 'old-message');
+    await harness.detect('a', 'new-message');
+    await clickPlan('a', { syntheticPlanId: oldId });
+    expect(harness.updateSettings).not.toHaveBeenCalled();
+    expect(harness.sent).not.toHaveBeenCalled();
+    expect(harness.provider._pendingPlanSelections.has('a')).toBe(true);
+    await clickPlan('a', { syntheticPlanId: planIdFor('a', 'new-message'), messageId: 'new-message' });
+    expect(harness.sent).toHaveBeenCalledOnce();
+  });
+
+  it('a current card executes the host-held plan exactly once and ignores forged plan text', async () => {
+    await harness.detect('a', 'old-message');
+    const syntheticPlanId = planIdFor('a', 'old-message');
+    await clickPlan('a', { syntheticPlanId, selectedPlan: { ...plan, id: 'not-offered' } });
+    await clickPlan('a', { syntheticPlanId: planIdFor('a', 'old-message'), executionMode: 'not-a-mode' });
+    expect(harness.sent).not.toHaveBeenCalled();
+    expect(harness.updateSettings).not.toHaveBeenCalled();
+    await clickPlan('a', { syntheticPlanId, originalQuery: 'FORGED QUERY', selectedPlan: { ...plan, title: 'Forged title' } });
+    expect(harness.updateSettings).toHaveBeenCalledWith({ mode: 'edit-automatically' });
+    expect(harness.sent).toHaveBeenCalledOnce();
+    expect(harness.sent).toHaveBeenCalledWith(expect.objectContaining({ content: 'query-a' }), 'a');
+    await clickPlan('a', { syntheticPlanId });
+    expect(harness.sent).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each([
     { name: 'unknown switch target', type: 'switchConversation', payload: { id: 'missing' } },
     { name: 'current switch target', type: 'switchConversation', payload: { id: 'conversation-a' } },
