@@ -42,7 +42,9 @@ describe('Cline native execution profile', () => {
   // resolveAgentPluginSearchPaths) and starts their MCP servers unprompted.
   it('refuses user agent plugins in $HOME/.agents/plugins before and during startup', async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-cline-home-')); dirs.push(home);
-    const previous = process.env.HOME; process.env.HOME = home;
+    // os.homedir() reads USERPROFILE on Windows and HOME elsewhere.
+    const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = home; process.env.USERPROFILE = home;
     try {
       const plugins = path.join(home, '.agents', 'plugins'); await fs.mkdir(plugins, { recursive: true });
       const launch = await prepareClineAcpLaunch(await context());
@@ -50,6 +52,8 @@ describe('Cline native execution profile', () => {
         await fs.mkdir(path.join(plugins, 'inert')); await expect(launch.assertUnchanged?.()).rejects.toThrow(path.join(home, '.agents/plugins'));
       } finally { await launch.cleanup?.(); }
       await expect(prepareClineAcpLaunch(await context())).rejects.toThrow('inherited hooks or plugins');
-    } finally { if (previous === undefined) { delete process.env.HOME; } else { process.env.HOME = previous; } }
+    } finally {
+      for (const [key, value] of Object.entries(previous)) { if (value === undefined) { delete process.env[key]; } else { process.env[key] = value; } }
+    }
   });
 });

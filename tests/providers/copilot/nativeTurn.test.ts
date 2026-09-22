@@ -39,6 +39,14 @@ class CopilotFixture extends CopilotProvider {
   }
 }
 async function drain(provider: ClineFixture | CopilotFixture) { const chunks: StreamChunk[] = []; for await (const chunk of provider.sendMessage('/allow-all on', [], settings(provider.id), null, undefined, 'panel')) { chunks.push(chunk); } return chunks; }
+// Production refuses Copilot native approvals on Windows before launch.
+const refusedOnWindows = async (name: string, provider: ClineFixture | CopilotFixture, handler: () => unknown) => {
+  if (name !== 'Copilot' || process.platform !== 'win32') { return false; }
+  const chunks = await drain(provider);
+  expect(chunks.some(chunk => chunk.type === 'error')).toBe(true);
+  expect(handler).not.toHaveBeenCalled(); expect(provider.launches).toBe(0); expect(fs.existsSync(provider.marker)).toBe(false);
+  return true;
+};
 afterEach(async () => {
   await Promise.all(childClosures.splice(0));
   for (const dir of dirs.splice(0)) { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -49,6 +57,7 @@ describe.each([['Cline', ClineFixture], ['Copilot', CopilotFixture]] as const)('
     const handler = vi.fn(() => new Promise<boolean>(done => { resolve = done; }));
     provider.setNativeApprovalHost({ handlerForPanel: () => handler });
     try {
+      if (await refusedOnWindows(_name, provider, handler)) { return; }
       const pending = drain(provider); await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
       expect(fs.existsSync(provider.marker)).toBe(false); resolve(true);
       const chunks = await pending; expect(fs.readFileSync(provider.marker, 'utf8')).toBe('effect\n');
@@ -66,6 +75,6 @@ describe.each([['Cline', ClineFixture], ['Copilot', CopilotFixture]] as const)('
   it('Stop prevents a late effect', async () => {
     const provider = new Fixture(); let resolve!: (allow: boolean) => void;
     const handler = vi.fn(() => new Promise<boolean>(done => { resolve = done; })); provider.setNativeApprovalHost({ handlerForPanel: () => handler });
-    try { const pending = drain(provider); await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce()); provider.cancelCurrentRequest('panel'); resolve(true); await pending; expect(fs.existsSync(provider.marker)).toBe(false); } finally { provider.dispose(); }
+    try { if (await refusedOnWindows(_name, provider, handler)) { return; } const pending = drain(provider); await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce()); provider.cancelCurrentRequest('panel'); resolve(true); await pending; expect(fs.existsSync(provider.marker)).toBe(false); } finally { provider.dispose(); }
   });
 });
