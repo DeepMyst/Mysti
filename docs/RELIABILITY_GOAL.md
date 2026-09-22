@@ -48,19 +48,19 @@ merely to make this checklist pass.
 | --- | --- | --- |
 | Claude Code | Latest stable 2.1.278 reviewed; verified bridge remains 2.1.266; install/update targets now agree | Supported installed version and authenticated editor operations |
 | Codex | Latest stable 0.155.1 reviewed; verified bridge remains 0.153.4; retired automatic model entry removed; sign-in action corrected to `codex login` | Successful native initialization and authenticated operations |
-| Gemini | Latest stable 0.60.0 rejects Mysti's user-owned system settings; verified bridge remains 0.58.0; installer/auth/model guidance corrected | Complete startup policy transport for latest release, current supported account/setup and operations |
-| Cline | Pending current release/ACP review | Installed current contract and authenticated operations |
-| Copilot | Native writable approval investigation | Actual read/write/command approval and account acceptance |
-| Cursor | Pending current CLI and restricted-mode review | Restricted functionality and authenticated acceptance |
-| OpenClaw | Owned runtime stays on 2026.6.34; shared updater corrected to respect that verified target. Current upstream gateway/tool-policy review remains open | Current runtime, authenticated/editor and Windows acceptance |
-| OpenCode | Actual 1.18.29 Core V2 imports workspace/ancestor plugins even in pure mode; new startup guards pass nine isolated native scenarios. Test-only shell hook exposes a surviving child after Stop and remains disabled | Owned shell execution/termination, stronger startup isolation and authenticated acceptance |
-| Qwen Code | 0.23 protocol-map compatibility and Qwen/Gemini launch-environment consistency fixed; 135 focused tests and 93 independent configuration/launch tests pass. The separate 0.24.1 source audit does not change the verified 0.23.0 bridge | Actual 0.24.1 tool inventory/approval/Stop and authenticated acceptance remain |
-| Hermes | Pending current ACP/tool-policy review | Runtime unavailable; actual native and account acceptance |
-| Continue | Pending current CLI/restricted-mode review | Runtime unavailable; restricted functionality and account acceptance |
-| Kimi Code | Pending current ACP/tool-policy review | Runtime unavailable; actual native and account acceptance |
+| Gemini | 0.60.0 skips non-root system settings; bridge now enforces via `--admin-policy`, startup refusal (incl. `.agents/skills`) and telemetry off. Install target 0.60.0, 0.58.0 accepted; fake-model runs on both (night 2026-09-22) | Authenticated account operations |
+| Cline | 3.0.64 ACP unchanged since 3.0.61; exact-version match widened (3.0.61 accepted); startup refuses a non-empty `~/.agents/plugins` (3.0.62 starts plugins before approval); fake-model 5/5 on both | Installed current contract and authenticated operations; 3.0.62 web search default unverified |
+| Copilot | Old write bypass was Mysti's own `COPILOT_ALLOW_ALL=false` (pre-1.0.85 treats any value as allow-all); now unset. Sync shell and per-file edits enabled behind host cards; async/detached denied; 16/16 fake-model scenarios on 1.0.83. Latest 1.0.87 not pinned | Account acceptance; 1.0.87 `--effort`/pin review |
+| Cursor | Latest 2026.09.18 reviewed: repo config, project hooks and ACP allowlists prevent Mysti-enforced restriction; restricted tiers remain rejected (documentation only) | Restricted functionality and authenticated acceptance |
+| OpenClaw | Pin stays 2026.6.34 (6.35 renames hash-pinned modules; 7.35/9.5 raise Node floor and change SDK/config); two dead gateway calls removed with a method-contract test | Current runtime, authenticated/editor and Windows acceptance |
+| OpenCode | Stop now freezes and kills the whole descendant tree (POSIX, all providers), runtime-verified on 1.18.29; shell stays disabled because 1.18.32 still skips permission for unparsed commands; latest 1.18.32 reviewed, pin 1.18.29 | Shell via proven hook, stronger startup isolation, Linux/Windows tree cleanup, authenticated acceptance |
+| Qwen Code | 0.24.4: excludes new `tool_call`/`exec`/`record_source`/`omni_*` tools and strips their env; model offered exactly the four admitted tools; install target 0.24.4, 0.23.0 accepted | Authenticated acceptance |
+| Hermes | Latest v2026.9.21 source: most tools never request permission and yolo is inherited, so restricted tiers are now rejected before launch; deny/cancel paths verified closed | Runtime unavailable; actual native and account acceptance |
+| Continue | cn 1.5.47 Search tool is shell-injectable (pattern and .gitignore lines, runtime-verified with stubbed rg); unrestricted turns now exclude Search and allow Edit/MultiEdit/Write explicitly. Restricted tiers still rejected | Runtime with real ripgrep; restricted functionality and account acceptance |
+| Kimi Code | `@moonshot-ai/kimi-code` 2.0.2 source: in-repo writes, FetchURL, Agent and Skill auto-approved, so restricted tiers are now rejected; 2.x `~/.kimi-code`/`KIMI_MODEL_*` not yet read | Runtime unavailable; actual native and account acceptance |
 | Ollama | Captured request ownership, bounded UTF-8 framing, final events, errors, thinking and proposal-only tools fixed; shared HTTP review passes 104 tests, including 45 loopback cases | Actual configured server/model and editor acceptance |
 | LocalAI | Captured request ownership, bounded SSE framing, fragmented tool arguments, usage-only events and reasoning fields fixed; included in the same 104-test HTTP review | Actual configured server/model and editor acceptance |
-| OpenRouter | Eleven defect witnesses preserved; ownership, strict stream/tool completion, error handling, accounting and catalogue cancellation fixed; 206 focused tests and 14,294 integrated tests pass | Opaque reasoning replay, direct-chat actual model/cost reporting, base prompt cancellation and account/model acceptance |
+| OpenRouter | Reasoning replay, served model/cost and prompt-build cancellation fixed (night 2026-09-22) on top of cfe0b0d ownership | Live-model replay acceptance and account/model acceptance |
 
 ## Current implementation increments
 
