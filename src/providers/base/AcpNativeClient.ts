@@ -97,8 +97,11 @@ export class AcpNativeClient {
   };
   private readonly _onAbort = () => {
     this._approvals.dispose();
-    if (this._sessionId && this._prompting) { this._write({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: this._sessionId } }); }
+    const prompting = this._sessionId && this._prompting;
+    // Terminate first: it freezes the agent before it can read the cancel and
+    // exit, which would orphan a running tool's detached process group.
     this._finish(); this._options.terminate();
+    if (prompting) { this._write({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: this._sessionId } }); }
   };
 
   constructor(private readonly _options: AcpNativeClientOptions) {

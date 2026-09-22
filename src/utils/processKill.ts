@@ -8,8 +8,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { spawn } from 'child_process';
-import type { ChildProcess } from 'child_process';
+import { spawn, execFile, ChildProcess } from 'child_process';
+import { promises as fs } from 'fs';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
 
 /**
@@ -62,6 +62,84 @@ export interface KillProcessTreeOptions {
    * signal is delivered to the stopped process without first resuming it.
    */
   initialSignal?: NodeJS.Signals;
+  /**
+   * POSIX only, default true. Before signalling a real child spawned by this
+   * process, freeze it, then find and SIGKILL every descendant (and every
+   * process group a descendant leads). CLI agents run approved shell commands
+   * in their own detached groups; signalling only the agent orphans them and
+   * their delayed effects survive Stop. See {@link killDescendants}.
+   */
+  descendants?: boolean;
+}
+
+interface ProcessRow { pid: number; ppid: number; pgid: number }
+
+async function processTable(): Promise<ProcessRow[]> {
+  if (process.platform === 'linux') {
+    // /proc works in minimal containers that ship without procps.
+    const rows: ProcessRow[] = [];
+    for (const name of await fs.readdir('/proc')) {
+      if (!/^\d+$/.test(name)) { continue; }
+      try {
+        const stat = await fs.readFile(`/proc/${name}/stat`, 'utf8');
+        // "pid (comm) state ppid pgrp ..."; comm may itself contain ") ".
+        const [, ppid, pgid] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        rows.push({ pid: Number(name), ppid: Number(ppid), pgid: Number(pgid) });
+      } catch { /* Exited while scanning. */ }
+    }
+    return rows;
+  }
+  const stdout = await new Promise<string>((resolve, reject) => {
+    execFile('/bin/ps', ['-A', '-o', 'pid=,ppid=,pgid='], { maxBuffer: 16 * 1024 * 1024 },
+      (error, out) => (error ? reject(error) : resolve(out)));
+  });
+  return stdout.split('\n').map(line => line.trim().split(/\s+/).map(Number))
+    .filter(fields => fields.length === 3 && fields.every(Number.isSafeInteger))
+    .map(([pid, ppid, pgid]) => ({ pid, ppid, pgid }));
+}
+
+function signalQuietly(pid: number, signal: NodeJS.Signals): void {
+  try { process.kill(pid, signal); } catch { /* ESRCH/EPERM: already gone. */ }
+}
+
+/**
+ * Freeze and SIGKILL every descendant of `rootPid`, including whole process
+ * groups led by a descendant (a detached shell and its background jobs).
+ * Acts only while `rootPid` is verifiably this process's own child, so a stale
+ * or fake pid can never reach an unrelated process. The caller keeps the root
+ * frozen (SIGSTOP) meanwhile, so it cannot exit and orphan the tree; frozen
+ * descendants cannot fork. Rescans until no new descendant appears.
+ *
+ * ponytail: a descendant that already re-parented itself (double-fork daemon,
+ * setsid before the first scan) is out of reach without OS containment such as
+ * cgroups; the approval contract does not claim otherwise.
+ */
+async function killDescendants(rootPid: number): Promise<void> {
+  const found = new Map<number, number>();
+  for (let round = 0; round < 5; round++) {
+    const table = await processTable();
+    const root = table.find(row => row.pid === rootPid);
+    if (!root || root.ppid !== process.pid) { break; }
+    const children = new Map<number, ProcessRow[]>();
+    for (const row of table) { children.set(row.ppid, [...(children.get(row.ppid) ?? []), row]); }
+    const fresh: ProcessRow[] = [];
+    for (const queue = [rootPid]; queue.length;) {
+      for (const row of children.get(queue.pop()!) ?? []) {
+        if (row.pid === process.pid) { continue; }
+        queue.push(row.pid);
+        if (!found.has(row.pid)) { fresh.push(row); }
+      }
+    }
+    if (!fresh.length) { break; }
+    for (const row of fresh) { found.set(row.pid, row.pgid); signalQuietly(row.pid, 'SIGSTOP'); }
+  }
+  for (const [pid, pgid] of found) { if (pid === pgid) { signalQuietly(-pgid, 'SIGKILL'); } }
+  for (const pid of found.keys()) { signalQuietly(pid, 'SIGKILL'); }
+}
+
+/** Real, unreaped children only; test doubles and foreign pids are never frozen. */
+function isOwnedChild(proc: ChildProcess): boolean {
+  try { return proc instanceof ChildProcess && typeof proc.pid === 'number'; } catch { return false; }
 }
 
 /**
@@ -131,7 +209,7 @@ function killWindowsProcessTree(proc: ChildProcess, fallbackSignal: NodeJS.Signa
  *    children too), with a single-pid fallback if taskkill fails.
  *  - POSIX with `useProcessGroup`: negative-pid group signal for detached
  *    spawns, falling back to the single pid if the group signal throws.
- *  - POSIX default: single-pid `proc.kill(signal)` (unchanged behaviour).
+ *  - POSIX default: single-pid `proc.kill(signal)`.
  * Swallows ESRCH/EPERM so callers never have to guard a kill on an
  * already-exited / reaped process.
  *
@@ -169,7 +247,9 @@ function sendSignal(
  * with reliable SIGKILL escalation. On Windows every signal step is delivered
  * as `taskkill /PID <pid> /T /F` (whole tree — reaches through the `shell:true`
  * cmd.exe shim); on POSIX, pass `useProcessGroup: true` for `detached: true`
- * spawns to signal the whole process group.
+ * spawns to signal the whole process group. On POSIX a real child is first
+ * frozen and its descendants, including detached groups they lead, are killed
+ * (`descendants`, default true); test doubles skip this and signal synchronously.
  *
  * Behaviour:
  *  - If the process is already dead (exitCode/signalCode set, or null handle),
@@ -192,7 +272,7 @@ export function killProcessTree(
   graceMs: number = PROCESS_KILL_GRACE_PERIOD_MS,
   options: Omit<KillProcessTreeOptions, 'graceMs'> = {},
 ): Promise<void> {
-  const { useProcessGroup = false, label, initialSignal = 'SIGTERM' } = options;
+  const { useProcessGroup = false, label, initialSignal = 'SIGTERM', descendants = true } = options;
 
   return new Promise<void>((resolve) => {
     // Already dead (or no handle): nothing to do.
@@ -225,33 +305,56 @@ export function killProcessTree(
 
     child.on('exit', onExit);
 
-    // Send the initial signal. If it could not be sent the process is already
-    // gone — but the 'exit' listener will have fired (or will), so we still rely
-    // on it / the immediate liveness re-check below.
-    sendSignal(child, initialSignal, useProcessGroup);
+    // Schedule SIGKILL escalation — fires only if still live after the grace period.
+    const scheduleEscalation = () => {
+      escalationTimer = setTimeout(() => {
+        escalationTimer = null;
+        if (isProcessLive(child)) {
+          if (label) {
+            console.warn(`[Mysti] ${label}: Force killing leaked process (SIGKILL)`);
+          } else {
+            console.warn('[Mysti] Force killing leaked process (SIGKILL)');
+          }
+          sendSignal(child, 'SIGKILL', useProcessGroup);
+        }
+        // Resolve regardless: we have done everything we can. The 'exit' listener
+        // (still attached until cleanupAndResolve) will fire when the process
+        // actually dies, but we don't block the caller on it.
+        cleanupAndResolve();
+      }, graceMs);
+    };
 
-    // Re-check liveness synchronously: the signal may have terminated the process
-    // immediately (or it was already reaped between the first check and now).
-    if (!isProcessLive(child)) {
-      cleanupAndResolve();
+    const tree = descendants && process.platform !== 'win32' && isOwnedChild(child);
+    const begin = () => {
+      if (settled) {
+        return;
+      }
+      // Send the initial signal. If it could not be sent the process is already
+      // gone — but the 'exit' listener will have fired (or will), so we still rely
+      // on it / the immediate liveness re-check below.
+      sendSignal(child, initialSignal, useProcessGroup);
+      if (tree) {
+        // Resume the frozen root so the pending signal is delivered.
+        sendSignal(child, 'SIGCONT', useProcessGroup);
+      }
+      // Re-check liveness synchronously: the signal may have terminated the process
+      // immediately (or it was already reaped between the first check and now).
+      if (!isProcessLive(child)) {
+        cleanupAndResolve();
+        return;
+      }
+      scheduleEscalation();
+    };
+
+    if (!tree) {
+      begin();
       return;
     }
-
-    // Schedule SIGKILL escalation — fires only if still live after the grace period.
-    escalationTimer = setTimeout(() => {
-      escalationTimer = null;
-      if (isProcessLive(child)) {
-        if (label) {
-          console.warn(`[Mysti] ${label}: Force killing leaked process (SIGKILL)`);
-        } else {
-          console.warn('[Mysti] Force killing leaked process (SIGKILL)');
-        }
-        sendSignal(child, 'SIGKILL', useProcessGroup);
-      }
-      // Resolve regardless: we have done everything we can. The 'exit' listener
-      // (still attached until cleanupAndResolve) will fire when the process
-      // actually dies, but we don't block the caller on it.
-      cleanupAndResolve();
-    }, graceMs);
+    // Freeze synchronously: the root must not exit (orphaning its tree to init)
+    // while descendants are found. It is unreaped, so the pid is still ours.
+    signalQuietly(child.pid as number, 'SIGSTOP');
+    void killDescendants(child.pid as number).catch((error) => {
+      console.warn(`[Mysti] ${label ?? 'process'}: descendant cleanup failed`, error);
+    }).then(begin);
   });
 }

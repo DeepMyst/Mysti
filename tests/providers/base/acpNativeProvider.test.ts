@@ -207,6 +207,25 @@ describe('shared ACP public provider lifecycle', () => {
     expect(provider.launches).toHaveLength(0); expect(provider.events).toEqual(['launch-cleanup-start', 'launch-cleanup-end', 'done']);
   });
 
+  it.skipIf(process.platform === 'win32')('Stop kills a detached native shell group so no delayed effect survives', { timeout: 10000 }, async () => {
+    const provider = await harness(); provider.scenario = 'detached-shell';
+    const pidFile = path.join(provider.dir, 'grandchild.pid');
+    const pending = collect(provider);
+    const deadline = Date.now() + 5000;
+    while (!(await fs.stat(pidFile).catch(() => undefined))?.size) {
+      if (Date.now() > deadline) { throw new Error('native shell never started'); }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    const shellPid = Number((await fs.readFile(pidFile, 'utf8')).trim());
+    provider.cancelCurrentRequest('panel');
+    await pending;
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    const alive = (() => { try { process.kill(shellPid, 0); return true; } catch { return false; } })();
+    expect(alive).toBe(false);
+    await expect(fs.stat(path.join(provider.dir, 'late.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.stat(path.join(provider.dir, 'late-leader.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('drains verbose native stderr without blocking initialization', async () => {
     const provider = await harness(); provider.scenario = 'stderr-flood';
     const chunks = await collect(provider);

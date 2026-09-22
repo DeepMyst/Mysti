@@ -53,8 +53,13 @@ change to pending tool inputs revoke the captured card. Late host results cannot
 authorize a replacement process. The inactivity clock pauses while a permission
 is pending and restarts when it settles. Startup calls have separate deadlines.
 A final done chunk is emitted after awaiting the captured child shutdown
-attempt and temporary-state cleanup. The existing process-kill helper does not
-guarantee all descendants have exited after escalation. Failure to prepare or attest the native launch never falls back
+attempt and temporary-state cleanup. On POSIX, termination first freezes the
+agent (before `session/cancel` is written), then kills every descendant and each
+process group a descendant leads, rescanning until none remain; only then is the
+agent itself signalled. This covers a tool's detached shell group and its
+background jobs. A process that already re-parented itself away (a double-fork
+daemon, or `setsid` before the first scan) is outside this cleanup, which is not
+OS containment. Failure to prepare or attest the native launch never falls back
 to the old transport.
 
 ## Native policy and configuration
@@ -103,10 +108,14 @@ therefore part of the approval boundary, independently of the protocol bridge.
   dependency checks use private npm configuration, offline mode and disabled
   lifecycle scripts. The internal ACP HTTP server binds loopback with a fresh
   password. Shell is removed from the executable map: this release otherwise
-  skips its permission callback for commands consisting only of redirections.
-  A private pre-execution-hook experiment gates those commands, but its active
-  shell descendant survived Stop. That prototype is test-only; shell restoration
-  requires owned execution and verified teardown.
+  skips its permission callback for commands consisting only of redirections
+  (`scan.patterns.size === 0`), which can create or truncate files unapproved.
+  Latest 1.18.32 source still has this early return (source-verified). A private
+  pre-execution-hook experiment gated those commands; its surviving shell
+  descendant after Stop is now fixed by the shared descendant teardown, proven
+  against the actual 1.18.29 shell with a test-only native allow. Shell stays
+  removed because the hook route still needs `--pure` removed and proof that the
+  executing plugin instance registered its hook.
 
 OpenCode 1.18.29 emits a redundant `fs/write_text_file` UI request after approval
 even when the client advertises that capability as false. Mysti returns

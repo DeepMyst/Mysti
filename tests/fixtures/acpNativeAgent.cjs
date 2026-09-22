@@ -36,6 +36,14 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     fs.writeFileSync(path.join(root, 'prompt.json'), JSON.stringify(frame.params));
     if (scenario === 'bad-json') { process.stdout.write('{invalid json}\n'); return; }
     if (scenario === 'unsupported') { send({ id: 8, method: 'terminal/create', params: { sessionId, command: 'never run' } }); return; }
+    if (scenario === 'detached-shell') {
+      // Mirrors OpenCode's native shell: an approved command runs in its own
+      // detached process group, with a background job inside that group.
+      const script = `echo $$ > grandchild.pid; (sleep 1; printf late > late.txt) & sleep 1; printf late > late-leader.txt; wait`;
+      require('node:child_process').spawn('/bin/sh', ['-c', script], { cwd: root, detached: true, stdio: 'ignore' }).unref();
+      send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call', toolCallId: toolId, kind: 'execute', title: 'shell', status: 'in_progress', rawInput: { command: script } } } });
+      return;
+    }
     send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call', ...tool, rawInput: { content: 'earlier display draft' }, status: 'pending' } } });
     send(approval);
     if (scenario === 'replay') { send(approval); }

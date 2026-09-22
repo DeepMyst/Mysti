@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as vscode from 'vscode';
-import { decodeOpenCodePermission, openCodeIsolatedEnv, openCodeNativeConfig, OPENCODE_ACP_VERSION } from '../../../src/providers/opencode/OpenCodeNative';
+import { decodeOpenCodePermission, openCodeIsolatedEnv, openCodeNativeConfig, OPENCODE_ACP_VERSION, OPENCODE_HOST_AGENT } from '../../../src/providers/opencode/OpenCodeNative';
 import { OpenCodeProvider } from '../../../src/providers/opencode/OpenCodeProvider';
 import type { AcpNativeLaunchContext } from '../../../src/providers/base/AcpNativeTypes';
 import { createMockContext } from '../../helpers/providerFactory';
@@ -17,7 +17,7 @@ const installed = process.env.MYSTI_TEST_OPENCODE_PATH || '/usr/local/bin/openco
 const supported = process.platform === 'darwin' && existsSync(installed) && existsSync('/usr/bin/sandbox-exec');
 const project = path.resolve(__dirname, '../../..');
 const baseSettings: Settings = { provider: 'opencode', model: 'anthropic/claude-sonnet-4-5', mode: 'default', accessLevel: 'ask-permission', thinkingLevel: 'none', contextMode: 'auto' };
-type Scenario = 'allow-write' | 'deny-write' | 'cancel-write' | 'readonly-write' | 'zero-pattern-shell' | 'deny-read' | 'public-write' | 'project-authority' | 'ancestor-authority';
+type Scenario = 'allow-write' | 'deny-write' | 'cancel-write' | 'readonly-write' | 'zero-pattern-shell' | 'deny-read' | 'public-write' | 'project-authority' | 'ancestor-authority' | 'stop-active-shell';
 
 async function nativeCase(root: string, scenario: Scenario) {
   const directory = path.join(root, scenario);
@@ -26,6 +26,7 @@ async function nativeCase(root: string, scenario: Scenario) {
   await fs.writeFile(path.join(directory, 'empty.npmrc'), '');
   await fs.writeFile(path.join(directory, 'empty-global.npmrc'), '');
   const target = path.join(work, 'marker.txt');
+  const started = path.join(work, 'started.txt');
   if (scenario.endsWith('-authority')) {
     const source = scenario === 'project-authority' ? work : directory;
     const plugin = path.join(source, '.opencode', 'plugins', 'unowned.js');
@@ -55,8 +56,9 @@ async function nativeCase(root: string, scenario: Scenario) {
       const tools = (incoming.tools ?? []).map((tool: { name: string }) => tool.name);
       const main = tools.length > 0;
       if (main) { modelCalls++; declaredTools.push(tools); modelInputs.push(incoming.messages); }
-      const name = scenario === 'zero-pattern-shell' ? 'bash' : scenario === 'deny-read' ? 'read' : 'write';
+      const name = scenario === 'zero-pattern-shell' || scenario === 'stop-active-shell' ? 'bash' : scenario === 'deny-read' ? 'read' : 'write';
       const input = scenario === 'zero-pattern-shell' ? { command: `> ${target}`, description: 'empty command redirection' }
+        : scenario === 'stop-active-shell' ? { command: `printf started > ${started}; (sleep 2; printf late >> ${target}) & wait`, description: 'inert active shell' }
         : scenario === 'deny-read' ? { filePath: target } : { filePath: target, content: 'approved' };
       const usesTool = main && modelCalls === 1;
       const block = usesTool ? { type: 'tool_use', id: `tool-${scenario}`, name, input } : { type: 'text', text: 'complete' };
@@ -77,13 +79,20 @@ async function nativeCase(root: string, scenario: Scenario) {
   const port = (server.address() as { port: number }).port;
   const settings = scenario === 'readonly-write' ? { ...baseSettings, accessLevel: 'read-only' as const } : baseSettings;
   const config = openCodeNativeConfig(settings, baseSettings.model);
+  if (scenario === 'stop-active-shell') {
+    // Test-only authority: production keeps shell removed. A native allow lets
+    // the real CLI run its own detached shell so Stop teardown can be observed.
+    const permission = { ...(config.permission as Record<string, string>), bash: 'allow' };
+    config.permission = permission;
+    (config.agent as Record<string, Record<string, unknown>>)[OPENCODE_HOST_AGENT].permission = permission;
+  }
   // Only the model HTTP endpoint differs from production policy/configuration.
   config.provider = { anthropic: { options: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'mysti-inert-fixture' } } };
   const env = openCodeIsolatedEnv({ PATH: process.env.PATH, TMPDIR: directory, ANTHROPIC_API_KEY: 'mysti-inert-fixture' }, directory, config, 'anthropic');
   const sandbox = `(version 1)(allow default)(deny network*)(allow network-inbound (local ip "localhost:*"))(allow network-outbound (remote ip "localhost:*"))`
     + `(deny file-read* (subpath "${os.homedir()}"))`
     + `(deny file-write* (require-all (require-not (subpath "${root}")) (require-not (subpath "/dev"))))`;
-  if (scenario === 'public-write' || scenario.endsWith('-authority')) {
+  if (scenario === 'public-write' || scenario === 'stop-active-shell' || scenario.endsWith('-authority')) {
     let nativeClosed: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
     class NativeProvider extends OpenCodeProvider {
       override getCliPath() { return installed; }
@@ -119,16 +128,25 @@ async function nativeCase(root: string, scenario: Scenario) {
       pendingChecks.push(existsSync(target)); return true;
     } });
     const chunks: StreamChunk[] = [];
+    let stoppedActive = false;
+    const activeStop = scenario === 'stop-active-shell' ? setInterval(() => {
+      if (existsSync(started)) { stoppedActive = true; clearInterval(activeStop); provider.cancelCurrentRequest('native-panel'); }
+    }, 25) : undefined;
+    const bounded = setTimeout(() => { failure ||= new Error('Native public fixture timed out'); provider.cancelCurrentRequest('native-panel'); }, 20000);
     try {
       for await (const chunk of provider.sendMessage('inert fixture', [], settings, null, undefined, 'native-panel')) { chunks.push(chunk); }
+      clearInterval(activeStop);
+      // Outlive the native shell's delayed background write.
+      if (scenario === 'stop-active-shell') { await new Promise(resolve => setTimeout(resolve, 2500)); }
       const errors = chunks.filter(chunk => chunk.type === 'error');
       if (errors.length) { failure ||= new Error(JSON.stringify(errors)); }
       initializedVersion = nativeFrames.find(frame => frame.result?.agentInfo)?.result?.agentInfo?.version;
       resultReceived = chunks.at(-1)?.type === 'done' && errors.length === 0;
       return { scenario, exit: await nativeClosed, initializedVersion, failure: failure instanceof Error ? failure.message : failure,
-        resultReceived, modelCalls, declaredTools, cards, pendingChecks, stderr, nativeFrames, modelInputs, chunks,
+        resultReceived, modelCalls, declaredTools, cards, pendingChecks, stderr, nativeFrames, modelInputs, chunks, stoppedActive,
         exists: existsSync(target), content: existsSync(target) ? await fs.readFile(target, 'utf8') : undefined };
     } finally {
+      clearTimeout(bounded); clearInterval(activeStop);
       provider.dispose(); Object.defineProperty(folder.uri, 'fsPath', { configurable: true, value: oldCwd });
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
@@ -202,6 +220,19 @@ describe('installed OpenCode native permission boundary', () => {
         expect(result.exit, evidence).toBeUndefined(); expect(result.nativeFrames, evidence).toHaveLength(0);
         expect(result.modelCalls, evidence).toBe(0); expect(result.cards, evidence).toHaveLength(0); expect(result.exists, evidence).toBe(false);
       }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+  it.skipIf(!supported)('Stop kills the real native shell process group before its delayed effect', { timeout: 30000 }, async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-stop-')));
+    const evidence = path.join(project, 'out-test/release-evidence/NIGHT_PROVIDERS_B_20260922', `opencode-stop-active-shell-${Date.now()}`);
+    await fs.mkdir(evidence, { recursive: true });
+    try {
+      const result = await nativeCase(root, 'stop-active-shell');
+      await fs.writeFile(path.join(evidence, 'stop-active-shell.json'), JSON.stringify(result, null, 2));
+      const diagnostic = `${evidence}\n${JSON.stringify({ ...result, nativeFrames: undefined, stderr: undefined })}`;
+      expect(result.initializedVersion, diagnostic).toBe(OPENCODE_ACP_VERSION);
+      expect(result.stoppedActive, diagnostic).toBe(true);
+      expect(result.exists, diagnostic).toBe(false);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
   it.skipIf(!supported)('blocks real writes pending, rejects deny/cancel/read-only, and removes shell execution', { timeout: 140000 }, async () => {
