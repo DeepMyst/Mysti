@@ -19,7 +19,7 @@ offers them as updates. Current release and acceptance gaps are tracked in
 | Codex | App-server | Native command/file requests and sandbox |
 | Gemini | ACP | Bounded file operations |
 | Cline | ACP | Supported final native tool inputs |
-| Copilot | ACP | Read/search only; writable support unresolved |
+| Copilot | ACP | Per-call approved sync shell and per-file edits; read/search only in restricted tiers |
 | Cursor | CLI | Fully unrestricted turns only |
 | OpenClaw | Owned local gateway/runtime | Bounded stock tools with final execution guard |
 | OpenCode | ACP | File/search/fetch subset; no shell/delegation |
@@ -242,9 +242,9 @@ The ACP bridge requires an explicit BYOK endpoint through `COPILOT_PROVIDER_BASE
 ### Unique Features
 
 - **Configured BYOK model**: Uses the explicitly configured provider endpoint/key/model. Subscription login is not supported by this isolated transport.
-- **Native approvals**: This verified Copilot release is restricted to read/search operations; native reads run without a host card
+- **Native approvals**: Sync shell commands and per-file edits wait for a host card; read-only and plan tiers expose read/search only; native reads run without a host card
 
-The **1.0.83** ACP transport permits only read/search operations. It disables file writes, shell, web tools, hooks, plugins, MCP and delegation. Native workspace writes and some shell commands bypass the approval callback, so writable Copilot support remains unresolved. Native safe reads do not reach host approval policy. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
+The **1.0.83** ACP transport holds each sync shell command and each patched file for a host card. It denies async/detached shells, web tools, broader path grants, hooks, plugins, MCP and delegation; read-only and plan tiers keep only read/search tools. The earlier approval bypass came from Mysti setting `COPILOT_ALLOW_ALL=false`, which this release reads as allow-all; the variable is now left unset. Native safe reads do not reach host approval policy. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
 
 ### Settings
 

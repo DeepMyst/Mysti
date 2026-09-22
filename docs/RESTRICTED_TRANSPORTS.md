@@ -13,7 +13,7 @@ or prompt preparation; they do not silently run with broader permissions.
 | Kimi Code | Rejected before launch | 2.0.2 auto-approves in-repository writes, FetchURL, Agent/AgentSwarm and Skill; plan mode does not cover fetch or subagents. |
 | OpenCode | Fixed native agent removes mutations in plan/read-only tiers | Shell and delegation remain unavailable in every mode. |
 | Qwen | Fixed native tool subset plus immutable host mutation denial | Only the tools and runtime in the ACP contract are supported. |
-| Copilot | Read/search subset in every mode; no legacy fallback | Writable approval support remains unresolved; native reads have no host approval card. |
+| Copilot | Read/search subset in read-only and plan tiers; per-call approved shell/edits otherwise | Native reads have no host approval card; multi-file patches are approved per file. |
 
 “Fully unrestricted” means `full-access` combined with `default` or
 `edit-automatically`. `ask-before-edit` remains restricted even with full access.

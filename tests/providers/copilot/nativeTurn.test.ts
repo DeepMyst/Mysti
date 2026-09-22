@@ -49,10 +49,6 @@ describe.each([['Cline', ClineFixture], ['Copilot', CopilotFixture]] as const)('
     const handler = vi.fn(() => new Promise<boolean>(done => { resolve = done; }));
     provider.setNativeApprovalHost({ handlerForPanel: () => handler });
     try {
-      if (_name === 'Copilot') {
-        provider.setNativeApprovalHost({ handlerForPanel: () => async () => true });
-        await drain(provider); expect(fs.existsSync(provider.marker)).toBe(false); expect(handler).not.toHaveBeenCalled(); return;
-      }
       const pending = drain(provider); await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
       expect(fs.existsSync(provider.marker)).toBe(false); resolve(true);
       const chunks = await pending; expect(fs.readFileSync(provider.marker, 'utf8')).toBe('effect\n');
@@ -70,6 +66,6 @@ describe.each([['Cline', ClineFixture], ['Copilot', CopilotFixture]] as const)('
   it('Stop prevents a late effect', async () => {
     const provider = new Fixture(); let resolve!: (allow: boolean) => void;
     const handler = vi.fn(() => new Promise<boolean>(done => { resolve = done; })); provider.setNativeApprovalHost({ handlerForPanel: () => handler });
-    try { const pending = drain(provider); if (_name === 'Copilot') { provider.cancelCurrentRequest('panel'); await pending; expect(fs.existsSync(provider.marker)).toBe(false); return; } await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce()); provider.cancelCurrentRequest('panel'); resolve(true); await pending; expect(fs.existsSync(provider.marker)).toBe(false); } finally { provider.dispose(); }
+    try { const pending = drain(provider); await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce()); provider.cancelCurrentRequest('panel'); resolve(true); await pending; expect(fs.existsSync(provider.marker)).toBe(false); } finally { provider.dispose(); }
   });
 });

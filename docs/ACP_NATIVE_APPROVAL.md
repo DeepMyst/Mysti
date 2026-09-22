@@ -11,7 +11,7 @@ legacy stream-JSON, plain-text, or auto-approve execution fallback.
 | --- | --- | --- |
 | Gemini | 0.58.0 | `read_file`, `write_file`, `replace`. File diffs carry the proposed contents; reads bind a single absolute native location. Shell, delegation and other tools are denied because this release omits their complete permission inputs. |
 | Cline | 3.0.61 | Supported built-in reads/searches, edits, foreground commands and web tools. The exact native tool name and final `rawInput` are required; a generic `think` kind cannot authorize an agent. |
-| Copilot | 1.0.83 | Read/search only. Native workspace reads bypass host cards. File writes, shell, web tools, broader path grants and delegation are disabled: this release executes some workspace edits and commands without ACP permission requests. |
+| Copilot | 1.0.83 | Sync `bash` commands (request must repeat the announced command) and per-file `apply_patch`/`edit`/`create` changes (absolute path + diff), each behind a host card. Async/detached shells, web tools, broader path grants and delegation are denied. Restricted tiers expose read/search only. Native workspace reads bypass host cards. |
 | Qwen Code | 0.23.0 | `read_file`, `edit`, `notebook_edit`, foreground `run_shell_command`. Final arguments and native normalized edit diffs are captured together. Other core and synthetic tools are excluded. |
 | OpenCode | 1.18.29 | File read/search/edit/fetch tools under a fixed `mysti-host` agent. Shell, task/delegation and arbitrary custom tools are removed from the executable tool map. |
 
@@ -86,11 +86,21 @@ therefore part of the approval boundary, independently of the protocol bridge.
   ACP mode and model are set by RPC because this native entry point ignores the
   corresponding CLI flags.
 - **Copilot:** a private `COPILOT_HOME` supplies manual permissions and disabled
-  hooks/plugins/IDE auto-connect. The available tool list permits only read/search. An append-redirection command
-  and an in-workspace apply_patch both bypassed the ACP callback despite manual
-  mode. File writes and shell are removed from the native tool map and explicitly
-  denied at every Mysti access tier. Interactive writable Copilot support remains
-  unresolved; the restricted transport must not be presented as that support. Native and managed configuration sources that cannot be
+  hooks/plugins/IDE auto-connect. The earlier finding that an append-redirection
+  command and an in-workspace apply_patch bypassed the ACP callback was caused by
+  Mysti itself: it set `COPILOT_ALLOW_ALL=false`, and releases before 1.0.85 treat
+  any non-empty value as allow-all while still reporting `allow_all: off`. With the
+  variable unset, 1.0.83 (and 1.0.87) send a permission request before every tested
+  shell form (redirects, `>>`, `tee`, `sed -i`, `find -delete`, substitutions,
+  compound commands) and every patched file, and a reject prevents the effect
+  (runtime-verified with a fake local model, 2026-09-22). Unrestricted and ask
+  tiers therefore expose `bash`, `apply_patch`, `edit` and `create`; each request
+  must match the announced tool, shells must be sync (no `mode: async`/`detach`),
+  and a multi-file patch is approved file by file, so a later rejection can leave
+  earlier approved files changed. A sync command still running after
+  `initial_wait` is killed with the agent's process tree at Stop or turn end.
+  Read-only and plan tiers keep the read/search tool map with shell and write
+  denied. Native and managed configuration sources that cannot be
   isolated prevent startup. GitHub token login can fetch opaque managed hooks,
   so this bridge requires BYOK and forces GitHub offline mode. Native safe reads
   still bypass host approval.
