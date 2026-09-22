@@ -139,7 +139,7 @@ merely to make this checklist pass.
   persistence. Nine historical witnesses/controls and the store transaction
   design are reviewed in `CANVAS_MEDIA_REVIEW_20260922/`. Implementation passes local
   typecheck, lint, 15,006 tests (one unchanged skip), package shape and independent
-  review in `CANVAS_MEDIA_FIX_20260922/`; hosted acceptance remains required.
+  review in `CANVAS_MEDIA_FIX_20260922/`; all 15 hosted checks pass on `72672ee`.
 
 Current working evidence goes in dated subdirectories of
 `out-test/release-evidence/`: `OPENROUTER_FIX_20260920/`,
