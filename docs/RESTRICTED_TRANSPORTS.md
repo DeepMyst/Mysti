@@ -9,6 +9,8 @@ or prompt preparation; they do not silently run with broader permissions.
 | --- | --- | --- |
 | Cursor | Rejected before launch | Native approval transport and isolated execution proof still needed. Fully unrestricted turns alone use `--force`. Prompt enhancement is disabled because that path had no execution restriction. |
 | Continue | Rejected before launch | Plain final-text transport cannot ask the host. Fully unrestricted turns alone use `--auto`. |
+| Hermes | Rejected before launch | v2026.9.21 asks only for denylisted shell commands and file edits; inherited `approvals.mode`/yolo can remove those. |
+| Kimi Code | Rejected before launch | 2.0.2 auto-approves in-repository writes, FetchURL, Agent/AgentSwarm and Skill; plan mode does not cover fetch or subagents. |
 | OpenCode | Fixed native agent removes mutations in plan/read-only tiers | Shell and delegation remain unavailable in every mode. |
 | Qwen | Fixed native tool subset plus immutable host mutation denial | Only the tools and runtime in the ACP contract are supported. |
 | Copilot | Read/search subset in every mode; no legacy fallback | Writable approval support remains unresolved; native reads have no host approval card. |

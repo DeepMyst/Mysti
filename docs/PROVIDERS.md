@@ -24,8 +24,8 @@ offers them as updates. Current release and acceptance gaps are tracked in
 | OpenClaw | Owned local gateway/runtime | Bounded stock tools with final execution guard |
 | OpenCode | ACP | File/search/fetch subset; no shell/delegation |
 | Qwen Code | ACP | Read/edit/notebook/foreground shell subset |
-| Hermes | Persistent ACP | Bridge implemented; installed policy acceptance pending |
-| Kimi Code | Persistent ACP | Bridge implemented; installed policy acceptance pending |
+| Hermes | Persistent ACP | Restricted tiers rejected; unrestricted turns only |
+| Kimi Code | Persistent ACP | Restricted tiers rejected; unrestricted turns only |
 | Continue | Plain-text CLI | Fully unrestricted turns only |
 | Ollama | HTTP | Reports tool proposals; does not execute them |
 | LocalAI | HTTP | Reports tool proposals; does not execute them |
@@ -506,6 +506,15 @@ These persistent ACP adapters implement native request/card/response routing,
 reported session continuity, images and usage. Neither CLI is installed in the
 review environment. Native policy completeness and authenticated/editor behavior
 remain unverified; fixture coverage does not establish universal tool approval.
+
+The 2026-09-22 source review found that neither agent requests permission for
+every operation: Hermes v2026.9.21 asks only for denylisted shell commands and
+file edits, and Kimi Code 2.0.2 auto-approves in-repository writes, fetches,
+subagents and skills. Both honour inherited yolo/auto-approve user settings.
+Mysti therefore rejects every restricted tier for them before launch; only
+`full-access` with `default` or `edit-automatically` runs. Kimi Code 2.x keeps
+its configuration in `~/.kimi-code` and reads `KIMI_MODEL_*`; Mysti's
+credential/model detection still targets the 1.x `~/.kimi` layout (unfixed).
 
 ## Continue
 

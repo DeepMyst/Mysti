@@ -34,6 +34,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import { respondToAcpApproval } from '../base/AcpApproval';
+import { requireUnrestrictedLegacyTransport } from '../base/NativeApprovalPolicy';
 import {
   parseAcpAvailableCommands,
   type NativeCommandSpec,
@@ -426,6 +427,17 @@ export class HermesProvider extends BaseCliProvider {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Hermes (v2026.9.21 tools/approval.py) requests ACP permission only for its
+   * dangerous-command denylist and write_file/patch edits; every other shell,
+   * code-execution, MCP and web tool runs unasked, and HERMES_YOLO_MODE or
+   * `approvals.mode: off` in the inherited user config removes even those.
+   * No launch option restores per-call approval, so restricted tiers fail closed.
+   */
+  protected async _validateNativeApprovalCli(_session: PanelSessionState, settings: Readonly<Settings>): Promise<void> {
+    requireUnrestrictedLegacyTransport(settings, this.displayName);
   }
 
   /**
