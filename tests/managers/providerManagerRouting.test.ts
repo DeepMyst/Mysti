@@ -256,4 +256,23 @@ describe('ProviderManager panel -> provider routing (B12)', () => {
 
     expect(registerProcessPid).not.toHaveBeenCalled();
   });
+
+  it('Canvas MCP config: a per-turn link targets the named backend and clearing reaches every backend', () => {
+    const x = spyProvider('provider-x');
+    const y = spyProvider('provider-y');
+    const setX = vi.fn();
+    const setY = vi.fn();
+    Object.assign(x.provider, { setCanvasMcpConfig: setX });
+    Object.assign(y.provider, { setCanvasMcpConfig: setY });
+    const manager = buildManager('provider-y', [x, y]); // default is Y
+
+    manager.setCanvasMcpConfig('panel-P', '/tmp/cfg.json', 'provider-x');
+    expect(setX).toHaveBeenCalledExactlyOnceWith('panel-P', '/tmp/cfg.json');
+    expect(setY).not.toHaveBeenCalled();
+
+    // The turn's backend (X) is not the active one; unlink must still reach it.
+    manager.setCanvasMcpConfig('panel-P', null);
+    expect(setX).toHaveBeenLastCalledWith('panel-P', null);
+    expect(setY).toHaveBeenCalledExactlyOnceWith('panel-P', null);
+  });
 });

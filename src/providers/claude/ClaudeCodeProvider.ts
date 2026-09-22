@@ -573,6 +573,17 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   /**
+   * The CLI reads `--mcp-config` once at spawn and keeps that HTTP session, so
+   * a rotated per-turn Canvas credential needs an owned restart (which resumes
+   * the same CLI session) rather than a reuse that would still carry the old,
+   * revoked bearer.
+   */
+  protected override _persistentSettingsMatch(session: PanelSessionState, settings: Settings): boolean {
+    return super._persistentSettingsMatch(session, settings)
+      && session.persistentCanvasMcpRevision === session.canvasMcpRevision;
+  }
+
+  /**
    * Detect response boundary in Claude CLI stream-json output.
    * The `result` event marks the end of a response in interactive mode.
    */
