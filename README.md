@@ -357,7 +357,7 @@ requirements; subscription access and API access may differ.
 | **GitHub Copilot CLI** | BYOK endpoint, model and API key; subscription login unsupported | `npm install -g @github/copilot@1.0.83` |
 | **Gemini CLI** | API key, Vertex AI or Code Assist Standard/Enterprise sign-in | `npm install -g @google/gemini-cli@0.60.0` |
 | **Codex CLI** | Supported ChatGPT sign-in or OpenAI API | `npm install -g @openai/codex@0.153.4` |
-| **Cline** | `CLINE_API_KEY` in the extension environment | `npm install -g cline@3.0.61` |
+| **Cline** | `CLINE_API_KEY` in the extension environment | `npm install -g cline@3.0.64` |
 | **Cursor** | Cursor subscription | macOS/Linux: `curl https://cursor.com/install -fsS \| bash` · Windows: `irm 'https://cursor.com/install?win32=true' \| iex` |
 | **OpenClaw** | Configured provider/model and matching credentials; POSIX runtime | `npm install -g openclaw@2026.6.34` |
 | **OpenCode** | Provider API keys (Anthropic, OpenAI, etc.) | `npm i -g opencode-ai@1.18.29` |
@@ -405,7 +405,7 @@ npm install -g @google/gemini-cli@0.60.0
 gemini
 
 # Or Cline
-npm install -g cline@3.0.61
+npm install -g cline@3.0.64
 # Set CLINE_API_KEY in the extension environment.
 
 # Or Cursor (macOS/Linux; on Windows PowerShell: irm 'https://cursor.com/install?win32=true' | iex)

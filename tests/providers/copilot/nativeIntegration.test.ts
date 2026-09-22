@@ -13,7 +13,9 @@ import type { AcpNativeLaunchContext } from '../../../src/providers/base/AcpNati
 import type { Settings, StreamChunk, ToolCall } from '../../../src/types';
 import { createMockContext } from '../../helpers/providerFactory';
 
-const installed = { cline: '/usr/local/lib/node_modules/cline/bin/.cline', copilot: '/usr/local/bin/copilot' };
+// MYSTI_NATIVE_CLINE_CLI selects an unpacked platform binary of another
+// verified release (outside $HOME: the sandbox denies reads there).
+const installed = { cline: process.env.MYSTI_NATIVE_CLINE_CLI || '/usr/local/lib/node_modules/cline/bin/.cline', copilot: '/usr/local/bin/copilot' };
 const supported = process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec');
 type Scenario = 'allow-command' | 'deny-command' | 'allow-write' | 'readonly-command' | 'cancel-command' | 'deny-write' | 'readonly-write' | 'cancel-write' | 'blocked-shell' | 'blocked-write' | 'read';
 

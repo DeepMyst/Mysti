@@ -11,7 +11,7 @@ export const VERIFIED_NATIVE_CLI_VERSIONS = Object.freeze({
   'google-gemini': '0.60.0',
   'github-copilot': '1.0.83',
   'opencode': '1.18.29',
-  'cline': '3.0.61',
+  'cline': '3.0.64',
   'qwen-code': '0.24.4',
   'openclaw': '2026.6.34',
 } as const);
@@ -24,6 +24,7 @@ export const VERIFIED_NATIVE_CLI_VERSIONS = Object.freeze({
 const PREVIOUSLY_VERIFIED_NATIVE_CLI_VERSIONS: Readonly<Partial<Record<keyof typeof VERIFIED_NATIVE_CLI_VERSIONS, readonly string[]>>> = Object.freeze({
   'google-gemini': Object.freeze(['0.58.0']),
   'qwen-code': Object.freeze(['0.23.0']),
+  'cline': Object.freeze(['3.0.61']),
 });
 
 /** The installer target first, then earlier verified releases. */

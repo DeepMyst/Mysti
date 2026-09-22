@@ -10,7 +10,7 @@ legacy stream-JSON, plain-text, or auto-approve execution fallback.
 | Provider | Verified release | Native operation boundary |
 | --- | --- | --- |
 | Gemini | 0.60.0 (0.58.0 accepted) | `read_file`, `write_file`, `replace`. File diffs carry the proposed contents; reads bind a single absolute native location. Shell, delegation and other tools are denied because these releases omit their complete permission inputs. 0.60.0 skips the bundled system settings file (not root-owned); the admin policy is the enforcing transport and `.agents/skills` is refused. |
-| Cline | 3.0.61 | Supported built-in reads/searches, edits, foreground commands and web tools. The exact native tool name and final `rawInput` are required; a generic `think` kind cannot authorize an agent. |
+| Cline | 3.0.64 (3.0.61 accepted) | Supported built-in reads/searches, edits, foreground commands and web tools. The exact native tool name and final `rawInput` are required; a generic `think` kind cannot authorize an agent. |
 | Copilot | 1.0.83 | Read/search only. Native workspace reads bypass host cards. File writes, shell, web tools, broader path grants and delegation are disabled: this release executes some workspace edits and commands without ACP permission requests. |
 | Qwen Code | 0.24.4 (0.23.0 accepted) | `read_file`, `edit`, `notebook_edit`, foreground `run_shell_command`. Final arguments and native normalized edit diffs are captured together. Other core and synthetic tools are excluded, including 0.24's `tool_call` dispatcher, code-mode `exec` and `omni_*` tools. |
 | OpenCode | 1.18.29 | File read/search/edit/fetch tools under a fixed `mysti-host` agent. Shell, task/delegation and arbitrary custom tools are removed from the executable tool map. |

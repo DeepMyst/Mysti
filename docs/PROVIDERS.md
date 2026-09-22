@@ -177,7 +177,7 @@ Versatile CLI tool with plan/act workflow support.
 ### Installation
 
 ```bash
-npm install -g cline@3.0.61
+npm install -g cline@3.0.64
 ```
 
 ### Authentication
@@ -196,7 +196,7 @@ The ACP bridge requires `CLINE_API_KEY` in the extension environment, with optio
 - **Multi-Model**: Supports models from multiple providers
 - **Task-Oriented**: Designed for structured task completion
 
-The **3.0.61** ACP bridge uses private local state and native permission requests. Images, native thinking controls and usage reporting are unavailable in this transport. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
+The **3.0.64** ACP bridge (3.0.61 remains accepted) uses private local state and native permission requests. Startup is refused while `~/.agents/plugins` (loaded by 3.0.62+) holds agent plugins. Images, native thinking controls and usage reporting are unavailable in this transport. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
 
 ### Settings
 

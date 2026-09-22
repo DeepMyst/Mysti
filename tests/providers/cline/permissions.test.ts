@@ -10,7 +10,8 @@ describe('Cline native permission identity', () => {
     const input = { commands: [{ command: 'printf approved > marker' }] };
     expect(decodeClinePermission(request('run_commands: write marker', 'execute', input))).toMatchObject({ name: 'Bash', input });
   });
-  it.each(['Agent', 'spawn_agent', 'skills', 'schedule_task', 'mcp_other'])('denies unsupported %s even when Cline labels it think', title => {
+  // 3.0.63 configured subagents (`subagent_*`) run their children without further approval once delegated.
+  it.each(['Agent', 'spawn_agent', 'subagent_reviewer', 'skills', 'schedule_task', 'mcp_other'])('denies unsupported %s even when Cline labels it think', title => {
     expect(decodeClinePermission(request(title, 'think', { prompt: 'write marker' }))).toBeUndefined();
   });
   it('rejects a command disguised as a safe read', () => {

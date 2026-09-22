@@ -596,8 +596,8 @@ export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
   ],
 
   // ---------------------------------------------------------------------------
-  // Cline — the CLI takes a prompt or a `task` subcommand; plan/act is a flag
-  // (--mode), which is why /plan-act maps onto Mysti's mode setting. Workflows
+  // Cline — driven over ACP (`cline --acp`), where plan/act is the session mode
+  // Mysti sets by RPC, which is why /plan-act maps onto Mysti's mode setting. Workflows
   // under .clinerules/workflows are discovered and sent by `expand`.
   // ---------------------------------------------------------------------------
   'cline': [
