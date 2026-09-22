@@ -264,4 +264,80 @@ describe('canvas handoff — assets and the open design', () => {
     expect(panel.webview.html).toContain(provider._canvasArtifact.id);
     expect(panel.webview.html).not.toContain(artifact.id);
   });
+
+  // R8 export ownership: Export/Present act on the design they were REQUESTED
+  // for, captured once as an immutable snapshot with its own store. A switch,
+  // close or concurrent edit during the folder picker / asset reads cannot
+  // retarget the bundle, crash it, or strip its images.
+  describe('export/present ownership', () => {
+    function deferredPick() {
+      let resolve!: (value: unknown) => void;
+      const promise = new Promise(yes => { resolve = yes; });
+      (vscode.window as any).showOpenDialog = () => promise;
+      return () => resolve([Uri.file(out)]);
+    }
+    const read = (file: string) => fs.readFileSync(path.join(out, file), 'utf8');
+
+    it('exports the requested design when the view switches designs while the picker is open', async () => {
+      const other = store.createArtifact({ name: 'Second design', kind: 'screens' });
+      store.insertPage(other, store.makePage({ mode: 'jsx', jsxSource: 'function Page(){return <div>second</div>;}' }));
+      await store.save(other);
+      const pick = deferredPick();
+      const exporting = provider._exportCanvas();
+      await provider._switchCanvasArtifact('canvas-panel', other.id);
+      expect(provider._canvasArtifact.id).toBe(other.id);
+      pick();
+      await exporting;
+      const title = /<title>([^<]*)<\/title>/.exec(read('index.html'))?.[1];
+      expect(title).toContain('Brand');
+      expect(title).not.toContain('Second design');
+      expect(read(path.join('pages', 'page-0.html')).includes(`data:image/png;base64,${PNG_B64}`)).toBe(true);
+    });
+
+    it('finishes the requested export with its images when the view closes while the picker is open', async () => {
+      const pick = deferredPick();
+      const exporting = provider._exportCanvas();
+      await provider._canvasArtifactSession.close();
+      expect(provider._canvasArtifact).toBeNull();
+      pick();
+      await exporting;
+      expect(/<title>([^<]*)<\/title>/.exec(read('index.html'))?.[1]).toContain('Brand');
+      expect(read(path.join('pages', 'page-0.html')).includes(`data:image/png;base64,${PNG_B64}`)).toBe(true);
+    });
+
+    it('never pairs a later edit with asset bytes gathered for an earlier page list', async () => {
+      const live = provider._canvasArtifact as CanvasArtifact;
+      const second = await store.addAsset(live, PNG_B64.replace('C0', 'C1'), 'image/png', { role: 'image' });
+      const readBytes = store.readAssetBytes.bind(store);
+      let mutated = false;
+      vi.spyOn(store, 'readAssetBytes').mockImplementation(async (assetRef: string) => {
+        if (!mutated) {
+          mutated = true;
+          store.insertPage(live, store.makePage({
+            mode: 'jsx', jsxSource: `function Page(){ return <img src="${second!.ref}" />; }`,
+          }));
+        }
+        return readBytes(assetRef);
+      });
+      await provider._exportCanvas();
+      const pages = fs.readdirSync(path.join(out, 'pages'));
+      const unresolved = pages.filter(page => read(path.join('pages', page)).includes('asset://'));
+      expect(unresolved).toEqual([]);
+    });
+
+    it('presents the requested design with its images when the view closes during preparation', async () => {
+      const panels: any[] = [];
+      (vscode.window as any).createWebviewPanel = () => {
+        const p = { webview: fakeWebview(), iconPath: undefined, onDidDispose: () => ({ dispose: () => {} }) };
+        panels.push(p);
+        return p;
+      };
+      const presenting = provider._presentCanvas();
+      await provider._canvasArtifactSession.close();
+      await presenting;
+      expect(panels).toHaveLength(1);
+      expect(panels[0].webview.html.includes(`data:image/png;base64,${PNG_B64}`)).toBe(true);
+    });
+  });
+
 });
