@@ -68,3 +68,16 @@ load project, user and managed sources before a model turn. Merely omitting
 Mysti's approval or that startup respects the selected restriction. A future
 integration needs isolated configuration, final operation identity and actual
 side-effect tests before enabling these tiers.
+
+2026-09-22 review of the latest release, `2026.09.18-9a7762b` (install script
+and shipped bundle; `--help` only, no login): restricted tiers stay rejected.
+Every project `.cursor/cli.json` up to the Git root is deep-merged with array
+replacement, so a repository can replace `allow`/`deny`; project hooks
+(`.cursor/hooks.json`, `.claude/settings.json`) run commands and
+`--disable-project-configs` does not disable them; allow rules also come from
+team dashboard and server-side allowlists Mysti cannot pin; and read-only shell
+confinement depends on a sandbox team settings can disable. The hidden `acp`
+entry point does send `session/request_permission`, but already-allowlisted
+operations and reads never reach the host. `--allowed-tools`/`--exclude-tools`
+are internal-only and absent from older builds. Unrestricted turns keep
+`--force`, which also satisfies the new print-mode workspace-trust check.
