@@ -8619,6 +8619,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Deactivation disposes panels only after `deactivate()` returns, and nothing
+   * awaits that disposal, so a pending debounce or in-flight write could be cut
+   * off by host exit. Run the canvas's normal close now and return its final
+   * save (or recovery copy) for deactivate to await.
+   */
+  public closeCanvasForShutdown(): Promise<void> {
+    const session = this._canvasArtifactSession;
+    const panel = this._canvasPanelId ? this._panelStates.get(this._canvasPanelId)?.panel : undefined;
+    panel?.dispose();
+    return session ? session.close() : Promise.resolve();
+  }
+
+  /**
    * F-11: inject the shared {@link CanvasSecrets} instance (constructed once in
    * extension.ts after the one-time settings→secrets migration) and prime the
    * generation services with the stored keys.

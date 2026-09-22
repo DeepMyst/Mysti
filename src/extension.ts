@@ -1298,8 +1298,11 @@ function _formatProviderLabel(provider: string): string {
   return labels[provider] || getProviderDisplayName(provider);
 }
 
-export function deactivate() {
+export function deactivate(): Promise<void> | undefined {
   console.log('Mysti extension is now deactivated');
+  // VS Code awaits (bounded) a returned promise before exiting the host; the
+  // open Canvas's final save must not race process exit.
+  const canvasClosed = chatViewProvider?.closeCanvasForShutdown();
   // Cleanup is handled automatically via context.subscriptions
   // Additional cleanup for managers not in subscriptions
   if (permissionManager) {
@@ -1341,4 +1344,5 @@ export function deactivate() {
   if (checkpointManager) {
     checkpointManager.dispose();
   }
+  return canvasClosed;
 }

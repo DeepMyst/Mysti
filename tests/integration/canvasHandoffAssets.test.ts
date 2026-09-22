@@ -371,6 +371,24 @@ describe('canvas handoff — assets and the open design', () => {
       expect(warn.mock.calls[0][0]).toContain('disk full');
     });
 
+    it('shutdown closes the canvas and waits for its final save instead of dropping the debounce', async () => {
+      const live = provider._canvasArtifact as CanvasArtifact;
+      live.name = 'Edited just before quitting';
+      provider._canvasArtifactSession.scheduleSave();
+      let release!: () => void;
+      const save = vi.spyOn(store, 'save').mockReturnValue(new Promise<void>(resolve => { release = resolve; }));
+      const panel = provider._panelStates.get('canvas-panel').panel;
+      panel.dispose = vi.fn();
+      let settled = false;
+      const shutdown = (provider.closeCanvasForShutdown() as Promise<void>).then(() => { settled = true; });
+      expect(panel.dispose).toHaveBeenCalledOnce();
+      expect(save).toHaveBeenCalledExactlyOnceWith(live, expect.any(Function));
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(settled).toBe(false);
+      release();
+      await shutdown;
+    });
+
     it('says the edits were lost when the recovery copy cannot be written either', async () => {
       const blocked = path.join(storage, 'not-a-directory');
       fs.writeFileSync(blocked, '');
