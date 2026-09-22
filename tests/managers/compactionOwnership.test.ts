@@ -160,6 +160,33 @@ describe('client compaction commit ownership', () => {
     }
   });
 
+  it('aborting closes exactly the compaction session transport and commits nothing', async () => {
+    const h = history(); const before = h.conversation.messages; const entered = deferred(); const closed = deferred();
+    const cancelRequest = vi.fn((id: string) => { if (id === 'panel-compaction') { closed.resolve(); } });
+    const provider = { cancelRequest, sendMessage: async function* (): AsyncGenerator<StreamChunk> {
+      entered.resolve(); await closed.promise; // A blocked transport ends only when its session is cancelled.
+    } } as unknown as ProviderManager;
+    const abort = new AbortController();
+    const pending = h.manager.executeClientSummarization(provider, h.store, settings, h.conversation, 'panel', () => true, abort.signal);
+    await entered.promise; abort.abort();
+    expect(cancelRequest.mock.calls).toEqual([['panel-compaction']]);
+    expect((await pending).success).toBe(false); expect(h.conversation.messages).toBe(before);
+  });
+
+  it('a settled summary detaches its abort listener so a later abort cannot cancel a reused session', async () => {
+    const h = history(); const cancelRequest = vi.fn();
+    const provider = { cancelRequest, sendMessage: async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', content: 'Summary' }; yield { type: 'done' };
+    } } as unknown as ProviderManager;
+    const abort = new AbortController();
+    expect((await h.manager.executeClientSummarization(provider, h.store, settings, h.conversation, 'panel', () => true, abort.signal)).success).toBe(true);
+    abort.abort(); expect(cancelRequest).not.toHaveBeenCalled();
+    const sent = vi.fn(); const stopped = new AbortController(); stopped.abort();
+    const off = { cancelRequest, sendMessage: sent } as unknown as ProviderManager;
+    for await (const _chunk of h.manager.executeNativeCompaction(off, settings, null, 'panel', stopped.signal)) { /* none */ }
+    expect(sent).not.toHaveBeenCalled();
+  });
+
   it('retains attempt cooldown during a client summary and after its explicit failure', async () => {
     const h = history(); const release = deferred(); const entered = deferred();
     const due = () => h.manager.shouldCompact('panel', { input_tokens: 950, output_tokens: 0 }, 1000, 20);

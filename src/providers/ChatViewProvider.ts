@@ -4883,7 +4883,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // active and a prior compaction produced memory to retrieve against, so it
       // adds no latency for non-smart sends and never blocks a send on failure.
       try {
-        const retrieved = await this._compactionManager.retrieveContext(panelId, content);
+        const retrieved = await this._compactionManager.retrieveContext(panelId, content, isChannelCurrent.signal);
         if (!acceptsTurn()) { return; }
         if (retrieved) {
           enrichedContent += retrieved;
@@ -4915,7 +4915,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             conversation,
             { input_tokens: activity?.fill ?? 0, output_tokens: 0 },
             contextWindow,
-            acceptsTurn, request.post,
+            acceptsTurn, request.post, isChannelCurrent.signal,
           );
           if (!acceptsTurn()) { return; }
           coldResumeIntercepted = true;
@@ -5469,7 +5469,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               );
               if (compactionEval.act) {
                 // Run compaction asynchronously (don't block the response flow)
-                void this._executeCompaction(panelId, settings, updatedConversation, lastUsage, contextWindow, acceptsTurn, request.post);
+                void this._executeCompaction(panelId, settings, updatedConversation, lastUsage, contextWindow, acceptsTurn, request.post, isChannelCurrent.signal);
               } else {
                 this._compactionManager.recordUsage(panelId, lastUsage, contextWindow);
               }
@@ -5693,7 +5693,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       ?? { input_tokens: 0, output_tokens: 0 };
 
     console.log(`[Mysti] Manual compaction requested for panel ${panelId}`);
-    await this._executeCompaction(panelId, settings, conversation, usage, contextWindow, isCurrent);
+    await this._executeCompaction(panelId, settings, conversation, usage, contextWindow, isCurrent, undefined, isChannelCurrent.signal);
   }
 
   private async _executeCompaction(
@@ -5704,6 +5704,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     contextWindow: number,
     isCurrent: () => boolean = () => true,
     post: ForegroundPost = message => this._postToPanel(panelId, { ...message, scope: 'notice' }),
+    /** Aborts with the captured panel scope, closing the summary transport itself. */
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!isCurrent()) { return; }
     const strategy = this._compactionManager.getStrategy(settings.provider, this._providerManager);
@@ -5736,7 +5738,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       //   2. the session id — so the next turn re-sends the compacted messages
       //      (effectiveConversation is only the conversation when sessionId is null).
       if (this._compactionManager.isSmartActive() && conversation) {
-        const smart = await this._compactionManager.executeSmartSummarization(settings, conversation, panelId, isCurrent);
+        const smart = await this._compactionManager.executeSmartSummarization(settings, conversation, panelId, isCurrent, signal);
         if (!isCurrent()) { return; }
         if (smart && smart.success) {
           this._providerManager.disposePersistentProcess(panelId);
@@ -5774,7 +5776,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Native /compact: send the command to the CLI
         console.log(`[Mysti] Executing native /compact for panel ${panelId}`);
         const stream = this._compactionManager.executeNativeCompaction(
-          this._providerManager, settings, conversation, panelId
+          this._providerManager, settings, conversation, panelId, signal,
         );
 
         // Process the compact response stream — capture text and usage
@@ -5839,6 +5841,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           conversation,
           panelId,
           isCurrent,
+          signal,
         );
         if (!isCurrent()) { return; }
 

@@ -52,6 +52,32 @@ export interface BoostCompactionOverlay {
 }
 
 /**
+ * Close a provider transport the moment its owner aborts. A consumer loop only
+ * notices cancellation between chunks, so a blocked CLI child or HTTP request
+ * would otherwise run to its own timeout; cancelling the exact session id ends
+ * the stream now. The listener is removed when the stream settles, so a late
+ * abort can never cancel a later request that reuses the same session id.
+ */
+async function* abortableStream(
+  stream: AsyncGenerator<StreamChunk>,
+  providerManager: ProviderManager,
+  sessionId: string,
+  signal: AbortSignal | undefined,
+): AsyncGenerator<StreamChunk> {
+  if (signal?.aborted) { return; }
+  const onAbort = () => providerManager.cancelRequest(sessionId);
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    for await (const chunk of stream) {
+      if (signal?.aborted) { return; }
+      yield chunk;
+    }
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+/**
  * CompactionManager - Unified context compaction across all providers
  *
  * Monitors per-panel token usage and triggers compaction when the context
@@ -211,7 +237,9 @@ export class CompactionManager {
     settings: Settings,
     conversation: Conversation | null,
     panelId: string,
+    signal?: AbortSignal,
   ): AsyncGenerator<StreamChunk> {
+    if (signal?.aborted) { return; }
     console.log(`[Mysti] CompactionManager: Executing native /compact for panel ${panelId}`);
     this._lastCompactionTime.set(panelId, Date.now());
 
@@ -224,7 +252,7 @@ export class CompactionManager {
       panelId,
     );
 
-    yield* stream;
+    yield* abortableStream(stream, providerManager, panelId, signal);
   }
 
   /**
@@ -237,8 +265,10 @@ export class CompactionManager {
     settings: Settings,
     conversation: Conversation,
     panelId: string,
-    isCurrent: () => boolean = () => true,
+    ownsRequest: () => boolean = () => true,
+    signal?: AbortSignal,
   ): Promise<CompactionResult> {
+    const isCurrent = () => !signal?.aborted && ownsRequest();
     const startTime = Date.now();
     const refused = (): CompactionResult => ({ success: false, beforeTokens: 0, afterTokens: 0,
       strategy: 'client-summarize', duration: Date.now() - startTime,
@@ -273,14 +303,14 @@ export class CompactionManager {
     let summaryContent = '';
     let completed = false;
     try {
-      const stream = providerManager.sendMessage(
+      const stream = abortableStream(providerManager.sendMessage(
         summaryPrompt,
         [],
         settings,
         null, // No conversation context for the summarization itself
         undefined,
         `${panelId}-compaction`,
-      );
+      ), providerManager, `${panelId}-compaction`, signal);
 
       for await (const chunk of stream) {
         if (!isCurrent()) { return refused(); }
@@ -303,6 +333,7 @@ export class CompactionManager {
       };
     }
 
+    if (!isCurrent()) { return refused(); }
     // Successful provider contracts terminate with done. EOF alone can be an
     // interrupted request, so partial text must never replace durable history.
     if (!completed) { return { ...refused(), error: 'The provider ended before completing the compaction summary.' }; }
@@ -509,6 +540,7 @@ export class CompactionManager {
     conversation: Conversation,
     panelId: string,
     isCurrent: () => boolean = () => true,
+    signal?: AbortSignal,
   ): Promise<CompactionResult | null> {
     if (!this.isSmartActive() || !this._smart) { return null; }
     if (isCurrent()) { this._lastCompactionTime.set(panelId, Date.now()); }
@@ -519,6 +551,7 @@ export class CompactionManager {
       cheapModel: this._cheapModel,
       minSummaryTokens: this._minSummaryTokens,
       isCurrent,
+      signal,
     });
   }
 
@@ -539,10 +572,10 @@ export class CompactionManager {
    * the user turn. Returns '' when smart compaction isn't active or retrieval
    * shouldn't run. Never throws.
    */
-  public async retrieveContext(panelId: string, prompt: string): Promise<string> {
+  public async retrieveContext(panelId: string, prompt: string, signal?: AbortSignal): Promise<string> {
     if (!this.isSmartActive() || !this._smart) { return ''; }
     try {
-      return await this._smart.retrieve(panelId, prompt, this._cheapModel, this._retrievalEnabled);
+      return await this._smart.retrieve(panelId, prompt, this._cheapModel, this._retrievalEnabled, signal);
     } catch {
       return '';
     }
