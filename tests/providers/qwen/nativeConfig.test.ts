@@ -15,7 +15,7 @@ async function fixture(flavor: 'qwen' | 'gemini' = 'qwen') {
   await fs.writeFile(packageFile, JSON.stringify({ name: flavor === 'qwen' ? '@qwen-code/qwen-code' : '@google/gemini-cli', version }));
   await fs.writeFile(policyFile, '{"host":"policy"}');
   const nativeDir = flavor === 'qwen' ? state : path.join(state, '.gemini'); await fs.mkdir(nativeDir, { recursive: true });
-  const options = { flavor, cwd, env: { QWEN_HOME: state, GEMINI_CLI_HOME: state }, cliPath, version, policyFiles: [policyFile] };
+  const options = { flavor, cwd, env: { QWEN_HOME: state, GEMINI_CLI_HOME: state }, cliPath, versions: [version], policyFiles: [policyFile] };
   return { dir, cwd, nativeDir, packageFile, policyFile, options };
 }
 afterEach(async () => { for (const dir of dirs.splice(0)) { await fs.rm(dir, { recursive: true, force: true }); } });
@@ -169,5 +169,51 @@ describe('native family startup authority snapshots', () => {
     await fs.writeFile(test.policyFile, '{"changed":true}'); await expect(captured.assertUnchanged()).rejects.toThrow('configuration changed');
     await fs.symlink(test.policyFile, path.join(test.nativeDir, 'settings.json'));
     await expect(captureNativeFamilyConfig(test.options)).rejects.toThrow('symbolic link');
+  });
+});
+
+// Current releases (npm latest 2026-09-22): Gemini CLI 0.60.0 and Qwen Code
+// 0.24.4, accepted alongside the earlier verified 0.58.0 / 0.23.0 bridges.
+describe('native family current-release contracts', () => {
+  it.each([['gemini', '0.60.0'], ['gemini', '0.58.0'], ['qwen', '0.24.4'], ['qwen', '0.23.0']] as const)(
+    'accepts %s %s from the verified set and reports the installed release', async (flavor, version) => {
+      const test = await fixture(flavor); await fs.writeFile(test.packageFile, JSON.stringify({ name: flavor === 'qwen' ? '@qwen-code/qwen-code' : '@google/gemini-cli', version }));
+      const versions = flavor === 'qwen' ? ['0.24.4', '0.23.0'] : ['0.60.0', '0.58.0'];
+      await expect(captureNativeFamilyConfig({ ...test.options, versions })).resolves.toMatchObject({ version });
+    });
+  it('names every accepted release when refusing another one', async () => {
+    const test = await fixture('gemini'); await fs.writeFile(test.packageFile, JSON.stringify({ name: '@google/gemini-cli', version: '0.61.0-preview.0' }));
+    await expect(captureNativeFamilyConfig({ ...test.options, versions: ['0.60.0', '0.58.0'] })).rejects.toThrow('only version 0.60.0 or 0.58.0');
+  });
+  // 0.60.0 skips a non-root-owned system settings file, so `skills.enabled:false`
+  // no longer applies and the `.agents/skills` aliases load (skillManager.ts:75-97).
+  it.each(['home', 'workspace'] as const)('refuses %s .agents/skills only where the host settings file is not applied', async where => {
+    const test = await fixture('gemini');
+    const base = where === 'home' ? test.options.env.GEMINI_CLI_HOME : test.cwd;
+    const skills = path.join(base, '.agents', 'skills', 'inert'); await fs.mkdir(skills, { recursive: true }); await fs.writeFile(path.join(skills, 'SKILL.md'), 'do not load');
+    for (const version of ['0.58.0', '0.60.0']) {
+      await fs.writeFile(test.packageFile, JSON.stringify({ name: '@google/gemini-cli', version }));
+      const result = captureNativeFamilyConfig({ ...test.options, versions: ['0.60.0', '0.58.0'], refuseAgentSkillAliases: v => v !== '0.58.0' });
+      if (version === '0.58.0') { await expect(result).resolves.toMatchObject({ version }); }
+      else { await expect(result).rejects.toThrow('custom native skills are present'); }
+    }
+  });
+  it('detects .agents/skills created after capture on releases that load it', async () => {
+    const test = await fixture('gemini'); await fs.writeFile(test.packageFile, JSON.stringify({ name: '@google/gemini-cli', version: '0.60.0' }));
+    const captured = await captureNativeFamilyConfig({ ...test.options, versions: ['0.60.0'], refuseAgentSkillAliases: () => true });
+    await fs.mkdir(path.join(test.cwd, '.agents', 'skills'), { recursive: true }); await expect(captured.assertUnchanged()).resolves.toBeUndefined();
+    await fs.writeFile(path.join(test.cwd, '.agents', 'skills', 'SKILL.md'), 'late'); await expect(captured.assertUnchanged()).rejects.toThrow('skills');
+  });
+  it('accepts the 0.24 openai-responses protocol only on a release that defines it', async () => {
+    const test = await fixture(); await fs.writeFile(path.join(test.nativeDir, 'settings.json'), JSON.stringify({ providerProtocol: { inert: 'openai-responses' } }));
+    await fs.writeFile(test.packageFile, JSON.stringify({ name: '@qwen-code/qwen-code', version: '0.24.4' }));
+    await expect(captureNativeFamilyConfig({ ...test.options, versions: ['0.24.4', '0.23.0'] })).resolves.toMatchObject({ version: '0.24.4' });
+    await fs.writeFile(test.packageFile, JSON.stringify({ name: '@qwen-code/qwen-code', version: '0.23.0' }));
+    await expect(captureNativeFamilyConfig({ ...test.options, versions: ['0.24.4', '0.23.0'] })).rejects.toThrow('supported protocol names');
+  });
+  it('removes the 0.24 omni, updater and private-runtime selectors in every casing', () => {
+    const keys = ['QWEN_CODE_ENABLE_OMNI', 'QWEN_UPDATE_BASE_URL', 'QWEN_CODE_PRIVATE_CONVERSATIONS_RUNTIME'];
+    const source = Object.fromEntries(keys.flatMap(key => [[key, '1'], [key.toLowerCase(), '1']]));
+    expect(nativeFamilyEnvironment({ PATH: '/inert', ...source })).toEqual({ PATH: '/inert', GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES: '0' });
   });
 });

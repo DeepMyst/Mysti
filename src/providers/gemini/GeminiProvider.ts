@@ -18,7 +18,7 @@ import * as os from 'os';
 import type { PanelSessionState } from '../base/BaseCliProvider';
 import { AcpNativeProvider } from '../base/AcpNativeProvider';
 import type { AcpNativeLaunch, AcpNativeLaunchContext } from '../base/AcpNativeTypes';
-import { GEMINI_ACP_VERSION, decodeGeminiPermission, decodeGeminiUsage } from './GeminiNativeApproval';
+import { GEMINI_ACP_VERSION, GEMINI_ACP_VERSIONS, GEMINI_SETTINGS_FILE_VERSION, decodeGeminiPermission, decodeGeminiUsage } from './GeminiNativeApproval';
 import { captureNativeFamilyConfig, nativeFamilyEnvironment } from '../qwen/QwenNativeConfig';
 import type {
   CliDiscoveryResult,
@@ -325,14 +325,25 @@ export class GeminiProvider extends AcpNativeProvider {
     const policyFile = path.join(policyDir, 'settings.json');
     const inheritedSystemSettingsPaths = [nativeEnv.GEMINI_CLI_SYSTEM_SETTINGS_PATH, nativeEnv.GEMINI_CLI_SYSTEM_DEFAULTS_PATH]
       .filter((file): file is string => Boolean(file));
+    // The bundled settings file is honoured by 0.58.0 only: 0.60.0 silently
+    // skips a system settings/defaults file unless it and every ancestor are
+    // root-owned. Nothing below may depend on it. On every accepted release the
+    // enforcing transport is the --admin-policy file (not ownership-checked;
+    // ignored only when the machine policies directory has rules, which the
+    // capture refuses), plus the capture's refusal of every user/workspace
+    // settings key, hook, extension, agent, skill and MCP source. Telemetry is
+    // pinned here because its settings default is no longer overridden.
     const env = { ...nativeEnv, GEMINI_CLI_SYSTEM_SETTINGS_PATH: policyFile,
-      GEMINI_CLI_SYSTEM_DEFAULTS_PATH: policyFile, GEMINI_CLI_NO_RELAUNCH: '1' };
-    const capture = await captureNativeFamilyConfig({ ...context, env, flavor: 'gemini', version: GEMINI_ACP_VERSION,
-      policyFiles: [policyFile, path.join(policyDir, 'host.toml'), path.join(policyDir, 'readonly.toml')], inheritedSystemSettingsPaths });
+      GEMINI_CLI_SYSTEM_DEFAULTS_PATH: policyFile, GEMINI_CLI_NO_RELAUNCH: '1', GEMINI_TELEMETRY_ENABLED: 'false' };
+    const capture = await captureNativeFamilyConfig({ ...context, env, flavor: 'gemini', versions: GEMINI_ACP_VERSIONS,
+      policyFiles: [policyFile, path.join(policyDir, 'host.toml'), path.join(policyDir, 'readonly.toml')], inheritedSystemSettingsPaths,
+      refuseAgentSkillAliases: version => version !== GEMINI_SETTINGS_FILE_VERSION });
+    // The attested identity must be the installed release; never skip the check.
+    if (!capture.version) { throw new Error('Gemini CLI native approval setup refused: the installed release could not be identified.'); }
     return {
       cliPath: capture.cliPath, args,
       env,
-      expectedAgentInfo: { name: 'gemini-cli', version: GEMINI_ACP_VERSION },
+      expectedAgentInfo: { name: 'gemini-cli', version: capture.version },
       mode: 'default', images: true, decodePermission: decodeGeminiPermission, decodeUsage: decodeGeminiUsage,
       validateUpdate: update => {
         if (update.sessionUpdate === 'config_option_update' && Array.isArray(update.configOptions)) {

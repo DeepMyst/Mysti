@@ -25,7 +25,7 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-async function fixture(flavor: Flavor, platform = 'win32') {
+async function fixture(flavor: Flavor, platform = 'win32', version = flavor === 'qwen' ? '0.23.0' : '0.58.0') {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-family-launch-'))); dirs.push(root);
   const cwd = path.join(root, 'work'); const state = path.join(root, 'selected'); const fallback = path.join(root, 'fallback');
   const cliDir = path.join(root, 'cli'); const extension = path.join(root, 'extension');
@@ -33,7 +33,7 @@ async function fixture(flavor: Flavor, platform = 'win32') {
   await Promise.all([fs.mkdir(cwd), fs.mkdir(state), fs.mkdir(fallback), fs.mkdir(cliDir), fs.mkdir(policyDir, { recursive: true })]);
   const cliPath = path.join(cliDir, 'cli.js'); await fs.writeFile(cliPath, '// Inert package inspected only; never executed.');
   await fs.writeFile(path.join(cliDir, 'package.json'), JSON.stringify({
-    name: flavor === 'qwen' ? '@qwen-code/qwen-code' : '@google/gemini-cli', version: flavor === 'qwen' ? '0.23.0' : '0.58.0',
+    name: flavor === 'qwen' ? '@qwen-code/qwen-code' : '@google/gemini-cli', version,
   }));
   await Promise.all(['settings.json', 'host.toml', 'readonly.toml'].map(file => fs.writeFile(path.join(policyDir, file), '{}')));
   const homeKey = flavor === 'qwen' ? 'QWEN_HOME' : 'GEMINI_CLI_HOME';
@@ -136,5 +136,32 @@ describe.each(['qwen', 'gemini'] as const)('%s captured native environment', fla
     const capturedDir = flavor === 'qwen' ? expectedHome : path.join(expectedHome, '.gemini'); await fs.mkdir(capturedDir, { recursive: true });
     await fs.writeFile(path.join(capturedDir, 'settings.json'), '{}');
     await expect(launch.assertUnchanged?.()).rejects.toThrow('configuration changed during startup');
+  });
+});
+
+describe('current and previous verified native releases', () => {
+  it.each([['qwen', '0.24.4'], ['qwen', '0.23.0'], ['gemini', '0.60.0'], ['gemini', '0.58.0']] as const)(
+    '%s %s is attested as the installed release, not a fixed pin', async (flavor, version) => {
+      const test = await fixture(flavor, 'linux', version);
+      const launch = await test.prepare({ [test.homeKey]: test.state });
+      expect(launch.expectedAgentInfo).toEqual({ name: flavor === 'qwen' ? 'qwen-code' : 'gemini-cli', version });
+    });
+  it('pins Gemini telemetry off even when the environment enables it', async () => {
+    const gemini = await fixture('gemini', 'linux', '0.60.0');
+    const launch = await gemini.prepare({ [gemini.homeKey]: gemini.state, GEMINI_TELEMETRY_ENABLED: 'true' });
+    expect(launch.env?.GEMINI_TELEMETRY_ENABLED).toBe('false');
+  });
+  it('excludes the 0.24 Qwen dispatch/code tools while keeping the four core tools', async () => {
+    const qwen = await fixture('qwen', 'linux', '0.23.0');
+    const args = (await qwen.prepare({ [qwen.homeKey]: qwen.state })).args;
+    const excluded = args.flatMap((arg, index) => args[index - 1] === '--exclude-tools' ? arg.split(',') : []);
+    expect(excluded).toEqual(expect.arrayContaining(['tool_call', 'exec', 'record_source', 'omni_ocr_image']));
+    expect(args[args.indexOf('--core-tools') + 1].split(',')).toEqual(['read_file', 'edit', 'notebook_edit', 'run_shell_command']);
+  });
+  it.each(['0.58.0', '0.60.0'])('wires the Gemini .agents/skills refusal for %s only where skills stay enabled', async version => {
+    const test = await fixture('gemini', 'linux', version);
+    await fs.mkdir(path.join(test.cwd, '.agents', 'skills'), { recursive: true }); await fs.writeFile(path.join(test.cwd, '.agents', 'skills', 'SKILL.md'), 'inert');
+    const launch = test.prepare({ [test.homeKey]: test.state });
+    if (version === '0.58.0') { await expect(launch).resolves.toBeDefined(); } else { await expect(launch).rejects.toThrow('custom native skills'); }
   });
 });

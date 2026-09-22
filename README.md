@@ -355,13 +355,13 @@ requirements; subscription access and API access may differ.
 |----------|--------------|---------|
 | **Claude Code** (recommended) | Anthropic API or Claude Pro/Max | `npm install -g @anthropic-ai/claude-code@2.1.266` |
 | **GitHub Copilot CLI** | BYOK endpoint, model and API key; subscription login unsupported | `npm install -g @github/copilot@1.0.83` |
-| **Gemini CLI** | API key, Vertex AI or Code Assist Standard/Enterprise sign-in | `npm install -g @google/gemini-cli@0.58.0` |
+| **Gemini CLI** | API key, Vertex AI or Code Assist Standard/Enterprise sign-in | `npm install -g @google/gemini-cli@0.60.0` |
 | **Codex CLI** | Supported ChatGPT sign-in or OpenAI API | `npm install -g @openai/codex@0.153.4` |
 | **Cline** | `CLINE_API_KEY` in the extension environment | `npm install -g cline@3.0.61` |
 | **Cursor** | Cursor subscription | macOS/Linux: `curl https://cursor.com/install -fsS \| bash` · Windows: `irm 'https://cursor.com/install?win32=true' \| iex` |
 | **OpenClaw** | Configured provider/model and matching credentials; POSIX runtime | `npm install -g openclaw@2026.6.34` |
 | **OpenCode** | Provider API keys (Anthropic, OpenAI, etc.) | `npm i -g opencode-ai@1.18.29` |
-| **Qwen Code** | Qwen OAuth or API keys | `npm install -g @qwen-code/qwen-code@0.23.0` |
+| **Qwen Code** | Qwen OAuth or API keys | `npm install -g @qwen-code/qwen-code@0.24.4` |
 | **Ollama** | Local (no subscription needed) | [Install from ollama.com](https://ollama.com) |
 | **LocalAI** | Local (no subscription needed) | [Docker / binaries](https://localai.io/basics/getting_started/) |
 
@@ -401,7 +401,7 @@ npm install -g @github/copilot@1.0.83
 # Configure COPILOT_PROVIDER_BASE_URL and its model/API key in the extension environment.
 
 # Or Gemini CLI
-npm install -g @google/gemini-cli@0.58.0
+npm install -g @google/gemini-cli@0.60.0
 gemini
 
 # Or Cline
@@ -422,7 +422,7 @@ npm i -g opencode-ai@1.18.29
 # Set mysti.opencodeModel to an explicit provider/model ID.
 
 # Or Qwen Code
-npm install -g @qwen-code/qwen-code@0.23.0
+npm install -g @qwen-code/qwen-code@0.24.4
 qwen  # then type /auth
 ```
 

@@ -9,8 +9,8 @@ for permission. Authenticated editor acceptance remains separate.
 | --- | --- | --- |
 | Claude | Earlier pinned 2.1.266 file/shell allow, denial, restricted modes and Stop | Binary no longer at its recorded location; current rerun skips it. Account/editor acceptance pending. |
 | Codex | App-server protocol/lifecycle fixtures; installed 0.153.4 startup failure, Stop, independent-process cancellation and 30-second deadline cleanup | Successful native initialization/configuration still inconclusive under profile isolation; authenticated real operation acceptance pending. |
-| Gemini | 0.58.0 native reads, writes/replacement, host veto, denied shell, Stop | Shell/delegation deliberately unavailable. |
-| Qwen | 0.23.0 native read/edit/shell, denial, read-only, Stop, inherited allow-rule override | Broader tools/delegation unavailable. |
+| Gemini | 0.58.0 (installed) and 0.60.0 (unpacked npm release, 2026-09-22) native reads, writes/replacement, host veto, denied shell, read-only, Stop; 0.60.0 declares only the three admitted tools | Shell/delegation deliberately unavailable. 0.60.0 skips the non-root system settings file; admin policy + startup refusal carry the policy. |
+| Qwen | 0.23.0 (installed) and 0.24.4 (unpacked npm release, 2026-09-22) native read/edit/shell, denial, read-only, Stop, background refusal, inherited allow-rule override; model-facing tools exactly the four admitted | Broader tools/delegation unavailable. |
 | Cline | 3.0.61 actual command/write, denial, read-only and Stop through public send | Saved-login, images, usage and broader native tools unavailable. |
 | Copilot | 1.0.83 public read/search; forced shell/write rejected | Writable approval failed native tests; read/search only. Reads do not open host cards. |
 | OpenCode | 1.18.29 public and native read/edit/fetch policies, denial, restricted modes, Stop | Shell/delegation removed from native executable tool map. |

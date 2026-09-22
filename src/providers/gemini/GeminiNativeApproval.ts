@@ -2,9 +2,12 @@
 import * as path from 'path';
 import { isRecord } from '../../utils/valueGuards';
 import type { ToolCall, UsageStats } from '../../types';
-import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
+import { VERIFIED_NATIVE_CLI_VERSIONS, getAcceptedNativeCliVersions } from '../base/NativeCliVersions';
 
 export const GEMINI_ACP_VERSION = VERIFIED_NATIVE_CLI_VERSIONS['google-gemini'];
+export const GEMINI_ACP_VERSIONS = getAcceptedNativeCliVersions('google-gemini');
+/** The only accepted release that applies a user-owned system settings file. */
+export const GEMINI_SETTINGS_FILE_VERSION = '0.58.0';
 
 /** Final prompt totals; per-model quota entries are already included in these. */
 export function decodeGeminiUsage(result: Readonly<Record<string, unknown>>): UsageStats | undefined {
@@ -16,7 +19,7 @@ export function decodeGeminiUsage(result: Readonly<Record<string, unknown>>): Us
 }
 
 /**
- * 0.58.0 omits rawInput/tool name. The bundled admin policy therefore admits
+ * 0.58.0 and 0.60.0 omit rawInput/tool name. The bundled admin policy therefore admits
  * only read_file/write_file/replace. Edits carry authoritative full-file diffs;
  * read_file carries its native toolLocations. Shell/delegation are denied by
  * native policy before dispatch, not reconstructed from a display title.
