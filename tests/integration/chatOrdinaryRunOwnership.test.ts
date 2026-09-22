@@ -294,12 +294,14 @@ describe('ordinary provider captured request ownership', () => {
     try {
       oldRun = send(h, 'OLD_REQUEST'); await oldWaiting.promise;
       p._canvasTurns.open('sidebar', 'old request');
-      const firstJob = router.get('canvas-turn-sidebar'); expect(firstJob).toBeDefined();
+      const firstId = p._canvasLiveness.jobIds()[0];
+      const firstJob = router.get(firstId); expect(firstJob).toBeDefined();
       newRun = send(h, 'NEW_REQUEST'); await newWaiting.promise;
       expect(h.cancels).toEqual(['sidebar']); expect(p._cancelledPanels.has('sidebar')).toBe(false);
       expect(events.filter(event => event.type === 'done')).toHaveLength(1);
       p._canvasTurns.open('sidebar', 'replacement');
-      const replacementJob = router.get('canvas-turn-sidebar');
+      const replacementId = p._canvasLiveness.jobIds()[0];
+      const replacementJob = router.get(replacementId);
       expect(replacementJob).toBeDefined(); expect(replacementJob).not.toBe(firstJob);
       const before = {messages:h.sidebarMessages.length,persisted:h.persistedCalls.length,lifecycle:h.lifecycle.length,canvasEnd:canvasEnd.mock.calls.length};
       releaseOld.resolve(); await oldRun;
@@ -307,7 +309,7 @@ describe('ordinary provider captured request ownership', () => {
       expect(h.persistedCalls.slice(before.persisted)).toEqual([]);
       expect(h.lifecycle.slice(before.lifecycle)).toEqual([]);
       expect(canvasEnd.mock.calls.slice(before.canvasEnd)).toEqual([]);
-      expect(router.get('canvas-turn-sidebar')).toBe(replacementJob);
+      expect(router.get(replacementId)).toBe(replacementJob);
       expect(events.filter(event => event.type === 'done' || event.type === 'error')).toHaveLength(1);
       expect(p._runningPanels.has('sidebar')).toBe(true); expect(returned).toEqual(['OLD_REQUEST']);
       releaseNew.resolve(); await newRun;
@@ -332,7 +334,7 @@ describe('ordinary provider captured request ownership', () => {
       } else if (boundary === 'Canvas Stop with cleared flag') {
         const router = new CanvasJobRouter(() => {}); p._canvasLiveness = new CanvasLiveness({ router });
         p._canvasTurns.open('sidebar', 'current request'); expect(router.activeCount()).toBe(1);
-        p._canvasTurns.cancel('canvas-turn-sidebar'); p._cancelledPanels.delete('sidebar');
+        p._canvasTurns.cancel(p._canvasLiveness.jobIds()[0]); p._cancelledPanels.delete('sidebar');
         expect(router.activeCount()).toBe(0);
       } else if (boundary === 'conversation switch') {
         await p._handleMessage({type:'switchConversation',panelId:'sidebar',payload:{id:'other-conversation'}});
@@ -592,8 +594,8 @@ it('an old semi-autonomous question timer cannot answer its replacement question
     await send(h,'Q1');await vi.advanceTimersByTimeAsync(500);await send(h,'Q2');
     expect(p._pendingAskUserQuestions.get('sidebar')).toBe('Q2');await vi.advanceTimersByTimeAsync(500);
     expect(answer).not.toHaveBeenCalled();expect(p._pendingAskUserQuestions.get('sidebar')).toBe('Q2');
-    expect(p._semiAutoQuestionTimeouts.has('Q1')).toBe(false);expect(p._semiAutoQuestionTimeouts.has('Q2')).toBe(true);
+    expect(p._semiAutoQuestionTimeouts.has('sidebar\0Q1')).toBe(false);expect(p._semiAutoQuestionTimeouts.has('sidebar\0Q2')).toBe(true);
     await vi.advanceTimersByTimeAsync(500);expect(answer).toHaveBeenCalledTimes(1);
-    expect(answer.mock.calls[0][1]).toMatchObject({toolCallId:'Q2'});expect(p._semiAutoQuestionTimeouts.has('Q2')).toBe(false);
+    expect(answer.mock.calls[0][1]).toMatchObject({toolCallId:'Q2'});expect(p._semiAutoQuestionTimeouts.has('sidebar\0Q2')).toBe(false);
   }finally{vi.useRealTimers();await h.dispose();vi.restoreAllMocks();clearMockConfig();}
 });

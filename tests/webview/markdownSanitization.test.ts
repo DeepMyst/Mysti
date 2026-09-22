@@ -42,7 +42,7 @@ describe('structural: every render site is sanitized', () => {
     expect(indexHtml.indexOf('{{markdownRendererJsUri}}')).toBeLessThan(indexHtml.indexOf('{{chatJsUri}}'));
   });
 
-  it.each(['markdownRenderer', 'messageRenderer'])('emits %s before chat with a nonce and a fresh asset URI', renderer => {
+  it.each(['markdownRenderer', 'messageRenderer', 'streamingTimeline'])('emits %s before chat with a nonce and a fresh asset URI', renderer => {
     const webview = {
       cspSource: 'vscode-resource://test',
       asWebviewUri: (uri: vscode.Uri) => ({ toString: () => 'vscode-resource://test' + uri.fsPath.replace(/\\/g, '/') }),

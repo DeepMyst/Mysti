@@ -621,7 +621,7 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
     const announce = vi.spyOn(c.provider, '_announceRefusedCapability');
     await c.run();
     expect(announce).toHaveBeenCalledOnce();
-    expect(announce).toHaveBeenCalledWith('sidebar', streamedText, runNonce, expect.arrayContaining(['read']));
+    expect(announce).toHaveBeenCalledWith('sidebar', streamedText, runNonce, expect.arrayContaining(['read']), expect.any(Function), undefined);
     expect(announce.mock.calls[0][3]).not.toContain('write');
     const actions = h.sidebarMessages.filter(message => message.type === 'mystiActionRequired');
     if (nonceKind === 'matching') {
@@ -929,7 +929,7 @@ describe('Legacy @agent sub-agent gate deny (Plan 18 H1)', () => {
 
     // The pass aborted: cancellation surfaced, the denied tool card was never
     // forwarded, and post-deny stream content never reached the webview.
-    expect(h.sidebarMessages.some(m => m.type === 'requestCancelled')).toBe(true);
+    expect(h.sidebarMessages.filter(m => ['error', 'requestCancelled', 'responseComplete'].includes(m.type))).toEqual([expect.objectContaining({ type: 'error', requestId: expect.any(String) })]);
     expect(h.sidebarMessages.some(m => m.type === 'subAgentToolUse')).toBe(false);
     expect(h.sidebarMessages.some(
       m => m.type === 'subAgentChunk' && (m.payload as any)?.content === 'AFTER-DENY'
@@ -975,7 +975,7 @@ describe('Legacy @agent sub-agent gate deny (Plan 18 H1)', () => {
     expect(pm.resumeRequest).not.toHaveBeenCalled();
     expect(pm.cancelRequest).toHaveBeenCalledWith('sidebar-subagent-openai-codex');
     expect(h.sidebarMessages.some(m => m.type === 'subAgentToolUse')).toBe(false);
-    expect(h.sidebarMessages.some(m => m.type === 'requestCancelled')).toBe(true);
+    expect(h.sidebarMessages.filter(m => ['error', 'requestCancelled', 'responseComplete'].includes(m.type))).toEqual([expect.objectContaining({ type: 'error', requestId: expect.any(String) })]);
   });
 
   it('an empty input notification also stops the child before later events are forwarded', async () => {

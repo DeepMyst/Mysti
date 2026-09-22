@@ -107,6 +107,7 @@ function composeHtml(replyOnReady = false): string {
       return {
         postMessage: function (m) {
           window.__posted.push(m);
+          if (['sendMessage', 'startSession', 'quickActionWithConfig'].includes(m.type) && m.requestId) { window.__fixtureLatestLocal = m.requestId; }
           if (${replyOnReady} && m.type === 'chatReady') {
             window.dispatchEvent(new MessageEvent('message', { data: {
               type: 'initialState', payload: {
@@ -130,6 +131,7 @@ function composeHtml(replyOnReady = false): string {
     .replace('<script nonce="n" src="{{messageRendererJsUri}}"></script>', () => `<script>${read('media/chat/messageRenderer.js')}</script>`)
     .replace('<script nonce="n" src="{{subAgentCardsJsUri}}"></script>', () => `<script>${read('media/chat/subAgentCards.js')}</script>`)
     .replace('<script nonce="n" src="{{toolCardsJsUri}}"></script>', () => `<script>${read('media/chat/toolCards.js')}</script>`)
+    .replace('<script nonce="n" src="{{streamingTimelineJsUri}}"></script>', () => `<script>${read('media/chat/streamingTimeline.js')}</script>`)
     .replace('<script nonce="n" src="{{chatJsUri}}"></script>', () => `<script>${read('media/chat/chat.js')}</script>`)
     .replace('<script nonce="n" src="{{deskJsUri}}"></script>', () => `<script>${read('media/chat/desk.js')}</script>`);
 
@@ -172,10 +174,37 @@ async function boot(): Promise<void> {
 }
 
 /** Drive the webview the way the extension does. */
+const fixtureTurns = new WeakMap<Page, { id: string; sequence: number; local: string | null; closed: boolean; started: boolean }>();
+const foregroundFixtureTypes = new Set(['responseStarted', 'responseChunk', 'responseComplete', 'requestCancelled',
+  'toolUse', 'toolResult', 'error', 'authError', 'subAgentStarted', 'subAgentChunk', 'subAgentComplete',
+  'subAgentError', 'subAgentToolUse', 'subAgentToolResult', 'subAgentRetry', 'subAgentAskUserQuestion',
+  'subAgentStatus', 'askUserQuestion', 'semiAutonomousDecision', 'autonomousDecision']);
+/** Simulate captured host admission for older UI fixtures. Raw-event regressions
+ * below do not use this helper and therefore cannot repair their own identity. */
+async function receiveFixture(pg: Page, msg: Record<string, unknown>): Promise<void> {
+  let turn = fixtureTurns.get(pg);
+  const permissionDecision = msg.type === 'semiAutonomousDecision' && (msg.payload as { targetType?: string })?.targetType === 'permission';
+  const foreground = foregroundFixtureTypes.has(String(msg.type)) && !msg.requestId && !permissionDecision;
+  if (foreground) {
+    const local = await pg.evaluate(() => (window as unknown as { __fixtureLatestLocal?: string }).__fixtureLatestLocal || null);
+    const newLocal = local && local !== turn?.local;
+    const newHost = msg.type === 'responseStarted' && (!turn || turn.closed || turn.started);
+    if (newLocal || newHost) {
+      const sequence = (turn?.sequence || 0) + 1;
+      turn = { id: newLocal ? local : 'fixture-host-' + sequence, sequence,
+        local: local || turn?.local || null, closed: false, started: false };
+      fixtureTurns.set(pg, turn);
+      await pg.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })),
+        { type: 'responsePending', requestId: turn.id, payload: { sequence } });
+    }
+  }
+  const tagged = foreground && turn ? { ...msg, requestId: turn.id } : msg;
+  await pg.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), tagged);
+  if (turn && msg.type === 'responseStarted') { turn.started = true; }
+  if (turn && ['responseComplete', 'requestCancelled', 'error', 'authError'].includes(String(msg.type))) { turn.closed = true; }
+}
 async function send(msg: Record<string, unknown>): Promise<void> {
-  await page!.evaluate((m) => {
-    window.dispatchEvent(new MessageEvent('message', { data: m }));
-  }, msg);
+  await receiveFixture(page!, msg);
 }
 
 /**
@@ -313,7 +342,7 @@ describe('restored messages in the actual chat page', () => {
     const pg = await newPanelPage();
     const errors: string[] = [];
     pg.on('pageerror', error => errors.push(String(error)));
-    const messageId = '\"><img class="spoof" src="missing" onerror="window.__messageSpoof=true">';
+    const messageId = '"><img class="spoof" src="missing" onerror="window.__messageSpoof=true">';
     const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jJ5sAAAAASUVORK5CYII=';
     try {
       await pg.evaluate(({ id, image }) => {
@@ -654,6 +683,7 @@ describe('Plan 28 Phase 4 — the Changes dock', () => {
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('separates agent edits from edits nothing claimed', async () => {
     // One file an agent was seen editing...
+    await startTurn();
     await send({ type: 'toolUse', payload: { id: 't1', name: 'Edit', input: { file_path: 'src/a.ts' } } });
     // ...and git reports that one plus a second nobody touched through a tool.
     await send({ type: 'sessionChanges', payload: { available: true, files: [
@@ -809,6 +839,8 @@ describe('Plan 28 Phase 6 — a team is a verb', () => {
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('asks a DIFFERENT agent the same question, through the mention path', async () => {
+    // Settle the admitted tool fixture from the preceding Changes tests.
+    await send({ type: 'responseComplete', payload: {} });
     // Build the footer action directly on the probe answer — renderMessageFooter
     // is what responseComplete calls, and it always appends this action now.
     await page!.evaluate(() => {
@@ -893,7 +925,7 @@ describe('Plan 28 Phase 7 — a silent backend says so', () => {
     // The case a stall detector must not get wrong: a model reasoning for two
     // minutes streams `thinking` and nothing else. The first draft listed a
     // type name that never existed, so this would have false-alarmed.
-    await fire({ type: 'thinking', payload: { content: 'still reasoning' } });
+    await fire({ type: 'responseChunk', payload: { type: 'thinking', content: 'still reasoning' } });
     await page2!.clock.fastForward('01:00');
     expect(await page2!.$('#stall-card')).toBeNull();
   }, 30000);
@@ -1584,6 +1616,7 @@ describe('sub-agent cards through the shipped chat message boundary', () => {
     try {
       await pg.evaluate(() => {
         const receive = (type: string, payload?: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        receive('responseStarted');
         receive('subAgentStarted', { agentId: 'openai-codex' });
         receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: 'old attempt' });
         receive('subAgentRetry', { agentId: 'openai-codex' });
@@ -1594,9 +1627,11 @@ describe('sub-agent cards through the shipped chat message boundary', () => {
       expect(await pg.locator('.subagent-card').textContent()).not.toContain('old attempt');
       await pg.evaluate(() => {
         const receive = (type: string, payload?: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        receive('responseStarted');
         receive('subAgentStarted', { agentId: 'openai-codex' });
         receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: 'old conversation' });
         receive('conversationChanged', { messages: [] });
+        receive('responseStarted');
         receive('subAgentStarted', { agentId: 'openai-codex' });
         receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: 'new conversation' });
         receive('subAgentComplete', { agentId: 'openai-codex' });
@@ -1614,6 +1649,7 @@ describe('sub-agent cards through the shipped chat message boundary', () => {
     try {
       await pg.evaluate(() => {
         const receive = (type: string, payload?: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        receive('responseStarted');
         for (const agentId of ['openai-codex', 'claude-code']) {
           receive('subAgentStarted', { agentId });
           receive('subAgentAskUserQuestion', { agentId, questionData: {
@@ -1642,4 +1678,283 @@ describe('sub-agent cards through the shipped chat message boundary', () => {
       expect(errors).toEqual([]);
     } finally { await pg.context().close(); }
   });
+});
+
+describe('correlated foreground timeline through the shipped browser', () => {
+  const raw = (pg: Page, message: Record<string, unknown>) => pg.evaluate(data => {
+    window.dispatchEvent(new MessageEvent('message', { data }));
+  }, message);
+  const begin = async (pg: Page, id = 'run-a', sequence = 1) => {
+    await raw(pg, { type: 'responsePending', requestId: id, payload: { sequence } });
+    await raw(pg, { type: 'responseStarted', requestId: id, payload: { provider: 'ollama', model: 'actual-model' } });
+  };
+  const outputs = (pg: Page) => pg.evaluate(() => (window as unknown as { __posted: Array<Record<string, unknown>> }).__posted);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE).each(['error', 'authError', 'mystiActionRequired', 'mystiSignInRequired', 'mystiUnavailable'])(
+    'settles the admitted Runs turn once after %s and leaves its successor working', async terminal => {
+      const pg = await newPanelPage(); const errors: string[] = []; pg.on('pageerror', e => errors.push(e.message));
+      try {
+        await begin(pg);
+        expect(await pg.locator('.runs-tab-count[data-count="working"]').textContent()).toBe('1');
+        const payload = terminal === 'error' ? 'inert refusal' : {
+          scope: 'foreground', terminal: true, message: 'inert refusal', providerName: 'Example',
+          authCommand: 'example auth', actions: [],
+        };
+        await raw(pg, { type: terminal, requestId: 'run-a', payload });
+        expect(await pg.locator('.runs-tab-count[data-count="working"]').textContent()).toBe('0');
+        expect(await pg.locator('.runs-tab-count[data-count="done"]').textContent()).toBe('1');
+        expect(await pg.locator('#stop-btn').isVisible()).toBe(false);
+        await pg.locator('#runs-btn').click();
+        const finished = await pg.locator('.runs-row[data-run="turn"]').innerHTML();
+        expect(await pg.locator('.runs-row[data-run="turn"] .runs-row-mark.bad').count()).toBe(1);
+        await raw(pg, { type: 'requestCancelled', requestId: 'run-a' });
+        expect(await pg.locator('.runs-row[data-run="turn"]').innerHTML()).toBe(finished);
+        await begin(pg, 'run-b', 2);
+        await raw(pg, { type: terminal, requestId: 'run-a', payload });
+        expect(await pg.locator('.runs-tab-count[data-count="working"]').textContent()).toBe('1');
+        expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+        expect(errors).toEqual([]);
+      } finally { await pg.context().close(); }
+    }, 20_000,
+  );
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps Runs working through independent refusals and coordinator progress until an admitted terminal', async () => {
+    const pg = await newPanelPage();
+    try {
+      await begin(pg);
+      await raw(pg, { type: 'mystiStarted', requestId: 'run-a', payload: { brief: 'inert plan', nodes: [] } });
+      await raw(pg, { type: 'mystiComplete', requestId: 'run-a', payload: {} });
+      expect(await pg.locator('.runs-tab-count[data-count="working"]').textContent()).toBe('1');
+      for (const type of ['error', 'authError', 'mystiActionRequired']) {
+        await raw(pg, { type, scope: 'notice', payload: { scope: 'notice', terminal: true, message: 'independent notice', actions: [] } });
+        expect(await pg.locator('.runs-tab-count[data-count="working"]').textContent()).toBe('1');
+        expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+      }
+      await raw(pg, { type: 'responseComplete', requestId: 'run-a', payload: {} });
+      expect(await pg.locator('.runs-tab-count[data-count="working"]').textContent()).toBe('0');
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE).each(['responseComplete', 'requestCancelled', 'error', 'authError', 'conversationChanged'])(
+    'refuses late text, reasoning and tools after %s without touching the next turn', async terminal => {
+      const pg = await newPanelPage(); const errors: string[] = []; pg.on('pageerror', e => errors.push(e.message));
+      try {
+        await begin(pg);
+        await raw(pg, { type: 'responseChunk', requestId: 'run-a', payload: { type: 'text', content: 'Original text' } });
+        const payload = terminal === 'conversationChanged' ? { messages: [] } : terminal === 'authError'
+          ? { providerName: 'Example', authCommand: 'example auth' } : terminal === 'error' ? 'inert failure'
+            : { message: { id: 'saved-a', role: 'assistant', content: 'Original text' } };
+        await raw(pg, { type: terminal, requestId: terminal === 'conversationChanged' ? undefined : 'run-a', payload });
+        const before = await pg.locator('#messages').innerHTML(); const posts = (await outputs(pg)).length;
+        for (const requestId of ['run-a', undefined]) {
+          for (const type of ['text', 'thinking']) {
+            await raw(pg, { type: 'responseChunk', requestId, payload: { type, content: 'LATE INTRUSION' } });
+          }
+          await raw(pg, { type: 'toolUse', requestId, payload: { id: 'late', name: 'Edit', input: { file_path: 'late.ts' } } });
+        }
+        expect(await pg.locator('#messages').innerHTML()).toBe(before);
+        expect((await outputs(pg)).length).toBe(posts);
+        await begin(pg, 'run-b', 2);
+        await raw(pg, { type: 'responseChunk', requestId: 'run-b', payload: { type: 'text', content: 'Current text' } });
+        await raw(pg, { type: 'responseComplete', requestId: 'run-a', payload: {} });
+        await raw(pg, { type: 'responseStarted', requestId: 'run-a', payload: {} });
+        expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+        expect(await pg.locator('.message.streaming').textContent()).toContain('Current text');
+        expect(errors).toEqual([]);
+      } finally { await pg.context().close(); }
+    }, 20_000,
+  );
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drains exactly one queued send and rejects old/untagged terminals before successor acknowledgement', async () => {
+    const pg = await newPanelPage();
+    try {
+      await begin(pg);
+      for (const content of ['queued one', 'queued two']) {
+        await pg.locator('#message-input').fill(content); await pg.locator('#message-input').press('Enter');
+      }
+      await pg.locator('#message-input').fill('unfinished draft');
+      await raw(pg, { type: 'responseComplete', requestId: 'run-a', payload: { message: { id: 'a', role: 'assistant', content: 'Final only' } } });
+      let sends = (await outputs(pg)).filter(m => m.type === 'sendMessage'); expect(sends).toHaveLength(1);
+      const nextId = sends[0].requestId as string;
+      for (const requestId of ['run-a', undefined]) {
+        for (const type of ['responseComplete', 'error', 'authError', 'requestCancelled']) {
+          await raw(pg, { type, requestId, payload: {} });
+        }
+      }
+      sends = (await outputs(pg)).filter(m => m.type === 'sendMessage'); expect(sends).toHaveLength(1);
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+      expect(await pg.locator('.queued-chip').count()).toBe(1);
+      expect(await pg.locator('#message-input').inputValue()).toBe('unfinished draft');
+      await raw(pg, { type: 'responsePending', requestId: nextId, payload: { sequence: 2 } });
+      await raw(pg, { type: 'responseComplete', requestId: nextId, payload: {} });
+      expect((await outputs(pg)).filter(m => m.type === 'sendMessage')).toHaveLength(2);
+      expect(await pg.locator('.message.assistant').count()).toBe(1);
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps interleaved tools and final text on the captured owner, including restored ID collisions', async () => {
+    const pg = await newPanelPage();
+    try {
+      await raw(pg, { type: 'conversationChanged', payload: { messages: [{ id: 'history', role: 'assistant', content: 'Saved',
+        toolCalls: [{ id: 'same', name: 'delegate', input: {}, status: 'completed' }] }] } });
+      const history = await pg.locator('.message[data-id="history"]').innerHTML();
+      await begin(pg);
+      await raw(pg, { type: 'responseChunk', requestId: 'run-a', payload: { type: 'text', content: 'Before' } });
+      await raw(pg, { type: 'toolUse', requestId: 'run-a', payload: { id: 'same', name: 'delegate', input: { agent: 'worker' } } });
+      await raw(pg, { type: 'mystiDelegateTrace', requestId: 'run-a', payload: { parentId: 'same', nodeId: 'same', chunk: { type: 'thinking', content: 'Owned trace' } } });
+      await raw(pg, { type: 'responseChunk', requestId: 'run-a', payload: { type: 'thinking', content: 'Reasoning one. ' } });
+      await raw(pg, { type: 'responseChunk', requestId: 'run-a', payload: { type: 'text', content: 'After' } });
+      await raw(pg, { type: 'toolUse', requestId: 'run-a', payload: { id: 'same', name: 'delegate', input: { agent: 'updated' } } });
+      await raw(pg, { type: 'responseChunk', requestId: 'run-a', payload: { type: 'thinking', content: 'Reasoning two.' } });
+      await raw(pg, { type: 'responseComplete', requestId: 'run-a', payload: { message: { id: 'current', content: 'BeforeAfter' } } });
+      expect(await pg.locator('.message[data-id="history"]').innerHTML()).toBe(history);
+      const current = pg.locator('.message[data-id="current"]');
+      expect(await current.locator('.mysti-delegate-activity').textContent()).toContain('Owned trace');
+      expect((await current.locator('.message-body > .message-content').allTextContents()).map(text => text.trim())).toEqual(['Before', 'After']);
+      expect(await current.locator('.thinking-zone').count()).toBe(1);
+      expect(await current.locator('.tool-call').count()).toBe(1);
+      expect(await current.locator('.tool-call-summary').textContent()).toContain('updated');
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps terminal question/connection accessories on their owner past a background action card', async () => {
+    const pg = await newPanelPage();
+    try {
+      await begin(pg);
+      await raw(pg, { type: 'toolUse', requestId: 'run-a', payload: { id: 'question-a', name: 'AskUserQuestion', input: {} } });
+      await raw(pg, { type: 'responseComplete', requestId: 'run-a', payload: { message: { id: 'owner', content: 'Pick one.' } } });
+      await raw(pg, { type: 'mystiActionRequired', payload: { scope: 'background', terminal: true, jobId: 'job-a', message: 'Background credentials', actions: [] } });
+      await raw(pg, { type: 'askUserQuestion', requestId: 'run-a', payload: { toolCallId: 'question-a', questions: [{ question: 'Which?', header: 'Pick', options: [{ label: 'One' }, { label: 'Two' }] }] } });
+      await raw(pg, { type: 'connectionRequired', requestId: 'run-a', payload: { service: 'github' } });
+      await raw(pg, { type: 'channelAction', requestId: 'run-a', payload: { action: 'inbound', channel: 'test', sender: 'queued sender' } });
+      await raw(pg, { type: 'toolResult', requestId: 'run-a', scope: 'accessory', payload: { id: 'question-a', status: 'completed', output: 'One' } });
+      const owner = pg.locator('.message[data-id="owner"]');
+      expect(await owner.locator('.ask-user-question-container').count()).toBe(1);
+      expect(await owner.locator('.connect-card').count()).toBe(1);
+      expect(await owner.locator('.channel-action-card').count()).toBe(1);
+      expect(await owner.locator('.tool-call-output-content').textContent()).toBe('One');
+      expect(await pg.locator('.mysti-action-card .ask-user-question-container, .mysti-action-card .connect-card, .mysti-action-card .channel-action-card').count()).toBe(0);
+      await begin(pg, 'run-b', 2);
+      await raw(pg, { type: 'toolResult', requestId: 'run-a', scope: 'accessory', payload: { id: 'question-a', status: 'failed', output: 'late' } });
+      await raw(pg, { type: 'mystiActionRequired', payload: { scope: 'background', terminal: true, jobId: 'job-a', message: 'Still background', actions: [] } });
+      expect(await owner.locator('.tool-call-output-content').textContent()).toBe('One');
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE).each([false, true])('stops brainstorm separately (prior ordinary turn: %s)', async prior => {
+    const pg = await newPanelPage();
+    try {
+      if (prior) { await begin(pg); await raw(pg, { type: 'responseComplete', requestId: 'run-a', payload: {} }); }
+      await raw(pg, { type: 'agentChanged', payload: { agent: 'brainstorm' } });
+      await pg.locator('#message-input').fill('Compare approaches'); await pg.locator('#send-btn').click();
+      const send = (await outputs(pg)).find(m => m.type === 'sendBrainstormMessage')!;
+      const id = (send.payload as { brainstormId: string }).brainstormId;
+      expect(id).toMatch(/^brainstorm-/);
+      await raw(pg, { type: 'brainstormStarted', payload: { brainstormId: id, sessionId: id, agents: ['claude-code'], strategy: 'quick' } });
+      await pg.locator('#stop-btn').click();
+      const stop = (await outputs(pg)).filter(m => m.type === 'cancelRequest').at(-1)!;
+      expect(stop.requestId).toBeUndefined(); expect(stop.payload).toEqual({ scope: 'brainstorm', brainstormId: id });
+      await raw(pg, { type: 'brainstormCancelled', payload: { brainstormId: 'old' } });
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+      await raw(pg, { type: 'brainstormCancelled', payload: { brainstormId: id } });
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(false);
+      expect(await pg.locator('#send-btn').isVisible()).toBe(true);
+      await begin(pg, 'run-b', 2);
+      await raw(pg, { type: 'brainstormCancelled', payload: { brainstormId: id } });
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('does not let background activity reset the foreground stall clock', async () => {
+    const pg = await newPanelPage();
+    try {
+      await pg.clock.install(); await begin(pg);
+      await raw(pg, { type: 'jobStarted', payload: { jobId: 'background' } });
+      await pg.clock.fastForward(60_000);
+      await raw(pg, { type: 'jobProgress', payload: { jobId: 'background', status: 'still busy' } });
+      await pg.clock.fastForward(35_000);
+      expect(await pg.locator('#stall-card').count()).toBe(1);
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 20_000);
+  it.skipIf(CHROMIUM_UNAVAILABLE)('admits a native permission decision by gate identity without resetting foreground processing', async () => {
+    const pg = await newPanelPage();
+    try {
+      await begin(pg);
+      await raw(pg, { type: 'permissionRequest', payload: {
+        id: 'native-gate', action: 'Bash', details: { command: 'echo inert' }, timestamp: Date.now(),
+      } });
+      expect(await pg.locator('.permission-card.pending').count()).toBe(1);
+      await raw(pg, { type: 'semiAutonomousDecision', payload: {
+        requestId: 'native-gate', targetType: 'permission', approved: true, reasoning: 'Allowed by gate',
+      } });
+      expect(await pg.locator('.permission-card.pending').count()).toBe(0);
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+      await raw(pg, { type: 'responseChunk', requestId: 'run-a', payload: { type: 'text', content: 'Still mine' } });
+      expect(await pg.locator('.message.streaming').textContent()).toContain('Still mine');
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('echoes each question card’s captured origin when the next turn reuses its tool ID', async () => {
+    const pg = await newPanelPage();
+    try {
+      for (const [id, sequence] of [['run-a', 1], ['run-b', 2]] as const) {
+        await begin(pg, id, sequence);
+        await raw(pg, { type: 'responseComplete', requestId: id, payload: { message: { id, content: 'Choose for ' + id } } });
+        await raw(pg, { type: 'askUserQuestion', requestId: id, payload: { toolCallId: 'reused', questions: [{ header: 'Choice', question: 'Choose', options: [{ label: 'Yes' }, { label: 'No' }] }] } });
+      }
+      const first = pg.locator('.message[data-id="run-a"] .ask-user-question-container');
+      const second = pg.locator('.message[data-id="run-b"] .ask-user-question-container');
+      await first.locator('input[type="radio"][value="Yes"]').check();
+      await second.locator('input[type="radio"][value="No"]').check();
+      expect(await first.locator('input[type="radio"][value="Yes"]').isChecked()).toBe(true);
+      await first.locator('.auq-submit-btn').click();
+      const answer = (await outputs(pg)).find(m => m.type === 'askUserQuestionResponse')!;
+      expect(answer.requestId).toBe('run-a');
+      expect(answer.payload).toEqual({ toolCallId: 'reused', answers: { Choice: 'Yes' } });
+      expect(await second.locator('input[type="radio"][value="No"]').isChecked()).toBe(true);
+      await second.locator('.auq-skip-btn').click();
+      const skipped = (await outputs(pg)).find(m => m.type === 'askUserQuestionSkipped')!;
+      expect(skipped.requestId).toBe('run-b'); expect(skipped.payload).toEqual({ toolCallId: 'reused' });
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('settles only the retired bubble’s tools when a new host admission replaces it', async () => {
+    const pg = await newPanelPage();
+    try {
+      await begin(pg);
+      await raw(pg, { type: 'toolUse', requestId: 'run-a', payload: { id: 'old-tool', name: 'Read', input: {} } });
+      await raw(pg, { type: 'responsePending', requestId: 'run-b', payload: { sequence: 2 } });
+      expect(await pg.locator('.tool-call[data-id="old-tool"]').getAttribute('class')).toContain('failed');
+      expect(await pg.locator('.tool-call[data-id="old-tool"] .tool-call-status').textContent()).toBe('stopped');
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+      await raw(pg, { type: 'responseStarted', requestId: 'run-b', payload: { provider: 'ollama' } });
+      await raw(pg, { type: 'toolUse', requestId: 'run-b', payload: { id: 'new-tool', name: 'Read', input: {} } });
+      await raw(pg, { type: 'requestCancelled', requestId: 'run-a' });
+      expect(await pg.locator('.tool-call[data-id="new-tool"]').getAttribute('class')).toContain('running');
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('detaches the origin once and leaves a successor active through background failure', async () => {
+    const pg = await newPanelPage();
+    try {
+      await begin(pg);
+      await raw(pg, { type: 'jobStarted', requestId: 'run-a', payload: { jobId: 'job-a', title: 'Detached job' } });
+      expect(await pg.locator('#send-btn').isVisible()).toBe(true);
+      expect(await pg.locator('.runs-tab-count[data-count="working"]').textContent()).toBe('1');
+      expect(await pg.locator('.runs-tab-count[data-count="done"]').textContent()).toBe('1');
+      await begin(pg, 'run-b', 2);
+      await raw(pg, { type: 'responseChunk', requestId: 'run-b', payload: { type: 'text', content: 'Current answer' } });
+      await raw(pg, { type: 'jobError', payload: { jobId: 'job-a', error: 'Credentials expired', reason: 'sign-in', actions: [] } });
+      expect(await pg.locator('.mysti-job-error').textContent()).toBe('Credentials expired');
+      expect(await pg.locator('.mysti-action-card').textContent()).toContain('Credentials expired');
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+      expect(await pg.locator('.message.streaming').textContent()).toContain('Current answer');
+      await raw(pg, { type: 'responseComplete', requestId: 'run-a', payload: {} });
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
 });

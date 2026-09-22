@@ -333,6 +333,10 @@ export interface SlashCommandSectionInfo {
 export interface WebviewMessage {
   type: string;
   payload?: unknown;
+  /** Captured foreground correlation, independent of provider/job/permission IDs. */
+  requestId?: string;
+  /** Explicit independent notices must not acquire foreground lifecycle effects. */
+  scope?: 'foreground' | 'background' | 'notice' | 'accessory';
 }
 
 // ============================================================================

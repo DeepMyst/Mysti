@@ -18,7 +18,7 @@
  * clicks it, because the failure being chased — the menu not appearing — is one
  * every static check passes.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JSDOM } from 'jsdom';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -57,7 +57,7 @@ const MENU_PAYLOAD = {
 interface Harness {
   win: any;
   doc: Document;
-  posted: Array<{ type: string; payload?: any }>;
+  posted: Array<{ type: string; requestId?: string; payload?: any }>;
   /** Deliver a message the extension would post. */
   receive(message: unknown): void;
   openMenu(): void;
@@ -65,6 +65,9 @@ interface Harness {
   agentRows(): Element[];
   runButton(): HTMLButtonElement | null;
 }
+
+const windows: Array<{ close(): void }> = [];
+afterEach(() => { for (const win of windows.splice(0)) { win.close(); } });
 
 function boot(): Harness {
   // The real page markup, minus the script tags jsdom would try to fetch.
@@ -74,7 +77,8 @@ function boot(): Harness {
 
   const dom = new JSDOM(body, { runScripts: 'outside-only', pretendToBeVisual: true });
   const win: any = dom.window;
-  const posted: Array<{ type: string; payload?: any }> = [];
+  windows.push(win);
+  const posted: Array<{ type: string; requestId?: string; payload?: any }> = [];
 
   // Every logo/icon the page reads at load. A Proxy answers any *Uri lookup
   // with a stub, so a new asset added to the boot object never breaks this
@@ -94,6 +98,7 @@ function boot(): Harness {
   win.eval(fs.readFileSync(path.join(ROOT, 'media', 'chat', 'subAgentCards.js'), 'utf8'));
   win.eval(fs.readFileSync(path.join(ROOT, 'media', 'chat', 'toolCards.js'), 'utf8'));
   win.eval(fs.readFileSync(path.join(ROOT, 'media', 'chat', 'messageRenderer.js'), 'utf8'));
+  win.eval(fs.readFileSync(path.join(ROOT, 'media', 'chat', 'streamingTimeline.js'), 'utf8'));
   win.eval(CHAT_JS);
 
   const receive = (message: unknown) => {
@@ -205,6 +210,117 @@ describe('the session agent picker, in a real DOM', () => {
     expect(start, 'Run posted no startSession').toBeTruthy();
     expect(start!.payload.shape).toBe('review');
     expect(start!.payload.agentIds).toHaveLength(2);
+  });
+
+  function submitSession(): string {
+    h.receive({ type: 'openSessionPicker', payload: { commandId: 'session:review', brief: 'Review this change', sessions: SESSIONS } });
+    h.runButton()!.click();
+    const request = h.posted.filter(message => message.type === 'startSession').at(-1)!;
+    expect(request.requestId).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
+    expect((h.doc.getElementById('stop-btn') as HTMLElement).style.display).not.toBe('none');
+    return request.requestId!;
+  }
+
+  it('releases a prepared session on its own preflight refusal without creating an empty answer', () => {
+    const requestId = submitSession();
+    h.receive({ type: 'responsePending', requestId, payload: { sequence: 1 } });
+    h.receive({ type: 'sessionError', requestId, payload: { message: 'Review needs two installed agents.' } });
+    h.receive({ type: 'responseComplete', requestId, payload: {} });
+    expect((h.doc.getElementById('stop-btn') as HTMLElement).style.display).toBe('none');
+    expect(h.doc.querySelectorAll('.message.assistant')).toHaveLength(0);
+    expect(h.doc.getElementById('messages')!.textContent).toContain('Review needs two installed agents.');
+  });
+
+  it('renders a final-only session answer once with its persisted identity and attribution', () => {
+    const requestId = submitSession();
+    h.receive({ type: 'responsePending', requestId, payload: { sequence: 1 } });
+    h.receive({ type: 'responseStarted', requestId, payload: { provider: 'review', model: 'Claude, Codex' } });
+    const completion = { type: 'responseComplete', requestId, payload: { message: {
+      id: 'final-session-answer', role: 'assistant', content: 'A complete session answer.', provider: 'review', model: 'Claude, Codex',
+    } } };
+    h.receive(completion);
+    h.receive(completion);
+    const answers = h.doc.querySelectorAll('.message.assistant[data-id="final-session-answer"]');
+    expect(answers).toHaveLength(1);
+    expect(answers[0].textContent).toContain('A complete session answer.');
+    expect(answers[0].querySelector('.message-model-info')?.textContent).toContain('Claude, Codex');
+    expect(answers[0].classList.contains('streaming')).toBe(false);
+    expect((h.doc.getElementById('stop-btn') as HTMLElement).style.display).toBe('none');
+  });
+
+  it.each([false, true])('keeps captured attribution when the picker changes before completion (streamed=%s)', streamed => {
+    const requestId = submitSession();
+    h.receive({ type: 'responsePending', requestId, payload: { sequence: 1 } });
+    h.receive({ type: 'responseStarted', requestId, payload: { provider: 'review', model: 'Original session model' } });
+    if (streamed) {
+      h.receive({ type: 'responseChunk', requestId, payload: { type: 'text', content: 'Partial answer.' } });
+    }
+    h.receive({ type: 'modelChanged', payload: { model: 'new-picker-model' } });
+    h.receive({ type: 'responseComplete', requestId, payload: { message: {
+      id: 'captured-session-answer', role: 'assistant', content: 'Final answer with no repeated attribution.',
+    } } });
+    const answer = h.doc.querySelector('.message.assistant[data-id="captured-session-answer"]')!;
+    expect(answer.textContent).toContain('Final answer with no repeated attribution.');
+    expect(answer.querySelector('.message-model-info')?.textContent).toContain('Original session model');
+    expect(answer.querySelector('.message-model-info')?.textContent).not.toContain('new-picker-model');
+  });
+
+  it.each(['error', 'authError'])('finishes Runs on admitted %s while an independent notice leaves it running', type => {
+    const requestId = submitSession();
+    h.receive({ type: 'responsePending', requestId, payload: { sequence: 1 } });
+    h.receive({ type: 'responseStarted', requestId, payload: { provider: 'review', model: 'Claude, Codex' } });
+    const working = () => h.doc.querySelector('.runs-tab-count[data-count="working"]')!.textContent;
+    expect(working()).toBe('1');
+    h.receive({ type: 'error', scope: 'notice', payload: 'An unrelated control failed.' });
+    expect(working()).toBe('1');
+    const terminal = { type, requestId, payload: type === 'error' ? 'The request failed.' : {
+      providerName: 'Review', authCommand: 'test sign-in', error: 'Sign-in required.',
+    } };
+    h.receive(terminal);
+    expect((h.doc.getElementById('stop-btn') as HTMLElement).style.display).toBe('none');
+    expect(working()).toBe('0');
+    h.receive(terminal);
+    expect(working()).toBe('0');
+  });
+
+  it('keeps the next prepared session intact when a completed session repeats its events', () => {
+    const first = submitSession();
+    h.receive({ type: 'responsePending', requestId: first, payload: { sequence: 1 } });
+    h.receive({ type: 'responseComplete', requestId: first, payload: {} });
+    const second = submitSession();
+    expect(second).not.toBe(first);
+    h.receive({ type: 'responsePending', requestId: first, payload: { sequence: 1 } });
+    h.receive({ type: 'responseStarted', requestId: first, payload: { provider: 'review' } });
+    h.receive({ type: 'responseChunk', requestId: first, payload: { type: 'text', content: 'STALE_SESSION' } });
+    h.receive({ type: 'responseComplete', requestId: first, payload: {} });
+    expect(h.doc.getElementById('messages')!.textContent).not.toContain('STALE_SESSION');
+    expect((h.doc.getElementById('stop-btn') as HTMLElement).style.display).not.toBe('none');
+    h.receive({ type: 'responsePending', requestId: second, payload: { sequence: 2 } });
+    h.receive({ type: 'responseComplete', requestId: second, payload: {} });
+    expect((h.doc.getElementById('stop-btn') as HTMLElement).style.display).toBe('none');
+  });
+
+  it('does not replace a locally prepared session with an unrelated host acknowledgement', () => {
+    const requestId = submitSession();
+    h.receive({ type: 'responsePending', requestId: 'unrelated-host-request', payload: { sequence: 99 } });
+    h.receive({ type: 'responseComplete', requestId: 'unrelated-host-request', payload: {} });
+    expect((h.doc.getElementById('stop-btn') as HTMLElement).style.display).not.toBe('none');
+    h.receive({ type: 'responsePending', requestId, payload: { sequence: 1 } });
+    h.receive({ type: 'responseComplete', requestId, payload: {} });
+    expect((h.doc.getElementById('stop-btn') as HTMLElement).style.display).toBe('none');
+  });
+
+  it('correlates Stop before session acknowledgement and refuses the cancelled tail', () => {
+    const requestId = submitSession();
+    (h.doc.getElementById('stop-btn') as HTMLButtonElement).click();
+    const stop = h.posted.filter(message => message.type === 'cancelRequest').at(-1)!;
+    expect(stop.requestId).toBe(requestId);
+    h.receive({ type: 'requestCancelled', requestId });
+    h.receive({ type: 'responsePending', requestId, payload: { sequence: 1 } });
+    h.receive({ type: 'responseStarted', requestId, payload: { provider: 'review' } });
+    h.receive({ type: 'responseChunk', requestId, payload: { type: 'text', content: 'CANCELLED_SESSION' } });
+    expect(h.doc.getElementById('messages')!.textContent).not.toContain('CANCELLED_SESSION');
+    expect((h.doc.getElementById('stop-btn') as HTMLElement).style.display).toBe('none');
   });
 
   it('a panel needs three, so Run is dead at the pre-ticked two', () => {
@@ -335,6 +451,15 @@ describe('the session agent picker, in a real DOM', () => {
   // -------------------------------------------------------------------------
 
   describe('the live session card', () => {
+    const requestId = 'host-session-card';
+    beforeEach(() => {
+      h.receive({ type: 'responsePending', requestId, payload: { sequence: 1 } });
+      h.receive({ type: 'responseStarted', requestId, payload: { provider: 'review', model: 'Claude, Codex' } });
+    });
+    function receiveSession(message: { type: 'sessionEvent'; payload: unknown }): void {
+      h.receive({ ...message, requestId });
+    }
+
     const started = {
       runId: 'run-1', type: 'session_started', shape: 'review',
       lanes: [
@@ -344,13 +469,13 @@ describe('the session agent picker, in a real DOM', () => {
     };
 
     it('renders one lane row per agent', () => {
-      h.receive({ type: 'sessionEvent', payload: started });
+      receiveSession({ type: 'sessionEvent', payload: started });
       expect(h.doc.querySelectorAll('#session-card .session-lane')).toHaveLength(2);
       expect(h.doc.querySelector('.session-card-progress')!.textContent).toContain('0 of 2 landed');
     });
 
     it('a running lane offers Stop, and it reaches the extension', () => {
-      h.receive({ type: 'sessionEvent', payload: started });
+      receiveSession({ type: 'sessionEvent', payload: started });
       h.posted.length = 0;
       (h.doc.querySelector('.session-lane-stop') as HTMLElement).click();
 
@@ -360,8 +485,8 @@ describe('the session agent picker, in a real DOM', () => {
     });
 
     it('a lane update replaces that lane in place, not appends', () => {
-      h.receive({ type: 'sessionEvent', payload: started });
-      h.receive({
+      receiveSession({ type: 'sessionEvent', payload: started });
+      receiveSession({
         type: 'sessionEvent',
         payload: {
           runId: 'run-1', type: 'lane_update',
@@ -374,8 +499,8 @@ describe('the session agent picker, in a real DOM', () => {
     });
 
     it('a failed lane shows the reason in words, not a taxonomy code', () => {
-      h.receive({ type: 'sessionEvent', payload: started });
-      h.receive({
+      receiveSession({ type: 'sessionEvent', payload: started });
+      receiveSession({
         type: 'sessionEvent',
         payload: {
           runId: 'run-1', type: 'lane_update',
@@ -386,13 +511,13 @@ describe('the session agent picker, in a real DOM', () => {
     });
 
     it('the card is removed when the session completes — the message is the result', () => {
-      h.receive({ type: 'sessionEvent', payload: started });
-      h.receive({ type: 'sessionEvent', payload: { runId: 'run-1', type: 'session_complete', markdown: '# done', lanes: [] } });
+      receiveSession({ type: 'sessionEvent', payload: started });
+      receiveSession({ type: 'sessionEvent', payload: { runId: 'run-1', type: 'session_complete', markdown: '# done', lanes: [] } });
       expect(h.doc.getElementById('session-card')).toBeNull();
     });
 
     it('a stray event with no card does not throw', () => {
-      expect(() => h.receive({
+      expect(() => receiveSession({
         type: 'sessionEvent',
         payload: { runId: 'x', type: 'lane_update', lane: { collaboratorId: 'c9', agentId: 'claude-code', label: 'x', status: 'done', text: '' } },
       })).not.toThrow();

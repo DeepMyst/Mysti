@@ -29,7 +29,7 @@ import type { CanvasBridge } from '../../src/canvas/CanvasBridge';
 import type { CanvasArtifactSession } from '../../src/canvas/CanvasArtifactSession';
 import { clearMockConfig, setMockConfig, Uri } from '../helpers/mockVscode';
 import { createModelRegistryStub } from '../helpers/modelRegistryStub';
-import type { Settings, WebviewMessage } from '../../src/types';
+import type { Settings, ToolCall, WebviewMessage } from '../../src/types';
 
 interface HostFixture {
   dispose(): void;
@@ -70,6 +70,7 @@ async function fixture(origin: 'sidebar' | null, resolveModel: () => Promise<str
   const subscriptions: Array<{ dispose(): void }> = [];
   let messageId = 0;
   const messages: WebviewMessage[] = [];
+  const persisted: Array<{ role: string; content: string; toolCalls?: ToolCall[] }> = [];
   const provider = new ChatViewProvider({
     extensionUri,
     extensionContext: {
@@ -81,8 +82,11 @@ async function fixture(origin: 'sidebar' | null, resolveModel: () => Promise<str
     contextManager: { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined },
     conversationManager: {
       getCurrentConversation: () => null, getConversation: () => null, getAgentConfig: () => undefined,
-      addMessageToConversation: (_conversation: string, role: string, content: string, _context: unknown, _attachments: unknown, thinking: unknown, extras: object) =>
-        ({ id: `message-${++messageId}`, role, content, timestamp: Date.now(), thinking, ...extras }),
+      addMessageToConversation: (_conversation: string, role: string, content: string, _context: unknown, _attachments: unknown, thinking: unknown, extras: object) => {
+        const message = { id: `message-${++messageId}`, role, content, timestamp: Date.now(), thinking, ...extras };
+        persisted.push(message);
+        return message;
+      },
     },
     providerManager: {
       setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
@@ -139,7 +143,7 @@ async function fixture(origin: 'sidebar' | null, resolveModel: () => Promise<str
       yield { done: true };
     },
   };
-  return { provider, artifact, messages, run: (settings: Settings) => provider._runMystiAgentic(
+  return { provider, artifact, messages, persisted, run: (settings: Settings) => provider._runMystiAgentic(
     'Inert authority fixture.', [], settings, { id: 'conversation', messages: [] }, 'sidebar', 'conversation',
   ) };
 }
@@ -210,8 +214,20 @@ it('Stop aborts a real coordinator Canvas open even after the panel cancellation
     await running;
     expect(h.provider._canvasArtifactSession.snapshot).toBeNull();
     expect(h.artifact.pages).toHaveLength(0);
-    expect(h.messages.filter(message => message.type === 'toolResult').map(message => message.payload))
-      .toEqual([expect.objectContaining({ status: 'failed', output: 'Canvas tool cancelled.' })]);
+    const use = h.messages.find(message => message.type === 'toolUse')!;
+    expect(use.requestId).toBeTruthy();
+    const tool = use.payload as { id: string; name: string };
+    // Stop closes the live request once. Its late native result remains in the
+    // persisted audit, rather than reopening that terminal stream.
+    expect(h.messages.filter(message => message.type === 'requestCancelled'))
+      .toEqual([{ type: 'requestCancelled', requestId: use.requestId }]);
+    expect(h.messages.filter(message => message.type === 'toolResult' || message.type === 'responseComplete')).toEqual([]);
+    expect(h.persisted.filter(message => message.role === 'assistant')).toEqual([
+      expect.objectContaining({
+        content: expect.stringContaining('Stopped'),
+        toolCalls: [expect.objectContaining({ id: tool.id, name: tool.name, status: 'failed', output: 'Canvas tool cancelled.' })],
+      }),
+    ]);
     await h.release();
     expect(h.provider._canvasArtifactSession.snapshot?.artifact).toBe(h.artifact);
     expect(sibling.signal.aborted).toBe(false);

@@ -152,7 +152,9 @@ describe('chat question integration', () => {
     Object.assign(h.provider, { _handleMessage: vi.fn().mockRejectedValue(new TypeError('private data')) });
     try {
       await expect(h.provider._receivePanelMessage({ type: 'sendMessage' }, 'panel', h.webview)).resolves.toBeUndefined();
-      expect(h.post).toHaveBeenCalledWith({ type: 'error', payload: expect.any(String) });
+      expect(h.post).toHaveBeenCalledWith({ type: 'systemNotice', payload: { message: expect.any(String) } });
+      await h.provider._receivePanelMessage({ type: 'sendMessage', requestId: 'captured-send' }, 'panel', h.webview);
+      expect(h.post).toHaveBeenCalledWith({ type: 'error', requestId: 'captured-send', payload: expect.any(String) });
       expect(JSON.stringify(log.mock.calls)).not.toContain('private data');
       h.post.mockRejectedValue(new Error('closed'));
       await expect(h.provider._receivePanelMessage({ type: 'sendMessage' }, 'panel', h.webview)).resolves.toBeUndefined();

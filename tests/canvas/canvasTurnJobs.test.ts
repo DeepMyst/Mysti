@@ -103,6 +103,11 @@ describe('canvas chat turn jobs', () => {
     turns.cancel('assigned-id');
     expect(cancelPanel).toHaveBeenCalledExactlyOnceWith('chat-A');
     turns.cancel('canvas-turn-chat-A');
+    expect(cancelPanel).toHaveBeenCalledTimes(1);
+    turns.end('chat-A');
+    turns.begin('chat-A');
+    turns.open('chat-A', 'Next edit');
+    turns.cancel('canvas-turn-chat-A');
     expect(cancelPanel).toHaveBeenCalledTimes(2);
   });
 
@@ -195,5 +200,24 @@ describe('canvas chat turn jobs', () => {
     expect(cancelPanel).not.toHaveBeenCalled();
     expect(events.map(event => event.type)).toEqual(['started']);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retains the opened job callback when another begin changes the panel preparation', () => {
+    const old = vi.fn(); const next = vi.fn();
+    turns.begin('chat-A', old, 'old'); turns.open('chat-A', 'Old');
+    turns.begin('chat-A', next, 'next');
+    turns.cancel('canvas-turn-chat-A-old');
+    expect(old).toHaveBeenCalledOnce(); expect(next).not.toHaveBeenCalled();
+    expect(cancelPanel).not.toHaveBeenCalled();
+  });
+
+  it('does not let a delayed old job cancellation reach a new turn on the same panel', () => {
+    const old = vi.fn(); const next = vi.fn();
+    turns.begin('chat-A', old, 'old'); turns.open('chat-A', 'Old'); turns.end('chat-A');
+    turns.begin('chat-A', next, 'next'); turns.open('chat-A', 'Next');
+    turns.cancel('canvas-turn-chat-A-old'); turns.cancel('canvas-turn-chat-A');
+    expect(old).not.toHaveBeenCalled(); expect(next).not.toHaveBeenCalled();
+    turns.cancel('canvas-turn-chat-A-next'); expect(next).toHaveBeenCalledOnce();
+    expect(cancelPanel).not.toHaveBeenCalled();
   });
 });

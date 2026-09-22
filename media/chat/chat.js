@@ -119,6 +119,7 @@
         // Brainstorm mode state
         activeAgent: 'mysti', // Plan 25 bootstrap default (pseudo-agent, no provider literal), replaced by initialState
         brainstormSession: null,
+        brainstormPending: null,
         brainstormPhase: null,
         brainstormStrategy: null,
         agentResponses: {},
@@ -1108,7 +1109,9 @@
       // Coarse send.ttftRender round-trip: posted in the rAF after the first
       // text chunk of a response painted, regardless of the enabled flag.
       function perfPostFirstChunkRendered(sentAt) {
+        var captured = typeof streamingTimeline === 'undefined' ? null : streamingTimeline.capture();
         requestAnimationFrame(function() {
+          if (captured && !streamingTimeline.isCurrent(captured)) { return; }
           postMessageWithPanelId({ type: 'perfMark', name: 'firstChunkRendered', sentAt: sentAt });
         });
       }
@@ -1494,6 +1497,7 @@
             // Send with suggested persona and skills for auto-configuration
             postMessageWithPanelId({
               type: 'quickActionWithConfig',
+              requestId: prepareForeground(),
               payload: {
                 content: message,
                 context: state.context,
@@ -1543,7 +1547,7 @@
       }
       if (stopBtn) {
         stopBtn.addEventListener('click', function() {
-          postMessageWithPanelId({ type: 'cancelRequest' });
+          cancelCurrentRequest();
         });
       }
       if (stopAgentBtn) {
@@ -1665,7 +1669,7 @@
         // else is consuming Escape.
         if (e.key === 'Escape' && state.isLoading) {
           e.preventDefault();
-          postMessageWithPanelId({ type: 'cancelRequest' });
+          cancelCurrentRequest();
           return;
         }
 
@@ -3310,13 +3314,13 @@
           var card = document.getElementById('stall-card');
           if (card) { card.remove(); }
           if (action === 'wait') { noteStreamActivity(); return; }
-          if (action === 'stop') { postMessageWithPanelId({ type: 'cancelRequest' }); return; }
+          if (action === 'stop') { cancelCurrentRequest(); return; }
           if (action === 'hand') {
             // Stop first, then re-ask the same question of a different agent —
             // down the mention path, so nothing is retyped and no new route
             // is invented.
             var question = state.lastSentContent || '';
-            postMessageWithPanelId({ type: 'cancelRequest' });
+            cancelCurrentRequest();
             if (!question) { showToast('Nothing to hand over \u2014 no question in flight.', 'error'); return; }
             var anchor = document.getElementById('agent-select-btn');
             var fake = document.createElement('div');
@@ -4287,10 +4291,21 @@
       });
 
       function handleMessage(message) {
+        if (message && message.type === 'brainstormCancelled' && (!state.brainstormPending ||
+            !message.payload || message.payload.brainstormId !== state.brainstormPending)) { return; }
+        // Refuse stale foreground frames before Runs, composer and queue effects.
+        var admission = streamingTimeline.admit(message);
+        if (!admission.accepted) { return; }
+        if (admission.terminal && message.type !== 'responseComplete') {
+          toolCards.end();
+          subAgentCards.stop();
+          hideLoading();
+          settleStoppedTools(admission.element);
+        }
         // Plan 28 Phase 3: keep the Runs dock in step. Deliberately BEFORE the
         // switch and outside it, so adding a run kind never means editing the
         // producer that draws it.
-        try { observeRun(message); } catch (err) { console.warn('[Mysti Webview] runs observer:', err); }
+        try { observeRun(message, admission); } catch (err) { console.warn('[Mysti Webview] runs observer:', err); }
         switch (message.type) {
           case 'initialState':
             initializeState(message.payload);
@@ -4311,27 +4326,14 @@
           case 'rewindComplete':
             handleRewindComplete(message.payload);
             break;
+          case 'responsePending':
+            toolCards.end();
+            setProcessing(true);
+            break;
           case 'responseStarted':
             toolCards.begin();
             subAgentCards.stop();
-            // Who is answering this turn, as the extension resolved it — the
-            // agent it routed to and the model that agent will really run
-            // (a per-provider custom-model override outranks the picker, so
-            // `state.settings.model` is not reliably that model).
-            currentTurnAttribution = message.payload || null;
-            // Perf: per-response chunk counter (ring buffer keeps rolling
-            // across responses — "last 2000 samples").
             if (perfState.enabled) { perfState.chunkCount = 0; }
-            // Clean up any incomplete streaming message from previous request
-            var oldStreaming = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
-            if (oldStreaming) {
-              console.log('[Mysti Webview] Cleaning up old streaming message');
-              oldStreaming.classList.remove('streaming');
-              // Reset streaming buffers
-              currentResponse = '';
-              currentThinking = '';
-              contentSegmentIndex = 0;
-            }
             showLoading();
             break;
           case 'responseChunk':
@@ -4354,7 +4356,7 @@
             hideLoading();
             // Payload is { message, usage } - extract message for finalization
             var responsePayload = message.payload || {};
-            var completedMessage = responsePayload.message || responsePayload;
+            var completedMessage = streamingTimeline.completedMessage(responsePayload.message || responsePayload);
             var finalizedEl = finalizeStreamingMessage(completedMessage);
             // Plan 02 Phase 3.4: unified footer (also auto-resolves running
             // tool cards for providers that never stream tool_result)
@@ -4433,19 +4435,6 @@
             toolCards.end();
             subAgentCards.stop();
             hideLoading();
-            // Resolve any still-running tool cards in the active streaming
-            // message so Stop never leaves an eternal spinner (review [5]).
-            var streamingForCancel = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
-            if (streamingForCancel) {
-              streamingForCancel.querySelectorAll('.tool-call.running, .tool-call.pending, .subagent-tool-call.running').forEach(function(card) {
-                card.classList.remove('running', 'pending');
-                card.classList.add('failed');
-                var st = card.querySelector('.tool-call-status');
-                if (st) { st.className = 'tool-call-status failed'; st.textContent = 'stopped'; }
-                var sp = card.querySelector('.subagent-tool-spinner');
-                if (sp) { sp.outerHTML = '<span class="subagent-tool-icon failed">&#10005;</span>'; }
-              });
-            }
             // Hide suggestion skeleton if showing
             var quickActionsContainer = document.getElementById('quick-actions');
             if (quickActionsContainer) {
@@ -4634,16 +4623,17 @@
             handleToolUse(message.payload);
             break;
           case 'toolResult':
-            handleToolResult(message.payload);
+            if (message.scope === 'accessory') { toolCards.acknowledge(message.payload); }
+            else { handleToolResult(message.payload); }
             break;
           case 'channelAction':
-            handleChannelAction(message.payload);
+            handleChannelAction(message.payload, message.requestId ? streamingTimeline.currentElement() : undefined);
             break;
           case 'connectionRequired':
-            handleConnectionRequired(message.payload);
+            handleConnectionRequired(message.payload, message.requestId ? streamingTimeline.currentElement() : undefined);
             break;
           case 'connectionAlready':
-            handleConnectionAlready(message.payload);
+            handleConnectionAlready(message.payload, message.requestId ? streamingTimeline.currentElement() : undefined);
             break;
           case 'connectionResult':
             handleConnectionResult(message.payload);
@@ -4687,17 +4677,17 @@
             handleSemiAutoPlanTimer(message.payload);
             break;
           case 'planOptions':
-            handlePlanOptionsMessage(message.payload);
+            handlePlanOptionsMessage(message.payload, message.requestId ? streamingTimeline.currentElement() : undefined);
             break;
           case 'askUserQuestion':
-            handleAskUserQuestionMessage(message.payload);
+            handleAskUserQuestionMessage(message.payload, message.requestId ? streamingTimeline.currentElement() : undefined, message.requestId);
             break;
           case 'error':
-            hideLoading();
+            if (admission.foreground) { hideLoading(); }
             showError(message.payload);
             break;
           case 'authError':
-            hideLoading();
+            if (admission.foreground) { hideLoading(); }
             showAuthError(message.payload);
             break;
           case 'contextUpdated':
@@ -4919,7 +4909,17 @@
             handleFileLineNumber(message.payload);
             break;
           // Brainstorm mode message handlers
+          case 'brainstormCancelled':
+            if (state.brainstormPending && message.payload && message.payload.brainstormId === state.brainstormPending) {
+              state.brainstormPending = null;
+              hideLoading();
+              state.brainstormSession = null;
+              Object.keys(brainstormAgentTimeouts).forEach(clearAgentTimeout);
+              document.querySelectorAll('[data-brainstorm-synthesis].streaming').forEach(function(el) { el.classList.remove('streaming'); });
+            }
+            break;
           case 'brainstormStarted':
+            if (message.payload && message.payload.brainstormId) { state.brainstormPending = message.payload.brainstormId; }
             handleBrainstormStarted(message.payload);
             break;
           case 'brainstormAgentChunk':
@@ -4932,9 +4932,11 @@
             handleBrainstormSynthesisChunk(message.payload);
             break;
           case 'brainstormComplete':
+            state.brainstormPending = null;
             handleBrainstormComplete(message.payload);
             break;
           case 'brainstormError':
+            state.brainstormPending = null;
             handleBrainstormError(message.payload);
             break;
           case 'brainstormAgentComplete':
@@ -7461,8 +7463,8 @@
       // ==================================================================
       function handleMystiDelegateTrace(payload) {
         if (!payload || !payload.parentId || !payload.chunk) { return; }
-        var pid = (window.CSS && CSS.escape) ? CSS.escape(String(payload.parentId)) : String(payload.parentId);
-        var card = messagesEl.querySelector('.tool-call[data-id="' + pid + '"]');
+        var element = streamingTimeline.currentElement();
+        var card = element && Array.from(element.querySelectorAll('.tool-call')).find(function(tool) { return tool.dataset.id === String(payload.parentId); });
         if (!card) { return; }
         var act = card.querySelector('.mysti-node-activity');
         if (!act) {
@@ -7491,28 +7493,11 @@
       // returns, and finalizeStreamingMessage picks up this bubble (it is not
       // tagged data-brainstorm-synthesis) to attach the persisted id + footer.
       function handleMystiSynthesis(evt) {
-        var content = evt.content || '';
-        var el = messagesEl.querySelector('.message.assistant.streaming[data-mysti-synthesis]');
-        if (!el) {
-          el = document.createElement('div');
-          el.className = 'message assistant streaming';
-          el.setAttribute('data-mysti-synthesis', 'pending');
-          el.innerHTML =
-            '<div class="message-header"><div class="message-role-container">' +
-            '<span class="message-role assistant">Mysti</span>' +
-            '<span class="message-model-info">Orchestrated</span>' +
-            '</div></div>' +
-            '<div class="message-body"><div class="message-content"></div></div>';
-          messagesEl.appendChild(el);
-        }
-        var contentEl = el.querySelector('.message-content');
-        if (contentEl) { contentEl.innerHTML = formatContent(content); }
-        scrollToBottom();
+        streamingTimeline.synthesis(evt.content || '');
       }
 
       function handleMystiComplete(payload) {
         payload = payload || {};
-        setProcessing(false);
         var container = mystiContainerEl();
         if (payload.cancelled) {
           // A stopped run must not read as successfully complete — leave the
@@ -7533,7 +7518,6 @@
 
       function handleMystiError(payload) {
         payload = payload || {};
-        setProcessing(false);
         var container = mystiContainerEl();
         if (container) {
           container.classList.add('mysti-done');
@@ -7564,9 +7548,7 @@
         payload = payload || {};
         var jobId = payload.jobId;
         if (!jobId) { return; }
-        // The turn becomes a background job — free the input AND remove the
-        // bottom "thinking" spinner that responseStarted appended.
-        hideLoading();
+        // Detachment is admitted separately; this renderer is job-owned.
         jobOutputText[jobId] = '';
         var card = document.createElement('div');
         card.className = 'mysti-job';
@@ -7766,7 +7748,6 @@
 
       function renderMystiActionCard(payload) {
         payload = payload || {};
-        hideLoading();
 
         var actions = Array.isArray(payload.actions) ? payload.actions : ['signIn'];
         var agents = Array.isArray(payload.agents) ? payload.agents : [];
@@ -8412,6 +8393,7 @@
       }
 
       function initializeState(payload) {
+        streamingTimeline.reset();
         dismissInitLoading();
         // Perf: the mysti.debug.performanceLogging flag rides the
         // initialState payload (starts/stops heap sampling + chunk timing).
@@ -8927,26 +8909,33 @@
         brainstormDiscussionChunk: 1, brainstormSynthesisChunk: 1, permissionRequest: 1
       };
 
-      function observeRun(message) {
+      function observeRun(message, admission) {
         var p = (message && message.payload) || {};
-        if (message && STREAM_ALIVE[message.type]) { noteStreamActivity(); }
+        var foreground = admission.foreground;
+        if (message && STREAM_ALIVE[message.type] && (foreground || (state.brainstormPending && message.type.indexOf('brainstorm') === 0))) { noteStreamActivity(); }
+        // The timeline alone admits a terminal, including refusal/error paths
+        // that have no later cancellation frame. Independent notices and a
+        // coordinator's progress-only completion cannot finish this turn.
+        if (foreground && admission.terminal) {
+          var completed = message.type === 'responseComplete';
+          var detached = message.type === 'jobStarted';
+          var stopped = message.type === 'requestCancelled' || (message.type === 'mystiComplete' && p.cancelled);
+          runFinish('turn', { ok: completed || detached,
+            detail: detached ? 'running in background' : completed ? 'done' : stopped ? 'stopped' :
+              (typeof p === 'string' ? p : p.error || p.message || 'failed') });
+        }
         switch (message && message.type) {
           // The main turn is a run too — usually the only one.
           case 'responseStarted':
             runUpsert('turn', { kind: 'turn', title: 'This turn', agentId: state.settings.provider, state: 'working' });
             break;
           case 'responseComplete':
-            runFinish('turn', { ok: true });
             // A question is answered by continuing the turn; nothing else
             // reports that, so the turn landing is what clears it.
             state.runOrder.slice().forEach(function(id) {
               if (id.indexOf('auq:') === 0) { runDrop(id); }
             });
             break;
-          case 'requestCancelled':
-            runFinish('turn', { ok: false, detail: 'stopped' });
-            break;
-
           case 'subAgentStarted':
             runUpsert('sub:' + p.agentId, { kind: 'sub', agentId: p.agentId, state: 'working',
               title: (getAgentDisplay(p.agentId) || {}).name || p.agentId, detail: 'sub-agent' });
@@ -8998,6 +8987,9 @@
             break;
           case 'brainstormError':
             runFinish('brainstorm', { ok: false, detail: p.error || 'failed' });
+            break;
+          case 'brainstormCancelled':
+            runFinish('brainstorm', { ok: false, detail: 'stopped' });
             break;
 
           // The two things that actually need a human.
@@ -9498,6 +9490,25 @@
         }
       }
 
+      function cancelCurrentRequest() {
+        if (state.brainstormPending) {
+          postMessageWithPanelId({ type: 'cancelRequest', payload: { scope: 'brainstorm', brainstormId: state.brainstormPending } });
+        } else {
+          var cancellation = { type: 'cancelRequest' };
+          var requestId = streamingTimeline.currentRequestId();
+          if (requestId) { cancellation.requestId = requestId; }
+          postMessageWithPanelId(cancellation);
+        }
+      }
+
+      function prepareForeground() {
+        state.brainstormPending = null;
+        var id = streamingTimeline.prepare();
+        toolCards.reset();
+        setProcessing(true);
+        return id;
+      }
+
       function sendMessage() {
         var content = inputEl.value.trim();
         if (!content && state.attachments.length === 0) { return; }
@@ -9520,6 +9531,7 @@
           // passthrough needs the same send context a normal message carries.
           postMessageWithPanelId({
             type: 'executeSlashCommand',
+            requestId: streamingTimeline.reserveCommand(),
             payload: { command: command, args: args, settings: state.settings, context: state.context }
           });
           inputEl.value = '';
@@ -9537,12 +9549,16 @@
 
         // Check if brainstorm mode is selected (use activeAgent which is set synchronously)
         if (state.activeAgent === 'brainstorm') {
+          state.brainstormPending = 'brainstorm-' + (window.crypto && typeof window.crypto.randomUUID === 'function'
+            ? window.crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
+          streamingTimeline.reset();
           // In brainstorm mode, ignore agent mentions (brainstorm handles multi-agent)
           // but still pass file mentions
           var fileMentions = parsedMentions.filter(function(m) { return m.type === 'file'; });
           postMessageWithPanelId({
             type: 'sendBrainstormMessage',
             payload: {
+              brainstormId: state.brainstormPending,
               content: content,
               context: state.context,
               settings: state.settings,
@@ -9553,6 +9569,7 @@
         } else {
           postMessageWithPanelId({
             type: 'sendMessage',
+            requestId: prepareForeground(),
             payload: {
               content: content,
               context: state.context,
@@ -9717,30 +9734,29 @@
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 
+      const streamingTimeline = window.MystiStreamingTimeline.create({
+        document,
+        getMessagesElement: () => messagesEl,
+        fallbackAttribution: () => ({ provider: state.activeAgent, model: state.settings.model }),
+        formatAttributionLabel, formatContent, stripChannelMarkers,
+        renderThinkingZone, getThinkingStyle, updateMessageAttributionChip,
+        retireElement: settleStoppedTools,
+        appendFinal: msg => addMessage(msg),
+        scroll: () => { messagesEl.scrollTop = messagesEl.scrollHeight; },
+      });
       const toolCards = window.MystiToolCards.create({
         document,
         getMessagesElement: () => messagesEl,
         cleanPathsInString,
         makeRelativePath,
-        getStreamingBody: () => {
-          const streaming = getOrCreateStreamingMessage();
-          if (currentResponse.trim()) { contentSegmentIndex++; currentResponse = ''; }
-          return streaming.querySelector('.message-body');
-        },
+        getStreamingBody: () => streamingTimeline.beforeTool(),
         scroll: () => { messagesEl.scrollTop = messagesEl.scrollHeight; },
         onResult: augmentToolResult,
       });
       window.addEventListener('pagehide', event => {
-        if (!event.persisted) { toolCards.dispose(); }
+        if (!event.persisted) { streamingTimeline.dispose(); toolCards.dispose(); }
       });
 
-      var currentResponse = '';
-      var currentThinking = '';
-      var contentSegmentIndex = 0;
-      // { provider, model? } announced by the extension on responseStarted —
-      // who is answering THIS turn, which is not always the panel's selection
-      // (an @-mention routes elsewhere) and not always the picker's model.
-      var currentTurnAttribution = null;
       var stuckTodoObservers = new Map(); // todoId -> IntersectionObserver
       var stuckTodos = new Map(); // todoId -> { originalEl, cloneEl }
       // Thinking buffers live on each message's .thinking-zone element
@@ -9769,54 +9785,7 @@
       }
 
       function handleResponseChunkBody(chunk) {
-        console.log('[Mysti Webview] Received chunk:', JSON.stringify(chunk));
-        if (chunk.type === 'text') {
-          currentResponse += chunk.content;
-          // Strip channel markers from display (actions handled by extension side)
-          var displayContent = stripChannelMarkers(currentResponse);
-          updateCurrentContentSegment(displayContent);
-        } else if (chunk.type === 'thinking') {
-          console.log('[Mysti Webview] Thinking content:', JSON.stringify(chunk.content));
-          currentThinking += chunk.content;  // Still accumulate for storage
-          appendThinkingBlock(chunk.content);  // But display each chunk separately
-        }
-      }
-
-      function getOrCreateStreamingMessage() {
-        var streamingEl = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
-
-        if (!streamingEl) {
-          // The first token replaces the spinner; the request remains active.
-          var loading = messagesEl.querySelector('.loading');
-          if (loading) { loading.remove(); }
-
-          // Only completion/error/cancel releases processing ownership. Hiding
-          // Stop here made an active HTTP/CLI stream impossible to interrupt
-          // from the button and disabled Escape/queue behavior after token one.
-
-          streamingEl = document.createElement('div');
-          streamingEl.className = 'message assistant streaming';
-          // Removed static thinking-block - now created dynamically for each thought
-          // The live header names the agent this turn is going to, not just the
-          // model — `updateMessageAttributionChip` swaps in the persisted stamp
-          // at finalize, so it is the same shape either way.
-          //
-          // The extension's announcement is taken WHOLE when present: it knows
-          // where an @-mention routed the turn and what the provider's own model
-          // resolution settled on, and an announcement carrying no model means
-          // the model is not knowable yet (the Mysti coordinator only reports
-          // the one it ran from inside the stream). Filling that gap from the
-          // picker would print a model this turn is not using — the exact
-          // mislabel this is here to end — so the chip shows the agent alone
-          // until the stamp lands.
-          var liveAttribution = currentTurnAttribution
-            ? { provider: currentTurnAttribution.provider, model: currentTurnAttribution.model || '' }
-            : { provider: state.activeAgent, model: state.settings.model };
-          streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Mysti</span><span class="message-model-info">' + escapeHtml(formatAttributionLabel(liveAttribution)) + '</span></div></div><div class="message-body"></div>';
-          messagesEl.appendChild(streamingEl);
-        }
-
-        return streamingEl;
+        streamingTimeline.append(chunk);
       }
 
       // ======================================================================
@@ -9899,35 +9868,6 @@
         return zone;
       }
 
-      function appendThinkingBlock(thinking) {
-        var streamingEl = getOrCreateStreamingMessage();
-        var messageBody = streamingEl.querySelector('.message-body');
-        if (thinking && messageBody) {
-          renderThinkingZone(messageBody, getThinkingStyle(state.settings.provider), thinking);
-        }
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-
-      function updateCurrentContentSegment(content) {
-        var streamingEl = getOrCreateStreamingMessage();
-        var messageBody = streamingEl.querySelector('.message-body');
-
-        // Find or create the current content segment
-        var segmentId = 'content-segment-' + contentSegmentIndex;
-        var segmentEl = messageBody.querySelector('.' + segmentId);
-
-        if (!segmentEl) {
-          segmentEl = document.createElement('div');
-          segmentEl.className = 'message-content ' + segmentId;
-          messageBody.appendChild(segmentEl);
-        }
-
-        segmentEl.innerHTML = formatContent(content);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-
-
-
       // Tool cards own live IDs/input and use the same DOM builder for replay.
       function buildToolCallElement(toolCall) { return toolCards.build(toolCall); }
       function handleToolUse(toolCall) { toolCards.use(toolCall); }
@@ -9945,7 +9885,7 @@
           var existingCard = Array.from(toolEl.parentNode.querySelectorAll('.edit-report-card')).find(function(card) { return card.dataset.toolId === toolCall.id; });
           if (!existingCard && editInfo.filePath) {
             // Create and insert edit report card below the tool call
-            var cardHtml = renderEditReportCard(editInfo, currentThinking);
+            var cardHtml = renderEditReportCard(editInfo, streamingTimeline.thinkingFor(toolEl));
             var cardWrapper = document.createElement('div');
             cardWrapper.innerHTML = cardHtml;
             var cardEl = cardWrapper.firstChild;
@@ -9997,10 +9937,12 @@
       // Channel Action Handling Functions
       // ========================================
 
-      function handleChannelAction(payload) {
+      function handleChannelAction(payload, target) {
         // For inbound messages, attach to last message (any type) since agent may be idle
         var targetEl;
-        if (payload.action === 'inbound') {
+        if (target !== undefined) {
+          targetEl = target;
+        } else if (payload.action === 'inbound') {
           targetEl = messagesEl.querySelector('.message:last-child');
         } else {
           targetEl = messagesEl.querySelector('.message.streaming') || messagesEl.querySelector('.message.assistant:last-child');
@@ -10069,16 +10011,16 @@
           .join(' ');
       }
 
-      function _connectTargetMessageBody() {
-        var targetEl = messagesEl.querySelector('.message.streaming') ||
-          messagesEl.querySelector('.message.assistant:last-child');
+      function _connectTargetMessageBody(target) {
+        var targetEl = target === undefined ? messagesEl.querySelector('.message.streaming') ||
+          messagesEl.querySelector('.message.assistant:last-child') : target;
         if (!targetEl) { return null; }
         return targetEl.querySelector('.message-body');
       }
 
       /** Render a "Link <service>" button when an agent requests a connection. */
-      function handleConnectionRequired(payload) {
-        var body = _connectTargetMessageBody();
+      function handleConnectionRequired(payload, target) {
+        var body = _connectTargetMessageBody(target);
         if (!body) { return; }
         var service = (payload && payload.service) || 'service';
         // Don't stack duplicate cards for the same service in one message.
@@ -10129,8 +10071,8 @@
       }
 
       /** Subtle note when the service is already linked in DeepMyst. */
-      function handleConnectionAlready(payload) {
-        var body = _connectTargetMessageBody();
+      function handleConnectionAlready(payload, target) {
+        var body = _connectTargetMessageBody(target);
         if (!body) { return; }
         var service = (payload && payload.service) || 'service';
         if (body.querySelector('.connect-card[data-service="' + service + '"]')) { return; }
@@ -11084,12 +11026,12 @@
       }
 
       // Handle planOptions message from backend
-      function handlePlanOptionsMessage(payload) {
+      function handlePlanOptionsMessage(payload, target) {
         if (!payload.options || payload.options.length === 0) { return; }
 
         // Find the message to attach plan options to
-        var messageEl = document.querySelector('.message[data-id="' + payload.messageId + '"]');
-        if (!messageEl) {
+        var messageEl = target === undefined ? Array.from(document.querySelectorAll('.message')).find(function(el) { return el.dataset.id === payload.messageId; }) : target;
+        if (!messageEl && target === undefined) {
           // Find most recent assistant message
           var messages = document.querySelectorAll('.message.assistant');
           messageEl = messages[messages.length - 1];
@@ -11124,12 +11066,13 @@
       // ========================================
 
       // Handle native AskUserQuestion tool from Claude Code CLI
-      function handleAskUserQuestionMessage(payload) {
+      function handleAskUserQuestionMessage(payload, target, requestId) {
         if (!payload || !payload.questions || payload.questions.length === 0) { return; }
 
-        // Find most recent assistant message
-        var messages = document.querySelectorAll('.message.assistant');
-        var messageEl = messages[messages.length - 1];
+        // Tagged question controls stay on the captured response even if a
+        // background result/action card was appended afterward.
+        var messages = target === undefined ? document.querySelectorAll('.message.assistant') : [];
+        var messageEl = target === undefined ? messages[messages.length - 1] : target;
 
         if (messageEl) {
           // Remove any existing AskUserQuestion container
@@ -11143,7 +11086,7 @@
           }
 
           // Add tabbed question UI
-          var container = renderAskUserQuestionTabs(payload.toolCallId, payload.questions);
+          var container = renderAskUserQuestionTabs(payload.toolCallId, payload.questions, requestId);
           if (container) {
             messageEl.appendChild(container);
             messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -11178,10 +11121,12 @@
         });
       }
 
-      function renderAskUserQuestionTabs(toolCallId, questions) {
+      var questionInstanceSequence = 0;
+      function renderAskUserQuestionTabs(toolCallId, questions, requestId) {
         var container = document.createElement('div');
         container.className = 'ask-user-question-container';
         container.setAttribute('data-tool-call-id', toolCallId);
+        container._inputPrefix = 'auq-' + (++questionInstanceSequence);
 
         // Track answers and current tab
         container._answers = {};
@@ -11226,10 +11171,9 @@
         skipBtn.className = 'auq-skip-btn';
         skipBtn.textContent = 'Skip';
         skipBtn.onclick = function() {
-          postMessageWithPanelId({
-            type: 'askUserQuestionSkipped',
-            payload: { toolCallId: toolCallId }
-          });
+          var skipped = { type: 'askUserQuestionSkipped', payload: { toolCallId: toolCallId } };
+          if (requestId) { skipped.requestId = requestId; }
+          postMessageWithPanelId(skipped);
           container.remove();
         };
 
@@ -11237,7 +11181,7 @@
         submitBtn.className = 'auq-submit-btn';
         submitBtn.textContent = 'Submit Answers';
         submitBtn.disabled = true;
-        submitBtn.onclick = function() { submitAuqAnswers(container, toolCallId); };
+        submitBtn.onclick = function() { submitAuqAnswers(container, toolCallId, requestId); };
 
         var submitHint = document.createElement('span');
         submitHint.style.cssText = 'font-size: 11px; color: var(--vscode-descriptionForeground); margin-right: auto; align-self: center;';
@@ -11268,7 +11212,7 @@
 
         var hasOptions = question.options && question.options.length > 0;
         var inputType = question.multiSelect ? 'checkbox' : 'radio';
-        var inputName = 'auq_' + index;
+        var inputName = container._inputPrefix + '_' + index;
 
         if (hasOptions) {
           question.options.forEach(function(opt, optIdx) {
@@ -11449,18 +11393,18 @@
         submitBtn.disabled = answeredCount < questions.length;
       }
 
-      function submitAuqAnswers(container, toolCallId) {
+      function submitAuqAnswers(container, toolCallId, requestId) {
+        if (container.classList.contains('submitted')) { return; }
         // Visual feedback
         container.classList.add('submitted');
 
         // Send answers to extension
-        postMessageWithPanelId({
+        var response = {
           type: 'askUserQuestionResponse',
-          payload: {
-            toolCallId: toolCallId,
-            answers: container._answers
-          }
-        });
+          payload: { toolCallId: toolCallId, answers: container._answers }
+        };
+        if (requestId) { response.requestId = requestId; }
+        postMessageWithPanelId(response);
 
         // Replace with confirmation
         container.innerHTML = '<div class="auq-submitted"><span class="auq-check">✓</span> Answers submitted</div>';
@@ -11491,12 +11435,6 @@
         if (stopBtn) { stopBtn.style.display = on ? 'flex' : 'none'; }
         var quickActionsContainer = document.getElementById('quick-actions-container');
         if (quickActionsContainer) { quickActionsContainer.classList.toggle('ai-running', on); }
-        if (!on) {
-          currentResponse = '';
-          currentThinking = '';
-          contentSegmentIndex = 0;
-          currentTurnAttribution = null;
-        }
       }
 
       function showLoading() {
@@ -11590,8 +11528,8 @@
       function getMessageAttribution(msg) {
         var conv = state.conversation || {};
         return {
-          provider: (msg && msg.provider) || conv.provider || (state.settings && state.settings.provider) || null,
-          model: (msg && msg.model) || conv.model || (state.settings && state.settings.model) || ''
+          provider: msg && typeof msg.provider === 'string' ? msg.provider : conv.provider || (state.settings && state.settings.provider) || null,
+          model: msg && typeof msg.model === 'string' ? msg.model : conv.model || (state.settings && state.settings.model) || ''
         };
       }
 
@@ -11804,33 +11742,19 @@
       }
 
       function finalizeStreamingMessage(msg) {
-        var streamingEl = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
-        if (streamingEl) {
-          // Remove streaming class from thinking block
-          var streamingThinking = streamingEl.querySelector('.thinking-block.streaming-thinking');
-          if (streamingThinking) {
-            streamingThinking.classList.remove('streaming-thinking');
-          }
+        return streamingTimeline.finish(msg);
+      }
 
-          streamingEl.classList.remove('streaming');
-          streamingEl.dataset.id = msg.id;
-
-          // Per-message attribution chip from the persisted provider/model
-          // (post-@-mention-switch values, not the dropdown selection)
-          updateMessageAttributionChip(streamingEl, msg);
-
-          // Re-render all content segments with final markdown
-          var messageBody = streamingEl.querySelector('.message-body');
-          if (messageBody && msg.content) {
-            var segments = messageBody.querySelectorAll('.message-content');
-            if (segments.length === 1) {
-              // Single segment - render full content
-              segments[0].innerHTML = formatContent(msg.content);
-            }
-            // For multiple segments, leave them as-is (already rendered during streaming)
-          }
-        }
-        return streamingEl;
+      function settleStoppedTools(element) {
+        if (!element) { return; }
+        element.querySelectorAll('.tool-call.running, .tool-call.pending, .subagent-tool-call.running').forEach(function(card) {
+          card.classList.remove('running', 'pending');
+          card.classList.add('failed');
+          var status = card.querySelector('.tool-call-status');
+          if (status) { status.className = 'tool-call-status failed'; status.textContent = 'stopped'; }
+          var spinner = card.querySelector('.subagent-tool-spinner');
+          if (spinner) { spinner.outerHTML = '<span class="subagent-tool-icon failed">&#10005;</span>'; }
+        });
       }
 
       function showError(error) {
@@ -11872,17 +11796,15 @@
       }
 
       function clearMessages() {
-        toolCards.end();
+        state.brainstormPending = null;
+        streamingTimeline.reset();
+        hideLoading();
+        toolCards.reset();
         subAgentCards.reset();
         messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Mysti" class="welcome-logo" /><h2>Welcome to Mysti</h2><p>Your AI coding team. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div><div class="welcome-spread"><h3>Spread the Word</h3><div class="about-links spread-links"><a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> Star on GitHub</a><a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti&ssr=false#review-details" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.254.008.045-.236 2.101-.574.028.166-.978 4.607z"/><circle cx="8" cy="4.5" r="1"/></svg> Rate on Marketplace</a><a id="share-on-x" href="#" class="spread-link" title="Share on X / Twitter"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Share on X</a></div></div></div>';
         renderWelcomeSuggestions();
         // A rebuilt message list invalidates any open rewind menu's anchor.
         if (typeof closeRewindMenu === 'function') { closeRewindMenu(); }
-        // Reset all streaming buffers
-        currentResponse = '';
-        currentThinking = '';
-        contentSegmentIndex = 0;
-        currentTurnAttribution = null;
       }
 
       /** A rough token count for N characters. Rough on purpose: ~4 chars per
@@ -12677,6 +12599,7 @@
 
         postMessageWithPanelId({
           type: 'startSession',
+          requestId: prepareForeground(),
           payload: {
             shape: shapeId,
             agentIds: agentIds,
@@ -12722,6 +12645,7 @@
         // command rather than guessing from the label.
         postMessageWithPanelId({
           type: 'executeSlashCommand',
+            requestId: streamingTimeline.reserveCommand(),
           payload: {
             commandId: cmd.id,
             command: cmd.nativeName || undefined,

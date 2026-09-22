@@ -25,32 +25,44 @@ export interface CanvasTurnJobPorts {
  */
 export class CanvasTurnJobs {
   private readonly _streamingPanels = new Set<string>();
-  private readonly _jobs = new Map<string, TurnJobHandle>();
+  private readonly _jobs = new Map<string, { handle: TurnJobHandle; requestedId: string; cancel?: () => void; cancelled?: boolean }>();
+  private readonly _cancelTurns = new Map<string, () => void>();
+  private readonly _turnIds = new Map<string, string>();
   private _disposed = false;
 
   public constructor(private readonly _ports: CanvasTurnJobPorts) {}
 
-  public begin(panelId: string): void {
-    if (!this._disposed) { this._streamingPanels.add(panelId); }
+  public begin(panelId: string, cancelCapturedTurn?: () => void, requestId?: string): void {
+    if (!this._disposed) {
+      this._streamingPanels.add(panelId);
+      if (cancelCapturedTurn) { this._cancelTurns.set(panelId, cancelCapturedTurn); }
+      else { this._cancelTurns.delete(panelId); }
+      if (requestId) { this._turnIds.set(panelId, requestId); }
+      else { this._turnIds.delete(panelId); }
+    }
   }
 
   /** A late or detached write has no future turn end, so it cannot open a job. */
   public open(panelId: string, label: string, pageId?: string): void {
     if (this._disposed || !this._streamingPanels.has(panelId) || this._jobs.has(panelId)) { return; }
+    const requestedId = this._jobId(panelId);
     const handle = this._ports.openJob({
       runId: 'chat-' + panelId,
-      jobId: this._jobId(panelId),
+      jobId: requestedId,
       label,
       ...(pageId ? { pageId } : {}),
     });
-    if (handle) { this._jobs.set(panelId, handle); }
+    if (handle) { this._jobs.set(panelId, { handle, requestedId, cancel: this._cancelTurns.get(panelId) }); }
   }
 
   /** Every exit from a streaming turn closes its job at most once. */
   public end(panelId: string, error?: string): void {
     this._streamingPanels.delete(panelId);
-    const handle = this._jobs.get(panelId);
-    if (!handle) { return; }
+    this._cancelTurns.delete(panelId);
+    this._turnIds.delete(panelId);
+    const job = this._jobs.get(panelId);
+    if (!job) { return; }
+    const { handle } = job;
     this._jobs.delete(panelId);
     try {
       if (error) { handle.fail(error); } else { handle.done(); }
@@ -59,9 +71,12 @@ export class CanvasTurnJobs {
 
   /** Hiding the liveness job alone would leave the provider writing. */
   public cancel(jobId: string): void {
-    for (const [panelId, handle] of this._jobs) {
-      if (handle.jobId !== jobId && this._jobId(panelId) !== jobId) { continue; }
-      this._ports.cancelPanel(panelId);
+    for (const [panelId, job] of this._jobs) {
+      const { handle, requestedId, cancel } = job;
+      if (handle.jobId !== jobId && requestedId !== jobId) { continue; }
+      if (job.cancelled) { return; }
+      job.cancelled = true;
+      if (cancel) { cancel(); } else { this._ports.cancelPanel(panelId); }
       return;
     }
   }
@@ -78,10 +93,13 @@ export class CanvasTurnJobs {
   public dispose(): void {
     this._disposed = true;
     this._streamingPanels.clear();
+    this._cancelTurns.clear();
+    this._turnIds.clear();
     this._jobs.clear();
   }
 
   private _jobId(panelId: string): string {
-    return `canvas-turn-${panelId}`;
+    const requestId = this._turnIds.get(panelId);
+    return `canvas-turn-${panelId}${requestId ? `-${requestId}` : ''}`;
   }
 }

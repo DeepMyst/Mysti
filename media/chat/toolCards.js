@@ -228,11 +228,13 @@
       body.appendChild(record.element);
       ports.scroll();
     }
-    function result(toolCall) {
-      if (disposed || !accepting || !isRecord(toolCall) || typeof toolCall.id !== 'string') { return; }
+    function result(toolCall, acknowledgement) {
+      if (disposed || (!accepting && !acknowledgement) || !isRecord(toolCall) || typeof toolCall.id !== 'string') { return; }
       const record = records.get(toolCall.id);
       if (!record || !current(record)) { records.delete(toolCall.id); return; }
-      if (record.terminal) { return; }
+      if (acknowledgement && record.name.toLowerCase().replace(/[^a-z]/g, '') !== 'askuserquestion') { return; }
+      if (acknowledgement ? record.acknowledged : record.terminal) { return; }
+      if (acknowledgement) { record.acknowledged = true; }
       const nextStatus = status(toolCall.status, 'failed');
       setStatus(record, nextStatus);
       showOutput(record, toolCall.output);
@@ -246,11 +248,15 @@
       records.clear();
       accepting = true;
     }
-    // A terminal event closes intake as well as forgetting IDs. Otherwise a
-    // delayed start frame would create a fresh spinner after Stop/completion.
-    function end() { accepting = false; records.clear(); }
-    function dispose() { if (!disposed) { disposed = true; end(); } }
-    return { build: toolCall => buildRecord(toolCall).element, summary, use, result, begin, end, reset: end, dispose };
+    // Close live intake. Retain only this run's exact card references for an
+    // explicit, once-only question acknowledgement after completion; reset or
+    // the next begin forgets them, and ordinary late frames remain refused.
+    function end() { accepting = false; }
+    function reset() { end(); records.clear(); }
+    function dispose() { if (!disposed) { disposed = true; reset(); } }
+    return { build: toolCall => buildRecord(toolCall).element, summary, use,
+      result: toolCall => result(toolCall, false), acknowledge: toolCall => result(toolCall, true),
+      begin, end, reset, dispose };
   }
   global.MystiToolCards = Object.freeze({ create });
 })(typeof window !== 'undefined' ? window : globalThis);

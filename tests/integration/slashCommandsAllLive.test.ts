@@ -37,6 +37,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { runInNewContext } from 'vm';
+import ts from 'typescript';
 
 const ROOT = path.join(__dirname, '..', '..');
 const SLASH = path.join(ROOT, 'src', 'managers', 'SlashCommandManager.ts');
@@ -189,11 +191,27 @@ describe('provider-declared menu entries are alive too', () => {
    * them is undeliverable — which is exactly what used to happen.
    */
   it('picking a menu item sends the same context typing one does', () => {
-    const idx = js.indexOf('function executeSlashMenuItem');
-    expect(idx).toBeGreaterThan(-1);
-    const body = js.slice(idx, idx + 1600);
-    expect(body).toContain('settings: state.settings');
-    expect(body).toContain('context: state.context');
+    const source = ts.createSourceFile(CHAT_JS, js, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const functions: ts.FunctionDeclaration[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === 'executeSlashMenuItem') { functions.push(node); }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(functions).toHaveLength(1);
+    const state = { settings: { provider: 'claude-code', model: 'selected-model' }, context: [{ type: 'file', path: '/fixture/review.ts' }] };
+    const posted: Array<{ type: string; requestId?: string; payload: { settings: unknown; context: unknown } }> = [];
+    runInNewContext(functions[0].getText(source) + '\nexecuteSlashMenuItem({ id: "claude:compact", nativeName: "compact", action: "execute" });', {
+      state,
+      document: { getElementById: () => ({ value: '/compact', style: { height: '40px' } }) },
+      hideSlashMenu: () => undefined,
+      streamingTimeline: { reserveCommand: () => 'menu-request' },
+      postMessageWithPanelId: (message: typeof posted[number]) => posted.push(message),
+    });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ type: 'executeSlashCommand', requestId: 'menu-request', payload: { commandId: 'claude:compact', command: 'compact', args: '' } });
+    expect(posted[0].payload.settings).toBe(state.settings);
+    expect(posted[0].payload.context).toBe(state.context);
   });
 });
 

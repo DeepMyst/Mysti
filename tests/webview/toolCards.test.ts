@@ -10,6 +10,7 @@ interface Cards {
   summary(tool: unknown): string;
   use(tool: unknown): void;
   result(tool: unknown): void;
+  acknowledge(tool: unknown): void;
   begin(): void;
   end(): void;
   reset(): void;
@@ -234,4 +235,23 @@ describe('main tool-card owner', () => {
     expect(h.card().querySelector('.tool-call-content')?.textContent).toBe('[Unserializable input]');
     expect(h.cards.summary({ name: 42, input: { path: 'safe' } })).toBe('safe');
   });
+  it('acknowledges only the retained question after end, once, without creating a body', () => {
+    const h = harness();
+    h.cards.use({ id: 'question', name: 'AskUserQuestion', input: { question: 'Which?' } });
+    h.cards.use(tool('read'));
+    h.cards.end();
+    h.cards.result({ id: 'question', status: 'completed', output: 'unowned late result' });
+    h.cards.acknowledge({ id: 'missing', status: 'completed', output: 'missing' });
+    h.cards.acknowledge({ id: 'read', status: 'completed', output: 'not a question' });
+    expect(h.onResult).not.toHaveBeenCalled();
+    h.cards.acknowledge({ id: 'question', status: 'completed', output: 'chosen' });
+    h.cards.acknowledge({ id: 'question', status: 'failed', output: 'duplicate' });
+    expect(h.card().querySelector('.tool-call-output-content')?.textContent).toBe('chosen');
+    expect(h.onResult).toHaveBeenCalledOnce();
+    expect(h.getStreamingBody).toHaveBeenCalledTimes(2);
+    h.cards.reset();
+    h.cards.acknowledge({ id: 'question', status: 'failed', output: 'after replacement' });
+    expect(h.onResult).toHaveBeenCalledOnce();
+  });
+
 });
