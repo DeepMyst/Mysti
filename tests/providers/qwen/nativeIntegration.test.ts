@@ -9,12 +9,15 @@ import { describe, expect, it } from 'vitest';
 import { TestableGeminiProvider, TestableQwenProvider } from '../../helpers/providerFactory';
 import { createGeminiSession, createQwenSession } from '../../helpers/sessionFactory';
 import { AcpNativeClient } from '../../../src/providers/base/AcpNativeClient';
+import { QWEN_ACP_TOOLS } from '../../../src/providers/qwen/QwenNativeApproval';
 import type { AcpNativeLaunch, AcpNativeLaunchContext } from '../../../src/providers/base/AcpNativeTypes';
 import type { NativeApprovalRequest } from '../../../src/providers/base/IProvider';
 import type { Settings, StreamChunk } from '../../../src/types';
 
 const project = path.resolve(__dirname, '../../..');
-const installed = { qwen: '/usr/local/bin/qwen', gemini: '/usr/local/bin/gemini' };
+// Defaults are the globally installed releases. An unpacked `npm pack` of
+// another verified release can be selected without installing it globally.
+const installed = { qwen: process.env.MYSTI_NATIVE_QWEN_CLI || '/usr/local/bin/qwen', gemini: process.env.MYSTI_NATIVE_GEMINI_CLI || '/usr/local/bin/gemini' };
 type Flavor = keyof typeof installed;
 type Scenario = 'allow-edit' | 'allow-replace' | 'allow-command' | 'deny' | 'readonly' | 'cancel' | 'background' | 'unsupported-shell' | 'read';
 const settings: Settings = { provider: 'qwen-code', model: 'qwen3-coder', mode: 'default', accessLevel: 'ask-permission', thinkingLevel: 'none', contextMode: 'auto' };
@@ -36,6 +39,7 @@ async function nativeCase(root: string, flavor: Flavor, scenario: Scenario) {
         : flavor === 'qwen' ? { file_path: target, old_string: '', new_string: 'approved' } : { file_path: target, content: 'approved' };
   let modelCalls = 0; let failure: unknown; let stderr = '';
   const cards: NativeApprovalRequest[] = []; const pendingChecks: boolean[] = []; const pendingContents: string[] = []; const frames: unknown[] = [];
+  const declaredTools = new Set<string>();
   const server = createServer(async (request, response) => {
     try {
       let raw = ''; for await (const part of request) { raw += part; }
@@ -44,6 +48,10 @@ async function nativeCase(root: string, flavor: Flavor, scenario: Scenario) {
         response.writeHead(404).end(); return;
       }
       const body = JSON.parse(raw); modelCalls++;
+      for (const tool of body.tools ?? []) {
+        if (tool?.function?.name) { declaredTools.add(tool.function.name); }
+        for (const declaration of tool?.functionDeclarations ?? []) { declaredTools.add(declaration.name); }
+      }
       response.writeHead(200, { 'Content-Type': 'text/event-stream' });
       if (flavor === 'qwen') {
         const chunk = { id: `inert-${modelCalls}`, object: 'chat.completion.chunk', created: 1, model: body.model,
@@ -72,6 +80,7 @@ async function nativeCase(root: string, flavor: Flavor, scenario: Scenario) {
   const launch = await launcher._prepareAcpLaunch({ settings: policy, session: flavor === 'qwen' ? createQwenSession() : createGeminiSession(), cwd: work, env, cliPath: installed[flavor], signal: controller.signal });
   const sandbox = `(version 1)(allow default)(deny network*)(allow network-outbound (remote ip "localhost:${port}"))`
     + `(deny file-read-data (subpath "${os.homedir()}"))(allow file-read-data (subpath "${project}/resources"))`
+    + `(allow file-read-data (subpath "${path.dirname(launch.cliPath!)}"))`
     + `(deny file-write* (require-all (require-not (subpath "${root}")) (require-not (subpath "/dev"))))`;
   const proc = spawn('/usr/bin/sandbox-exec', ['-p', sandbox, launch.cliPath!, ...launch.args], { cwd: work, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'] });
   proc.stderr.on('data', part => { stderr += part; });
@@ -101,7 +110,7 @@ async function nativeCase(root: string, flavor: Flavor, scenario: Scenario) {
     await new Promise<void>(resolve => proc.exitCode !== null || proc.signalCode !== null ? resolve() : proc.once('close', () => resolve()));
     await new Promise<void>(resolve => server.close(() => resolve())); provider.dispose();
   }
-  return { flavor, scenario, stateFiles: await fs.readdir(state, { recursive: true }), failure: failure instanceof Error ? failure.message : failure, stderr, modelCalls, pendingChecks, pendingContents,
+  return { flavor, scenario, declaredTools: [...declaredTools].sort(), stateFiles: await fs.readdir(state, { recursive: true }), failure: failure instanceof Error ? failure.message : failure, stderr, modelCalls, pendingChecks, pendingContents,
     cards: cards.map(card => ({ name: card.toolCall.name, input: card.toolCall.input })), frames, chunks,
     exists: existsSync(target), content: existsSync(target) ? await fs.readFile(target, 'utf8') : undefined };
 }
@@ -129,6 +138,8 @@ describe('installed Gemini/Qwen native authority', () => {
           if (scenario === 'deny' || scenario === 'cancel') { expect(result.pendingChecks, diagnostic).toEqual([false, false]); }
           if (scenario === 'background' || scenario === 'readonly' || scenario === 'unsupported-shell') { expect(result.cards, diagnostic).toHaveLength(0); }
           if (scenario === 'read') { expect(result.cards, diagnostic).toHaveLength(1); }
+          // The model may only be offered the bounded native surface.
+          if (flavor === 'qwen') { expect(result.declaredTools.filter(tool => !(QWEN_ACP_TOOLS as readonly string[]).includes(tool)), diagnostic).toEqual([]); }
         }
       } finally { await fs.rm(root, { recursive: true, force: true }); }
     });

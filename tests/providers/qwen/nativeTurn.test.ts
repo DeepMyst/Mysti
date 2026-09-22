@@ -11,7 +11,7 @@ import { clearMockConfig, setMockConfig } from '../../helpers/mockVscode';
 import type { NativeApprovalRequest } from '../../../src/providers/base/IProvider';
 import type { Settings, StreamChunk } from '../../../src/types';
 
-const validation = vi.hoisted(() => ({ capture: vi.fn(async () => ({ cliPath: '/inert/native-cli', assertUnchanged: vi.fn(async () => {}) })) }));
+const validation = vi.hoisted(() => ({ capture: vi.fn(async (options: { versions: readonly string[] }) => ({ cliPath: '/inert/native-cli', version: options.versions[0], assertUnchanged: vi.fn(async () => {}) })) }));
 vi.mock('../../../src/providers/qwen/QwenNativeConfig', async importOriginal => ({
   ...await importOriginal<typeof import('../../../src/providers/qwen/QwenNativeConfig')>(), captureNativeFamilyConfig: validation.capture,
 }));
@@ -70,6 +70,11 @@ describe.each(['qwen', 'gemini'] as const)('%s public native turn ownership', fl
     test.provider.cancelCurrentRequest('panel'); allow(true); await pending;
     expect(request?.signal.aborted).toBe(true); expect(fs.existsSync(test.marker)).toBe(false);
   });
+  it('refuses to launch when the installed release is not identified', async () => {
+    const test = setup(flavor); validation.capture.mockResolvedValueOnce({ cliPath: '/inert/native-cli', version: '', assertUnchanged: vi.fn(async () => {}) });
+    const chunks = await test.drain(); expect(test.launches).toHaveLength(0);
+    expect(chunks.some(chunk => chunk.type === 'error' && String(chunk.content).includes('could not be identified'))).toBe(true);
+  });
   it('blocks invalid native configuration before any provider process is started', async () => {
     const test = setup(flavor); validation.capture.mockRejectedValueOnce(new Error('unsupported native configuration'));
     const chunks = await test.drain(); expect(test.launches).toHaveLength(0); expect(chunks.some(chunk => chunk.type === 'error')).toBe(true);
@@ -77,7 +82,7 @@ describe.each(['qwen', 'gemini'] as const)('%s public native turn ownership', fl
   it('captures the selected custom model before asynchronous native validation', async () => {
     const key = flavor === 'qwen' ? 'qwenCodeModel' : 'geminiModel'; setMockConfig(key, 'captured-model');
     const test = setup(flavor); let finish!: () => void;
-    validation.capture.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ cliPath: '/inert/native-cli', assertUnchanged: vi.fn(async () => {}) }); }));
+    validation.capture.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ cliPath: '/inert/native-cli', version: flavor === 'qwen' ? '0.24.4' : '0.60.0', assertUnchanged: vi.fn(async () => {}) }); }));
     test.provider.setNativeApprovalHost({ handlerForPanel: () => async () => false });
     const pending = test.drain(); await vi.waitFor(() => expect(finish).toBeDefined());
     setMockConfig(key, 'replacement-model'); finish(); await pending;

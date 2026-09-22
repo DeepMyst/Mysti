@@ -134,7 +134,7 @@ Google's AI with fast response times and strong Google ecosystem integration.
 ### Installation
 
 ```bash
-npm install -g @google/gemini-cli@0.58.0
+npm install -g @google/gemini-cli@0.60.0
 ```
 
 ### Authentication
@@ -159,7 +159,7 @@ Use the picker or an explicit custom model ID. The bundled default is
 - **Usage reporting**: The native transport reports token usage when available
 - **Google Integration**: Works well with Google Cloud and Firebase projects
 
-The **0.58.0** ACP bridge permits file reads, writes and replacements. Shell and delegation are disabled because this version omits their complete approval inputs. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
+The **0.60.0** ACP bridge (0.58.0 remains accepted) permits file reads, writes and replacements. Shell and delegation are disabled because these releases omit their complete approval inputs. 0.60.0 ignores a system settings file that is not root-owned, so Mysti enforces its startup policy through the admin policy file and refuses user/workspace customization (including `.agents/skills`) instead. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
 
 ### Settings
 
@@ -177,7 +177,7 @@ Versatile CLI tool with plan/act workflow support.
 ### Installation
 
 ```bash
-npm install -g cline@3.0.61
+npm install -g cline@3.0.64
 ```
 
 ### Authentication
@@ -196,7 +196,7 @@ The ACP bridge requires `CLINE_API_KEY` in the extension environment, with optio
 - **Multi-Model**: Supports models from multiple providers
 - **Task-Oriented**: Designed for structured task completion
 
-The **3.0.61** ACP bridge uses private local state and native permission requests. Images, native thinking controls and usage reporting are unavailable in this transport. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
+The **3.0.64** ACP bridge (3.0.61 remains accepted) uses private local state and native permission requests. Startup is refused while `~/.agents/plugins` (loaded by 3.0.62+) holds agent plugins. Images, native thinking controls and usage reporting are unavailable in this transport. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
 
 ### Settings
 
@@ -390,12 +390,12 @@ checks and their limits.
 
 ## Qwen Code
 
-Alibaba's AI coding CLI agent with an ACP permission bridge for version **0.23.0**.
+Alibaba's AI coding CLI agent with an ACP permission bridge for version **0.24.4** (0.23.0 remains accepted).
 
 ### Installation
 
 ```bash
-npm install -g @qwen-code/qwen-code@0.23.0
+npm install -g @qwen-code/qwen-code@0.24.4
 ```
 
 ### Authentication

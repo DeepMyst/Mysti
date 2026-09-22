@@ -1,4 +1,4 @@
-# A bounded file-tool surface for Gemini CLI 0.58.0. This version does not send
+# A bounded file-tool surface for Gemini CLI 0.58.0 and 0.60.0. Neither sends
 # full shell inputs through ACP, so native shell/delegation remains denied.
 [[rule]]
 toolName = "*"

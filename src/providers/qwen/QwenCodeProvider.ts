@@ -18,7 +18,7 @@ import * as os from 'os';
 import type { PanelSessionState } from '../base/BaseCliProvider';
 import { AcpNativeProvider } from '../base/AcpNativeProvider';
 import type { AcpNativeLaunch, AcpNativeLaunchContext } from '../base/AcpNativeTypes';
-import { QWEN_ACP_VERSION, QWEN_ACP_TOOLS, QWEN_ACP_EXCLUDED_TOOLS, decodeQwenPermission } from './QwenNativeApproval';
+import { QWEN_ACP_VERSION, QWEN_ACP_VERSIONS, QWEN_ACP_TOOLS, QWEN_ACP_EXCLUDED_TOOLS, decodeQwenPermission } from './QwenNativeApproval';
 import { captureNativeFamilyConfig, nativeFamilyEnvironment } from './QwenNativeConfig';
 import type {
   CliDiscoveryResult,
@@ -317,15 +317,17 @@ export class QwenCodeProvider extends AcpNativeProvider {
     const env: NodeJS.ProcessEnv = { ...nativeEnv, QWEN_CODE_SYSTEM_SETTINGS_PATH: policyFile,
       QWEN_CODE_SYSTEM_DEFAULTS_PATH: policyFile, QWEN_CODE_SIMPLE: '0', QWEN_CODE_SAFE_MODE: '0',
       QWEN_CODE_NO_RELAUNCH: '1' };
-    const capture = await captureNativeFamilyConfig({ ...context, env, flavor: 'qwen', version: QWEN_ACP_VERSION,
+    const capture = await captureNativeFamilyConfig({ ...context, env, flavor: 'qwen', versions: QWEN_ACP_VERSIONS,
       policyFiles: [policyFile], inheritedSystemSettingsPaths });
+    // The attested identity must be the installed release; never skip the check.
+    if (!capture.version) { throw new Error('Qwen Code native approval setup refused: the installed release could not be identified.'); }
     // cli-entry.js otherwise prefers a mutable managed installation before
     // importing the verified npm payload. A null pin disables that lookup.
     env.QWEN_CODE_MANAGED_NPM_PIN = JSON.stringify({ bootstrap: capture.cliPath, version: null, updateRoot: path.dirname(capture.cliPath) });
     let inputTokens = 0; let outputTokens = 0;
     return {
       cliPath: capture.cliPath, args, env,
-      expectedAgentInfo: { name: 'qwen-code', version: QWEN_ACP_VERSION },
+      expectedAgentInfo: { name: 'qwen-code', version: capture.version },
       mode: 'default', images: true,
       // 0.23.0 treats MethodNotFound as a permanently unavailable optional
       // mid-turn queue and continues its ordinary current prompt.

@@ -6,7 +6,9 @@ import type { ToolCall } from '../../types';
 import { isRecord } from '../../utils/valueGuards';
 import { toolKind } from '../../utils/toolNames';
 import type { AcpNativeLaunch, AcpNativeLaunchContext, AcpObject } from '../base/AcpNativeTypes';
-import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
+import { getAcceptedNativeCliVersions } from '../base/NativeCliVersions';
+
+export const CLINE_ACP_VERSIONS = getAcceptedNativeCliVersions('cline');
 
 const TOOLS: Readonly<Record<string, { name: string; kind: string }>> = {
   read_file: { name: 'Read', kind: 'read' }, read_files: { name: 'Read', kind: 'read' },
@@ -46,8 +48,12 @@ async function assertNoInheritedAuthority(cwd: string): Promise<void> {
     }
   }
   const candidates = [...roots].flatMap(root => ['.cline/plugins', '.cline/hooks', '.clinerules/hooks', '.cline/settings.json', '.cline/hooks.json', '.cline/mcp.json'].map(file => path.join(root, file)));
-  // These legacy global paths do not honor CLINE_DIR.
-  candidates.push(path.join(os.homedir(), 'Documents/Cline/Hooks'), path.join(os.homedir(), 'Documents/Cline/Plugins'));
+  // These global paths do not honor CLINE_DIR. 3.0.62+ also loads agent
+  // plugins from $HOME/.agents/plugins and starts their MCP servers before any
+  // request (core local-runtime-bootstrap loadAgentPluginPackages). 3.0.61 does
+  // not read it; refusing it there too keeps one startup rule for every release.
+  candidates.push(path.join(os.homedir(), 'Documents/Cline/Hooks'), path.join(os.homedir(), 'Documents/Cline/Plugins'),
+    path.join(os.homedir(), '.agents/plugins'));
   for (const candidate of candidates) {
     try {
       const info = await fs.lstat(candidate);
@@ -76,7 +82,15 @@ export async function prepareClineAcpLaunch(context: AcpNativeLaunchContext, mod
     env.CLINE_SESSION_BACKEND_MODE = 'local';
     return {
       args: ['--acp', '--auto-approve', 'false'], env,
-      expectedAgentInfo: { name: 'cline', version: VERIFIED_NATIVE_CLI_VERSIONS.cline },
+      expectedAgentInfo: { name: 'cline' },
+      // The ACP adapter (apps/cli/src/acp) is unchanged from 3.0.61 to 3.0.64;
+      // only an accepted verified release may continue past initialize.
+      validateInitialize(result) {
+        const info = isRecord(result.agentInfo) ? result.agentInfo : {};
+        if (typeof info.version !== 'string' || !CLINE_ACP_VERSIONS.includes(info.version)) {
+          throw new Error('The native ACP agent reported an unsupported identity or version.');
+        }
+      },
       mode: context.settings.accessLevel === 'read-only' || ['quick-plan', 'detailed-plan'].includes(context.settings.mode) ? 'plan' : 'act',
       model, images: false, decodePermission: decodeClinePermission,
       validateSession(result) {

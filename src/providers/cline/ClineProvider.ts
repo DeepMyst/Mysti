@@ -147,11 +147,11 @@ export class ClineProvider extends AcpNativeProvider {
 		supportsPromptEnhancement: false,
 		// Plan 02 Phase 1 capability matrix
 		thinkingStyle: 'complete-blocks',  // say:"reasoning" blocks arrive whole
-		thinkingLevelEffective: false,     // ACP 3.0.61 fixes thinking off
+		thinkingLevelEffective: false,     // ACP 3.0.61-3.0.64 fixes thinking off
 		planMode: 'detected',
 		sessionKind: 'prompt-history',     // no actual resume — history replayed into the prompt
 		emitsToolResults: true,
-		emitsUsage: false,                 // ACP 3.0.61 does not forward usage
+		emitsUsage: false,                 // ACP 3.0.61-3.0.64 does not forward usage
 		usageConvention: 'none',   // The pinned ACP adapter omits native usage events.
 		modelSelection: 'full',            // session/set_model before each prompt
 	};

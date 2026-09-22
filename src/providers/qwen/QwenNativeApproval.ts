@@ -2,12 +2,13 @@
 import * as path from 'path';
 import { isRecord } from '../../utils/valueGuards';
 import type { ToolCall } from '../../types';
-import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
+import { VERIFIED_NATIVE_CLI_VERSIONS, getAcceptedNativeCliVersions } from '../base/NativeCliVersions';
 
 export const QWEN_ACP_VERSION = VERIFIED_NATIVE_CLI_VERSIONS['qwen-code'];
+export const QWEN_ACP_VERSIONS = getAcceptedNativeCliVersions('qwen-code');
 export const QWEN_ACP_TOOLS = ['read_file', 'edit', 'notebook_edit', 'run_shell_command'] as const;
 
-// Pinned 0.23.0 registry. --core-tools does not restrict synthetic tools, so
+// Verified 0.23.0/0.24.4 registries. --core-tools does not restrict synthetic tools, so
 // those must be excluded separately, before registration and execution.
 export const QWEN_ACP_EXCLUDED_TOOLS = [
   'agent', 'skill', 'exit_plan_mode', 'enter_plan_mode',
@@ -17,6 +18,15 @@ export const QWEN_ACP_EXCLUDED_TOOLS = [
   'tool_search', 'enter_worktree', 'exit_worktree',
   'workflow', 'artifact', 'record_artifact', 'report_findings', 'get_goal',
   'update_goal', 'propose_goal', 'display_image',
+  // Added by 0.24.x and outside --core-tools. `tool_call` dispatches another
+  // registered tool by name; `exec` runs code-mode JavaScript that can call
+  // bound tools; `omni_*` register when QWEN_CODE_ENABLE_OMNI or `omni` is on.
+  // Unknown deny names are inert on 0.23.0, so one list serves both releases.
+  'tool_call', 'exec', 'record_source',
+  'omni_downsample_image', 'omni_downscale_video', 'omni_downsample_audio', 'omni_extract_keyframes',
+  'omni_extract_audio', 'omni_clip_video', 'omni_convert_image', 'omni_transcribe_audio', 'omni_clip_image',
+  'omni_clip_audio', 'omni_caption_image', 'omni_caption_audio', 'omni_ocr_image',
+  'omni_understand_video_segments', 'omni_recall_media_memory',
 ] as const;
 
 /** Decode the actual can-execute request, never a display-only kind or title. */

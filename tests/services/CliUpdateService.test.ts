@@ -336,7 +336,7 @@ describe('verified native execution update targets', () => {
   const providers = [
     ['claude-code', '@anthropic-ai/claude-code', '2.1.278'],
     ['openai-codex', '@openai/codex', '0.155.1'],
-    ['google-gemini', '@google/gemini-cli', '0.60.0'],
+    ['google-gemini', '@google/gemini-cli', '0.61.0'],
     ['github-copilot', '@github/copilot', '1.0.86'],
     ['opencode', 'opencode-ai', '1.18.31'],
     ['cline', 'cline', '99.0.0'],
@@ -385,7 +385,7 @@ describe('verified native execution update targets', () => {
   it.each(['unavailable', 'incompatible', 'wrong-version'])('does not substitute an unverified runtime when the supported package is %s', async failure => {
     const verified = VERIFIED_NATIVE_CLI_VERSIONS['google-gemini'];
     const pkg = '@google/gemini-cli';
-    stubNpm({ [pkg]: '0.60.0', [`${pkg}@${verified}`]: failure === 'unavailable' ? new Error('E404')
+    stubNpm({ [pkg]: '0.61.0', [`${pkg}@${verified}`]: failure === 'unavailable' ? new Error('E404')
       : JSON.stringify({ version: failure === 'wrong-version' ? '0.59.0' : verified, 'engines.node': `>=${bump(process.versions.node)}` }) });
     const svc = new CliUpdateService(makeContext().context, makeVersions([{ providerId: 'google-gemini', found: true, version: '0.1.0' }]), npm);
     expect(await svc.checkAll()).toEqual([]);

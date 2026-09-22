@@ -12,7 +12,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   }
   if (frame.method === 'initialize') {
     send({ id: frame.id, result: { protocolVersion: 1, agentInfo: { name: flavor === 'qwen' ? 'qwen-code' : 'gemini-cli',
-      version: scenario === 'version' ? '0.0.0' : flavor === 'qwen' ? '0.23.0' : '0.58.0' } } });
+      version: scenario === 'version' ? '0.0.0' : flavor === 'qwen' ? '0.24.4' : '0.60.0' } } });
   } else if (frame.method === 'session/new') {
     send({ id: frame.id, result: { sessionId: 'owned-session', modes: { currentModeId: 'default', availableModes: [{ id: 'default', name: 'Default' }] } } });
   } else if (frame.method === 'session/set_mode' || frame.method === 'session/set_model') { send({ id: frame.id, result: {} });

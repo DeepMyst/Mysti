@@ -8,6 +8,8 @@ import { isRecord } from '../../utils/valueGuards';
 type Flavor = 'qwen' | 'gemini';
 // Qwen Code 0.23.0 AuthType values; extend only with a reviewed runtime contract.
 const QWEN_PROVIDER_PROTOCOLS = new Set(['openai', 'qwen-oauth', 'gemini', 'vertex-ai', 'anthropic']);
+// 0.24.x adds USE_OPENAI_RESPONSES; 0.23.0 would not recognise the mapping.
+const QWEN_024_PROVIDER_PROTOCOLS = new Set([...QWEN_PROVIDER_PROTOCOLS, 'openai-responses']);
 const NATIVE_CONFIG_SELECTORS = new Set(['QWEN_HOME', 'GEMINI_CLI_HOME',
   'QWEN_CODE_SYSTEM_SETTINGS_PATH', 'QWEN_CODE_SYSTEM_DEFAULTS_PATH', 'GEMINI_CLI_SYSTEM_SETTINGS_PATH', 'GEMINI_CLI_SYSTEM_DEFAULTS_PATH']);
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -19,7 +21,11 @@ export function nativeFamilyEnvironment(source: NodeJS.ProcessEnv): NodeJS.Proce
     // Windows child environments are case-insensitive. Remove every spelling
     // before adding host-owned values, including simultaneous casing aliases.
     const normalized = key.toUpperCase();
+    // QWEN_CODE_ENABLE_OMNI (0.24.x) registers omni tools and starts @-media
+    // ingestion outside any permission request; the other two redirect the
+    // updater and the private conversation runtime.
     if (['QWEN_AGENT_EXECUTION_BACKEND', 'GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES',
+      'QWEN_CODE_ENABLE_OMNI', 'QWEN_UPDATE_BASE_URL', 'QWEN_CODE_PRIVATE_CONVERSATIONS_RUNTIME',
       'NODE_OPTIONS', 'NODE_PATH', 'NODE_COMPILE_CACHE', 'CLI_VERSION', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'BUN_OPTIONS', 'BASH_ENV', 'ENV', 'ZDOTDIR', 'ZSH_ENV', 'KSH_ENV'].includes(normalized)
       || /^(?:QWEN|GEMINI)_/.test(normalized) && /(?:GUARD|PARENT|CAPABILITY|DAEMON|COMMAND|ENTRY|SIMPLE|SAFE_MODE|HOOK|PRELOAD|SANDBOX|IDE_|RELAUNCH|LAUNCHER|MANAGED_NPM|STARTUP_VERSION|COMPILE_CACHE|CODE_CLI$)/.test(normalized)) { delete env[key]; }
   }
@@ -46,17 +52,24 @@ export function nativeFamilyEnvironment(source: NodeJS.ProcessEnv): NodeJS.Proce
 }
 
 /**
- * Read-only startup check for the two pinned Gemini-family runtimes. Neither
+ * Read-only startup check for the verified Gemini-family runtimes. Neither
  * runtime exposes an effective-policy attestation. Refuse customization that
  * can install executable startup behavior and verify the sources again before
  * model input. This detects ordinary changes, not an adversarial host ABA race.
  */
 export async function captureNativeFamilyConfig(options: {
   flavor: Flavor; cwd: string; env: NodeJS.ProcessEnv; cliPath: string;
-  version: string; policyFiles: string[];
+  /** Accepted verified releases; the installed package must be one of them. */
+  versions: readonly string[]; policyFiles: string[];
   /** Preserve checks of inherited settings paths after host-owned overrides. */
   inheritedSystemSettingsPaths?: string[];
-}): Promise<{ cliPath: string; assertUnchanged(): Promise<void> }> {
+  /**
+   * Releases whose host settings file is not applied (Gemini 0.60 skips a
+   * system settings file that is not root-owned), so native skills stay on and
+   * the `.agents/skills` alias directories must be refused like `skills`.
+   */
+  refuseAgentSkillAliases?(version: string): boolean;
+}): Promise<{ cliPath: string; version: string; assertUnchanged(): Promise<void> }> {
   const { flavor, cwd, env } = options;
   const label = flavor === 'qwen' ? 'Qwen Code' : 'Gemini CLI';
   const error = (detail: string): never => { throw new Error(`${label} native approval setup refused: ${detail}.`); };
@@ -95,20 +108,20 @@ export async function captureNativeFamilyConfig(options: {
     }
   }
   if (!resolvedCli) { return error('the configured CLI executable could not be resolved'); }
-  let packagePath: string | undefined;
+  let packagePath: string | undefined; let version = '';
   for (let dir = path.dirname(resolvedCli), depth = 0; depth < 4; depth++, dir = path.dirname(dir)) {
     const candidate = path.join(dir, 'package.json');
     try {
       const value = JSON.parse(await fs.readFile(candidate, 'utf8'));
       if (value.name === (flavor === 'qwen' ? '@qwen-code/qwen-code' : '@google/gemini-cli')) {
-        if (value.version !== options.version) { return error(`only version ${options.version} has a verified bridge`); }
-        packagePath = candidate; break;
+        if (!options.versions.includes(value.version)) { return error(`only version ${options.versions.join(' or ')} has a verified bridge`); }
+        packagePath = candidate; version = value.version; break;
       }
     } catch (reason) {
       if ((reason as NodeJS.ErrnoException).code !== 'ENOENT') { throw reason; }
     }
   }
-  if (!packagePath) { return error(`select the installed ${label} ${options.version} npm executable`); }
+  if (!packagePath) { return error(`select the installed ${label} ${options.versions.join(' or ')} npm executable`); }
   await capture(resolvedCli); await capture(packagePath);
 
   const ancestors = new Set<string>();
@@ -152,7 +165,8 @@ export async function captureNativeFamilyConfig(options: {
     if (Object.keys(parsed).some(key => !allowed.has(key))) { return error('native settings contain unsupported customization; use an isolated provider configuration'); }
     if (flavor === 'qwen' && Object.prototype.hasOwnProperty.call(parsed, 'providerProtocol')) {
       const protocols = parsed.providerProtocol;
-      if (!isRecord(protocols) || Object.values(protocols).some(protocol => typeof protocol !== 'string' || !QWEN_PROVIDER_PROTOCOLS.has(protocol))) {
+      const supported = version === '0.23.0' ? QWEN_PROVIDER_PROTOCOLS : QWEN_024_PROVIDER_PROTOCOLS;
+      if (!isRecord(protocols) || Object.values(protocols).some(protocol => typeof protocol !== 'string' || !supported.has(protocol))) {
         return error('native providerProtocol must map provider IDs to supported protocol names');
       }
     }
@@ -193,6 +207,11 @@ export async function captureNativeFamilyConfig(options: {
     }
     await capture(path.join(dir, '.env'), () => error('a native .env file can redirect startup policy'));
   }
+  if (options.refuseAgentSkillAliases?.(version)) {
+    for (const dir of new Set([path.resolve(cwd, env.GEMINI_CLI_HOME || os.homedir()), ...ancestors])) {
+      const file = path.join(dir, '.agents', 'skills'); customizationDirs.add(file); await capture(file);
+    }
+  }
   for (const dir of ancestors) {
     await capture(path.join(dir, '.env'), () => error('a workspace .env file can redirect startup policy'));
     await capture(path.join(dir, '.mcp.json'), () => error('project MCP customization is not supported by this bridge'));
@@ -214,7 +233,7 @@ export async function captureNativeFamilyConfig(options: {
     await capture(file);
     if (snapshots.get(file) === 'absent') { return error('the bundled host policy is missing'); }
   }
-  return { cliPath: resolvedCli, assertUnchanged: async () => {
+  return { cliPath: resolvedCli, version, assertUnchanged: async () => {
     for (const [file, previous] of snapshots) {
       if (await signature(file) !== previous) { return error('native configuration changed during startup'); }
     }

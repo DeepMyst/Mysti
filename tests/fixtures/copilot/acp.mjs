@@ -9,7 +9,7 @@ const tool = provider === 'cline'
 for await (const line of createInterface({ input: process.stdin })) {
   const frame = JSON.parse(line);
   if (frame.method === 'initialize') {
-    send({ id: frame.id, result: { protocolVersion: 1, agentInfo: { name: provider === 'cline' ? 'cline' : 'Copilot', version: scenario === 'wrong-version' ? '99.0.0' : provider === 'cline' ? '3.0.61' : '1.0.83' } } });
+    send({ id: frame.id, result: { protocolVersion: 1, agentInfo: { name: provider === 'cline' ? 'cline' : 'Copilot', version: scenario === 'wrong-version' ? '99.0.0' : provider === 'cline' ? '3.0.64' : '1.0.83' } } });
   } else if (frame.method === 'session/new') {
     send({ id: frame.id, result: { sessionId, configOptions: [provider === 'cline' ? { id: 'auto_approve', currentValue: false } : { id: 'allow_all', currentValue: 'off' }] } });
   } else if (frame.method === 'session/set_mode' || frame.method === 'session/set_model') {

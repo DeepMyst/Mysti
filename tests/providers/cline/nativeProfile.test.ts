@@ -28,4 +28,28 @@ describe('Cline native execution profile', () => {
     try { expect(() => launch.validateSession?.({ configOptions: [{ id: 'auto_approve', currentValue: true }] })).toThrow('auto-approval'); expect(() => launch.validateSession?.({})).toThrow('auto-approval'); }
     finally { await launch.cleanup?.(); }
   });
+  it.each(['3.0.64', '3.0.61'])('accepts verified ACP release %s after initialize', async version => {
+    const launch = await prepareClineAcpLaunch(await context());
+    try { expect(launch.expectedAgentInfo).toEqual({ name: 'cline' }); expect(() => launch.validateInitialize?.({ protocolVersion: 1, agentInfo: { name: 'cline', version } })).not.toThrow(); }
+    finally { await launch.cleanup?.(); }
+  });
+  it.each([['3.0.62'], ['99.0.0'], [undefined]])('refuses unverified ACP release %s before a session exists', async version => {
+    const launch = await prepareClineAcpLaunch(await context());
+    try { expect(() => launch.validateInitialize?.({ protocolVersion: 1, agentInfo: { name: 'cline', version } })).toThrow('unsupported identity or version'); }
+    finally { await launch.cleanup?.(); }
+  });
+  // 3.0.62+ loads $HOME/.agents/plugins (shared/src/storage/paths.ts
+  // resolveAgentPluginSearchPaths) and starts their MCP servers unprompted.
+  it('refuses user agent plugins in $HOME/.agents/plugins before and during startup', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-cline-home-')); dirs.push(home);
+    const previous = process.env.HOME; process.env.HOME = home;
+    try {
+      const plugins = path.join(home, '.agents', 'plugins'); await fs.mkdir(plugins, { recursive: true });
+      const launch = await prepareClineAcpLaunch(await context());
+      try {
+        await fs.mkdir(path.join(plugins, 'inert')); await expect(launch.assertUnchanged?.()).rejects.toThrow(path.join(home, '.agents/plugins'));
+      } finally { await launch.cleanup?.(); }
+      await expect(prepareClineAcpLaunch(await context())).rejects.toThrow('inherited hooks or plugins');
+    } finally { if (previous === undefined) { delete process.env.HOME; } else { process.env.HOME = previous; } }
+  });
 });

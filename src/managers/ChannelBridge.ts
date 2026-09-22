@@ -150,9 +150,6 @@ export class ChannelBridge {
   /** Timestamp watermark — only process messages newer than this */
   private _lastPollTimestamp: number = 0;
 
-  /** Whether sessions.history RPC is available (null = unknown, true/false = tested) */
-  private _sessionHistoryAvailable: boolean | null = null;
-
   /** Track which message timestamps we've already processed to avoid duplicates */
   private _processedMessageIds: Set<string> = new Set();
 
