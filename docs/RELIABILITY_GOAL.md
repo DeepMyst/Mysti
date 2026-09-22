@@ -10,14 +10,14 @@ Starting point: candidate `09f9eb2a4984bc7189995a952b47df8e81b8d1a1` passed all
 `out-test/release-evidence/REVIEW_ROUND_20260916/REVIEW.json`. These results do not
 automatically validate subsequent changes or current provider releases.
 
-Latest verified candidate: `d38c8ba3af7f1c6fd61bd901ad6e7b781edc1f24` passed all
-15 required hosted checks on attempt 1 and five independent archive reviews,
-including six hosted packaged-editor runs. Local validation passed 14,880 tests
-with one unchanged unavailable pinned-Claude skip and 73 added cases; no baseline
-cases were removed. Evidence is in
-`out-test/release-evidence/CANVAS_FENCED_FIX_20260922/REVIEW.json`. Captured Canvas
-fenced-turn authority and reentrant job cleanup are verified. Subsequent async
-media work requires new validation.
+Latest verified candidate: `21cb02e` passed all 15 required hosted checks
+(overnight 2026-09-22: async media, per-turn Canvas MCP admission, Canvas
+export/present/failed-close, compaction cancellation and stale click ownership,
+OpenRouter replay/cost/cancellation, and the provider current-release audits).
+Local validation passed 15,126 tests with one unchanged unavailable pinned-Claude
+skip, typecheck, lint and package shape. Five-archive reviews and hosted editor
+archive comparison were not repeated. Evidence is in
+`out-test/release-evidence/NIGHT_INTEGRATION_20260922/`.
 
 ## Completion requirements
 
