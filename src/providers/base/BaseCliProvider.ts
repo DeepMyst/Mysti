@@ -141,6 +141,14 @@ export interface PanelSessionState {
    * sessions (Claude Code). Cleared on unlink/dispose.
    */
   canvasMcpConfigPath?: string;
+  /**
+   * Bumped on every canvas MCP link/unlink. The config FILE name is stable per
+   * panel while its bearer rotates per turn, so the path alone cannot tell a
+   * warm process that its credential is stale.
+   */
+  canvasMcpRevision?: number;
+  /** The {@link canvasMcpRevision} the live persistent process was spawned with. */
+  persistentCanvasMcpRevision?: number;
   /** True when the process has been suspended via SIGSTOP */
   suspended: boolean;
   /**
@@ -281,8 +289,11 @@ export abstract class BaseCliProvider implements ICliProvider {
    * a panel. Read by buildCliArgs (Claude Code appends `--mcp-config`). Plan 05.
    */
   public setCanvasMcpConfig(panelId: string, configPath: string | null): void {
-    const session = this._getSession(panelId);
+    // Clearing never creates a session, and clearing nothing is not a change.
+    const session = configPath === null ? this._panelSessions.get(panelId) : this._getSession(panelId);
+    if (!session || (configPath === null && session.canvasMcpConfigPath === undefined)) { return; }
     session.canvasMcpConfigPath = configPath ?? undefined;
+    session.canvasMcpRevision = (session.canvasMcpRevision ?? 0) + 1;
   }
 
   // Abstract methods - must be implemented by subclasses
@@ -890,6 +901,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     if (!args) {
       return null;
     }
+    session.persistentCanvasMcpRevision = session.canvasMcpRevision;
 
     const cliPath = this.getCliPath();
     const workspaceFolders = vscode.workspace.workspaceFolders;
