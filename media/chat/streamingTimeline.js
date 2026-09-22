@@ -14,6 +14,7 @@
     'autonomousDecision', 'connectionAlready', 'connectionRequired', 'compactionStatus', 'contextWindowInfo',
     'channelAction', 'autonomousDeactivated']);
   const validId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
+  const VISUAL_ACCESSORY = new Set(['visualTestMiniStatus', 'visualTestDashboardUpdate']);
 
   function create(ports) {
     const document = ports.document;
@@ -91,8 +92,9 @@
       owner.phase = 'active';
       return true;
     }
-    function close() {
+    function close(type) {
       owner.phase = 'terminal';
+      owner.successful = type === 'responseComplete';
       preserve();
       return owner.element;
     }
@@ -113,7 +115,19 @@
         // A job has its own lifetime. An old origin cannot detach the new turn,
         // but its job card still needs to appear.
         const detach = matches(message.requestId) && live();
-        return { accepted: true, foreground: detach, terminal: detach, element: detach ? close() : null };
+        return { accepted: true, foreground: detach, terminal: detach, element: detach ? close(type) : null };
+      }
+      if (VISUAL_ACCESSORY.has(type)) {
+        // Human dashboard/background traffic owns a separate operation. A
+        // captured chat observation may outlive only its successful parent.
+        if (message.scope === 'notice' || message.scope === 'background') {
+          return { accepted: !validId(message.requestId) || matches(message.requestId), foreground: false };
+        }
+        if (!validId(message.requestId)) {
+          return { accepted: !tagged && message.scope !== 'accessory', foreground: false };
+        }
+        return { accepted: message.scope === 'accessory' && matches(message.requestId) &&
+          (live() || owner.successful === true), foreground: false };
       }
       const action = ['mystiActionRequired', 'mystiSignInRequired', 'mystiUnavailable'].includes(type);
       const neutral = message.scope === 'background' || message.scope === 'notice' ||
@@ -138,7 +152,7 @@
       if (accessory) { return { accepted: true, foreground: false }; }
       if (!live()) { return { accepted: false }; }
       if (type === 'responseChunk' && owner.phase !== 'active') { return { accepted: false }; }
-      if (terminal) { return { accepted: true, foreground: true, terminal: true, element: close() }; }
+      if (terminal) { return { accepted: true, foreground: true, terminal: true, element: close(type) }; }
       return { accepted: true, foreground: true };
     }
     function ensure() {

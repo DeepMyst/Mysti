@@ -21,6 +21,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { Uri, Webview } from 'vscode';
 import { getVisualTestDashboardContent } from '../../src/webview/visualTestDashboardContent';
 
 const repoRoot = path.resolve(__dirname, '..', '..');
@@ -32,10 +33,10 @@ function makeWebview() {
     asWebviewUri: (uri: { fsPath: string }) => ({
       toString: () => 'vscode-resource://authority' + uri.fsPath.replace(/\\/g, '/')
     })
-  } as any;
+  } as unknown as Webview;
 }
 
-const extensionUri = { fsPath: repoRoot, path: repoRoot } as any;
+const extensionUri = { fsPath: repoRoot, path: repoRoot } as unknown as Uri;
 
 describe('vt-dashboard static assets', () => {
   it('ships index.html, vt-dashboard.css and vt-dashboard.js', () => {
@@ -54,8 +55,8 @@ describe('vt-dashboard static assets', () => {
   it('vt-dashboard.js carries the dashboard message handlers verbatim', () => {
     const js = fs.readFileSync(path.join(mediaDir, 'vt-dashboard.js'), 'utf8');
     // Outbound messages
-    expect(js).toContain("vscode.postMessage({ type: 'dashboardStartVisualTest', payload: { config: config } })");
-    expect(js).toContain("vscode.postMessage({ type: 'dashboardCancelVisualTest' })");
+    expect(js).toContain("vscode.postMessage({ type: 'dashboardStartVisualTest', payload: { config: config, operationId: operation.id } })");
+    expect(js).toContain("vscode.postMessage({ type: 'dashboardCancelVisualTest', payload: { operationId: operation.id } })");
     // Inbound messages
     for (const type of [
       'visualTestDashboardConfig',

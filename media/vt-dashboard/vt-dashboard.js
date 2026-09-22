@@ -2,6 +2,11 @@
       var vscode = acquireVsCodeApi();
       var issueCount = 0;
       var actionCount = 0;
+      var operation = null;
+      function newOperationId() {
+        return 'visual-' + (window.crypto && typeof window.crypto.randomUUID === 'function'
+          ? window.crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
+      }
 
 
       // ── Elements ──
@@ -37,20 +42,25 @@
           interactionsEnabled: document.getElementById('cfg-interactions').checked
         };
 
-        vscode.postMessage({ type: 'dashboardStartVisualTest', payload: { config: config } });
+        operation = { id: newOperationId(), phase: 'running' };
         switchToProgress();
+        vscode.postMessage({ type: 'dashboardStartVisualTest', payload: { config: config, operationId: operation.id } });
       });
 
       // ── Cancel ──
       cancelBtn.addEventListener('click', function() {
-        vscode.postMessage({ type: 'dashboardCancelVisualTest' });
+        if (!operation || operation.phase !== 'running') { return; }
+        operation.phase = 'cancelling';
+        cancelBtn.disabled = true;
         setStatus('Cancelling...', 'cancelled');
+        vscode.postMessage({ type: 'dashboardCancelVisualTest', payload: { operationId: operation.id } });
       });
 
       function switchToProgress() {
         configPanel.classList.add('hidden');
         progressPanel.classList.add('active');
         cancelBtn.classList.remove('hidden');
+        cancelBtn.disabled = false;
 
         issueCount = 0;
         actionCount = 0;
@@ -146,6 +156,7 @@
           case 'visualTestDashboardAutoStart': {
             // Agent triggered — auto-fill and start immediately
             var cfg = msg.payload;
+            if (!operation || operation.phase !== 'running' || !cfg || cfg.operationId !== operation.id) { break; }
             if (cfg) {
               if (cfg.url) { document.getElementById('cfg-url').value = cfg.url; }
               if (cfg.devServerCommand) { document.getElementById('cfg-dev-cmd').value = cfg.devServerCommand; }
@@ -158,16 +169,21 @@
 
           case 'visualTestDashboardUpdate': {
             var chunk = msg.payload;
-            if (!chunk) { break; }
+            if (!chunk || !operation || operation.phase !== 'running' || chunk.operationId !== operation.id) { break; }
             handleChunk(chunk);
             break;
           }
 
           case 'visualTestDashboardCancelled':
-            setStatus('Cancelled', 'cancelled');
+            if (!operation || operation.phase === 'terminal' || !msg.payload || msg.payload.operationId !== operation.id) { break; }
+            operation.phase = 'terminal';
+            setStatus(msg.payload.cleanupIncomplete ? 'Cancelled — cleanup unconfirmed' : 'Cancelled',
+              msg.payload.cleanupIncomplete ? 'failed' : 'cancelled');
             cancelBtn.classList.add('hidden');
 
-            addAction('done', 'Visual test cancelled');
+            addAction('done', msg.payload.cleanupIncomplete
+              ? 'Visual test cancelled; ' + (msg.payload.message || 'resource cleanup could not be confirmed.')
+              : 'Visual test cancelled');
             break;
         }
       });
@@ -202,7 +218,9 @@
             // The new primitive: one look, rendered as its digest. Text, because
             // the digest (console errors, failed requests, layout probes) is the
             // actionable part — the screenshot is already shown above.
-            setStatus('Look complete', 'done');
+            operation.phase = 'terminal';
+            cancelBtn.classList.add('hidden');
+            setStatus('Look complete', 'complete');
             var o = chunk.observation || {};
             var errs = (o.console || []).filter(function (c) { return c.level === 'error'; });
             addAction('done', 'Looked at ' + (o.url || 'the app'), (o.durationMs ? Math.round(o.durationMs / 1000) + 's' : ''));
@@ -243,16 +261,18 @@
             break;
 
           case 'visual_test_error':
+            operation.phase = 'terminal';
+            cancelBtn.classList.add('hidden');
             setStatus('Error', 'failed');
             addAction('done', 'ERROR: ' + (chunk.message || 'Unknown error'));
             break;
 
           case 'visual_test_complete':
-
+            operation.phase = 'terminal';
             cancelBtn.classList.add('hidden');
-            var verdict = chunk.report && chunk.report.summary ? chunk.report.summary.verdict : 'fail';
-            setStatus(verdict === 'pass' ? 'Passed' : verdict === 'partial' ? 'Partial' : 'Failed',
-              verdict === 'pass' ? 'complete' : 'failed');
+            var verdict = chunk.report && chunk.report.summary && chunk.report.summary.verdict;
+            setStatus(verdict ? (verdict === 'pass' ? 'Passed' : verdict === 'partial' ? 'Partial' : 'Failed') : (chunk.message || 'Look complete'),
+              !verdict || verdict === 'pass' ? 'complete' : 'failed');
             addAction('done', 'Visual test complete');
             if (chunk.report) { showReport(chunk.report); }
             break;

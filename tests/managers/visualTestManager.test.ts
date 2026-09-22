@@ -25,6 +25,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { VisualSessionManager } from '../../src/managers/VisualSessionManager';
 import { VisualTestManager } from '../../src/managers/VisualTestManager';
+import type { LookOptions } from '../../src/managers/VisualSessionManager';
 import type { VisualResolution } from '../../src/services/visualTestPolicy';
 
 function resolution(overrides: Partial<VisualResolution> = {}): VisualResolution {
@@ -51,9 +52,7 @@ function resolution(overrides: Partial<VisualResolution> = {}): VisualResolution
 function makeManager(opts: { approveDevServer?: boolean } = {}) {
   const approveDevServer = vi.fn().mockResolvedValue(opts.approveDevServer ?? true);
   const mgr = new VisualSessionManager({
-    approveDevServer,
     storageDir: () => '/tmp/mysti-test',
-    workspaceRoot: () => '/repo',
     readyPattern: () => undefined,
   });
 
@@ -90,7 +89,13 @@ function makeManager(opts: { approveDevServer?: boolean } = {}) {
   inject('_browser', browser);
   inject('_screenshot', screenshot);
 
-  return { mgr, devServer, browser, screenshot, page, approveDevServer };
+  const look = (key: string, resolved: VisualResolution, options: Partial<LookOptions> = {}) => {
+    const panelId = key.startsWith('mysti:') ? key.slice(6) : key;
+    const operation = { id: 'fixture-look', panelId, ownerKey: panelId, workspaceRoot: '/repo', workspaceIdentity: 'inert-workspace',
+      signal: new AbortController().signal, isCurrent: () => true };
+    return mgr.look({ cacheKey: key, panelId, ownerKey: panelId }, resolved, { operation, approveDevServer, ...options });
+  };
+  return { mgr, look, devServer, browser, screenshot, page, approveDevServer };
 }
 
 describe('the ungated inner agent is gone for good', () => {
@@ -115,8 +120,8 @@ describe('warm session reuse', () => {
 
   it('starts the dev server and launches the browser exactly ONCE across two looks', async () => {
     const r = resolution({ devCommand: 'npm run dev', devCommandSource: 'settings' });
-    await h.mgr.look('p1', r);
-    await h.mgr.look('p1', r);
+    await h.look('p1', r);
+    await h.look('p1', r);
 
     expect(h.devServer.start).toHaveBeenCalledTimes(1);
     expect(h.browser.launch).toHaveBeenCalledTimes(1);
@@ -126,15 +131,15 @@ describe('warm session reuse', () => {
 
   it('asks for dev-server approval only once per session', async () => {
     const r = resolution({ devCommand: 'npm run dev', devCommandSource: 'settings' });
-    await h.mgr.look('p1', r);
-    await h.mgr.look('p1', r);
+    await h.look('p1', r);
+    await h.look('p1', r);
     expect(h.approveDevServer).toHaveBeenCalledTimes(1);
   });
 
   it('reloads on a repeat look so a code fix is actually observed', async () => {
     const r = resolution();
-    await h.mgr.look('p1', r);
-    await h.mgr.look('p1', r);
+    await h.look('p1', r);
+    await h.look('p1', r);
     expect(h.browser.reload).toHaveBeenCalled();
   });
 
@@ -143,23 +148,23 @@ describe('warm session reuse', () => {
     // to the resolved base URL would yank the session back to `/` and quietly
     // undo whatever an earlier `act` had navigated to.
     h.page.url.mockReturnValue('http://localhost:3000/settings');
-    await h.mgr.look('p1', resolution());
-    await h.mgr.look('p1', resolution());
+    await h.look('p1', resolution());
+    await h.look('p1', resolution());
     expect(h.browser.navigate).not.toHaveBeenCalled();
     expect(h.browser.reload).toHaveBeenCalled();
   });
 
   it('navigates when — and only when — a destination was named', async () => {
     h.page.url.mockReturnValue('http://localhost:3000/settings');
-    await h.mgr.look('p1', resolution());
-    await h.mgr.look('p1', resolution(), { url: 'http://localhost:3000/billing' });
-    expect(h.browser.navigate).toHaveBeenCalledWith('p1', 'http://localhost:3000/billing');
+    await h.look('p1', resolution());
+    await h.look('p1', resolution(), { url: 'http://localhost:3000/billing' });
+    expect(h.browser.navigate).toHaveBeenCalledWith(h.browser.launch.mock.calls[0][0], 'http://localhost:3000/billing');
   });
 
   it('increments the sequence number per look', async () => {
     const r = resolution();
-    const a = await h.mgr.look('p1', r);
-    const b = await h.mgr.look('p1', r);
+    const a = await h.look('p1', r);
+    const b = await h.look('p1', r);
     expect(a.sequence).toBe(1);
     expect(b.sequence).toBe(2);
   });
@@ -168,15 +173,15 @@ describe('warm session reuse', () => {
 describe('dev-server ownership contract', () => {
   it('STOPS a server this session started', async () => {
     const h = makeManager();
-    await h.mgr.look('p1', resolution({ devCommand: 'npm run dev', devCommandSource: 'settings' }));
+    await h.look('p1', resolution({ devCommand: 'npm run dev', devCommandSource: 'settings' }));
     await h.mgr.close('p1');
-    expect(h.devServer.stop).toHaveBeenCalledWith('p1');
+    expect(h.devServer.stop).toHaveBeenCalledWith(h.browser.launch.mock.calls[0][0]);
   });
 
   it('LEAVES a server that was already running before the session', async () => {
     const h = makeManager();
     h.devServer.isRunning.mockReturnValue(true);
-    await h.mgr.look('p1', resolution({ devCommandSource: 'already-running' }));
+    await h.look('p1', resolution({ devCommandSource: 'already-running' }));
     await h.mgr.close('p1');
     expect(h.devServer.start).not.toHaveBeenCalled();
     expect(h.devServer.stop).not.toHaveBeenCalled();
@@ -184,14 +189,14 @@ describe('dev-server ownership contract', () => {
 
   it('never touches the dev server when no command is configured', async () => {
     const h = makeManager();
-    await h.mgr.look('p1', resolution());
+    await h.look('p1', resolution());
     expect(h.devServer.start).not.toHaveBeenCalled();
   });
 
   it('aborts the look when the user declines the dev server', async () => {
     const h = makeManager({ approveDevServer: false });
     await expect(
-      h.mgr.look('p1', resolution({ devCommand: 'npm run dev', devCommandSource: 'settings' }))
+      h.look('p1', resolution({ devCommand: 'npm run dev', devCommandSource: 'settings' }))
     ).rejects.toThrow(/declined/i);
     expect(h.devServer.start).not.toHaveBeenCalled();
     expect(h.browser.launch).not.toHaveBeenCalled();
@@ -203,7 +208,7 @@ describe('Playwright availability is probed before anything is spawned', () => {
     const h = makeManager();
     h.browser.probe.mockResolvedValue({ module: true, browser: false, hint: 'Run: npx playwright install chromium' });
     await expect(
-      h.mgr.look('p1', resolution({ devCommand: 'npm run dev', devCommandSource: 'settings' }))
+      h.look('p1', resolution({ devCommand: 'npm run dev', devCommandSource: 'settings' }))
     ).rejects.toThrow(/npx playwright install/);
     expect(h.devServer.start).not.toHaveBeenCalled();
   });
@@ -212,7 +217,7 @@ describe('Playwright availability is probed before anything is spawned', () => {
 describe('interactions', () => {
   it('fails CLOSED when no approver is supplied', async () => {
     const h = makeManager();
-    const obs = await h.mgr.look('p1', resolution({ interactionPolicy: 'safe' }), {
+    const obs = await h.look('p1', resolution({ interactionPolicy: 'safe' }), {
       actions: [{ action: 'click', target: '#save' }],
     });
     expect(obs.actionsPerformed).toBeUndefined();
@@ -222,7 +227,7 @@ describe('interactions', () => {
   it('does not run interactions when the policy is off', async () => {
     const h = makeManager();
     const approve = vi.fn().mockResolvedValue(true);
-    const obs = await h.mgr.look('p1', resolution({ interactionPolicy: 'off' }), {
+    const obs = await h.look('p1', resolution({ interactionPolicy: 'off' }), {
       actions: [{ action: 'click', target: '#save' }],
       approveInteractions: approve,
     });
@@ -233,7 +238,7 @@ describe('interactions', () => {
   it('reports unrecognised actions instead of executing them', async () => {
     const h = makeManager();
     const approve = vi.fn().mockResolvedValue(true);
-    const obs = await h.mgr.look('p1', resolution({ interactionPolicy: 'safe' }), {
+    const obs = await h.look('p1', resolution({ interactionPolicy: 'safe' }), {
       actions: [{ action: 'evaluate', value: 'alert(1)' }],
       approveInteractions: approve,
     });
@@ -246,7 +251,7 @@ describe('interactions', () => {
     const h = makeManager();
     const approve = vi.fn().mockResolvedValue(true);
     const many = Array.from({ length: 20 }, () => ({ action: 'hover', target: '#x' }));
-    const obs = await h.mgr.look('p1', resolution({ interactionPolicy: 'safe' }), {
+    const obs = await h.look('p1', resolution({ interactionPolicy: 'safe' }), {
       actions: many,
       approveInteractions: approve,
     });
@@ -263,9 +268,9 @@ describe('single-flight', () => {
       release = () => res({ id: 's', filePath: '/tmp/s.png', base64Data: '' });
     }));
 
-    const first = h.mgr.look('p1', resolution());
+    const first = h.look('p1', resolution());
     await new Promise(r => setTimeout(r, 5));
-    await expect(h.mgr.look('p1', resolution())).rejects.toThrow(/already in progress/i);
+    await expect(h.look('p1', resolution())).rejects.toThrow(/already in progress/i);
     release();
     await first;
   });
@@ -274,9 +279,29 @@ describe('single-flight', () => {
 describe('disposal', () => {
   it('closing a panel closes its sessions', async () => {
     const h = makeManager();
-    await h.mgr.look('mysti:p1', resolution({ devCommand: 'npm run dev', devCommandSource: 'settings' }));
-    await h.mgr.closeForPanel('mysti:p1');
-    expect(h.browser.close).toHaveBeenCalledWith('mysti:p1');
+    await h.look('mysti:p1', resolution({ devCommand: 'npm run dev', devCommandSource: 'settings' }));
+    await h.mgr.closeForPanel('p1');
+    expect(h.browser.close).toHaveBeenCalledWith(h.browser.launch.mock.calls[0][0]);
+  });
+
+  it('VisualTestManager.cancelTest observes deferred cleanup failure and preserves cancellation', async () => {
+    const vtm = new VisualTestManager({} as never);
+    let reject!: (error: Error) => void;
+    const sessions = {
+      dispose: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      closeForPanel: vi.fn(() => new Promise<void>((_resolve, no) => { reject = no; })),
+      isDevServerRunning: vi.fn().mockReturnValue(false),
+    };
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vtm.attachSessionManager(sessions); vtm.cancelTest('owned');
+      expect(vtm.isCancelled('owned')).toBe(true); expect(vtm.isCancelled('sibling')).toBe(false);
+      expect(sessions.closeForPanel).toHaveBeenCalledWith('owned');
+      reject(new Error('owned cleanup unconfirmed')); await new Promise(resolve => setImmediate(resolve));
+      expect(warning).toHaveBeenCalledWith('[Mysti] Visual resource cleanup could not be confirmed:', 'owned cleanup unconfirmed');
+      expect(vtm.isCancelled('owned')).toBe(true);
+    } finally { warning.mockRestore(); await vtm.dispose(); }
   });
 
   it('VisualTestManager.dispose cascades to the attached session manager', async () => {

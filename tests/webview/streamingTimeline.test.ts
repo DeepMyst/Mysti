@@ -58,6 +58,36 @@ function harness() {
 afterEach(() => windows.splice(0).forEach(dom => dom.window.close()));
 
 describe('foreground streaming timeline owner', () => {
+  it.each(['visualTestMiniStatus', 'visualTestDashboardUpdate'])(
+    'admits %s only with captured visual scope and a current eligible parent', type => {
+      const h = harness(); const id = h.active();
+      const visual = (requestId?: string, scope?: string) => h.timeline.admit({ type, requestId, scope });
+      expect(visual(id).accepted).toBe(false);
+      expect(visual(undefined, 'accessory').accepted).toBe(false);
+      expect(visual(id, 'accessory')).toEqual({ accepted: true, foreground: false });
+      h.frame('responseComplete', id);
+      expect(visual(id, 'accessory')).toEqual({ accepted: true, foreground: false });
+      const next = h.timeline.prepare();
+      expect(visual(id, 'accessory').accepted).toBe(false);
+      // A dedicated human operation remains independent of the new chat turn.
+      expect(visual(undefined, 'notice')).toEqual({ accepted: true, foreground: false });
+      expect(h.timeline.currentRequestId()).toBe(next);
+      h.timeline.reset();
+      expect(visual(next, 'accessory').accepted).toBe(false);
+      expect(visual(undefined).accepted).toBe(false);
+    },
+  );
+  it.each(['requestCancelled', 'error', 'authError', 'jobStarted', 'mystiUnavailable', 'mystiSignInRequired', 'mystiActionRequired'])(
+    'refuses visual accessories after %s without reviving the parent', terminal => {
+      const h = harness(); const id = h.active();
+      h.frame(terminal, id, { terminal: true });
+      expect(h.frame('responseComplete', id).accepted).toBe(false);
+      for (const type of ['visualTestMiniStatus', 'visualTestDashboardUpdate']) {
+        expect(h.timeline.admit({ type, requestId: id, scope: 'accessory' }).accepted).toBe(false);
+      }
+      expect(h.messages.children).toHaveLength(0);
+    },
+  );
   it('keeps local intent ahead of unrelated pending without poisoning its sequence', () => {
     const h = harness(); const id = h.timeline.prepare();
     expect(h.pending('unrelated', 99).accepted).toBe(false);

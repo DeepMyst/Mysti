@@ -22,6 +22,7 @@ import { EventEmitter } from 'events';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn } from 'child_process';
 import { DevServerManager } from '../../src/managers/DevServerManager';
+import { VisualOperationCancelled } from '../../src/services/VisualOperation';
 import { VISUAL_TEST_SERVER_KILL_GRACE_MS } from '../../src/constants';
 
 vi.mock('child_process', () => ({
@@ -43,8 +44,9 @@ class FakeChild extends EventEmitter {
   public signalCode: NodeJS.Signals | null = null;
   public killed = false;
   public readonly signals: NodeJS.Signals[] = [];
-  public stdout = new EventEmitter();
-  public stderr = new EventEmitter();
+  public stdout = Object.assign(new EventEmitter(), { destroy: vi.fn() });
+  public stderr = Object.assign(new EventEmitter(), { destroy: vi.fn() });
+  public unref = vi.fn();
 
   kill(signal?: NodeJS.Signals): boolean {
     this.signals.push((signal ?? 'SIGTERM') as NodeJS.Signals);
@@ -56,6 +58,7 @@ class FakeChild extends EventEmitter {
     this.exitCode = code;
     this.signalCode = signal;
     this.emit('exit', code, signal);
+    this.emit('close', code, signal);
   }
 }
 
@@ -129,7 +132,11 @@ describe('DevServerManager', () => {
       const child = new FakeChild();
       await startServer(mgr, child);
 
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+        if (signal === 0 && (child.exitCode !== null || child.signalCode !== null)) { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); }
+        if (signal === 'SIGKILL') { child.simulateExit(null, 'SIGKILL'); }
+        return true;
+      });
 
       const stopPromise = mgr.stop('panel-1');
 
@@ -151,7 +158,11 @@ describe('DevServerManager', () => {
       await startServer(mgr, child);
 
       vi.useFakeTimers();
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+        if (signal === 0 && (child.exitCode !== null || child.signalCode !== null)) { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); }
+        if (signal === 'SIGKILL') { child.simulateExit(null, 'SIGKILL'); }
+        return true;
+      });
 
       const stopPromise = mgr.stop('panel-1');
       expect(killSpy).toHaveBeenCalledWith(-child.pid, 'SIGTERM');
@@ -201,12 +212,90 @@ describe('DevServerManager', () => {
 
       child.simulateExit(0);
 
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+        if (signal === 0 && (child.exitCode !== null || child.signalCode !== null)) { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); }
+        if (signal === 'SIGKILL') { child.simulateExit(null, 'SIGKILL'); }
+        return true;
+      });
       await mgr.stop('panel-1');
 
       expect(child.signals).toEqual([]);
-      expect(killSpy).not.toHaveBeenCalledWith(-child.pid, expect.anything());
+      expect(killSpy.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
       expect(mgr.isRunning('panel-1')).toBe(false);
     });
   });
+  it('refuses an already aborted start before touching any process', async () => {
+    const manager = new DevServerManager(); const controller = new AbortController(); controller.abort();
+    await expect(manager.start('owned', 'inert', '/inert', undefined, undefined,
+      { signal: controller.signal, isCurrent: () => true })).rejects.toBeInstanceOf(VisualOperationCancelled);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('rechecks Stop after waiting for the prior process, before spawning', async () => {
+    const manager = new DevServerManager(); const controller = new AbortController(); let release!: () => void;
+    vi.spyOn(manager, 'stop').mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
+    const pending = manager.start('owned', 'inert', '/inert', undefined, undefined,
+      { signal: controller.signal, isCurrent: () => true });
+    controller.abort(); release(); await expect(pending).rejects.toBeInstanceOf(VisualOperationCancelled);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('aborting readiness stops the exact owned process and removes its waiter listeners', async () => {
+    const manager = new DevServerManager(); const controller = new AbortController(); const child = new FakeChild();
+    spawnMock.mockReturnValueOnce(child as unknown as ReturnType<typeof spawn>);
+    const kill = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+      if (child.signalCode !== null) { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); }
+      if (signal === 'SIGTERM') { child.simulateExit(null, 'SIGTERM'); } return true;
+    });
+    const pending = manager.start('owned', 'inert', '/inert', undefined, 'http://127.0.0.1:9',
+      { signal: controller.signal, isCurrent: () => true });
+    const rejected = expect(pending).rejects.toBeInstanceOf(VisualOperationCancelled);
+    await new Promise(resolve => setImmediate(resolve)); controller.abort(); await rejected;
+    expect(kill).toHaveBeenCalledWith(-child.pid, 'SIGTERM'); expect(manager.isRunning('owned')).toBe(false);
+    expect(child.stdout.listenerCount('data')).toBe(1); expect(child.listenerCount('exit')).toBe(1);
+  });
+
+  it('Windows dead root reports unconfirmed descendants even when its own pipes closed', async () => {
+    setPlatform('win32'); const manager = new DevServerManager(); const child = new FakeChild();
+    await startServer(manager, child); child.simulateExit(0);
+    await expect(manager.stop('panel-1')).rejects.toThrow(/cleanup incomplete/);
+    expect(child.stdout.destroy).toHaveBeenCalledOnce(); expect(child.unref).toHaveBeenCalledOnce();
+  });
+
+  it('Windows failed tree helper is observed and releases owned handles without claiming cleanup', async () => {
+    setPlatform('win32'); const manager = new DevServerManager(); const child = new FakeChild(); await startServer(manager, child);
+    const helper = new EventEmitter(); spawnMock.mockReturnValueOnce(helper as unknown as ReturnType<typeof spawn>);
+    const stopped = manager.stop('panel-1'); const rejected = expect(stopped).rejects.toThrow(/taskkill failed/);
+    helper.emit('exit', 1); await rejected; expect(helper.listenerCount('exit')).toBe(0);
+    expect(child.stdout.destroy).toHaveBeenCalledOnce(); expect(child.stderr.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('retains a failed Windows tree and retries only that live root while a successor remains active', async () => {
+    setPlatform('win32'); const manager = new DevServerManager(); const old = new FakeChild(); await startServer(manager, old, 'old');
+    const failedHelper = new EventEmitter(); spawnMock.mockReturnValueOnce(failedHelper as unknown as ReturnType<typeof spawn>);
+    const failed = manager.stop('old'); const rejected = expect(failed).rejects.toThrow(/taskkill failed/); failedHelper.emit('exit', 1); await rejected;
+    expect((manager as any)._pendingCleanup.size).toBe(1); expect(manager.isRunning('old')).toBe(false);
+    const next = new FakeChild(); next.pid = 888; await startServer(manager, next, 'new');
+    const recoveredHelper = new EventEmitter(); spawnMock.mockReturnValueOnce(recoveredHelper as unknown as ReturnType<typeof spawn>);
+    const recovered = manager.stop('old'); expect(spawnMock).toHaveBeenLastCalledWith('taskkill',['/PID','777','/T','/F'],expect.anything());
+    recoveredHelper.emit('exit', 0); old.simulateExit(1); await recovered;
+    expect((manager as any)._pendingCleanup.size).toBe(0); expect(manager.isRunning('new')).toBe(true); expect(next.signals).toEqual([]);
+  });
+
+  it('retains failed dead roots without issuing a later taskkill against a potentially recycled PID', async () => {
+    setPlatform('win32'); const manager = new DevServerManager(); const child = new FakeChild(); await startServer(manager, child);
+    child.simulateExit(0); await expect(manager.stop('panel-1')).rejects.toThrow(/cleanup incomplete/);
+    const before = spawnMock.mock.calls.length;
+    await expect(manager.dispose()).rejects.toThrow(/retry cannot safely identify/);
+    expect(spawnMock).toHaveBeenCalledTimes(before); expect((manager as any)._pendingCleanup.size).toBe(1);
+  });
+
+  it('does not equate a vanished group with closed inherited pipes or signal the vanished group again', async () => {
+    const manager = new DevServerManager(); const child = new FakeChild(); await startServer(manager, child); vi.useFakeTimers();
+    const kill = vi.spyOn(process,'kill').mockImplementation(()=>{throw Object.assign(new Error('gone'),{code:'ESRCH'});});
+    const pending = manager.stop('panel-1'); const rejected = expect(pending).rejects.toThrow(/closure was not confirmed/);
+    await vi.advanceTimersByTimeAsync(VISUAL_TEST_SERVER_KILL_GRACE_MS + 1000); await rejected;
+    expect(kill.mock.calls).toEqual([[-child.pid,0]]); expect(child.stdout.destroy).toHaveBeenCalledOnce();
+  });
+
 });

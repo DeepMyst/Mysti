@@ -19,10 +19,13 @@ import * as crypto from 'crypto';
 import { SubAgentQuestionBroker, parseSubAgentResponse } from '../chat/SubAgentQuestionBroker';
 import { bindIncomingMessage } from '../chat/incomingMessage';
 import { ForegroundRequest, type ForegroundPost, validForegroundRequestId } from '../chat/ForegroundRequest';
+import { BackendVisualTurn } from '../chat/BackendVisualTurn';
+import { createAbortScope } from '../utils/abortScope';
+import { VisualOperationCancelled, assertVisualOperation, awaitVisualOperation, type VisualOperationContext, type VisualSessionTarget } from '../services/VisualOperation';
 import { CoordinatorRunOutput } from '../chat/CoordinatorRunOutput';
 import { settleWithin } from '../utils/settleWithin';
 import { clampEffort } from '../utils/effort';
-import { MystiTagScanner, type MystiDirective, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_SKILL_KINDS, MYSTI_CAPABILITY_KINDS, MYSTI_CONNECT_KINDS, MYSTI_VISUAL_KINDS, MYSTI_VISUAL_ACT_KINDS, MYSTI_CANVAS_KINDS } from '../utils/mystiDelegateParser';
+import { type MystiDirective, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_SKILL_KINDS, MYSTI_CAPABILITY_KINDS, MYSTI_CONNECT_KINDS, MYSTI_VISUAL_KINDS, MYSTI_VISUAL_ACT_KINDS, MYSTI_CANVAS_KINDS } from '../utils/mystiDelegateParser';
 import { resolveCanvasApproval } from '../canvas/resolveCanvasApproval';
 import { CanvasBridge, CANVAS_PENDING_RUN } from '../canvas/CanvasBridge';
 import type { CanvasBridgeSession } from '../canvas/CanvasBridge';
@@ -181,6 +184,17 @@ interface QuestionOrigin {
   readonly requestId?: string;
   readonly post: ForegroundPost;
   readonly isCurrent: () => boolean;
+}
+
+interface HostVisualOperation {
+  readonly operation: VisualOperationContext;
+  readonly target: VisualSessionTarget;
+  readonly policy: VisualPolicyDeps;
+  readonly permissionOwnerKey: string;
+  readonly requestId?: string;
+  cancelRequested?: boolean;
+  abort(): void;
+  dispose(): void;
 }
 
 /**
@@ -412,9 +426,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // Visual test dashboard tracking
   private _vtDashboardPanelId: string | null = null;
   private _vtDashboardChatOrigin: string | null = null;
-  private _vtTriggeredThisResponse: boolean = false;
-  /** Per-panel nonce-bound scanner for the CLI-backend `<look:…>` tag. */
-  private _vtScanners: Map<string, MystiTagScanner> = new Map();
+  private _backendVisualTurns?: Map<string, { turn: BackendVisualTurn; visual: HostVisualOperation }>;
+  private _visualOperations?: Map<string, HostVisualOperation>;
+  private _dashboardVisualOwners?: Map<string, string>;
   // Plan 04 Phase 4: DeepMyst auth (set post-construction in extension.ts). Used
   // to (a) inject the in-chat connect convention into the system prompt and
   // (b) resolve the web URL for the "Link <service>" connect action.
@@ -1160,6 +1174,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Re-resolution replaces the view owner even if the old dispose arrives later.
     if (this._panelStates.has(this._sidebarId)) {
       this._cancelQueuedChannelTurn(this._sidebarId);
+      this._observeVisualCleanup(this._visualTestManager.disposePanel(this._sidebarId));
       this._providerManager.cancelRequest(this._sidebarId);
       this._abortMystiDirect(this._sidebarId);
     }
@@ -1190,6 +1205,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.onDidDispose(() => {
       if (this._panelStates.get(this._sidebarId)?.webview === webviewView.webview) {
         this._cancelQueuedChannelTurn(this._sidebarId);
+        this._observeVisualCleanup(this._visualTestManager.disposePanel(this._sidebarId));
         this._panelStates.delete(this._sidebarId);
         this._providerManager.cancelRequest(this._sidebarId);
         this._abortMystiDirect(this._sidebarId);
@@ -3087,19 +3103,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
 
-      case 'cancelVisualTest':
-        {
-          const panelId = msg.panelId;
-          if (panelId) {
-            this._visualTestManager.cancelTest(panelId);
-          }
-          // Also cancel via dashboard if running
-          if (this._vtDashboardPanelId) {
-            this._visualTestManager.cancelTest(this._vtDashboardPanelId);
-            this._postToPanel(this._vtDashboardPanelId, { type: 'visualTestDashboardCancelled' });
-          }
+      case 'cancelVisualTest': {
+        const operationId = (msg.payload as { operationId?: string } | undefined)?.operationId;
+        const visual = operationId ? this._visualOperations?.get(operationId) : undefined;
+        if (visual && visual.operation.panelId === msg.panelId && this._cancelVisualOperation(operationId, msg.requestId)) {
+          const panel = this._panelStates.get(msg.panelId);
+          const request = this._foregroundRequests?.get(msg.panelId);
+          let cleanupError: string | undefined;
+          try { await this._visualSessions?.cancelOwner(visual.operation.ownerKey); }
+          catch (error) { cleanupError = error instanceof Error ? error.message : String(error); }
+          if (this._panelStates.get(msg.panelId) !== panel
+            || (msg.requestId && this._foregroundRequests?.get(msg.panelId) !== request)) { break; }
+          const reply: WebviewMessage = { type: 'visualTestMiniStatus', scope: msg.requestId ? 'accessory' : 'notice',
+            payload: { operationId, type: 'visual_test_cancelled', status: 'cancelled',
+              cleanupIncomplete: !!cleanupError, message: cleanupError || 'Visual observation cancelled.' } };
+          if (msg.requestId) { this._foregroundRequests?.get(msg.panelId)?.post(reply); }
+          else { this._postToPanel(msg.panelId, reply); }
         }
         break;
+      }
 
       case 'getVisualTestReport':
         {
@@ -4018,6 +4040,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private _cancelQueuedChannelTurn(panelId: string, preserveRunning = false, preserveStoppedAudit = false): void {
+    this._retireBackendVisual(panelId);
     // Retire the captured ordinary owner before a successor can begin. Other
     // lanes retain their existing lifecycle; this map never owns their jobs.
     this._ordinaryRequestRetirements?.get(panelId)?.(preserveRunning);
@@ -4082,6 +4105,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       && this._panelStates.get(panelId) === capturedPanel
       && capturedPanel.currentConversationId === capturedConversationId;
     const acceptsTurn = () => ownsTurn() && !this._cancelledPanels.has(panelId);
+    let backendVisual: BackendVisualTurn | undefined;
+    let parentSucceeded = false;
     let ordinaryOwned = false;
     let ordinarySettled = false;
     let ordinaryTerminal = false;
@@ -4697,6 +4722,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const effectiveSettings = this._autonomousManager.isActive()
         ? { ...settings, autonomousMode: true }
         : settings;
+      backendVisual = new BackendVisualTurn(request.requestId, panelId, effectiveSettings, acceptsTurn);
+      const visualOwner = backendVisual;
+      const visualBinding = this._createVisualOperation(visualOwner.settings, panelId, `mysti:${panelId}`,
+        request.requestId, panelId, visualOwner.isCurrent, visualOwner.signal, request.requestId);
+      visualBinding.operation.signal.addEventListener('abort', () => visualOwner.retire(), { once: true });
+      (this._backendVisualTurns ??= new Map()).set(panelId, { turn: visualOwner, visual: visualBinding });
 
       // Pass panelId for per-panel process tracking
       // Filter attachments based on provider capabilities
@@ -4813,7 +4844,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Tell the backend the `look` tag exists (and mint this turn's nonce).
       // Returns '' whenever the capability would not work, so the convention
       // never leaks into a setup that cannot honour it.
-      const visualSnippet = await this._visualPromptSnippet(panelId, effectiveSettings, acceptsTurn).catch(() => '');
+      const visualSnippet = await this._visualPromptSnippet(panelId, effectiveSettings, acceptsTurn, visualOwner).catch(() => '');
       if (!acceptsTurn()) { return; }
       const fullSystemContext = [projectInstructions, channelContext, autoMemory, deepMystConnect, canvasSnippet, visualSnippet].filter(Boolean).join('\n\n');
 
@@ -4897,15 +4928,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       let assistantContent = '';
       let thinkingContent = '';
-      this._vtTriggeredThisResponse = false;
-      // A fresh, nonce-bound scanner per response. The nonce was minted by
-      // _visualPromptSnippet when this turn's system context was built; if the
-      // capability is off, no scanner exists and a `<look:…>` tag is just text.
-      if (this._vtNonces.has(panelId)) {
-        this._vtScanners.set(panelId, new MystiTagScanner(this._backendVisualNonce(panelId), MYSTI_VISUAL_KINDS));
-      } else {
-        this._vtScanners.delete(panelId);
-      }
       this._connectServicesThisResponse.clear();
       if (this._isCanvasLinked(panelId)) { this._canvasOpParser = new CanvasOpParser(); }
       // Plan 22 §3.4 tier 1 — the window in which this turn may open a canvas
@@ -5082,18 +5104,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // injected file's contents could trigger it. The tag also has no
             // url/command attribute, so there is no model-supplied shell command
             // left to gate.
-            if (!this._vtTriggeredThisResponse) {
-              const scanner = this._vtScanners.get(panelId);
-              if (scanner) {
-                const scanned = scanner.feed(chunk.content || '');
-                const d = scanned.directive;
-                if (d && d.kind === 'look') {
-                  this._vtTriggeredThisResponse = true;
-                  const effectiveSettings = this._getSettingsForPanel(panelId);
-                  void this._launchBackendVisualLook(d, panelId, effectiveSettings);
-                }
-              }
-            }
+            const look = visualOwner.feed(chunk.content || '');
+            if (look) { void this._launchBackendVisualLook(look, visualOwner, visualBinding, request.post); }
             break;
           }
 
@@ -5366,6 +5378,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
             });
 
+            parentSucceeded = true;
+            backendVisual?.succeeded();
+
             // Done is one-way, including if iterator.return or later optional
             // post-processing fails. A replacement may start during its awaits.
             ordinaryTerminal = true;
@@ -5555,6 +5570,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         }
       }
+      if (!ordinaryTerminal && acceptsTurn()) {
+        backendVisual?.retire();
+        ordinaryTerminal = true;
+        request.post({ type: 'requestCancelled' });
+      }
       // The stream can also END without a `done` chunk (a provider that closes
       // its generator, a cancel between chunks). Closing here as well is what
       // makes "a ghost can only disappear via a terminal event" true for this
@@ -5576,6 +5596,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
     } finally {
+      if (backendVisual && (!parentSucceeded || !backendVisual.pendingLook)) {
+        backendVisual.retire();
+        const entry = this._backendVisualTurns?.get(panelId);
+        if (entry?.turn === backendVisual) {
+          this._retireBackendVisual(panelId);
+        }
+      }
       // This only releases the captured ordinary turn. Invalidation already
       // retired its Canvas owner synchronously; never touch a successor here.
       settleOrdinary();
@@ -8064,7 +8091,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Plan 27 §21.6c #11: the id is minted per open, so a persisted
       // `mysti.context:<panelId>` would outlive the panel — same as the chat tab.
       this._contextManager.clearPanelContext(panelId);
-      // Cancel running test on close
+      const visualId = this._dashboardVisualOwners?.get(panelId);
+      if (visualId) { this._cancelVisualOperation(visualId); }
+      this._dashboardVisualOwners?.delete(panelId);
       this._visualTestManager.cancelTest(panelId);
     });
 
@@ -8104,16 +8133,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         };
         const originPanel = this._vtDashboardChatOrigin || this._sidebarId;
         const settings = this._getSettingsForPanel(originPanel);
-        await this._runDashboardLook(dashboardPanelId, originPanel, settings, req);
+        const operationId = payload && typeof payload === 'object' && 'operationId' in payload ? payload.operationId : undefined;
+        if (!validForegroundRequestId(operationId)) { return; }
+        await this._runDashboardLook(dashboardPanelId, originPanel, settings, req, operationId);
         break;
       }
       case 'dashboardCancelVisualTest':
-        this._visualTestManager.cancelTest(dashboardPanelId);
-        this._postToPanel(dashboardPanelId, { type: 'visualTestDashboardCancelled' });
+      case 'dashboardStopServer': {
+        const payload = 'payload' in msg ? msg.payload as { operationId?: string } : undefined;
+        const operationId = payload?.operationId;
+        if (!operationId || this._dashboardVisualOwners?.get(dashboardPanelId) !== operationId) { return; }
+        const dashboard = this._panelStates.get(dashboardPanelId);
+        this._cancelVisualOperation(operationId);
+        let cleanupError: string | undefined;
+        try { await this._visualSessions?.cancelOwner(operationId); }
+        catch (error) { cleanupError = error instanceof Error ? error.message : String(error); }
+        if (this._dashboardVisualOwners.get(dashboardPanelId) !== operationId
+          || this._panelStates.get(dashboardPanelId) !== dashboard) { return; }
+        this._dashboardVisualOwners.delete(dashboardPanelId);
+        this._postToPanel(dashboardPanelId, { type: 'visualTestDashboardCancelled', payload: {
+          operationId, ...(cleanupError ? { cleanupIncomplete: true, message: cleanupError } : {}),
+        } });
         break;
-      case 'dashboardStopServer':
-        await this._visualTestManager.stopDevServer(dashboardPanelId);
-        break;
+      }
     }
   }
 
@@ -8130,48 +8172,56 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async _launchBackendVisualLook(
     directive: Extract<MystiDirective, { kind: 'look' }>,
-    panelId: string,
-    settings: Settings,
+    owner: BackendVisualTurn, visual: HostVisualOperation, post: ForegroundPost,
   ): Promise<void> {
-    this._postToPanel(panelId, {
-      type: 'visualTestMiniStatus',
-      payload: { type: 'visual_test_started', status: 'capturing', message: 'Looking at your app…' }
-    } as never);
-
-    const toolId = `vt-look-${Date.now()}`;
-    const res = await this._runMystiVisual(directive, settings, panelId, toolId, panelId);
-
-    if (res.observation) {
-      this._visualTestManager.recordObservation(panelId, res.observation);
-      this._postToPanel(panelId, {
-        type: 'visualTestDashboardUpdate',
-        payload: { type: 'visual_test_screenshot', status: 'capturing', screenshot: { filePath: res.observation.screenshotPath, base64Data: res.observation.screenshotBase64, iteration: res.observation.sequence } }
-      } as never);
-    }
-    this._postToPanel(panelId, {
-      type: 'visualTestMiniStatus',
-      payload: res.ok
+    const status = (payload: Record<string, unknown>) => {
+      if (!owner.isCurrent() || !visual.operation.isCurrent()) { return; }
+      post({ type: 'visualTestMiniStatus', scope: 'accessory', payload: { ...payload, operationId: visual.operation.id } } as WebviewMessage);
+    };
+    try {
+      if (!owner.isCurrent()) { return; }
+      status({ type: 'visual_test_started', status: 'capturing', message: 'Looking at your app…' });
+      const res = await this._runMystiVisual(directive, owner.settings, owner.panelId, `vt-look-${visual.operation.id}`, visual);
+      if (res.cancelled) {
+        if (!visual.cancelRequested && this._backendVisualTurns?.get(owner.panelId)?.turn === owner) {
+          post({ type: 'visualTestMiniStatus', scope: 'accessory', payload: {
+            operationId: visual.operation.id, type: 'visual_test_cancelled', status: 'cancelled',
+            cleanupIncomplete: res.cleanupIncomplete, message: res.output,
+          } });
+        }
+        return;
+      }
+      if (!owner.isCurrent() || !visual.operation.isCurrent()) { return; }
+      // Even an already completed observation cannot replace an unfinished
+      // provider stream. Persisted parent success is a separate authority.
+      if (!await owner.waitForSuccess() || !visual.operation.isCurrent()) { return; }
+      if (res.observation) {
+        this._visualTestManager.recordObservation(owner.panelId, res.observation);
+        post({ type: 'visualTestDashboardUpdate', scope: 'accessory', payload: {
+          operationId: visual.operation.id, type: 'visual_test_screenshot', status: 'capturing',
+          screenshot: { filePath: res.observation.screenshotPath, base64Data: res.observation.screenshotBase64, iteration: res.observation.sequence },
+        } } as WebviewMessage);
+      }
+      status(res.ok
         ? { type: 'visual_test_complete', status: 'complete', message: 'Look complete' }
-        : { type: 'visual_test_error', status: 'failed', message: res.output.slice(0, 200) }
-    } as never);
-
-    // Feed the observation back as a synthetic follow-up turn. This is the only
-    // mechanism that works across all 15 heterogeneous backends — none of them
-    // exposes "resume this session with an injected tool result". It is the same
-    // path autonomous continuation already uses.
-    const body = res.ok
-      ? res.output
-      : `The look failed: ${res.output}`;
-    await this._handleSendMessage(
-      {
-        content: this._fenceLocalToolResult('look', body, this._backendVisualNonce(panelId), undefined),
-        context: [],
-        settings,
-      },
-      panelId,
-    ).catch((err) => {
-      console.warn('[Mysti] Failed to deliver visual observation to the backend:', err);
-    });
+        : { type: 'visual_test_error', status: 'failed', message: res.output.slice(0, 200) });
+      const body = res.ok ? res.output : `The look failed: ${res.output}`;
+      if (!visual.operation.isCurrent() || !owner.claimContinuation()) { return; }
+      // Atomic owner check -> synchronous successor admission. No await here.
+      await this._handleSendMessage({
+        content: this._fenceLocalToolResult('look', body, owner.nonce, undefined),
+        context: [], settings: { ...owner.settings },
+      }, owner.panelId);
+    } catch (err) {
+      if (owner.isCurrent() && !visual.operation.signal.aborted) { console.warn('[Mysti] Failed to deliver visual observation:', err); }
+    } finally {
+      owner.retire();
+      visual.dispose();
+      if (!owner.continuationClaimed) { this._cancelVisualOwner(visual.operation.ownerKey); }
+      if (this._backendVisualTurns?.get(owner.panelId)?.turn === owner) {
+        this._backendVisualTurns.delete(owner.panelId);
+      }
+    }
   }
 
   /**
@@ -8231,69 +8281,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * stopped the entry points from each inventing their own configuration.
    */
   private async _runDashboardLook(
-    dashPanelId: string,
-    originPanelId: string,
-    settings: Settings,
-    req: Partial<VisualTestConfig> & { path?: string },
+    dashPanelId: string, originPanelId: string, settings: Settings,
+    req: Partial<VisualTestConfig> & { path?: string }, operationId: string,
   ): Promise<void> {
-    const sessionKey = `dash:${dashPanelId}`;
-    const post = (payload: unknown) =>
-      this._postToPanel(dashPanelId, { type: 'visualTestDashboardUpdate', payload } as never);
-
-    post({ type: 'visual_test_started', status: 'capturing', message: 'Opening your app…' });
-
-    const resolution = resolveVisualLook(
-      {
-        requester: 'user',
-        url: req.url,
-        path: req.path,
-        devServerCommand: req.devServerCommand,
-        selector: req.elementSelector,
-        mode: req.screenshotMode,
-        waitFor: req.waitForSelector,
-        focus: req.requirements,
-        interactions: req.interactionsEnabled === false ? 'off' : undefined,
-      },
-      await this._visualPolicyDeps(settings, sessionKey),
-    );
-    if (isBlocked(resolution)) {
-      post({ type: 'visual_test_error', status: 'failed', message: resolution.blocked });
-      return;
-    }
-
+    const previous = this._dashboardVisualOwners?.get(dashPanelId);
+    if (previous) { this._cancelVisualOperation(previous); }
+    (this._dashboardVisualOwners ??= new Map()).set(dashPanelId, operationId);
+    const origin = this._panelStates.get(originPanelId);
+    const dashboard = this._panelStates.get(dashPanelId);
+    const visual = this._createVisualOperation(settings, dashPanelId, `dash:${dashPanelId}`, operationId,
+      dashPanelId, () => this._dashboardVisualOwners?.get(dashPanelId) === operationId, undefined, undefined, operationId);
+    const post = (payload: Record<string, unknown>) => {
+      if (!visual.operation.isCurrent()) { return; }
+      this._postToPanel(dashPanelId, { type: 'visualTestDashboardUpdate', payload: { ...payload, operationId } } as WebviewMessage);
+    };
     try {
-      const observation = await this._getVisualSessions().look(sessionKey, resolution, {
-        url: resolution.config.url,
-        selector: resolution.config.elementSelector,
-        mode: resolution.config.screenshotMode,
-        waitFor: resolution.config.waitForSelector,
-        focus: resolution.config.requirements,
-        wantImage: true, // the dashboard renders the picture
+      assertVisualOperation(visual.operation);
+      post({ type: 'visual_test_started', status: 'capturing', message: 'Opening your app…' });
+      const resolution = resolveVisualLook({ requester: 'user', url: req.url, path: req.path,
+        devServerCommand: req.devServerCommand, selector: req.elementSelector, mode: req.screenshotMode,
+        waitFor: req.waitForSelector, focus: req.requirements,
+        interactions: req.interactionsEnabled === false ? 'off' : undefined,
+      }, await this._visualPolicyDeps(visual));
+      assertVisualOperation(visual.operation);
+      if (isBlocked(resolution)) { post({ type: 'visual_test_error', status: 'failed', message: resolution.blocked }); return; }
+      const observation = await this._getVisualSessions().look(visual.target, resolution, {
+        operation: visual.operation,
+        approveDevServer: (command, source) => this._confirmVisualDevServerCommand(command, source, visual.operation),
+        url: resolution.config.url, selector: resolution.config.elementSelector, mode: resolution.config.screenshotMode,
+        waitFor: resolution.config.waitForSelector, focus: resolution.config.requirements, wantImage: true,
       });
+      assertVisualOperation(visual.operation);
       this._visualTestManager.recordObservation(dashPanelId, observation);
-      post({ type: 'visual_test_screenshot', status: 'capturing', screenshot: { filePath: observation.screenshotPath, base64Data: observation.screenshotBase64, iteration: observation.sequence } });
+      post({ type: 'visual_test_screenshot', status: 'capturing', screenshot: {
+        filePath: observation.screenshotPath, base64Data: observation.screenshotBase64, iteration: observation.sequence,
+      } });
       post({ type: 'visual_observation', status: 'complete', observation, message: formatObservation(observation) });
-      if (originPanelId) {
-        this._postToPanel(originPanelId, {
-          type: 'visualTestMiniStatus',
-          payload: { type: 'visual_test_complete', status: 'complete', message: `Look complete — ${observation.console.filter(c => c.level === 'error').length} console error(s)` },
-        } as never);
+      if (origin && this._panelStates.get(originPanelId) === origin) {
+        void origin.webview.postMessage({ type: 'visualTestMiniStatus', scope: 'notice', payload: {
+          operationId, type: 'visual_test_complete', status: 'complete', message: `Look complete — ${observation.console.filter(c => c.level === 'error').length} console error(s)`,
+        } });
       }
     } catch (err) {
-      post({ type: 'visual_test_error', status: 'failed', message: err instanceof Error ? err.message : String(err) });
-    }
+      if (err instanceof VisualOperationCancelled && !visual.cancelRequested
+        && this._dashboardVisualOwners?.get(dashPanelId) === operationId
+        && this._panelStates.get(dashPanelId) === dashboard) {
+        this._dashboardVisualOwners.delete(dashPanelId);
+        this._postToPanel(dashPanelId, { type: 'visualTestDashboardCancelled', payload: {
+          operationId, cleanupIncomplete: err.cleanupIncomplete, message: err.message,
+        } });
+      } else if (!(err instanceof VisualOperationCancelled) && visual.operation.isCurrent()) {
+        post({ type: 'visual_test_error', status: 'failed', message: err instanceof Error ? err.message : String(err) });
+      }
+    } finally { visual.dispose(); }
   }
-
-  /**
-   * Per-turn nonce for the CLI-backend `<look:NONCE …>` tag.
-   *
-   * Minted fresh for each backend turn and injected into that turn's system
-   * context. A tag echoed from a file, a fetched page or a sub-agent's output
-   * carries a stale or absent token and is left as plain text — the same
-   * discipline the coordinator's directive protocol uses, replacing the old
-   * unfenced ```visual-test``` scan whose only realistic trigger was injection.
-   */
-  private _vtNonces: Map<string, string> = new Map();
 
   /**
    * Per-turn nonce for the legacy fenced ```` ```canvas-op ```` lane
@@ -8320,22 +8361,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return n;
   }
 
-  private _backendVisualNonce(panelId: string): string {
-    let n = this._vtNonces.get(panelId);
-    if (!n) {
-      n = crypto.randomUUID().slice(0, 8);
-      this._vtNonces.set(panelId, n);
-    }
-    return n;
-  }
-
-  /** Mint a fresh nonce for a new backend turn. */
-  private _rotateBackendVisualNonce(panelId: string): string {
-    const n = crypto.randomUUID().slice(0, 8);
-    this._vtNonces.set(panelId, n);
-    return n;
-  }
-
   /**
    * The system-context snippet that tells a CLI backend the `look` tag exists.
    *
@@ -8344,24 +8369,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Without this the tag was documented NOWHERE — which is why the old
    * ```visual-test``` path had never once been invoked by a model.
    */
-  private async _visualPromptSnippet(panelId: string, settings: Settings, isCurrent: () => boolean = () => true): Promise<string> {
-    // Clearing the nonce is part of returning '' — a leftover token from an
-    // earlier turn would keep parsing `<look:…>` tags after the capability was
-    // turned off.
-    const off = (): string => { if (isCurrent()) { this._vtNonces.delete(panelId); } return ''; };
-    if (!isCurrent()) { return ''; }
-
-    const caps = this._mystiVisualEnabled(settings);
-    if (!caps.look) { return off(); }
-
-    const preview = resolveVisualLook({ requester: 'model' }, await this._visualPolicyDeps(settings, `mysti:${panelId}`));
-    if (!isCurrent()) { return ''; }
-    if (isBlocked(preview)) { return off(); }
-    const probe = await this._getVisualSessions().probe(preview.config.browser);
-    if (!isCurrent()) { return ''; }
-    if (!probe.module || !probe.browser) { return off(); }
-
-    const n = this._rotateBackendVisualNonce(panelId);
+  private async _visualPromptSnippet(panelId: string, settings: Settings, isCurrent: () => boolean, owner: BackendVisualTurn): Promise<string> {
+    const visual = this._backendVisualTurns?.get(panelId)?.visual;
+    if (!visual || !isCurrent() || !owner.isCurrent() || !this._mystiVisualEnabled(owner.settings).look) { return ''; }
+    const preview = resolveVisualLook({ requester: 'model' }, await this._visualPolicyDeps(visual));
+    assertVisualOperation(visual.operation);
+    if (isBlocked(preview)) { return ''; }
+    const probe = await awaitVisualOperation(visual.operation, () => this._getVisualSessions().probe(preview.config.browser));
+    if (!probe.module || !probe.browser || !owner.isCurrent()) { return ''; }
+    owner.enable();
+    const n = owner.nonce;
     const server = preview.devCommandSource === 'already-running'
       ? 'dev server: already running'
       : preview.devCommand
@@ -9521,9 +9538,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _getVisualSessions(): VisualSessionManager {
     if (this._visualSessions) { return this._visualSessions; }
     const mgr = new VisualSessionManager({
-      approveDevServer: (command, source) => this._confirmVisualDevServerCommand(command, source),
       storageDir: () => this._extensionContext.globalStorageUri.fsPath,
-      workspaceRoot: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '',
       readyPattern: () => vscode.workspace.getConfiguration('mysti').get<string>('visualTest.serverReadyPattern'),
     });
     this._visualSessions = mgr;
@@ -9531,24 +9546,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return mgr;
   }
 
-  /**
-   * Build the policy inputs from live settings. Everything the model is not
-   * allowed to choose is read here, from the user's configuration.
-   */
-  private async _visualPolicyDeps(settings: Settings, sessionKey: string): Promise<VisualPolicyDeps> {
-    // Only used to guess a default port when the user has set no URL, so a scan
-    // failure is a non-event.
-    const scan = await this._projectContextManager?.scanWorkspace().catch(() => null);
+  /** Capture policy before any framework scan or permission await. */
+  private _visualPolicySnapshot(settings: Settings): { deps: VisualPolicyDeps; fingerprint: string } {
     const cfg = vscode.workspace.getConfiguration('mysti');
-    const sessions = this._visualSessions;
-    return {
+    const caps = this._mystiVisualEnabled(settings);
+    const deps: VisualPolicyDeps = {
       enabled: cfg.get<boolean>('visualTest.enabled', true),
       agentToolsEnabled: cfg.get<string>('mysti.visualTools', 'off') === 'on',
       workspaceTrusted: vscode.workspace.isTrusted,
       workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-      allowedOrigins: cfg.get<string[]>('visualTest.allowedOrigins', VISUAL_DEFAULT_ALLOWED_ORIGINS),
+      allowedOrigins: [...cfg.get<string[]>('visualTest.allowedOrigins', VISUAL_DEFAULT_ALLOWED_ORIGINS)],
       allowModelDevServerCommand: cfg.get<boolean>('visualTest.allowModelDevServerCommand', false),
-      agentInteractions: cfg.get<'off' | 'safe'>('visualTest.agentInteractions', 'off'),
+      agentInteractions: caps.act ? cfg.get<'off' | 'safe'>('visualTest.agentInteractions', 'off') : 'off',
       userInteractions: cfg.get<'off' | 'safe' | 'full'>('visualTest.interactions', 'safe'),
       settingsUrl: cfg.get<string>('visualTest.url', ''),
       settingsDevCommand: cfg.get<string>('visualTest.devServerCommand', ''),
@@ -9557,11 +9566,111 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       viewportWidth: cfg.get<number>('visualTest.viewportWidth', 1280),
       viewportHeight: cfg.get<number>('visualTest.viewportHeight', 720),
       maxIterations: cfg.get<number>('visualTest.maxIterations', 5),
-      sessionBaseUrl: sessions?.getBaseUrl(sessionKey),
-      devServerRunning: sessions?.isDevServerRunning(sessionKey) ?? false,
-      detectDevCommand: (root) => DevServerManager.detectDevCommand(root),
-      framework: scan?.framework ?? null,
     };
+    // Include raw interaction policy too: a read-only floor may otherwise mask
+    // a live policy change. Model/UI picker preferences are not authority.
+    const fingerprint = JSON.stringify({ deps, look: caps.look,
+      agentInteractions: cfg.get('visualTest.agentInteractions', 'off'),
+      readyPattern: cfg.get('visualTest.serverReadyPattern'),
+      folders: vscode.workspace.workspaceFolders?.map(folder => folder.uri.toString()) ?? [],
+      workspace: vscode.workspace.workspaceFile?.toString() ?? null,
+    });
+    return { deps, fingerprint };
+  }
+
+  private _createVisualOperation(
+    settings: Settings, panelId: string, cacheKey: string, ownerKey: string,
+    permissionOwnerKey: string, parentCurrent: () => boolean, parentSignal?: AbortSignal,
+    requestId?: string, operationId: string = crypto.randomUUID(),
+  ): HostVisualOperation {
+    const settingsSnapshot = JSON.parse(JSON.stringify(settings)) as Settings;
+    const panel = this._panelStates.get(panelId);
+    const captured = this._visualPolicySnapshot(settingsSnapshot);
+    const abort = new AbortController();
+    const scope = createAbortScope([parentSignal, abort.signal]);
+    const listeners: vscode.Disposable[] = [];
+    let disposed = false;
+    const operation: VisualOperationContext = {
+      id: operationId, panelId, ownerKey,
+      workspaceRoot: captured.deps.workspaceRoot || '',
+      workspaceIdentity: captured.fingerprint,
+      signal: scope.signal,
+      isCurrent: () => {
+        if (disposed || scope.signal.aborted) { return false; }
+        if (!panel || this._panelStates.get(panelId) !== panel || !parentCurrent()
+          || this._visualPolicySnapshot(settingsSnapshot).fingerprint !== captured.fingerprint) {
+          abort.abort(); return false;
+        }
+        return true;
+      },
+    };
+    // These callbacks only invalidate the exact operation; the manager owns
+    // resource teardown and guards every asynchronous continuation as well.
+    const recheck = () => { operation.isCurrent(); };
+    listeners.push(vscode.workspace.onDidChangeConfiguration(recheck));
+    if (vscode.workspace.onDidChangeWorkspaceFolders) { listeners.push(vscode.workspace.onDidChangeWorkspaceFolders(recheck)); }
+    if (vscode.workspace.onDidGrantWorkspaceTrust) { listeners.push(vscode.workspace.onDidGrantWorkspaceTrust(recheck)); }
+    const policy = captured.deps;
+    policy.sessionBaseUrl = this._visualSessions?.getBaseUrl(cacheKey, operation.workspaceIdentity);
+    policy.devServerRunning = this._visualSessions?.isDevServerRunning(cacheKey, operation.workspaceIdentity) ?? false;
+    // Capture package.json command along with cwd before consent or scanning.
+    const detected = policy.enabled && policy.workspaceTrusted && policy.workspaceRoot
+      && !policy.settingsDevCommand && !policy.devServerRunning
+      ? DevServerManager.detectDevCommand(policy.workspaceRoot) : null;
+    policy.detectDevCommand = () => detected;
+    const binding: HostVisualOperation = {
+      operation, policy, permissionOwnerKey, requestId,
+      target: { cacheKey, panelId, ownerKey },
+      abort: () => { abort.abort(); },
+      dispose: () => {
+        if (disposed) { return; }
+        disposed = true;
+        scope.dispose();
+        for (const listener of listeners) { listener.dispose(); }
+        if (this._visualOperations?.get(operation.id) === binding) { this._visualOperations.delete(operation.id); }
+      },
+    };
+    (this._visualOperations ??= new Map()).set(operation.id, binding);
+    return binding;
+  }
+
+  private async _visualPolicyDeps(visual: HostVisualOperation): Promise<VisualPolicyDeps> {
+    const scan = await awaitVisualOperation(visual.operation, async () => {
+      try { return await this._projectContextManager?.scanWorkspace(); } catch { return null; }
+    });
+    assertVisualOperation(visual.operation);
+    return { ...visual.policy, framework: scan?.framework ?? null };
+  }
+
+  private _retireBackendVisual(panelId: string): void {
+    const owned = this._backendVisualTurns?.get(panelId);
+    if (!owned) { return; }
+    this._backendVisualTurns?.delete(panelId);
+    owned.turn.retire();
+    owned.visual.dispose();
+    // A legitimate child handoff may reuse the completed warm browser. Stop or
+    // replacement of pending work closes only the parent's exact resource owner.
+    if (!owned.turn.continuationClaimed) { this._cancelVisualOwner(owned.visual.operation.ownerKey); }
+  }
+
+  private _observeVisualCleanup(cleanup: Promise<void> | undefined): void {
+    void cleanup?.catch(error => {
+      console.warn('[Mysti] Visual resource cleanup could not be confirmed:', error instanceof Error ? error.message : String(error));
+    });
+  }
+
+  private _cancelVisualOwner(ownerKey: string): void {
+    this._observeVisualCleanup(this._visualSessions?.cancelOwner(ownerKey));
+  }
+
+  private _cancelVisualOperation(operationId: string | undefined, requestId?: string): boolean {
+    if (!operationId) { return false; }
+    const visual = this._visualOperations?.get(operationId);
+    if (!visual || visual.requestId !== requestId) { return false; }
+    if (requestId && this._foregroundRequests?.get(visual.operation.panelId)?.requestId !== requestId) { return false; }
+    visual.cancelRequested = true;
+    visual.abort();
+    return true;
   }
 
   /**
@@ -9573,11 +9682,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * canvas /render path already gives the repo's own dev script. A command that
    * did come from the model is never remembered.
    */
-  private async _confirmVisualDevServerCommand(command: string, source: string): Promise<boolean> {
-    const APPROVED_KEY = 'mysti.visualTest.approvedDevCommands';
+  private async _confirmVisualDevServerCommand(command: string, source: string, operation: VisualOperationContext): Promise<boolean> {
+    assertVisualOperation(operation);
+    const APPROVED_KEY = 'mysti.visualTest.approvedDevCommands.v2';
+    const approvalKey = JSON.stringify([operation.workspaceRoot, command]);
     const remembered = this._extensionContext.workspaceState.get<string[]>(APPROVED_KEY, []);
     const fromModel = source === 'model';
-    if (!fromModel && remembered.includes(command)) { return true; }
+    if (!fromModel && remembered.includes(approvalKey)) { return true; }
 
     const RUN = 'Run once';
     const ALWAYS = 'Always for this workspace';
@@ -9586,13 +9697,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       : source === 'package-json'
         ? 'This command was detected from this workspace\'s package.json.'
         : 'This command comes from your mysti.visualTest.devServerCommand setting.';
-    const choice = await vscode.window.showWarningMessage(
+    const choice = await awaitVisualOperation(operation, async () => vscode.window.showWarningMessage(
       `Mysti wants to start a dev server so it can look at your app:\n\n${command}\n\n${provenance}`,
       { modal: true },
       ...(fromModel ? [RUN] : [RUN, ALWAYS]),
-    );
+    ));
+    assertVisualOperation(operation);
     if (choice === ALWAYS) {
-      await this._extensionContext.workspaceState.update(APPROVED_KEY, [...remembered, command]);
+      await this._extensionContext.workspaceState.update(APPROVED_KEY, [...remembered, approvalKey]);
+      assertVisualOperation(operation);
       return true;
     }
     return choice === RUN;
@@ -9611,51 +9724,57 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async _runMystiVisual(
     d: Extract<MystiDirective, { kind: 'look' | 'act' }>,
-    settings: Settings, panelId: string, toolId: string, ownerKey?: string,
-  ): Promise<{ ok: boolean; output: string; observation?: VisualObservation }> {
-    const sessionKey = `mysti:${panelId}`;
-    const sessions = this._getVisualSessions();
-    const caps = this._mystiVisualEnabled(settings);
-
-    const request: VisualLookRequest = d.kind === 'look'
-      ? { requester: 'model', path: d.path, selector: d.selector, mode: d.mode, waitFor: d.waitFor, focus: d.focus }
-      : { requester: 'model', focus: d.focus };
-
-    const resolution = resolveVisualLook(request, await this._visualPolicyDeps(settings, sessionKey));
-    if (isBlocked(resolution)) { return { ok: false, output: resolution.blocked }; }
-
-    const denials = [...resolution.denials];
-    let actions: unknown[] | undefined;
-    if (d.kind === 'act') {
-      if (!caps.act) {
-        return { ok: false, output: 'Page interactions are not enabled. You can still use `look` to inspect the page.' };
-      }
-      if (d.parseError) {
-        return { ok: false, output: `act: ${d.parseError}. Send a JSON array like [{"action":"click","target":"#save"}].` };
-      }
-      actions = d.actions;
-    }
-
-    // Approve the interaction batch through the SAME inline permission path
-    // every other side-effecting coordinator op uses. forceInteractive so an
-    // autonomous run cannot silently auto-approve clicking around a live app.
-    const approveInteractions = async (list: VisualTestInteraction[]): Promise<boolean> => {
-      const summary = list
-        .map(a => `${a.action}${a.target ? ` ${a.target}` : ''}${a.value !== undefined ? ` = ${String(a.value).slice(0, 60)}` : ''}`)
-        .join('\n');
-      return this.requestPermissionInline(
-        // Reuse 'web-request' rather than minting a new action type: a new one
-        // classifies as unknown in the SafetyClassifier and MemoryManager maps.
-        'web-request',
-        'Mysti wants to interact with your app',
-        'Mysti (coordinator) will perform these actions on the running app:',
-        { command: summary, riskLevel: 'medium' },
-        panelId, toolId, ownerKey, /* forceInteractive */ true,
-      );
-    };
-
+    settings: Settings, panelId: string, toolId: string, visual: HostVisualOperation,
+  ): Promise<{ ok: boolean; output: string; cancelled?: boolean; cleanupIncomplete?: boolean; observation?: VisualObservation }> {
     try {
-      const observation = await sessions.look(sessionKey, resolution, {
+      assertVisualOperation(visual.operation);
+      if (visual.operation.panelId !== panelId) { throw new VisualOperationCancelled(); }
+      const sessions = this._getVisualSessions();
+      const caps = this._mystiVisualEnabled(settings);
+
+      const request: VisualLookRequest = d.kind === 'look'
+        ? { requester: 'model', path: d.path, selector: d.selector, mode: d.mode, waitFor: d.waitFor, focus: d.focus }
+        : { requester: 'model', focus: d.focus };
+
+      const resolution = resolveVisualLook(request, await this._visualPolicyDeps(visual));
+      if (isBlocked(resolution)) { return { ok: false, output: resolution.blocked }; }
+
+      const denials = [...resolution.denials];
+      let actions: unknown[] | undefined;
+      if (d.kind === 'act') {
+        if (!caps.act) {
+          return { ok: false, output: 'Page interactions are not enabled. You can still use `look` to inspect the page.' };
+        }
+        if (d.parseError) {
+          return { ok: false, output: `act: ${d.parseError}. Send a JSON array like [{"action":"click","target":"#save"}].` };
+        }
+        actions = d.actions;
+      }
+
+      // Approve the interaction batch through the SAME inline permission path
+      // every other side-effecting coordinator op uses. forceInteractive so an
+      // autonomous run cannot silently auto-approve clicking around a live app.
+      const approveInteractions = async (list: VisualTestInteraction[]): Promise<boolean> => {
+        const summary = list
+          .map(a => `${a.action}${a.target ? ` ${a.target}` : ''}${a.value !== undefined ? ` = ${String(a.value).slice(0, 60)}` : ''}`)
+          .join('\n');
+        assertVisualOperation(visual.operation);
+        const allowed = await this.requestPermissionInline(
+          // Reuse 'web-request' rather than minting a new action type: a new one
+          // classifies as unknown in the SafetyClassifier and MemoryManager maps.
+          'web-request',
+          'Mysti wants to interact with your app',
+          'Mysti (coordinator) will perform these actions on the running app:',
+          { command: summary, riskLevel: 'medium' },
+          panelId, toolId, visual.permissionOwnerKey, /* forceInteractive */ true, false, visual.operation.signal,
+        );
+        assertVisualOperation(visual.operation);
+        return allowed;
+      };
+
+      const observation = await sessions.look(visual.target, resolution, {
+        operation: visual.operation,
+        approveDevServer: (command, source) => this._confirmVisualDevServerCommand(command, source, visual.operation),
         // Only navigate when the model actually named a page. A bare `look`
         // means "show me where we are"; an `act` must not be yanked back to the
         // app root before its clicks are observed.
@@ -9670,8 +9789,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         wantImage: false, // the coordinator's model chain is text-only; the digest is the channel
         denials,
       });
+      assertVisualOperation(visual.operation);
       return { ok: true, output: formatObservation(observation), observation };
     } catch (err) {
+      if (err instanceof VisualOperationCancelled || visual.operation.signal.aborted || !visual.operation.isCurrent()) {
+        return { ok: false, cancelled: true, cleanupIncomplete: err instanceof VisualOperationCancelled && err.cleanupIncomplete,
+          output: err instanceof VisualOperationCancelled ? err.message : 'Visual operation cancelled.' };
+      }
       return { ok: false, output: `look: ${err instanceof Error ? err.message : String(err)}` };
     }
   }
@@ -9747,8 +9871,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const originPanel = this._panelStates.get(panelId);
     const cancelKey = bg ? jobId! : panelId;
     const canvasApprovalFloor = resolveCanvasApproval(settings);
+    const visualSettings = Object.freeze(JSON.parse(JSON.stringify(settings)) as Settings);
     const runId = crypto.randomUUID();
     const executionAbort = new AbortController();
+    // A finished look may leave an owned warm session while the next model
+    // turn waits. Stop still closes that exact owner; a successor warm lease
+    // is protected by the session manager's owner comparison.
+    const cancelVisualRun = () => this._cancelVisualOwner(bg ? jobId! : runId);
+    executionAbort.signal.addEventListener('abort', cancelVisualRun, { once: true });
     // Ownership: capture the panel's current send generation. A newer send bumps
     // it (in _handleSendMessage, synchronously), so a superseded run's owns()
     // goes false and isCancelled() self-terminates it at the next checkpoint —
@@ -9847,29 +9977,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // trusted, Playwright present, and a resolvable in-allowlist address. An
       // advertised-but-broken tool costs a wasted turn every time the model
       // reaches for it, so a hard "off" beats a hopeful "on".
-      const visualCaps = this._mystiVisualEnabled(settings);
+      const visualCaps = this._mystiVisualEnabled(visualSettings);
       let visualAppLine = '';
       if (visualCaps.look) {
-        const preview = resolveVisualLook({ requester: 'model' }, await this._visualPolicyDeps(settings, `mysti:${panelId}`));
-        if (isBlocked(preview)) {
-          visualCaps.look = false;
-          visualCaps.act = false;
-        } else {
-          const probe = await this._getVisualSessions().probe(preview.config.browser);
-          if (!probe.module || !probe.browser) {
+        const previewOwner = this._createVisualOperation(visualSettings, panelId,
+          bg ? `mysti-job:${jobId}` : `mysti:${panelId}`, bg ? jobId! : runId,
+          cancelKey, () => !isCancelled(), executionAbort.signal, foreground?.requestId);
+        try {
+          const preview = resolveVisualLook({ requester: 'model' }, await this._visualPolicyDeps(previewOwner));
+          if (isBlocked(preview)) {
             visualCaps.look = false;
             visualCaps.act = false;
-            console.log(`[Mysti] Visual tools unavailable: ${probe.hint}`);
           } else {
-            // The single line that stops the model guessing a port or a command.
-            const server = preview.devCommandSource === 'already-running'
-              ? 'dev server: already running'
-              : preview.devCommand
-                ? `dev server: not running, will start \`${preview.devCommand}\` (you approve once)`
-                : 'dev server: not running and no start command is configured — the user must start it themselves';
-            visualAppLine = `App: ${preview.config.url} · ${server}`;
+            const probe = await awaitVisualOperation(previewOwner.operation, () => this._getVisualSessions().probe(preview.config.browser));
+            if (!probe.module || !probe.browser) {
+              visualCaps.look = false;
+              visualCaps.act = false;
+              console.log(`[Mysti] Visual tools unavailable: ${probe.hint}`);
+            } else {
+              // The single line that stops the model guessing a port or a command.
+              const server = preview.devCommandSource === 'already-running'
+                ? 'dev server: already running'
+                : preview.devCommand
+                  ? `dev server: not running, will start \`${preview.devCommand}\` (you approve once)`
+                  : 'dev server: not running and no start command is configured — the user must start it themselves';
+              visualAppLine = `App: ${preview.config.url} · ${server}`;
+            }
           }
-        }
+        } catch (error) {
+          if (!(error instanceof VisualOperationCancelled)) { throw error; }
+          visualCaps.look = false; visualCaps.act = false;
+          if (isCancelled()) {
+            if (bg) { this._backgroundJobManager.markCancelled(jobId!, Date.now()); post({ type: 'jobCancelled', payload: { jobId } }); }
+            else { foreground?.cancel(); }
+            return;
+          }
+        } finally { previewOwner.dispose(); }
       }
       // Plan 19 Phase 6: the user's CONNECTED external MCP tools (Gmail/Slack/…),
       // discovered via the DeepMyst broker. null when disabled/signed-out/handshake
@@ -10014,13 +10157,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         lookupSkill: directive => this._runMystiSkillLookup(directive),
         executeMcp: (directive, toolId, description) => this._runMystiMcpTool(directive, mcpToolset!.client, panelId, toolId, cancelKey, description),
         noteMcpUsage: tool => this._bumpMcpUsage(tool),
-        executeVisual: (directive, toolId) => this._runMystiVisual(directive, settings, panelId, toolId, cancelKey),
-        noteVisualResult: res => post({
-          type: 'visualTestMiniStatus',
-          payload: res.ok
-            ? { type: 'visual_test_screenshot', status: 'capturing', message: `Looked at ${res.observation?.url || 'the app'}` }
-            : { type: 'visual_test_error', status: 'failed', message: res.output.slice(0, 200) },
-        } as never),
+        executeVisual: async (directive, toolId) => {
+          const visual = this._createVisualOperation(visualSettings, panelId,
+            bg ? `mysti-job:${jobId}` : `mysti:${panelId}`, bg ? jobId! : runId,
+            cancelKey, () => !isCancelled(), executionAbort.signal, foreground?.requestId);
+          if (!bg && visual.operation.isCurrent()) {
+            post({ type: 'visualTestMiniStatus', scope: 'accessory', payload: {
+              operationId: visual.operation.id, type: 'visual_test_started', status: 'capturing', message: 'Looking at your app…',
+            } });
+          }
+          try {
+            const result = await this._runMystiVisual(directive, visualSettings, panelId, toolId, visual);
+            if (result.cancelled) {
+              if (!bg && !visual.cancelRequested && owns()) {
+                post({ type: 'visualTestMiniStatus', scope: 'accessory', payload: {
+                  operationId: visual.operation.id, type: 'visual_test_cancelled', status: 'cancelled',
+                  cleanupIncomplete: result.cleanupIncomplete, message: result.output,
+                } });
+              }
+              executionAbort.abort();
+            }
+            return { ...result, operationId: visual.operation.id };
+          } finally { visual.dispose(); }
+        },
+        noteVisualResult: res => {
+          if (bg) { post({ type: 'jobProgress', payload: { jobId, status: res.ok ? 'Look complete' : res.output.slice(0, 200) } }); }
+          else { post({ type: 'visualTestMiniStatus', scope: 'accessory', payload: {
+            operationId: res.operationId,
+            ...(res.ok
+              ? { type: 'visual_test_complete', status: 'complete', message: `Looked at ${res.observation?.url || 'the app'}` }
+              : { type: 'visual_test_error', status: 'failed', message: res.output.slice(0, 200) }),
+          } }); }
+        },
         canvasToolLabel: tool => this._canvasToolLabel(tool),
         executeCanvas: (directive, toolId) => this._runMystiCanvasTool(directive, panelId, runId, toolId, isCancelled, executionAbort.signal, canvasApprovalFloor),
       }, mcpToolset?.tools);
@@ -10232,6 +10400,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     } finally {
       settleForeground();
+      executionAbort.signal.removeEventListener('abort', cancelVisualRun);
+      if (bg) {
+        // No later job can reuse this cache key; release even a completed warm
+        // look. Cleanup refusal must not skip run-controller bookkeeping.
+        try { await this._visualSessions?.close(`mysti-job:${jobId}`); }
+        catch (error) { console.warn('[Mysti] Background visual cleanup could not be confirmed:', error instanceof Error ? error.message : String(error)); }
+      }
       if (this._mystiExecutionAborts.get(cancelKey) === executionAbort) {
         this._mystiExecutionAborts.delete(cancelKey);
       }
@@ -12420,10 +12595,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Close this tab's warm visual session (browser + any dev server IT
       // started) and drop its look nonce/scanner — a closed tab must never
       // leave a Chromium and a `npm run dev` running.
-      this._vtNonces.delete(panelId);
-      this._vtScanners.delete(panelId);
-      void this._visualTestManager.disposePanel(panelId);
-      void this._visualSessions?.close(`dash:${panelId}`);
+      this._retireBackendVisual(panelId);
+      this._observeVisualCleanup(this._visualTestManager.disposePanel(panelId));
+      this._observeVisualCleanup(this._visualSessions?.close(`dash:${panelId}`));
       // S7: drop the panel's compaction usage (sweeps -brainstorm- child keys
       // too) — these outlived closed tabs before.
       this._compactionManager.resetUsage(panelId);
@@ -13570,6 +13744,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   public dispose(): void {
+    for (const panelId of this._backendVisualTurns?.keys() ?? []) { this._retireBackendVisual(panelId); }
+    for (const visual of this._visualOperations?.values() ?? []) { visual.abort(); visual.dispose(); }
+    this._dashboardVisualOwners?.clear();
     for (const retire of this._ordinaryRequestRetirements?.values() ?? []) { retire(false); }
     this._ordinaryRequestRetirements?.clear();
     for (const request of this._foregroundRequests?.values() ?? []) { request.retire(); }

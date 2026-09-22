@@ -1690,6 +1690,86 @@ describe('correlated foreground timeline through the shipped browser', () => {
   };
   const outputs = (pg: Page) => pg.evaluate(() => (window as unknown as { __posted: Array<Record<string, unknown>> }).__posted);
 
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps a successful parent visual result visible without reporting FAIL or reopening chat', async () => {
+    const pg = await newPanelPage();
+    try {
+      await begin(pg);
+      await raw(pg, { type: 'responseComplete', requestId: 'run-a', payload: {} });
+      await raw(pg, { type: 'visualTestMiniStatus', requestId: 'run-a', scope: 'accessory',
+        payload: { operationId: 'visual-a', type: 'visual_test_started', message: 'Looking now' } });
+      expect(await pg.locator('#vt-mini-status-text').textContent()).toBe('Visual Test: Looking now');
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(false);
+      await raw(pg, { type: 'visualTestMiniStatus', requestId: 'run-a', scope: 'accessory',
+        payload: { operationId: 'visual-a', type: 'visual_test_complete', status: 'complete', message: 'Look complete' } });
+      expect(await pg.locator('#vt-mini-status-text').textContent()).toBe('Visual Test: Look complete');
+      expect(await pg.locator('#vt-mini-cancel').isVisible()).toBe(false);
+      await begin(pg, 'run-b', 2);
+      expect(await pg.locator('#vt-mini-status').isVisible()).toBe(false);
+      await raw(pg, { type: 'visualTestMiniStatus', requestId: 'run-a', scope: 'accessory',
+        payload: { operationId: 'visual-a', type: 'visual_test_started', message: 'OBSOLETE' } });
+      expect(await pg.locator('#vt-mini-status').isVisible()).toBe(false);
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('sends visual Cancel with its captured operation and refuses progress after that click', async () => {
+    const pg = await newPanelPage();
+    try {
+      await begin(pg);
+      await raw(pg, { type: 'visualTestMiniStatus', requestId: 'run-a', scope: 'accessory',
+        payload: { operationId: 'visual-a', type: 'visual_test_started', message: 'Owned observation' } });
+      await pg.locator('#vt-mini-cancel').click();
+      expect((await outputs(pg)).filter(m => m.type === 'cancelVisualTest')).toEqual([
+        { type: 'cancelVisualTest', panelId: null, requestId: 'run-a', payload: { operationId: 'visual-a' } },
+      ]);
+      await raw(pg, { type: 'visualTestMiniStatus', requestId: 'run-a', scope: 'accessory',
+        payload: { operationId: 'visual-a', type: 'visual_test_complete', message: 'LATE SUCCESS' } });
+      expect(await pg.locator('#vt-mini-status-text').textContent()).toBe('Visual Test: Cancelling...');
+      expect(await pg.locator('#vt-mini-cancel').isVisible()).toBe(false);
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+      await raw(pg, { type: 'visualTestMiniStatus', requestId: 'run-a', scope: 'accessory',
+        payload: { operationId: 'visual-a', type: 'visual_test_cancelled', status: 'cancelled', cleanupIncomplete: true } });
+      expect(await pg.locator('#vt-mini-status-text').textContent()).toBe('Visual Test: Cancelled — cleanup unconfirmed');
+      expect(await pg.locator('#vt-mini-cancel').isVisible()).toBe(false);
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE).each(['requestCancelled', 'error', 'authError', 'conversationChanged'])(
+    'retires visual controls on %s and refuses their late update', async terminal => {
+      const pg = await newPanelPage();
+      try {
+        await begin(pg);
+        const visual = { type: 'visualTestMiniStatus', requestId: 'run-a', scope: 'accessory',
+          payload: { operationId: 'visual-a', type: 'visual_test_started', message: 'Owned' } };
+        await raw(pg, visual);
+        expect(await pg.locator('#vt-mini-cancel').isVisible()).toBe(true);
+        await raw(pg, { type: terminal, requestId: terminal === 'conversationChanged' ? undefined : 'run-a',
+          payload: terminal === 'error' ? 'Inert failure' : { messages: [], providerName: 'Example', authCommand: 'example auth' } });
+        expect(await pg.locator('#vt-mini-status').isVisible()).toBe(false);
+        await raw(pg, visual);
+        expect(await pg.locator('#vt-mini-status').isVisible()).toBe(false);
+        expect((await outputs(pg)).filter(m => m.type === 'cancelVisualTest')).toHaveLength(0);
+      } finally { await pg.context().close(); }
+    }, 20_000,
+  );
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps dedicated human visual controls separate from the active chat owner', async () => {
+    const pg = await newPanelPage();
+    try {
+      await begin(pg);
+      await raw(pg, { type: 'visualTestMiniStatus', scope: 'notice',
+        payload: { operationId: 'human-visual', type: 'visual_test_started', message: 'Dashboard observation' } });
+      await begin(pg, 'run-b', 2);
+      expect(await pg.locator('#vt-mini-status-text').textContent()).toBe('Visual Test: Dashboard observation');
+      await pg.locator('#vt-mini-cancel').click();
+      expect((await outputs(pg)).filter(m => m.type === 'cancelVisualTest')).toEqual([
+        { type: 'cancelVisualTest', panelId: null, payload: { operationId: 'human-visual' } },
+      ]);
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(true);
+      expect(await pg.locator('.runs-tab-count[data-count="working"]').textContent()).toBe('1');
+    } finally { await pg.context().close(); }
+  }, 20_000);
+
   it.skipIf(CHROMIUM_UNAVAILABLE).each(['error', 'authError', 'mystiActionRequired', 'mystiSignInRequired', 'mystiUnavailable'])(
     'settles the admitted Runs turn once after %s and leaves its successor working', async terminal => {
       const pg = await newPanelPage(); const errors: string[] = []; pg.on('pageerror', e => errors.push(e.message));

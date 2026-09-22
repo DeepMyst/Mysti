@@ -292,3 +292,22 @@ describe('CoordinatorToolDispatcher capability budgets and effects', () => {
     expect(harness().dispatcher.redundantToolCalls).toBe(0);
   });
 });
+
+describe('CoordinatorToolDispatcher visual cancellation receipts', () => {
+  it('records cleanup-incomplete cancellation as failed without model replay or a success mini-status', async () => {
+    const h = harness(); const output = 'Visual operation cancelled; resource cleanup could not be confirmed.';
+    h.ports.executeVisual.mockResolvedValue({ ok: false, cancelled: true, cleanupIncomplete: true, output });
+    expect(await h.dispatch({ kind: 'look' })).toEqual({ kind: 'cancelled' });
+    expect(h.ports.output.postToolResult).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', output }));
+    expect(h.ports.output.recordTool).toHaveBeenCalledWith(expect.any(String), 'look', expect.any(Object), output, true);
+    expect(h.ports.noteVisualResult).not.toHaveBeenCalled(); expect(h.messages).toEqual([]);
+  });
+
+  it('refuses a successful visual result which arrives after Stop', async () => {
+    const h = harness(); const visual = deferred<CoordinatorToolResult>(); h.ports.executeVisual.mockReturnValue(visual.promise);
+    const running = h.dispatch({ kind: 'look' }); h.stop(); visual.resolve(ok('late success'));
+    expect(await running).toEqual({ kind: 'cancelled' });
+    expect(h.ports.output.postToolResult).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', output: 'Visual operation cancelled.' }));
+    expect(h.ports.noteVisualResult).not.toHaveBeenCalled(); expect(h.messages).toEqual([]);
+  });
+});

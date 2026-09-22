@@ -11,7 +11,7 @@ import type { CoordinatorTurnResult } from './CoordinatorTurnRunner';
 
 type Directive<K extends MystiDirectiveKind> = Extract<MystiDirective, { kind: K }>;
 export interface CoordinatorToolResult { ok: boolean; output: string }
-export interface CoordinatorVisualResult extends CoordinatorToolResult { observation?: { url: string } }
+export interface CoordinatorVisualResult extends CoordinatorToolResult { observation?: { url: string }; cancelled?: boolean; cleanupIncomplete?: boolean; operationId?: string }
 
 /**
  * Concrete effects only. Mutating ports retain their permission/checkpoint
@@ -354,6 +354,12 @@ export class CoordinatorToolDispatcher {
       }
       runOutput.postToolUse({ id: toolId, name: directive.kind, input });
       const res = await this._ports.executeVisual(directive, toolId);
+      if (res.cancelled || isCancelled()) {
+        const stopped = res.cancelled ? res.output : 'Visual operation cancelled.';
+        runOutput.postToolResult({ id: toolId, name: directive.kind, output: stopped, status: 'failed' });
+        runOutput.recordTool(toolId, directive.kind, input, stopped, true);
+        return { kind: 'cancelled' };
+      }
       runOutput.postToolResult({ id: toolId, name: directive.kind, output: res.output, status: res.ok ? 'completed' : 'failed' });
       runOutput.recordTool(toolId, directive.kind, input, res.output, !res.ok);
       this._ports.noteVisualResult(res);

@@ -15,6 +15,7 @@ const ACCESSORIES = new Set([
   'connectionAlready', 'connectionRequired', 'compactionStatus', 'contextWindowInfo',
   'channelAction', 'autonomousDeactivated',
 ]);
+const VISUAL_ACCESSORIES = new Set(['visualTestMiniStatus', 'visualTestDashboardUpdate']);
 
 function terminal(message: WebviewMessage): boolean {
   if (['responseComplete', 'requestCancelled', 'error', 'authError', 'mystiUnavailable', 'mystiSignInRequired', 'jobStarted'].includes(message.type)) { return true; }
@@ -26,6 +27,7 @@ function terminal(message: WebviewMessage): boolean {
 export class ForegroundRequest {
   private _retired = false;
   private _terminal = false;
+  private _successful = false;
   private _cancelled = false;
   public constructor(
     public readonly requestId: string,
@@ -39,9 +41,11 @@ export class ForegroundRequest {
   public get wasCancelled(): boolean { return this._cancelled; }
 
   public readonly post: ForegroundPost = (message: WebviewMessage): void => {
-    const accessory = ACCESSORIES.has(message.type) || (message.type === 'toolResult' && message.scope === 'accessory');
+    const visual = VISUAL_ACCESSORIES.has(message.type);
+    if (visual && (message.scope !== 'accessory' || (this._terminal && !this._successful))) { return; }
+    const accessory = visual || ACCESSORIES.has(message.type) || (message.type === 'toolResult' && message.scope === 'accessory');
     if (!this.isCurrent() || (this._terminal && !accessory)) { return; }
-    if (terminal(message)) { this._terminal = true; }
+    if (terminal(message)) { this._terminal = true; this._successful = message.type === 'responseComplete'; }
     this._deliver({ ...message, requestId: this.requestId });
   };
 

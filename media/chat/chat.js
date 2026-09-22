@@ -4297,6 +4297,7 @@
         var admission = streamingTimeline.admit(message);
         if (!admission.accepted) { return; }
         if (admission.terminal && message.type !== 'responseComplete') {
+          retireForegroundVisualMini();
           toolCards.end();
           subAgentCards.stop();
           hideLoading();
@@ -4327,6 +4328,7 @@
             handleRewindComplete(message.payload);
             break;
           case 'responsePending':
+            retireForegroundVisualMini();
             toolCards.end();
             setProcessing(true);
             break;
@@ -5301,7 +5303,7 @@
             postMessageWithPanelId({ type: 'openVisualTestDashboard' });
             break;
           case 'visualTestMiniStatus':
-            handleVisualTestMiniStatus(message.payload);
+            handleVisualTestMiniStatus(message.payload, message.requestId);
             break;
           case 'badgeUnlocked': {
             var badge = message.payload;
@@ -5462,11 +5464,27 @@
 
       // Visual test mini status handler (dashboard runs in separate tab)
       var vtMiniHideTimer = null;
-      function handleVisualTestMiniStatus(chunk) {
+      var vtMiniOwner = null;
+      function retireForegroundVisualMini() {
+        if (!vtMiniOwner || !vtMiniOwner.requestId) { return; }
+        vtMiniOwner = null;
+        if (vtMiniHideTimer) { clearTimeout(vtMiniHideTimer); vtMiniHideTimer = null; }
+        var bar = document.getElementById('vt-mini-status');
+        if (bar) { bar.classList.add('hidden'); }
+      }
+      function handleVisualTestMiniStatus(chunk, requestId) {
         if (!chunk) { return; }
+        if (vtMiniOwner && vtMiniOwner.operationId === chunk.operationId &&
+            (vtMiniOwner.phase === 'terminal' || (vtMiniOwner.phase === 'cancelling' &&
+              chunk.type !== 'visual_test_cancelled' && chunk.status !== 'cancelled'))) { return; }
         var bar = document.getElementById('vt-mini-status');
         var text = document.getElementById('vt-mini-status-text');
         if (!bar || !text) { return; }
+        var ended = ['visual_test_error', 'visual_test_complete', 'visual_test_cancelled'].includes(chunk.type) || chunk.status === 'cancelled';
+        vtMiniOwner = typeof chunk.operationId === 'string'
+          ? { requestId: requestId, operationId: chunk.operationId, phase: ended ? 'terminal' : 'active' } : null;
+        var cancel = document.getElementById('vt-mini-cancel');
+        if (cancel) { cancel.hidden = !vtMiniOwner || vtMiniOwner.phase !== 'active'; }
 
         bar.classList.remove('hidden');
         if (vtMiniHideTimer) { clearTimeout(vtMiniHideTimer); vtMiniHideTimer = null; }
@@ -5490,9 +5508,16 @@
             text.textContent = 'Visual Test: Error — ' + (chunk.message || 'Unknown');
             vtMiniHideTimer = setTimeout(function() { bar.classList.add('hidden'); }, 8000);
             break;
+          case 'visual_test_cancelled':
+            text.textContent = chunk.cleanupIncomplete
+              ? 'Visual Test: Cancelled — cleanup unconfirmed'
+              : 'Visual Test: ' + (chunk.message || 'Cancelled');
+            break;
           case 'visual_test_complete': {
-            var verdict = chunk.report && chunk.report.summary ? chunk.report.summary.verdict : 'fail';
-            text.textContent = 'Visual Test: Complete — ' + verdict.toUpperCase();
+            var verdict = chunk.report && chunk.report.summary && chunk.report.summary.verdict;
+            text.textContent = typeof verdict === 'string'
+              ? 'Visual Test: Complete — ' + verdict.toUpperCase()
+              : 'Visual Test: ' + (chunk.message || 'Look complete');
             vtMiniHideTimer = setTimeout(function() { bar.classList.add('hidden'); }, 5000);
             break;
           }
@@ -5524,7 +5549,14 @@
         var vtMiniCancel = document.getElementById('vt-mini-cancel');
         if (vtMiniCancel) {
           vtMiniCancel.addEventListener('click', function() {
-            postMessageWithPanelId({ type: 'cancelVisualTest' });
+            var owner = vtMiniOwner;
+            if (!owner || owner.phase !== 'active') { return; }
+            owner.phase = 'cancelling';
+            vtMiniCancel.hidden = true;
+            document.getElementById('vt-mini-status-text').textContent = 'Visual Test: Cancelling...';
+            var message = { type: 'cancelVisualTest', payload: { operationId: owner.operationId } };
+            if (owner.requestId) { message.requestId = owner.requestId; }
+            postMessageWithPanelId(message);
           });
         }
       })();
@@ -8393,6 +8425,7 @@
       }
 
       function initializeState(payload) {
+        retireForegroundVisualMini();
         streamingTimeline.reset();
         dismissInitLoading();
         // Perf: the mysti.debug.performanceLogging flag rides the
@@ -9502,6 +9535,7 @@
       }
 
       function prepareForeground() {
+        retireForegroundVisualMini();
         state.brainstormPending = null;
         var id = streamingTimeline.prepare();
         toolCards.reset();
@@ -11796,6 +11830,7 @@
       }
 
       function clearMessages() {
+        retireForegroundVisualMini();
         state.brainstormPending = null;
         streamingTimeline.reset();
         hideLoading();

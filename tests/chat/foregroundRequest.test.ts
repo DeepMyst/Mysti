@@ -49,4 +49,35 @@ describe('captured foreground request port', () => {
     request.post({ type: 'suggestionsReady' });
     expect(events).toEqual([{ type: 'requestCancelled', requestId: 'run' }]);
   });
+
+  it.each(['visualTestMiniStatus', 'visualTestDashboardUpdate'])(
+    'retains captured %s only for an active or successful parent', type => {
+      const events: WebviewMessage[] = []; let current = true;
+      const request = new ForegroundRequest('parent', 1, 'panel', () => current, event => events.push(event));
+      request.post({ type });
+      request.post({ type, scope: 'accessory', payload: { phase: 'active' } });
+      request.post({ type: 'responseComplete' });
+      request.post({ type, scope: 'accessory', payload: { phase: 'completed' } });
+      current = false;
+      request.post({ type, scope: 'accessory', payload: { phase: 'obsolete' } });
+      expect(events).toEqual([
+        { type, scope: 'accessory', requestId: 'parent', payload: { phase: 'active' } },
+        { type: 'responseComplete', requestId: 'parent' },
+        { type, scope: 'accessory', requestId: 'parent', payload: { phase: 'completed' } },
+      ]);
+    },
+  );
+
+  it.each(['requestCancelled', 'error', 'authError', 'jobStarted', 'mystiUnavailable', 'mystiSignInRequired', 'mystiActionRequired'])(
+    'refuses visual publication after %s even if a late completion arrives', type => {
+      const events: WebviewMessage[] = [];
+      const request = new ForegroundRequest('parent', 1, 'panel', () => true, event => events.push(event));
+      request.post({ type, payload: { terminal: true } });
+      request.post({ type: 'responseComplete' });
+      for (const visualType of ['visualTestMiniStatus', 'visualTestDashboardUpdate']) {
+        request.post({ type: visualType, scope: 'accessory' });
+      }
+      expect(events.map(event => event.type)).toEqual([type]);
+    },
+  );
 });

@@ -82,7 +82,9 @@ export class VisualTestManager {
   /** Mark a panel's in-flight observation as cancelled. */
   cancelTest(panelId: string): void {
     this._cancelled.add(panelId);
-    void this._sessions?.closeForPanel(panelId);
+    void this._sessions?.closeForPanel(panelId).catch(error => {
+      console.warn('[Mysti] Visual resource cleanup could not be confirmed:', error instanceof Error ? error.message : String(error));
+    });
   }
 
   isCancelled(panelId: string): boolean {

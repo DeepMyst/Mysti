@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import type { VisualTestConfig } from '../types';
 import { VISUAL_SETTLE_TIMEOUT_MS, VISUAL_DEFAULT_ALLOWED_ORIGINS } from '../constants';
 import { isAllowedOrigin } from './visualTestPolicy';
+import { assertVisualOperation, awaitVisualOperation, awaitVisualCleanup, VisualOperationCancelled, type VisualOperationControl } from './VisualOperation';
 
 // Playwright types — using `any` because playwright is an optional runtime dependency
 // that is dynamically required (not bundled). TypeScript compilation targets Node, not browser.
@@ -24,10 +25,12 @@ type Page = any;
 type BrowserType = any;
 
 interface BrowserSession {
+  key: string;
   browser: Browser;
   context: any;
   page: Page;
   allowedOrigins: string[];
+  closing?: Promise<void>;
 }
 
 /** What `probe()` found — the two failure modes are very different for the user. */
@@ -47,6 +50,9 @@ export interface PlaywrightProbe {
 export class BrowserManager {
   private _sessions: Map<string, BrowserSession> = new Map();
   private _playwright: any = null;
+  /** Exact handles awaiting confirmed cleanup, never eligible for warm reuse. */
+  private _pendingCleanup = new Set<BrowserSession>();
+  private _pendingLaunches = new Set<{ key: string }>();
 
   /**
    * Dynamically require Playwright. Throws a user-friendly error if not installed.
@@ -107,15 +113,18 @@ export class BrowserManager {
    * throws afterwards closes it — otherwise a failed `goto` orphans a live
    * Chromium with no handle to kill it, which a warm session makes routine.
    */
-  async launch(panelId: string, config: VisualTestConfig, allowedOrigins: string[] = VISUAL_DEFAULT_ALLOWED_ORIGINS): Promise<Page> {
+  async launch(panelId: string, config: VisualTestConfig, allowedOrigins: string[] = VISUAL_DEFAULT_ALLOWED_ORIGINS, control?: VisualOperationControl): Promise<Page> {
+    assertVisualOperation(control);
     // Close existing session for this panel
-    await this.close(panelId);
+    const previous = this._sessions.get(panelId);
+    if (previous) { await this._closeCaptured(panelId, previous); }
+    assertVisualOperation(control);
 
     if (!isAllowedOrigin(config.url, allowedOrigins)) {
       throw new Error(`Refusing to open "${config.url}" — it is outside the allowed origins (${allowedOrigins.join(', ')}).`);
     }
 
-    const pw = await this.ensurePlaywright();
+    const pw = await awaitVisualOperation(control, () => this.ensurePlaywright());
 
     const browserType: BrowserType = config.browser === 'firefox'
       ? pw.firefox
@@ -123,49 +132,80 @@ export class BrowserManager {
         ? pw.webkit
         : pw.chromium;
 
-    const browser = await browserType.launch({ headless: config.headless });
+    const pendingLaunch = { key: panelId };
+    let browser: Browser;
+    try {
+      browser = await awaitVisualOperation(control, () => {
+        this._pendingLaunches.add(pendingLaunch);
+        return Promise.resolve().then(() => { assertVisualOperation(control); return browserType.launch({ headless: config.headless }) as Promise<Browser>; })
+          .catch(error => { this._pendingLaunches.delete(pendingLaunch); throw error; });
+      }, late => {
+        this._pendingLaunches.delete(pendingLaunch);
+        return this._closeCaptured(panelId, { key: panelId, browser: late, context: null, page: null, allowedOrigins });
+      });
+    } catch (error) {
+      // Playwright does not expose a cancellation handle before launch returns.
+      // The observed late-result disposer remains responsible for that handle.
+      if (this._pendingLaunches.has(pendingLaunch) && error instanceof VisualOperationCancelled) {
+        throw new VisualOperationCancelled(true);
+      }
+      throw error;
+    }
+    this._pendingLaunches.delete(pendingLaunch);
 
     // Registered BEFORE any further await, so every later failure is cleanable.
-    const session: BrowserSession = { browser, context: null, page: null, allowedOrigins };
+    const session: BrowserSession = { key: panelId, browser, context: null, page: null, allowedOrigins };
     this._sessions.set(panelId, session);
 
+    const closeOwned = () => this._closeCaptured(panelId, session);
+    let abortCleanup: Promise<void> | undefined;
+    const abort = () => { abortCleanup ??= closeOwned(); void abortCleanup.catch(() => {}); };
+    control?.signal.addEventListener('abort', abort, { once: true });
     try {
-      const context = await browser.newContext({
+      assertVisualOperation(control);
+      const context = await awaitVisualOperation<any>(control, () => browser.newContext({
         viewport: { width: config.viewportWidth, height: config.viewportHeight },
         acceptDownloads: false,
-      });
+      }));
       session.context = context;
 
       // The last line of origin defence: a redirect chain, a `<meta refresh>` or
       // an in-page `location =` cannot leave the allowlist, because every single
       // request is checked here rather than only the URLs we hand to `goto`.
-      await context.route('**/*', (route: any) => {
+      await awaitVisualOperation(control, () => context.route('**/*', (route: any) => {
         const url = route.request().url();
         if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('about:')) {
           return route.continue();
         }
         if (isAllowedOrigin(url, allowedOrigins)) { return route.continue(); }
         return route.abort('blockedbyclient');
-      });
+      }));
 
-      const page = await context.newPage();
+      const page = await awaitVisualOperation<any>(control, () => context.newPage());
       session.page = page;
       // A popup would escape both the viewport and our observation plumbing.
       page.on('popup', (p: any) => { void p.close().catch(() => { /* already gone */ }); });
 
-      await this._goto(page, config.url);
+      await awaitVisualOperation(control, () => this._goto(page, config.url));
 
       if (config.waitForSelector) {
-        await page.waitForSelector(config.waitForSelector, {
+        await awaitVisualOperation(control, () => page.waitForSelector(config.waitForSelector, {
           timeout: config.waitForTimeout || 10000
-        });
+        }));
       }
 
+      assertVisualOperation(control);
       return page;
     } catch (err) {
-      // Never leave a browser we launched running.
-      await this.close(panelId);
+      // Close only the exact browser this call launched, never a successor.
+      try { await (abortCleanup ?? closeOwned()); }
+      catch (cleanupError) {
+        if (control?.signal.aborted || err instanceof VisualOperationCancelled) { throw new VisualOperationCancelled(true); }
+        throw cleanupError;
+      }
       throw err;
+    } finally {
+      control?.signal.removeEventListener('abort', abort);
     }
   }
 
@@ -228,24 +268,37 @@ export class BrowserManager {
    * Close the browser session for a panel.
    */
   async close(panelId: string): Promise<void> {
-    const session = this._sessions.get(panelId);
-    if (!session) { return; }
-    // Delete first: a concurrent close must not double-close, and a throw below
-    // must not leave a dead session in the map forever.
-    this._sessions.delete(panelId);
-
-    try {
-      await session.browser.close();
-    } catch {
-      // Browser may already be closed
+    const sessions = new Set([...this._pendingCleanup].filter(session => session.key === panelId));
+    const active = this._sessions.get(panelId);
+    if (active) { sessions.add(active); }
+    await Promise.all([...sessions].map(session => this._closeCaptured(panelId, session)));
+    if ([...this._pendingLaunches].some(launch => launch.key === panelId)) {
+      throw new Error('Visual browser cleanup incomplete: an owned launch has not returned its browser handle.');
     }
   }
 
-  /**
-   * Dispose all browser sessions.
-   */
+  private _closeCaptured(panelId: string, session: BrowserSession): Promise<void> {
+    if (session.closing) { return session.closing; }
+    if (this._sessions.get(panelId) === session) { this._sessions.delete(panelId); }
+    this._pendingCleanup.add(session);
+    const attempt = awaitVisualCleanup(Promise.resolve().then(() => session.browser.close()), 'Visual browser');
+    session.closing = attempt.then(() => {
+      this._pendingCleanup.delete(session);
+    }, error => {
+      // Retain the actual browser, not its reusable logical key. A later retry
+      // must never look up and close a replacement browser under that key.
+      session.closing = undefined;
+      throw error;
+    });
+    return session.closing;
+  }
+
+  /** Dispose active and previously failed exact browser handles. */
   async dispose(): Promise<void> {
-    const closes = Array.from(this._sessions.keys()).map(id => this.close(id));
-    await Promise.all(closes);
+    const sessions = new Set([...this._sessions.values(), ...this._pendingCleanup]);
+    await Promise.all([...sessions].map(session => this._closeCaptured(session.key, session)));
+    if (this._pendingLaunches.size) {
+      throw new Error('Visual browser cleanup incomplete: an owned launch has not returned its browser handle.');
+    }
   }
 }

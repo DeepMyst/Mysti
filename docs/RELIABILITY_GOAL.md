@@ -10,14 +10,15 @@ Starting point: candidate `09f9eb2a4984bc7189995a952b47df8e81b8d1a1` passed all
 `out-test/release-evidence/REVIEW_ROUND_20260916/REVIEW.json`. These results do not
 automatically validate subsequent changes or current provider releases.
 
-Latest verified candidate: `ffe707120e162229984c2aa6fbb9480db070e9a4` passed all 15
-required hosted checks on attempt 1 and five independent archive reviews, including
-six hosted packaged-editor runs. Local validation passed 14,570 tests with one
-unavailable pinned-Claude skip. Evidence is in
-`out-test/release-evidence/CHAT_HOST_FIX_20260920/REVIEW.json`. The earlier
+Latest verified candidate: `09b85031a5d28e9032f78b6b3ae4bb4d3bef1262` passed all
+15 required hosted checks on attempt 1 and five independent archive reviews,
+including six hosted packaged-editor runs. Local validation passed 14,677 tests
+with one unchanged unavailable pinned-Claude skip and 107 added cases; no baseline
+cases were removed. Evidence is in
+`out-test/release-evidence/CHAT_TIMELINE_FIX_20260922/REVIEW.json`. The earlier
 `aa759a0` teardown failure remains preserved; its corrected fixture passes on all
-three platforms. Current R9b timeline and request-identity changes are subsequent
-work and are not covered by this candidate.
+three platforms. R9c visual ownership is subsequent work and is not covered by
+this candidate.
 
 ## Completion requirements
 
@@ -27,12 +28,12 @@ work and are not covered by this candidate.
 | G2 | Actual provider functionality | Installed supported runtime plus authenticated editor turns; streaming, error recovery, Stop during preparation/execution/approval, concurrent panels, history and each advertised capability | Unverified for real accounts; fixtures and installed-runtime proofs have narrower scope |
 | G3 | Native operation completeness | Supported read/write/command/network/delegation paths retain authoritative approvals, captured authority, side-effect provenance and cancellation; actual effects observed | Copilot writes, OpenCode shell and restricted Cursor/Continue are unresolved; other transport limits require review |
 | G4 | Canvas ownership and behavior (R8) | Authoritative artifact load/switch/save/close owner, tool/view lifecycle ownership, deferred-race tests, browser and packaged editor acceptance | Artifact session, save ordering and tool-session ownership verified on `98fbfa0`; 342 focused Canvas cases and all candidate gates pass. Fenced parser/turn, async media/export/capability ownership and failed-close recovery remain open |
-| G5 | Chat timeline and interaction ownership (R9) | Remaining state has explicit ownership; ordering, replay, cancellation and multi-panel behavior preserved in browser/editor tests | Ten Chromium witnesses cover stale intake, final-only loss and duplicate completion; four real-host witnesses show stale ordinary-provider effects after replacement. Host and compaction ownership fixes pass all candidate gates on `ffe7071`, with 62 new regressions. R9b timeline/request identity passes independent source review and local 14,677 tests/one unchanged skip, including 107 additions; exact release package and private editor pass; hosted gates are in progress. Detached visual continuation, broader interaction ownership and immediate compaction transport cancellation remain open |
-| G6 | Minimum runtime and editor compatibility (R10/E3) | Host source checks against minimum Node declarations, exact Node 18.17.1 runtime checks, minimum and stable packaged editor acceptance on supported platforms | R10 passes on `ffe7071` across all three hosted declaration gates (243 host files), 23 exact Node 18.17.1 runtime checks, 28 runner probes and minimum/stable packaged editor checks; minimum macOS GUI startup remains unresolved |
+| G5 | Chat timeline and interaction ownership (R9) | Remaining state has explicit ownership; ordering, replay, cancellation and multi-panel behavior preserved in browser/editor tests | Ten Chromium witnesses cover stale intake, final-only loss and duplicate completion; four real-host witnesses show stale ordinary-provider effects after replacement. Host and compaction ownership fixes pass all candidate gates on `ffe7071`, with 62 new regressions. R9b timeline/request identity passes all candidate gates on `09b8503`: local 14,677 tests/one unchanged skip, 107 additions, all 15 hosted checks and five independent archives. Detached visual continuation, broader interaction ownership and immediate compaction transport cancellation remain open |
+| G6 | Minimum runtime and editor compatibility (R10/E3) | Host source checks against minimum Node declarations, exact Node 18.17.1 runtime checks, minimum and stable packaged editor acceptance on supported platforms | R10 passes on `09b8503` across all three hosted declaration gates (244 host files), 23 exact Node 18.17.1 runtime checks, 28 runner probes and minimum/stable packaged editor checks; minimum macOS GUI startup remains unresolved |
 | G7 | Complete owned-process termination (E7) | Stop/timeout leaves no owned descendants, including escaped sessions or an exited parent; no unrelated processes signaled; actual supported-platform proofs | Bounded failure reporting exists; stronger orphan containment is open |
 | G8 | Desk functionality and acceptance (E1) | Implement remaining task authority/execution and exercise pairing, grants, revocation, scope, replay, disconnect/Stop and returned results across two machines | Status/lookup implemented; task execution absent; private relay and second machine explicitly unavailable |
 | G9 | Persistence and downgrade acceptance (E5) | Current persistence/migration/recovery proofs plus a controlled real-profile downgrade with matching snapshots and no silent loss | Synthetic old-source probes demonstrate schema/field loss; real-profile acceptance open |
-| G10 | Final release candidate validation | Exact final source, full suites with understood skips, performance, audits, build, five archives, installed editors, all 15 required hosted checks and independent reviews | `ffe7071`: local 14,570 passed/one skip, all 15 hosted source/performance/package/editor gates and five independent archive reviews pass. R9b local suite passes 14,677 tests/one unchanged skip with no baseline cases removed; release package and private editor pass; hosted acceptance remains in progress |
+| G10 | Final release candidate validation | Exact final source, full suites with understood skips, performance, audits, build, five archives, installed editors, all 15 required hosted checks and independent reviews | `09b8503`: local 14,677 passed/one unchanged skip, 107 added cases with no baseline cases removed; all 15 hosted source/performance/package/editor gates and five independent archive reviews pass. Subsequent R9c work requires fresh validation |
 | G11 | Release disposition (E6) | Reviewable final candidate, applicable external gates complete, and authorization for main merge/tag/publication | Candidate-branch publication authorized; final release actions remain outstanding |
 
 ## Provider evidence ledger
@@ -109,11 +110,22 @@ merely to make this checklist pass.
   checks; production was unchanged. Main/minimum 244-file/editor types and lint
   pass. The release package matches reviewed source; private VS Code 1.137.0
   acceptance passes 13 tests with one expected universal native-payload absence
-  skip. Exact hosted validation remains in progress.
-- Next item R9c has three deferred visual-observation witnesses: Stop, conversation
-  switch and panel replacement can still deliver the old observation and launch a
-  synthetic follow-up using the successor's nonce. The helper is unchanged from
-  `ffe7071`; these are defect reproductions, not passing acceptance evidence.
+  skip. All 15 exact hosted checks and five independent archive reviews pass on
+  `09b8503`. Hosted main counts are Linux 14,649 passed/26 skips, macOS
+  14,654/21 and Windows 14,629/46, plus three performance cases per platform.
+  All skip contracts are unchanged; minimum 244-file declarations, exact Node
+  18.17.1 runtime 23 checks and 28 runner probes pass.
+- R9c visual ownership implementation passes independent source review and the
+  full local suite: 14,807 passed, one unchanged unavailable Claude skip,
+  130 added cases and no baseline cases removed. Three actual browser/process
+  controls pass under OS isolation. Captured parent success/nonce prevents early
+  or stale synthetic turns; captured policy, operation and resource ownership
+  covers approval, action and screenshot boundaries. Cancellation retains exact
+  failed resources for bounded cleanup and reports unconfirmed cleanup honestly.
+  The historical three stale-observation, four parent-outcome and eight deeper
+  authority witnesses remain preserved. Local package shape and isolated editor acceptance pass (13 passed, one expected
+  native absence skip); hosted acceptance remains pending in `CHAT_VISUAL_FIX_20260922/`. The next bounded item is Canvas
+  fenced parser and captured turn/artifact ownership.
 
 Current working evidence goes in dated subdirectories of
 `out-test/release-evidence/`: `OPENROUTER_FIX_20260920/`,
@@ -121,7 +133,7 @@ Current working evidence goes in dated subdirectories of
 `GOAL_RELIABILITY_20260919/GATEWAY_STREAM_FIX_20260920/`. Combined candidate
 validation goes in `GATEWAY_QWEN_FIX_20260920/` (failed hosted candidate) and
 `CANVAS_TOOL_FIX_20260920/` (verified `98fbfa0`). Verified R9a evidence uses
-`CHAT_HOST_FIX_20260920/`; current R9b implementation and validation uses
+`CHAT_HOST_FIX_20260920/`; verified R9b implementation and validation uses
 `CHAT_TIMELINE_FIX_20260922/`. Canvas implementation evidence is
 in `CANVAS_TOOL_SESSION_20260920/`; next-item browser witnesses are in
 `CHAT_TIMELINE_REVIEW_20260920/`; detached visual witnesses are in

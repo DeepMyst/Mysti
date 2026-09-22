@@ -15,12 +15,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { VISUAL_TEST_SCREENSHOT_WAIT_MS } from '../constants';
 import type { VisualTestScreenshot, VisualTestConfig } from '../types';
+import { assertVisualOperation, awaitVisualOperation, type VisualOperationControl } from './VisualOperation';
 
 // Playwright types — using `any` because playwright is an optional runtime dependency
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Page = any;
 
 export interface ScreenshotOptions {
+  control?: VisualOperationControl;
   mode: VisualTestConfig['screenshotMode'];
   elementSelector?: string;
   iteration: number;
@@ -39,10 +41,7 @@ export class ScreenshotService {
    */
   async capture(page: Page, options: ScreenshotOptions): Promise<VisualTestScreenshot> {
     // Wait for page to settle
-    await page.waitForTimeout(VISUAL_TEST_SCREENSHOT_WAIT_MS);
-
-    // Ensure output directory exists
-    fs.mkdirSync(options.outputDir, { recursive: true });
+    await awaitVisualOperation(options.control, () => page.waitForTimeout(VISUAL_TEST_SCREENSHOT_WAIT_MS));
 
     const id = `screenshot-${++this._counter}-${Date.now()}`;
     const fileName = `${options.label.replace(/[^a-z0-9]/gi, '-')}-iter${options.iteration}-${this._counter}.png`;
@@ -51,18 +50,21 @@ export class ScreenshotService {
     let screenshotBuffer: Buffer;
 
     if (options.mode === 'element' && options.elementSelector) {
-      const element = await page.$(options.elementSelector);
+      const element = await awaitVisualOperation<any>(options.control, () => page.$(options.elementSelector));
       if (!element) {
         throw new Error(`Element not found: ${options.elementSelector}`);
       }
-      screenshotBuffer = await element.screenshot({ type: 'png' });
+      screenshotBuffer = await awaitVisualOperation(options.control, () => element.screenshot({ type: 'png' }) as Promise<Buffer>);
     } else if (options.mode === 'full-page') {
-      screenshotBuffer = await page.screenshot({ fullPage: true, type: 'png' });
+      screenshotBuffer = await awaitVisualOperation(options.control, () => page.screenshot({ fullPage: true, type: 'png' }) as Promise<Buffer>);
     } else {
       // viewport mode (default)
-      screenshotBuffer = await page.screenshot({ fullPage: false, type: 'png' });
+      screenshotBuffer = await awaitVisualOperation(options.control, () => page.screenshot({ fullPage: false, type: 'png' }) as Promise<Buffer>);
     }
 
+    // No awaited gap between the authority check and filesystem commit.
+    assertVisualOperation(options.control);
+    fs.mkdirSync(options.outputDir, { recursive: true });
     fs.writeFileSync(filePath, screenshotBuffer);
     const base64Data = screenshotBuffer.toString('base64');
 
