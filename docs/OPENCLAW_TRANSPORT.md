@@ -118,3 +118,24 @@ option. A service startup failure does not launch an alternate agent route.
 Transport passes and local fake-model fixtures do not establish authenticated
 account compatibility, alternate harness support or cross-platform editor
 release readiness. Those remain separate acceptance requirements.
+
+## Current upstream review (2026-09-22)
+
+npm `latest` is 2026.9.5, `extended-stable` 2026.7.35, and 2026.6.35 is a
+backport patch on the verified line. The verified pin stays **2026.6.34**:
+
+- 2026.6.35 keeps protocol 4, the `agent`/`gateway run` flags and the config
+  surface, but renames all six hash-pinned modules and changes
+  `native-hook-relay`; moving requires re-attesting the owned-runtime manifest
+  against an installed 6.35 runtime. Its changelog names no advisory fixes.
+- 2026.7.35 raises `engines.node` above common 22.20 hosts and restructures the
+  guarded tool-execution module.
+- 2026.9.5 is a port: `.mjs` build output, a rewritten guard target, plugin SDK
+  exports the policy plugin uses are gone, `agents.list` becomes
+  `agents.entries`, and Node 24.16+ is required.
+
+The shared gateway client only requests methods that the verified runtime
+advertises (`tests/providers/openclaw/gatewayMethodContract.test.ts`). The
+unused `sessions.history` poll (no such method in any of these releases) and
+the `wizard.start` channel setup (rejected params; the UI already opens
+`openclaw configure --section channels` in a terminal) were removed.

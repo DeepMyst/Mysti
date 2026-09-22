@@ -18,9 +18,7 @@ import {
   type ChannelInfo,
   type ChannelEvent,
   type ActivityEntry,
-  type ChannelConnectResult,
   type SessionInfo,
-  type SessionMessage,
 } from '../providers/openclaw/OpenClawGateway';
 import { getCommonSearchPaths, validateCliPath, checkCommandExists, getEnrichedEnv, readOpenClawToken } from '../utils/platform';
 
@@ -195,24 +193,7 @@ export class ActiveModeManager {
     return this._gateway.listSessions();
   }
 
-  /**
-   * Fetch session history from the Gateway (for inbound message polling).
-   */
-  async getSessionHistory(sessionKey: string, after?: number, limit?: number): Promise<SessionMessage[]> {
-    return this._gateway.getSessionHistory(sessionKey, after, limit);
-  }
-
   // --- Actions ---
-
-  async connectChannel(type: string, config: Record<string, unknown> = {}): Promise<ChannelConnectResult> {
-    const result = await this._gateway.connectChannel(type, config);
-    if (result.success) {
-      this._addActivity('system', `Connecting ${type} channel...`);
-      // Refresh channels after a short delay to pick up new channel
-      setTimeout(() => this._refreshChannels(), 2000);
-    }
-    return result;
-  }
 
   async disconnectChannel(channelId: string): Promise<void> {
     const channel = this._channels.find(c => c.id === channelId);

@@ -80,24 +80,6 @@ export interface SessionInfo {
   messageCount?: number;
 }
 
-export interface SessionMessage {
-  role: string;
-  content: string;
-  timestamp: number;
-  from?: string;
-}
-
-export interface ChannelConnectResult {
-  success: boolean;
-  channelId?: string;
-  pairingData?: {
-    qrCode?: string;
-    authUrl?: string;
-    instructions?: string;
-  };
-  error?: string;
-}
-
 /**
  * OpenClaw Gateway WebSocket protocol frame types
  */
@@ -531,33 +513,6 @@ export class OpenClawGateway {
   }
 
   /**
-   * Initiate channel connection/pairing
-   */
-  async connectChannel(type: string, _config: Record<string, unknown> = {}): Promise<ChannelConnectResult> {
-    if (!this.isConnected()) {
-      return { success: false, error: 'Gateway not connected' };
-    }
-    try {
-      // Channel setup uses the wizard flow
-      const response = await this._sendRequest('wizard.start', { wizard: 'channel-setup', channel: type });
-      if (response.ok && response.payload) {
-        return {
-          success: true,
-          channelId: response.payload.channelId as string | undefined,
-          pairingData: {
-            qrCode: response.payload.qrCode as string | undefined,
-            authUrl: response.payload.authUrl as string | undefined,
-            instructions: (response.payload.instructions || response.payload.message) as string | undefined,
-          },
-        };
-      }
-      return { success: false, error: response.error?.message || 'Channel setup failed' };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
-    }
-  }
-
-  /**
    * Disconnect a channel
    */
   async disconnectChannel(channelId: string): Promise<boolean> {
@@ -677,34 +632,6 @@ export class OpenClawGateway {
       return [];
     } catch (err) {
       console.log('[Mysti] OpenClaw Gateway: sessions.list error:', err);
-      return [];
-    }
-  }
-
-  /**
-   * Fetch message history for a specific session.
-   * Used to poll for new inbound messages.
-   */
-  async getSessionHistory(sessionKey: string, after?: number, limit: number = 20): Promise<SessionMessage[]> {
-    if (!this.isConnected()) { return []; }
-    try {
-      const params: Record<string, unknown> = { sessionKey, limit };
-      if (after) { params.after = after; }
-      const response = await this._sendRequest('sessions.history', params);
-      if (response.ok && response.payload) {
-        const messages = (response.payload.messages || response.payload.history || response.payload.entries) as Array<Record<string, unknown>> | undefined;
-        if (Array.isArray(messages)) {
-          return messages.map(m => ({
-            role: (m.role || m.type || 'unknown') as string,
-            content: (m.content || m.text || m.body || m.message || '') as string,
-            timestamp: (m.timestamp || m.createdAt || m.time || 0) as number,
-            from: (m.from || m.sender || m.source) as string | undefined,
-          }));
-        }
-      }
-      return [];
-    } catch (err) {
-      console.log('[Mysti] OpenClaw Gateway: sessions.history error:', err);
       return [];
     }
   }
