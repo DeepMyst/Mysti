@@ -142,6 +142,7 @@ import type { ModelRegistryService } from '../services/ModelRegistryService';
 import type { ModelAnnouncementService, AnnouncedModel } from '../services/ModelAnnouncementService';
 import type { CliUpdateService } from '../services/CliUpdateService';
 import type { CanvasSecrets } from '../services/CanvasSecrets';
+import { retainUnsavedCanvasDesign } from '../canvas/CanvasCloseRecovery';
 import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
 import { DevServerManager } from '../managers/DevServerManager';
@@ -8628,6 +8629,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Deactivation disposes panels only after `deactivate()` returns, and nothing
+   * awaits that disposal, so a pending debounce or in-flight write could be cut
+   * off by host exit. Run the canvas's normal close now and return its final
+   * save (or recovery copy) for deactivate to await.
+   */
+  public closeCanvasForShutdown(): Promise<void> {
+    const session = this._canvasArtifactSession;
+    const panel = this._canvasPanelId ? this._panelStates.get(this._canvasPanelId)?.panel : undefined;
+    panel?.dispose();
+    return session ? session.close() : Promise.resolve();
+  }
+
+  /**
    * F-11: inject the shared {@link CanvasSecrets} instance (constructed once in
    * extension.ts after the one-time settings→secrets migration) and prime the
    * generation services with the stored keys.
@@ -12188,6 +12202,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       relink: artifactId => ownsSession() ? this._canvasMcpSession.relink(artifactId) : Promise.resolve(),
       closeTransport: () => this._canvasArtifactSession === session ? this._canvasMcpSession.close() : Promise.resolve(),
+      // Deliberately not ownership-gated: it runs after close, for the closed view.
+      retainUnsaved: async (artifact, cause) => {
+        const message = await retainUnsavedCanvasDesign(this._extensionContext.globalStorageUri?.fsPath, artifact, cause);
+        console.warn(`[Mysti] ${message}`);
+        void vscode.window.showWarningMessage(message);
+      },
       onError: (stage, error) => {
         if (stage === 'initial-load') {
           if (!ownsSession()) { return; }
@@ -12198,7 +12218,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           );
         } else {
           console.warn(`[Mysti] Canvas ${stage} failed:`, error);
-          if (stage === 'save') {
+          // A closed view's failed save is reported once, by retainUnsaved.
+          if (stage === 'save' && !session.closed) {
             const detail = error instanceof Error ? error.message : String(error);
             void vscode.window.showWarningMessage(
               `Mysti Canvas could not save your design (${detail}). Your latest changes may not be on disk.`,
@@ -12367,9 +12388,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * cap is skipped, which leaves the raw ref in place — the pre-existing
    * missing-image behaviour, not a new failure mode.
    */
-  private async _canvasInlineAssets(artifact: CanvasArtifact): Promise<InlineAsset[]> {
-    const store = this._canvasStore;
-    if (!store) { return []; }
+  private async _canvasInlineAssets(artifact: CanvasArtifact, store: ArtifactStore): Promise<InlineAsset[]> {
     const out: InlineAsset[] = [];
     for (const ref of collectArtifactAssetRefs(artifact)) {
       const bytes = await store.readAssetBytes(ref).catch(() => null);
@@ -12386,18 +12405,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return out;
   }
 
+  /**
+   * Export/Present act on the design they were requested for: an immutable copy
+   * plus that view's store, captured before any await. A switch, close or edit
+   * while the folder picker or asset reads are pending cannot retarget the
+   * handoff, null it out, or pair new pages with an older asset list.
+   */
+  private _captureCanvasHandoff(): { artifact: CanvasArtifact; store: ArtifactStore } | null {
+    const artifact = this._canvasArtifact;
+    const store = this._canvasStore;
+    return artifact && store ? { artifact: structuredClone(artifact), store } : null;
+  }
+
   /** Open the current design full-bleed in a Present viewer panel. */
   private async _presentCanvas(pageId?: string): Promise<void> {
-    const artifact = this._canvasArtifact;
-    if (!artifact || artifact.pages.length === 0) {
+    const handoff = this._captureCanvasHandoff();
+    if (!handoff || handoff.artifact.pages.length === 0) {
       void vscode.window.showInformationMessage('Nothing to present — this design has no artboards yet.');
       return;
     }
+    const { artifact } = handoff;
     const { buildPresentDocument } = await import('../canvas/CanvasPresent');
     // Read the design's images BEFORE the panel exists: Present has no files on
     // disk to point a frame at, so an `asset://` ref that is not inlined is an
     // image the viewer simply does not have (R4-3).
-    const resolveAsset = makeDataUriAssetResolver(await this._canvasInlineAssets(artifact));
+    const resolveAsset = makeDataUriAssetResolver(await this._canvasInlineAssets(artifact, handoff.store));
     const panel = vscode.window.createWebviewPanel(
       'mysti.canvasPresent',
       `Present — ${artifact.name}`,
@@ -12462,7 +12494,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Export the current canvas to a self-contained HTML bundle in a chosen folder. */
   private async _exportCanvas(): Promise<void> {
-    if (!this._canvasArtifact) { return; }
+    const handoff = this._captureCanvasHandoff();
+    if (!handoff) { return; }
+    const { artifact } = handoff;
     const pick = await vscode.window.showOpenDialog({
       canSelectFolders: true, canSelectFiles: false, canSelectMany: false, openLabel: 'Export design here',
     });
@@ -12473,8 +12507,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // needed by `legacy` pages (source we could not compile). Shipping its
     // 2,983,904 bytes into every export when nothing uses them made a two-page
     // design a 3 MB download.
-    const needsBabel = this._canvasArtifact.pages.some(p => !!p.legacy);
-    const files = exportHtmlBundle(this._canvasArtifact, {
+    const needsBabel = artifact.pages.some(p => !!p.legacy);
+    const files = exportHtmlBundle(artifact, {
       headRuntime: [
         read('react.production.min.js'),
         read('react-dom.production.min.js'),
@@ -12485,7 +12519,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // document has an opaque origin and may not load sibling files, and the
       // exported CSP allows `data:` images and nothing else. Without this the
       // bundle a user hands to a colleague has every image missing (R4-3).
-      resolveAsset: makeDataUriAssetResolver(await this._canvasInlineAssets(this._canvasArtifact)),
+      resolveAsset: makeDataUriAssetResolver(await this._canvasInlineAssets(artifact, handoff.store)),
       // Babel rides its OWN slot so it reaches only the legacy artboards that
       // need a compiler; inside `headRuntime` it lands in every page document.
       ...(needsBabel ? { babel: read('babel.min.js') } : {}),
@@ -12497,7 +12531,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       fs.writeFileSync(dest, file.content, file.encoding === 'base64' ? { encoding: 'base64' } : { encoding: 'utf8' });
     }
     const indexUri = vscode.Uri.file(path.join(root, 'index.html'));
-    void vscode.window.showInformationMessage(`Canvas exported to ${root}`, 'Open').then(choice => {
+    void vscode.window.showInformationMessage(`Canvas design "${artifact.name}" exported to ${root}`, 'Open').then(choice => {
       if (choice === 'Open') { void vscode.env.openExternal(indexUri); }
     });
   }

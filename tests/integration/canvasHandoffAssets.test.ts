@@ -264,4 +264,139 @@ describe('canvas handoff — assets and the open design', () => {
     expect(panel.webview.html).toContain(provider._canvasArtifact.id);
     expect(panel.webview.html).not.toContain(artifact.id);
   });
+
+  // R8 export ownership: Export/Present act on the design they were REQUESTED
+  // for, captured once as an immutable snapshot with its own store. A switch,
+  // close or concurrent edit during the folder picker / asset reads cannot
+  // retarget the bundle, crash it, or strip its images.
+  describe('export/present ownership', () => {
+    function deferredPick() {
+      let resolve!: (value: unknown) => void;
+      const promise = new Promise(yes => { resolve = yes; });
+      (vscode.window as any).showOpenDialog = () => promise;
+      return () => resolve([Uri.file(out)]);
+    }
+    const read = (file: string) => fs.readFileSync(path.join(out, file), 'utf8');
+
+    it('exports the requested design when the view switches designs while the picker is open', async () => {
+      const other = store.createArtifact({ name: 'Second design', kind: 'screens' });
+      store.insertPage(other, store.makePage({ mode: 'jsx', jsxSource: 'function Page(){return <div>second</div>;}' }));
+      await store.save(other);
+      const pick = deferredPick();
+      const exporting = provider._exportCanvas();
+      await provider._switchCanvasArtifact('canvas-panel', other.id);
+      expect(provider._canvasArtifact.id).toBe(other.id);
+      pick();
+      await exporting;
+      const title = /<title>([^<]*)<\/title>/.exec(read('index.html'))?.[1];
+      expect(title).toContain('Brand');
+      expect(title).not.toContain('Second design');
+      expect(read(path.join('pages', 'page-0.html')).includes(`data:image/png;base64,${PNG_B64}`)).toBe(true);
+    });
+
+    it('finishes the requested export with its images when the view closes while the picker is open', async () => {
+      const pick = deferredPick();
+      const exporting = provider._exportCanvas();
+      await provider._canvasArtifactSession.close();
+      expect(provider._canvasArtifact).toBeNull();
+      pick();
+      await exporting;
+      expect(/<title>([^<]*)<\/title>/.exec(read('index.html'))?.[1]).toContain('Brand');
+      expect(read(path.join('pages', 'page-0.html')).includes(`data:image/png;base64,${PNG_B64}`)).toBe(true);
+    });
+
+    it('never pairs a later edit with asset bytes gathered for an earlier page list', async () => {
+      const live = provider._canvasArtifact as CanvasArtifact;
+      const second = await store.addAsset(live, PNG_B64.replace('C0', 'C1'), 'image/png', { role: 'image' });
+      const readBytes = store.readAssetBytes.bind(store);
+      let mutated = false;
+      vi.spyOn(store, 'readAssetBytes').mockImplementation(async (assetRef: string) => {
+        if (!mutated) {
+          mutated = true;
+          store.insertPage(live, store.makePage({
+            mode: 'jsx', jsxSource: `function Page(){ return <img src="${second!.ref}" />; }`,
+          }));
+        }
+        return readBytes(assetRef);
+      });
+      await provider._exportCanvas();
+      const pages = fs.readdirSync(path.join(out, 'pages'));
+      const unresolved = pages.filter(page => read(path.join('pages', page)).includes('asset://'));
+      expect(unresolved).toEqual([]);
+    });
+
+    it('presents the requested design with its images when the view closes during preparation', async () => {
+      const panels: any[] = [];
+      (vscode.window as any).createWebviewPanel = () => {
+        const p = { webview: fakeWebview(), iconPath: undefined, onDidDispose: () => ({ dispose: () => {} }) };
+        panels.push(p);
+        return p;
+      };
+      const presenting = provider._presentCanvas();
+      await provider._canvasArtifactSession.close();
+      await presenting;
+      expect(panels).toHaveLength(1);
+      expect(panels[0].webview.html.includes(`data:image/png;base64,${PNG_B64}`)).toBe(true);
+    });
+  });
+
+  // R8 failed-close recovery: the host keeps a durable copy outside the failed
+  // workspace store and says truthfully where it is, or that it was lost.
+  describe('failed close recovery', () => {
+    let storage: string;
+    beforeEach(() => { storage = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-recovery-')); });
+    afterEach(() => { vi.restoreAllMocks(); fs.rmSync(storage, { recursive: true, force: true }); });
+
+    function closeWithFailedSave() {
+      const live = provider._canvasArtifact as CanvasArtifact;
+      live.name = 'Unsaved brand';
+      provider._canvasArtifactSession.scheduleSave();
+      vi.spyOn(store, 'save').mockRejectedValue(new Error('disk full'));
+      const warn = vi.spyOn(vscode.window, 'showWarningMessage');
+      return { live, warn, closing: provider._canvasArtifactSession.close() as Promise<void> };
+    }
+
+    it('writes a restorable recovery copy and names it in the only warning', async () => {
+      provider._extensionContext.globalStorageUri = Uri.file(storage);
+      const { live, warn, closing } = closeWithFailedSave();
+      await closing;
+      const dir = path.join(storage, 'canvas-recovery');
+      const files = fs.readdirSync(dir);
+      expect(files).toHaveLength(1);
+      const copy = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+      expect(copy).toMatchObject({ id: live.id, name: 'Unsaved brand', schemaVersion: 1 });
+      expect(copy.pages).toHaveLength(live.pages.length);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0][0]).toContain(path.join(dir, files[0]));
+      expect(warn.mock.calls[0][0]).toContain('disk full');
+    });
+
+    it('shutdown closes the canvas and waits for its final save instead of dropping the debounce', async () => {
+      const live = provider._canvasArtifact as CanvasArtifact;
+      live.name = 'Edited just before quitting';
+      provider._canvasArtifactSession.scheduleSave();
+      let release!: () => void;
+      const save = vi.spyOn(store, 'save').mockReturnValue(new Promise<void>(resolve => { release = resolve; }));
+      const panel = provider._panelStates.get('canvas-panel').panel;
+      panel.dispose = vi.fn();
+      let settled = false;
+      const shutdown = (provider.closeCanvasForShutdown() as Promise<void>).then(() => { settled = true; });
+      expect(panel.dispose).toHaveBeenCalledOnce();
+      expect(save).toHaveBeenCalledExactlyOnceWith(live, expect.any(Function));
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(settled).toBe(false);
+      release();
+      await shutdown;
+    });
+
+    it('says the edits were lost when the recovery copy cannot be written either', async () => {
+      const blocked = path.join(storage, 'not-a-directory');
+      fs.writeFileSync(blocked, '');
+      provider._extensionContext.globalStorageUri = Uri.file(blocked);
+      const { warn, closing } = closeWithFailedSave();
+      await closing;
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0][0]).toMatch(/could not save "Unsaved brand".*unsaved changes were lost/);
+    });
+  });
 });
