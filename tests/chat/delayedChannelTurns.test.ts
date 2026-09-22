@@ -67,6 +67,26 @@ describe('delayed channel turns', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it('aborts a captured scope signal exactly when that scope is cancelled or disposed', () => {
+    const old = turns.capture('panel');
+    const other = turns.capture('other');
+    const seen: boolean[] = [];
+    old.signal.addEventListener('abort', () => seen.push(old()));
+    turns.cancelPanel('panel');
+    // Listeners run synchronously and already observe the revoked scope.
+    expect(seen).toEqual([false]);
+    expect(old.signal.aborted).toBe(true);
+    expect(other.signal.aborted).toBe(false);
+    const fresh = turns.capture('panel');
+    expect(fresh.signal.aborted).toBe(false);
+    turns.dispose();
+    expect(fresh.signal.aborted).toBe(true);
+    expect(other.signal.aborted).toBe(true);
+    const late = turns.capture('panel');
+    expect(late()).toBe(false);
+    expect(late.signal.aborted).toBe(true);
+  });
+
   it('keeps complete attributed inputs in arrival order', () => {
     const longContent = `  first\n${'x'.repeat(300)}\n`;
     expect(formatQueuedChannelTurn([

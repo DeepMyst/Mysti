@@ -438,18 +438,18 @@ export class SmartCompactor {
    * block to append to the user turn, or '' when retrieval shouldn't run (disabled,
    * no workspace, no prior compaction, on cooldown, or nothing relevant).
    */
-  async retrieve(panelId: string, prompt: string, cheapModel: string, retrievalEnabled: boolean): Promise<string> {
+  async retrieve(panelId: string, prompt: string, cheapModel: string, retrievalEnabled: boolean, signal?: AbortSignal): Promise<string> {
     if (!retrievalEnabled) { return ''; }
     const rr = this._ensureRetrieval();
     if (!rr) { return ''; }
     // Only retrieve once a compaction has happened (memory exists) — before that
     // the full conversation is still in context and retrieval is pointless.
     const memory = await this._readMemory(panelId);
-    if (!memory.trim()) { return ''; }
+    if (!memory.trim() || signal?.aborted) { return ''; }
     const last = this._lastRetrievalAt.get(panelId) || 0;
     if (Date.now() - last < RETRIEVAL_COOLDOWN_MS) { return ''; }
     this._lastRetrievalAt.set(panelId, Date.now());
-    const snippets = await rr.retrieval.retrieve({ panelId, prompt, cheapModel });
+    const snippets = await rr.retrieval.retrieve({ panelId, prompt, cheapModel, signal });
     return RetrievalCoordinator.formatSnippets(snippets);
   }
 

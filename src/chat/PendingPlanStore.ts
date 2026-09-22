@@ -8,7 +8,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { PlanOption } from '../types';
+import type { OperationMode, PlanOption, PlanSelectionResult } from '../types';
+import { OPERATION_MODES } from '../utils/settingsClamp';
 
 export interface PendingPlanData {
   options: PlanOption[];
@@ -72,6 +73,30 @@ export class PendingPlanStore {
     plans.delete(planId);
     if (plans.size === 0) { this._panels.delete(panelId); }
     return plan.data;
+  }
+
+  /**
+   * Resolve a webview plan click against the plan this panel still has pending.
+   * A card outlives its turn in the DOM, so the click must name the exact offer
+   * (Stop, a newer turn or a conversation change retired it) and an option that
+   * offer contained. The plan text comes from the host, never the click; only
+   * the user's own mode choice and instructions do. Single use.
+   */
+  public claim(panelId: string, payload: unknown): PlanSelectionResult | undefined {
+    if (!payload || typeof payload !== 'object') { return undefined; }
+    const click = payload as Record<string, unknown>;
+    const planId = click.syntheticPlanId;
+    const optionId = (click.selectedPlan as { id?: unknown } | undefined)?.id;
+    if (typeof planId !== 'string' || !OPERATION_MODES.includes(click.executionMode as string)) { return undefined; }
+    const offer = this._panels.get(panelId)?.get(planId)?.data;
+    const selectedPlan = offer?.options.find(option => option.id === optionId);
+    if (!offer || !selectedPlan) { return undefined; }
+    this.take(panelId, planId);
+    return {
+      selectedPlan, originalQuery: offer.originalQuery, messageId: offer.messageId,
+      executionMode: click.executionMode as OperationMode,
+      customInstructions: typeof click.customInstructions === 'string' ? click.customInstructions : undefined,
+    };
   }
 
   public clearPanel(panelId: string): void {

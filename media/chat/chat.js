@@ -4238,6 +4238,18 @@
       themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
       var enhanceTimeout = null;
+      // Only the click still waiting may apply a reply. After the safety
+      // timeout hands the composer back, a late reply would overwrite whatever
+      // the user typed since, or answer a newer click with the old prompt.
+      var enhanceSeq = 0;
+      var pendingEnhanceId = null;
+      function settleEnhance(payload) {
+        var id = payload && typeof payload === 'object' ? payload.enhanceId : undefined;
+        if (pendingEnhanceId === null || id !== pendingEnhanceId) { return false; }
+        pendingEnhanceId = null;
+        if (enhanceTimeout) { clearTimeout(enhanceTimeout); enhanceTimeout = null; }
+        return true;
+      }
       enhanceBtn.addEventListener('click', function() {
         if (enhanceBtn.disabled) { return; }
         if (inputEl.value.trim() && !enhanceBtn.classList.contains('enhancing')) {
@@ -4249,6 +4261,7 @@
 
           // Safety timeout - reset UI if no response after 30 seconds
           enhanceTimeout = setTimeout(function() {
+            pendingEnhanceId = null;
             if (enhanceBtn.classList.contains('enhancing')) {
               enhanceBtn.classList.remove('enhancing');
               updateEnhanceAffordance();
@@ -4261,7 +4274,8 @@
             }
           }, 30000);
 
-          postMessageWithPanelId({ type: 'enhancePrompt', payload: inputEl.value });
+          pendingEnhanceId = 'enhance-' + (++enhanceSeq);
+          postMessageWithPanelId({ type: 'enhancePrompt', payload: { prompt: inputEl.value, enhanceId: pendingEnhanceId } });
         }
       });
 
@@ -4793,21 +4807,14 @@
             break;
           }
           case 'promptEnhanced':
-            // Clear safety timeout
-            if (enhanceTimeout) {
-              clearTimeout(enhanceTimeout);
-              enhanceTimeout = null;
-            }
+            if (!settleEnhance(message.payload)) { break; }
             // Reset enhancing state
             enhanceBtn.classList.remove('enhancing');
             var inputAreaReset = document.querySelector('.input-area');
             if (inputAreaReset) { inputAreaReset.classList.remove('enhancing'); }
 
-            // Payload is a PromptEnhancedPayload object; a bare string is the
-            // legacy shape a cached webview may still receive mid-upgrade.
-            var enhancedPayload = (typeof message.payload === 'string')
-              ? { prompt: message.payload, changed: true, fallback: false, enhancedBy: '' }
-              : (message.payload || { prompt: inputEl.value, changed: false, fallback: false, enhancedBy: '' });
+            // A PromptEnhancedPayload carrying this click's enhanceId (settled above).
+            var enhancedPayload = message.payload;
 
             if (enhancedPayload.changed === false) {
               // Every backend's enhancePrompt() resolves the ORIGINAL prompt when
@@ -4836,10 +4843,7 @@
             // Authoritative "nothing installed can do this" from the extension:
             // stop the spinner and disable the button with the reason, instead
             // of handing back identical text and looking broken.
-            if (enhanceTimeout) {
-              clearTimeout(enhanceTimeout);
-              enhanceTimeout = null;
-            }
+            if (!settleEnhance(message.payload)) { break; }
             enhanceBtn.classList.remove('enhancing');
             var inputAreaUnavail = document.querySelector('.input-area');
             if (inputAreaUnavail) { inputAreaUnavail.classList.remove('enhancing'); }
@@ -4850,11 +4854,7 @@
             inputEl.focus();
             break;
           case 'promptEnhanceError':
-            // Clear safety timeout
-            if (enhanceTimeout) {
-              clearTimeout(enhanceTimeout);
-              enhanceTimeout = null;
-            }
+            if (!settleEnhance(message.payload)) { break; }
             // Reset enhancing state on error
             enhanceBtn.classList.remove('enhancing');
             var inputAreaError = document.querySelector('.input-area');
@@ -4863,7 +4863,7 @@
 
             // Show error briefly in the input area
             var originalPlaceholder = inputEl.placeholder;
-            inputEl.placeholder = 'Enhancement failed: ' + (message.payload || 'Try again');
+            inputEl.placeholder = 'Enhancement failed: ' + ((message.payload && message.payload.error) || 'Try again');
             setTimeout(function() {
               inputEl.placeholder = originalPlaceholder;
             }, 3000);
@@ -11037,6 +11037,7 @@
       function handlePlanOptionSelect(option, messageId, executionMode, customInstructions) {
         var container = document.querySelector('.plan-options-container[data-message-id="' + messageId + '"]');
         var originalQuery = container ? container.getAttribute('data-original-query') : '';
+        var syntheticPlanId = container ? container.getAttribute('data-synthetic-plan-id') || '' : '';
 
         // Mark as selected
         var cards = document.querySelectorAll('.plan-option-card');
@@ -11053,6 +11054,7 @@
             selectedPlan: option,
             originalQuery: originalQuery,
             messageId: messageId,
+            syntheticPlanId: syntheticPlanId,
             executionMode: executionMode,
             customInstructions: customInstructions || ''
           }

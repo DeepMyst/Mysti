@@ -14,18 +14,27 @@ export function formatQueuedChannelTurn(messages: readonly QueuedChannelMessage[
   }).join('\n\n---\n\n');
 }
 
+/** A captured panel scope: current until cancelled, and its signal aborts at that moment. */
+export type PanelScope = (() => boolean) & { readonly signal: AbortSignal };
+
 /** Owns delayed channel turns independently for each panel and send generation. */
 export class DelayedChannelTurns {
   private readonly _timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly _preparations = new Map<string, object>();
-  private readonly _scopes = new Map<string, object>();
+  private readonly _scopes = new Map<string, AbortController>();
   private _disposed = false;
 
-  public capture(panelId: string): () => boolean {
-    if (this._disposed) { return () => false; }
+  /**
+   * Capture the panel's current scope. The signal aborts synchronously when the
+   * scope is cancelled (Stop, replacement send, conversation change, dispose),
+   * so work owned by it can close its transport instead of ignoring a late reply.
+   */
+  public capture(panelId: string): PanelScope {
+    if (this._disposed) { return Object.assign(() => false, { signal: AbortSignal.abort() }); }
     let scope = this._scopes.get(panelId);
-    if (!scope) { scope = {}; this._scopes.set(panelId, scope); }
-    return () => !this._disposed && this._scopes.get(panelId) === scope;
+    if (!scope) { scope = new AbortController(); this._scopes.set(panelId, scope); }
+    const captured = scope;
+    return Object.assign(() => !this._disposed && this._scopes.get(panelId) === captured, { signal: captured.signal });
   }
 
   public has(panelId: string): boolean {
@@ -58,7 +67,9 @@ export class DelayedChannelTurns {
   }
 
   public cancelPanel(panelId: string): void {
+    const scope = this._scopes.get(panelId);
     this._scopes.delete(panelId);
+    scope?.abort();
     this._preparations.delete(panelId);
     const timer = this._timers.get(panelId);
     if (timer !== undefined) { clearTimeout(timer); }
@@ -67,7 +78,9 @@ export class DelayedChannelTurns {
 
   public dispose(): void {
     this._disposed = true;
+    const scopes = [...this._scopes.values()];
     this._scopes.clear();
+    for (const scope of scopes) { scope.abort(); }
     this._preparations.clear();
     for (const panelId of this._timers.keys()) { this.cancelPanel(panelId); }
   }

@@ -2139,7 +2139,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'enhancePrompt':
-        await this._handleEnhancePrompt(msg.payload as string, msg.panelId);
+        await this._handleEnhancePrompt(msg.payload, msg.panelId);
         break;
 
       case 'deskRequestRoster':
@@ -2306,15 +2306,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
 
-      case 'planOptionSelected':
+      case 'planOptionSelected': {
+        // Only the exact plan this panel still has pending may run, with the
+        // host-held plan text: a card from a stopped or superseded turn must not
+        // switch the mode or send into the current one.
+        const selection = this._pendingPlans.claim(msg.panelId, msg.payload);
+        if (!selection) {
+          this._postToPanel(msg.panelId, { type: 'systemNotice', scope: 'notice', payload: { message: 'That plan is no longer pending, so it was not run.' } });
+          break;
+        }
         // Clear suggestions before handling plan selection
         this._postToPanel(msg.panelId, { type: 'clearSuggestions', scope: 'notice' });
 
-        await this._handlePlanOptionSelected(
-          msg.payload as PlanSelectionResult,
-          msg.panelId
-        );
+        await this._handlePlanOptionSelected(selection, msg.panelId);
         break;
+      }
 
       case 'questionAnswered':
         // Clear suggestions before handling question answers
@@ -4887,7 +4893,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // active and a prior compaction produced memory to retrieve against, so it
       // adds no latency for non-smart sends and never blocks a send on failure.
       try {
-        const retrieved = await this._compactionManager.retrieveContext(panelId, content);
+        const retrieved = await this._compactionManager.retrieveContext(panelId, content, isChannelCurrent.signal);
         if (!acceptsTurn()) { return; }
         if (retrieved) {
           enrichedContent += retrieved;
@@ -4919,7 +4925,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             conversation,
             { input_tokens: activity?.fill ?? 0, output_tokens: 0 },
             contextWindow,
-            acceptsTurn, request.post,
+            acceptsTurn, request.post, isChannelCurrent.signal,
           );
           if (!acceptsTurn()) { return; }
           coldResumeIntercepted = true;
@@ -5480,7 +5486,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               );
               if (compactionEval.act) {
                 // Run compaction asynchronously (don't block the response flow)
-                void this._executeCompaction(panelId, settings, updatedConversation, lastUsage, contextWindow, acceptsTurn, request.post);
+                void this._executeCompaction(panelId, settings, updatedConversation, lastUsage, contextWindow, acceptsTurn, request.post, isChannelCurrent.signal);
               } else {
                 this._compactionManager.recordUsage(panelId, lastUsage, contextWindow);
               }
@@ -5704,7 +5710,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       ?? { input_tokens: 0, output_tokens: 0 };
 
     console.log(`[Mysti] Manual compaction requested for panel ${panelId}`);
-    await this._executeCompaction(panelId, settings, conversation, usage, contextWindow, isCurrent);
+    await this._executeCompaction(panelId, settings, conversation, usage, contextWindow, isCurrent, undefined, isChannelCurrent.signal);
   }
 
   private async _executeCompaction(
@@ -5715,6 +5721,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     contextWindow: number,
     isCurrent: () => boolean = () => true,
     post: ForegroundPost = message => this._postToPanel(panelId, { ...message, scope: 'notice' }),
+    /** Aborts with the captured panel scope, closing the summary transport itself. */
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!isCurrent()) { return; }
     const strategy = this._compactionManager.getStrategy(settings.provider, this._providerManager);
@@ -5747,7 +5755,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       //   2. the session id — so the next turn re-sends the compacted messages
       //      (effectiveConversation is only the conversation when sessionId is null).
       if (this._compactionManager.isSmartActive() && conversation) {
-        const smart = await this._compactionManager.executeSmartSummarization(settings, conversation, panelId, isCurrent);
+        const smart = await this._compactionManager.executeSmartSummarization(settings, conversation, panelId, isCurrent, signal);
         if (!isCurrent()) { return; }
         if (smart && smart.success) {
           this._providerManager.disposePersistentProcess(panelId);
@@ -5785,7 +5793,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Native /compact: send the command to the CLI
         console.log(`[Mysti] Executing native /compact for panel ${panelId}`);
         const stream = this._compactionManager.executeNativeCompaction(
-          this._providerManager, settings, conversation, panelId
+          this._providerManager, settings, conversation, panelId, signal,
         );
 
         // Process the compact response stream — capture text and usage
@@ -5850,6 +5858,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           conversation,
           panelId,
           isCurrent,
+          signal,
         );
         if (!isCurrent()) { return; }
 
@@ -6826,7 +6835,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async _handleEnhancePrompt(prompt: string, panelId?: string) {
+  private async _handleEnhancePrompt(request: unknown, panelId?: string) {
+    // Echo the click's id so the webview can drop a reply that outlived it.
+    const { prompt, enhanceId } = typeof request === 'string' ? { prompt: request, enhanceId: undefined }
+      : (request ?? {}) as { prompt?: unknown; enhanceId?: unknown };
+    if (typeof prompt !== 'string') { return; }
+    const echo = typeof enhanceId === 'string' ? { enhanceId } : {};
     try {
       // Send to AI to enhance the prompt. The result carries which backend ran
       // it and whether the text actually changed — 12 of 16 providers cannot
@@ -6836,7 +6850,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (panelId) {
         this._postToPanel(panelId, {
           type: 'promptEnhanced',
-          payload: result
+          payload: { ...result, ...echo }
         });
       }
     } catch (error) {
@@ -6849,7 +6863,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             type: 'promptEnhanceUnavailable',
             payload: {
               activeProviderName: error.activeProviderName,
-              reason: error.message
+              reason: error.message,
+              ...echo,
             } satisfies PromptEnhanceUnavailablePayload
           });
         }
@@ -6860,7 +6875,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (panelId) {
         this._postToPanel(panelId, {
           type: 'promptEnhanceError',
-          payload: error instanceof Error ? error.message : 'Failed to enhance prompt'
+          payload: { error: error instanceof Error ? error.message : 'Failed to enhance prompt', ...echo }
         });
       }
     }

@@ -2038,3 +2038,38 @@ describe('correlated foreground timeline through the shipped browser', () => {
   }, 20_000);
 
 });
+
+describe('prompt enhancement ownership', () => {
+  const deliver = (pg: Page, data: Record<string, unknown>) =>
+    pg.evaluate(message => window.dispatchEvent(new MessageEvent('message', { data: message })), data);
+  const enhanceRequests = (pg: Page) => pg.evaluate(() =>
+    (window as unknown as { __posted: Array<Record<string, unknown>> }).__posted.filter(m => m.type === 'enhancePrompt'));
+  const idOf = (request: Record<string, unknown>) => (request.payload as { enhanceId?: unknown } | undefined)?.enhanceId;
+  const result = (prompt: string, enhanceId: unknown) =>
+    ({ type: 'promptEnhanced', payload: { prompt, changed: true, fallback: false, enhancedBy: '', enhanceId } });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a late enhancement cannot overwrite the draft after its timeout or answer a newer click', async () => {
+    const pg = await newPanelPage();
+    try {
+      await pg.clock.install();
+      await pg.fill('#message-input', 'first draft');
+      await pg.evaluate(() => document.getElementById('enhance-btn')!.click());
+      await pg.clock.runFor(30_001); // The webview gives up and hands the composer back.
+      await pg.fill('#message-input', 'second draft');
+      await pg.evaluate(() => document.getElementById('enhance-btn')!.click());
+      const [first, second] = await enhanceRequests(pg);
+      expect(second).toBeDefined();
+
+      await deliver(pg, result('ENHANCED FIRST', idOf(first)));
+      expect(await pg.inputValue('#message-input')).toBe('second draft');
+      expect(await pg.locator('#enhance-btn.enhancing').count()).toBe(1);
+
+      await deliver(pg, result('ENHANCED SECOND', idOf(second)));
+      expect(await pg.inputValue('#message-input')).toBe('ENHANCED SECOND');
+      expect(await pg.locator('#enhance-btn.enhancing').count()).toBe(0);
+      // A duplicate or unmatched reply after settlement changes nothing.
+      await deliver(pg, result('LATE DUPLICATE', idOf(second)));
+      expect(await pg.inputValue('#message-input')).toBe('ENHANCED SECOND');
+    } finally { await pg.context().close(); }
+  }, 20_000);
+});
