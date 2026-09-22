@@ -119,7 +119,10 @@ describe('resolveCommandOnPath', () => {
   });
 
   it('returns null for a command that does not exist', async () => {
-    expect(await resolveCommandOnPath('mysti-definitely-not-a-real-binary-xyz')).toBeNull();
+    // Bounded like the positive case: `where` over a hosted Windows runner's
+    // full PATH can exceed the test timeout on a miss.
+    const env = { ...process.env, PATH: path.dirname(process.execPath) };
+    expect(await resolveCommandOnPath('mysti-definitely-not-a-real-binary-xyz', env)).toBeNull();
   });
 
   /** A path is already resolved; handing it to `which` would be meaningless. */
