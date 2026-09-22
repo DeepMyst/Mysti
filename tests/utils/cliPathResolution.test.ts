@@ -121,7 +121,10 @@ describe('resolveCommandOnPath', () => {
   it('returns null for a command that does not exist', async () => {
     // Bounded like the positive case: `where` over a hosted Windows runner's
     // full PATH can exceed the test timeout on a miss.
-    const env = { ...process.env, PATH: path.dirname(process.execPath) };
+    const systemPaths = process.platform === 'win32'
+      ? [path.join(process.env.SystemRoot || 'C:\\Windows', 'System32')]
+      : ['/usr/bin', '/bin'];
+    const env = { ...process.env, PATH: systemPaths.join(path.delimiter) };
     expect(await resolveCommandOnPath('mysti-definitely-not-a-real-binary-xyz', env)).toBeNull();
   });
 
@@ -133,6 +136,11 @@ describe('resolveCommandOnPath', () => {
 });
 
 describe('discovery prefers PATH over the hard-coded guesses', () => {
+  // Only what the locator itself needs. `where` lists every match on a miss
+  // or hit, so a hosted Windows runner's full PATH can exceed the timeout.
+  const sys = (process.platform === 'win32'
+    ? [path.join(process.env.SystemRoot || 'C:\\Windows', 'System32')]
+    : ['/usr/bin', '/bin']).join(path.delimiter);
   let dir: string;
   let onPathBin: string;
   let guessBin: string;
@@ -166,10 +174,10 @@ describe('discovery prefers PATH over the hard-coded guesses', () => {
 
     // Both directories are searchable; the "preferred" one comes first, exactly
     // as ~/.local/bin precedes /usr/local/bin on the machine where this bit.
-    // The system PATH stays on the end — `which` itself has to be findable.
+    // The system directories stay on the end — `which` itself has to be findable.
     const resolved = await resolveCommandOnPath(name, {
       ...process.env,
-      PATH: [onPathBin, guessBin, process.env.PATH ?? ''].join(path.delimiter),
+      PATH: [onPathBin, guessBin, sys].join(path.delimiter),
     });
     expect(fs.realpathSync.native(resolved!)).toBe(fs.realpathSync.native(preferred));
     expect(fs.realpathSync.native(resolved!)).not.toBe(fs.realpathSync.native(stale));
@@ -185,7 +193,6 @@ describe('discovery prefers PATH over the hard-coded guesses', () => {
       fs.writeFileSync(file, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n');
       fs.chmodSync(file, 0o755);
     }
-    const sys = process.env.PATH ?? '';
     expect(fs.realpathSync.native((await resolveCommandOnPath(name, { ...process.env, PATH: [onPathBin, guessBin, sys].join(path.delimiter) }))!)).toBe(fs.realpathSync.native(a));
     expect(fs.realpathSync.native((await resolveCommandOnPath(name, { ...process.env, PATH: [guessBin, onPathBin, sys].join(path.delimiter) }))!)).toBe(fs.realpathSync.native(b));
   });
