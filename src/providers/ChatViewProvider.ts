@@ -142,6 +142,7 @@ import type { ModelRegistryService } from '../services/ModelRegistryService';
 import type { ModelAnnouncementService, AnnouncedModel } from '../services/ModelAnnouncementService';
 import type { CliUpdateService } from '../services/CliUpdateService';
 import type { CanvasSecrets } from '../services/CanvasSecrets';
+import { retainUnsavedCanvasDesign } from '../canvas/CanvasCloseRecovery';
 import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
 import { DevServerManager } from '../managers/DevServerManager';
@@ -12167,6 +12168,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       relink: artifactId => ownsSession() ? this._canvasMcpSession.relink(artifactId) : Promise.resolve(),
       closeTransport: () => this._canvasArtifactSession === session ? this._canvasMcpSession.close() : Promise.resolve(),
+      // Deliberately not ownership-gated: it runs after close, for the closed view.
+      retainUnsaved: async (artifact, cause) => {
+        const message = await retainUnsavedCanvasDesign(this._extensionContext.globalStorageUri?.fsPath, artifact, cause);
+        console.warn(`[Mysti] ${message}`);
+        void vscode.window.showWarningMessage(message);
+      },
       onError: (stage, error) => {
         if (stage === 'initial-load') {
           if (!ownsSession()) { return; }
@@ -12177,7 +12184,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           );
         } else {
           console.warn(`[Mysti] Canvas ${stage} failed:`, error);
-          if (stage === 'save') {
+          // A closed view's failed save is reported once, by retainUnsaved.
+          if (stage === 'save' && !session.closed) {
             const detail = error instanceof Error ? error.message : String(error);
             void vscode.window.showWarningMessage(
               `Mysti Canvas could not save your design (${detail}). Your latest changes may not be on disk.`,

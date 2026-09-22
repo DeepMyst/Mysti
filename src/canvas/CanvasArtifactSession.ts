@@ -31,11 +31,20 @@ export interface CanvasArtifactSessionPorts {
   /** The existing MCP owner revokes the previous bearer before reconnecting. */
   relink(artifactId: string): Promise<void>;
   closeTransport(): Promise<void>;
+  /**
+   * Close dropped the view's only in-memory copy and its final save failed while
+   * edits were unsaved. Copy the design before the first await (nothing may
+   * mutate it afterwards) and report where it went, or that it was lost.
+   */
+  retainUnsaved(artifact: CanvasArtifact, cause: unknown): Promise<void>;
   onError(stage: CanvasArtifactFailure, error: unknown): void;
 }
 
 interface SaveState {
   revision: number;
+  /** Highest revision known to be on disk. */
+  saved: number;
+  failure?: unknown;
   pending?: Promise<boolean>;
 }
 
@@ -179,7 +188,7 @@ export class CanvasArtifactSession {
     catch (error) { this._report('close', error); transport = Promise.resolve(); }
     this._closing = Promise.all([
       transport.catch(error => this._report('close', error)),
-      outgoing ? this._flush(outgoing) : Promise.resolve(),
+      outgoing ? this._flush(outgoing).then(saved => saved ? undefined : this._retain(outgoing)) : Promise.resolve(),
     ]).then(() => {});
     return this._closing;
   }
@@ -201,7 +210,7 @@ export class CanvasArtifactSession {
 
   private _saveState(artifact: CanvasArtifact): SaveState {
     let state = this._saves.get(artifact);
-    if (!state) { state = { revision: 0 }; this._saves.set(artifact, state); }
+    if (!state) { state = { revision: 0, saved: 0 }; this._saves.set(artifact, state); }
     return state;
   }
 
@@ -217,13 +226,24 @@ export class CanvasArtifactSession {
     // Invoke save before returning from close: a newly opened store must see
     // this pending write before it starts its own initial list/load.
     void (async () => {
+      // The store's last revision read is the one its completed write holds.
+      let written = state.revision;
       try {
-        await this.store.save(artifact, () => state.revision);
+        await this.store.save(artifact, () => (written = state.revision));
+        state.saved = Math.max(state.saved, written);
         return true;
-      } catch (error) { this._report('save', error); return false; }
+      } catch (error) { state.failure = error; this._report('save', error); return false; }
       finally { state.pending = undefined; }
     })().then(settle);
     return pending;
+  }
+
+  /** Nothing to recover when every edit already reached disk (or none was made). */
+  private async _retain(artifact: CanvasArtifact): Promise<void> {
+    const state = this._saveState(artifact);
+    if (state.revision <= state.saved) { return; }
+    try { await this._ports.retainUnsaved(artifact, state.failure); }
+    catch (error) { this._report('close', error); }
   }
 
   private _report(stage: CanvasArtifactFailure, error: unknown): void {

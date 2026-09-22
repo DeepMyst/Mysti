@@ -28,6 +28,7 @@ function harness() {
     createHistory: vi.fn((design: CanvasArtifact, captured: CanvasOpExecutor) => new CanvasHistory(design, captured, { jobId: 'fixture' })),
     render: vi.fn(), ready: vi.fn(), relink: vi.fn(async (_id: string) => {}),
     closeTransport: vi.fn(async () => {}), onError: vi.fn(),
+    retainUnsaved: vi.fn(async (_design: CanvasArtifact, _cause: unknown) => {}),
   };
   const session = new CanvasArtifactSession(store, executor, ports, 'Project designs');
   return { session, store, executor, ports, list, load, save };
@@ -369,6 +370,88 @@ describe('CanvasArtifactSession', () => {
     h.save.mockRejectedValue(new Error('disk full'));
     h.ports.closeTransport.mockRejectedValue(new Error('close failed'));
     h.ports.onError.mockImplementation(() => { throw new Error('logger failed'); });
+    await h.session.close();
+    expect(h.session.snapshot).toBeNull();
+    expect(h.ports.onError.mock.calls.map(call => call[0]).sort()).toEqual(['close', 'save']);
+  });
+});
+
+// R8 failed-close recovery: close drops the view's only in-memory copy, so a
+// failed final flush must hand unsaved edits to a recovery owner before close
+// resolves, and must not claim a loss when nothing unsaved existed.
+describe('CanvasArtifactSession failed-close recovery', () => {
+  it('hands unsaved edits and the failure to recovery before close resolves', async () => {
+    const h = harness();
+    await h.session.initialize();
+    const outgoing = h.session.snapshot!.artifact;
+    outgoing.name = 'Unsaved at close';
+    h.session.scheduleSave();
+    const failure = new Error('disk full');
+    h.save.mockRejectedValue(failure);
+    const retained = deferred<void>();
+    h.ports.retainUnsaved.mockReturnValue(retained.promise);
+    let closed = false;
+    const closing = h.session.close().then(() => { closed = true; });
+    await vi.waitFor(() => expect(h.ports.retainUnsaved).toHaveBeenCalledExactlyOnceWith(outgoing, failure));
+    expect(outgoing.name).toBe('Unsaved at close');
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    retained.resolve();
+    await closing;
+    await h.session.close();
+    expect(h.ports.retainUnsaved).toHaveBeenCalledOnce();
+  });
+
+  it('retains edits that arrived while an earlier save was failing', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    await h.session.initialize();
+    const outgoing = h.session.snapshot!.artifact;
+    const pending = deferred<void>();
+    h.save.mockReturnValueOnce(pending.promise);
+    h.session.scheduleSave();
+    await vi.advanceTimersByTimeAsync(800);
+    outgoing.name = 'Edited while saving';
+    h.session.scheduleSave();
+    const closing = h.session.close();
+    pending.reject(new Error('disk full'));
+    await closing;
+    expect(h.ports.retainUnsaved).toHaveBeenCalledExactlyOnceWith(outgoing, expect.any(Error));
+  });
+
+  it('does not retain a copy when the close flush succeeds or nothing unsaved remained', async () => {
+    const saved = harness();
+    await saved.session.initialize();
+    saved.session.scheduleSave();
+    await saved.session.close();
+    expect(saved.ports.retainUnsaved).not.toHaveBeenCalled();
+
+    // Loaded or empty and never edited: disk already holds everything there is.
+    const untouched = harness();
+    await untouched.session.initialize();
+    untouched.save.mockRejectedValue(new Error('Open a workspace folder before saving Canvas designs.'));
+    await untouched.session.close();
+    expect(untouched.ports.onError).toHaveBeenCalledWith('save', expect.any(Error));
+    expect(untouched.ports.retainUnsaved).not.toHaveBeenCalled();
+
+    // Everything was persisted by an earlier flush; only the final one failed.
+    vi.useFakeTimers();
+    const persisted = harness();
+    await persisted.session.initialize();
+    persisted.session.scheduleSave();
+    await vi.advanceTimersByTimeAsync(800);
+    expect(persisted.save).toHaveBeenCalledOnce();
+    persisted.save.mockRejectedValue(new Error('disk full'));
+    await persisted.session.close();
+    expect(persisted.ports.retainUnsaved).not.toHaveBeenCalled();
+  });
+
+  it('a failing recovery owner is reported and cannot prevent close from settling', async () => {
+    const h = harness();
+    await h.session.initialize();
+    h.session.scheduleSave();
+    h.save.mockRejectedValue(new Error('disk full'));
+    h.ports.retainUnsaved.mockImplementation(() => { throw new Error('recovery failed'); });
     await h.session.close();
     expect(h.session.snapshot).toBeNull();
     expect(h.ports.onError.mock.calls.map(call => call[0]).sort()).toEqual(['close', 'save']);

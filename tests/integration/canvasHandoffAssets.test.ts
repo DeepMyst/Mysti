@@ -340,4 +340,45 @@ describe('canvas handoff — assets and the open design', () => {
     });
   });
 
+  // R8 failed-close recovery: the host keeps a durable copy outside the failed
+  // workspace store and says truthfully where it is, or that it was lost.
+  describe('failed close recovery', () => {
+    let storage: string;
+    beforeEach(() => { storage = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-recovery-')); });
+    afterEach(() => { vi.restoreAllMocks(); fs.rmSync(storage, { recursive: true, force: true }); });
+
+    function closeWithFailedSave() {
+      const live = provider._canvasArtifact as CanvasArtifact;
+      live.name = 'Unsaved brand';
+      provider._canvasArtifactSession.scheduleSave();
+      vi.spyOn(store, 'save').mockRejectedValue(new Error('disk full'));
+      const warn = vi.spyOn(vscode.window, 'showWarningMessage');
+      return { live, warn, closing: provider._canvasArtifactSession.close() as Promise<void> };
+    }
+
+    it('writes a restorable recovery copy and names it in the only warning', async () => {
+      provider._extensionContext.globalStorageUri = Uri.file(storage);
+      const { live, warn, closing } = closeWithFailedSave();
+      await closing;
+      const dir = path.join(storage, 'canvas-recovery');
+      const files = fs.readdirSync(dir);
+      expect(files).toHaveLength(1);
+      const copy = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+      expect(copy).toMatchObject({ id: live.id, name: 'Unsaved brand', schemaVersion: 1 });
+      expect(copy.pages).toHaveLength(live.pages.length);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0][0]).toContain(path.join(dir, files[0]));
+      expect(warn.mock.calls[0][0]).toContain('disk full');
+    });
+
+    it('says the edits were lost when the recovery copy cannot be written either', async () => {
+      const blocked = path.join(storage, 'not-a-directory');
+      fs.writeFileSync(blocked, '');
+      provider._extensionContext.globalStorageUri = Uri.file(blocked);
+      const { warn, closing } = closeWithFailedSave();
+      await closing;
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0][0]).toMatch(/could not save "Unsaved brand".*unsaved changes were lost/);
+    });
+  });
 });
