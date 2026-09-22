@@ -94,7 +94,9 @@ export async function prepareCopilotAcpLaunch(context: AcpNativeLaunchContext, m
     }
     env.COPILOT_HOME = state;
     env.COPILOT_CACHE_HOME = path.join(state, 'cache');
-    env.COPILOT_ALLOW_ALL = 'false';
+    // COPILOT_ALLOW_ALL stays unset (the scrub above removes any inherited
+    // value). Before 1.0.85 any non-empty value, including 'false', enables
+    // allow-all while the session's allow_all option still reports off.
     // This disables GitHub authentication and its managed-policy refresh while
     // preserving the separately configured custom model provider.
     env.COPILOT_OFFLINE = 'true';

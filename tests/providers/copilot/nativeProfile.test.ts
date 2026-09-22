@@ -16,7 +16,7 @@ describe('Copilot native execution profile', () => {
   beforeEach(() => { Object.defineProperty(process, 'platform', { value: 'linux', configurable: true }); });
   it('isolates inherited grants, hooks, plugins and native version spoofing', async () => {
     const ctx = await context(); const launch = await prepareCopilotAcpLaunch(ctx);
-    try { expect(launch.env?.COPILOT_HOME).not.toBe('/untrusted'); expect(launch.env?.COPILOT_ALLOW_ALL).toBe('false'); expect(launch.env?.COPILOT_SKILLS_DIRS).toBeUndefined(); expect(launch.env?.COPILOT_CLI_VERSION).toBeUndefined(); expect(launch.env?.NODE_OPTIONS).toBeUndefined(); expect(launch.env?.HOME).toBeUndefined(); await launch.assertUnchanged?.(); }
+    try { expect(launch.env?.COPILOT_HOME).not.toBe('/untrusted'); expect(launch.env?.COPILOT_ALLOW_ALL).toBeUndefined(); expect(launch.env?.COPILOT_SKILLS_DIRS).toBeUndefined(); expect(launch.env?.COPILOT_CLI_VERSION).toBeUndefined(); expect(launch.env?.NODE_OPTIONS).toBeUndefined(); expect(launch.env?.HOME).toBeUndefined(); await launch.assertUnchanged?.(); }
     finally { await launch.cleanup?.(); }
     await expect(fs.stat(launch.env!.COPILOT_HOME!)).rejects.toMatchObject({ code: 'ENOENT' });
   });
