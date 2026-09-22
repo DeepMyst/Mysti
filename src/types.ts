@@ -850,6 +850,10 @@ export interface StreamChunk {
   askUserQuestion?: AskUserQuestionData;
   planFilePath?: string | null;
   compactionEvent?: CompactionEvent;
+  /** On 'done': the model that actually served the turn, when the backend reports it (routers/fallbacks). */
+  model?: string;
+  /** On 'done': the cost the backend itself reported for the turn, in USD. */
+  costUsd?: number;
   // Auth error specific fields
   authCommand?: string;
   providerName?: string;

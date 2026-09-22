@@ -5331,6 +5331,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           case 'done': {
             this._retireCanvasMediaParent(panelId, request);
+            // A router backend may serve a different model than requested.
+            const servedModel = chunk.model || this._attributionModel(effectiveSettings);
             // Capture usage stats if present in this chunk
             // Normalize at the boundary (see src/services/TokenAccounting.ts):
             // Anthropic buckets are disjoint, OpenAI's cached count is a SUBSET
@@ -5381,7 +5383,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               persistedThinking,
               {
                 provider: effectiveSettings.provider,
-                model: this._attributionModel(effectiveSettings),
+                model: servedModel,
                 toolCalls: persistedToolCalls.length > 0 ? persistedToolCalls : undefined,
                 segments: responseSegments.length > 0 ? responseSegments : undefined
               }
@@ -5406,7 +5408,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               payload: {
                 message: assistantMessage,
                 usage: lastUsage
-                  ? { ...lastUsage, contextTokens: contextFillTokens(lastUsage) }
+                  ? { ...lastUsage, contextTokens: contextFillTokens(lastUsage), ...(chunk.costUsd !== undefined ? { costUsd: chunk.costUsd } : {}) }
                   : undefined,
                 ...(usageEmitted ? {} : { usageUnavailable: true }),
               }
@@ -5509,7 +5511,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 kind: 'cli',
                 panelId,
                 provider: effectiveSettings.provider,
-                model: this._attributionModel(effectiveSettings),
+                model: servedModel,
                 ...(coldResumeIntercepted ? { coldResumeIntercepted: true } : {}),
                 contextTokens: contextKnown ? fillTokens : undefined,
                 outputTokens: lastUsageRaw.output_tokens,

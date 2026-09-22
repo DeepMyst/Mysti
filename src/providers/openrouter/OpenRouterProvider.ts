@@ -45,6 +45,7 @@ import { validateModelName } from '../../utils/validation';
 import { OpenRouterClient, OPENROUTER_BASE_URL, OPENROUTER_FREE_ROUTER } from '../../services/OpenRouterClient';
 import { normalizeUsage } from '../../services/TokenAccounting';
 import { clampEffort } from '../../utils/effort';
+import { waitForCaller } from '../../utils/abortScope';
 import type { EffortLevel } from '../../types';
 import * as vscode from 'vscode';
 
@@ -242,6 +243,10 @@ export class OpenRouterProvider extends BaseCliProvider {
     const controller = new AbortController();
     session.abortController = controller;
     let usage: UsageStats | undefined;
+    // OpenRouter may serve a different model than requested (auto router,
+    // fallbacks) and reports that model and the turn's cost itself.
+    let servedModel: string | undefined;
+    let costUsd: number | undefined;
     let completed = false;
     let finishReason: string | undefined;
 
@@ -255,7 +260,11 @@ export class OpenRouterProvider extends BaseCliProvider {
         };
         return;
       }
-      const prompt = await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig);
+      // Stop must not wait for prompt assembly (agent files, context, history).
+      const prompt = await waitForCaller(
+        () => this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig),
+        controller.signal,
+      );
       controller.signal.throwIfAborted();
       const model = this._getEffectiveModel(settings) || this.config.defaultModel;
       const effort = clampEffort(settings.effortLevel, OPENROUTER_EFFORT_LEVELS) as
@@ -281,6 +290,8 @@ export class OpenRouterProvider extends BaseCliProvider {
             ...(ev.usage.cacheCreationTokens !== undefined ? { cache_creation_input_tokens: ev.usage.cacheCreationTokens } : {}),
           }, 'openai');
         }
+        if (ev.model) { servedModel = ev.model; }
+        if (ev.costUsd !== undefined) { costUsd = ev.costUsd; }
         if (ev.finishReason) { finishReason = ev.finishReason; }
         if (ev.done) { completed = true; break; }
       }
@@ -288,7 +299,12 @@ export class OpenRouterProvider extends BaseCliProvider {
       if (!completed) { throw new Error('Stream ended before completion.'); }
       if (finishReason === 'length') { throw new Error('Response reached the output token limit before completion.'); }
       if (finishReason && finishReason !== 'stop') { throw new Error(`Response ended with ${finishReason}.`); }
-      yield usage ? { type: 'done', usage } : { type: 'done' };
+      yield {
+        type: 'done',
+        ...(usage ? { usage } : {}),
+        ...(servedModel ? { model: servedModel } : {}),
+        ...(costUsd !== undefined ? { costUsd } : {}),
+      };
     } catch (err) {
       // Stop/replacement/disposal already owns the UI transition. Do not publish
       // stale output or an internal error from the abandoned request.

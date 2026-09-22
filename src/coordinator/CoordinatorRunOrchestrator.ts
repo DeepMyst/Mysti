@@ -45,11 +45,14 @@ export class CoordinatorRunOrchestrator {
           this._ports.onError(turn);
           break;
         }
+        const replayFrom = messages.length;
         const dispatch = await this._ports.dispatchTool(turn, messages);
+        attachReasoning(messages, replayFrom, turn.reasoningDetails);
         if (this._ports.isCancelled() || dispatch.kind === 'cancelled') { cancelled = true; break; }
         if (dispatch.kind === 'handled') { continue; }
         if (dispatch.directive?.kind === 'delegate') {
           const result = await this._ports.delegate(dispatch.directive, turn.text, messages);
+          attachReasoning(messages, replayFrom, turn.reasoningDetails);
           if (this._ports.isCancelled() || result === 'cancelled') { cancelled = true; break; }
           continue;
         }
@@ -68,4 +71,16 @@ export class CoordinatorRunOrchestrator {
     }
     return { errored, naturalEnd, exhausted: !naturalEnd && !errored && !cancelled };
   }
+}
+
+/**
+ * Every tool/delegation owner replays a turn as `assistant(turn text)` followed
+ * by the fenced result. Attach the turn's opaque reasoning to that assistant
+ * message here, once, instead of at each of the owners' replay sites, so the
+ * next request carries it unmodified (OpenRouter reasoning continuity).
+ */
+function attachReasoning(messages: GatewayChatMessage[], from: number, details?: Record<string, unknown>[]): void {
+  if (!details?.length) { return; }
+  const replay = messages.slice(from).find(message => message.role === 'assistant');
+  if (replay && !replay.reasoning_details) { replay.reasoning_details = details; }
 }
