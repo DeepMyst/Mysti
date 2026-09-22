@@ -134,7 +134,7 @@ export class CopilotProvider extends AcpNativeProvider {
   readonly capabilities: ProviderCapabilities = {
     supportsStreaming: true,
     supportsThinking: false,
-    // The pinned ACP runtime is restricted to native read/search tools.
+    // Pinned ACP runtime: per-call approved shell/edits; restricted tiers read/search only.
     supportsToolUse: true,
     toolExecution: 'native',
     supportsNativeApproval: true,

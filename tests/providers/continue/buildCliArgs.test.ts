@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * ContinueProvider CLI-arg mapping: headless print mode, permission
- * unrestricted policy (--auto only), custom model, and rule injection.
+ * unrestricted policy (every tool but Search), custom model, and rule injection.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TestableContinueProvider } from '../../helpers/providerFactory';
@@ -37,13 +37,16 @@ describe('Continue buildCliArgs', () => {
     expect(() => provider.buildCliArgs(s({ accessLevel: 'ask-permission' }), createContinueSession())).toThrow('cannot enforce');
   });
 
-  it('uses --auto only where the gate is intentionally off (autonomous tiers)', () => {
+  it('allows every tool except the shell-injectable Search, only in unrestricted tiers', () => {
+    // cn 1.5.47 builds Search's rg command as a shell string from the model's
+    // pattern and .gitignore lines; --auto overrides --exclude, so it is not used.
     for (const settings of [
       s({ mode: 'edit-automatically', accessLevel: 'full-access' }),
       s({ mode: 'default', accessLevel: 'full-access' }),
     ]) {
       const args = provider.buildCliArgs(settings, createContinueSession());
-      expect(args, JSON.stringify(settings)).toContain('--auto');
+      expect(args.slice(1, 9), JSON.stringify(settings)).toEqual(['--exclude', 'Search', '--allow', 'Edit', '--allow', 'MultiEdit', '--allow', 'Write']);
+      expect(args, JSON.stringify(settings)).not.toContain('--auto');
       expect(args, JSON.stringify(settings)).not.toContain('--readonly');
     }
   });

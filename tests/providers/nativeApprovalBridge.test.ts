@@ -41,6 +41,11 @@ describe.each([
     Object.defineProperty(vscode.workspace, 'workspaceFolders', {
       value: [{ uri: vscode.Uri.file(directory), name: 'fixture', index: 0 }], writable: true, configurable: true,
     });
+    // Production rejects these restricted tiers before spawn because the
+    // native agents skip permission requests for many tools
+    // (acpRestrictedTiers.test.ts). The bridge still answers every request an
+    // agent does emit, so its ownership contract is exercised past that guard.
+    vi.spyOn(provider as unknown as { _validateNativeApprovalCli(): Promise<void> }, '_validateNativeApprovalCli').mockResolvedValue(undefined);
     const originalBuild = provider.buildPersistentCliArgs.bind(provider);
     vi.spyOn(provider, 'getCliPath').mockReturnValue(process.execPath);
     vi.spyOn(provider, 'buildPersistentCliArgs').mockImplementation((config, session) => {

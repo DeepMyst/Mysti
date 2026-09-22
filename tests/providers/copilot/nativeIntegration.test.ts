@@ -17,23 +17,30 @@ import { createMockContext } from '../../helpers/providerFactory';
 // verified release (outside $HOME: the sandbox denies reads there).
 const installed = { cline: process.env.MYSTI_NATIVE_CLINE_CLI || '/usr/local/lib/node_modules/cline/bin/.cline', copilot: '/usr/local/bin/copilot' };
 const supported = process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec');
-type Scenario = 'allow-command' | 'deny-command' | 'allow-write' | 'readonly-command' | 'cancel-command' | 'deny-write' | 'readonly-write' | 'cancel-write' | 'blocked-shell' | 'blocked-write' | 'read';
+type Scenario = 'allow-command' | 'deny-command' | 'allow-write' | 'readonly-command' | 'cancel-command' | 'deny-write' | 'readonly-write' | 'cancel-write' | 'blocked-shell' | 'blocked-write' | 'read' | 'outside-read' | 'async-shell' | 'redirect-only';
 
 async function nativeCase(kind: keyof typeof installed, scenario: Scenario) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `mysti-${kind}-native-`)));
   const work = path.join(directory, 'work'); await fs.mkdir(work);
   const target = path.join(work, 'marker.txt');
   if (scenario === 'read') { await fs.writeFile(target, 'inert existing content'); }
+  // Outside both the workspace and the private TMPDIR, which Copilot trusts.
+  const outsideDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-copilot-outside-')));
+  const outside = path.join(outsideDir, 'outside-secret.txt');
+  if (scenario === 'outside-read') { await fs.writeFile(outside, 'inert outside secret'); }
+  const bodies: string[] = [];
   let calls = 0; let stderr = ''; let frames = ''; const cards: ToolCall[] = []; const pendingChecks: boolean[] = [];
   const server = createServer(async (request, response) => {
     let raw = ''; for await (const chunk of request) { raw += chunk; }
-    const body = JSON.parse(raw); const first = ++calls === 1;
+    bodies.push(raw); const body = JSON.parse(raw); const first = ++calls === 1;
     const command = `printf approved >> ${target}`;
     const write = scenario.endsWith('-write');
-    const name = kind === 'cline' ? (write ? 'editor' : 'run_commands') : scenario === 'read' ? 'view' : (write ? 'apply_patch' : 'bash');
+    const name = kind === 'cline' ? (write ? 'editor' : 'run_commands') : scenario === 'read' || scenario === 'outside-read' ? 'view' : (write ? 'apply_patch' : 'bash');
     const input = kind === 'cline'
       ? (write ? { path: target, new_text: 'approved' } : { commands: [command] })
-      : scenario === 'read' ? { path: target } : (write ? { input: `*** Begin Patch\n*** Add File: ${target}\n+approved\n*** End Patch` } : { command, description: 'Write inert marker' });
+      : scenario === 'read' ? { path: target } : scenario === 'outside-read' ? { path: outside }
+        : scenario === 'async-shell' ? { command: `sleep 1; ${command}`, description: 'Detached inert marker', mode: 'async', detach: true }
+        : scenario === 'redirect-only' ? { command: `> ${target}`, description: 'Redirect-only inert marker' } : (write ? { input: `*** Begin Patch\n*** Add File: ${target}\n+approved\n*** End Patch` } : { command, description: 'Write inert marker' });
     response.writeHead(200, { 'Content-Type': 'text/event-stream' });
     if (kind === 'cline') {
       const emit = (type: string, data: object) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
@@ -100,6 +107,9 @@ async function nativeCase(kind: keyof typeof installed, scenario: Scenario) {
       expect(cards, stderr + frames).toHaveLength(1); expect((await fs.readFile(target, 'utf8')).trim()).toBe('approved');
       expect(cards[0].name).toBe(scenario === 'allow-command' ? 'Bash' : 'Edit');
     } else if (scenario === 'read') { expect(await fs.readFile(target, 'utf8')).toBe('inert existing content'); expect(cards).toHaveLength(0); }
+    else if (scenario === 'redirect-only') { expect(cards, stderr + frames).toHaveLength(1); expect(existsSync(target)).toBe(false); }
+    else if (scenario === 'async-shell') { expect(cards, stderr + frames).toHaveLength(0); await new Promise(resolve => setTimeout(resolve, 1500)); expect(existsSync(target)).toBe(false); }
+    else if (scenario === 'outside-read') { expect(bodies.join('\n'), stderr + frames).not.toContain('inert outside secret'); expect(cards).toHaveLength(0); }
     else { expect(existsSync(target), stderr).toBe(false); }
     if (scenario.startsWith('deny-') || scenario.startsWith('cancel-')) { expect(cards, stderr).toHaveLength(1); }
     if (scenario.startsWith('readonly-') || scenario === 'blocked-shell') { expect(cards).toHaveLength(0); }
@@ -107,12 +117,13 @@ async function nativeCase(kind: keyof typeof installed, scenario: Scenario) {
     provider.dispose(); Object.defineProperty(folder.uri, 'fsPath', { configurable: true, value: previous });
     if (nativeClosed) { await nativeClosed; }
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await fs.rm(directory, { recursive: true, force: true });
+    await fs.rm(outsideDir, { recursive: true, force: true });
   }
 }
 
 for (const kind of ['cline', 'copilot'] as const) {
   describe.skipIf(!supported || !existsSync(installed[kind]))(`${kind} installed native ACP`, () => {
-    it.each<Scenario>(kind === 'cline' ? ['allow-command', 'deny-command', 'allow-write', 'readonly-command', 'cancel-command'] : ['blocked-write', 'readonly-write', 'blocked-shell', 'readonly-command', 'read'])('%s with no real model or credential access', async scenario => {
+    it.each<Scenario>(kind === 'cline' ? ['allow-command', 'deny-command', 'allow-write', 'readonly-command', 'cancel-command'] : ['allow-command', 'deny-command', 'allow-write', 'deny-write', 'cancel-command', 'redirect-only', 'async-shell', 'readonly-write', 'readonly-command', 'read', 'outside-read'])('%s with no real model or credential access', async scenario => {
       await nativeCase(kind, scenario);
     }, 60000);
   });

@@ -8,10 +8,12 @@ or prompt preparation; they do not silently run with broader permissions.
 | Provider | Restricted turns | Remaining limitation |
 | --- | --- | --- |
 | Cursor | Rejected before launch | Native approval transport and isolated execution proof still needed. Fully unrestricted turns alone use `--force`. Prompt enhancement is disabled because that path had no execution restriction. |
-| Continue | Rejected before launch | Plain final-text transport cannot ask the host. Fully unrestricted turns alone use `--auto`. |
+| Continue | Rejected before launch | Plain final-text transport cannot ask the host. Fully unrestricted turns alone run, with every tool except the shell-injectable `Search`. |
+| Hermes | Rejected before launch | v2026.9.21 asks only for denylisted shell commands and file edits; inherited `approvals.mode`/yolo can remove those. |
+| Kimi Code | Rejected before launch | 2.0.2 auto-approves in-repository writes, FetchURL, Agent/AgentSwarm and Skill; plan mode does not cover fetch or subagents. |
 | OpenCode | Fixed native agent removes mutations in plan/read-only tiers | Shell and delegation remain unavailable in every mode. |
 | Qwen | Fixed native tool subset plus immutable host mutation denial | Only the tools and runtime in the ACP contract are supported. |
-| Copilot | Read/search subset in every mode; no legacy fallback | Writable approval support remains unresolved; native reads have no host approval card. |
+| Copilot | Read/search subset in read-only and plan tiers; per-call approved shell/edits otherwise | Native reads have no host approval card; multi-file patches are approved per file. |
 
 “Fully unrestricted” means `full-access` combined with `default` or
 `edit-automatically`. `ask-before-edit` remains restricted even with full access.
@@ -33,8 +35,28 @@ at commit `5522c6f44ca0ac3528b37244818fbfa39b5af470` confirms this behavior:
   puts exclusions before allows within CLI policies. A wildcard exclusion with
   read allows therefore excludes the reads too.
 
-Continue is not installed in the reviewed environment. No installed-native
-Continue execution or authenticated acceptance is claimed.
+Continue is not installed in the reviewed environment. No authenticated
+acceptance is claimed.
+
+2026-09-22 (latest `@continuedev/cli` 1.5.47, commit `d3f60ba9`, run from the
+npm tarball under `sandbox-exec` with a private `CONTINUE_GLOBAL_DIR` and a fake
+loopback model, no account):
+
+- `tools/searchCode.ts` builds `rg ... "${pattern}" ... -g "!${gitignoreLine}"`
+  as a shell string. With ripgrep on PATH, both a model `pattern` and a
+  repository `.gitignore` line executed an injected `touch` under `--auto`.
+  `--auto` overrides `--exclude`, so unrestricted turns now pass
+  `--exclude Search --allow Edit --allow MultiEdit --allow Write` instead; Bash,
+  Write, Read and Fetch still work and the injection no longer runs. The user's
+  own `permissions.yaml` now applies after these flags (headless `ask` = deny).
+- A read-only boundary does exist: an explicit private `CONTINUE_GLOBAL_DIR` whose
+  `permissions.yaml` excludes `*`, plus `--allow Read --allow List`, advertised
+  only Read and List; Bash, Write and Fetch had no effect, and a workspace `.env`
+  or `.continue/` could not widen it. It is not wired because the private global
+  directory also hides the user's `config.yaml` and its `.env` secrets, and no
+  real configuration was available to prove model access still works.
+- No per-call host approval exists: headless `ask` is denied before any callback,
+  and the hidden `cn serve` permission endpoint is unauthenticated and headless.
 
 ## Cursor evidence
 
@@ -46,3 +68,16 @@ load project, user and managed sources before a model turn. Merely omitting
 Mysti's approval or that startup respects the selected restriction. A future
 integration needs isolated configuration, final operation identity and actual
 side-effect tests before enabling these tiers.
+
+2026-09-22 review of the latest release, `2026.09.18-9a7762b` (install script
+and shipped bundle; `--help` only, no login): restricted tiers stay rejected.
+Every project `.cursor/cli.json` up to the Git root is deep-merged with array
+replacement, so a repository can replace `allow`/`deny`; project hooks
+(`.cursor/hooks.json`, `.claude/settings.json`) run commands and
+`--disable-project-configs` does not disable them; allow rules also come from
+team dashboard and server-side allowlists Mysti cannot pin; and read-only shell
+confinement depends on a sandbox team settings can disable. The hidden `acp`
+entry point does send `session/request_permission`, but already-allowlisted
+operations and reads never reach the host. `--allowed-tools`/`--exclude-tools`
+are internal-only and absent from older builds. Unrestricted turns keep
+`--force`, which also satisfies the new print-mode workspace-trust check.

@@ -19,13 +19,13 @@ offers them as updates. Current release and acceptance gaps are tracked in
 | Codex | App-server | Native command/file requests and sandbox |
 | Gemini | ACP | Bounded file operations |
 | Cline | ACP | Supported final native tool inputs |
-| Copilot | ACP | Read/search only; writable support unresolved |
+| Copilot | ACP | Per-call approved sync shell and per-file edits; read/search only in restricted tiers |
 | Cursor | CLI | Fully unrestricted turns only |
 | OpenClaw | Owned local gateway/runtime | Bounded stock tools with final execution guard |
 | OpenCode | ACP | File/search/fetch subset; no shell/delegation |
 | Qwen Code | ACP | Read/edit/notebook/foreground shell subset |
-| Hermes | Persistent ACP | Bridge implemented; installed policy acceptance pending |
-| Kimi Code | Persistent ACP | Bridge implemented; installed policy acceptance pending |
+| Hermes | Persistent ACP | Restricted tiers rejected; unrestricted turns only |
+| Kimi Code | Persistent ACP | Restricted tiers rejected; unrestricted turns only |
 | Continue | Plain-text CLI | Fully unrestricted turns only |
 | Ollama | HTTP | Reports tool proposals; does not execute them |
 | LocalAI | HTTP | Reports tool proposals; does not execute them |
@@ -242,9 +242,9 @@ The ACP bridge requires an explicit BYOK endpoint through `COPILOT_PROVIDER_BASE
 ### Unique Features
 
 - **Configured BYOK model**: Uses the explicitly configured provider endpoint/key/model. Subscription login is not supported by this isolated transport.
-- **Native approvals**: This verified Copilot release is restricted to read/search operations; native reads run without a host card
+- **Native approvals**: Sync shell commands and per-file edits wait for a host card; read-only and plan tiers expose read/search only; native reads run without a host card
 
-The **1.0.83** ACP transport permits only read/search operations. It disables file writes, shell, web tools, hooks, plugins, MCP and delegation. Native workspace writes and some shell commands bypass the approval callback, so writable Copilot support remains unresolved. Native safe reads do not reach host approval policy. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
+The **1.0.83** ACP transport holds each sync shell command and each patched file for a host card. It denies async/detached shells, web tools, broader path grants, hooks, plugins, MCP and delegation; read-only and plan tiers keep only read/search tools. The earlier approval bypass came from Mysti setting `COPILOT_ALLOW_ALL=false`, which this release reads as allow-all; the variable is now left unset. Native safe reads do not reach host approval policy. See the [ACP approval contract](ACP_NATIVE_APPROVAL.md) for startup restrictions and acceptance limits.
 
 ### Settings
 
@@ -507,12 +507,22 @@ reported session continuity, images and usage. Neither CLI is installed in the
 review environment. Native policy completeness and authenticated/editor behavior
 remain unverified; fixture coverage does not establish universal tool approval.
 
+The 2026-09-22 source review found that neither agent requests permission for
+every operation: Hermes v2026.9.21 asks only for denylisted shell commands and
+file edits, and Kimi Code 2.0.2 auto-approves in-repository writes, fetches,
+subagents and skills. Both honour inherited yolo/auto-approve user settings.
+Mysti therefore rejects every restricted tier for them before launch; only
+`full-access` with `default` or `edit-automatically` runs. Kimi Code 2.x keeps
+its configuration in `~/.kimi-code` and reads `KIMI_MODEL_*`; Mysti's
+credential/model detection still targets the 1.x `~/.kimi` layout (unfixed).
+
 ## Continue
 
 The `cn` CLI prints final text and exposes no host approval handshake. Its native
 `--readonly` mode permits Bash and MCP operations, so Mysti rejects restricted
 turns before launch. Only `full-access` with `default` or `edit-automatically` is
-available. It replays conversation history in the prompt and reports no usage.
+available; those turns exclude the built-in `Search` tool, whose ripgrep command
+line is shell-injectable from a model pattern or a `.gitignore` line. It replays conversation history in the prompt and reports no usage.
 Continue is not installed in the review environment.
 
 ## OpenRouter

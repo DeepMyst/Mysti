@@ -11,7 +11,7 @@ legacy stream-JSON, plain-text, or auto-approve execution fallback.
 | --- | --- | --- |
 | Gemini | 0.60.0 (0.58.0 accepted) | `read_file`, `write_file`, `replace`. File diffs carry the proposed contents; reads bind a single absolute native location. Shell, delegation and other tools are denied because these releases omit their complete permission inputs. 0.60.0 skips the bundled system settings file (not root-owned); the admin policy is the enforcing transport and `.agents/skills` is refused. |
 | Cline | 3.0.64 (3.0.61 accepted) | Supported built-in reads/searches, edits, foreground commands and web tools. The exact native tool name and final `rawInput` are required; a generic `think` kind cannot authorize an agent. |
-| Copilot | 1.0.83 | Read/search only. Native workspace reads bypass host cards. File writes, shell, web tools, broader path grants and delegation are disabled: this release executes some workspace edits and commands without ACP permission requests. |
+| Copilot | 1.0.83 | Sync `bash` commands (request must repeat the announced command) and per-file `apply_patch`/`edit`/`create` changes (absolute path + diff), each behind a host card. Async/detached shells, web tools, broader path grants and delegation are denied. Restricted tiers expose read/search only. Native workspace reads bypass host cards. |
 | Qwen Code | 0.24.4 (0.23.0 accepted) | `read_file`, `edit`, `notebook_edit`, foreground `run_shell_command`. Final arguments and native normalized edit diffs are captured together. Other core and synthetic tools are excluded, including 0.24's `tool_call` dispatcher, code-mode `exec` and `omni_*` tools. |
 | OpenCode | 1.18.29 | File read/search/edit/fetch tools under a fixed `mysti-host` agent. Shell, task/delegation and arbitrary custom tools are removed from the executable tool map. |
 
@@ -53,8 +53,13 @@ change to pending tool inputs revoke the captured card. Late host results cannot
 authorize a replacement process. The inactivity clock pauses while a permission
 is pending and restarts when it settles. Startup calls have separate deadlines.
 A final done chunk is emitted after awaiting the captured child shutdown
-attempt and temporary-state cleanup. The existing process-kill helper does not
-guarantee all descendants have exited after escalation. Failure to prepare or attest the native launch never falls back
+attempt and temporary-state cleanup. On POSIX, termination first freezes the
+agent (before `session/cancel` is written), then kills every descendant and each
+process group a descendant leads, rescanning until none remain; only then is the
+agent itself signalled. This covers a tool's detached shell group and its
+background jobs. A process that already re-parented itself away (a double-fork
+daemon, or `setsid` before the first scan) is outside this cleanup, which is not
+OS containment. Failure to prepare or attest the native launch never falls back
 to the old transport.
 
 ## Native policy and configuration
@@ -81,11 +86,21 @@ therefore part of the approval boundary, independently of the protocol bridge.
   ACP mode and model are set by RPC because this native entry point ignores the
   corresponding CLI flags.
 - **Copilot:** a private `COPILOT_HOME` supplies manual permissions and disabled
-  hooks/plugins/IDE auto-connect. The available tool list permits only read/search. An append-redirection command
-  and an in-workspace apply_patch both bypassed the ACP callback despite manual
-  mode. File writes and shell are removed from the native tool map and explicitly
-  denied at every Mysti access tier. Interactive writable Copilot support remains
-  unresolved; the restricted transport must not be presented as that support. Native and managed configuration sources that cannot be
+  hooks/plugins/IDE auto-connect. The earlier finding that an append-redirection
+  command and an in-workspace apply_patch bypassed the ACP callback was caused by
+  Mysti itself: it set `COPILOT_ALLOW_ALL=false`, and releases before 1.0.85 treat
+  any non-empty value as allow-all while still reporting `allow_all: off`. With the
+  variable unset, 1.0.83 (and 1.0.87) send a permission request before every tested
+  shell form (redirects, `>>`, `tee`, `sed -i`, `find -delete`, substitutions,
+  compound commands) and every patched file, and a reject prevents the effect
+  (runtime-verified with a fake local model, 2026-09-22). Unrestricted and ask
+  tiers therefore expose `bash`, `apply_patch`, `edit` and `create`; each request
+  must match the announced tool, shells must be sync (no `mode: async`/`detach`),
+  and a multi-file patch is approved file by file, so a later rejection can leave
+  earlier approved files changed. A sync command still running after
+  `initial_wait` is killed with the agent's process tree at Stop or turn end.
+  Read-only and plan tiers keep the read/search tool map with shell and write
+  denied. Native and managed configuration sources that cannot be
   isolated prevent startup. GitHub token login can fetch opaque managed hooks,
   so this bridge requires BYOK and forces GitHub offline mode. Native safe reads
   still bypass host approval.
@@ -103,10 +118,14 @@ therefore part of the approval boundary, independently of the protocol bridge.
   dependency checks use private npm configuration, offline mode and disabled
   lifecycle scripts. The internal ACP HTTP server binds loopback with a fresh
   password. Shell is removed from the executable map: this release otherwise
-  skips its permission callback for commands consisting only of redirections.
-  A private pre-execution-hook experiment gates those commands, but its active
-  shell descendant survived Stop. That prototype is test-only; shell restoration
-  requires owned execution and verified teardown.
+  skips its permission callback for commands consisting only of redirections
+  (`scan.patterns.size === 0`), which can create or truncate files unapproved.
+  Latest 1.18.32 source still has this early return (source-verified). A private
+  pre-execution-hook experiment gated those commands; its surviving shell
+  descendant after Stop is now fixed by the shared descendant teardown, proven
+  against the actual 1.18.29 shell with a test-only native allow. Shell stays
+  removed because the hook route still needs `--pure` removed and proof that the
+  executing plugin instance registered its hook.
 
 OpenCode 1.18.29 emits a redundant `fs/write_text_file` UI request after approval
 even when the client advertises that capability as false. Mysti returns

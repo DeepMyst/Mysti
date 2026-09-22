@@ -39,6 +39,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import { respondToAcpApproval } from '../base/AcpApproval';
+import { requireUnrestrictedLegacyTransport } from '../base/NativeApprovalPolicy';
 import {
   parseAcpAvailableCommands,
   type NativeCommandSpec,
@@ -495,6 +496,16 @@ export class KimiCodeProvider extends BaseCliProvider {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Kimi Code (2.0.2 permissionPolicy) auto-approves in-repository Write/Edit,
+   * FetchURL, Agent, AgentSwarm and Skill without an ACP request, and applies an
+   * inherited `default_permission_mode = yolo|auto`. Its plan mode does not cover
+   * fetches or subagents, so restricted tiers fail closed.
+   */
+  protected async _validateNativeApprovalCli(_session: PanelSessionState, settings: Readonly<Settings>): Promise<void> {
+    requireUnrestrictedLegacyTransport(settings, this.displayName);
   }
 
   /**

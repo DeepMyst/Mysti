@@ -5,26 +5,55 @@ import * as path from 'node:path';
 import type { Settings, ToolCall } from '../../types';
 import { isRecord } from '../../utils/valueGuards';
 import { clampEffort } from '../../utils/effort';
+import { toolKind } from '../../utils/toolNames';
 import type { AcpNativeLaunch, AcpNativeLaunchContext, AcpObject } from '../base/AcpNativeTypes';
 import { VERIFIED_NATIVE_CLI_VERSIONS } from '../base/NativeCliVersions';
 
-const TOOLS = ['view', 'grep', 'glob'];
+const READ_TOOLS = ['view', 'grep', 'glob'];
+// apply_patch serves OpenAI-family models, edit/create Claude-family ones.
+const WRITE_TOOLS = ['bash', 'apply_patch', 'edit', 'create'];
+const isRestricted = (settings: Readonly<Settings>) => settings.accessLevel === 'read-only' || ['quick-plan', 'detailed-plan'].includes(settings.mode);
+
 export function copilotAcpArgs(settings: Readonly<Settings>, model?: string): string[] {
   const args = ['--acp', '--no-auto-update', '--no-remote', '--no-remote-export', '--no-bash-env',
-    '--no-custom-instructions', '--disable-builtin-mcps', '--no-experimental', '--available-tools', ...TOOLS, '--deny-tool', 'shell', 'write'];
+    '--no-custom-instructions', '--disable-builtin-mcps', '--no-experimental', '--available-tools', ...READ_TOOLS];
+  // Restricted tiers never expose mutation tools, independent of host policy.
+  if (isRestricted(settings)) { args.push('--deny-tool', 'shell', 'write'); } else { args.splice(args.indexOf('--available-tools') + 1, 0, ...WRITE_TOOLS); }
   if (model) { args.push('--model', model); }
   const effort = clampEffort(settings.effortLevel, ['low', 'medium', 'high', 'xhigh']);
   if (effort) { args.push('--effort', effort); }
   return args;
 }
 
+// A sync shell is discarded when its command ends; one still running after
+// initial_wait belongs to the agent process tree that Stop and turn end kill.
+const SHELL_KEYS = new Set(['command', 'description', 'mode', 'initial_wait', 'shellId']);
+
 /**
- * 1.0.83 bypasses ACP for workspace edits and some redirected shell commands.
- * Its verified executable map is read/search only. Outside-path permissions
- * grant broader access than one operation, so no permission request may widen
- * this boundary, even if the host would otherwise approve it.
+ * 1.0.83 sends one ACP request per shell command and per patched file before
+ * executing it, and a reject prevents the effect (runtime-verified with a
+ * private profile; the earlier "bypass" was COPILOT_ALLOW_ALL being set).
+ * Only a sync command whose request repeats the announced command, or one
+ * file's absolute path with its diff, can be approved. Async/detached shells,
+ * outside-path/URL grants and every other kind are denied.
  */
-export function decodeCopilotPermission(_params: Readonly<AcpObject>, _trackedTool?: Readonly<AcpObject>): ToolCall | undefined {
+export function decodeCopilotPermission(params: Readonly<AcpObject>, tracked?: Readonly<AcpObject>): ToolCall | undefined {
+  const call = params.toolCall;
+  if (!isRecord(call) || typeof call.toolCallId !== 'string' || !call.toolCallId || !isRecord(call.rawInput)) { return; }
+  if (!tracked || tracked.toolCallId !== call.toolCallId || tracked.kind !== call.kind
+    || tracked.status === 'completed' || tracked.status === 'failed') { return; }
+  const raw = call.rawInput;
+  if (call.kind === 'execute') {
+    const announced = isRecord(tracked.rawInput) ? tracked.rawInput : undefined;
+    if (typeof raw.command !== 'string' || !raw.command.trim() || announced?.command !== raw.command
+      || Object.keys(announced).some(key => !SHELL_KEYS.has(key))
+      || (announced.mode !== undefined && announced.mode !== 'sync')) { return; }
+    return { id: call.toolCallId, name: 'Bash', input: { command: raw.command }, status: 'running', kind: toolKind('Bash') };
+  }
+  if (call.kind === 'edit') {
+    if (typeof raw.fileName !== 'string' || !path.isAbsolute(raw.fileName) || typeof raw.diff !== 'string' || !raw.diff) { return; }
+    return { id: call.toolCallId, name: 'Edit', input: { file_path: raw.fileName, diff: raw.diff }, status: 'running', kind: toolKind('Edit') };
+  }
   return undefined;
 }
 
@@ -94,7 +123,9 @@ export async function prepareCopilotAcpLaunch(context: AcpNativeLaunchContext, m
     }
     env.COPILOT_HOME = state;
     env.COPILOT_CACHE_HOME = path.join(state, 'cache');
-    env.COPILOT_ALLOW_ALL = 'false';
+    // COPILOT_ALLOW_ALL stays unset (the scrub above removes any inherited
+    // value). Before 1.0.85 any non-empty value, including 'false', enables
+    // allow-all while the session's allow_all option still reports off.
     // This disables GitHub authentication and its managed-policy refresh while
     // preserving the separately configured custom model provider.
     env.COPILOT_OFFLINE = 'true';

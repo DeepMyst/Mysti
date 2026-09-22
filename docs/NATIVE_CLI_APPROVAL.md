@@ -148,8 +148,9 @@ acceptance.
 Authenticated provider accounts, installed-editor behavior, and hosted
 cross-platform acceptance remain separate release work. Revoking pending
 permission requests does not undo an already approved command. The shared CLI
-process cleanup is not an OS sandbox and does not establish containment of an
-approved program that detaches descendants or survives a parent crash. OpenClaw's
+process cleanup kills the POSIX descendants and descendant-led process groups of
+a live agent, but it is not an OS sandbox: it does not contain a program that
+re-parents itself away before teardown or survives a parent crash. OpenClaw's
 separate cleanup boundary and remaining platform/account acceptance are recorded
 in its [native policy](OPENCLAW_NATIVE_POLICY.md).
 
