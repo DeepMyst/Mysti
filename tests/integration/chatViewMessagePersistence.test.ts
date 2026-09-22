@@ -379,6 +379,32 @@ describe('ChatViewProvider done-handler persistence (Plan 02 Phase 3)', () => {
     const [, , , , , , extras] = getAssistantPersistCall(h);
     expect(extras.segments).toEqual([{ type: 'text', content: 'part one, part two' }]);
   });
+
+  it('attributes the turn to the model that served it and shows the reported cost (R11)', async () => {
+    h.setStream([
+      { type: 'text', content: 'routed' },
+      { type: 'done', usage: { input_tokens: 10, output_tokens: 2 }, model: 'anthropic/claude-sonnet-5', costUsd: 0.0042 },
+    ]);
+
+    await send(h);
+
+    const [, , , , , , extras] = getAssistantPersistCall(h);
+    expect(extras.model).toBe('anthropic/claude-sonnet-5');
+    const complete = h.sidebarMessages.find(message => message.type === 'responseComplete');
+    expect(complete?.payload.message.model).toBe('anthropic/claude-sonnet-5');
+    expect(complete?.payload.usage.costUsd).toBe(0.0042);
+  });
+
+  it('keeps the requested model when the backend does not report a served one', async () => {
+    h.setStream([{ type: 'text', content: 'plain' }, { type: 'done', usage: { input_tokens: 10, output_tokens: 2 } }]);
+
+    await send(h);
+
+    const [, , , , , , extras] = getAssistantPersistCall(h);
+    expect(extras.model).toBe('claude-opus-4-6');
+    const complete = h.sidebarMessages.find(message => message.type === 'responseComplete');
+    expect(complete?.payload.usage).not.toHaveProperty('costUsd');
+  });
 });
 
 describe('ChatViewProvider exit_plan_mode routing (Plan 02 Phase 3.5)', () => {

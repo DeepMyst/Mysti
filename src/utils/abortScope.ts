@@ -52,3 +52,25 @@ export function createAbortScope(
   }
   return { signal: controller.signal, dispose };
 }
+
+/**
+ * Stop waiting for `start()` as soon as `signal` aborts, without cancelling the
+ * underlying work (it may be shared, e.g. catalogue discovery, or not abortable,
+ * e.g. prompt assembly). Late settlement is always observed.
+ */
+export async function waitForCaller<T>(start: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  const pending = start();
+  if (!signal) { return pending; }
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => { cleanup(); reject(signal.reason); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    // Always observe both outcomes, including late settlement after this caller Stops.
+    pending.then(value => {
+      cleanup();
+      if (signal.aborted) { reject(signal.reason); } else { resolve(value); }
+    }, error => { cleanup(); reject(error); });
+    if (signal.aborted) { onAbort(); }
+  });
+}

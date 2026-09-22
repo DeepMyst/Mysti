@@ -54,7 +54,7 @@ export interface CoordinatorTurnConfig {
 }
 
 export type CoordinatorTurnResult =
-  | { kind: 'turn'; text: string; directive?: MystiDirective; toolCalls?: AccumulatedToolCall[] }
+  | { kind: 'turn'; text: string; directive?: MystiDirective; toolCalls?: AccumulatedToolCall[]; reasoningDetails?: Record<string, unknown>[] }
   | { kind: 'error'; message: string; cause?: unknown };
 
 interface TurnIterationScope {
@@ -118,6 +118,7 @@ export class CoordinatorTurnRunner {
       let text = '';
       let directive: MystiDirective | undefined;
       let toolCalls: AccumulatedToolCall[] | undefined;
+      let reasoningDetails: Record<string, unknown>[] | undefined;
       let finishReason: string | undefined;
       let failure: Extract<CoordinatorTurnResult, { kind: 'error' }> | undefined;
       try {
@@ -132,6 +133,7 @@ export class CoordinatorTurnRunner {
           if (event.error) { failure = { kind: 'error', message: event.error }; break; }
           this._ports.output.observe(event);
           if (event.toolCalls?.length) { toolCalls = event.toolCalls; }
+          if (event.reasoningDetails?.length) { reasoningDetails = event.reasoningDetails; }
           if (event.finishReason) { finishReason = event.finishReason; }
           if (event.text) {
             text += event.text;
@@ -166,7 +168,7 @@ export class CoordinatorTurnRunner {
         lengthContinues++;
         if (text.trim()) {
           carryScanner = true;
-          messages.push({ role: 'assistant', content: text }, { role: 'user', content: LENGTH_NUDGE });
+          messages.push({ role: 'assistant', content: text, ...(reasoningDetails ? { reasoning_details: reasoningDetails } : {}) }, { role: 'user', content: LENGTH_NUDGE });
         } else {
           this._appendNudge(messages, REASONING_NUDGE);
         }
@@ -184,7 +186,7 @@ export class CoordinatorTurnRunner {
         text = `(tool: ${toolCalls.map(call => call.name).join(', ')})`;
       }
       if (isCancelled()) { return; }
-      yield { kind: 'turn', text, directive, toolCalls };
+      yield { kind: 'turn', text, directive, toolCalls, ...(reasoningDetails ? { reasoningDetails } : {}) };
     }
   }
 

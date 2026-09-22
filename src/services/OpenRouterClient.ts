@@ -199,6 +199,7 @@ export class OpenRouterClient {
       let completed = false;
       let finishReason: string | undefined;
       let model: string | undefined;
+      const reasoningDetails: Record<string, unknown>[] = [];
       for await (const data of readServerSentData(res.body, abortScope.signal)) {
         abortScope.signal.throwIfAborted();
         if (data.trim() === '[DONE]') { completed = true; break; }
@@ -223,6 +224,7 @@ export class OpenRouterClient {
             if ((delta[field] !== undefined && delta[field] !== null) && typeof delta[field] !== 'string') { throw new Error(`OpenRouter returned invalid ${field}`); }
           }
           const reasoning = visibleReasoning(delta);
+          appendReasoningDetails(reasoningDetails, delta.reasoning_details);
           if (finishReason && (delta.content || reasoning || (Array.isArray(delta.tool_calls) && delta.tool_calls.length))) {
             throw new Error('OpenRouter returned content after its terminal response');
           }
@@ -284,6 +286,8 @@ export class OpenRouterClient {
         throw new Error('OpenRouter returned incomplete or invalid tool arguments');
       }
       if (finishReason) { abortScope.signal.throwIfAborted(); yield { finishReason }; }
+      // Like tool calls, replayable reasoning escapes only from a completed response.
+      if (reasoningDetails.length) { abortScope.signal.throwIfAborted(); yield { reasoningDetails }; }
       // No proposals escape until the entire response has completed successfully.
       if (calls.length) { abortScope.signal.throwIfAborted(); yield { toolCalls: calls }; }
       abortScope.signal.throwIfAborted();
@@ -511,6 +515,12 @@ export interface OpenRouterStreamEvent {
   finishReason?: string;
   /** Plan 19 P4: finalized native tool calls for this turn (emitted once). */
   toolCalls?: AccumulatedToolCall[];
+  /**
+   * The completed response's `reasoning_details`, in stream order (emitted once,
+   * only after the completion marker). Opaque: callers replay them unmodified on
+   * the assistant message of the next request and never display or edit them.
+   */
+  reasoningDetails?: Record<string, unknown>[];
 }
 
 interface OpenRouterModelsResponse {
@@ -646,6 +656,33 @@ function visibleReasoning(delta: Record<string, unknown>): string {
     if ((value !== undefined && value !== null) && typeof value !== 'string') { throw new Error('OpenRouter returned invalid reasoning text'); }
     return typeof value === 'string' ? value : '';
   }).join('');
+}
+
+/**
+ * Rebuild the response's reasoning_details from streamed deltas. Consecutive
+ * fragments of the SAME text/summary block (same type and index) are joined into
+ * the one block the non-streaming response would carry, keeping the first
+ * signature/id/format seen — the merge OpenRouter's own AI SDK provider does.
+ * Every other entry (reasoning.encrypted, unknown types) is kept verbatim and in
+ * order: the docs require the sequence to match the model's output exactly.
+ * https://openrouter.ai/docs/use-cases/reasoning-tokens#preserving-reasoning-blocks
+ */
+function appendReasoningDetails(out: Record<string, unknown>[], value: unknown): void {
+  if (!Array.isArray(value)) { return; } // visibleReasoning already rejected non-arrays.
+  for (const detail of value) {
+    if (!isRecord(detail)) { throw new Error('OpenRouter returned an invalid reasoning detail'); }
+    const field = detail.type === 'reasoning.text' ? 'text' : detail.type === 'reasoning.summary' ? 'summary' : undefined;
+    const last = out[out.length - 1];
+    if (field && last && last.type === detail.type && last.index === detail.index) {
+      if (typeof (detail[field] ?? '') !== 'string') { throw new Error('OpenRouter returned invalid reasoning text'); }
+      last[field] = String(last[field] ?? '') + String(detail[field] ?? '');
+      for (const key of Object.keys(detail)) {
+        if (key !== field && (last[key] === undefined || last[key] === null)) { last[key] = detail[key]; }
+      }
+      continue;
+    }
+    out.push(structuredClone(detail));
+  }
 }
 
 function validateToolDeltas(value: unknown): ToolCallDelta[] {

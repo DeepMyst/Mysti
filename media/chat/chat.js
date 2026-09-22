@@ -11671,10 +11671,10 @@
           parts.push('<span class="message-footer-item message-footer-tokens" title="Tokens in / out' + (usage.tokensPartial ? ' (delegation turns estimated)' : '') + '">' +
             approx + (usage.input_tokens || 0) + ' in \u00b7 ' + approx + (usage.output_tokens || 0) + ' out</span>');
         }
-        // P0.8: coordinator cost (estimated \u2014 streaming cost is not exact) + delegation count
+        // P0.8: cost the backend reported for the turn (coordinator or OpenRouter chat) + delegation count
         if (usage && typeof usage.costUsd === 'number' && usage.costUsd > 0) {
           var costStr = usage.costUsd < 0.01 ? '$' + usage.costUsd.toFixed(4) : '$' + usage.costUsd.toFixed(2);
-          parts.push('<span class="message-footer-item message-footer-cost" title="Estimated coordinator cost (billed via your DeepMyst account)">~' + costStr + '</span>');
+          parts.push('<span class="message-footer-item message-footer-cost" title="Cost reported for this turn">~' + costStr + '</span>');
         }
         if (usage && typeof usage.delegations === 'number' && usage.delegations > 0) {
           parts.push('<span class="message-footer-pill" title="Sub-agent delegations in this turn">' +

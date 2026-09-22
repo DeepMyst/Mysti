@@ -27,6 +27,7 @@ import type { AccumulatedToolCall } from '../utils/toolCallAccumulator';
 import { modelSupportsToolCalls } from './coordinatorTools';
 import { normalizeUsage } from './TokenAccounting';
 import type { OpenRouterClient } from './OpenRouterClient';
+import { waitForCaller } from '../utils/abortScope';
 
 export interface CoordinatorConfig {
   /**
@@ -146,6 +147,8 @@ export interface CoordinatorStreamEvent {
   costUsd?: number;
   /** Plan 19 P4: the coordinator model requested native tool calls this turn. */
   toolCalls?: AccumulatedToolCall[];
+  /** Opaque reasoning of a completed response, to replay on its assistant message. */
+  reasoningDetails?: Record<string, unknown>[];
 }
 
 /** Message shown when the Mysti agent has no credential to run on. */
@@ -484,7 +487,7 @@ export class CoordinatorModelClient {
   }
 
   /** Normalize an OpenRouter/gateway stream into CoordinatorStreamEvents. */
-  private async *_drain(source: AsyncGenerator<{ text?: string; reasoning?: string; usage?: ClientUsage; done?: boolean; error?: string; finishReason?: string; costUsd?: number; model?: string; toolCalls?: AccumulatedToolCall[] }>): AsyncGenerator<CoordinatorStreamEvent> {
+  private async *_drain(source: AsyncGenerator<{ text?: string; reasoning?: string; usage?: ClientUsage; done?: boolean; error?: string; finishReason?: string; costUsd?: number; model?: string; toolCalls?: AccumulatedToolCall[]; reasoningDetails?: Record<string, unknown>[] }>): AsyncGenerator<CoordinatorStreamEvent> {
     let sawText = false;
     let sawToolCalls = false;
     let streamErr: string | undefined;
@@ -499,6 +502,7 @@ export class CoordinatorModelClient {
       // on a length truncation (was gateway-path-only).
       if (ev.finishReason) { yield { finishReason: ev.finishReason }; }
       if (ev.costUsd !== undefined) { yield { costUsd: ev.costUsd }; }
+      if (ev.reasoningDetails) { yield { reasoningDetails: ev.reasoningDetails }; }
       if (ev.done) { yield { done: true }; return; }
     }
     if (streamErr) { yield { error: streamErr }; return; }
@@ -539,24 +543,6 @@ export class CoordinatorModelClient {
     }
     return /\b429\b|\b5\d{2}\b|\b40[04]\b|rate.?limit|temporarily rate|too many requests|quota|mid.?stream|stream interrupted|provider (returned|error)|no (allowed )?(providers|endpoints)|overloaded|unavailable|timed? ?out|timeout|econnreset|econnrefused|enotfound|eai_again|epipe|socket hang|other side closed|fetch failed|terminated|network error|connection (reset|closed|error)|(model|it) (was )?not found|no such model|(invalid|unknown|unsupported) model|not a valid model/i.test(err);
   }
-}
-
-/** Cancel one catalogue waiter without cancelling discovery shared by other callers. */
-async function waitForCaller<T>(start: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-  signal?.throwIfAborted();
-  const pending = start();
-  if (!signal) { return pending; }
-  return new Promise<T>((resolve, reject) => {
-    const cleanup = () => signal.removeEventListener('abort', onAbort);
-    const onAbort = () => { cleanup(); reject(signal.reason); };
-    signal.addEventListener('abort', onAbort, { once: true });
-    // Always observe both outcomes, including late settlement after this caller Stops.
-    pending.then(value => {
-      cleanup();
-      if (signal.aborted) { reject(signal.reason); } else { resolve(value); }
-    }, error => { cleanup(); reject(error); });
-    if (signal.aborted) { onAbort(); }
-  });
 }
 
 function requestError(error: unknown): string {

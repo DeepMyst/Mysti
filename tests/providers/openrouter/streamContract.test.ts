@@ -49,7 +49,14 @@ describe('OpenRouter stream completion contract', () => {
     ];
     const events = await collect(client(sse(...frames)).streamChat(params));
     expect(events.filter(event => event.reasoning)).toEqual([{ reasoning: 'flat' }, { reasoning: 'textsummary' }]);
-    expect(JSON.stringify(events)).not.toContain('opaque');
+    // R11: opaque data is never displayed, but the completed sequence is carried
+    // (once, verbatim, in order) so the coordinator can replay it next request.
+    expect(JSON.stringify(events.filter(event => !event.reasoningDetails))).not.toContain('opaque');
+    expect(events.filter(event => event.reasoningDetails)).toEqual([{ reasoningDetails: [
+      { type: 'reasoning.text', text: 'duplicatetext' },
+      { type: 'reasoning.summary', summary: 'summary' },
+      { type: 'reasoning.encrypted', data: 'opaque' },
+    ] }]);
   });
 
   // OpenRouter documents a final [DONE]. A finish reason alone can precede a

@@ -44,6 +44,8 @@ export interface GatewayChatMessage {
   tool_call_id?: string;
   /** Plan 19 P4: the tool name on a tool-result message (some providers require it). */
   name?: string;
+  /** Opaque reasoning from this assistant turn, replayed unmodified (OpenRouter `reasoning_details`). */
+  reasoning_details?: Record<string, unknown>[];
 }
 
 /** One streamed delta from the gateway (same shape as OpenRouterStreamEvent). */
