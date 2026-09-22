@@ -13,13 +13,15 @@
 
 import * as vscode from 'vscode';
 import * as https from 'https';
+import type { ClientRequest, IncomingMessage } from 'http';
 import { asRecord, asRecords, asString, parseJsonObject, errorMessage } from '../utils/valueGuards';
 import type { ImageGenerationProvider } from '../types';
 
 type GeminiRequestPart = { text: string } | { inline_data: { mime_type: string; data: string } };
 type OpenAIRequestPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 
-interface GenerateOptions {
+export interface GenerateOptions {
+  signal?: AbortSignal;
   size?: string;
   style?: string;
   model?: string;
@@ -212,6 +214,7 @@ export class ImageGenerationService {
   }
 
   async generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult> {
+    options?.signal?.throwIfAborted();
     this._provider = this._resolveProvider();
 
     switch (this._provider) {
@@ -260,6 +263,7 @@ export class ImageGenerationService {
         hostname: 'api.openai.com',
         path: '/v1/images/edits',
         method: 'POST',
+        signal: options.signal,
         headers: {
           'Content-Type': `multipart/form-data; boundary=${boundary}`,
           'Authorization': `Bearer ${apiKey}`,
@@ -267,6 +271,7 @@ export class ImageGenerationService {
         },
       }, body);
 
+      options.signal?.throwIfAborted();
       const parsed = parseJsonObject(response);
       if (parsed.error) {
         throw new Error(`GPT Image error: ${errorMessage(parsed.error)}`);
@@ -292,6 +297,7 @@ export class ImageGenerationService {
       hostname: 'api.openai.com',
       path: '/v1/images/generations',
       method: 'POST',
+      signal: options?.signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
@@ -299,6 +305,7 @@ export class ImageGenerationService {
       },
     }, body);
 
+    options?.signal?.throwIfAborted();
     const parsed = parseJsonObject(response);
     if (parsed.error) {
       throw new Error(`GPT Image error: ${errorMessage(parsed.error)}`);
@@ -354,6 +361,7 @@ export class ImageGenerationService {
       // 6.5: key in the x-goog-api-key header, never the query string.
       path: `/v1beta/models/${model}:generateContent`,
       method: 'POST',
+      signal: options?.signal,
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
@@ -361,6 +369,7 @@ export class ImageGenerationService {
       },
     }, body);
 
+    options?.signal?.throwIfAborted();
     const parsed = parseJsonObject(response);
     if (parsed.error) {
       throw new Error(`Nano Banana error: ${errorMessage(parsed.error)}`);
@@ -464,60 +473,93 @@ export class ImageGenerationService {
   }
 
   private _httpsRequestBuffer(options: https.RequestOptions, body: Buffer): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const req = https.request(options, (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          const data = Buffer.concat(chunks).toString('utf-8');
-          if (res.statusCode && res.statusCode >= 400) {
-            try {
-              const errBody = parseJsonObject(data);
-              reject(new Error(asString(asRecord(errBody.error)?.message) || `HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
-            } catch {
-              reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
-            }
-          } else {
-            resolve(data);
-          }
-        });
-      });
-      req.on('error', reject);
-      // F-25: image-edits at high fidelity routinely exceeds 120s; allow 180s.
-      req.setTimeout(180000, () => {
-        req.destroy(new Error('Image edit request timed out (180s)'));
-      });
-      req.write(body);
-      req.end();
-    });
+    return this._requestBody(options, body, 'Image edit request timed out (180s)');
   }
 
   private _httpsRequest(options: https.RequestOptions, body: string): Promise<string> {
+    return this._requestBody(options, body, 'Image generation request timed out (180s)');
+  }
+
+  private _requestBody(options: https.RequestOptions, body: string | Buffer, timeoutMessage: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const req = https.request(options, (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          const data = Buffer.concat(chunks).toString('utf-8');
-          if (res.statusCode && res.statusCode >= 400) {
-            try {
-              const errBody = parseJsonObject(data);
-              reject(new Error(asString(asRecord(errBody.error)?.message) || `HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
-            } catch {
-              reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
-            }
-          } else {
-            resolve(data);
+      const signal = options.signal;
+      signal?.throwIfAborted();
+      let req: ClientRequest | undefined;
+      let res: IncomingMessage | undefined;
+      let settled = false;
+      const chunks: Buffer[] = [];
+      const cleanup = () => {
+        signal?.removeEventListener('abort', abort);
+        if (req) {
+          req.setTimeout(0);
+          req.removeListener('timeout', timeout);
+          req.removeListener('error', fail);
+          req.removeListener('close', requestClosed);
+          req.on('error', ignoreLateRequestError);
+        }
+        if (res) {
+          res.removeListener('data', data);
+          res.removeListener('end', end);
+          res.removeListener('aborted', responseClosed);
+          res.removeListener('close', responseClosed);
+          res.removeListener('error', fail);
+          res.on('error', ignoreLateRequestError);
+        }
+        chunks.length = 0;
+      };
+      const finish = (error: unknown, value?: string) => {
+        if (settled) { return; }
+        settled = true; cleanup();
+        if (error !== undefined) { reject(error); } else { resolve(value ?? ''); }
+      };
+      const fail = (error: unknown) => finish(error);
+      const stop = (error: unknown) => {
+        finish(error);
+        res?.destroy();
+        req?.destroy();
+      };
+      const abort = () => stop(signal?.reason ?? new Error('Image request cancelled'));
+      const timeout = () => stop(new Error(timeoutMessage));
+      const responseClosed = () => stop(new Error('Image response closed before completion'));
+      const requestClosed = () => { if (!res) { stop(new Error('Image request closed before response')); } };
+      const data = (chunk: Buffer) => { if (!settled) { chunks.push(chunk); } };
+      const end = () => {
+        if (signal?.aborted) { abort(); return; }
+        const value = Buffer.concat(chunks).toString('utf-8');
+        if (res?.statusCode && res.statusCode >= 400) {
+          try {
+            const errBody = parseJsonObject(value);
+            finish(new Error(asString(asRecord(errBody.error)?.message) || `HTTP ${res.statusCode}: ${value.substring(0, 200)}`));
+          } catch { finish(new Error(`HTTP ${res.statusCode}: ${value.substring(0, 200)}`)); }
+        } else { finish(undefined, value); }
+      };
+      signal?.addEventListener('abort', abort, { once: true });
+      try {
+        if (signal?.aborted) { abort(); return; }
+        req = https.request(options, response => {
+          if (settled || signal?.aborted) {
+            response.on('error', ignoreLateRequestError);
+            response.destroy();
+            return;
           }
+          res = response;
+          res.on('data', data);
+          res.once('end', end);
+          res.once('aborted', responseClosed);
+          res.once('close', responseClosed);
+          res.on('error', fail);
         });
-      });
-      req.on('error', reject);
-      // F-25: gpt-image at 1536×1024 routinely exceeds 60s; allow 180s.
-      req.setTimeout(180000, () => {
-        req.destroy(new Error('Image generation request timed out (180s)'));
-      });
-      req.write(body);
-      req.end();
+        req.on('error', fail);
+        req.once('close', requestClosed);
+        if (settled || signal?.aborted) { abort(); return; }
+        // F-25: generation and high-fidelity edits retain their 180s timeout.
+        req.setTimeout(180000, timeout);
+        req.write(body);
+        req.end();
+      } catch (error) { stop(error); }
     });
   }
 }
+
+/** Late socket errors are observed without retaining a completed operation. */
+function ignoreLateRequestError(): void {}

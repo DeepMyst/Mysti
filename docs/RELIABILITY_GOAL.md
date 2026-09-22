@@ -10,14 +10,14 @@ Starting point: candidate `09f9eb2a4984bc7189995a952b47df8e81b8d1a1` passed all
 `out-test/release-evidence/REVIEW_ROUND_20260916/REVIEW.json`. These results do not
 automatically validate subsequent changes or current provider releases.
 
-Latest verified candidate: `4bcd08cf1c28220d615771935d789a04bb097904` passed all
+Latest verified candidate: `d38c8ba3af7f1c6fd61bd901ad6e7b781edc1f24` passed all
 15 required hosted checks on attempt 1 and five independent archive reviews,
-including six hosted packaged-editor runs. Local validation passed 14,807 tests
-with one unchanged unavailable pinned-Claude skip and 130 added cases; no baseline
+including six hosted packaged-editor runs. Local validation passed 14,880 tests
+with one unchanged unavailable pinned-Claude skip and 73 added cases; no baseline
 cases were removed. Evidence is in
-`out-test/release-evidence/CHAT_VISUAL_FIX_20260922/REVIEW.json`. Visual parent,
-operation, policy and resource ownership are verified within the documented
-cleanup limits. Subsequent Canvas fenced-turn work requires new validation.
+`out-test/release-evidence/CANVAS_FENCED_FIX_20260922/REVIEW.json`. Captured Canvas
+fenced-turn authority and reentrant job cleanup are verified. Subsequent async
+media work requires new validation.
 
 ## Completion requirements
 
@@ -26,13 +26,13 @@ cleanup limits. Subsequent Canvas fenced-turn work requires new validation.
 | G1 | Current behavior for all 15 providers | Dated official release/protocol sources, exact supported versions, implementation review and regression coverage for changed contracts | Core-provider audit corrected eight providers' install/update targets and retired model suggestions; latest native contracts and remaining providers remain open |
 | G2 | Actual provider functionality | Installed supported runtime plus authenticated editor turns; streaming, error recovery, Stop during preparation/execution/approval, concurrent panels, history and each advertised capability | Unverified for real accounts; fixtures and installed-runtime proofs have narrower scope |
 | G3 | Native operation completeness | Supported read/write/command/network/delegation paths retain authoritative approvals, captured authority, side-effect provenance and cancellation; actual effects observed | Copilot writes, OpenCode shell and restricted Cursor/Continue are unresolved; other transport limits require review |
-| G4 | Canvas ownership and behavior (R8) | Authoritative artifact load/switch/save/close owner, tool/view lifecycle ownership, deferred-race tests, browser and packaged editor acceptance | Artifact session, save ordering and tool-session ownership verified on `98fbfa0`; 342 focused Canvas cases and all candidate gates pass. Fenced parser/turn, async media/export/capability ownership and failed-close recovery remain open |
+| G4 | Canvas ownership and behavior (R8) | Authoritative artifact load/switch/save/close owner, tool/view lifecycle ownership, deferred-race tests, browser and packaged editor acceptance | Artifact session, save ordering and tool-session ownership verified on `98fbfa0`; 342 focused Canvas cases and all candidate gates pass. Fenced parser/turn and reentrant job cleanup pass all gates on `d38c8ba`; async media/export/capability ownership and failed-close recovery remain open |
 | G5 | Chat timeline and interaction ownership (R9) | Remaining state has explicit ownership; ordering, replay, cancellation and multi-panel behavior preserved in browser/editor tests | Ten Chromium witnesses cover stale intake, final-only loss and duplicate completion; four real-host witnesses show stale ordinary-provider effects after replacement. Host and compaction ownership fixes pass all candidate gates on `ffe7071`, with 62 new regressions. R9b timeline/request identity passes all candidate gates on `09b8503`: local 14,677 tests/one unchanged skip, 107 additions, all 15 hosted checks and five independent archives. R9c visual ownership passes all candidate gates on `4bcd08c`: 14,807 local tests/one unchanged skip, 130 additions, all 15 checks and five archives. Broader interaction ownership and immediate compaction transport cancellation remain open |
-| G6 | Minimum runtime and editor compatibility (R10/E3) | Host source checks against minimum Node declarations, exact Node 18.17.1 runtime checks, minimum and stable packaged editor acceptance on supported platforms | R10 passes on `4bcd08c` across all three hosted declaration gates (246 host files), 23 exact Node 18.17.1 runtime checks, 28 runner probes and minimum/stable packaged editor checks; minimum macOS GUI startup remains unresolved |
+| G6 | Minimum runtime and editor compatibility (R10/E3) | Host source checks against minimum Node declarations, exact Node 18.17.1 runtime checks, minimum and stable packaged editor acceptance on supported platforms | R10 passes on `d38c8ba` across all three hosted declaration gates (247 host files), 23 exact Node 18.17.1 runtime checks, 28 runner probes and minimum/stable packaged editor checks; minimum macOS GUI startup remains unresolved |
 | G7 | Complete owned-process termination (E7) | Stop/timeout leaves no owned descendants, including escaped sessions or an exited parent; no unrelated processes signaled; actual supported-platform proofs | Bounded failure reporting exists; stronger orphan containment is open |
 | G8 | Desk functionality and acceptance (E1) | Implement remaining task authority/execution and exercise pairing, grants, revocation, scope, replay, disconnect/Stop and returned results across two machines | Status/lookup implemented; task execution absent; private relay and second machine explicitly unavailable |
 | G9 | Persistence and downgrade acceptance (E5) | Current persistence/migration/recovery proofs plus a controlled real-profile downgrade with matching snapshots and no silent loss | Synthetic old-source probes demonstrate schema/field loss; real-profile acceptance open |
-| G10 | Final release candidate validation | Exact final source, full suites with understood skips, performance, audits, build, five archives, installed editors, all 15 required hosted checks and independent reviews | `4bcd08c`: local 14,807 passed/one unchanged skip, 130 added cases with no baseline cases removed; all 15 hosted source/performance/package/editor gates and five independent archive reviews pass. Subsequent Canvas work requires fresh validation |
+| G10 | Final release candidate validation | Exact final source, full suites with understood skips, performance, audits, build, five archives, installed editors, all 15 required hosted checks and independent reviews | `d38c8ba`: local 14,880 passed/one unchanged skip, 73 added cases with no baseline cases removed; all 15 hosted source/performance/package/editor gates and five independent archive reviews pass. Subsequent media work requires fresh validation |
 | G11 | Release disposition (E6) | Reviewable final candidate, applicable external gates complete, and authorization for main merge/tag/publication | Candidate-branch publication authorized; final release actions remain outstanding |
 
 ## Provider evidence ledger
@@ -126,14 +126,20 @@ merely to make this checklist pass.
   native absence skip). All 15 hosted checks, five independent archives and six
   hosted editor runs pass on `4bcd08c`. All three platforms pass the actual browser
   and process controls; full and production dependency audits report zero.
-- Current item R8a is Canvas fenced parser and captured turn/artifact ownership.
+- R8a Canvas fenced parser and captured turn/artifact ownership is complete on `d38c8ba`.
   Eight actual-host failures and two valid controls at `4bcd08c` demonstrate
   approval widening, nonce-field confusion, artifact retargeting and shared-parser
   loss/splicing. Independent witness/plan review is complete. Implementation and independent review pass, including actual host authority
   and reentrant job cleanup. Full local validation passes 14,880 tests, one unchanged
   skip and 73 additions with none removed. Local package/editor acceptance passes (13 passed, one expected native absence
-  skip). Hosted checks remain pending in `CANVAS_FENCED_FIX_20260922/`.
-  Evidence: `CANVAS_REMAINING_REVIEW_20260922/`.
+  skip). All 15 hosted checks, five independent archive reviews and six editor runs
+  pass in `CANVAS_FENCED_FIX_20260922/`. Historical evidence remains in
+  `CANVAS_REMAINING_REVIEW_20260922/`.
+- Current item R8b/C2 is asynchronous Canvas media ownership and staged asset
+  persistence. Nine historical witnesses/controls and the store transaction
+  design are reviewed in `CANVAS_MEDIA_REVIEW_20260922/`. Implementation passes local
+  typecheck, lint, 15,006 tests (one unchanged skip), package shape and independent
+  review in `CANVAS_MEDIA_FIX_20260922/`; hosted acceptance remains required.
 
 Current working evidence goes in dated subdirectories of
 `out-test/release-evidence/`: `OPENROUTER_FIX_20260920/`,

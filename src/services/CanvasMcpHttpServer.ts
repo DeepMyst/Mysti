@@ -207,24 +207,29 @@ export class CanvasMcpHttpServer {
     }
     // Plan 20 §3.6: the token is scoped to ONE artifact. A valid bearer whose
     // design is gone is dead, not a pass into the user's next design.
-    if (this._stopped || !this._bindingHolds()) {
-      this._revoked = true;
-      res.writeHead(410, { 'content-type': 'text/plain' });
-      res.on('finish', () => { void this.stop(); });
-      res.end('canvas session ended');
-      return;
-    }
+    if (this._stopped || !this._bindingHolds()) { this._endSession(res); return; }
     const path = (req.url || '').split('?')[0];
     if (path !== '/mcp') {
       res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
       return;
     }
-    if (!this._transport) {
+    const transport = this._transport;
+    if (!transport) {
       res.writeHead(503, { 'content-type': 'text/plain' }).end('not ready');
       return;
     }
     const body = req.method === 'POST' ? await readJson(req) : undefined;
-    await this._transport.handleRequest(req, res, body);
+    // A slow body can straddle a design switch or stop. Only the exact
+    // transport admitted above may dispatch, and only while the binding holds.
+    if (this._stopped || this._transport !== transport || !this._bindingHolds()) { this._endSession(res); return; }
+    await transport.handleRequest(req, res, body);
+  }
+
+  private _endSession(res: http.ServerResponse): void {
+    this._revoked = true;
+    res.writeHead(410, { 'content-type': 'text/plain' });
+    res.on('finish', () => { void this.stop(); });
+    res.end('canvas session ended');
   }
 }
 

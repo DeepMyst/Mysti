@@ -27,6 +27,7 @@ import {
   type MigrationReport,
 } from '../canvas/pageMigration';
 import type { DocNode } from '../canvas/doc/DocNode';
+import type { CanvasApprovalMode } from './CanvasOpExecutor';
 import type {
   CanvasArtifact,
   ArtifactPage,
@@ -344,6 +345,58 @@ export interface ArtifactStoreOptions {
    * without mocking `vscode.workspace.fs`.
    */
   getRoot?: () => string | null;
+  /** Only the owned media transaction's filesystem operations. */
+  mediaFs?: MediaAssetFileOps;
+}
+
+declare const mediaDestinationBrand: unique symbol;
+export interface MediaAssetDestination {
+  readonly operationId: string;
+  readonly artifactId: string;
+  readonly workspaceIdentity: string;
+  readonly [mediaDestinationBrand]: true;
+}
+export interface MediaAssetCommitControl {
+  readonly signal: AbortSignal;
+  isCurrent(): boolean;
+  readonly approvalFloor: CanvasApprovalMode;
+  liveApproval(): CanvasApprovalMode;
+  accepted?(operationId: string): void;
+}
+export interface MediaAssetSubmission {
+  readonly runId: string;
+  readonly jobId: string;
+  submit(record: CanvasAssetRecord, approval: CanvasApprovalMode): CanvasOp | null;
+}
+export type MediaAssetCommitResult =
+  | { state: 'refused'; committed: false; reason: 'cancelled' | 'stale' | 'unavailable' | 'invalid'; error?: string; cleanupIncomplete?: true }
+  | { state: 'durable'; committed: true; operationId: string; asset: CanvasAssetRecord; op: CanvasOp; approval: CanvasApprovalMode; cleanupIncomplete?: true }
+  | { state: 'unsaved'; committed: true; operationId: string; assetId: string; opId?: string; error: string; recoveryRetained: true }
+  | { state: 'retired'; committed: true; operationId: string; reason: 'deleted' | 'restored'; cleanupIncomplete?: true };
+export interface MediaAssetFileOps {
+  mkdir(directory: string): Promise<void>;
+  writeExclusive(file: string, bytes: Buffer): Promise<void>;
+  read(file: string): Promise<Buffer>;
+  rename(from: string, to: string): Promise<void>;
+  removeOwnedTemp(file: string): Promise<void>;
+}
+const realMediaFs: MediaAssetFileOps = {
+  mkdir: async directory => { await fs.mkdir(directory, { recursive: true }); },
+  writeExclusive: (file, bytes) => fs.writeFile(file, bytes, { flag: 'wx', mode: 0o600 }),
+  read: file => fs.readFile(file),
+  rename: (from, to) => fs.rename(from, to),
+  removeOwnedTemp: file => fs.rm(file, { force: true }),
+};
+interface MediaPathState { epoch: number; retiring: number; retired?: 'deleted' | 'restored'; lastRetirement?: 'deleted' | 'restored' }
+interface MediaEntry {
+  store: ArtifactStore; destination: MediaAssetDestination; artifact: CanvasArtifact;
+  root: string; canvasDir: string; dir: string; file: string; epoch: number;
+  phase: 'captured' | 'preparing' | 'committing' | 'unsaved' | 'durable' | 'refused';
+  task?: Promise<MediaAssetCommitResult>; result?: MediaAssetCommitResult;
+  control?: Readonly<MediaAssetCommitControl>; submission?: Readonly<MediaAssetSubmission>;
+  record?: CanvasAssetRecord; approval?: CanvasApprovalMode; op?: CanvasOp;
+  assetTemp?: string; assetFile?: string; assetReady?: boolean; submitted?: boolean;
+  temps: Set<string>; retired?: 'deleted' | 'restored';
 }
 
 /**
@@ -367,6 +420,12 @@ export class ArtifactStore {
   // saving. Share in-process mutation ordering, keyed by the absolute artifact
   // file; independent workspaces/designs retain independent write queues.
   private static readonly _pendingWrites = new Map<string, Promise<unknown>>();
+  private static readonly _mediaPaths = new Map<string, MediaPathState>();
+  private static readonly _mediaObjects = new WeakMap<CanvasArtifact, { file: string; epoch: number }>();
+  private static readonly _mediaRevisions = new WeakMap<CanvasArtifact, number>();
+  private static readonly _mediaPending = new Map<string, MediaEntry>();
+  private readonly _mediaEntries = new WeakMap<MediaAssetDestination, MediaEntry>();
+  private readonly _mediaFs: Readonly<MediaAssetFileOps>;
   private _getRoot: () => string | null;
   private _designSpec = new DesignSpecManager();
   /**
@@ -378,6 +437,7 @@ export class ArtifactStore {
 
   constructor(opts: ArtifactStoreOptions = {}) {
     this._getRoot = opts.getRoot ?? (() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null);
+    this._mediaFs = Object.freeze({ ...(opts.mediaFs ?? realMediaFs) });
   }
 
   // ========================================================================
@@ -394,7 +454,7 @@ export class ArtifactStore {
     // App & website design is the primary use; a new artifact defaults to
     // `screens` (→ desktop frame) unless a caller asks for deck/document/board.
     const kind = opts.kind ?? 'screens';
-    return {
+    const artifact: CanvasArtifact = {
       id: crypto.randomUUID(),
       version: 1,
       kind,
@@ -408,6 +468,9 @@ export class ArtifactStore {
       createdAt: now,
       updatedAt: now,
     };
+    const dir = this.artifactDir(artifact.id);
+    if (dir) { this._registerMediaObject(artifact, path.join(dir, ARTIFACT_FILE)); }
+    return artifact;
   }
 
   // ========================================================================
@@ -450,10 +513,19 @@ export class ArtifactStore {
       const revision = currentRevision?.();
       const payload: JsonRecord = { schemaVersion: ARTIFACT_SCHEMA_VERSION, ...artifact };
       payload.schemaVersion = ARTIFACT_SCHEMA_VERSION;
-      return { revision, serialized: JSON.stringify(payload, null, 2), summary: summaryOf(artifact) };
+      return { revision, mediaRevision: ArtifactStore._mediaRevisions.get(artifact) ?? 0,
+        serialized: JSON.stringify(payload, null, 2), summary: summaryOf(artifact) };
     };
     let snapshot = capture();
     return ArtifactStore._queueArtifactWrite(filePath, async () => {
+      const media = ArtifactStore._mediaPending.get(path.resolve(filePath));
+      if (media?.artifact === artifact && ['committing', 'unsaved'].includes(media.phase)) {
+        const result = await media.store._finishMedia(media);
+        if (result.state !== 'durable') { throw new Error(result.state === 'unsaved' ? result.error : 'Media persistence remains incomplete.'); }
+      }
+      // A queued snapshot of THIS object may precede an accepted media op.
+      // Never borrow another view's object when refreshing it.
+      if (snapshot.mediaRevision !== (ArtifactStore._mediaRevisions.get(artifact) ?? 0)) { snapshot = capture(); }
       await fs.mkdir(dir, { recursive: true });
       for (;;) {
         // Back up the previous completed write, not a competing writer's old head.
@@ -502,8 +574,9 @@ export class ArtifactStore {
     if (!dir) { return null; }
     const filePath = path.join(dir, ARTIFACT_FILE);
     await ArtifactStore._waitForWrites(file => file === path.resolve(filePath));
+    const mediaEpoch = this._mediaPath(filePath).epoch;
     const res = await this._readAndValidate(filePath);
-    if (res.ok) { return res.artifact; }
+    if (res.ok) { this._registerMediaObject(res.artifact, filePath, mediaEpoch); return res.artifact; }
 
     const backup = await this._readBackup(dir);
     if (res.missing) {
@@ -536,7 +609,9 @@ export class ArtifactStore {
     const dir = this.artifactDir(artifactId);
     if (!dir) { return null; }
     const filePath = path.join(dir, ARTIFACT_FILE);
+    const retirement = this._beginMediaRetirement(filePath, 'restored');
     return ArtifactStore._queueArtifactWrite(filePath, async () => {
+      await this._retireMedia(filePath, 'restored');
       // Use private validation inside this queue: public load/list wait on the
       // pending mutation, which would make this operation wait on itself.
       const bakPath = path.join(dir, ARTIFACT_BACKUP_FILE);
@@ -562,7 +637,11 @@ export class ArtifactStore {
       await this._updateIndexEntry(summaryOf(res.artifact), filePath);
       console.log(`[Mysti] ArtifactStore: restored ${artifactId} from backup`);
       return res.artifact;
-    });
+    }).then(artifact => {
+      retirement.state.retiring--;
+      if (artifact) { this._registerMediaObject(artifact, filePath, retirement.epoch); }
+      return artifact;
+    }, error => { retirement.state.retiring--; throw error; });
   }
 
   /**
@@ -648,7 +727,10 @@ export class ArtifactStore {
   async delete(artifactId: string): Promise<void> {
     const dir = this.artifactDir(artifactId);
     if (!dir) { return; }
-    return ArtifactStore._queueArtifactWrite(path.join(dir, ARTIFACT_FILE), async () => {
+    const filePath = path.join(dir, ARTIFACT_FILE);
+    const retirement = this._beginMediaRetirement(filePath, 'deleted');
+    return ArtifactStore._queueArtifactWrite(filePath, async () => {
+      await this._retireMedia(filePath, 'deleted');
       try {
         await fs.rm(dir, { recursive: true, force: true });
       } catch (err) {
@@ -662,7 +744,7 @@ export class ArtifactStore {
           console.log('[Mysti] ArtifactStore: index prune failed (non-fatal):', err);
         }
       });
-    });
+    }).finally(() => { retirement.state.retiring--; });
   }
 
   // ========================================================================
@@ -825,6 +907,230 @@ export class ArtifactStore {
   // ========================================================================
   // Asset registry — per-artifact content-addressed store
   // ========================================================================
+
+  /** Capture a destination before generation; neither later roots nor reused IDs can redirect it. */
+  captureMediaDestination(artifact: CanvasArtifact): MediaAssetDestination | null {
+    const root = this._getRoot();
+    if (!root || !ArtifactStore._isSafeArtifactId(artifact.id)) { return null; }
+    const dir = path.resolve(root, '.mysti', 'canvas', artifact.id);
+    const file = path.join(dir, ARTIFACT_FILE);
+    const state = this._mediaPath(file);
+    const object = ArtifactStore._mediaObjects.get(artifact);
+    if (state.retiring || state.retired || object?.file !== file || object.epoch !== state.epoch) { return null; }
+    const destination = Object.freeze({ operationId: crypto.randomUUID(), artifactId: artifact.id,
+      workspaceIdentity: path.resolve(root) }) as MediaAssetDestination;
+    this._mediaEntries.set(destination, { store: this, destination, artifact, root: path.resolve(root),
+      canvasDir: path.dirname(path.resolve(dir)), dir: path.resolve(dir), file, epoch: state.epoch,
+      phase: 'captured', temps: new Set() });
+    return destination;
+  }
+
+  commitGeneratedAsset(
+    destination: MediaAssetDestination, bytes: Buffer, mimeType: string,
+    metadata: Omit<CanvasAssetRecord, 'id' | 'ref' | 'ts'>,
+    control: MediaAssetCommitControl, submission: MediaAssetSubmission,
+  ): Promise<MediaAssetCommitResult> {
+    const entry = this._mediaEntries.get(destination);
+    if (!entry) { return Promise.resolve({ state: 'refused', committed: false, reason: 'invalid' }); }
+    if (entry.task) { return entry.task; }
+    if (entry.phase !== 'captured') { return Promise.resolve(entry.result!); }
+    let content: Buffer;
+    try {
+      content = Buffer.from(bytes);
+      const hash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+      const filename = `${hash}.${ArtifactStore._extForMime(mimeType)}`;
+      entry.assetFile = path.join(entry.dir, ASSETS_DIR, filename);
+      entry.assetTemp = path.join(entry.dir, ASSETS_DIR, `.media-${destination.operationId}.tmp`);
+      entry.record = Object.freeze({ ...JSON.parse(JSON.stringify(metadata)), id: crypto.randomUUID(),
+        ref: `asset://${destination.artifactId}/${ASSETS_DIR}/${filename}`, ts: Date.now() }) as CanvasAssetRecord;
+      entry.control = Object.freeze({ signal: control.signal, approvalFloor: control.approvalFloor,
+        isCurrent: control.isCurrent.bind(control), liveApproval: control.liveApproval.bind(control),
+        ...(control.accepted ? { accepted: control.accepted.bind(control) } : {}) });
+      entry.submission = Object.freeze({ runId: submission.runId, jobId: submission.jobId, submit: submission.submit.bind(submission) });
+    } catch (error) {
+      entry.phase = 'refused';
+      return Promise.resolve(entry.result = { state: 'refused', committed: false, reason: 'invalid', error: String(error) });
+    }
+    entry.task = ArtifactStore._queueArtifactWrite(entry.file, async () => {
+      entry.phase = 'preparing';
+      try {
+        let refusal = this._mediaRefusal(entry);
+        if (refusal) { return this._refuseMedia(entry, refusal); }
+        const pending = ArtifactStore._mediaPending.get(entry.file);
+        if (pending && pending !== entry) { return this._refuseMedia(entry, 'unavailable'); }
+        await this._mediaFs.mkdir(path.dirname(entry.assetFile!));
+        if ((refusal = this._mediaRefusal(entry))) { return this._refuseMedia(entry, refusal); }
+        await this._writeMediaTemp(entry, entry.assetTemp!, content);
+        if ((refusal = this._mediaRefusal(entry))) { return this._refuseMedia(entry, refusal); }
+        try {
+          const existing = await this._mediaFs.read(entry.assetFile!);
+          if (!existing.equals(content)) { throw new Error('Existing media hash file has different bytes.'); }
+          entry.assetReady = true;
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; } }
+        if ((refusal = this._mediaRefusal(entry))) { return this._refuseMedia(entry, refusal); }
+        const live = entry.control!.liveApproval();
+        if ((refusal = this._mediaRefusal(entry))) { return this._refuseMedia(entry, refusal); }
+        entry.approval = entry.control!.approvalFloor === 'auto' && live === 'auto' ? 'auto' : 'staged';
+        // Logical commit: final renames and captured submission now finish even
+        // after Stop. A rename may already have happened before its Promise settles.
+        entry.phase = 'committing';
+        ArtifactStore._mediaPending.set(entry.file, entry);
+        try { entry.control!.accepted?.(destination.operationId); }
+        catch (error) { console.warn('[Mysti] Media acceptance observer failed:', error); }
+        return this._finishMedia(entry);
+      } catch (error) { return this._refuseMedia(entry, 'invalid', String(error)); }
+    });
+    return entry.task;
+  }
+
+  retryMediaPersistence(destination: MediaAssetDestination): Promise<MediaAssetCommitResult> {
+    const entry = this._mediaEntries.get(destination);
+    if (!entry) { return Promise.resolve({ state: 'refused', committed: false, reason: 'invalid' }); }
+    return ArtifactStore._queueArtifactWrite(entry.file, async () => {
+      if (entry.phase === 'refused') {
+        const incomplete = !await this._cleanupMedia(entry);
+        return entry.result = { ...(entry.result as Extract<MediaAssetCommitResult, { state: 'refused' }>),
+          cleanupIncomplete: incomplete ? true : undefined };
+      }
+      if (entry.phase === 'captured' || entry.phase === 'preparing') { return { state: 'refused', committed: false, reason: 'invalid' }; }
+      const state = this._mediaPath(entry.file);
+      if (entry.retired || state.epoch !== entry.epoch) {
+        const incomplete = !await this._cleanupMedia(entry);
+        return { state: 'retired', committed: true, operationId: destination.operationId,
+          reason: entry.retired ?? state.lastRetirement!, ...(incomplete ? { cleanupIncomplete: true } : {}) };
+      }
+      return this._finishMedia(entry);
+    });
+  }
+
+  private async _finishMedia(entry: MediaEntry): Promise<MediaAssetCommitResult> {
+    if (entry.retired) { return { state: 'retired', committed: true, operationId: entry.destination.operationId, reason: entry.retired }; }
+    try {
+      if (!entry.assetReady) {
+        await this._renameMedia(entry.assetTemp!, entry.assetFile!);
+        entry.temps.delete(entry.assetTemp!);
+        entry.assetReady = true;
+      }
+      if (!entry.op) {
+        if (entry.submitted) { throw new Error('Media submission failed without an identifiable operation; explicit recovery is required.'); }
+        entry.submitted = true;
+        const before = new Set(entry.artifact.opLog.map(op => op.opId));
+        let submissionError: unknown;
+        try { entry.submission!.submit(entry.record!, entry.approval!); }
+        catch (error) { submissionError = error; }
+        entry.op = entry.artifact.opLog.find(op => !before.has(op.opId) && op.kind === 'add_asset'
+          && (op.proposedValue as Partial<CanvasAssetRecord> | undefined)?.id === entry.record!.id);
+        if (!entry.op) { throw submissionError ?? new Error('Media submission did not register its exact asset operation.'); }
+        ArtifactStore._mediaRevisions.set(entry.artifact, (ArtifactStore._mediaRevisions.get(entry.artifact) ?? 0) + 1);
+        if (submissionError) { console.warn('[Mysti] Media operation accepted before its notification failed:', submissionError); }
+      }
+      if (entry.phase !== 'durable') {
+        await this._refreshBackup(entry.dir, entry.file);
+        const serialize = () => {
+          const payload = { schemaVersion: ARTIFACT_SCHEMA_VERSION, ...entry.artifact };
+          payload.schemaVersion = ARTIFACT_SCHEMA_VERSION;
+          return JSON.stringify(payload, null, 2);
+        };
+        for (;;) {
+          const serialized = serialize();
+          const tmp = `${entry.file}.media-${entry.destination.operationId}-${_tmpCounter++}.tmp`;
+          await this._writeMediaTemp(entry, tmp, Buffer.from(serialized));
+          await this._renameMedia(tmp, entry.file);
+          entry.temps.delete(tmp);
+          if (serialized === serialize()) { break; }
+        }
+        await this._updateIndexEntry(summaryOf(entry.artifact), entry.file, entry.canvasDir);
+        entry.phase = 'durable';
+      }
+      const incomplete = !await this._cleanupMedia(entry);
+      return entry.result = { state: 'durable', committed: true, operationId: entry.destination.operationId,
+        asset: entry.record!, op: entry.op, approval: entry.approval!, ...(incomplete ? { cleanupIncomplete: true } : {}) };
+    } catch (error) {
+      entry.phase = 'unsaved';
+      ArtifactStore._mediaPending.set(entry.file, entry);
+      return entry.result = { state: 'unsaved', committed: true, operationId: entry.destination.operationId,
+        assetId: entry.record!.id, ...(entry.op ? { opId: entry.op.opId } : {}), error: String(error), recoveryRetained: true };
+    }
+  }
+
+  private _mediaRefusal(entry: MediaEntry): 'cancelled' | 'stale' | undefined {
+    if (entry.control!.signal.aborted) { return 'cancelled'; }
+    const current = entry.control!.isCurrent();
+    const root = this._getRoot();
+    const state = this._mediaPath(entry.file);
+    const object = ArtifactStore._mediaObjects.get(entry.artifact);
+    if (entry.control!.signal.aborted) { return 'cancelled'; }
+    if (!current || !root || path.resolve(root) !== entry.root || entry.artifact.id !== entry.destination.artifactId
+      || object?.file !== entry.file || object.epoch !== entry.epoch
+      || state.epoch !== entry.epoch || state.retiring || state.retired) { return 'stale'; }
+    return undefined;
+  }
+
+  private async _refuseMedia(entry: MediaEntry, reason: 'cancelled' | 'stale' | 'unavailable' | 'invalid', error?: string): Promise<MediaAssetCommitResult> {
+    entry.phase = 'refused';
+    const incomplete = !await this._cleanupMedia(entry);
+    if (incomplete) { ArtifactStore._mediaPending.set(entry.file, entry); }
+    return entry.result = { state: 'refused', committed: false, reason, ...(error ? { error } : {}),
+      ...(incomplete ? { cleanupIncomplete: true } : {}) };
+  }
+
+  private async _writeMediaTemp(entry: MediaEntry, file: string, bytes: Buffer): Promise<void> {
+    entry.temps.add(file);
+    try { await this._mediaFs.writeExclusive(file, bytes); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') { entry.temps.delete(file); }
+      throw error;
+    }
+  }
+
+  private async _cleanupMedia(entry: MediaEntry): Promise<boolean> {
+    for (const temp of [...entry.temps]) {
+      try { await this._mediaFs.removeOwnedTemp(temp); entry.temps.delete(temp); }
+      catch { /* keep the exact owned descriptor for a bounded later retry */ }
+    }
+    if (!entry.temps.size && ArtifactStore._mediaPending.get(entry.file) === entry) { ArtifactStore._mediaPending.delete(entry.file); }
+    return !entry.temps.size;
+  }
+
+  private async _renameMedia(from: string, to: string): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try { await this._mediaFs.rename(from, to); return; }
+      catch (error) {
+        if (process.platform !== 'win32' || attempt >= 5
+          || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) { throw error; }
+        await new Promise(resolve => setTimeout(resolve, 25 * 2 ** attempt));
+      }
+    }
+  }
+
+  private _mediaPath(file: string): MediaPathState {
+    const key = path.resolve(file);
+    let state = ArtifactStore._mediaPaths.get(key);
+    if (!state) { state = { epoch: 0, retiring: 0 }; ArtifactStore._mediaPaths.set(key, state); }
+    return state;
+  }
+
+  private _registerMediaObject(artifact: CanvasArtifact, file: string, expectedEpoch?: number): void {
+    const state = this._mediaPath(file);
+    if (state.retiring || (expectedEpoch !== undefined && state.epoch !== expectedEpoch)) { return; }
+    state.retired = undefined;
+    ArtifactStore._mediaObjects.set(artifact, { file: path.resolve(file), epoch: state.epoch });
+  }
+
+  private _beginMediaRetirement(file: string, reason: 'deleted' | 'restored'): { state: MediaPathState; epoch: number } {
+    const state = this._mediaPath(file);
+    state.epoch++; state.retiring++; state.retired = reason; state.lastRetirement = reason;
+    return { state, epoch: state.epoch };
+  }
+
+  private async _retireMedia(file: string, reason: 'deleted' | 'restored'): Promise<void> {
+    const entry = ArtifactStore._mediaPending.get(path.resolve(file));
+    if (!entry) { return; }
+    entry.retired = reason;
+    await entry.store._cleanupMedia(entry);
+    // Failed temporary-file cleanup remains owned even after restore. Never
+    // transfer it to the new artifact or remove shared final hash files.
+  }
 
   /**
    * Write raw bytes into the artifact's `assets/` dir (content-addressed,
@@ -1044,9 +1350,8 @@ export class ArtifactStore {
 
   // ---- listing index ----
 
-  private async _readIndex(): Promise<Map<string, ArtifactIndexEntry>> {
+  private async _readIndex(canvasDir = this._canvasDir()): Promise<Map<string, ArtifactIndexEntry>> {
     const result = new Map<string, ArtifactIndexEntry>();
-    const canvasDir = this._canvasDir();
     if (!canvasDir) { return result; }
     let raw: string;
     try {
@@ -1072,8 +1377,7 @@ export class ArtifactStore {
     return result;
   }
 
-  private async _writeIndex(entries: Map<string, ArtifactIndexEntry>): Promise<void> {
-    const canvasDir = this._canvasDir();
+  private async _writeIndex(entries: Map<string, ArtifactIndexEntry>, canvasDir = this._canvasDir()): Promise<void> {
     if (!canvasDir) { return; }
     try {
       await fs.mkdir(canvasDir, { recursive: true });
@@ -1091,14 +1395,14 @@ export class ArtifactStore {
   }
 
   /** Upsert one row after a save/restore. Best-effort — `list()` self-heals. */
-  private async _updateIndexEntry(summary: ArtifactSummary, filePath: string): Promise<void> {
-    if (!this._canvasDir()) { return; }
+  private async _updateIndexEntry(summary: ArtifactSummary, filePath: string, canvasDir = this._canvasDir()): Promise<void> {
+    if (!canvasDir) { return; }
     await this._queueIndexOp(async () => {
       try {
         const stat = await fs.stat(filePath);
-        const entries = await this._readIndex();
+        const entries = await this._readIndex(canvasDir);
         entries.set(summary.id, { ...summary, mtimeMs: stat.mtimeMs, size: stat.size });
-        await this._writeIndex(entries);
+        await this._writeIndex(entries, canvasDir);
       } catch (err) {
         console.log('[Mysti] ArtifactStore: index update failed (non-fatal):', err);
       }

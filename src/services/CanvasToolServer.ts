@@ -18,6 +18,12 @@ import { listMcpTools, callMcpTool } from '../managers/CanvasMcpBridge';
 import type { CanvasToolContext } from '../managers/CanvasToolDispatch';
 import type { PreviewIssue } from './CanvasPreviewService';
 import type { CanvasMediaService, MediaKind } from './CanvasMediaService';
+import type { CanvasMediaOperation } from '../canvas/CanvasMediaOperation';
+
+export interface CanvasMediaRequest {
+  readonly requestId: string | number;
+  readonly signal: AbortSignal;
+}
 
 /** The async render-to-PNG + vision-critique tool (Playwright/vision injected). */
 export type RenderPagePreviewHook = (
@@ -78,6 +84,8 @@ export interface CanvasToolServerOptions {
   renderPagePreview?: RenderPagePreviewHook;
   /** Optional media generation; when set, exposes generate_visual/generate_video. */
   mediaService?: CanvasMediaService;
+  /** Capture lifetime authority; a synchronous tool context alone cannot authorize async writes. */
+  captureMediaOperation?: (ctx: CanvasToolContext, request: CanvasMediaRequest) => CanvasMediaOperation | null;
   serverName?: string;
   version?: string;
 }
@@ -87,11 +95,13 @@ export class CanvasToolServer {
   private _resolveContext: () => CanvasToolContext | null;
   private _renderPagePreview?: RenderPagePreviewHook;
   private _mediaService?: CanvasMediaService;
+  private _captureMediaOperation?: CanvasToolServerOptions['captureMediaOperation'];
 
   constructor(opts: CanvasToolServerOptions) {
     this._resolveContext = opts.resolveContext;
     this._renderPagePreview = opts.renderPagePreview;
     this._mediaService = opts.mediaService;
+    this._captureMediaOperation = opts.captureMediaOperation;
     this._server = new Server(
       { name: opts.serverName ?? 'mysti-canvas', version: opts.version ?? '0.1.0' },
       { capabilities: { tools: {} } },
@@ -121,7 +131,7 @@ export class CanvasToolServer {
       return { tools };
     });
 
-    this._server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    this._server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       const ctx = this._resolveContext();
       if (!ctx) {
         return { content: [{ type: 'text', text: 'No active canvas to edit. Open the canvas first.' }], isError: true };
@@ -136,7 +146,11 @@ export class CanvasToolServer {
         const kind: MediaKind = req.params.name === 'generate_video' ? 'video' : 'image';
         const size = typeof args.width === 'number' && typeof args.height === 'number'
           ? { width: args.width as number, height: args.height as number } : undefined;
-        const result = await this._mediaService.generate(ctx.artifact, {
+        const operation = this._captureMediaOperation?.(ctx, { requestId: extra.requestId, signal: extra.signal });
+        if (!operation) {
+          return { content: [{ type: 'text', text: 'No current Canvas media operation. Reopen the Canvas or start a new request.' }], isError: true };
+        }
+        const result = await this._mediaService.generate(operation, {
           kind,
           prompt: String(args.prompt ?? ''),
           role: typeof args.role === 'string' ? args.role : undefined,
@@ -145,10 +159,14 @@ export class CanvasToolServer {
         });
         if (!result.ok) {
           const hint = result.connectHint ? ` <<<MYSTI_CONNECT:${result.connectHint}>>>` : '';
-          return { content: [{ type: 'text', text: `${result.error}${hint}` }], isError: true };
+          // An accepted edit whose save needs retry must never look like a
+          // cancelled edit with no effects; retain that distinction on MCP.
+          return { content: [{ type: 'text', text: result.committed
+            ? JSON.stringify(result) : `${result.error}${hint}` }], isError: true };
         }
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: true, source: result.source, asset: { id: result.asset!.id, ref: result.asset!.ref, role: result.asset!.role } }) }],
+          content: [{ type: 'text', text: JSON.stringify({ ...result,
+            asset: { id: result.asset!.id, ref: result.asset!.ref, role: result.asset!.role } }) }],
         };
       }
 

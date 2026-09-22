@@ -31,18 +31,34 @@ export interface McpToolCallResult {
   content: Array<{ type: string; [k: string]: unknown }>;
 }
 
-/** Race a promise against a timeout; rejects with a clear error if it wins. */
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+/** Release one waiter without cancelling a connection shared by other callers. */
+function waitForCaller<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) { return pending; }
   return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    p.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+    const cleanup = () => signal.removeEventListener('abort', abort);
+    const abort = () => { cleanup(); reject(signal.reason); };
+    signal.addEventListener('abort', abort, { once: true });
+    // Always observe late settlement, including a shared handshake after Stop.
+    pending.then(value => {
+      cleanup();
+      if (signal.aborted) { reject(signal.reason); } else { resolve(value); }
+    }, error => { cleanup(); reject(signal.aborted ? signal.reason : error); });
+    if (signal.aborted) { abort(); }
   });
+}
+
+interface Connection {
+  client: Client;
+  transport: StreamableHTTPClientTransport;
+  controller: AbortController;
+  ready: Promise<Client>;
+  closing?: Promise<void>;
 }
 
 export class McpClient {
   private _url: string;
   private _bearer?: string;
-  private _client: Client | null = null;
+  private _connection: Connection | null = null;
   /** Per-request timeout (ms). A hung MCP server must never hang a coordinator turn. */
   private readonly _timeoutMs: number;
 
@@ -52,8 +68,8 @@ export class McpClient {
     this._timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 30_000;
   }
 
-  private async _connect(): Promise<Client> {
-    if (this._client) { return this._client; }
+  private _connect(): Connection {
+    if (this._connection) { return this._connection; }
     // A bearer is a live account credential. The endpoint comes from a setting
     // (machine-scoped, but still a string), so refuse to put the token on the
     // wire in cleartext: https, or loopback for a local dev broker. This does
@@ -74,45 +90,98 @@ export class McpClient {
     const transport = new StreamableHTTPClientTransport(new URL(this._url), {
       requestInit: this._bearer ? { headers: { authorization: `Bearer ${this._bearer}` } } : undefined,
     });
-    // The transport connect has no built-in deadline — bound it so an
-    // unreachable/hung endpoint can't stall the caller indefinitely.
-    await withTimeout(client.connect(transport), this._timeoutMs, 'MCP connect');
-    this._client = client;
-    return client;
+    const connection: Connection = {
+      client, transport, controller: new AbortController(),
+      // Publish the reservation before connect can emit callbacks or another
+      // lazy caller starts. The handshake belongs to this connection only.
+      ready: Promise.resolve().then(() => this._initialize(connection)),
+    };
+    this._connection = connection;
+    client.onclose = () => {
+      if (this._connection === connection) { this._connection = null; }
+      connection.controller.abort(new Error('MCP connection closed'));
+    };
+    return connection;
+  }
+
+  private async _initialize(connection: Connection): Promise<Client> {
+    const { client, transport, controller } = connection;
+    const timer = setTimeout(() => controller.abort(new Error(`MCP connect timed out after ${this._timeoutMs}ms`)), this._timeoutMs);
+    const pending = Promise.resolve().then(() => {
+      controller.signal.throwIfAborted();
+      return client.connect(transport, { signal: controller.signal, timeout: this._timeoutMs });
+    });
+    // A late, non-cooperative connect cannot publish or retain its resources
+    // after close/timeout. Cleanup always targets this captured client.
+    void pending.then(() => {
+      if (controller.signal.aborted || this._connection !== connection) { return this._closeConnection(connection); }
+    }, () => {}).catch(() => {});
+    try {
+      await waitForCaller(pending, controller.signal);
+      controller.signal.throwIfAborted();
+      if (this._connection !== connection) { throw new Error('MCP connection replaced'); }
+      return client;
+    } catch (error) {
+      if (this._connection === connection) { this._connection = null; }
+      controller.abort(error);
+      await this._closeConnection(connection);
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+
+  private _closeConnection(connection: Connection): Promise<void> {
+    if (connection.closing) { return connection.closing; }
+    const closing = Promise.resolve().then(() => connection.client.close()).catch(() => {}).finally(() => {
+      if (connection.closing === closing) { connection.closing = undefined; }
+    });
+    connection.closing = closing;
+    return closing;
+  }
+
+  private async _request<T>(signal: AbortSignal | undefined, send: (client: Client, signal: AbortSignal) => Promise<T>): Promise<T> {
+    signal?.throwIfAborted();
+    const connection = this._connect();
+    const client = await waitForCaller(connection.ready, signal);
+    signal?.throwIfAborted();
+    connection.controller.signal.throwIfAborted();
+    if (this._connection !== connection) { throw new Error('MCP connection replaced'); }
+    // The SDK retains its listener on a request signal. Give it a short-lived
+    // derived signal, never the run signal that can outlive many requests.
+    const controller = new AbortController();
+    const abort = () => controller.abort(signal?.reason);
+    signal?.addEventListener('abort', abort, { once: true });
+    try {
+      if (signal?.aborted) { abort(); }
+      controller.signal.throwIfAborted();
+      const result = await waitForCaller(send(client, controller.signal), signal);
+      signal?.throwIfAborted();
+      return result;
+    } finally { signal?.removeEventListener('abort', abort); }
   }
 
   /**
    * List the server's tools. Surfaces `inputSchema` so callers can advertise
-   * argument shapes to a model. On timeout/error the session is dropped so the
-   * next call reconnects fresh.
+   * argument shapes to a model. Cancellation and timeout belong to this request,
+   * so a sibling request can continue using the same session.
    */
-  async listTools(): Promise<Array<{ name: string; description?: string; inputSchema?: unknown }>> {
-    try {
-      const client = await this._connect();
-      const { tools } = await client.listTools(undefined, { timeout: this._timeoutMs });
-      return tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
-    } catch (e) {
-      await this.close();
-      throw e;
-    }
+  async listTools(signal?: AbortSignal): Promise<Array<{ name: string; description?: string; inputSchema?: unknown }>> {
+    const { tools } = await this._request(signal, (client, requestSignal) => client.listTools(undefined, { timeout: this._timeoutMs, signal: requestSignal }));
+    return tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<McpToolCallResult> {
-    try {
-      const client = await this._connect();
-      const res = await client.callTool({ name, arguments: args }, undefined, { timeout: this._timeoutMs });
-      const content = Array.isArray(res.content) ? (res.content as McpToolCallResult['content']) : [];
-      const text = content.filter(c => c.type === 'text').map(c => String((c as { text?: unknown }).text ?? '')).join('\n');
-      return { isError: res.isError === true, text, content };
-    } catch (e) {
-      // Drop the (possibly wedged) session so a retry reconnects; surface the error.
-      await this.close();
-      throw e;
-    }
+  async callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<McpToolCallResult> {
+    const res = await this._request(signal, (client, requestSignal) => client.callTool({ name, arguments: args }, undefined, { timeout: this._timeoutMs, signal: requestSignal }));
+    const content = Array.isArray(res.content) ? (res.content as McpToolCallResult['content']) : [];
+    const text = content.filter(c => c.type === 'text').map(c => String((c as { text?: unknown }).text ?? '')).join('\n');
+    return { isError: res.isError === true, text, content };
   }
 
   async close(): Promise<void> {
-    try { await this._client?.close(); } catch { /* ignore */ }
-    this._client = null;
+    const connection = this._connection;
+    this._connection = null;
+    if (connection) {
+      connection.controller.abort(new Error('MCP connection closed'));
+      await this._closeConnection(connection);
+    }
   }
 }

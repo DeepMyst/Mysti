@@ -374,3 +374,65 @@ describe('CanvasArtifactSession', () => {
     expect(h.ports.onError.mock.calls.map(call => call[0]).sort()).toEqual(['close', 'save']);
   });
 });
+
+describe('CanvasArtifactSession async media scopes', () => {
+  it('revokes before a target load and prevents capture against the outgoing snapshot', async () => {
+    const h = harness(); await h.session.initialize();
+    const scope = h.session.captureMediaScope()!;
+    const loaded = deferred<CanvasArtifact>(); h.load.mockReturnValue(loaded.promise);
+    const selecting = h.session.select('target');
+    expect(scope.signal.aborted).toBe(true); expect(scope.isCurrent()).toBe(false);
+    expect(h.session.captureMediaScope()).toBeNull();
+    loaded.resolve(artifact('Target')); await selecting;
+    expect(h.session.captureMediaScope()?.isCurrent()).toBe(true);
+    expect(scope.isCurrent()).toBe(false);
+  });
+
+  it('revokes before outgoing persistence and denies reentrant media until selection settles', async () => {
+    const h = harness(); await h.session.initialize();
+    const scope = h.session.captureMediaScope()!; const saving = deferred<void>();
+    h.save.mockImplementation(async () => { expect(scope.signal.aborted).toBe(true); expect(h.session.captureMediaScope()).toBeNull(); await saving.promise; });
+    const selecting = h.session.select(null, 'Next');
+    expect(h.session.captureMediaScope()).toBeNull(); saving.resolve(); await selecting;
+    expect(h.session.captureMediaScope()?.isCurrent()).toBe(true);
+  });
+
+  it.each(['missing', 'failed'] as const)('a %s selection restores fresh admission without reviving old signals', async outcome => {
+    const h = harness(); await h.session.initialize(); const snapshot = h.session.snapshot;
+    const old = h.session.captureMediaScope()!;
+    if (outcome === 'failed') { h.load.mockRejectedValue(new Error('inert failure')); }
+    await h.session.select('unavailable');
+    expect(h.session.snapshot).toBe(snapshot); expect(old.signal.aborted).toBe(true);
+    expect(h.session.captureMediaScope()?.isCurrent()).toBe(true);
+  });
+
+  it('a current-design choice cancels pending selection without its late finally blocking fresh media', async () => {
+    const h = harness(); await h.session.initialize(); const snapshot = h.session.snapshot!;
+    const loaded = deferred<CanvasArtifact>(); h.load.mockReturnValue(loaded.promise);
+    const selecting = h.session.select('other');
+    await h.session.select(snapshot.artifact.id);
+    const fresh = h.session.captureMediaScope()!; expect(fresh.isCurrent()).toBe(true);
+    loaded.resolve(artifact('Obsolete')); await selecting;
+    expect(h.session.snapshot).toBe(snapshot); expect(fresh.isCurrent()).toBe(true);
+  });
+
+  it('abort-listener selection reentrancy cannot reopen the successor admission barrier', async () => {
+    const h = harness(); await h.session.initialize(); const scope = h.session.captureMediaScope()!;
+    const loaded = deferred<CanvasArtifact>(); h.load.mockReturnValue(loaded.promise);
+    let successor!: Promise<void>;
+    scope.signal.addEventListener('abort', () => { successor = h.session.select('held-successor'); }, { once: true });
+    await h.session.select(null, 'Obsolete outer');
+    expect(h.session.captureMediaScope()).toBeNull();
+    loaded.resolve(artifact('Actual successor')); await successor;
+    expect(h.session.snapshot!.artifact.name).toBe('Actual successor');
+    expect(h.session.captureMediaScope()?.isCurrent()).toBe(true);
+  });
+
+  it('close revokes synchronously before transport or save awaits and never permits capture again', async () => {
+    const h = harness(); await h.session.initialize(); const scope = h.session.captureMediaScope()!;
+    const transport = deferred<void>(); h.ports.closeTransport.mockReturnValue(transport.promise);
+    const closing = h.session.close();
+    expect(scope.signal.aborted).toBe(true); expect(scope.isCurrent()).toBe(false); expect(h.session.captureMediaScope()).toBeNull();
+    transport.resolve(); await closing; expect(h.session.captureMediaScope()).toBeNull();
+  });
+});

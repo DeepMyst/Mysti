@@ -6,7 +6,7 @@
  * - McpClient end-to-end over REAL HTTP against our own CanvasMcpHttpServer
  *   (bearer auth) — the same client the DeepMyst-hub path uses.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -16,7 +16,8 @@ import { CanvasMediaService } from '../../src/services/CanvasMediaService';
 import type { CanvasMediaDeps } from '../../src/services/CanvasMediaService';
 import { CanvasCapabilityRegistry } from '../../src/managers/CanvasCapabilityRegistry';
 import type { CapabilityInputs } from '../../src/managers/CanvasCapabilityRegistry';
-import { CanvasToolServer } from '../../src/services/CanvasToolServer';
+import { CanvasToolServer, type CanvasMediaRequest } from '../../src/services/CanvasToolServer';
+import { CanvasMediaOperation } from '../../src/canvas/CanvasMediaOperation';
 import { CanvasMcpHttpServer } from '../../src/services/CanvasMcpHttpServer';
 import { McpClient } from '../../src/services/McpClient';
 import { ArtifactStore } from '../../src/managers/ArtifactStore';
@@ -26,6 +27,14 @@ import type { CanvasToolContext } from '../../src/managers/CanvasToolDispatch';
 import type { CanvasArtifact } from '../../src/types';
 
 const PNG64 = Buffer.from('fake-png').toString('base64');
+
+function operation(ctx: CanvasToolContext, request?: CanvasMediaRequest): CanvasMediaOperation {
+  return new CanvasMediaOperation({ id: String(request?.requestId ?? 'inert-media'), ctx,
+    signal: request?.signal ?? new AbortController().signal,
+    isCurrent: () => true, liveApproval: () => ctx.approvalMode, publish: () => {},
+  });
+}
+
 
 function registry(over: { hub?: string[]; keys?: string[] } = {}): CanvasCapabilityRegistry {
   const hub = new Set(over.hub ?? []);
@@ -50,6 +59,11 @@ describe('CanvasMediaService', () => {
     return () => fs.rmSync(root, { recursive: true, force: true });
   });
 
+  function admitted(): CanvasMediaOperation {
+    return operation({ artifact, store, executor: new CanvasOpExecutor(store, new CanvasJobRouter(() => {})),
+      jobId: 'j', runId: 'mcp', approvalMode: 'auto' });
+  }
+
   function deps(over: Partial<CanvasMediaDeps> & { reg?: CanvasCapabilityRegistry } = {}): CanvasMediaDeps {
     return {
       registry: over.reg ?? registry({ hub: ['fal_ai'] }),
@@ -62,7 +76,7 @@ describe('CanvasMediaService', () => {
 
   it('routes to the brokered (DeepMyst/fal) generator when the hub is connected', async () => {
     const d = deps();
-    const r = await new CanvasMediaService(d).generate(artifact, { kind: 'image', prompt: 'a city skyline', role: 'hero', sourcePageId: 'p1' });
+    const r = await new CanvasMediaService(d).generate(admitted(), { kind: 'image', prompt: 'a city skyline', role: 'hero', sourcePageId: 'p1' });
     expect(r.ok).toBe(true);
     expect(r.source).toBe('deepmyst');
     expect(d.callBrokered).toHaveBeenCalledOnce();
@@ -77,7 +91,7 @@ describe('CanvasMediaService', () => {
 
   it('falls back to the local generator when only a key is present', async () => {
     const d = deps({ reg: registry({ keys: ['openai'] }) });
-    const r = await new CanvasMediaService(d).generate(artifact, { kind: 'image', prompt: 'x' });
+    const r = await new CanvasMediaService(d).generate(admitted(), { kind: 'image', prompt: 'x' });
     expect(r.ok).toBe(true);
     expect(r.source).toBe('local');
     expect(d.callBrokered).not.toHaveBeenCalled();
@@ -85,7 +99,7 @@ describe('CanvasMediaService', () => {
 
   it('returns a connect hint when the capability is off', async () => {
     const d = deps({ reg: registry() });
-    const r = await new CanvasMediaService(d).generate(artifact, { kind: 'image', prompt: 'x' });
+    const r = await new CanvasMediaService(d).generate(admitted(), { kind: 'image', prompt: 'x' });
     expect(r.ok).toBe(false);
     expect(r.connectHint).toBe('canvas-image');
     expect(r.error).toContain('not connected');
@@ -93,21 +107,21 @@ describe('CanvasMediaService', () => {
 
   it('fetches URL results (fal CDN) before persisting', async () => {
     const d = deps({ callBrokered: vi.fn().mockResolvedValue({ url: 'https://cdn.fal.ai/x.png', mimeType: 'image/png' }) });
-    const r = await new CanvasMediaService(d).generate(artifact, { kind: 'image', prompt: 'x' });
+    const r = await new CanvasMediaService(d).generate(admitted(), { kind: 'image', prompt: 'x' });
     expect(r.ok).toBe(true);
-    expect(d.fetchBytes).toHaveBeenCalledWith('https://cdn.fal.ai/x.png');
+    expect(d.fetchBytes).toHaveBeenCalledWith('https://cdn.fal.ai/x.png', expect.any(AbortSignal));
   });
 
   it('video requests use the canvas-video capability and role video', async () => {
     const d = deps({ reg: registry({ hub: ['fal_ai'] }) });
-    const r = await new CanvasMediaService(d).generate(artifact, { kind: 'video', prompt: 'intro clip' });
+    const r = await new CanvasMediaService(d).generate(admitted(), { kind: 'video', prompt: 'intro clip' });
     expect(r.ok).toBe(true);
     expect(r.asset!.role).toBe('video');
   });
 
   it('surfaces generator failures as clean errors', async () => {
     const d = deps({ callBrokered: vi.fn().mockRejectedValue(new Error('rate limited')) });
-    const r = await new CanvasMediaService(d).generate(artifact, { kind: 'image', prompt: 'x' });
+    const r = await new CanvasMediaService(d).generate(admitted(), { kind: 'image', prompt: 'x' });
     expect(r.ok).toBe(false);
     expect(r.error).toContain('rate limited');
   });
@@ -127,10 +141,15 @@ describe('CanvasToolServer media tools', () => {
     return () => fs.rmSync(root, { recursive: true, force: true });
   });
 
+  const connected: Array<{ client: Client; server: CanvasToolServer }> = [];
+  afterEach(async () => {
+    for (const { client, server } of connected.splice(0)) { await client.close(); await server.close(); }
+  });
   async function connect(server: CanvasToolServer) {
     const client = new Client({ name: 't', version: '1.0.0' }, { capabilities: {} });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(st), client.connect(ct)]);
+    connected.push({ client, server });
     return client;
   }
 
@@ -148,13 +167,13 @@ describe('CanvasToolServer media tools', () => {
     const bare = await connect(new CanvasToolServer({ resolveContext: () => ctx }));
     expect((await bare.listTools()).tools.map(t => t.name)).not.toContain('generate_visual');
 
-    const withMedia = await connect(new CanvasToolServer({ resolveContext: () => ctx, mediaService: mediaService(registry({ hub: ['fal_ai'] })) }));
+    const withMedia = await connect(new CanvasToolServer({ resolveContext: () => ctx, captureMediaOperation: operation, mediaService: mediaService(registry({ hub: ['fal_ai'] })) }));
     const names = (await withMedia.listTools()).tools.map(t => t.name);
     expect(names).toEqual(expect.arrayContaining(['generate_visual', 'generate_video']));
   });
 
   it('generate_visual persists an asset and returns its asset:// ref', async () => {
-    const client = await connect(new CanvasToolServer({ resolveContext: () => ctx, mediaService: mediaService(registry({ hub: ['fal_ai'] })) }));
+    const client = await connect(new CanvasToolServer({ resolveContext: () => ctx, captureMediaOperation: operation, mediaService: mediaService(registry({ hub: ['fal_ai'] })) }));
     const res: any = await client.callTool({ name: 'generate_visual', arguments: { prompt: 'hero image', role: 'hero', sourcePageId: 'p9' } });
     expect(res.isError).toBeFalsy();
     const payload = JSON.parse(res.content[0].text);
@@ -165,7 +184,7 @@ describe('CanvasToolServer media tools', () => {
   });
 
   it('returns isError + MYSTI_CONNECT hint when the capability is off', async () => {
-    const client = await connect(new CanvasToolServer({ resolveContext: () => ctx, mediaService: mediaService(registry()) }));
+    const client = await connect(new CanvasToolServer({ resolveContext: () => ctx, captureMediaOperation: operation, mediaService: mediaService(registry()) }));
     const res: any = await client.callTool({ name: 'generate_visual', arguments: { prompt: 'x' } });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('<<<MYSTI_CONNECT:canvas-image>>>');

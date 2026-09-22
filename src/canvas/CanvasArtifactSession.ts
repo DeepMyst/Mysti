@@ -14,6 +14,12 @@ export interface CanvasArtifactSnapshot {
   readonly history: CanvasHistory;
 }
 
+/** A captured async operation may never follow a selection or reopened view. */
+export interface CanvasArtifactMediaScope {
+  readonly signal: AbortSignal;
+  isCurrent(): boolean;
+}
+
 export type CanvasArtifactFailure = 'initial-load' | 'load' | 'render' | 'save' | 'relink' | 'close';
 
 export interface CanvasArtifactSessionPorts {
@@ -45,6 +51,8 @@ export class CanvasArtifactSession {
   private _initializing?: Promise<void>;
   private _closing?: Promise<void>;
   private _saveTimer: ReturnType<typeof setTimeout> | undefined;
+  private _mediaController = new AbortController();
+  private _mediaSelecting = false;
   private readonly _saves = new WeakMap<CanvasArtifact, SaveState>();
 
   public constructor(
@@ -56,6 +64,15 @@ export class CanvasArtifactSession {
 
   public get snapshot(): CanvasArtifactSnapshot | null { return this._snapshot; }
   public get closed(): boolean { return this._closed; }
+
+  public captureMediaScope(): CanvasArtifactMediaScope | null {
+    const snapshot = this._snapshot;
+    const controller = this._mediaController;
+    if (this._closed || this._mediaSelecting || !snapshot) { return null; }
+    return Object.freeze({ signal: controller.signal,
+      isCurrent: () => !this._closed && !this._mediaSelecting && !controller.signal.aborted
+        && this._mediaController === controller && this._snapshot === snapshot });
+  }
 
   /** Most recent saved design, or a new empty design; an explicit choice wins. */
   public initialize(): Promise<void> {
@@ -88,31 +105,42 @@ export class CanvasArtifactSession {
   public async select(artifactId: string | null, name?: string): Promise<void> {
     if (this._closed) { return; }
     const generation = ++this._generation;
-    // The live design can contain unsaved edits. Loading its disk copy before
-    // flushing would replace those edits and reset history. A current-design
-    // selection also cancels any older pending switch without losing its save.
-    if (artifactId && this._snapshot?.artifact.id === artifactId) { return; }
-    let next: CanvasArtifact | null;
+    // Revoke before loading/flushing. No new media may attach to the outgoing
+    // snapshot while a selection is waiting to persist and replace it.
+    this._mediaSelecting = true;
+    const previousMedia = this._mediaController;
+    this._mediaController = new AbortController();
+    previousMedia.abort();
+    if (!this._owns(generation)) { return; }
     try {
-      next = artifactId
-        ? await this.store.load(artifactId)
-        : this._ports.createEmpty(name || this._defaultName);
-    } catch (error) {
-      if (this._owns(generation)) { this._report('load', error); }
-      return;
+      // The live design can contain unsaved edits. Loading its disk copy before
+      // flushing would replace those edits and reset history. A current-design
+      // selection also cancels any older pending switch without losing its save.
+      if (artifactId && this._snapshot?.artifact.id === artifactId) { return; }
+      let next: CanvasArtifact | null;
+      try {
+        next = artifactId
+          ? await this.store.load(artifactId)
+          : this._ports.createEmpty(name || this._defaultName);
+      } catch (error) {
+        if (this._owns(generation)) { this._report('load', error); }
+        return;
+      }
+      if (!next || !this._owns(generation)) { return; }
+      this._cancelSaveTimer();
+      const outgoing = this._snapshot?.artifact;
+      // A save failure keeps the only in-memory copy and its undo history alive.
+      // A later edit, selection or close can retry; do not publish its replacement.
+      if (outgoing && !await this._flush(outgoing)) { return; }
+      if (!this._owns(generation)) { return; }
+      this._publish(next);
+      // Rendering is non-fatal: it must not skip revocation of the old bearer.
+      if (!this._owns(generation)) { return; }
+      await this.refreshTransport();
+      if (this._owns(generation)) { this._ports.ready('selection'); }
+    } finally {
+      if (this._owns(generation)) { this._mediaSelecting = false; }
     }
-    if (!next || !this._owns(generation)) { return; }
-    this._cancelSaveTimer();
-    const outgoing = this._snapshot?.artifact;
-    // A save failure keeps the only in-memory copy and its undo history alive.
-    // A later edit, selection or close can retry; do not publish its replacement.
-    if (outgoing && !await this._flush(outgoing)) { return; }
-    if (!this._owns(generation)) { return; }
-    this._publish(next);
-    // Rendering is non-fatal: it must not skip revocation of the old bearer.
-    if (!this._owns(generation)) { return; }
-    await this.refreshTransport();
-    if (this._owns(generation)) { this._ports.ready('selection'); }
   }
 
   /** Capability discovery calls this later, using the design selected NOW. */
@@ -143,6 +171,8 @@ export class CanvasArtifactSession {
     this._closed = true;
     ++this._generation;
     this._snapshot = null;
+    this._mediaSelecting = true;
+    this._mediaController.abort();
     this._cancelSaveTimer();
     let transport: Promise<void>;
     try { transport = this._ports.closeTransport(); }

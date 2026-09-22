@@ -211,6 +211,33 @@ describe('CanvasMcpHttpServer artifact binding', () => {
     }
   });
 
+  it('a body still arriving when the design switches is refused, never dispatched', async () => {
+    const a = makeContext('A');
+    const b = makeContext('B');
+    let current = a.artifact.id;
+    const server = new CanvasMcpHttpServer(new CanvasToolServer({ resolveContext: () => a.ctx }), {
+      artifactId: a.artifact.id,
+      currentArtifactId: () => current,
+    });
+    const h = await server.start();
+    try {
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.request({ host: '127.0.0.1', port: h.port, path: '/mcp', method: 'POST',
+          headers: { host: '127.0.0.1', authorization: `Bearer ${h.token}`, 'content-type': 'application/json' } },
+        (res) => { res.resume(); res.on('end', () => resolve(res.statusCode ?? 0)); });
+        req.on('error', reject);
+        req.flushHeaders();
+        req.write('{');
+        // Headers passed every gate; switch designs before the body completes.
+        setTimeout(() => { current = b.artifact.id; req.end('}'); }, 50);
+      });
+      expect(status).toBe(410);
+      expect(server.isRevoked).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('two artifacts get two different tokens', () => {
     const a = makeContext('A');
     const s1 = new CanvasMcpHttpServer(new CanvasToolServer({ resolveContext: () => a.ctx }), { artifactId: 'one' });

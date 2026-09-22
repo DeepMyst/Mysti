@@ -250,11 +250,13 @@ export async function fetchGuarded(
 
   let current = raw;
   for (let hop = 0; hop <= maxRedirects; hop++) {
-    const url = await assertAllowedOutboundUrl(current, opts);
-    const res = await doFetch(url.toString(), { ...(init ?? {}), redirect: 'manual' });
+    const url = await waitForOutbound(() => assertAllowedOutboundUrl(current, opts), init?.signal);
+    const res = await waitForOutbound(() => doFetch(url.toString(), { ...(init ?? {}), redirect: 'manual' }), init?.signal, discardResponse);
+    if (init?.signal?.aborted) { discardResponse(res); init.signal.throwIfAborted(); }
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
       if (!location) { return res; }
+      discardResponse(res);
       try {
         current = new URL(location, url).toString();
       } catch {
@@ -274,20 +276,77 @@ export async function fetchGuarded(
  */
 export async function fetchGuardedBytes(
   raw: string,
-  opts: OutboundUrlPolicyOptions = {}
+  opts: OutboundUrlPolicyOptions = {},
+  signal?: AbortSignal,
 ): Promise<{ base64: string; mimeType?: string }> {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
-  const res = await fetchGuarded(raw, undefined, opts);
+  const res = await fetchGuarded(raw, signal ? { signal } : undefined, opts);
+  if (signal?.aborted) { discardResponse(res); signal.throwIfAborted(); }
   if (!res.ok) {
+    discardResponse(res);
     throw new Error(`media download failed: HTTP ${res.status}`);
   }
   const declared = Number(res.headers.get('content-length') ?? NaN);
   if (Number.isFinite(declared) && declared > maxBytes) {
+    discardResponse(res);
     throw new OutboundUrlBlockedError(raw, `content-length ${declared} exceeds ${maxBytes}`);
   }
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.byteLength > maxBytes) {
-    throw new OutboundUrlBlockedError(raw, `body ${buf.byteLength} exceeds ${maxBytes}`);
+  const reader = res.body?.getReader();
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let complete = false;
+  try {
+    if (reader) {
+      for (;;) {
+        const part = await waitForOutbound(() => reader.read(), signal);
+        signal?.throwIfAborted();
+        if (part.done) { break; }
+        size += part.value.byteLength;
+        if (size > maxBytes) { throw new OutboundUrlBlockedError(raw, `body ${size} exceeds ${maxBytes}`); }
+        chunks.push(Buffer.from(part.value));
+      }
+    }
+    signal?.throwIfAborted();
+    const buf = Buffer.concat(chunks, size);
+    complete = true;
+    return { base64: buf.toString('base64'), mimeType: res.headers.get('content-type') ?? undefined };
+  } finally {
+    if (reader) {
+      // Cancellation must release the caller even if an injected stream's
+      // cancellation hook never settles. Its eventual rejection is observed.
+      if (!complete) { void reader.cancel().catch(() => {}); }
+      reader.releaseLock();
+    }
   }
-  return { base64: buf.toString('base64'), mimeType: res.headers.get('content-type') ?? undefined };
+}
+
+function discardResponse(response: Response): void {
+  if (response.body) { void response.body.cancel().catch(() => {}); }
+}
+
+/** Stop one DNS/fetch/read waiter; observe late work and discard its owned body. */
+function waitForOutbound<T>(start: () => Promise<T>, signal?: AbortSignal | null, discard?: (value: T) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal?.removeEventListener('abort', abort);
+    const abort = () => {
+      if (settled) { return; }
+      settled = true; cleanup(); reject(signal?.reason);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) { abort(); return; }
+    let pending: Promise<T>;
+    try { pending = start(); } catch (error) { settled = true; cleanup(); reject(error); return; }
+    pending.then(value => {
+      if (settled || signal?.aborted) {
+        discard?.(value);
+        abort();
+        return;
+      }
+      settled = true; cleanup(); resolve(value);
+    }, error => {
+      if (settled) { return; }
+      settled = true; cleanup(); reject(signal?.aborted ? signal.reason : error);
+    });
+  });
 }

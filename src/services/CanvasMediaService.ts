@@ -13,7 +13,8 @@
 
 import { CanvasCapabilityRegistry } from '../managers/CanvasCapabilityRegistry';
 import type { ArtifactStore } from '../managers/ArtifactStore';
-import type { CanvasArtifact, CanvasAssetRecord } from '../types';
+import type { CanvasAssetRecord, CanvasOp } from '../types';
+import { CanvasMediaCancelled, CanvasMediaOperation } from '../canvas/CanvasMediaOperation';
 
 /**
  * Media generation for the canvas (Plan 05 §9 / Phase 6.3): `generate_visual`
@@ -54,11 +55,11 @@ export interface GeneratedMedia {
 export interface CanvasMediaDeps {
   registry: CanvasCapabilityRegistry;
   /** Call the brokered (DeepMyst-hub) generator for a kind. */
-  callBrokered(kind: MediaKind, req: GenerateMediaRequest): Promise<GeneratedMedia>;
+  callBrokered(kind: MediaKind, req: GenerateMediaRequest, signal: AbortSignal): Promise<GeneratedMedia>;
   /** Call the local BYO-key generator for a kind. */
-  generateLocal(kind: MediaKind, req: GenerateMediaRequest): Promise<GeneratedMedia>;
+  generateLocal(kind: MediaKind, req: GenerateMediaRequest, signal: AbortSignal): Promise<GeneratedMedia>;
   /** Download bytes for URL results (returns base64). */
-  fetchBytes(url: string): Promise<{ base64: string; mimeType?: string }>;
+  fetchBytes(url: string, signal: AbortSignal): Promise<{ base64: string; mimeType?: string }>;
   store: ArtifactStore;
 }
 
@@ -71,6 +72,15 @@ export interface GenerateMediaResult {
   error?: string;
   /** Set when the capability is off — the UI turns this into a connect card. */
   connectHint?: string;
+  /** Accepted commits may need persistence recovery; cancellation cannot undo them. */
+  committed?: boolean;
+  persisted?: boolean;
+  cancelled?: boolean;
+  pending?: boolean;
+  opId?: string;
+  status?: CanvasOp['status'];
+  recoveryRetained?: boolean;
+  cleanupIncomplete?: boolean;
 }
 
 const KIND_TO_SLUG = { image: 'canvas-image', video: 'canvas-video' } as const;
@@ -79,54 +89,88 @@ export class CanvasMediaService {
   private _deps: CanvasMediaDeps;
 
   constructor(deps: CanvasMediaDeps) {
-    this._deps = deps;
+    this._deps = { ...deps };
   }
 
-  async generate(artifact: CanvasArtifact, req: GenerateMediaRequest): Promise<GenerateMediaResult> {
-    const slug = KIND_TO_SLUG[req.kind];
-    const status = this._deps.registry.resolve(slug);
-
-    if (!status.enabled) {
-      return {
-        ok: false,
-        error: `${req.kind} generation is not connected. Connect it via DeepMyst (fal) or add a local API key.`,
-        connectHint: slug,
-      };
-    }
-
+  async generate(operation: CanvasMediaOperation, request: GenerateMediaRequest): Promise<GenerateMediaResult> {
     try {
+      operation.assertCurrent();
+      if (operation.store !== this._deps.store || !operation.destination) {
+        return { ok: false, committed: false, error: 'No captured workspace destination for this media operation.' };
+      }
+      // Generation and provenance use the same admitted inputs, even if a
+      // caller changes its object while a provider or download is pending.
+      const req: GenerateMediaRequest = Object.freeze({ ...request,
+        ...(request.size ? { size: Object.freeze({ ...request.size }) } : {}),
+      });
+      const slug = KIND_TO_SLUG[req.kind];
+      const status = this._deps.registry.resolve(slug);
+      operation.assertCurrent();
+      if (!status.enabled) {
+        return { ok: false, committed: false,
+          error: `${req.kind} generation is not connected. Connect it via DeepMyst (fal) or add a local API key.`,
+          connectHint: slug };
+      }
       const media = status.source === 'deepmyst'
-        ? await this._deps.callBrokered(req.kind, req)
-        : await this._deps.generateLocal(req.kind, req);
+        ? await operation.wait(() => this._deps.callBrokered(req.kind, req, operation.signal))
+        : await operation.wait(() => this._deps.generateLocal(req.kind, req, operation.signal));
 
       let base64 = media.base64;
       let mimeType = media.mimeType;
+      const model = media.model;
       if (!base64 && media.url) {
-        const fetched = await this._deps.fetchBytes(media.url);
+        const url = media.url;
+        const fetched = await operation.wait(() => this._deps.fetchBytes(url, operation.signal));
         base64 = fetched.base64;
         mimeType = fetched.mimeType || mimeType;
       }
       if (!base64) {
-        return { ok: false, error: 'generator returned no media content' };
+        return { ok: false, committed: false, error: 'generator returned no media content' };
       }
 
       // The record role is the storage kind; the intent (hero/background/...)
       // travels in the prompt provenance.
       const role: CanvasAssetRecord['role'] =
         req.kind === 'video' ? 'video' : req.role === 'icon' || req.role === 'svg' ? req.role : 'image';
-      const asset = await this._deps.store.addAsset(artifact, base64, mimeType, {
+      operation.assertCurrent();
+      // Do not race this promise against Stop: once the store admits its final
+      // publication, that exact accepted commit must finish or retain recovery.
+      const committed = await this._deps.store.commitGeneratedAsset(operation.destination, Buffer.from(base64, 'base64'), mimeType, {
         role,
         prompt: req.role ? `[${req.role}] ${req.prompt}` : req.prompt,
-        model: media.model,
+        model,
         size: req.size,
         sourcePageId: req.sourcePageId,
-      });
-      if (!asset) {
-        return { ok: false, error: 'no workspace to store the asset in' };
+      }, operation.control, operation.submission);
+      if (committed.state === 'refused') {
+        return { ok: false, committed: false, cancelled: committed.reason === 'cancelled' || committed.reason === 'stale',
+          error: committed.error ?? `Canvas media commit refused: ${committed.reason}.`,
+          ...(committed.cleanupIncomplete ? { cleanupIncomplete: true } : {}) };
       }
-      return { ok: true, asset, source: status.source as 'deepmyst' | 'local' };
+      if (committed.state === 'retired') {
+        return { ok: false, committed: true, persisted: false,
+          error: `The accepted media edit was retired because the design was ${committed.reason}.` };
+      }
+      if (committed.state === 'unsaved') {
+        return { ok: false, committed: true, persisted: false, recoveryRetained: true,
+          opId: committed.opId, error: committed.error };
+      }
+      // Publication is secondary to the completed store write; a failed view
+      // notification must not misreport an accepted edit as uncommitted.
+      let publicationError: string | undefined;
+      try { operation.publish(); }
+      catch (error) { publicationError = error instanceof Error ? error.message : String(error); }
+      return { ok: true, committed: true, persisted: true, asset: committed.asset,
+        opId: committed.op.opId, status: committed.op.status,
+        pending: committed.op.status === 'pending' || committed.op.status === 'stale',
+        source: status.source as 'deepmyst' | 'local',
+        ...(committed.cleanupIncomplete ? { cleanupIncomplete: true } : {}),
+        ...(publicationError ? { error: `Media saved; Canvas refresh failed: ${publicationError}` } : {}) };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      return { ok: false, committed: false, ...(err instanceof CanvasMediaCancelled ? { cancelled: true } : {}),
+        error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      operation.dispose();
     }
   }
 }

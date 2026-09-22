@@ -34,6 +34,7 @@ import { CanvasLiveness } from '../canvas/CanvasLiveness';
 import { CanvasTurnJobs } from '../canvas/CanvasTurnJobs';
 import { CanvasMcpSession } from '../canvas/CanvasMcpSession';
 import { CanvasArtifactSession } from '../canvas/CanvasArtifactSession';
+import { CanvasMediaOperation } from '../canvas/CanvasMediaOperation';
 import { CanvasFencedTurn } from '../canvas/CanvasFencedTurn';
 import { CanvasToolSession, type CanvasContextAuthority, type CanvasToolView } from '../canvas/CanvasToolSession';
 import { mintViewToken } from '../canvas/protocol';
@@ -449,6 +450,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _cancelledPanels: Set<string> = new Set();
   /** Captured ordinary stream cleanup, retired synchronously on panel handoff. */
   private _ordinaryRequestRetirements?: Map<string, (preserveRunning: boolean) => void>;
+  /** An active parent is a cancellation/policy ceiling, not MCP provenance. */
+  private _canvasMediaParents?: Map<string, {
+    request: ForegroundRequest; controller: AbortController;
+    approvalFloor: 'auto' | 'staged'; isCurrent(): boolean;
+  }>;
+  private _canvasMediaOperations?: Set<{ operation: CanvasMediaOperation; request?: ForegroundRequest }>;
   private _foregroundRequests?: Map<string, ForegroundRequest>;
   private _foregroundSequence = 0;
   private _questionForegroundPosts?: Map<string, QuestionOrigin>;
@@ -4024,6 +4031,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _admitForegroundRequest(panelId: string, requestId?: string): ForegroundRequest | undefined {
     const panel = this._panelStates.get(panelId);
     if (!panel || (requestId !== undefined && !validForegroundRequestId(requestId))) { return; }
+    this._retireCanvasMediaParent(panelId);
     const conversationId = panel.currentConversationId;
     const scope = this._delayedChannelTurns.capture(panelId);
     this._foregroundRequests?.get(panelId)?.retire();
@@ -4038,6 +4046,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private _cancelQueuedChannelTurn(panelId: string, preserveRunning = false, preserveStoppedAudit = false): void {
+    this._retireCanvasMediaParent(panelId);
     this._retireBackendVisual(panelId);
     // Retire the captured ordinary owner before a successor can begin. Other
     // lanes retain their existing lifecycle; this map never owns their jobs.
@@ -4119,6 +4128,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       settleOrdinary(undefined, preserveRunning);
     };
     const settleOrdinary = (error?: string, preserveRunning = false) => {
+      this._retireCanvasMediaParent(panelId, request);
       // Always retire this private parser, even when a replacement already owns
       // the panel. It cannot release or mutate that replacement's resources.
       canvasTurn?.retire();
@@ -4405,6 +4415,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Own ordinary preparation before its first await as well as the stream.
       ordinaryOwned = true;
       (this._ordinaryRequestRetirements ??= new Map()).set(panelId, retireOrdinary);
+      (this._canvasMediaParents ??= new Map()).set(panelId, {
+        request, controller: new AbortController(),
+        approvalFloor: resolveCanvasApproval(settings), isCurrent: acceptsTurn,
+      });
 
       // Get agent configuration for this conversation
       const agentConfig = conversationId
@@ -5190,6 +5204,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
 
           case 'error':
+            this._retireCanvasMediaParent(panelId, request);
             ordinaryTerminal = true;
             // Gate 4: a missing CLI gets a card with an Install button; anything
             // else keeps the plain error.
@@ -5203,6 +5218,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break ordinaryStream;
 
           case 'auth_error':
+            this._retireCanvasMediaParent(panelId, request);
             ordinaryTerminal = true;
             request.post({
               type: 'authError',
@@ -5297,6 +5313,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
 
           case 'done': {
+            this._retireCanvasMediaParent(panelId, request);
             // Capture usage stats if present in this chunk
             // Normalize at the boundary (see src/services/TokenAccounting.ts):
             // Anthropic buckets are disjoint, OpenAI's cached count is a SUBSET
@@ -5571,6 +5588,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
       if (!ordinaryTerminal && acceptsTurn()) {
+        this._retireCanvasMediaParent(panelId, request);
         backendVisual?.retire();
         ordinaryTerminal = true;
         request.post({ type: 'requestCancelled' });
@@ -8531,7 +8549,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // an HTML string, and there is no vision bridge). Wiring it is feature
       // work tracked in Plan 05 / plans/18 Wave 4 log, not a hook one-liner;
       // without the hook the tool is simply not advertised to the model.
-      this._canvasToolServer = new CanvasToolServer({ resolveContext: () => this._canvasToolContext({ kind: 'mcp' }), mediaService });
+      this._canvasToolServer = new CanvasToolServer({
+        resolveContext: () => this._canvasToolContext({ kind: 'mcp' }), mediaService,
+        captureMediaOperation: (ctx, request) => this._captureCanvasMediaOperation(ctx, request),
+      });
       // A design switch can finish while capabilities are loading. Connect the
       // current design, never the artifact captured by the initial load.
       await artifactSession.refreshTransport();
@@ -11759,6 +11780,64 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return this._canvasTools.context(authority);
   }
 
+  /** Retire only captured media; an obsolete finally cannot cancel a successor. */
+  private _retireCanvasMediaParent(panelId: string, request?: ForegroundRequest): void {
+    const parent = this._canvasMediaParents?.get(panelId);
+    const operations = [...this._canvasMediaOperations ?? []].filter(entry =>
+      entry.request?.panelId === panelId && (!request || entry.request === request));
+    if (parent && (!request || parent.request === request)) {
+      this._canvasMediaParents?.delete(panelId);
+      parent.controller.abort();
+    }
+    for (const { operation } of operations) { operation.retire(); }
+  }
+
+  /**
+   * The bearer authenticates MCP/view access. The active ordinary request adds
+   * a cancellation and policy ceiling, never proof that this call originated
+   * from that turn: per-turn MCP credentials are a separate native contract.
+   */
+  private _captureCanvasMediaOperation(
+    ctx: CanvasToolContext, request: { requestId: string | number; signal: AbortSignal },
+  ): CanvasMediaOperation | null {
+    const view = this._captureCanvasToolView();
+    const snapshot = view?.artifacts.snapshot;
+    if (!view || !snapshot || ctx.artifact !== snapshot.artifact || ctx.history !== snapshot.history
+      || ctx.store !== view.artifacts.store || ctx.executor !== view.artifacts.executor) { return null; }
+    const panel = this._panelStates.get(view.panelId);
+    const origin = view.originPanelId;
+    const originPanel = origin === null ? undefined : this._panelStates.get(origin);
+    const parent = origin === null ? undefined : this._canvasMediaParents?.get(origin);
+    if (!panel || (origin !== null && (!originPanel || !parent))) { return null; }
+    const scope = view.artifacts.captureMediaScope();
+    if (!scope) { return null; }
+    const owns = () => view.isCurrent() && scope.isCurrent()
+      && this._panelStates.get(view.panelId) === panel && this._canvasChatOrigin === origin
+      && (origin === null || (this._panelStates.get(origin) === originPanel
+        && this._canvasMediaParents?.get(origin) === parent && parent!.isCurrent()
+        && !parent!.controller.signal.aborted));
+    if (request.signal.aborted || !owns()) { return null; }
+    const settingsFor = this._getSettingsForPanel.bind(this);
+    const operation = new CanvasMediaOperation({
+      id: crypto.randomUUID(),
+      ctx: { ...ctx, approvalMode: ctx.approvalMode === 'auto'
+        && (!parent || parent.approvalFloor === 'auto') ? 'auto' : 'staged' },
+      signal: request.signal,
+      signals: [scope.signal, ...(parent ? [parent.controller.signal] : [])],
+      isCurrent: owns,
+      liveApproval: () => resolveCanvasApproval(settingsFor(origin ?? 'default')),
+      publish: () => { if (owns()) { view.publish(snapshot); } },
+      onDispose: () => {
+        for (const entry of this._canvasMediaOperations ?? []) {
+          if (entry.operation === operation) { this._canvasMediaOperations!.delete(entry); }
+        }
+      },
+    });
+    if (!operation.isCurrent()) { operation.retire(); operation.dispose(); return null; }
+    (this._canvasMediaOperations ??= new Set()).add({ operation, ...(parent ? { request: parent.request } : {}) });
+    return operation;
+  }
+
   private _canvasBoundTo(panelId: string): boolean {
     return this._canvasTools.boundTo(panelId);
   }
@@ -11915,24 +11994,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private _buildCanvasMediaService(registry: CanvasCapabilityRegistry, store: ArtifactStore): CanvasMediaService {
     let falClient: McpClient | null = null;
-    let falImageTool: string | null = null;
+    const falTools = new Map<MediaKind, string>();
 
-    const callBrokered = async (kind: MediaKind, req: GenerateMediaRequest): Promise<GeneratedMedia> => {
+    const callBrokered = async (kind: MediaKind, req: GenerateMediaRequest, signal: AbortSignal): Promise<GeneratedMedia> => {
+      signal.throwIfAborted();
       const auth = this._deepMystAuth;
       const dmKey = auth?.getApiKey();
       if (!auth?.isSignedIn() || !dmKey) { throw new Error('DeepMyst sign-in required for brokered generation'); }
       if (!falClient) {
         falClient = new McpClient({ url: auth.client.getMcpEndpointUrl('fal_ai'), bearer: dmKey });
       }
-      if (!falImageTool) {
-        const tools = await falClient.listTools();
+      let tool = falTools.get(kind);
+      if (!tool) {
+        const tools = await falClient.listTools(signal);
+        signal.throwIfAborted();
         const match = (res: RegExp) => tools.find(t => res.test(t.name))?.name ?? null;
-        falImageTool = kind === 'video'
+        tool = (kind === 'video'
           ? match(/video/i) ?? match(/generat/i)
-          : match(/text.?to.?image|image.*generat|flux/i) ?? match(/image/i);
-        if (!falImageTool) { throw new Error('no fal generation tool found on the DeepMyst connection'); }
+          : match(/text.?to.?image|image.*generat|flux/i) ?? match(/image/i)) ?? undefined;
+        if (!tool) { throw new Error('no fal generation tool found on the DeepMyst connection'); }
+        falTools.set(kind, tool);
       }
-      const res = await falClient.callTool(falImageTool, { prompt: req.prompt });
+      const res = await falClient.callTool(tool, { prompt: req.prompt }, signal);
+      signal.throwIfAborted();
       if (res.isError) { throw new Error(res.text || 'fal generation failed'); }
       // fal returns CDN URLs (in JSON or prose) — extract the first media URL.
       const urlMatch = res.text.match(/https?:\/\/[^\s"')]+\.(png|jpe?g|webp|mp4|webm)[^\s"')]*/i)
@@ -11941,13 +12025,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return { url: urlMatch[0], mimeType: kind === 'video' ? 'video/mp4' : 'image/png' };
     };
 
-    const generateLocal = async (kind: MediaKind, req: GenerateMediaRequest): Promise<GeneratedMedia> => {
+    const generateLocal = async (kind: MediaKind, req: GenerateMediaRequest, signal: AbortSignal): Promise<GeneratedMedia> => {
+      signal.throwIfAborted();
       if (kind === 'video') { throw new Error('local video generation is not supported yet — connect fal via DeepMyst'); }
       const apiKey = this._canvasSecrets ? await this._canvasSecrets.get('openai') : '';
+      signal.throwIfAborted();
       const result = await this._imageGenService.generate(req.prompt, {
         frameBounds: req.size,
+        signal,
         ...(apiKey ? { apiKey } : {}),
       } as Parameters<ImageGenerationService['generate']>[1]);
+      signal.throwIfAborted();
       return { base64: result.imageBase64, mimeType: 'image/png', model: 'gpt-image-1' };
     };
 
@@ -11957,8 +12045,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // http://169.254.169.254/latest/meta-data/ come back base64'd into a canvas
     // asset. `fetchGuardedBytes` applies the outbound origin policy on the
     // initial URL AND on every redirect hop, and size-caps the body.
-    const fetchBytes = (url: string): Promise<{ base64: string; mimeType?: string }> =>
-      fetchGuardedBytes(url);
+    const fetchBytes = (url: string, signal: AbortSignal): Promise<{ base64: string; mimeType?: string }> =>
+      fetchGuardedBytes(url, {}, signal);
 
     return new CanvasMediaService({ registry, callBrokered, generateLocal, fetchBytes, store });
   }
@@ -13664,6 +13752,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   public dispose(): void {
+    for (const panelId of this._canvasMediaParents?.keys() ?? []) { this._retireCanvasMediaParent(panelId); }
+    for (const { operation } of this._canvasMediaOperations ?? []) { operation.retire(); operation.dispose(); }
+    this._canvasMediaOperations?.clear();
     for (const panelId of this._backendVisualTurns?.keys() ?? []) { this._retireBackendVisual(panelId); }
     for (const visual of this._visualOperations?.values() ?? []) { visual.abort(); visual.dispose(); }
     this._dashboardVisualOwners?.clear();
