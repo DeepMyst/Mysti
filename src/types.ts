@@ -361,6 +361,8 @@ export interface PromptEnhancedPayload {
   enhancedById: string;
   fallback: boolean;
   changed: boolean;
+  /** Echo of the webview click that asked; a reply for any other click is stale. */
+  enhanceId?: string;
 }
 
 /**
@@ -372,6 +374,7 @@ export interface PromptEnhancedPayload {
 export interface PromptEnhanceUnavailablePayload {
   activeProviderName: string;
   reason: string;
+  enhanceId?: string;
 }
 
 /**

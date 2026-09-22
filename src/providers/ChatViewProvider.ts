@@ -2137,7 +2137,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'enhancePrompt':
-        await this._handleEnhancePrompt(msg.payload as string, msg.panelId);
+        await this._handleEnhancePrompt(msg.payload, msg.panelId);
         break;
 
       case 'deskRequestRoster':
@@ -6824,7 +6824,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async _handleEnhancePrompt(prompt: string, panelId?: string) {
+  private async _handleEnhancePrompt(request: unknown, panelId?: string) {
+    // Echo the click's id so the webview can drop a reply that outlived it.
+    const { prompt, enhanceId } = typeof request === 'string' ? { prompt: request, enhanceId: undefined }
+      : (request ?? {}) as { prompt?: unknown; enhanceId?: unknown };
+    if (typeof prompt !== 'string') { return; }
+    const echo = typeof enhanceId === 'string' ? { enhanceId } : {};
     try {
       // Send to AI to enhance the prompt. The result carries which backend ran
       // it and whether the text actually changed — 12 of 16 providers cannot
@@ -6834,7 +6839,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (panelId) {
         this._postToPanel(panelId, {
           type: 'promptEnhanced',
-          payload: result
+          payload: { ...result, ...echo }
         });
       }
     } catch (error) {
@@ -6847,7 +6852,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             type: 'promptEnhanceUnavailable',
             payload: {
               activeProviderName: error.activeProviderName,
-              reason: error.message
+              reason: error.message,
+              ...echo,
             } satisfies PromptEnhanceUnavailablePayload
           });
         }
@@ -6858,7 +6864,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (panelId) {
         this._postToPanel(panelId, {
           type: 'promptEnhanceError',
-          payload: error instanceof Error ? error.message : 'Failed to enhance prompt'
+          payload: { error: error instanceof Error ? error.message : 'Failed to enhance prompt', ...echo }
         });
       }
     }
