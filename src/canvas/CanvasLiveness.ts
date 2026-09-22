@@ -666,8 +666,17 @@ export class CanvasLiveness {
     if (spec.size) { started.size = { w: spec.size.w, h: spec.size.h }; }
     this._router.emit(job.jobId, started);
 
-    if (!this._disposed) {
-      state.timer = this._schedule(() => this._beat(job.jobId), this._heartbeatMs);
+    // The started sink may synchronously cancel/end this job, dispose its
+    // view, or open a successor with the same ID. Never give that old state a
+    // timer (or let its callback beat a replacement merely by looking up ID).
+    if (this._isCurrent(state)) {
+      const timer = this._schedule(() => this._beat(state), this._heartbeatMs);
+      if (this._isCurrent(state)) { state.timer = timer; }
+      else { this._unschedule(timer); }
+    } else {
+      state.closed = true;
+      state.cancelled = state.signal.aborted;
+      if (this._jobs.get(state.jobId) === state) { this._jobs.delete(state.jobId); }
     }
 
     return this._handle(state);
@@ -850,7 +859,10 @@ export class CanvasLiveness {
    */
   dispose(): void {
     this._disposed = true;
-    for (const state of this._jobs.values()) { this._stopTimer(state); }
+    for (const state of this._jobs.values()) {
+      this._stopTimer(state);
+      state.closed = true;
+    }
     this._jobs.clear();
     this._inbox.clear();
   }
@@ -924,20 +936,30 @@ export class CanvasLiveness {
   private _close(state: JobState, body: Omit<CanvasJobEvent, 'jobId'>): void {
     this._stopTimer(state);
     state.closed = true;
+    if (this._jobs.get(state.jobId) !== state) { return; }
     this._jobs.delete(state.jobId);
+    if (this._router.signal(state.jobId) !== state.signal) { return; }
     // `finish()` rather than `emit()`: it forgets the job as it emits, so the
     // terminal event is exactly one even if this raced a cancel. A cancel that
     // already fired dropped the job from the router, and `finish` no-ops.
     this._router.finish(state.jobId, body);
   }
 
-  private _beat(jobId: string): void {
-    const state = this._jobs.get(jobId);
-    if (!state || state.closed || state.cancelled) { return; }
+  private _isCurrent(state: JobState): boolean {
+    return !this._disposed && !state.closed && this._jobs.get(state.jobId) === state
+      && this._router.signal(state.jobId) === state.signal && !state.signal.aborted;
+  }
+
+  private _beat(state: JobState): void {
     // The router is the authority on liveness: a job cancelled through the
     // router directly (panel dispose, cancelAll) is gone from it, and a
     // heartbeat for it would be an event after the terminal one.
-    if (!this._router.has(jobId)) { this._stopTimer(state); this._jobs.delete(jobId); return; }
+    if (!this._isCurrent(state)) {
+      this._stopTimer(state);
+      state.closed = true;
+      if (this._jobs.get(state.jobId) === state) { this._jobs.delete(state.jobId); }
+      return;
+    }
     state.elapsedSeconds = Math.max(0, Math.round((this._now() - state.startedAt) / 1000));
     const body: Omit<CanvasLivenessEvent, 'jobId'> = {
       type: 'heartbeat',
@@ -946,7 +968,7 @@ export class CanvasLiveness {
       runId: state.runId,
     };
     if (state.pageId) { body.pageId = state.pageId; }
-    this._router.emit(jobId, body);
+    this._router.emit(state.jobId, body);
   }
 
   private _stopTimer(state: JobState): void {

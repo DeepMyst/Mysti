@@ -22,7 +22,7 @@ export interface ParsedCanvasOp {
 }
 
 export type CanvasOpParseResult =
-  | { ok: true; op: ParsedCanvasOp; raw: string }
+  | { ok: true; op: ParsedCanvasOp; raw: string; nonce?: string }
   | { ok: false; error: string; raw: string };
 
 const VALID_KINDS: ReadonlySet<string> = new Set<CanvasOpKind>([
@@ -118,6 +118,8 @@ export class CanvasOpParser {
     };
     if (typeof obj.targetPageId === 'string') { op.targetPageId = obj.targetPageId; }
     if (typeof obj.baseVersion === 'number') { op.baseVersion = obj.baseVersion; }
-    return { ok: true, op, raw };
+    // Authentication belongs to the transport envelope, never the stored op.
+    // A token mentioned inside proposedValue is not the nonce field.
+    return { ok: true, op, raw, ...(typeof obj.nonce === 'string' ? { nonce: obj.nonce } : {}) };
   }
 }

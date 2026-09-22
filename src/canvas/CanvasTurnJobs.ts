@@ -8,6 +8,26 @@ import type { LivenessJobHandle, LivenessJobSpec } from './CanvasLiveness';
 
 type TurnJobHandle = Pick<LivenessJobHandle, 'jobId' | 'done' | 'fail'>;
 
+interface TurnState {
+  requestId?: string;
+  cancel?: () => void;
+}
+
+interface OpenRequest {
+  turn: TurnState;
+  canvas: object;
+  label: string;
+  pageId?: string;
+}
+
+interface OpeningJob {
+  request: OpenRequest;
+  requestedId: string;
+  cancelled?: boolean;
+  error?: string;
+  next?: OpenRequest;
+}
+
 export interface CanvasTurnJobPorts {
   /** Resolve the current view's liveness owner at the moment an edit begins. */
   openJob(spec: LivenessJobSpec): TurnJobHandle | undefined;
@@ -24,42 +44,44 @@ export interface CanvasTurnJobPorts {
  * This owner cannot write an artifact, render a view, or access a provider.
  */
 export class CanvasTurnJobs {
-  private readonly _streamingPanels = new Set<string>();
+  private readonly _turns = new Map<string, TurnState>();
   private readonly _jobs = new Map<string, { handle: TurnJobHandle; requestedId: string; cancel?: () => void; cancelled?: boolean }>();
-  private readonly _cancelTurns = new Map<string, () => void>();
-  private readonly _turnIds = new Map<string, string>();
+  private readonly _opening = new Map<string, OpeningJob>();
+  private _canvas: object = {};
   private _disposed = false;
 
   public constructor(private readonly _ports: CanvasTurnJobPorts) {}
 
   public begin(panelId: string, cancelCapturedTurn?: () => void, requestId?: string): void {
     if (!this._disposed) {
-      this._streamingPanels.add(panelId);
-      if (cancelCapturedTurn) { this._cancelTurns.set(panelId, cancelCapturedTurn); }
-      else { this._cancelTurns.delete(panelId); }
-      if (requestId) { this._turnIds.set(panelId, requestId); }
-      else { this._turnIds.delete(panelId); }
+      this._turns.set(panelId, { cancel: cancelCapturedTurn, requestId });
     }
   }
 
   /** A late or detached write has no future turn end, so it cannot open a job. */
   public open(panelId: string, label: string, pageId?: string): void {
-    if (this._disposed || !this._streamingPanels.has(panelId) || this._jobs.has(panelId)) { return; }
-    const requestedId = this._jobId(panelId);
-    const handle = this._ports.openJob({
-      runId: 'chat-' + panelId,
-      jobId: requestedId,
-      label,
-      ...(pageId ? { pageId } : {}),
-    });
-    if (handle) { this._jobs.set(panelId, { handle, requestedId, cancel: this._cancelTurns.get(panelId) }); }
+    const turn = this._turns.get(panelId);
+    if (this._disposed || !turn || this._jobs.has(panelId)) { return; }
+    const request: OpenRequest = { turn, canvas: this._canvas, label, pageId };
+    const opening = this._opening.get(panelId);
+    if (opening) {
+      // A started sink may replace the turn or view synchronously. Serialize
+      // the replacement until the old handle returns: legacy IDs can match,
+      // and opening immediately would otherwise borrow that old live handle.
+      if (opening.request.turn !== turn || opening.request.canvas !== this._canvas) {
+        opening.next = request;
+      }
+      return;
+    }
+    this._open(panelId, request);
   }
 
   /** Every exit from a streaming turn closes its job at most once. */
   public end(panelId: string, error?: string): void {
-    this._streamingPanels.delete(panelId);
-    this._cancelTurns.delete(panelId);
-    this._turnIds.delete(panelId);
+    const turn = this._turns.get(panelId);
+    this._turns.delete(panelId);
+    const opening = this._opening.get(panelId);
+    if (opening && opening.request.turn === turn) { opening.error = error; }
     const job = this._jobs.get(panelId);
     if (!job) { return; }
     const { handle } = job;
@@ -79,6 +101,14 @@ export class CanvasTurnJobs {
       if (cancel) { cancel(); } else { this._ports.cancelPanel(panelId); }
       return;
     }
+    for (const [panelId, opening] of this._opening) {
+      if (opening.requestedId !== jobId) { continue; }
+      if (opening.cancelled) { return; }
+      opening.cancelled = true;
+      const cancel = opening.request.turn.cancel;
+      if (cancel) { cancel(); } else { this._ports.cancelPanel(panelId); }
+      return;
+    }
   }
 
   /**
@@ -86,20 +116,46 @@ export class CanvasTurnJobs {
    * a still-streaming turn can acquire a new job if the canvas is reopened.
    */
   public clearCanvas(): void {
+    this._canvas = {};
     this._jobs.clear();
   }
 
   /** The host disposes the canvas liveness owner before discarding this state. */
   public dispose(): void {
     this._disposed = true;
-    this._streamingPanels.clear();
-    this._cancelTurns.clear();
-    this._turnIds.clear();
+    this._turns.clear();
     this._jobs.clear();
   }
 
-  private _jobId(panelId: string): string {
-    const requestId = this._turnIds.get(panelId);
-    return `canvas-turn-${panelId}${requestId ? `-${requestId}` : ''}`;
+  private _isCurrent(panelId: string, request: OpenRequest): boolean {
+    return !this._disposed && this._turns.get(panelId) === request.turn && this._canvas === request.canvas;
+  }
+
+  private _open(panelId: string, request: OpenRequest): void {
+    const { turn, label, pageId } = request;
+    const requestedId = `canvas-turn-${panelId}${turn.requestId ? `-${turn.requestId}` : ''}`;
+    const opening: OpeningJob = { request, requestedId };
+    this._opening.set(panelId, opening);
+    try {
+      const handle = this._ports.openJob({
+        runId: 'chat-' + panelId,
+        jobId: requestedId,
+        label,
+        ...(pageId ? { pageId } : {}),
+      });
+      if (handle) {
+        if (this._isCurrent(panelId, request)) {
+          this._jobs.set(panelId, { handle, requestedId, cancel: turn.cancel, cancelled: opening.cancelled });
+        } else {
+          try {
+            if (opening.error) { handle.fail(opening.error); } else { handle.done(); }
+          } catch { /* only the obsolete handle is being retired */ }
+        }
+      }
+    } finally {
+      this._opening.delete(panelId);
+      const next = opening.next;
+      if (next && this._isCurrent(panelId, next)) { this._open(panelId, next); }
+    }
   }
 }

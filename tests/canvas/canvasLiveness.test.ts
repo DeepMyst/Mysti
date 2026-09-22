@@ -50,10 +50,10 @@ class FakeClock {
   }
 }
 
-function setup() {
+function setup(onEvent?: (event: CanvasJobEvent, liveness: CanvasLiveness) => void) {
   const events: CanvasJobEvent[] = [];
   const posted: CanvasHostMessage[] = [];
-  const router = new CanvasJobRouter(e => events.push(e));
+  const router = new CanvasJobRouter(e => { events.push(e); onEvent?.(e, liveness); });
   const clock = new FakeClock();
   const liveness = new CanvasLiveness({
     router,
@@ -205,6 +205,94 @@ describe('CanvasLiveness — Tier 1 jobs', () => {
     expect(clock.liveTimers).toBe(1);
   });
 
+  it.each(['cancel', 'endRun'] as const)('does not schedule a heartbeat after %s during started', action => {
+    const { events, clock, router, liveness } = setup((event, live) => {
+      if (event.type !== 'started') { return; }
+      if (action === 'cancel') { live.cancel(event.jobId); } else { live.endRun('run'); }
+    });
+    const job = liveness.openJob({ runId: 'run', jobId: 'owned', label: 'Editing' });
+    expect(job.closed).toBe(true);
+    expect(job.cancelled).toBe(action === 'cancel');
+    expect(liveness.jobIds()).toEqual([]);
+    expect(router.activeCount()).toBe(0);
+    expect(clock.liveTimers).toBe(0);
+    clock.advance(10_000);
+    job.done();
+    expect(events.map(event => event.type)).toEqual(['started', 'done']);
+  });
+
+  it('does not leave a heartbeat after the router cancels directly during started', () => {
+    const { events, clock, router, liveness } = setup(event => {
+      if (event.type === 'started') { router.cancel(event.jobId); }
+    });
+    const job = liveness.openJob({ runId: 'run', jobId: 'owned', label: 'Editing' });
+    expect(job.closed).toBe(true);
+    expect(job.signal.aborted).toBe(true);
+    expect(liveness.jobIds()).toEqual([]);
+    expect(router.activeCount()).toBe(0);
+    expect(clock.liveTimers).toBe(0);
+    expect(events.map(event => event.type)).toEqual(['started', 'done']);
+  });
+
+  it('keeps a same-ID successor and sibling independent when started cancels and reopens a job', () => {
+    let replace = true;
+    const { events, clock, router, liveness } = setup((event, live) => {
+      if (event.type !== 'started' || event.jobId !== 'owned' || !replace) { return; }
+      replace = false;
+      live.cancel(event.jobId);
+      live.openJob({ runId: 'next', jobId: 'owned', label: 'Successor' });
+    });
+    const sibling = liveness.openJob({ runId: 'sibling', jobId: 'other', label: 'Sibling' });
+    const old = liveness.openJob({ runId: 'old', jobId: 'owned', label: 'Old' });
+    expect(old.closed).toBe(true);
+    expect(old.signal.aborted).toBe(true);
+    expect(liveness.jobIds()).toEqual(['other', 'owned']);
+    expect(router.activeCount()).toBe(2);
+    expect(clock.liveTimers).toBe(2);
+    old.done(); old.fail('late');
+    clock.advance(2000);
+    expect(events.filter(event => event.type === 'heartbeat').map(event => event.label))
+      .toEqual(['Sibling', 'Successor']);
+    expect(sibling.signal.aborted).toBe(false);
+    liveness.endRun('next');
+    expect(liveness.jobIds()).toEqual(['other']);
+    expect(clock.liveTimers).toBe(1);
+    sibling.done();
+    expect(clock.liveTimers).toBe(0);
+  });
+
+  it('does not revive a disposed view from the returning started call or its retained handle', () => {
+    const { events, clock, router, liveness } = setup((event, live) => {
+      if (event.type === 'started') { live.dispose(); router.cancelAll(); }
+    });
+    const job = liveness.openJob({ runId: 'run', jobId: 'owned', label: 'Editing' });
+    expect(job.closed).toBe(true);
+    expect(liveness.jobIds()).toEqual([]);
+    expect(router.activeCount()).toBe(0);
+    expect(clock.liveTimers).toBe(0);
+    job.progress(0.5); job.done(); job.fail('late');
+    clock.advance(10_000);
+    expect(events.map(event => event.type)).toEqual(['started', 'done']);
+  });
+
+  it('does not let an already queued old heartbeat tick the reused job ID', () => {
+    const callbacks: Array<() => void> = [];
+    const events: CanvasJobEvent[] = [];
+    const router = new CanvasJobRouter(event => events.push(event));
+    const live = new CanvasLiveness({ router, schedule: fn => { callbacks.push(fn); return fn; }, unschedule: () => {} });
+    const old = live.openJob({ runId: 'old', jobId: 'owned', label: 'Old' });
+    old.done();
+    const next = live.openJob({ runId: 'next', jobId: 'owned', label: 'Successor' });
+    callbacks[0]();
+    expect(events.filter(event => event.type === 'heartbeat')).toEqual([]);
+    expect(live.jobIds()).toEqual(['owned']);
+    expect(next.closed).toBe(false);
+    callbacks[1]();
+    expect(events.filter(event => event.type === 'heartbeat')).toMatchObject([{ label: 'Successor' }]);
+    next.done();
+    live.dispose();
+  });
+
   it('the handle survives destructuring — speculate() keeps its receiver', () => {
     const { events, liveness } = setup();
     const job = liveness.openJob({ runId: 'r', label: 'Working' });
@@ -327,6 +415,7 @@ describe('CanvasRunInbox — the per-run steering queue', () => {
 describe('scrubInboxText — comments are DATA', () => {
   it('strips control characters and terminal escapes', () => {
     const scrubbed = scrubInboxText('red \u0007\u001B[31m alert\u0000');
+    // eslint-disable-next-line no-control-regex -- Assert the untrusted text contains no control characters.
     expect(scrubbed).not.toMatch(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/);
     expect(scrubbed).toContain('alert');
   });

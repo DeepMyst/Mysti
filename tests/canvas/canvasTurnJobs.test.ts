@@ -10,11 +10,16 @@ describe('canvas chat turn jobs', () => {
   let openJob: ReturnType<typeof vi.fn<CanvasTurnJobPorts['openJob']>>;
   let cancelPanel: ReturnType<typeof vi.fn<CanvasTurnJobPorts['cancelPanel']>>;
   let turns: CanvasTurnJobs;
+  let onStarted: ((event: CanvasJobEvent) => void) | undefined;
 
   beforeEach(() => {
     vi.useFakeTimers();
     events = [];
-    liveness = new CanvasLiveness({ router: new CanvasJobRouter(event => events.push(event)) });
+    onStarted = undefined;
+    liveness = new CanvasLiveness({ router: new CanvasJobRouter(event => {
+      events.push(event);
+      if (event.type === 'started') { onStarted?.(event); }
+    }) });
     openJob = vi.fn(spec => liveness.openJob(spec));
     cancelPanel = vi.fn();
     turns = new CanvasTurnJobs({ openJob, cancelPanel });
@@ -219,5 +224,173 @@ describe('canvas chat turn jobs', () => {
     expect(old).not.toHaveBeenCalled(); expect(next).not.toHaveBeenCalled();
     turns.cancel('canvas-turn-chat-A-next'); expect(next).toHaveBeenCalledOnce();
     expect(cancelPanel).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'stream failed'])('retires an opening handle when its started sink ends the turn with %s', error => {
+    const cancel = vi.fn();
+    onStarted = () => turns.end('chat-A', error);
+    turns.begin('chat-A', cancel, 'request');
+    turns.open('chat-A', 'Editing');
+    turns.end('chat-A');
+    turns.cancel('canvas-turn-chat-A-request');
+    expect(events.map(event => event.type)).toEqual(['started', error ? 'error' : 'done']);
+    if (error) { expect(events.at(-1)?.error).toBe(error); }
+    expect(liveness.jobIds()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('routes Stop during started to the captured producer exactly once and preserves a sibling', () => {
+    const cancel = vi.fn(() => turns.end('chat-A'));
+    const siblingCancel = vi.fn();
+    turns.begin('sibling', siblingCancel, 'other');
+    turns.open('sibling', 'Other edit');
+    onStarted = event => {
+      turns.cancel(event.jobId);
+      turns.cancel(event.jobId);
+    };
+    turns.begin('chat-A', cancel, 'request');
+    turns.open('chat-A', 'Editing');
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(siblingCancel).not.toHaveBeenCalled();
+    expect(cancelPanel).not.toHaveBeenCalled();
+    expect(events.filter(event => event.jobId === 'canvas-turn-chat-A-request').map(event => event.type))
+      .toEqual(['started', 'done']);
+    expect(liveness.jobIds()).toEqual(['canvas-turn-sibling-other']);
+    expect(vi.getTimerCount()).toBe(1);
+    turns.end('sibling');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    { tagged: true, endFirst: true }, { tagged: false, endFirst: true },
+    { tagged: true, endFirst: false }, { tagged: false, endFirst: false },
+  ])('serializes a same-panel replacement during started (%j)', ({ tagged, endFirst }) => {
+    const oldCancel = vi.fn(); const nextCancel = vi.fn();
+    onStarted = () => {
+      onStarted = undefined;
+      if (endFirst) { turns.end('chat-A'); }
+      turns.begin('chat-A', nextCancel, tagged ? 'next' : undefined);
+      turns.open('chat-A', 'Successor');
+    };
+    turns.begin('chat-A', oldCancel, tagged ? 'old' : undefined);
+    turns.open('chat-A', 'Old');
+    expect(events.map(event => event.type)).toEqual(['started', 'done', 'started']);
+    expect(events.at(-1)?.label).toBe('Successor');
+    expect(liveness.jobIds()).toEqual([`canvas-turn-chat-A${tagged ? '-next' : ''}`]);
+    expect(vi.getTimerCount()).toBe(1);
+    if (tagged) { turns.cancel('canvas-turn-chat-A-old'); }
+    turns.cancel(`canvas-turn-chat-A${tagged ? '-next' : ''}`);
+    expect(oldCancel).not.toHaveBeenCalled();
+    expect(nextCancel).toHaveBeenCalledOnce();
+    turns.end('chat-A');
+    expect(events.map(event => event.type)).toEqual(['started', 'done', 'started', 'done']);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reopens only the new canvas when the started sink closes and reopens its view', () => {
+    let oldLiveness: CanvasLiveness;
+    onStarted = () => {
+      onStarted = undefined;
+      oldLiveness = liveness;
+      liveness.dispose();
+      turns.clearCanvas();
+      liveness = new CanvasLiveness({ router: new CanvasJobRouter(event => events.push(event)) });
+      turns.open('chat-A', 'Reopened');
+    };
+    turns.begin('chat-A');
+    turns.open('chat-A', 'Old view');
+    expect(oldLiveness!.jobIds()).toEqual([]);
+    expect(liveness.jobIds()).toEqual(['canvas-turn-chat-A']);
+    expect(events.map(event => event.type)).toEqual(['started', 'started']);
+    expect(events.at(-1)?.label).toBe('Reopened');
+    expect(vi.getTimerCount()).toBe(1);
+    turns.end('chat-A');
+    expect(events.map(event => event.type)).toEqual(['started', 'started', 'done']);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not register a handle after disposal during its started callback', () => {
+    onStarted = () => turns.dispose();
+    turns.begin('chat-A');
+    turns.open('chat-A', 'Editing');
+    turns.cancel('canvas-turn-chat-A');
+    turns.begin('chat-A');
+    turns.open('chat-A', 'Late');
+    expect(events.map(event => event.type)).toEqual(['started', 'done']);
+    expect(liveness.jobIds()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(cancelPanel).not.toHaveBeenCalled();
+  });
+
+  it('does not recursively open the same turn from its own started callback', () => {
+    onStarted = () => turns.open('chat-A', 'Reentrant');
+    turns.begin('chat-A');
+    turns.open('chat-A', 'Editing');
+    expect(openJob).toHaveBeenCalledOnce();
+    expect(events.map(event => event.type)).toEqual(['started']);
+    expect(vi.getTimerCount()).toBe(1);
+    turns.end('chat-A');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('releases a failed opening reservation so a later view can acquire the job', () => {
+    openJob.mockImplementationOnce(() => { throw new Error('view unavailable'); });
+    turns.begin('chat-A');
+    expect(() => turns.open('chat-A', 'Unavailable')).toThrow('view unavailable');
+    turns.open('chat-A', 'Ready');
+    expect(events).toMatchObject([{ type: 'started', label: 'Ready' }]);
+    turns.end('chat-A');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retains the original cancellation callback if started prepares a successor before Stop', () => {
+    const oldCancel = vi.fn(); const nextCancel = vi.fn();
+    onStarted = event => {
+      onStarted = undefined;
+      turns.begin('chat-A', nextCancel, 'next');
+      turns.open('chat-A', 'Successor');
+      turns.cancel(event.jobId);
+    };
+    turns.begin('chat-A', oldCancel, 'old');
+    turns.open('chat-A', 'Old');
+    expect(oldCancel).toHaveBeenCalledOnce();
+    expect(nextCancel).not.toHaveBeenCalled();
+    expect(liveness.jobIds()).toEqual(['canvas-turn-chat-A-next']);
+    turns.cancel('canvas-turn-chat-A-next');
+    expect(nextCancel).toHaveBeenCalledOnce();
+    turns.end('chat-A');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('opens the queued successor even if the old view returns no handle', () => {
+    openJob.mockImplementationOnce(() => {
+      turns.end('chat-A');
+      turns.begin('chat-A', undefined, 'next');
+      turns.open('chat-A', 'Successor');
+      return undefined;
+    });
+    turns.begin('chat-A', undefined, 'old');
+    turns.open('chat-A', 'Unavailable');
+    expect(events).toMatchObject([{ type: 'started', jobId: 'canvas-turn-chat-A-next', label: 'Successor' }]);
+    expect(openJob).toHaveBeenCalledTimes(2);
+    turns.end('chat-A');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not replace the old opening failure with a successor terminal outcome', () => {
+    onStarted = () => {
+      turns.end('chat-A', 'Original stream failed');
+      turns.begin('chat-A', undefined, 'next');
+      turns.open('chat-A', 'Never started');
+      turns.end('chat-A');
+    };
+    turns.begin('chat-A', undefined, 'old');
+    turns.open('chat-A', 'Old');
+    expect(events.map(event => event.type)).toEqual(['started', 'error']);
+    expect(events.at(-1)?.error).toBe('Original stream failed');
+    expect(openJob).toHaveBeenCalledOnce();
+    expect(liveness.jobIds()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

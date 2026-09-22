@@ -101,4 +101,15 @@ describe('CanvasOpParser', () => {
     const results = parser.push('"proposedValue":{}}\n```');
     expect(results).toEqual([]); // the opening half was discarded
   });
+
+  it('keeps the exact top-level nonce in the envelope, outside the stored operation', () => {
+    const [result] = parser.push('```canvas-op\n{"nonce":"captured","kind":"insert_page","proposedValue":{"nonce":"decoy"}}\n```');
+    expect(result).toMatchObject({ ok: true, nonce: 'captured', op: { proposedValue: { nonce: 'decoy' } } });
+    if (result.ok) { expect(result.op).not.toHaveProperty('nonce'); }
+  });
+
+  it.each([undefined, null, 17, [], { value: 'token' }])('does not coerce nonce %j or borrow a nested nonce', nonce => {
+    const [result] = parser.push('```canvas-op\n' + JSON.stringify({ nonce, kind: 'set_theme', proposedValue: { nonce: 'token' } }) + '\n```');
+    expect(result.ok).toBe(true); expect(result).not.toHaveProperty('nonce');
+  });
 });
