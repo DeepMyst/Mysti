@@ -22,6 +22,7 @@
  *
  * This notification-free transport is available only in unrestricted tiers.
  * Native --readonly permits Bash and MCP tools; it is not a read-only boundary.
+ * Unrestricted turns allow every tool except Search (see _addPermissionFlags).
  */
 
 import * as vscode from 'vscode';
@@ -229,7 +230,12 @@ export class ContinueProvider extends BaseCliProvider {
 
   private _addPermissionFlags(args: string[], settings: Settings): void {
     requireUnrestrictedLegacyTransport(settings, this.displayName);
-    args.push('--auto');
+    // Not --auto: it overrides --exclude. cn 1.5.47's Search runs
+    // `exec("rg ... \"${pattern}\" -g \"!${gitignoreLine}\" ...")`, so a model
+    // pattern or a repository .gitignore line executes shell (runtime-verified).
+    // Headless defaults allow Bash and every other tool; only the default-ask
+    // write tools need explicit allows. No `*`: Windows shell-mode spawn refuses it.
+    args.push('--exclude', 'Search', '--allow', 'Edit', '--allow', 'MultiEdit', '--allow', 'Write');
   }
 
   /**

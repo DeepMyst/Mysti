@@ -18,7 +18,7 @@ describe.each([
         const settings: Settings = { mode, accessLevel, thinkingLevel: 'none', contextMode: 'auto', model: '', provider: provider.id };
         if (unrestricted) {
           const args = provider.buildCliArgs(settings, session());
-          expect(args).toContain(provider.id === 'cursor' ? '--force' : '--auto');
+          expect(args).toContain(provider.id === 'cursor' ? '--force' : '--allow');
           return;
         }
         expect(() => provider.buildCliArgs(settings, session())).toThrow('cannot enforce');

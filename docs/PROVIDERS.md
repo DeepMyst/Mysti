@@ -521,7 +521,8 @@ credential/model detection still targets the 1.x `~/.kimi` layout (unfixed).
 The `cn` CLI prints final text and exposes no host approval handshake. Its native
 `--readonly` mode permits Bash and MCP operations, so Mysti rejects restricted
 turns before launch. Only `full-access` with `default` or `edit-automatically` is
-available. It replays conversation history in the prompt and reports no usage.
+available; those turns exclude the built-in `Search` tool, whose ripgrep command
+line is shell-injectable from a model pattern or a `.gitignore` line. It replays conversation history in the prompt and reports no usage.
 Continue is not installed in the review environment.
 
 ## OpenRouter

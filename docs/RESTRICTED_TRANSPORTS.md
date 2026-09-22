@@ -8,7 +8,7 @@ or prompt preparation; they do not silently run with broader permissions.
 | Provider | Restricted turns | Remaining limitation |
 | --- | --- | --- |
 | Cursor | Rejected before launch | Native approval transport and isolated execution proof still needed. Fully unrestricted turns alone use `--force`. Prompt enhancement is disabled because that path had no execution restriction. |
-| Continue | Rejected before launch | Plain final-text transport cannot ask the host. Fully unrestricted turns alone use `--auto`. |
+| Continue | Rejected before launch | Plain final-text transport cannot ask the host. Fully unrestricted turns alone run, with every tool except the shell-injectable `Search`. |
 | Hermes | Rejected before launch | v2026.9.21 asks only for denylisted shell commands and file edits; inherited `approvals.mode`/yolo can remove those. |
 | Kimi Code | Rejected before launch | 2.0.2 auto-approves in-repository writes, FetchURL, Agent/AgentSwarm and Skill; plan mode does not cover fetch or subagents. |
 | OpenCode | Fixed native agent removes mutations in plan/read-only tiers | Shell and delegation remain unavailable in every mode. |
@@ -35,8 +35,28 @@ at commit `5522c6f44ca0ac3528b37244818fbfa39b5af470` confirms this behavior:
   puts exclusions before allows within CLI policies. A wildcard exclusion with
   read allows therefore excludes the reads too.
 
-Continue is not installed in the reviewed environment. No installed-native
-Continue execution or authenticated acceptance is claimed.
+Continue is not installed in the reviewed environment. No authenticated
+acceptance is claimed.
+
+2026-09-22 (latest `@continuedev/cli` 1.5.47, commit `d3f60ba9`, run from the
+npm tarball under `sandbox-exec` with a private `CONTINUE_GLOBAL_DIR` and a fake
+loopback model, no account):
+
+- `tools/searchCode.ts` builds `rg ... "${pattern}" ... -g "!${gitignoreLine}"`
+  as a shell string. With ripgrep on PATH, both a model `pattern` and a
+  repository `.gitignore` line executed an injected `touch` under `--auto`.
+  `--auto` overrides `--exclude`, so unrestricted turns now pass
+  `--exclude Search --allow Edit --allow MultiEdit --allow Write` instead; Bash,
+  Write, Read and Fetch still work and the injection no longer runs. The user's
+  own `permissions.yaml` now applies after these flags (headless `ask` = deny).
+- A read-only boundary does exist: an explicit private `CONTINUE_GLOBAL_DIR` whose
+  `permissions.yaml` excludes `*`, plus `--allow Read --allow List`, advertised
+  only Read and List; Bash, Write and Fetch had no effect, and a workspace `.env`
+  or `.continue/` could not widen it. It is not wired because the private global
+  directory also hides the user's `config.yaml` and its `.env` secrets, and no
+  real configuration was available to prove model access still works.
+- No per-call host approval exists: headless `ask` is denied before any callback,
+  and the hidden `cn serve` permission endpoint is unauthenticated and headless.
 
 ## Cursor evidence
 
