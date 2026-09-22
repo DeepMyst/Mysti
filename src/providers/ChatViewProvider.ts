@@ -412,9 +412,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     artifactId: () => this._canvasArtifact?.id ?? null,
     originPanel: () => this._canvasChatOrigin,
     createServer: artifactId => this._canvasToolServer ? this._createCanvasMcpServer(artifactId) : null,
-    link: (panelId, endpoint) => {
+    link: (panelId, endpoint, providerId) => {
       const config = this._canvasLinker.link(panelId, endpoint);
-      this._providerManager.setCanvasMcpConfig(panelId, config);
+      if (providerId) { this._providerManager.setCanvasMcpConfig(panelId, config, providerId); }
+      else { this._providerManager.setCanvasMcpConfig(panelId, config); }
     },
     unlink: panelId => {
       this._canvasLinker.unlink(panelId);
@@ -4032,6 +4033,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const panel = this._panelStates.get(panelId);
     if (!panel || (requestId !== undefined && !validForegroundRequestId(requestId))) { return; }
     this._retireCanvasMediaParent(panelId);
+    this._revokeCanvasMcpTurn(panelId);
     const conversationId = panel.currentConversationId;
     const scope = this._delayedChannelTurns.capture(panelId);
     this._foregroundRequests?.get(panelId)?.retire();
@@ -4047,6 +4049,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _cancelQueuedChannelTurn(panelId: string, preserveRunning = false, preserveStoppedAudit = false): void {
     this._retireCanvasMediaParent(panelId);
+    this._revokeCanvasMcpTurn(panelId);
     this._retireBackendVisual(panelId);
     // Retire the captured ordinary owner before a successor can begin. Other
     // lanes retain their existing lifecycle; this map never owns their jobs.
@@ -4932,6 +4935,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Stop, closing the panel or a replacement send can happen during any
       // asynchronous preparation above. Never start that obsolete request.
       if (!acceptsTurn()) { return; }
+      // Per-turn Canvas MCP admission: admission revoked the predecessor's
+      // bearer; mint this turn's own for the backend that will consume it.
+      const canvasArtifactId = this._canvasChatOrigin === panelId ? this._canvasArtifact?.id : undefined;
+      if (canvasArtifactId) {
+        await this._canvasMcpSession.relink(canvasArtifactId, effectiveSettings.provider);
+        if (!acceptsTurn()) { return; }
+      }
       const stream = this._providerManager.sendMessage(
         enrichedContent,
         enrichedContext,
@@ -11793,9 +11803,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * The bearer authenticates MCP/view access. The active ordinary request adds
-   * a cancellation and policy ceiling, never proof that this call originated
-   * from that turn: per-turn MCP credentials are a separate native contract.
+   * A successor turn (or Stop/replacement) in the canvas-linked chat panel
+   * revokes the previous turn's MCP bearer synchronously, before any await, so
+   * a delayed call from the old turn's CLI is refused instead of admitted under
+   * its successor's authority. The ordinary send mints the next one. Sibling
+   * panels are never linked and are unaffected.
+   */
+  private _revokeCanvasMcpTurn(panelId: string): void {
+    if (this._canvasChatOrigin === panelId) { void this._canvasMcpSession.close(); }
+  }
+
+  /**
+   * The bearer authenticates MCP/view access; for the linked chat panel it is
+   * minted per ordinary turn (see `_revokeCanvasMcpTurn`). The active ordinary
+   * request adds a cancellation and policy ceiling on top of that bearer.
    */
   private _captureCanvasMediaOperation(
     ctx: CanvasToolContext, request: { requestId: string | number; signal: AbortSignal },

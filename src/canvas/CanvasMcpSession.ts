@@ -16,12 +16,21 @@ export interface CanvasMcpSessionPorts {
   artifactId(): string | null;
   originPanel(): string | null;
   createServer(artifactId: string): CanvasMcpSessionServer | null;
-  link(panelId: string, endpoint: McpHttpEndpoint): void;
+  /** `providerId` names the backend a per-turn link is minted for (else the default). */
+  link(panelId: string, endpoint: McpHttpEndpoint, providerId?: string): void;
   unlink(panelId: string): void;
   onError(error: unknown): void;
 }
 
-/** Owns one design's MCP server and its disposable chat-session registration. */
+/**
+ * Owns one design's MCP server and its disposable chat-session registration.
+ *
+ * The host also uses it as the per-turn MCP admission: every ordinary turn in
+ * the linked chat panel {@link close}s (synchronously revoking the previous
+ * turn's bearer and transport) and then {@link relink}s for that turn's own
+ * backend, so a delayed call from an earlier turn's CLI is refused rather
+ * than admitted under its successor's authority.
+ */
 export class CanvasMcpSession {
   private _generation = 0;
   private _server: CanvasMcpSessionServer | null = null;
@@ -33,7 +42,7 @@ export class CanvasMcpSession {
   public constructor(private readonly _ports: CanvasMcpSessionPorts) {}
 
   /** Only the latest design switch may publish a newly started endpoint. */
-  public async relink(artifactId: string): Promise<void> {
+  public async relink(artifactId: string, providerId?: string): Promise<void> {
     if (this._disposed || this._ports.artifactId() !== artifactId) { return; }
     const generation = ++this._generation;
     const origin = this._ports.originPanel();
@@ -61,7 +70,8 @@ export class CanvasMcpSession {
       if (origin) {
         // Record before calling the port so a partially failed link is removed.
         this._linkedPanel = origin;
-        this._ports.link(origin, endpoint);
+        if (providerId) { this._ports.link(origin, endpoint, providerId); }
+        else { this._ports.link(origin, endpoint); }
       }
     } catch (error) {
       const wasCurrent = current();

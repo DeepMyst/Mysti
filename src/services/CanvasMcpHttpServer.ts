@@ -32,7 +32,9 @@ import type { CanvasToolServer } from './CanvasToolServer';
  * request via a `currentArtifactId` probe captured at construction: the moment
  * the host is serving a different artifact the token is revoked, every further
  * request is `410 Gone`, and the listener shuts itself down. Callers mint a new
- * server (hence a new token) per artifact.
+ * server (hence a new token and a new MCP session) per artifact, and the host
+ * also per ordinary turn of the linked chat panel: stopping this server is the
+ * revocation, so an old turn's bearer is refused once a successor is admitted.
  *
  * **Lifecycle.** `stop()` is idempotent and is honoured *retroactively*: it sets
  * a `_stopped` flag that `start()` re-checks after every await — including after

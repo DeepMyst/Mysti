@@ -355,8 +355,16 @@ export class ProviderManager {
    * Plan 05 — register (or clear) the per-session `mysti-canvas` MCP config for a
    * panel so a canvas-linked CLI session spawns with `--mcp-config`. Must run
    * before sendMessage() so buildCliArgs reads it.
+   *
+   * Clearing without a provider id clears it from EVERY backend's session for
+   * this panel: a per-turn link targets the turn's own backend, which need not
+   * be the one active now. Other panels' sessions are never touched.
    */
   public setCanvasMcpConfig(panelId: string, configPath: string | null, providerId?: string): void {
+    if (configPath === null && !providerId) {
+      for (const id of this.getAllProviderIds()) { this.setCanvasMcpConfig(panelId, null, id); }
+      return;
+    }
     const provider = this._getActiveProvider(providerId);
     if (provider && 'setCanvasMcpConfig' in provider) {
       (provider as BaseCliProvider).setCanvasMcpConfig(panelId, configPath);
