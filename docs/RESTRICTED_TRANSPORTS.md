@@ -11,7 +11,7 @@ or prompt preparation; they do not silently run with broader permissions.
 | Continue | Rejected before launch | Plain final-text transport cannot ask the host. Fully unrestricted turns alone run, with every tool except the shell-injectable `Search`. |
 | Hermes | Rejected before launch | v2026.9.21 asks only for denylisted shell commands and file edits; inherited `approvals.mode`/yolo can remove those. |
 | Kimi Code | Rejected before launch | 2.0.2 auto-approves in-repository writes, FetchURL, Agent/AgentSwarm and Skill; plan mode does not cover fetch or subagents. |
-| OpenCode | Fixed native agent removes mutations in plan/read-only tiers | Shell and delegation remain unavailable in every mode. |
+| OpenCode | Fixed native agent removes mutations and shell in plan/read-only tiers | Delegation is unavailable in every mode. Shell is per-call approved in unrestricted tiers on macOS only. |
 | Qwen | Fixed native tool subset plus immutable host mutation denial | Only the tools and runtime in the ACP contract are supported. |
 | Copilot | Read/search subset in read-only and plan tiers; per-call approved shell/edits otherwise | Native reads have no host approval card; multi-file patches are approved per file. |
 

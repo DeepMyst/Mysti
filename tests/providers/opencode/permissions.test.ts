@@ -59,7 +59,13 @@ describe('OpenCode isolated native policy', () => {
     await expect(assertOpenCodeAuthorityAbsent([external])).rejects.toThrow('cannot isolate');
   });
   it('checks system and managed authority outside isolated XDG directories', () => {
-    expect(openCodeExternalAuthorityPaths({}, 'darwin', '/user', 'fixture')).toEqual([path.join('/user', '.opencode'), '/Library/Application Support/opencode', path.join('/Library/Managed Preferences', 'fixture', 'ai.opencode.managed.plist'), '/Library/Managed Preferences/ai.opencode.managed.plist']);
+    expect(openCodeExternalAuthorityPaths({}, 'darwin', '/user', 'fixture', '/user')).toEqual([path.join('/user', '.opencode'), '/Library/Application Support/opencode', path.join('/Library/Managed Preferences', 'fixture', 'ai.opencode.managed.plist'), '/Library/Managed Preferences/ai.opencode.managed.plist']);
+  });
+  it('checks the account home the child resolves as well as a custom host HOME', () => {
+    // The child gets no HOME, so it resolves home from the user database.
+    const paths = openCodeExternalAuthorityPaths({}, 'darwin', '/custom-home', 'fixture', '/account-home');
+    expect(paths.slice(0, 2)).toEqual([path.join('/custom-home', '.opencode'), path.join('/account-home', '.opencode')]);
+    expect(openCodeExternalAuthorityPaths({}, 'linux', '/same', 'fixture', '/same').filter(item => item.endsWith('.opencode'))).toEqual([path.join('/same', '.opencode')]);
   });
   it.each(['opencode.json', 'opencode.jsonc', '.opencode'])('rejects ancestor %s before allocating native authority', async name => {
     const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-oc-ancestor-'))); dirs.push(dir);
@@ -76,12 +82,12 @@ describe('OpenCode isolated native policy', () => {
     const paths = await openCodeWorkspaceAuthorityPaths(path.join(dir, 'alias', 'work'));
     expect(paths).toContain(path.join(dir, 'real', '.opencode')); expect(paths).toContain(path.join(dir, 'alias', '.opencode'));
   });
-  it('rechecks newly added authority before native startup and retains pure shell denial', async () => {
+  it.each(['linux', 'darwin'] as const)('rechecks newly added authority before native startup on %s', async platform => {
     const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-oc-recheck-'))); dirs.push(dir);
-    const launch = await prepareOpenCodeNativeLaunch({ settings, session: createOpenCodeSession(), cwd: dir, env: { ANTHROPIC_API_KEY: 'inert-fixture' }, cliPath: '/inert', signal: new AbortController().signal }, settings.model);
+    const launch = await prepareOpenCodeNativeLaunch({ settings, session: createOpenCodeSession(), cwd: dir, env: { ANTHROPIC_API_KEY: 'inert-fixture' }, cliPath: '/inert', signal: new AbortController().signal }, settings.model, platform);
     try {
-      expect(launch.args).toContain('--pure'); expect(launch.env?.OPENCODE_PURE).toBe('true');
-      expect(JSON.parse(launch.env!.OPENCODE_CONFIG_CONTENT!).plugin).toEqual([]);
+      // Shell-gate launch details are covered in shellGate.test.ts.
+      expect(launch.args.includes('--pure')).toBe(platform === 'linux');
       await fs.writeFile(path.join(dir, 'opencode.jsonc'), '{}');
       await expect(launch.assertUnchanged!()).rejects.toThrow('cannot isolate');
     } finally { await launch.cleanup!(); }
@@ -119,8 +125,20 @@ describe('OpenCode final permission payload binding', () => {
     const input = { filePath: '/work/file', offset: 4, limit: 9 };
     expect(decodeOpenCodePermission(request('read', {}), tool('read', input))).toMatchObject({ name: 'Read', input });
   });
+  it('binds a shell request to the tracked command and its workdir', () => {
+    expect(decodeOpenCodePermission(request('execute', { command: '> out' }), tool('execute', { command: '> out', description: 'd', cwd: '/shown' })))
+      .toMatchObject({ name: 'Bash', input: { command: '> out' } });
+    expect(decodeOpenCodePermission(request('execute', { command: 'ls' }), tool('execute', { command: 'ls', workdir: 'sub' }))?.input)
+      .toEqual({ command: 'ls', workdir: 'sub' });
+  });
   it.each([
     [request('execute', { command: '> /work/effect' }), tool('execute', {})],
+    [request('execute', { command: 'ls' }), tool('execute', { command: 'ls -la' })],
+    [request('execute', { command: 'ls', workdir: '/other' }), tool('execute', { command: 'ls' })],
+    [request('execute', { command: 'ls' }), tool('execute', { command: 'ls', workdir: 7 })],
+    [request('execute', { command: 'ls' }), undefined],
+    [request('execute', { command: '' }), tool('execute', { command: '' })],
+    [request('execute', { command: 'ls' }), tool('edit', { command: 'ls' })],
     [request('edit', {}), tool('edit', { filePath: '/work/a' })],
     [request('edit', { files: [] }), tool('edit', {})],
     [request('read', {}), undefined],

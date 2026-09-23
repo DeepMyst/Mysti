@@ -143,6 +143,19 @@ function isOwnedChild(proc: ChildProcess): boolean {
 }
 
 /**
+ * POSIX only: freeze and SIGKILL the child's current descendants (see
+ * {@link killDescendants}) while the child itself keeps running, e.g. so an
+ * agent can still finish its own cancellation. Without the root frozen it may
+ * fork during the scan; the rescans catch what appears meanwhile, and the
+ * caller's later tree kill remains the backstop. A no-op on Windows and for
+ * test doubles.
+ */
+export async function killProcessDescendants(proc: ChildProcess): Promise<void> {
+  if (process.platform === 'win32' || !isOwnedChild(proc) || !isProcessLive(proc)) { return; }
+  await killDescendants(proc.pid as number);
+}
+
+/**
  * Windows tree kill: `taskkill /PID <pid> /T /F` terminates the process AND all
  * of its descendants. This matters because every provider spawn on Windows uses
  * `shell: true`, so the tracked pid is a cmd.exe shim — signalling only that pid

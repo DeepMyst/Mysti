@@ -1,8 +1,10 @@
 /** Mysti — SPDX-License-Identifier: Apache-2.0 */
 import fs from 'fs/promises';
+import { writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { randomBytes } from 'crypto';
+import { pathToFileURL } from 'url';
 import type { Settings, ToolCall, UsageStats } from '../../types';
 import type { AcpNativeLaunch, AcpNativeLaunchContext, AcpObject } from '../base/AcpNativeTypes';
 import { isRecord } from '../../utils/valueGuards';
@@ -20,33 +22,126 @@ export const OPENCODE_ENV_AUTH: Readonly<Record<string, readonly string[]>> = Ob
   perplexity: ['PERPLEXITY_API_KEY'], cerebras: ['CEREBRAS_API_KEY'], nvidia: ['NVIDIA_API_KEY'],
 });
 
+function openCodeRestricted(settings: Pick<Settings, 'mode' | 'accessLevel'>): boolean {
+  return settings.accessLevel === 'read-only' || settings.mode === 'quick-plan' || settings.mode === 'detailed-plan';
+}
+
+/**
+ * Shell is offered only in unrestricted tiers, only through the shell gate
+ * plugin below, and only where the gate and Stop were verified against the
+ * native release (macOS). Elsewhere shell stays removed and V1 plugins off.
+ */
+export function openCodeShellEnabled(settings: Pick<Settings, 'mode' | 'accessLevel'>, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'darwin' && !openCodeRestricted(settings);
+}
+
 export function openCodePermissionPolicy(settings: Pick<Settings, 'mode' | 'accessLevel'>): Record<string, string> {
-  const restricted = settings.accessLevel === 'read-only' || settings.mode === 'quick-plan' || settings.mode === 'detailed-plan';
+  const restricted = openCodeRestricted(settings);
   // A wildcard deny removes unsupported tools from the native executable map
-  // (Permission.disabled -> LLMRequestPrep.resolveTools), including shell's
-  // redirection-only path which otherwise skips its own ask() call entirely.
+  // (Permission.disabled -> LLMRequestPrep.resolveTools). Shell starts denied
+  // here too; only the registered shell gate plugin can turn it into `ask`.
   return { '*': 'deny', read: 'ask', glob: 'ask', grep: 'ask', edit: restricted ? 'deny' : 'ask', webfetch: restricted ? 'deny' : 'ask' };
 }
 
-export function openCodeNativeConfig(settings: Pick<Settings, 'mode' | 'accessLevel'>, model: string): AcpObject {
+/**
+ * OpenCode's shell tool (1.18.29-1.18.32, tool/shell.ts `ask`) skips its
+ * permission request when its parser yields no command pattern, e.g. a bare
+ * `> file`. This plugin closes that gap without a second approval channel:
+ *
+ * - `config` runs only for hooks already in the instance's registered list; it
+ *   is the only thing that changes `bash` from deny to ask, so the tool exists
+ *   only where these hooks exist. It then writes the startup attestation.
+ * - Event listeners run synchronously inside `publish`, so `permission.asked`
+ *   and `permission.replied` (published before the waiting tool resumes) are
+ *   recorded before the shell can continue.
+ * - `shell.env` runs after the permission step and immediately before every
+ *   spawn. It allows a call only after this call's own bash request was
+ *   answered `once`. No request, a rejection, `always`, a reused or duplicate
+ *   call id all throw, which aborts the spawn. So does the `stopped` file, which
+ *   Mysti writes the moment Stop begins: an approval answered just before Stop
+ *   cannot start its command while OpenCode has yet to read the cancel.
+ */
+export function openCodeShellGatePlugin(nonce: string, attestation: string, stopped: string): string {
+  return `import { existsSync, writeFileSync } from "node:fs";
+const NONCE = ${JSON.stringify(nonce)}, ATTESTATION = ${JSON.stringify(attestation)}, STOPPED = ${JSON.stringify(stopped)}, AGENT = ${JSON.stringify(OPENCODE_HOST_AGENT)};
+export default {
+  id: "mysti-shell-gate",
+  server: async (input) => {
+    const calls = new Map(), requests = new Map();
+    const key = (session, call) => typeof session === "string" && session && typeof call === "string" && call ? session + "\\u0000" + call : undefined;
+    return {
+      config: async (cfg) => {
+        const agent = cfg && cfg.agent && cfg.agent[AGENT];
+        if (!cfg || !cfg.permission || !agent || !agent.permission) return;
+        cfg.permission.bash = "ask"; agent.permission.bash = "ask";
+        writeFileSync(ATTESTATION, JSON.stringify({ nonce: NONCE, directory: input.directory,
+          plugins: (cfg.plugin_origins || []).map((origin) => origin.spec) }), { mode: 0o600 });
+      },
+      event: async ({ event }) => {
+        const properties = event && event.properties;
+        if (!properties) return;
+        if (event.type === "permission.asked" && properties.permission === "bash") {
+          const call = key(properties.sessionID, properties.tool && properties.tool.callID);
+          if (call === undefined) return;
+          if (calls.get(call) === "started" && typeof properties.id === "string" && !requests.has(properties.id)) {
+            calls.set(call, "asked"); requests.set(properties.id, call);
+          } else calls.set(call, "refused");
+        } else if (event.type === "permission.replied") {
+          const call = requests.get(properties.requestID);
+          if (call === undefined) return;
+          requests.delete(properties.requestID);
+          if (calls.get(call) !== "asked") return;
+          if (properties.reply === "once") calls.set(call, "approved"); else calls.delete(call);
+        }
+      },
+      "tool.execute.before": async (call) => {
+        if (call.tool !== "bash") return;
+        const id = key(call.sessionID, call.callID);
+        if (id !== undefined) calls.set(id, calls.has(id) ? "refused" : "started");
+      },
+      "shell.env": async (call) => {
+        const id = key(call.sessionID, call.callID);
+        const state = id === undefined ? undefined : calls.get(id);
+        if (id !== undefined) calls.delete(id);
+        if (state !== "approved") throw new Error("Mysti refused a shell command that OpenCode did not submit for approval.");
+        if (existsSync(STOPPED)) throw new Error("Mysti refused a shell command after Stop.");
+      },
+    };
+  },
+};
+`;
+}
+
+export function openCodeNativeConfig(settings: Pick<Settings, 'mode' | 'accessLevel'>, model: string, plugin?: string): AcpObject {
   const permission = openCodePermissionPolicy(settings);
   return {
     $schema: 'https://opencode.ai/config.json', model, small_model: model,
     enabled_providers: [model.split('/')[0]], default_agent: OPENCODE_HOST_AGENT,
     permission, subagent_depth: 0, snapshot: false, share: 'disabled', autoupdate: false,
-    formatter: false, lsp: false, plugin: [], mcp: {}, command: {}, instructions: [],
+    formatter: false, lsp: false, plugin: plugin ? [plugin] : [], mcp: {}, command: {}, instructions: [],
     compaction: { auto: false, prune: false },
     agent: {
-      [OPENCODE_HOST_AGENT]: { mode: 'primary', permission, description: 'Mysti approval-controlled file, search, and fetch tools.' },
+      [OPENCODE_HOST_AGENT]: { mode: 'primary', permission, description: 'Mysti approval-controlled file, search, fetch, and shell tools.' },
       build: { disable: true }, plan: { disable: true }, general: { disable: true }, explore: { disable: true },
       title: { permission: { '*': 'deny' } }, summary: { permission: { '*': 'deny' } }, compaction: { permission: { '*': 'deny' } },
     },
   };
 }
 
-/** Sources outside XDG isolation are rejected without reading their contents. */
-export function openCodeExternalAuthorityPaths(env: NodeJS.ProcessEnv, platform = process.platform, userDirectory = os.homedir(), username = os.userInfo().username): string[] {
-  const paths = [path.join(userDirectory, '.opencode')];
+/** The account's home from the OS user database, which the child uses: it gets no HOME. */
+function accountHome(): string | undefined {
+  try { return os.userInfo().homedir || undefined; } catch { return undefined; }
+}
+
+/**
+ * Sources outside XDG isolation are rejected without reading their contents.
+ * The child receives no HOME/USERPROFILE, so it resolves home from the user
+ * database; the host's `os.homedir()` follows a custom HOME. Check both.
+ */
+export function openCodeExternalAuthorityPaths(env: NodeJS.ProcessEnv, platform = process.platform, userDirectory = os.homedir(), username = os.userInfo().username,
+  accountDirectory = accountHome()): string[] {
+  const homes = [...new Set([userDirectory, accountDirectory].filter((home): home is string => !!home))];
+  const paths = homes.map(home => path.join(home, '.opencode'));
   const managed = platform === 'darwin' ? '/Library/Application Support/opencode'
     : platform === 'win32' ? path.join(env.ProgramData || 'C:\\ProgramData', 'opencode') : '/etc/opencode';
   paths.push(managed);
@@ -79,7 +174,7 @@ export async function assertOpenCodeAuthorityAbsent(paths: readonly string[]): P
 }
 
 /** Only ordinary process settings and the selected provider's API key enter the child. */
-export function openCodeIsolatedEnv(parent: NodeJS.ProcessEnv, directory: string, config: AcpObject, provider: string): NodeJS.ProcessEnv {
+export function openCodeIsolatedEnv(parent: NodeJS.ProcessEnv, directory: string, config: AcpObject, provider: string, pure = true): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TEMP', 'TMP', 'ProgramData', ...(OPENCODE_ENV_AUTH[provider] ?? [])]) {
     if (parent[key] !== undefined) { env[key] = parent[key]; }
@@ -90,7 +185,7 @@ export function openCodeIsolatedEnv(parent: NodeJS.ProcessEnv, directory: string
   Object.assign(env, {
     TMPDIR: directory, TEMP: directory, TMP: directory,
     OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_PERMISSION: JSON.stringify(config.permission),
-    OPENCODE_PURE: 'true', OPENCODE_DISABLE_PROJECT_CONFIG: 'true', OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true',
+    OPENCODE_DISABLE_PROJECT_CONFIG: 'true', OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true',
     OPENCODE_DISABLE_EXTERNAL_SKILLS: 'true', OPENCODE_DISABLE_CLAUDE_CODE: 'true',
     OPENCODE_DISABLE_AUTOUPDATE: 'true', OPENCODE_DISABLE_MODELS_FETCH: 'true', OPENCODE_DISABLE_AUTOCOMPACT: 'true',
     OPENCODE_DISABLE_LSP_DOWNLOAD: 'true', OPENCODE_DISABLE_FFF: 'true', OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: 'true',
@@ -103,10 +198,15 @@ export function openCodeIsolatedEnv(parent: NodeJS.ProcessEnv, directory: string
     npm_config_userconfig: path.join(directory, 'empty.npmrc'), npm_config_globalconfig: path.join(directory, 'empty-global.npmrc'),
     npm_config_cache: path.join(directory, 'npm-cache'),
   });
+  // Pure mode skips every V1 server plugin, including the shell gate. Without
+  // it, V1 loads only the configured gate: project configuration is disabled,
+  // the XDG directories are private, and the remaining global/managed sources
+  // are rejected before launch and attested absent after startup.
+  if (pure) { env.OPENCODE_PURE = 'true'; }
   return env;
 }
 
-export async function prepareOpenCodeNativeLaunch(context: AcpNativeLaunchContext, model: string | undefined): Promise<AcpNativeLaunch> {
+export async function prepareOpenCodeNativeLaunch(context: AcpNativeLaunchContext, model: string | undefined, platform: NodeJS.Platform = process.platform): Promise<AcpNativeLaunch> {
   if (!model || !/^[a-z0-9][a-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model)) {
     throw new Error('OpenCode native approvals require an explicit provider/model ID in Mysti’s OpenCode model setting. Native user configuration and login stores are isolated.');
   }
@@ -127,10 +227,17 @@ export async function prepareOpenCodeNativeLaunch(context: AcpNativeLaunchContex
     await fs.chmod(directory, 0o700);
     await fs.writeFile(path.join(directory, 'empty.npmrc'), '', { mode: 0o600 });
     await fs.writeFile(path.join(directory, 'empty-global.npmrc'), '', { mode: 0o600 });
-    const config = openCodeNativeConfig(context.settings, model);
+    const shell = openCodeShellEnabled(context.settings, platform);
+    const plugin = path.join(directory, 'mysti-shell-gate.mjs');
+    const attestation = path.join(directory, 'shell-gate-attestation.json');
+    const stopped = path.join(directory, 'stopped');
+    const nonce = randomBytes(32).toString('hex');
+    if (shell) { await fs.writeFile(plugin, openCodeShellGatePlugin(nonce, attestation, stopped), { mode: 0o600 }); }
+    const pluginSpec = pathToFileURL(plugin).href;
+    const config = openCodeNativeConfig(context.settings, model, shell ? pluginSpec : undefined);
     return {
-      args: ['acp', '--pure', '--hostname', '127.0.0.1', '--port', '0', '--cwd', context.cwd],
-      env: openCodeIsolatedEnv(context.env, directory, config, provider),
+      args: ['acp', ...(shell ? [] : ['--pure']), '--hostname', '127.0.0.1', '--port', '0', '--cwd', context.cwd],
+      env: openCodeIsolatedEnv(context.env, directory, config, provider, !shell),
       expectedAgentInfo: { name: 'OpenCode', version: OPENCODE_ACP_VERSION },
       mode: OPENCODE_HOST_AGENT, model, images: true,
       // This native release emits an optional UI mirror write even when the
@@ -138,6 +245,13 @@ export async function prepareOpenCodeNativeLaunch(context: AcpNativeLaunchContex
       // the already approved edit. Mysti never writes the requested file.
       nonFatalUnsupportedRequests: ['fs/write_text_file'],
       decodePermission: decodeOpenCodePermission,
+      // On abort this release SIGTERMs each running shell's whole process group
+      // (core cross-spawn-spawner killGroup, SIGKILL after 3 s). That reaches a
+      // background job whose foreground shell already exited: it is no longer a
+      // descendant, so the tree kill alone misses it. Stop therefore blocks new
+      // spawns and kills current descendants at once, then waits for the
+      // cancelled prompt result before the freeze and tree kill, bounded.
+      ...(shell ? { cancelGraceMs: 5000, onStop: () => writeFileSync(stopped, '', { mode: 0o600 }) } : {}),
       decodeUsage: decodeOpenCodeUsage,
       validateUpdate: update => validateOpenCodeConfigUpdate(update, model),
       validateSession(result) {
@@ -145,6 +259,17 @@ export async function prepareOpenCodeNativeLaunch(context: AcpNativeLaunchContex
         const mode = options.find(option => option.id === 'mode');
         if (!mode || mode.currentValue !== OPENCODE_HOST_AGENT) { throw new Error('OpenCode did not select the fixed Mysti permission agent.'); }
       },
+      // Bootstrap loads plugins before the session exists, so the gate has
+      // attested by now. Without it shell would stay denied; refuse the turn
+      // anyway so a missing gate or an extra plugin is never silent.
+      configure: shell ? async () => {
+        let attested: unknown;
+        try { attested = JSON.parse(await fs.readFile(attestation, 'utf8')); } catch { attested = undefined; }
+        if (!isRecord(attested) || attested.nonce !== nonce || (attested.directory !== context.cwd && attested.directory !== canonicalCwd)
+          || !Array.isArray(attested.plugins) || attested.plugins.length !== 1 || attested.plugins[0] !== pluginSpec) {
+          throw new Error('OpenCode did not attest Mysti\'s shell approval gate as its only plugin; Mysti will not start this turn.');
+        }
+      } : undefined,
       assertUnchanged,
       cleanup: () => fs.rm(directory, { recursive: true, force: true }),
     };
@@ -180,9 +305,9 @@ export function decodeOpenCodeUsage(result: Readonly<AcpObject>): UsageStats | u
   return { input_tokens: inputTokens, output_tokens: outputTokens };
 }
 
-/** The final native request owns edit/fetch inputs; read/search need the
- * preceding immutable update because 1.18.29 omits read metadata. Plugins,
- * custom tools, and mode changes are excluded by the isolated native policy. */
+/** The final native request owns edit/fetch/shell inputs; read/search and
+ * shell's workdir need the preceding immutable update because 1.18.29 omits
+ * them. Custom tools and mode changes are excluded by the isolated policy. */
 export function decodeOpenCodePermission(params: Readonly<AcpObject>, tracked: Readonly<AcpObject> | undefined): ToolCall | undefined {
   if (!isRecord(params.toolCall)) { return; }
   const call = params.toolCall;
@@ -207,6 +332,13 @@ export function decodeOpenCodePermission(params: Readonly<AcpObject>, tracked: R
   } else if (call.kind === 'fetch' && tracked.kind === 'fetch' && typeof raw.url === 'string' && /^https?:\/\//.test(raw.url)) {
     if (!previous || previous.url !== raw.url) { return; }
     name = 'WebFetch'; input = raw;
+  } else if (call.kind === 'execute' && tracked.kind === 'execute' && typeof raw.command === 'string' && raw.command) {
+    // The request carries only the command; the running update carries the
+    // model's arguments. `workdir` is the only other argument that changes
+    // where it runs (outside the workspace it is denied natively).
+    if (Object.keys(raw).length !== 1 || !previous || previous.command !== raw.command) { return; }
+    if (previous.workdir !== undefined && typeof previous.workdir !== 'string') { return; }
+    name = 'Bash'; input = { command: raw.command, ...(previous.workdir !== undefined ? { workdir: previous.workdir } : {}) };
   } else { return; }
   return { id: call.toolCallId, name, input, status: 'running', kind: toolKind(name) };
 }

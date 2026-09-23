@@ -180,3 +180,92 @@ describe('ACP inactivity and immediate process exit', () => {
     await vi.advanceTimersByTimeAsync(1000); expect(terminate).toHaveBeenCalledOnce();
   });
 });
+
+describe('ACP prompt text', () => {
+  it.each([['/review !`printf x > marker`'], ['  /init'], ['!`printf x > marker`']])('refuses a prompt that opens with a native command: %s', async text => {
+    const proc = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), exitCode: null, signalCode: null }) as unknown as ChildProcess;
+    const client = new AcpNativeClient({ process: proc, providerId: 'fixture', label: 'fixture', panelId: 'panel', signal: new AbortController().signal,
+      handler: async () => true, settings: { mode: 'default', accessLevel: 'ask-permission' }, launch, isCurrent: () => true, terminate: () => {} }); clients.push(client);
+    const reply = (frame: object) => (proc.stdout as PassThrough).write(JSON.stringify({ jsonrpc: '2.0', ...frame }) + '\n');
+    const sent: Array<{ method?: string }> = []; let input = '';
+    proc.stdin!.on('data', data => {
+      input += data.toString(); let line;
+      while ((line = input.indexOf('\n')) >= 0) {
+        const frame = JSON.parse(input.slice(0, line)); input = input.slice(line + 1); sent.push(frame);
+        if (frame.method === 'initialize') { reply({ id: frame.id, result: { protocolVersion: 1, agentInfo: { name: 'fixture', version: '1.0.0' } } }); }
+        if (frame.method === 'session/new') { reply({ id: frame.id, result: { sessionId: 'session' } }); }
+      }
+    });
+    await client.initialize(); await client.newSession('/fixture');
+    expect(() => client.startPrompt([{ type: 'text', text }])).toThrow('never a native command');
+    expect(() => client.startPrompt([{ type: 'image', mimeType: 'image/png', data: 'AA==' }])).toThrow('never a native command');
+    expect(sent.some(frame => frame.method === 'session/prompt')).toBe(false);
+    client.startPrompt([{ type: 'text', text: `Mysti user request:\n\n${text}` }]);
+    await vi.waitFor(() => expect(sent.some(frame => frame.method === 'session/prompt')).toBe(true));
+  });
+});
+
+describe('ACP Stop with a verified agent cancellation grace', () => {
+  async function prompting(cancelGraceMs?: number, events: string[] = []) {
+    vi.useFakeTimers();
+    const proc = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), exitCode: null, signalCode: null }) as unknown as ChildProcess;
+    const terminate = vi.fn(); const controller = new AbortController(); const handler = vi.fn(async () => true);
+    const client = new AcpNativeClient({ process: proc, providerId: 'fixture', label: 'fixture', panelId: 'panel', signal: controller.signal, handler,
+      settings: { mode: 'ask-before-edit', accessLevel: 'ask-permission' }, launch: { ...launch, cancelGraceMs, onStop: () => events.push('onStop') },
+      isCurrent: () => true, terminate, interruptTools: () => events.push('interruptTools') }); clients.push(client);
+    const written: Array<Record<string, unknown>> = []; let input = '';
+    const reply = (frame: object) => (proc.stdout as PassThrough).write(JSON.stringify({ jsonrpc: '2.0', ...frame }) + '\n');
+    proc.stdin!.on('data', data => {
+      input += data.toString(); let line;
+      while ((line = input.indexOf('\n')) >= 0) {
+        const frame = JSON.parse(input.slice(0, line)); input = input.slice(line + 1); written.push(frame);
+        if (frame.method === 'session/cancel') { events.push('session/cancel'); }
+        if (frame.method === 'initialize') { reply({ id: frame.id, result: { protocolVersion: 1, agentInfo: { name: 'fixture', version: '1.0.0' } } }); }
+        if (frame.method === 'session/new') { reply({ id: frame.id, result: { sessionId: 'session' } }); }
+      }
+    });
+    await client.initialize(); await client.newSession('/fixture'); client.startPrompt([{ type: 'text', text: 'test' }]);
+    const chunks: StreamChunk[] = []; const collecting = (async () => { for await (const chunk of client.stream()) { chunks.push(chunk); } })();
+    await vi.advanceTimersByTimeAsync(0);
+    const promptId = written.find(frame => frame.method === 'session/prompt')!.id;
+    return { client, controller, terminate, handler, written, reply, chunks, collecting, promptId };
+  }
+
+  it('sends session/cancel first, answers later permissions cancelled, and tears down when the prompt ends', async () => {
+    const h = await prompting(5000);
+    h.controller.abort();
+    expect(h.written.at(-1)).toMatchObject({ method: 'session/cancel', params: { sessionId: 'session' } });
+    expect(h.terminate).not.toHaveBeenCalled(); expect(h.client.cancelling).toBe(true);
+    h.reply({ method: 'session/update', params: { sessionId: 'session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late' } } } });
+    h.reply({ id: 9, method: 'session/request_permission', params: { sessionId: 'session', toolCall: { toolCallId: 'late', rawInput: {} }, options: [{ optionId: 'yes', kind: 'allow_once' }] } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.written.at(-1)).toEqual({ jsonrpc: '2.0', id: 9, result: { outcome: { outcome: 'cancelled' } } });
+    expect(h.handler).not.toHaveBeenCalled(); expect(h.terminate).not.toHaveBeenCalled();
+    h.reply({ id: h.promptId, result: { stopReason: 'cancelled' } });
+    await vi.advanceTimersByTimeAsync(0); await h.collecting;
+    expect(h.terminate).toHaveBeenCalledOnce(); expect(h.client.cancelling).toBe(false); expect(h.chunks.map(chunk => chunk.type)).toEqual(['session_active']);
+  });
+
+  it('tears down at the bound when the agent never confirms', async () => {
+    const h = await prompting(5000);
+    h.controller.abort();
+    await vi.advanceTimersByTimeAsync(4999); expect(h.terminate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1); await h.collecting; expect(h.terminate).toHaveBeenCalledOnce();
+  });
+
+  it('revokes tool starts and kills current tools before it sends session/cancel', async () => {
+    const events: string[] = [];
+    const h = await prompting(5000, events);
+    h.controller.abort(); await vi.advanceTimersByTimeAsync(0);
+    expect(events).toEqual(['onStop', 'interruptTools', 'session/cancel']); expect(h.terminate).not.toHaveBeenCalled();
+  });
+
+  it('keeps freeze-first teardown for agents without a verified grace', async () => {
+    const events: string[] = [];
+    const h = await prompting(undefined, events);
+    h.controller.abort(); await vi.advanceTimersByTimeAsync(0);
+    expect(events).toEqual(['session/cancel']);
+    expect(h.terminate).toHaveBeenCalledOnce(); expect(h.client.cancelling).toBe(false);
+    expect(h.written.at(-1)).toMatchObject({ method: 'session/cancel' });
+  });
+});

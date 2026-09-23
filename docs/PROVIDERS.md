@@ -22,7 +22,7 @@ offers them as updates. Current release and acceptance gaps are tracked in
 | Copilot | ACP | Per-call approved sync shell and per-file edits; read/search only in restricted tiers |
 | Cursor | CLI | Fully unrestricted turns only |
 | OpenClaw | Owned local gateway/runtime | Bounded stock tools with final execution guard |
-| OpenCode | ACP | File/search/fetch subset; no shell/delegation |
+| OpenCode | ACP | File/search/fetch subset; per-call approved shell on macOS; no delegation |
 | Qwen Code | ACP | Read/edit/notebook/foreground shell subset |
 | Hermes | Persistent ACP | Restricted tiers rejected; unrestricted turns only |
 | Kimi Code | Persistent ACP | Restricted tiers rejected; unrestricted turns only |
@@ -366,10 +366,11 @@ Set `mysti.opencodeModel` to an explicit `provider/model` ID. The bridge support
 ### Unique Features
 
 - **Native approvals**: File, search and fetch tools use a fixed native permission policy.
-- **Restricted mode**: Mutating tools are removed from the executable tool map.
+- **Shell (macOS)**: In unrestricted tiers each shell command needs its own approval card. Mysti loads a private gate plugin that refuses any command OpenCode did not submit for approval, such as a redirection-only `> file`.
+- **Restricted mode**: Mutating tools and shell are removed from the executable tool map.
 - **Prompt history**: Each turn starts a fresh native session.
 
-Shell commands, delegation, plugins, MCP, custom tools, formatters and native session resume are unavailable in this bridge.
+Delegation, user/workspace plugins, MCP, custom tools, formatters and native session resume are unavailable in this bridge. Shell stays unavailable on Linux and Windows until the gate has native acceptance there.
 
 Startup is refused if `.opencode`, `opencode.json`, or `opencode.jsonc` exists in
 the workspace or any ancestor, including ancestors reached through symlinks.

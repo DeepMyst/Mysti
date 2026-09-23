@@ -1,4 +1,4 @@
-/** Installed native OpenCode with a local inert model and OS isolation. */
+/** Installed native OpenCode with a local inert model and OS isolation (macOS sandbox-exec only). */
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -7,7 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as vscode from 'vscode';
-import { decodeOpenCodePermission, openCodeIsolatedEnv, openCodeNativeConfig, OPENCODE_ACP_VERSION, OPENCODE_HOST_AGENT } from '../../../src/providers/opencode/OpenCodeNative';
+import { decodeOpenCodePermission, openCodeIsolatedEnv, openCodeNativeConfig, prepareOpenCodeNativeLaunch, OPENCODE_ACP_VERSION, OPENCODE_HOST_AGENT } from '../../../src/providers/opencode/OpenCodeNative';
+import { createOpenCodeSession } from '../../helpers/sessionFactory';
 import { OpenCodeProvider } from '../../../src/providers/opencode/OpenCodeProvider';
 import type { AcpNativeLaunchContext } from '../../../src/providers/base/AcpNativeTypes';
 import { createMockContext } from '../../helpers/providerFactory';
@@ -16,8 +17,29 @@ import type { Settings, StreamChunk } from '../../../src/types';
 const installed = process.env.MYSTI_TEST_OPENCODE_PATH || '/usr/local/bin/opencode';
 const supported = process.platform === 'darwin' && existsSync(installed) && existsSync('/usr/bin/sandbox-exec');
 const project = path.resolve(__dirname, '../../..');
+// Native startup alone took 22 s at load average ~70 during review; a bound
+// that fails a correct run is not a safety property.
+const CASE_BOUND_MS = 60000;
+const evidenceDir = (name: string) => path.join(project, 'out-test/release-evidence/FU_OPENCODE_20260923', `${name}-${Date.now()}`);
 const baseSettings: Settings = { provider: 'opencode', model: 'anthropic/claude-sonnet-4-5', mode: 'default', accessLevel: 'ask-permission', thinkingLevel: 'none', contextMode: 'auto' };
-type Scenario = 'allow-write' | 'deny-write' | 'cancel-write' | 'readonly-write' | 'zero-pattern-shell' | 'deny-read' | 'public-write' | 'project-authority' | 'ancestor-authority' | 'stop-active-shell';
+type Scenario = 'allow-write' | 'deny-write' | 'cancel-write' | 'readonly-write' | 'zero-pattern-shell' | 'deny-read' | 'public-write' | 'project-authority' | 'ancestor-authority' | 'stop-active-shell'
+  | 'ungated-no-pattern' | 'shell-no-pattern' | 'shell-allow' | 'shell-deny' | 'shell-background' | 'stop-background' | 'stop-orphaned-background' | 'shell-readonly' | 'extra-plugin' | 'missing-gate'
+  | 'stop-ignore-term' | 'stop-slow-cancel' | 'allow-then-stop';
+const shellCommand = (scenario: Scenario, target: string, started: string): string | undefined => ({
+  'zero-pattern-shell': `> ${target}`, 'ungated-no-pattern': `> ${target}`, 'shell-no-pattern': `> ${target}`,
+  'shell-allow': `printf approved > ${target}`, 'shell-deny': `printf approved > ${target}`, 'shell-readonly': `printf approved > ${target}`,
+  'shell-background': `(sleep 4; printf late > ${target}) & printf started > ${started}`,
+  'stop-background': `(sleep 2; printf late > ${target}) & printf started > ${started}`,
+  'stop-orphaned-background': `(sleep 3; printf late > ${target}) & printf started > ${started}`,
+  'stop-active-shell': `printf started > ${started}; (sleep 2; printf late >> ${target}) & wait`,
+  // SIG_IGN is inherited: neither the shell nor its sleep dies of OpenCode's group SIGTERM.
+  'stop-ignore-term': `trap '' TERM; printf started > ${started}; sleep 1; printf late > ${target}`,
+  'stop-slow-cancel': `trap '' TERM; printf started > ${started}; sleep 1; printf late > ${target}`,
+  'allow-then-stop': `trap '' TERM; printf started > ${started}; sleep 1; printf late > ${target}`,
+  'extra-plugin': `printf approved > ${target}`, 'missing-gate': `printf approved > ${target}`,
+} as Partial<Record<Scenario, string>>)[scenario];
+const publicPath = (scenario: Scenario) => scenario === 'public-write' || scenario.startsWith('shell-') || scenario.endsWith('-authority')
+  || scenario.startsWith('stop-') || scenario === 'extra-plugin' || scenario === 'missing-gate' || scenario === 'allow-then-stop';
 
 async function nativeCase(root: string, scenario: Scenario) {
   const directory = path.join(root, scenario);
@@ -56,9 +78,9 @@ async function nativeCase(root: string, scenario: Scenario) {
       const tools = (incoming.tools ?? []).map((tool: { name: string }) => tool.name);
       const main = tools.length > 0;
       if (main) { modelCalls++; declaredTools.push(tools); modelInputs.push(incoming.messages); }
-      const name = scenario === 'zero-pattern-shell' || scenario === 'stop-active-shell' ? 'bash' : scenario === 'deny-read' ? 'read' : 'write';
-      const input = scenario === 'zero-pattern-shell' ? { command: `> ${target}`, description: 'empty command redirection' }
-        : scenario === 'stop-active-shell' ? { command: `printf started > ${started}; (sleep 2; printf late >> ${target}) & wait`, description: 'inert active shell' }
+      const command = shellCommand(scenario, target, started);
+      const name = command ? 'bash' : scenario === 'deny-read' ? 'read' : 'write';
+      const input = command ? { command, description: 'inert shell fixture' }
         : scenario === 'deny-read' ? { filePath: target } : { filePath: target, content: 'approved' };
       const usesTool = main && modelCalls === 1;
       const block = usesTool ? { type: 'tool_use', id: `tool-${scenario}`, name, input } : { type: 'text', text: 'complete' };
@@ -77,34 +99,56 @@ async function nativeCase(root: string, scenario: Scenario) {
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
-  const settings = scenario === 'readonly-write' ? { ...baseSettings, accessLevel: 'read-only' as const } : baseSettings;
+  const settings = scenario === 'readonly-write' || scenario === 'shell-readonly' ? { ...baseSettings, accessLevel: 'read-only' as const } : baseSettings;
+  const provider = { anthropic: { options: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'mysti-inert-fixture' } } };
   const config = openCodeNativeConfig(settings, baseSettings.model);
-  if (scenario === 'stop-active-shell') {
-    // Test-only authority: production keeps shell removed. A native allow lets
-    // the real CLI run its own detached shell so Stop teardown can be observed.
-    const permission = { ...(config.permission as Record<string, string>), bash: 'allow' };
+  if (scenario === 'ungated-no-pattern') {
+    // Witness only: what shell `ask` means in this release without Mysti's gate.
+    const permission = { ...(config.permission as Record<string, string>), bash: 'ask' };
     config.permission = permission;
     (config.agent as Record<string, Record<string, unknown>>)[OPENCODE_HOST_AGENT].permission = permission;
   }
   // Only the model HTTP endpoint differs from production policy/configuration.
-  config.provider = { anthropic: { options: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'mysti-inert-fixture' } } };
+  config.provider = provider;
   const env = openCodeIsolatedEnv({ PATH: process.env.PATH, TMPDIR: directory, ANTHROPIC_API_KEY: 'mysti-inert-fixture' }, directory, config, 'anthropic');
-  const sandbox = `(version 1)(allow default)(deny network*)(allow network-inbound (local ip "localhost:*"))(allow network-outbound (remote ip "localhost:*"))`
+  const sandbox = (writable: string) => `(version 1)(allow default)(deny network*)(allow network-inbound (local ip "localhost:*"))(allow network-outbound (remote ip "localhost:*"))`
     + `(deny file-read* (subpath "${os.homedir()}"))`
-    + `(deny file-write* (require-all (require-not (subpath "${root}")) (require-not (subpath "/dev"))))`;
-  if (scenario === 'public-write' || scenario === 'stop-active-shell' || scenario.endsWith('-authority')) {
+    + `(deny file-write* (require-all (require-not (subpath "${root}")) (require-not (subpath "${writable}")) (require-not (subpath "/dev"))))`;
+  if (publicPath(scenario)) {
+    let spawnedAt = 0; const frameTimes: number[] = []; const sentFrames: Array<{ at: number; frame: unknown }> = [];
     let nativeClosed: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
     class NativeProvider extends OpenCodeProvider {
       override getCliPath() { return installed; }
       protected override async _prepareAcpLaunch(context: AcpNativeLaunchContext) {
         const launch = await super._prepareAcpLaunch({ ...context, env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: 'mysti-inert-fixture' } });
-        // Keep the production preparation/attestation; redirect only native
-        // private state and model HTTP into this test's OS sandbox.
-        return { ...launch, env };
+        // Keep the production preparation, policy, plugin and attestation;
+        // redirect only model HTTP to the inert local fixture.
+        const productionConfig = JSON.parse(launch.env!.OPENCODE_CONFIG_CONTENT!);
+        const privateDir = path.dirname(launch.env!.XDG_CONFIG_HOME!);
+        if (scenario === 'extra-plugin') {
+          // A plugin source appearing after the pre-launch checks: the private
+          // global plugin directory stands in for any late V1 plugin origin.
+          const extra = path.join(launch.env!.XDG_CONFIG_HOME!, 'opencode', 'plugins', 'late.js');
+          await fs.mkdir(path.dirname(extra), { recursive: true });
+          await fs.writeFile(extra, `import fs from 'node:fs'; export default async () => { fs.writeFileSync(${JSON.stringify(path.join(work, 'extra-ran.txt'))}, 'ran'); return {}; };`);
+        }
+        if (scenario === 'missing-gate') { await fs.rm(path.join(privateDir, 'mysti-shell-gate.mjs')); }
+        return { ...launch, env: { ...launch.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...productionConfig, provider }) } };
       }
       protected override _spawnCliProcess(args: string[], cwd: string, childEnv: NodeJS.ProcessEnv) {
-        const child = spawn('/usr/bin/sandbox-exec', ['-p', sandbox, installed, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+        spawnedAt = Date.now();
+        const child = spawn('/usr/bin/sandbox-exec', ['-p', sandbox(path.dirname(childEnv.XDG_CONFIG_HOME!)), installed, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
         nativeClosed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+        const write = child.stdin.write.bind(child.stdin) as (chunk: unknown, ...rest: unknown[]) => boolean;
+        child.stdin.write = ((chunk: unknown, ...rest: unknown[]) => {
+          let frame: { method?: string } | undefined;
+          try { frame = JSON.parse(String(chunk)); sentFrames.push({ at: Date.now() - spawnedAt, frame }); } catch { /* Not a frame. */ }
+          // A busy agent reads the cancel late; Stop must not depend on when.
+          if (frame?.method === 'session/cancel' && (scenario === 'stop-slow-cancel' || scenario === 'allow-then-stop')) {
+            setTimeout(() => { if (child.stdin.writable) { write(chunk, ...rest); } }, 2000); return true;
+          }
+          return write(chunk, ...rest);
+        }) as typeof child.stdin.write;
         child.stderr.on('data', data => { stderr = (stderr + data).slice(-12000); });
         let pending = '';
         child.stdout.on('data', data => {
@@ -112,46 +156,56 @@ async function nativeCase(root: string, scenario: Scenario) {
           let newline: number;
           while ((newline = pending.indexOf('\n')) >= 0) {
             const line = pending.slice(0, newline); pending = pending.slice(newline + 1);
-            if (line.trim()) { nativeFrames.push(JSON.parse(line)); }
+            if (line.trim()) { nativeFrames.push(JSON.parse(line)); frameTimes.push(Date.now() - spawnedAt); }
           }
         });
         return child;
       }
     }
-    const provider = new NativeProvider(createMockContext());
+    const native = new NativeProvider(createMockContext());
     const folder = vscode.workspace.workspaceFolders![0];
     const oldCwd = folder.uri.fsPath;
     Object.defineProperty(folder.uri, 'fsPath', { configurable: true, value: work });
-    provider.setNativeApprovalHost({ handlerForPanel: () => async request => {
-      cards.push(request.toolCall); pendingChecks.push(existsSync(target));
+    let stoppedActive = false;
+    native.setNativeApprovalHost({ handlerForPanel: () => async request => {
+      cards.push(request.toolCall); pendingChecks.push(existsSync(target), existsSync(started));
       await new Promise<void>(resolve => setTimeout(resolve, 150));
-      pendingChecks.push(existsSync(target)); return true;
+      pendingChecks.push(existsSync(target), existsSync(started));
+      if (scenario === 'allow-then-stop') {
+        // Stop right after the allow answer is written (it is written in a microtask).
+        stoppedActive = true; setTimeout(() => native.cancelCurrentRequest('native-panel'), 0);
+      }
+      return scenario !== 'shell-deny';
     } });
     const chunks: StreamChunk[] = [];
-    let stoppedActive = false;
-    const activeStop = scenario === 'stop-active-shell' ? setInterval(() => {
-      if (existsSync(started)) { stoppedActive = true; clearInterval(activeStop); provider.cancelCurrentRequest('native-panel'); }
+    const activeStop = scenario.startsWith('stop-') ? setInterval(() => {
+      if (existsSync(started)) {
+        stoppedActive = true; clearInterval(activeStop);
+        // Let the foreground shell exit first so the background job is orphaned.
+        setTimeout(() => native.cancelCurrentRequest('native-panel'), scenario === 'stop-orphaned-background' ? 1000 : 0);
+      }
     }, 25) : undefined;
-    const bounded = setTimeout(() => { failure ||= new Error('Native public fixture timed out'); provider.cancelCurrentRequest('native-panel'); }, 20000);
+    const bounded = setTimeout(() => { failure ||= new Error('Native public fixture timed out'); native.cancelCurrentRequest('native-panel'); }, CASE_BOUND_MS);
     try {
-      for await (const chunk of provider.sendMessage('inert fixture', [], settings, null, undefined, 'native-panel')) { chunks.push(chunk); }
+      for await (const chunk of native.sendMessage('inert fixture', [], settings, null, undefined, 'native-panel')) { chunks.push(chunk); }
       clearInterval(activeStop);
       // Outlive the native shell's delayed background write.
-      if (scenario === 'stop-active-shell') { await new Promise(resolve => setTimeout(resolve, 2500)); }
+      if (scenario.startsWith('stop-') || scenario === 'shell-background' || scenario === 'allow-then-stop') { await new Promise(resolve => setTimeout(resolve, 5000)); }
       const errors = chunks.filter(chunk => chunk.type === 'error');
       if (errors.length) { failure ||= new Error(JSON.stringify(errors)); }
       initializedVersion = nativeFrames.find(frame => frame.result?.agentInfo)?.result?.agentInfo?.version;
       resultReceived = chunks.at(-1)?.type === 'done' && errors.length === 0;
       return { scenario, exit: await nativeClosed, initializedVersion, failure: failure instanceof Error ? failure.message : failure,
         resultReceived, modelCalls, declaredTools, cards, pendingChecks, stderr, nativeFrames, modelInputs, chunks, stoppedActive,
+        frameTimes, sentFrames, extraPluginRan: existsSync(path.join(work, 'extra-ran.txt')), started: existsSync(started),
         exists: existsSync(target), content: existsSync(target) ? await fs.readFile(target, 'utf8') : undefined };
     } finally {
       clearTimeout(bounded); clearInterval(activeStop);
-      provider.dispose(); Object.defineProperty(folder.uri, 'fsPath', { configurable: true, value: oldCwd });
+      native.dispose(); Object.defineProperty(folder.uri, 'fsPath', { configurable: true, value: oldCwd });
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
   }
-  const proc = spawn('/usr/bin/sandbox-exec', ['-p', sandbox, installed, 'acp', '--pure', '--hostname', '127.0.0.1', '--port', '0', '--cwd', work], { cwd: work, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const proc = spawn('/usr/bin/sandbox-exec', ['-p', sandbox(directory), installed, 'acp', '--pure', '--hostname', '127.0.0.1', '--port', '0', '--cwd', work], { cwd: work, env, stdio: ['pipe', 'pipe', 'pipe'] });
   const write = (frame: object) => { if (proc.stdin.writable) { proc.stdin.write(JSON.stringify(frame) + '\n'); } };
   proc.stdin.on('error', error => { if (!resultReceived) { failure ||= error; } });
   proc.stderr.on('data', data => { stderr = (stderr + data).slice(-12000); });
@@ -195,7 +249,7 @@ async function nativeCase(root: string, scenario: Scenario) {
       } catch (error) { failure ||= error; proc.kill('SIGKILL'); }
     }
   });
-  const timeout = setTimeout(() => { failure ||= new Error('Native fixture timed out'); proc.kill('SIGKILL'); }, 20000);
+  const timeout = setTimeout(() => { failure ||= new Error('Native fixture timed out'); proc.kill('SIGKILL'); }, CASE_BOUND_MS);
   write({ jsonrpc: '2.0', id: 'initialize', method: 'initialize', params: { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'mysti-test', version: '1' } } });
   try {
     const exit = await new Promise(resolve => { proc.once('close', (code, signal) => resolve({ code, signal })); proc.once('error', error => { failure ||= error; }); });
@@ -208,9 +262,21 @@ async function nativeCase(root: string, scenario: Scenario) {
 }
 
 describe('installed OpenCode native permission boundary', () => {
-  it.skipIf(!supported)('rejects Core V2 project and ancestor authority before any process or model starts', { timeout: 10000 }, async () => {
+  it.skipIf(process.platform === 'darwin')('keeps OpenCode shell removed on this platform: the native gate is verified on macOS only', async () => {
+    const cwd = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-platform-')));
+    try {
+      const launch = await prepareOpenCodeNativeLaunch({ settings: baseSettings, session: createOpenCodeSession(), cwd,
+        env: { ANTHROPIC_API_KEY: 'inert-fixture' }, cliPath: '/inert', signal: new AbortController().signal }, baseSettings.model);
+      try {
+        expect(launch.args).toContain('--pure'); expect(launch.env!.OPENCODE_PURE).toBe('true');
+        expect(JSON.parse(launch.env!.OPENCODE_CONFIG_CONTENT!).plugin).toEqual([]);
+        expect(JSON.parse(launch.env!.OPENCODE_PERMISSION!)).toMatchObject({ '*': 'deny' });
+      } finally { await launch.cleanup!(); }
+    } finally { await fs.rm(cwd, { recursive: true, force: true }); }
+  });
+  it.skipIf(!supported)('rejects Core V2 project and ancestor authority before any process or model starts', { timeout: 150000 }, async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-authority-')));
-    const evidence = path.join(project, 'out-test/release-evidence/GOAL_RELIABILITY_20260919', `opencode-authority-fixed-${Date.now()}`);
+    const evidence = evidenceDir('authority');
     await fs.mkdir(evidence, { recursive: true });
     try {
       for (const scenario of ['project-authority', 'ancestor-authority'] as const) {
@@ -222,22 +288,87 @@ describe('installed OpenCode native permission boundary', () => {
       }
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
-  it.skipIf(!supported)('Stop kills the real native shell process group before its delayed effect', { timeout: 30000 }, async () => {
-    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-stop-')));
-    const evidence = path.join(project, 'out-test/release-evidence/NIGHT_PROVIDERS_B_20260922', `opencode-stop-active-shell-${Date.now()}`);
+  it.skipIf(!supported)('upstream witness: shell `ask` alone runs a no-pattern command with no permission request', { timeout: 90000 }, async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-witness-')));
+    const evidence = evidenceDir('ungated-witness');
     await fs.mkdir(evidence, { recursive: true });
     try {
-      const result = await nativeCase(root, 'stop-active-shell');
-      await fs.writeFile(path.join(evidence, 'stop-active-shell.json'), JSON.stringify(result, null, 2));
+      // If this starts failing, upstream changed tool/shell.ts `ask`; re-audit the gate.
+      const result = await nativeCase(root, 'ungated-no-pattern');
+      await fs.writeFile(path.join(evidence, 'ungated-no-pattern.json'), JSON.stringify(result, null, 2));
       const diagnostic = `${evidence}\n${JSON.stringify({ ...result, nativeFrames: undefined, stderr: undefined })}`;
       expect(result.initializedVersion, diagnostic).toBe(OPENCODE_ACP_VERSION);
-      expect(result.stoppedActive, diagnostic).toBe(true);
-      expect(result.exists, diagnostic).toBe(false);
+      expect(result.declaredTools[0], diagnostic).toContain('bash');
+      expect(result.cards, diagnostic).toHaveLength(0); expect(result.exists, diagnostic).toBe(true);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
-  it.skipIf(!supported)('blocks real writes pending, rejects deny/cancel/read-only, and removes shell execution', { timeout: 140000 }, async () => {
+  it.skipIf(!supported)('gates every tested shell shape through one native approval before it runs', { timeout: 400000 }, async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-shell-')));
+    const evidence = evidenceDir('shell-gate');
+    await fs.mkdir(evidence, { recursive: true });
+    try {
+      for (const scenario of ['shell-allow', 'shell-deny', 'shell-no-pattern', 'shell-background', 'shell-readonly'] as const) {
+        const result = await nativeCase(root, scenario);
+        await fs.writeFile(path.join(evidence, `${scenario}.json`), JSON.stringify(result, null, 2));
+        const diagnostic = `${evidence}\n${JSON.stringify({ ...result, nativeFrames: undefined, stderr: undefined, modelInputs: undefined })}`;
+        expect(result.failure, diagnostic).toBeUndefined(); expect(result.resultReceived, diagnostic).toBe(true);
+        expect(result.initializedVersion, diagnostic).toBe(OPENCODE_ACP_VERSION);
+        for (const names of result.declaredTools) {
+          if (scenario === 'shell-readonly') { expect(names, diagnostic).not.toContain('bash'); } else { expect(names, diagnostic).toContain('bash'); }
+          expect(names, diagnostic).not.toContain('task');
+        }
+        // Nothing ran while a card was pending (target, started marker).
+        expect(result.pendingChecks.every(check => check === false), diagnostic).toBe(true);
+        const shellResult = result.chunks.find(chunk => chunk.type === 'tool_result')?.toolCall;
+        if (scenario === 'shell-allow' || scenario === 'shell-deny' || scenario === 'shell-background') {
+          expect(result.cards, diagnostic).toEqual([expect.objectContaining({ name: 'Bash', input: { command: expect.any(String) } })]);
+          expect((result.cards[0] as { input: { command: string } }).input.command, diagnostic).toBe(shellCommand(scenario, path.join(root, scenario, 'work', 'marker.txt'), path.join(root, scenario, 'work', 'started.txt')));
+        } else { expect(result.cards, diagnostic).toHaveLength(0); }
+        if (scenario === 'shell-allow') { expect(result.content, diagnostic).toBe('approved'); }
+        else if (scenario === 'shell-background') { expect(result.started, diagnostic).toBe(true); expect(result.content, diagnostic).toBe('late'); }
+        else { expect(result.exists, diagnostic).toBe(false); expect(result.started, diagnostic).toBe(false); }
+        if (scenario === 'shell-no-pattern') { expect(shellResult?.output, diagnostic).toContain('did not submit for approval'); }
+      }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+  it.skipIf(!supported)('Stop leaves no late effect from a running, background or orphaned background shell', { timeout: 300000 }, async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-stop-')));
+    const evidence = evidenceDir('shell-stop');
+    await fs.mkdir(evidence, { recursive: true });
+    try {
+      for (const scenario of ['stop-active-shell', 'stop-background', 'stop-orphaned-background', 'stop-ignore-term', 'stop-slow-cancel', 'allow-then-stop'] as const) {
+        const result = await nativeCase(root, scenario);
+        await fs.writeFile(path.join(evidence, `${scenario}.json`), JSON.stringify(result, null, 2));
+        const diagnostic = `${evidence}\n${JSON.stringify({ ...result, nativeFrames: undefined, stderr: undefined, modelInputs: undefined })}`;
+        expect(result.initializedVersion, diagnostic).toBe(OPENCODE_ACP_VERSION);
+        expect(result.cards, diagnostic).toHaveLength(1);
+        expect(result.stoppedActive, diagnostic).toBe(true);
+        // Allow-then-Stop may or may not reach the spawn; either way nothing runs on.
+        if (scenario !== 'allow-then-stop') { expect(result.started, diagnostic).toBe(true); }
+        expect(result.exists, diagnostic).toBe(false);
+      }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+  it.skipIf(!supported)('refuses the turn before any model call when the gate is missing or another plugin loaded', { timeout: 150000 }, async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-opencode-attest-')));
+    const evidence = evidenceDir('shell-attestation');
+    await fs.mkdir(evidence, { recursive: true });
+    try {
+      for (const scenario of ['missing-gate', 'extra-plugin'] as const) {
+        const result = await nativeCase(root, scenario);
+        await fs.writeFile(path.join(evidence, `${scenario}.json`), JSON.stringify(result, null, 2));
+        const diagnostic = `${evidence}\n${JSON.stringify({ ...result, nativeFrames: undefined, stderr: undefined })}`;
+        expect(result.failure, diagnostic).toContain('did not attest');
+        expect(result.modelCalls, diagnostic).toBe(0); expect(result.cards, diagnostic).toHaveLength(0);
+        // Detection, not prevention: a plugin source that appears after the
+        // pre-launch checks has already run its load-time code.
+        expect(result.extraPluginRan, diagnostic).toBe(scenario === 'extra-plugin');
+      }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+  it.skipIf(!supported)('blocks real writes pending, rejects deny/cancel/read-only, and keeps shell out of pure launches', { timeout: 450000 }, async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-native-opencode-')));
-    const evidence = path.join(project, 'out-test/release-evidence', `item5-native-opencode-${Date.now()}`);
+    const evidence = evidenceDir('file-matrix');
     await fs.mkdir(evidence, { recursive: true });
     try {
       for (const scenario of ['allow-write', 'deny-write', 'cancel-write', 'readonly-write', 'zero-pattern-shell', 'deny-read', 'public-write'] as const) {
@@ -251,11 +382,13 @@ describe('installed OpenCode native permission boundary', () => {
         else { expect(result.exit, diagnostic).toBeDefined(); }
         expect(result.modelCalls, diagnostic).toBeGreaterThan(0);
         for (const names of result.declaredTools) {
-          expect(names, diagnostic).not.toContain('bash'); expect(names, diagnostic).not.toContain('shell'); expect(names, diagnostic).not.toContain('task');
+          // The public launch is shell-enabled through the gate; raw pure launches never declare shell.
+          if (scenario !== 'public-write') { expect(names, diagnostic).not.toContain('bash'); expect(names, diagnostic).not.toContain('shell'); }
+          expect(names, diagnostic).not.toContain('task');
           if (scenario === 'readonly-write') { expect(names, diagnostic).not.toContain('write'); expect(names, diagnostic).not.toContain('edit'); }
         }
         if (scenario === 'allow-write' || scenario === 'public-write') {
-          expect(result.pendingChecks, diagnostic).toEqual([false, false]); expect(result.content, diagnostic).toBe('approved');
+          expect(result.pendingChecks.every(check => check === false), diagnostic).toBe(true); expect(result.content, diagnostic).toBe('approved');
         } else if (scenario === 'deny-read') {
           expect(result.cards, diagnostic).toHaveLength(1); expect(result.content, diagnostic).toBe('fixture-private-read');
           expect(JSON.stringify(result.modelInputs), diagnostic).not.toContain('fixture-private-read');

@@ -37,6 +37,21 @@ export interface AcpNativeLaunch {
   /** Inspect verified provider-specific notifications for the owned session. */
   validateNotification?(method: string, params: Readonly<AcpObject>): void;
   configure?(client: AcpNativeClient, session: Readonly<AcpObject>, initialized: Readonly<AcpObject>): Promise<void>;
+  /**
+   * On Stop during a prompt: SIGKILL the agent's current descendants at once
+   * (the agent itself keeps running), send `session/cancel`, then wait up to
+   * this long for the agent to finish its own cancellation before the freeze
+   * and tree kill. Only for a verified agent whose cancellation kills its
+   * tools' process groups, which also reaches detached jobs that are no
+   * longer descendants.
+   */
+  cancelGraceMs?: number;
+  /**
+   * Called synchronously when such a graced Stop begins, before `session/cancel`
+   * is written: revoke whatever still lets the agent start a tool process. The
+   * provider SIGKILLs the agent's current descendants right after it.
+   */
+  onStop?(): void;
   /** Recheck policy after session creation/configuration, before the prompt. */
   assertUnchanged?(): Promise<void>;
   cleanup?(): Promise<void>;

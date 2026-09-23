@@ -6,7 +6,7 @@ import type { ChildProcess } from 'child_process';
 import type { AgentConfiguration, Attachment, ContextItem, Conversation, Settings, StreamChunk, UsageStats } from '../../types';
 import type { PersonaConfig } from './IProvider';
 import { getEnrichedEnv } from '../../utils/platform';
-import { killProcessTree } from '../../utils/processKill';
+import { killProcessDescendants, killProcessTree } from '../../utils/processKill';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
 import { BaseCliProvider, type PanelSessionState } from './BaseCliProvider';
 import { AcpNativeClient } from './AcpNativeClient';
@@ -17,7 +17,12 @@ type AcpSession = PanelSessionState & { lastUsageStats?: UsageStats | null };
 
 /** Version-specific adapters prepare native policy; this class owns the turn. */
 export abstract class AcpNativeProvider extends BaseCliProvider {
+  private readonly _clients = new WeakMap<PanelSessionState, AcpNativeClient>();
   protected abstract _prepareAcpLaunch(context: AcpNativeLaunchContext): Promise<AcpNativeLaunch>;
+
+  protected override _ownsCancellation(session: PanelSessionState): boolean {
+    return this._clients.get(session)?.cancelling === true;
+  }
 
   protected override async _probeCliVersion(cliPath: string): Promise<string | undefined> {
     // A bootstrap wrapper may process environment/configuration before even
@@ -102,7 +107,9 @@ export abstract class AcpNativeProvider extends BaseCliProvider {
       closed = new Promise(resolve => child!.once('close', () => resolve()));
       session.process = child;
       client = new AcpNativeClient({ process: child, providerId: this.id, label: this.displayName,
-        panelId: session.panelId, signal, settings: captured, handler, launch, isCurrent: current, terminate });
+        panelId: session.panelId, signal, settings: captured, handler, launch, isCurrent: current, terminate,
+        interruptTools: () => { void killProcessDescendants(child!).catch(error => console.warn(`[Mysti] ${this.displayName} ACP: tool cleanup failed`, error)); } });
+      this._clients.set(session, client);
       const initialized = await client.initialize();
       if (!current()) { return; }
       const nativeSession = await client.newSession(cwd);
@@ -121,6 +128,7 @@ export abstract class AcpNativeProvider extends BaseCliProvider {
       }
       if (current()) { (session as AcpSession).lastUsageStats = client.usage ?? null; }
     } finally {
+      if (client && this._clients.get(session) === client) { this._clients.delete(session); }
       client?.dispose(); terminate();
       if (killing) { await killing; }
       if (closed) {
