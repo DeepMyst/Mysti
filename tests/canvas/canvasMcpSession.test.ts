@@ -262,3 +262,56 @@ describe('canvas MCP session ownership', () => {
     await h.session.dispose();
   });
 });
+
+describe('turn-owned credential revocation', () => {
+  it('the minting turn stops its bearer on completion but keeps the link for a warm process', async () => {
+    const h = harness();
+    const turn = {};
+    const minted = server('design-A');
+    h.createServer.mockReturnValueOnce(minted);
+    await h.session.relink('design-A', 'claude-code', turn);
+    h.session.revoke(turn);
+    expect(minted.stop).toHaveBeenCalledOnce();
+    // No unlink: a config change would restart the warm CLI for an accessory send.
+    expect(h.unlink).not.toHaveBeenCalled();
+    // The next admission still unlinks the dead config before minting afresh.
+    await h.session.close();
+    expect(h.unlink).toHaveBeenCalledExactlyOnceWith('chat-A');
+    await h.session.dispose();
+  });
+
+  it('a stale turn cannot revoke its successor or the design-open link', async () => {
+    const h = harness();
+    const old = {};
+    const successor = {};
+    const designOpen = server('design-open');
+    const next = server('design-next');
+    h.createServer.mockReturnValueOnce(designOpen).mockReturnValueOnce(next);
+    await h.session.relink('design-A');
+    h.session.revoke(old);
+    expect(designOpen.stop).not.toHaveBeenCalled();
+    await h.session.relink('design-A', 'claude-code', successor);
+    h.session.revoke(old);
+    expect(next.stop).not.toHaveBeenCalled();
+    h.session.revoke(successor);
+    expect(next.stop).toHaveBeenCalledOnce();
+    await h.session.dispose();
+  });
+
+  it('a turn that ends while its mint is starting never publishes the endpoint', async () => {
+    const h = harness();
+    const turn = {};
+    const started = deferred<{ url: string; token: string }>();
+    const pending = server('design-A');
+    pending.start.mockReturnValue(started.promise);
+    h.createServer.mockReturnValueOnce(pending);
+    const minting = h.session.relink('design-A', 'claude-code', turn);
+    await vi.waitFor(() => expect(pending.start).toHaveBeenCalledOnce());
+    h.session.revoke(turn);
+    expect(pending.stop).toHaveBeenCalledOnce();
+    started.resolve(endpoint('design-A'));
+    await minting;
+    expect(h.link).not.toHaveBeenCalled();
+    await h.session.dispose();
+  });
+});

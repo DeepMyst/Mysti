@@ -622,3 +622,43 @@ describe('production Canvas media adapter signal and kind routing', () => {
         } finally { lookup.resolve(''); h.p._canvasSecrets = null; await h.close(); }
     });
 });
+
+describe('Canvas media is owned by the ordinary lane only', () => {
+    it.each(['coordinator', 'brainstorm'] as const)('a %s turn in the linked panel retires ordinary media and admits none of its own', async lane => {
+        const h = await mediaHarness(); const laneEntered = deferred(); const laneRelease = deferred();
+        try {
+            h.startParent(); await h.parentEntered.promise;
+            const old = h.startMedia(); await h.generationEntered.promise;
+            let laneRun: Promise<void>;
+            if (lane === 'coordinator') {
+                vi.spyOn(h.p, '_runMystiAgentic').mockImplementation(async () => { laneEntered.resolve(); await laneRelease.promise; });
+                laneRun = h.run('lane', 'sidebar', { ...fullSettings, provider: 'mysti' as Settings['provider'] });
+            } else {
+                h.p._brainstormManager = { cancelSession: () => undefined, getCurrentSession: () => undefined,
+                    startBrainstormSession: async function* () { laneEntered.resolve(); await laneRelease.promise; } };
+                laneRun = h.p._handleBrainstormMessage({ content: 'lane', context: [], settings: { ...fullSettings } }, 'sidebar');
+            }
+            await laneEntered.promise;
+            expect((await old).isError).toBe(true);
+            const during = await h.startMedia();
+            expect(during.isError).toBe(true);
+            expect(h.generation).toHaveBeenCalledOnce();
+            laneRelease.resolve(); await laneRun;
+            h.generationRelease.resolve(); await Promise.resolve();
+            expectNoMedia(h);
+        } finally { laneRelease.resolve(); await h.finish(); }
+    });
+
+    it('a brainstorm Stop in a sibling panel leaves the linked ordinary media running', async () => {
+        const h = await mediaHarness();
+        try {
+            h.p._brainstormStopOwners = new Map([['second', 'b-1']]);
+            h.startParent(); await h.parentEntered.promise;
+            const pending = h.startMedia(); await h.generationEntered.promise;
+            await h.p._handleMessage({ type: 'cancelRequest', panelId: 'second', payload: { scope: 'brainstorm', brainstormId: 'b-1' } });
+            expect(h.captures[0].isCurrent()).toBe(true);
+            h.generationRelease.resolve(); expect((await pending).isError).toBeFalsy();
+            expect(h.artifact.assets).toHaveLength(1);
+        } finally { await h.finish(); }
+    });
+});
