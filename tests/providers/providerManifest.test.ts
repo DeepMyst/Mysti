@@ -347,6 +347,13 @@ describe('PROVIDER_NPM_PACKAGES', () => {
       } catch {
         installCommand = '';
       }
+      // A provider whose recommended install is a script may still publish the
+      // same CLI on npm and offer it as a wizard method (Kimi Code 2.x); that
+      // npm method is then what the declared package must match.
+      const npmMethod = (provider.getInstallMethods?.() ?? [])
+        .map(method => method.command)
+        .find(command => /\bnpm\s+(install|i)\s+-g\b/.test(command));
+      if (npmMethod && !/\bnpm\s+(install|i)\s+-g\b/.test(installCommand)) { installCommand = npmMethod; }
       const isNpmInstall = /\bnpm\s+(install|i)\s+-g\b/.test(installCommand);
 
       if (declared) {

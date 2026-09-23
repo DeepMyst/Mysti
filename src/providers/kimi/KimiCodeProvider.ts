@@ -12,6 +12,19 @@
  *
  * Kimi Code provider (MoonshotAI/kimi-code — the `kimi` CLI).
  *
+ * Two generations share the `kimi` binary name and the `kimi acp` transport:
+ *  - Kimi Code 2.x (and its 0.x predecessors): the TypeScript rewrite, npm
+ *    `@moonshot-ai/kimi-code` or the official installer (~/.kimi-code/bin).
+ *    Data root ~/.kimi-code (KIMI_CODE_HOME). `--version` prints a bare semver.
+ *  - kimi-cli 1.x: the Python CLI (PyPI `kimi-cli`). Data root ~/.kimi
+ *    (KIMI_SHARE_DIR). `--version` prints `kimi, version 1.x.y`. 1.52.0 is the
+ *    final release and a tombstone: every subcommand, `acp` included, prints a
+ *    "no longer maintained" notice and exits, and bare `kimi` runs the Kimi
+ *    Code installer without asking. 1.51 and earlier still speak ACP.
+ * Both keep OAuth tokens in `<home>/credentials/<name>.json` and both accept
+ * `session/set_model` (neither reads ANTHROPIC_MODEL, which is what Mysti
+ * used to set).
+ *
  * Transport: the Agent Client Protocol (ACP) — `kimi acp` speaks JSON-RPC
  * 2.0 over stdio, purpose-built for editor integrations ("Kimi Code CLI
  * speaks the Agent Client Protocol"). Mysti drives it through the base
@@ -22,15 +35,20 @@
  * *response* (carrying `stopReason`) is the response boundary.
  *
  * Kimi's own coding models (Kimi K2.7 Code / K3, 256K–1M context) reason, so
- * ACP `agent_thought_chunk` notifications surface as thinking. Model choice
- * is normally made inside the session (`/model`) — ACP has no per-prompt
- * model override — but a `mysti.kimiCodeModel` override is injected as the
- * `ANTHROPIC_MODEL` env var at spawn (the channel Kimi documents for its
- * Anthropic-compatible surface), best-effort.
+ * ACP `agent_thought_chunk` notifications surface as thinking. A selected
+ * model is applied with `session/set_model` right after `session/new`; a bare
+ * id (`k3`) is matched against the aliases the agent reported (`kimi-code/k3`).
  *
- * There is no documented stream-JSON one-shot mode, so the single-shot
- * fallback runs `kimi acp --check` and surfaces its diagnostics as an
- * actionable error instead of hanging or silently re-sending (Hermes pattern).
+ * Kimi Code 2.x applies the user's `default_permission_mode = "yolo"|"auto"`
+ * and `default_plan_mode` to ACP sessions while still reporting mode
+ * `default`. Witnessed on 2.0.2: an inherited yolo ran Bash with no
+ * `session/request_permission`. So when the agent advertises more than one
+ * mode, Mysti sends `session/set_mode {modeId:'default'}` before the first
+ * prompt, which restores per-tool requests for the main agent.
+ *
+ * The single-shot fallback only runs `kimi --version` so the error names the
+ * binary that failed; neither generation has a one-shot ACP diagnostic
+ * (`acp --check` was never a real option and both reject it).
  */
 
 import * as vscode from 'vscode';
@@ -56,7 +74,8 @@ import type {
   ProviderConfig,
   AuthStatus,
   InstallMethod,
-  AccessLevel
+  AccessLevel,
+  ModelInfo
 } from '../../types';
 import { normalizeToolName, toolKind } from '../../utils/toolNames';
 import { isProcessLive, killProcessTree } from '../../utils/processKill';
@@ -104,7 +123,16 @@ export interface KimiCodeSessionState extends PanelSessionState {
    */
   acpAccessLevel: AccessLevel;
   acpMode: Settings['mode'];
-  /** True while the single-shot diagnostic fallback (`acp --check`) runs. */
+  /** Model to apply with session/set_model once the ACP session exists. */
+  requestedModel: string | null;
+  /** Setup requests (set_mode / set_model) still to send before the prompt. */
+  pendingSetup: Array<{ method: string; params: Record<string, unknown>; failure: string }>;
+  /** Id + failure text of the setup request awaiting its response. */
+  setupId: number | null;
+  setupFailure: string;
+  /** Model ids the agent reported on session/new (2.x configOptions, 1.x models). */
+  reportedModels: string[] | null;
+  /** True while the single-shot diagnostic fallback (`--version`) runs. */
   fallbackDiagnostics: boolean;
   /** One diagnostic error per fallback run, not one per output line. */
   fallbackErrorEmitted: boolean;
@@ -131,7 +159,7 @@ export class KimiCodeProvider extends BaseCliProvider {
       {
         id: 'default',
         name: 'Default (account model)',
-        description: 'Uses the model selected in Kimi (`/model`) for your plan',
+        description: 'Uses default_model from your Kimi config (or `/model`)',
         contextWindow: 262144
       },
       {
@@ -186,9 +214,8 @@ export class KimiCodeProvider extends BaseCliProvider {
     emitsToolResults: true,
     emitsUsage: true,
     usageConvention: 'none',   // ACP usage carries flat input/output only.
-    // ACP has no per-prompt model override; a custom model is passed via the
-    // ANTHROPIC_MODEL env at spawn (best-effort) — expose it as custom-only.
-    modelSelection: 'custom-only'
+    // Applied per session with session/set_model (see _startSessionSetup).
+    modelSelection: 'full'
   };
 
   protected _createSession(panelId: string): KimiCodeSessionState {
@@ -207,6 +234,11 @@ export class KimiCodeProvider extends BaseCliProvider {
       promptId: null,
       acpSessionId: null,
       pendingPrompt: null,
+      requestedModel: null,
+      pendingSetup: [],
+      setupId: null,
+      setupFailure: '',
+      reportedModels: null,
       acpAccessLevel: 'ask-permission',
       acpMode: 'default',
       fallbackDiagnostics: false,
@@ -254,92 +286,99 @@ export class KimiCodeProvider extends BaseCliProvider {
     return config.get<string>('kimiCodePath', 'kimi');
   }
 
-  /** Kimi config/home dir (~/.kimi by default, KIMI_HOME override). */
-  private _kimiHome(): string {
-    return process.env.KIMI_HOME || path.join(os.homedir(), '.kimi');
+  /** The official 2.x installer's location, which a GUI-launched host's PATH may lack. */
+  protected _getAdditionalSearchPaths(): string[] {
+    const binary = process.platform === 'win32' ? 'kimi.exe' : 'kimi';
+    return [path.join(os.homedir(), '.kimi-code', 'bin', binary)];
   }
 
   /**
-   * Provider API keys Kimi Code honors from the environment. Kimi's own key
-   * (MOONSHOT_API_KEY / KIMI_API_KEY) or the Anthropic-compatible token used
-   * for its `/anthropic` surface. Bare ANTHROPIC_API_KEY is deliberately
-   * EXCLUDED — it is ubiquitous and would false-positive on Anthropic users.
+   * True for the Python kimi-cli (1.x), false for Kimi Code (0.x/2.x), null
+   * when discovery has not reported a version. Only the Python CLI prints
+   * `kimi, version …`, and the TypeScript line skipped 1.x entirely.
    */
-  private static readonly _envKeys = [
-    'MOONSHOT_API_KEY', 'KIMI_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
-  ];
+  private _isLegacyCli(): boolean | null {
+    const raw = this.getCachedCliVersion();
+    if (!raw) { return null; }
+    return /\bversion\b/i.test(raw) || this._getCliMajorVersion() === 1;
+  }
 
-  private _kimiEnvKey(): string | undefined {
-    return KimiCodeProvider._envKeys.find(k => (process.env[k] || '').trim().length > 0);
+  /**
+   * Data roots to look in, current layout first. A known version picks its
+   * own; an unknown one checks both, because a user who migrated may still
+   * have the other directory lying around.
+   */
+  private _kimiHomes(): string[] {
+    const current = process.env.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code');
+    const legacy = process.env.KIMI_SHARE_DIR || path.join(os.homedir(), '.kimi');
+    const isLegacy = this._isLegacyCli();
+    return isLegacy === null ? [current, legacy] : [isLegacy ? legacy : current];
+  }
+
+  /**
+   * Presence-only auth probe. OAuth tokens live in `<home>/credentials/*.json`
+   * (1.x and 2.x); the directory itself is created before login, so only a
+   * file counts, and its contents are never read. An API key lives in
+   * config.toml; the only read is a key-shaped match so an empty `api_key = ""`
+   * (written for OAuth providers) is not mistaken for one. 2.x also takes a
+   * model from KIMI_MODEL_NAME + KIMI_MODEL_API_KEY. Neither generation reads
+   * MOONSHOT_API_KEY / KIMI_API_KEY from the shell on their own, so those are
+   * not treated as sign-in.
+   */
+  private _detectAuth(): { kind: 'oauth' | 'api-key' | 'env'; configPath: string } | { kind: null; configPath: string } {
+    const homes = this._kimiHomes();
+    for (const home of homes) {
+      try {
+        if (fs.readdirSync(path.join(home, 'credentials')).some(name => name.endsWith('.json'))) {
+          return { kind: 'oauth', configPath: path.join(home, 'config.toml') };
+        }
+      } catch { /* no credentials directory */ }
+    }
+    for (const home of homes) {
+      const configPath = path.join(home, 'config.toml');
+      try {
+        // `api_key = "…"` or a `[providers.<name>.env]` key such as KIMI_API_KEY.
+        if (/^\s*\w*api_key\s*=\s*["']?[^\s"']/im.test(fs.readFileSync(configPath, 'utf-8'))) {
+          return { kind: 'api-key', configPath };
+        }
+      } catch { /* no config */ }
+    }
+    const configPath = path.join(homes[0], 'config.toml');
+    if ((process.env.KIMI_MODEL_NAME || '').trim() && (process.env.KIMI_MODEL_API_KEY || '').trim()) {
+      return { kind: 'env', configPath };
+    }
+    return { kind: null, configPath };
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
-    const home = this._kimiHome();
-    // Kimi stores OAuth/session credentials under ~/.kimi after `/login`.
-    const authCandidates = [
-      path.join(home, 'auth.json'),
-      path.join(home, 'credentials.json'),
-      path.join(home, 'oauth.json'),
-    ];
-    const configCandidates = [
-      path.join(home, 'config.toml'),
-      path.join(home, 'config.json'),
-      path.join(home, 'config.yaml'),
-    ];
-    const authFile = authCandidates.find(p => fs.existsSync(p));
-    const configFile = configCandidates.find(p => fs.existsSync(p));
-
+    const auth = this._detectAuth();
     return {
-      type: authFile ? 'oauth' : 'api-key',
-      isAuthenticated: !!this._kimiEnvKey() || !!authFile || !!configFile,
-      configPath: configFile || configCandidates[0]
+      type: auth.kind === 'oauth' ? 'oauth' : 'api-key',
+      isAuthenticated: auth.kind !== null,
+      configPath: auth.configPath
     };
   }
 
   async checkAuthentication(): Promise<AuthStatus> {
-    const home = this._kimiHome();
-
-    // OAuth session from `/login` (or `kimi login`) — Kimi Code / Moonshot.
-    for (const name of ['auth.json', 'credentials.json', 'oauth.json']) {
-      if (fs.existsSync(path.join(home, name))) {
-        return { authenticated: true, user: 'Kimi Code' };
-      }
+    switch (this._detectAuth().kind) {
+      case 'oauth': return { authenticated: true, user: 'Kimi Code' };
+      case 'api-key': return { authenticated: true, user: 'Kimi Config' };
+      case 'env': return { authenticated: true, user: 'Environment (KIMI_MODEL_*)' };
+      default: return {
+        authenticated: false,
+        error: 'Not authenticated. Run "kimi login" (Kimi Code OAuth), or run "kimi" and use "/login" for a Kimi Platform API key.'
+      };
     }
-
-    // A saved config with an API key (Moonshot Open Platform key pasted at login).
-    for (const name of ['config.toml', 'config.json', 'config.yaml']) {
-      const configPath = path.join(home, name);
-      if (fs.existsSync(configPath)) {
-        try {
-          const content = fs.readFileSync(configPath, 'utf-8');
-          if (/(api[_-]?key|token)\s*[:=]\s*['"]?\S/i.test(content)) {
-            return { authenticated: true, user: 'Kimi Config' };
-          }
-        } catch {
-          // unreadable — fall through
-        }
-      }
-    }
-
-    // Environment-level keys Kimi honors.
-    if (this._kimiEnvKey()) {
-      return { authenticated: true, user: 'Environment API Key' };
-    }
-
-    return {
-      authenticated: false,
-      error: 'Not authenticated. Run "kimi" and use "/login" (Kimi Code OAuth or a Moonshot AI Open Platform API key), or set MOONSHOT_API_KEY.'
-    };
   }
 
   getAuthCommand(): string {
-    // The CLI authenticates with the in-session `/login` slash command; there
-    // is no non-interactive `kimi login` in Kimi Code, so surface `kimi`.
-    return 'kimi';
+    // Both generations have a device-code `kimi login`. Bare `kimi` is unsafe
+    // to suggest: on kimi-cli 1.52 it runs the Kimi Code installer unasked.
+    return 'kimi login';
   }
 
   getInstallCommand(): string {
-    return 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash';
+    return this._installCommandForCurrentOS('curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash');
   }
 
   getInstallMethods(): InstallMethod[] {
@@ -349,7 +388,21 @@ export class KimiCodeProvider extends BaseCliProvider {
       { id: 'script-linux', label: 'Install script (Linux/WSL2)', command: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash', platform: 'linux', priority: 1 },
       { id: 'brew-linux', label: 'Homebrew (Linux)', command: 'brew install kimi-code', platform: 'linux', priority: 2 },
       { id: 'ps1', label: 'PowerShell installer (Windows)', command: 'irm https://code.kimi.com/kimi-code/install.ps1 | iex', platform: 'win32', priority: 1 },
+      { id: 'npm', label: 'npm (Node.js 22.19+)', command: 'npm install -g @moonshot-ai/kimi-code', platform: 'all', priority: 3 },
     ];
+  }
+
+  /**
+   * The model aliases the agent reported for any panel's session, or null
+   * before one has been created. Reported by Kimi itself (2.x configOptions /
+   * 1.x models on session/new), so nothing is read from its config files.
+   */
+  async discoverModels(_timeoutMs: number): Promise<ModelInfo[] | null> {
+    for (const session of this._panelSessions.values()) {
+      const reported = (session as KimiCodeSessionState).reportedModels;
+      if (reported?.length) { return reported.map(id => ({ id, name: id })); }
+    }
+    return null;
   }
 
   protected getThinkingTokens(_thinkingLevel: string): number | undefined {
@@ -357,9 +410,8 @@ export class KimiCodeProvider extends BaseCliProvider {
   }
 
   /**
-   * Custom model as a Kimi model id (kimi-for-coding, kimi-for-coding-highspeed,
-   * k3, kimi-k2.7-code). ACP has no per-prompt model param, so this is surfaced
-   * to the CLI via the ANTHROPIC_MODEL env at spawn (getExtraSpawnEnv).
+   * Custom model as a Kimi model alias (`kimi-code/k3`) or a bare id (`k3`,
+   * resolved against the reported aliases). Applied with session/set_model.
    */
   protected _getEffectiveModel(settings: Settings): string | undefined {
     // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
@@ -379,16 +431,6 @@ export class KimiCodeProvider extends BaseCliProvider {
     return undefined;
   }
 
-  /**
-   * Inject the selected model into the spawn env. `kimi acp` takes no model
-   * flag; ANTHROPIC_MODEL is the documented channel for Kimi's Anthropic-
-   * compatible surface. Best-effort — if unhonored, the account default is used.
-   */
-  protected override getExtraSpawnEnv(settings: Settings): Record<string, string> {
-    const model = this._getEffectiveModel(settings);
-    return model ? { ANTHROPIC_MODEL: model } : {};
-  }
-
   // ==========================================================================
   // Persistent mode — the primary transport (`kimi acp`, JSON-RPC/stdio)
   // ==========================================================================
@@ -405,6 +447,10 @@ export class KimiCodeProvider extends BaseCliProvider {
     kimi.acpSessionId = null;
     kimi.pendingPrompt = null;
     kimi.sessionId = null;
+    kimi.requestedModel = this._getEffectiveModel(settings) ?? null;
+    kimi.pendingSetup = [];
+    kimi.setupId = null;
+    kimi.reportedModels = null;
     kimi.acpAccessLevel = settings.accessLevel;
     kimi.acpMode = settings.mode;
     kimi.fallbackDiagnostics = false;
@@ -500,12 +546,22 @@ export class KimiCodeProvider extends BaseCliProvider {
 
   /**
    * Kimi Code (2.0.2 permissionPolicy) auto-approves in-repository Write/Edit,
-   * FetchURL, Agent, AgentSwarm and Skill without an ACP request, and applies an
-   * inherited `default_permission_mode = yolo|auto`. Its plan mode does not cover
-   * fetches or subagents, so restricted tiers fail closed.
+   * FetchURL, Agent, AgentSwarm and Skill without an ACP request, even in the
+   * `default` (manual) mode Mysti pins. The only policy ahead of those
+   * auto-approvals that could force a request is a user-configured `ask`
+   * rule in config.toml; there is no flag, env var or ACP parameter to set
+   * one per spawn. Ordinary subagents inherit the caller's mode, but Kimi's
+   * TowerSpawn workers are forced to `auto`. kimi-cli 1.x applies
+   * `default_yolo` with no ACP override at all. Restricted tiers therefore
+   * still fail closed.
    */
   protected async _validateNativeApprovalCli(_session: PanelSessionState, settings: Readonly<Settings>): Promise<void> {
     requireUnrestrictedLegacyTransport(settings, this.displayName);
+    // kimi-cli 1.52.0 answers `kimi acp` with a deprecation notice and exits.
+    const version = /(\d+)\.(\d+)\.\d+/.exec(this.getCachedCliVersion() ?? '');
+    if (this._isLegacyCli() && version && Number(version[1]) === 1 && Number(version[2]) >= 52) {
+      throw new Error(`The installed kimi-cli ${version[0]} is the final Python release and no longer runs (every command only prints a deprecation notice), so this turn was not started. Install Kimi Code 2.x: ${this.getInstallCommand()}`);
+    }
   }
 
   /**
@@ -533,7 +589,7 @@ export class KimiCodeProvider extends BaseCliProvider {
     const kimi = session as KimiCodeSessionState;
     kimi.fallbackDiagnostics = true;
     kimi.fallbackErrorEmitted = false;
-    return ['acp', '--check'];
+    return ['--version'];
   }
 
   // ==========================================================================
@@ -613,8 +669,8 @@ export class KimiCodeProvider extends BaseCliProvider {
         // No credentials is the overwhelmingly common cause
         return {
           type: 'auth_error',
-          content: `Kimi Code could not start a session: ${error.message || 'authentication required'}. Run "kimi" and use "/login" to sign in.`,
-          authCommand: 'kimi',
+          content: `Kimi Code could not start a session: ${error.message || 'authentication required'}. Run "kimi login" to sign in.`,
+          authCommand: this.getAuthCommand(),
           providerName: 'Kimi Code'
         };
       }
@@ -624,15 +680,24 @@ export class KimiCodeProvider extends BaseCliProvider {
       }
       kimi.acpSessionId = sessionId;
       kimi.sessionId = sessionId;
-      const prompt = kimi.pendingPrompt ?? '';
-      kimi.pendingPrompt = null;
-      if (kimi.persistentProcess?.stdin?.writable) {
-        kimi.persistentProcess.stdin.write(this._promptRequest(kimi, prompt));
-      }
+      this._queueSessionSetup(kimi, result);
+      this._advanceSetup(kimi);
       // Deliberately emit NO chunk here. usedPersistent must flip only once the
       // prompt is actually answered (the boundary session_active below), so a
       // process death DURING the first prompt yields zero chunks and surfaces
       // the diagnostic fallback instead of a silent empty reply.
+      return null;
+    }
+
+    if (data.id === kimi.setupId) {
+      kimi.setupId = null;
+      if (error) {
+        // An error response is a turn boundary, so the prompt is never sent.
+        kimi.pendingPrompt = null;
+        kimi.pendingSetup = [];
+        return { type: 'error', content: `${kimi.setupFailure}: ${error.message || 'request rejected'}. The prompt was not sent.` };
+      }
+      this._advanceSetup(kimi);
       return null;
     }
 
@@ -660,6 +725,68 @@ export class KimiCodeProvider extends BaseCliProvider {
     return null;
   }
 
+  /**
+   * Decide what must run between session/new and the first prompt, from what
+   * the agent reported:
+   *  - more than one mode on offer (2.x: default/plan/auto/yolo) → pin
+   *    `default`, so an inherited yolo/auto/plan config cannot decide for Mysti;
+   *  - a selected model that is not already current → session/set_model, with
+   *    a bare id resolved to the single reported alias ending in `/<id>`.
+   */
+  private _queueSessionSetup(kimi: KimiCodeSessionState, result: Record<string, unknown>): void {
+    const sessionId = kimi.acpSessionId;
+    const modes = (result.modes ?? {}) as Record<string, unknown>;
+    const availableModes = Array.isArray(modes.availableModes) ? modes.availableModes : [];
+    const configOptions = Array.isArray(result.configOptions) ? result.configOptions as Array<Record<string, unknown>> : [];
+    const modelOption = configOptions.find(option => option?.id === 'model');
+    const legacyModels = (result.models ?? {}) as Record<string, unknown>;
+    const reported = modelOption && Array.isArray(modelOption.options)
+      ? (modelOption.options as Array<Record<string, unknown>>).map(option => String(option?.value ?? ''))
+      : Array.isArray(legacyModels.availableModels)
+        ? (legacyModels.availableModels as Array<Record<string, unknown>>).map(model => String(model?.modelId ?? model?.model_id ?? ''))
+        : [];
+    kimi.reportedModels = reported.filter(Boolean);
+    const current = String(modelOption?.currentValue ?? legacyModels.currentModelId ?? '');
+
+    kimi.pendingSetup = [];
+    if (availableModes.length > 1) {
+      kimi.pendingSetup.push({
+        method: 'session/set_mode',
+        params: { sessionId, modeId: 'default' },
+        failure: 'Kimi Code could not be switched to its ask-first default mode',
+      });
+    }
+    const requested = kimi.requestedModel;
+    if (requested) {
+      const suffixed = kimi.reportedModels.filter(id => id.endsWith(`/${requested}`));
+      const modelId = kimi.reportedModels.includes(requested) || suffixed.length !== 1 ? requested : suffixed[0];
+      if (modelId !== current) {
+        kimi.pendingSetup.push({
+          method: 'session/set_model',
+          params: { sessionId, modelId },
+          failure: `Kimi Code could not select model "${modelId}"`
+            + (kimi.reportedModels.length ? ` (it offers: ${kimi.reportedModels.join(', ')})` : ''),
+        });
+      }
+    }
+  }
+
+  /** Send the next setup request, or the stashed prompt once setup is done. */
+  private _advanceSetup(kimi: KimiCodeSessionState): void {
+    const next = kimi.pendingSetup.shift();
+    if (next) {
+      kimi.setupId = ++kimi.rpcId;
+      kimi.setupFailure = next.failure;
+      this._writeToAcp(kimi, { jsonrpc: '2.0', id: kimi.setupId, method: next.method, params: next.params });
+      return;
+    }
+    const prompt = kimi.pendingPrompt ?? '';
+    kimi.pendingPrompt = null;
+    if (kimi.persistentProcess?.stdin?.writable) {
+      kimi.persistentProcess.stdin.write(this._promptRequest(kimi, prompt));
+    }
+  }
+
   private _handleSessionUpdate(params: Record<string, unknown> | undefined, kimi: KimiCodeSessionState): StreamChunk | null {
     const update = (params?.update ?? {}) as Record<string, unknown>;
     const kind = String(update.sessionUpdate ?? update.session_update ?? '');
@@ -681,7 +808,7 @@ export class KimiCodeProvider extends BaseCliProvider {
         const toolName = ACP_KIND_TO_TOOL_NAME[acpKind]
           || normalizeToolName(String(update.title ?? 'tool').split(':')[0].trim())
           || 'tool';
-        const input = (update.rawInput ?? update.raw_input ?? {}) as Record<string, unknown>;
+        const input = (update.rawInput ?? update.raw_input ?? this._jsonContent(update.content)) as Record<string, unknown>;
         kimi.activeToolCalls.set(toolId, { id: toolId, name: toolName, input });
         return {
           type: 'tool_use',
@@ -760,6 +887,21 @@ export class KimiCodeProvider extends BaseCliProvider {
       .join('');
   }
 
+  /**
+   * Kimi Code 2.x sends no rawInput on tool_call; the arguments arrive as the
+   * JSON text of the first content block (witnessed on 2.0.2).
+   */
+  private _jsonContent(content: unknown): Record<string, unknown> {
+    const first = Array.isArray(content) ? content[0] as Record<string, unknown> | undefined : undefined;
+    const text = first?.type === 'content' ? this._contentText(first.content) : '';
+    try {
+      const parsed: unknown = JSON.parse(text);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }
+
   private _toolOutputText(update: Record<string, unknown>): string {
     const content = update.content as unknown[] | undefined;
     if (Array.isArray(content)) {
@@ -793,9 +935,9 @@ export class KimiCodeProvider extends BaseCliProvider {
     return {
       type: 'error',
       content: 'Kimi Code ACP transport is unavailable, so this message was not processed. '
-        + 'Mysti drives Kimi Code through "kimi acp" — run "kimi acp --check" in a terminal, '
-        + 'sign in with "/login", update Kimi Code, then try again.\n'
-        + `First diagnostic line: ${trimmed.slice(0, 300)}`
+        + 'Mysti drives Kimi Code through "kimi acp". Sign in with "kimi login", check your '
+        + 'config with "kimi doctor" (Kimi Code 2.x), update Kimi Code, then try again.\n'
+        + `The CLI Mysti ran reports: ${trimmed.slice(0, 300)}`
     };
   }
 
@@ -824,6 +966,8 @@ export class KimiCodeProvider extends BaseCliProvider {
         session.promptId = null;
         session.acpSessionId = null;
         session.pendingPrompt = null;
+        session.pendingSetup = [];
+        session.setupId = null;
         session.activeToolCalls.clear();
         session.lastUsageStats = null;
       }

@@ -20,7 +20,7 @@
  *     exactly a semver, and it never reaches the update command — which is
  *     built from the in-repo package literal alone.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ExtensionContext } from 'vscode';
 import { createMockMemento } from '../helpers/mockVscode';
 
@@ -596,3 +596,40 @@ function bump(nodeVersion: string): string {
   const [major, minor] = nodeVersion.replace(/^v/, '').split('.').map(Number);
   return `${major}.${minor + 1}.0`;
 }
+
+// ---------------------------------------------------------------------------
+// Kimi Code (2026-09-23): 2.x is on npm as @moonshot-ai/kimi-code, but most
+// installs come from the official installer, so the update runs Kimi's own
+// `kimi upgrade` (it detects installer/npm/pnpm/bun/Homebrew). The Python
+// kimi-cli 1.x prints `kimi, version 1.x.y`, has no `upgrade`, and is
+// end-of-life, so it is moved to Kimi Code with the installer instead.
+// ---------------------------------------------------------------------------
+describe('Kimi Code update targets', () => {
+  const npm = { getNpmPath: () => '/usr/bin/npm' };
+  const originalPlatform = process.platform;
+  beforeEach(() => { execFileMock.mockReset(); });
+  afterEach(() => { Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true }); });
+
+  it.each([
+    ['darwin', 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash'],
+    ['linux', 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash'],
+    ['win32', 'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://code.kimi.com/kimi-code/install.ps1 | iex"'],
+  ] as const)('checks npm and picks the command by installed generation on %s', async (platform, installer) => {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+    stubNpm({ '@moonshot-ai/kimi-code': JSON.stringify({ version: '2.0.2', 'engines.node': '>=18' }) });
+
+    const current = new CliUpdateService(makeContext().context,
+      makeVersions([{ providerId: 'kimi-code', found: true, version: '2.0.1' }]), npm);
+    expect(await current.checkAll()).toEqual([expect.objectContaining({ providerId: 'kimi-code', installed: '2.0.1', installable: '2.0.2' })]);
+    expect(current.getUpdateCommand('kimi-code')).toBe('kimi upgrade');
+
+    const legacy = new CliUpdateService(makeContext().context,
+      makeVersions([{ providerId: 'kimi-code', found: true, version: 'kimi, version 1.51.0' }]), npm);
+    expect(await legacy.checkAll()).toEqual([expect.objectContaining({ providerId: 'kimi-code', installed: '1.51.0' })]);
+    expect(legacy.getUpdateCommand('kimi-code')).toBe(installer);
+
+    const upToDate = new CliUpdateService(makeContext().context,
+      makeVersions([{ providerId: 'kimi-code', found: true, version: '2.0.2' }]), npm);
+    expect(await upToDate.checkAll()).toEqual([]);
+  });
+});

@@ -1,0 +1,376 @@
+{
+  "_source": "Captured 2026-09-23 from @moonshot-ai/kimi-code 2.0.2 (npm pack) and kimi-cli 1.51.0 (PyPI), each run with an isolated HOME and no credentials; the session payloads used a local fake OpenAI-compatible model server (no real model). Absolute paths scrubbed to /opt/kimi.",
+  "versionLines": {
+    "2.0.2": "2.0.2",
+    "1.51.0": "kimi, version 1.51.0",
+    "1.52.0": "kimi, version 1.52.0"
+  },
+  "v2_initialize": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "loadSession": true,
+        "promptCapabilities": {
+          "image": true,
+          "audio": false,
+          "embeddedContext": true
+        },
+        "sessionCapabilities": {
+          "list": {},
+          "resume": {},
+          "close": {},
+          "delete": {},
+          "fork": {},
+          "additionalDirectories": {}
+        },
+        "mcpCapabilities": {
+          "http": true,
+          "sse": true
+        },
+        "auth": {
+          "logout": {}
+        }
+      },
+      "authMethods": [
+        {
+          "id": "login",
+          "type": "terminal",
+          "name": "Login with Kimi account",
+          "description": "Open the device-code login flow in a terminal.",
+          "args": [
+            "--login"
+          ],
+          "env": {},
+          "_meta": {
+            "terminal-auth": {
+              "type": "terminal",
+              "label": "Login with Kimi account",
+              "command": "/opt/kimi/main.mjs",
+              "args": [
+                "login"
+              ],
+              "env": {}
+            }
+          }
+        }
+      ],
+      "agentInfo": {
+        "name": "Kimi Code CLI",
+        "version": "2.0.2"
+      }
+    }
+  },
+  "v2_sessionNew_unauthenticated": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "error": {
+      "code": -32000,
+      "message": "Authentication required"
+    }
+  },
+  "v2_sessionNew": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "sessionId": "session_9a025ebc-648c-4a94-a7b1-4f63256aca63",
+      "configOptions": [
+        {
+          "type": "select",
+          "id": "model",
+          "name": "Model",
+          "category": "model",
+          "currentValue": "fake",
+          "options": [
+            {
+              "value": "fake",
+              "name": "fake-model"
+            },
+            {
+              "value": "fake2",
+              "name": "fake-model-2"
+            }
+          ]
+        },
+        {
+          "type": "select",
+          "id": "mode",
+          "name": "Mode",
+          "category": "mode",
+          "currentValue": "default",
+          "options": [
+            {
+              "value": "default",
+              "name": "Default",
+              "description": "Manual approvals; tools execute normally."
+            },
+            {
+              "value": "plan",
+              "name": "Plan",
+              "description": "Read-only planning; no tool execution."
+            },
+            {
+              "value": "auto",
+              "name": "Auto",
+              "description": "Auto-approve safe operations."
+            },
+            {
+              "value": "yolo",
+              "name": "YOLO",
+              "description": "Auto-approve everything."
+            }
+          ]
+        }
+      ],
+      "modes": {
+        "currentModeId": "default",
+        "availableModes": [
+          {
+            "id": "default",
+            "name": "Default",
+            "description": "Manual approvals; tools execute normally."
+          },
+          {
+            "id": "plan",
+            "name": "Plan",
+            "description": "Read-only planning; no tool execution."
+          },
+          {
+            "id": "auto",
+            "name": "Auto",
+            "description": "Auto-approve safe operations."
+          },
+          {
+            "id": "yolo",
+            "name": "YOLO",
+            "description": "Auto-approve everything."
+          }
+        ]
+      }
+    }
+  },
+  "v2_setModeResult": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {}
+  },
+  "v2_availableCommandsUpdate": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "session_724bed27-e4b3-4910-94b8-a609c4456bb9",
+      "update": {
+        "sessionUpdate": "available_commands_update",
+        "availableCommands": [
+          {
+            "name": "compact",
+            "description": "Compact the conversation context",
+            "input": {
+              "hint": "<optional custom summarization instructions>"
+            }
+          },
+          {
+            "name": "status",
+            "description": "Show current session status"
+          },
+          {
+            "name": "usage",
+            "description": "Show session token usage"
+          },
+          {
+            "name": "mcp",
+            "description": "Show MCP server status"
+          },
+          {
+            "name": "tasks",
+            "description": "List background tasks"
+          },
+          {
+            "name": "help",
+            "description": "Show available ACP commands"
+          },
+          {
+            "name": "check-kimi-code-docs",
+            "description": "Answer questions about the Kimi Code product using the official documentation \u2014 CLI usage, configuration, slash commands, features, membership and quota, API onboarding, third-party tool setup, and error codes. Use when the user asks how Kimi Code works, how to set something up, or what a Kimi Code error message means."
+          },
+          {
+            "name": "import-from-cc-codex",
+            "description": "Import Claude Code and Codex instructions, skills, and MCP settings into Kimi Code."
+          },
+          {
+            "name": "mcp-config",
+            "description": "Configure MCP servers and handle MCP OAuth login."
+          },
+          {
+            "name": "sub-skill",
+            "description": "Discover and reorganize the skill inventory into hierarchical sub-skill bundles. Use when the user asks to review, group, or consolidate skills into a parent bundle."
+          },
+          {
+            "name": "sub-skill.consolidate",
+            "description": "Apply an approved sub-skill grouping by moving user-specified skills into a parent bundle, with timestamped backups of every modified directory."
+          },
+          {
+            "name": "sub-skill.review",
+            "description": "Analyze the available skill set and recommend candidate groups that could be consolidated into sub-skill bundles. Read-only \u2014 proposes a plan, does not move files."
+          },
+          {
+            "name": "update-config",
+            "description": "Inspect or edit kimi-code's own config \u2014 `config.toml` (model, provider, permission, hooks) and `tui.toml` (theme, editor, notifications, auto-update). Use when the user asks what a setting does, wants to change one, or needs to fix a deprecated config key / environment variable warning."
+          },
+          {
+            "name": "write-goal",
+            "description": "Help the user craft a well-specified `/goal` objective for goal mode \u2014 turn a rough intention into a completion contract with a clear finish line, proof, boundaries, and stop rule. Use when the user asks for help writing, refining, or improving a goal."
+          }
+        ]
+      }
+    }
+  },
+  "v2_toolCall": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "session_724bed27-e4b3-4910-94b8-a609c4456bb9",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "0:call_1",
+        "title": "Bash",
+        "kind": "execute",
+        "status": "pending",
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "{\"command\":\"echo witnessed > marker.txt\",\"description\":\"write marker\"}"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "v2_requestPermission": {
+    "jsonrpc": "2.0",
+    "id": 0,
+    "method": "session/request_permission",
+    "params": {
+      "sessionId": "session_9a025ebc-648c-4a94-a7b1-4f63256aca63",
+      "options": [
+        {
+          "optionId": "approve_once",
+          "name": "Approve once",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "approve_always",
+          "name": "Approve for this session",
+          "kind": "allow_always"
+        },
+        {
+          "optionId": "reject",
+          "name": "Reject",
+          "kind": "reject_once"
+        }
+      ],
+      "toolCall": {
+        "toolCallId": "0:call_1",
+        "title": "Bash",
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "Requesting approval to Running: echo witnessed > marker.txt"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "v2_usageUpdate": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "session_724bed27-e4b3-4910-94b8-a609c4456bb9",
+      "update": {
+        "sessionUpdate": "usage_update",
+        "used": 15,
+        "size": 100000
+      }
+    }
+  },
+  "v2_promptResult": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "stopReason": "end_turn"
+    }
+  },
+  "v1_initialize": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "agentCapabilities": {
+        "loadSession": true,
+        "mcpCapabilities": {
+          "http": true,
+          "sse": false
+        },
+        "promptCapabilities": {
+          "audio": false,
+          "embeddedContext": true,
+          "image": true
+        },
+        "sessionCapabilities": {
+          "list": {},
+          "resume": {}
+        }
+      },
+      "agentInfo": {
+        "name": "Kimi Code CLI",
+        "version": "1.51.0"
+      },
+      "authMethods": [
+        {
+          "_meta": {
+            "terminal-auth": {
+              "command": "/opt/kimi/kimi",
+              "args": [
+                "login"
+              ],
+              "label": "Kimi Code Login",
+              "env": {},
+              "type": "terminal"
+            }
+          },
+          "description": "Run `kimi login` command in the terminal, then follow the instructions to finish login.",
+          "id": "login",
+          "name": "Login with Kimi account"
+        }
+      ],
+      "protocolVersion": 1
+    }
+  },
+  "v1_sessionNew_unauthenticated": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "error": {
+      "code": -32000,
+      "message": "Authentication required",
+      "data": {
+        "authMethods": [
+          {
+            "id": "login",
+            "name": "Login with Kimi account",
+            "description": "Run `kimi login` command in the terminal, then follow the instructions to finish login.",
+            "type": "terminal",
+            "args": [
+              "login"
+            ],
+            "env": {}
+          }
+        ]
+      }
+    }
+  }
+}
