@@ -309,6 +309,11 @@
         "command": "mysti.canvasAddScaffold",
         "title": "Mysti: Add Canvas Page",
         "category": "Mysti"
+      },
+      {
+        "command": "mysti.restoreCanvasRecovery",
+        "title": "Restore Canvas Recovery Copy",
+        "category": "Mysti"
       }
     ],
     "menus": {

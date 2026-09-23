@@ -4,6 +4,10 @@ All notable changes to the Mysti extension will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `Mysti: Restore Canvas Recovery Copy` restores unsaved edits that a failed Canvas close kept in extension storage. It lists only the current workspace's copies. It restores in place only when the design is unchanged and not open; otherwise it creates a new "(recovered)" design. It asks before bringing back a deleted design. Restore is never automatic.
+
 ## [0.5.2] - Review candidate, unpublished
 
 ### Changed

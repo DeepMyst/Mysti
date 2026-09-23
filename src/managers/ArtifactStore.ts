@@ -595,6 +595,63 @@ export class ArtifactStore {
   }
 
   /**
+   * The load path's validation and migration for an already-parsed
+   * `artifact.json` body that did not come from this store's own directory
+   * (a recovery copy). Mutates `value` exactly as a load does.
+   */
+  static validateArtifact(value: unknown):
+    | { ok: true; artifact: CanvasArtifact; migration: MigrationReport }
+    | { ok: false; problem: 'invalid-shape' | 'schema-too-new'; detail: string } {
+    const validated = validatePersistedArtifact(value);
+    if (!validated.ok) { return validated; }
+    // Plan 22 §3.1: upgrade pre-document-model pages the moment they come off
+    // disk, so no consumer above this line ever sees two page shapes. It is
+    // idempotent, total and non-throwing — a design that already migrated pays
+    // only an `isDocNode` walk, and one bad page can never fail the whole load.
+    return { ok: true, artifact: validated.artifact, migration: migrateArtifactPages(validated.artifact) };
+  }
+
+  /** The resolved workspace root that owns this store's designs, or null. */
+  workspaceRoot(): string | null {
+    const root = this._getRoot();
+    return root ? path.resolve(root) : null;
+  }
+
+  /**
+   * Write a recovered copy over its own design ONLY while the design on disk is
+   * still exactly `base` (`null`: still absent, with no backup either). The
+   * check and the write share the design's mutation queue, so a closing view's
+   * pending save cannot slip between them. Returns false, writing nothing, when
+   * the design changed; the caller then restores the copy as a new design.
+   */
+  async replaceIfUnchanged(
+    artifact: CanvasArtifact, base: { version: number; updatedAt: number } | null,
+  ): Promise<boolean> {
+    const dir = this.artifactDir(artifact.id);
+    if (!dir) { throw new Error('Cannot restore a Canvas design without a workspace and a valid identifier.'); }
+    const filePath = path.join(dir, ARTIFACT_FILE);
+    // Like restoreFromBackup: pending media for the replaced design must never
+    // land over the restored copy later.
+    const retirement = this._beginMediaRetirement(filePath, 'restored');
+    return ArtifactStore._queueArtifactWrite(filePath, async () => {
+      const current = await this._readAndValidate(filePath);
+      const unchanged = current.ok
+        ? base !== null && current.artifact.version === base.version && current.artifact.updatedAt === base.updatedAt
+        : current.missing && base === null && !await this._readBackup(dir);
+      if (!unchanged) { return false; }
+      await this._retireMedia(filePath, 'restored');
+      artifact.updatedAt = Date.now();
+      const payload: JsonRecord = { schemaVersion: ARTIFACT_SCHEMA_VERSION, ...artifact };
+      payload.schemaVersion = ARTIFACT_SCHEMA_VERSION;
+      await fs.mkdir(dir, { recursive: true });
+      await this._refreshBackup(dir, filePath);
+      await ArtifactStore._writeFileAtomic(filePath, JSON.stringify(payload, null, 2));
+      await this._updateIndexEntry(summaryOf(artifact), filePath);
+      return true;
+    }).finally(() => { retirement.state.retiring--; });
+  }
+
+  /**
    * Promote `artifact.json.bak` over a corrupt primary — the "restore backup"
    * branch of the corruption modal. Never called implicitly: swapping files
    * under a user who has not chosen to is exactly the silent behaviour this
@@ -1336,16 +1393,11 @@ export class ArtifactStore {
     } catch (err) {
       return { ok: false, problem: 'unparseable', detail: `not valid JSON: ${describe(err)}`, missing: false, cause: err };
     }
-    const validated = validatePersistedArtifact(parsed);
+    const validated = ArtifactStore.validateArtifact(parsed);
     if (!validated.ok) {
       return { ok: false, problem: validated.problem, detail: validated.detail, missing: false };
     }
-    // Plan 22 §3.1: upgrade pre-document-model pages the moment they come off
-    // disk, so no consumer above this line ever sees two page shapes. It is
-    // idempotent, total and non-throwing — a design that already migrated pays
-    // only an `isDocNode` walk, and one bad page can never fail the whole load.
-    const migration = migrateArtifactPages(validated.artifact);
-    return { ok: true, raw, artifact: validated.artifact, migration };
+    return { ok: true, raw, artifact: validated.artifact, migration: validated.migration };
   }
 
   // ---- listing index ----

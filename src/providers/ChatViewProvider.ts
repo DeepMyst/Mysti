@@ -142,7 +142,7 @@ import type { ModelRegistryService } from '../services/ModelRegistryService';
 import type { ModelAnnouncementService, AnnouncedModel } from '../services/ModelAnnouncementService';
 import type { CliUpdateService } from '../services/CliUpdateService';
 import type { CanvasSecrets } from '../services/CanvasSecrets';
-import { retainUnsavedCanvasDesign } from '../canvas/CanvasCloseRecovery';
+import { offerCanvasRecovery, promptCanvasRecoveryRestore, retainUnsavedCanvasDesign } from '../canvas/CanvasCloseRecovery';
 import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
 import { DevServerManager } from '../managers/DevServerManager';
@@ -8558,6 +8558,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     void (async () => {
       await artifactSession.initialize();
       if (!ownsSession()) { return; }
+      void offerCanvasRecovery(this._extensionContext.globalStorageUri?.fsPath, canvasStore, () => this.restoreCanvasRecovery())
+        .catch(error => console.warn('[Mysti] Canvas recovery lookup failed:', error));
 
       // Real capability status (DeepMyst hub connections + local keys) → media
       // generation routing + truthful top-bar chips (Plan 05 §9 / Phase 6).
@@ -8656,6 +8658,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const panel = this._canvasPanelId ? this._panelStates.get(this._canvasPanelId)?.panel : undefined;
     panel?.dispose();
     return session ? session.close() : Promise.resolve();
+  }
+
+  /** `mysti.restoreCanvasRecovery`: explicit restore of a failed-close recovery copy. */
+  public restoreCanvasRecovery(): Promise<unknown> {
+    const session = this._canvasArtifactSession;
+    return promptCanvasRecoveryRestore(this._extensionContext.globalStorageUri?.fsPath, session?.store ?? new ArtifactStore(),
+      id => this._canvasArtifactSession?.snapshot?.artifact.id === id);
   }
 
   /**
@@ -12221,7 +12230,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       closeTransport: () => this._canvasArtifactSession === session ? this._canvasMcpSession.close() : Promise.resolve(),
       // Deliberately not ownership-gated: it runs after close, for the closed view.
       retainUnsaved: async (artifact, cause) => {
-        const message = await retainUnsavedCanvasDesign(this._extensionContext.globalStorageUri?.fsPath, artifact, cause);
+        const message = await retainUnsavedCanvasDesign(this._extensionContext.globalStorageUri?.fsPath, store, artifact, cause);
         console.warn(`[Mysti] ${message}`);
         void vscode.window.showWarningMessage(message);
       },
