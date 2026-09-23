@@ -10,6 +10,7 @@ import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { PermissionManager } from '../../src/managers/PermissionManager';
 import { PendingPlanStore } from '../../src/chat/PendingPlanStore';
 import { DelayedChannelTurns } from '../../src/chat/DelayedChannelTurns';
+import { MentionRetryStore } from '../../src/chat/MentionRetryStore';
 import { SubAgentQuestionBroker } from '../../src/chat/SubAgentQuestionBroker';
 import { clearMockConfig, setMockConfig } from '../helpers/mockVscode';
 import type { Conversation, PermissionResponse, WebviewMessage } from '../../src/types';
@@ -55,7 +56,7 @@ function createHarness() {
     _pendingQuestionData: new Map(),
     _semiAutoQuestionTimeouts: new Map(),
     _lastUserMessage: new Map(),
-    _lastMentionContext: new Map(),
+    _mentionRetries: new MentionRetryStore(),
     _runningPanels: new Set(),
     _panelAutonomyLevel: new Map(),
     _mystiRunGen: new Map(),

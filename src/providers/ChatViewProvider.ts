@@ -72,6 +72,7 @@ import { MentionRouter } from '../managers/MentionRouter';
 import { PermissionManager } from '../managers/PermissionManager';
 import { PlanOptionManager } from '../managers/PlanOptionManager';
 import { PendingPlanStore } from '../chat/PendingPlanStore';
+import { MentionRetryStore } from '../chat/MentionRetryStore';
 import { NativeApprovalCards } from '../chat/NativeApprovalCards';
 import { DelayedChannelTurns, formatQueuedChannelTurn } from '../chat/DelayedChannelTurns';
 import { SetupManager, type WizardStatusResult } from '../managers/SetupManager';
@@ -472,7 +473,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // Track last user message per panel for plan selection follow-up
   private _lastUserMessage: Map<string, string> = new Map();
   // Store mention context per panel for sub-agent retry support
-  private _lastMentionContext: Map<string, { content: string; mentions: Mention[]; context: ContextItem[]; settings: Settings }> = new Map();
+  private readonly _mentionRetries = new MentionRetryStore();
   // Track if agents have been loaded
   private _agentsLoaded: boolean = false;
   private _agentInitPromise: Promise<void>;
@@ -1748,95 +1749,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'retrySubAgent':
-        {
-          const retryPanelId = msg.panelId;
-          const retryPayload = msg.payload as { agentId: AgentType };
-          if (retryPanelId && retryPayload?.agentId) {
-            // A prior gate deny leaves the pass-cancel flag set (that is how
-            // the mention loop aborts); an explicit Retry is a fresh user
-            // action — clear it or the retry loop breaks on its first chunk.
-            this._cancelledPanels.delete(retryPanelId);
-            const mentionCtx = this._lastMentionContext.get(retryPanelId);
-            if (mentionCtx) {
-              // Re-dispatch to just this single agent by creating a single-agent mention
-              const singleMention = mentionCtx.mentions.find(m => m.value === retryPayload.agentId);
-              if (singleMention) {
-                const retryMentions = [singleMention];
-                const retryConversation = (() => {
-                  const ps = this._panelStates.get(retryPanelId);
-                  const cId = ps?.currentConversationId;
-                  return cId ? this._conversationManager.getConversation(cId) : null;
-                })();
-
-                // Reset the card UI
-                this._postToPanel(retryPanelId, {
-                  type: 'subAgentStarted',
-                  payload: { agentId: retryPayload.agentId }
-                });
-
-                const retryStream = this._mentionRouter.processMentions(
-                  mentionCtx.content, retryMentions, mentionCtx.context, mentionCtx.settings,
-                  retryConversation, retryPanelId
-                );
-
-                for await (const chunk of retryStream) {
-                  if (this._cancelledPanels.has(retryPanelId)) { break; }
-                  switch (chunk.type) {
-                    case 'subagent_text':
-                      this._postToPanel(retryPanelId, {
-                        type: 'subAgentChunk',
-                        payload: { agentId: chunk.agentId, content: chunk.content, chunkType: 'text' }
-                      });
-                      break;
-                    case 'subagent_thinking':
-                      this._postToPanel(retryPanelId, {
-                        type: 'subAgentChunk',
-                        payload: { agentId: chunk.agentId, content: chunk.content, chunkType: 'thinking' }
-                      });
-                      break;
-                    case 'subagent_tool_use':
-                      // H1 (retry path): same suspend-first gate as the main
-                      // mention loop — the old copy here had the identical
-                      // parent-panel-cancel + bare-break no-op deny.
-                      if (!(await this._gateSubAgentToolUse(chunk, mentionCtx.settings, retryPanelId))) {
-                        break;
-                      }
-                      this._postToPanel(retryPanelId, {
-                        type: 'subAgentToolUse',
-                        payload: { agentId: chunk.agentId, toolCall: chunk.toolCall }
-                      });
-                      break;
-                    case 'subagent_tool_result':
-                      this._postToPanel(retryPanelId, {
-                        type: 'subAgentToolResult',
-                        payload: { agentId: chunk.agentId, toolCall: chunk.toolCall }
-                      });
-                      break;
-                    case 'subagent_complete':
-                      this._postToPanel(retryPanelId, {
-                        type: 'subAgentComplete',
-                        payload: { agentId: chunk.agentId, hasError: chunk.hasError }
-                      });
-                      break;
-                    case 'subagent_error':
-                      this._postToPanel(retryPanelId, {
-                        type: 'subAgentError',
-                        payload: { agentId: chunk.agentId, error: chunk.content }
-                      });
-                      break;
-                    case 'subagent_retry':
-                      this._postToPanel(retryPanelId, {
-                        type: 'subAgentRetry',
-                        payload: { agentId: chunk.agentId, retryCount: chunk.retryCount }
-                      });
-                      break;
-                    // Skip intent_classified, files_resolved, main_start for retry
-                  }
-                }
-              }
-            }
-          }
-        }
+        await this._handleRetrySubAgent(msg.payload, msg.panelId);
         break;
 
       case 'sendBrainstormMessage':
@@ -4036,6 +3949,99 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     request.post({ type: 'responseComplete', payload: { message: assistantMessage } });
   }
 
+  /**
+   * Retry one failed sub-agent of the mention turn its card came from. The card
+   * carries the host-issued turn id, and the retry re-runs that turn's own
+   * content, context and settings. It runs as an owned foreground turn, so Stop,
+   * a replacement send and panel close reach it. An unknown id, an id from another
+   * conversation, or a busy panel is refused visibly and touches nothing,
+   * including a Stop flag another request set.
+   */
+  private async _handleRetrySubAgent(payload: unknown, panelId: string): Promise<void> {
+    const panel = this._panelStates.get(panelId);
+    if (!panel) { return; }
+    const retry = this._mentionRetries.claim(panelId, payload, panel.currentConversationId);
+    const live = this._foregroundRequests?.get(panelId);
+    const busy = (live?.isCurrent() && !live.settled) || this._brainstormStopOwners?.has(panelId)
+      || this._delayedChannelTurns.has(panelId);
+    if (!retry || busy) {
+      this._postToPanel(panelId, { type: 'systemNotice', payload: { message: retry
+        ? 'Wait for the current response to finish, or stop it, before retrying.'
+        : 'That sub-agent turn can no longer be retried. Send the request again instead.' } });
+      return;
+    }
+    this._cancelQueuedChannelTurn(panelId);
+    const request = this._admitForegroundRequest(panelId);
+    if (!request) { return; }
+    // The retry owns the panel now; a Stop flag left by an earlier turn is not its own.
+    this._cancelledPanels.delete(panelId);
+    const { id: retryId, turn, mention } = retry;
+    const agentId = mention.value as AgentType;
+    const conversation = turn.conversationId ? this._conversationManager.getConversation(turn.conversationId) : null;
+
+    this._lifecycleManager.touchSession(panelId);
+    this._lifecycleManager.markBusy(panelId);
+    this._runningPanels.add(panelId);
+    let settled = false;
+    const settle = (preserveRunning = false) => {
+      if (settled) { return; }
+      settled = true;
+      if (this._ordinaryRequestRetirements?.get(panelId) === retire) { this._ordinaryRequestRetirements.delete(panelId); }
+      if (!request.isCurrent()) { return; }
+      if (!preserveRunning) { this._runningPanels.delete(panelId); }
+      this._lifecycleManager.markIdle(panelId);
+    };
+    const retire = (preserveRunning: boolean) => {
+      this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
+      settle(preserveRunning);
+    };
+    (this._ordinaryRequestRetirements ??= new Map()).set(panelId, retire);
+
+    try {
+      request.post({ type: 'subAgentStarted', payload: { agentId, retryId } });
+      const stream = this._mentionRouter.processMentions(turn.content, [mention], turn.context, turn.settings,
+        conversation, panelId, this._createSubAgentQuestionCallback(panelId, request));
+      for await (const chunk of stream) {
+        if (!request.isCurrent() || this._cancelledPanels.has(panelId)) { break; }
+        switch (chunk.type) {
+          case 'subagent_text':
+          case 'subagent_thinking':
+            request.post({ type: 'subAgentChunk', payload: {
+              agentId: chunk.agentId, content: chunk.content, chunkType: chunk.type === 'subagent_text' ? 'text' : 'thinking',
+            } });
+            break;
+          case 'subagent_tool_use':
+            // Same suspend-first gate as the main mention loop.
+            if (!(await this._gateSubAgentToolUse(chunk, turn.settings, panelId, request.post))) { break; }
+            request.post({ type: 'subAgentToolUse', payload: { agentId: chunk.agentId, toolCall: chunk.toolCall } });
+            break;
+          case 'subagent_tool_result':
+            request.post({ type: 'subAgentToolResult', payload: { agentId: chunk.agentId, toolCall: chunk.toolCall } });
+            break;
+          case 'subagent_complete':
+            request.post({ type: 'subAgentComplete', payload: { agentId: chunk.agentId, hasError: chunk.hasError } });
+            break;
+          case 'subagent_error':
+            request.post({ type: 'subAgentError', payload: { agentId: chunk.agentId, error: chunk.content } });
+            break;
+          case 'subagent_retry':
+            request.post({ type: 'subAgentRetry', payload: { agentId: chunk.agentId, retryCount: chunk.retryCount } });
+            break;
+          case 'subagent_ask_user_question':
+            request.post({ type: 'subAgentStatus', payload: { agentId: chunk.agentId, status: 'Waiting for your answer...' } });
+            break;
+          // The main agent does not run on a retry: skip task lists, files and main_start.
+        }
+      }
+    } catch (err) {
+      request.post({ type: 'error', payload: err instanceof Error ? err.message : 'The retry failed.' });
+    } finally {
+      settle();
+    }
+    if (!request.isCurrent()) { return; }
+    request.post(this._cancelledPanels.has(panelId) ? { type: 'requestCancelled' } : { type: 'responseComplete', payload: {} });
+  }
+
   private _admitForegroundRequest(panelId: string, requestId?: string): ForegroundRequest | undefined {
     const panel = this._panelStates.get(panelId);
     if (!panel || (requestId !== undefined && !validForegroundRequestId(requestId))) { return; }
@@ -4482,8 +4488,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         console.log('[Mysti] Processing mentions:', effectiveMentions.length, 'mentions for panel:', panelId);
         const subAgentResponses = new Map<AgentType, SubAgentResponse>();
 
-        // Store mention context for retry support
-        this._lastMentionContext.set(panelId, { content, mentions: effectiveMentions, context, settings });
+        // Each card carries its own turn's id, so Retry re-runs this turn.
+        const retryId = this._mentionRetries.record(panelId,
+          { content, mentions: effectiveMentions, context, settings, conversationId });
 
         const subAgentQuestionCallback = this._createSubAgentQuestionCallback(panelId, request);
         const mentionStream = this._mentionRouter.processMentions(
@@ -4561,7 +4568,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             case 'subagent_started':
               request.post({
                 type: 'subAgentStarted',
-                payload: { agentId: chunk.agentId }
+                payload: { agentId: chunk.agentId, retryId }
               });
               break;
 
@@ -4712,8 +4719,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               type: 'responseComplete',
               payload: { message: assistantMessage }
             });
-
-            this._lastMentionContext.delete(panelId);
             return;
           }
         }
@@ -12636,7 +12641,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._panelStates.delete(panelId);
       this._cancelPendingSubAgentQuestions(panelId);
       this._lastUserMessage.delete(panelId);
-      this._lastMentionContext.delete(panelId);
+      this._mentionRetries.clearPanel(panelId);
       this._cancelledPanels.delete(panelId);
       // Cancel any running processes for this panel
       this._providerManager.cancelRequest(panelId);
@@ -13856,7 +13861,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Clear tracking maps
     this._lastUserMessage.clear();
-    this._lastMentionContext.clear();
+    this._mentionRetries.clear();
     this._cancelledPanels.clear();
     this._pendingPlans.dispose();
     this._pendingPlanSelections.clear();

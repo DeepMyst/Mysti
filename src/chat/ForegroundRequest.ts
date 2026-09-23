@@ -39,6 +39,8 @@ export class ForegroundRequest {
 
   public readonly isCurrent = (): boolean => !this._retired && this._owns();
   public get wasCancelled(): boolean { return this._cancelled; }
+  /** A terminal frame (completion, cancel, error, job hand-off) has been posted. */
+  public get settled(): boolean { return this._terminal; }
 
   public readonly post: ForegroundPost = (message: WebviewMessage): void => {
     const visual = VISUAL_ACCESSORIES.has(message.type);

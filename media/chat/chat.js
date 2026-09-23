@@ -916,6 +916,7 @@
         },
         renderQuestion: renderAskUserQuestionTabs,
         postMessage: postMessageWithPanelId,
+        canRetry: () => !state.isLoading,
       });
       window.addEventListener('pagehide', event => {
         if (!event.persisted) { subAgentCards.dispose(); }
