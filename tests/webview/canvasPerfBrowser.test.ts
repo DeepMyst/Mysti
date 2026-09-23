@@ -280,8 +280,11 @@ describe('zoomed-out board cost (the reported complaint)', () => {
 
     // Zooming OUT should not make panning worse: fewer readable pixels, less
     // work. If it does, the board is paying full DOM/paint price for artboards
-    // rendered too small to read — the level-of-detail gap.
-    expect(far.p95, `panning zoomed out (p95 ${far.p95.toFixed(1)}ms) is worse than at 100% (${near.p95.toFixed(1)}ms)`)
-      .toBeLessThan(Math.max(near.p95 * 2, 24));
+    // rendered too small to read — the level-of-detail gap. That cost lands on
+    // every frame, so compare medians: p95 of 60 frames is the 3rd-worst frame,
+    // and two vsync misses on a shared CI runner (ubuntu at 9c8f8f6, macOS at
+    // a3ae386, no renderer change) crossed a p95 bound. p95 stays logged above.
+    expect(far.p50, `panning zoomed out (p50 ${far.p50.toFixed(1)}ms) is worse than at 100% (${near.p50.toFixed(1)}ms)`)
+      .toBeLessThan(Math.max(near.p50 * 2, 24));
   }, 240_000);
 });
