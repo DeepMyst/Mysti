@@ -37,6 +37,12 @@ export interface AcpNativeLaunch {
   /** Inspect verified provider-specific notifications for the owned session. */
   validateNotification?(method: string, params: Readonly<AcpObject>): void;
   configure?(client: AcpNativeClient, session: Readonly<AcpObject>, initialized: Readonly<AcpObject>): Promise<void>;
+  /**
+   * On Stop during a prompt, send `session/cancel` and wait up to this long for
+   * the agent to finish its own cancellation before the freeze and tree kill.
+   * Only for a verified agent whose cancellation kills its tools' process groups.
+   */
+  cancelGraceMs?: number;
   /** Recheck policy after session creation/configuration, before the prompt. */
   assertUnchanged?(): Promise<void>;
   cleanup?(): Promise<void>;

@@ -429,7 +429,8 @@ qwen  # then type /auth
 Copilot requires BYOK configuration; GitHub tokens and subscription logins are
 unsupported, and writes and shell commands are disabled. OpenCode uses provider
 API keys rather than saved CLI logins and refuses startup when its configuration
-exists in the workspace or an ancestor. See [provider setup and limits](docs/PROVIDERS.md).
+exists in the workspace or an ancestor. OpenCode shell commands are approved one
+by one on macOS and unavailable on other platforms. See [provider setup and limits](docs/PROVIDERS.md).
 
 HTTP backends do not require a provider CLI. Configure two available agents for
 Brainstorm Mode.

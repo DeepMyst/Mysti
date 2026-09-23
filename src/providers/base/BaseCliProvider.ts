@@ -504,6 +504,14 @@ export abstract class BaseCliProvider implements ICliProvider {
   }
 
   /**
+   * True when the aborted request itself tears down its process within a
+   * bound (see AcpNativeLaunch.cancelGraceMs); Stop then leaves the kill to it.
+   */
+  protected _ownsCancellation(_session: PanelSessionState): boolean {
+    return false;
+  }
+
+  /**
    * Cancel the active request for a single session.
    * For persistent processes, sends an interrupt instead of killing.
    */
@@ -543,7 +551,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     // Single-shot: kill the process. (The suspended case is handled by the
     // early-return block above — both persistent and single-shot — so it is no
     // longer re-checked here.)
-    if (isProcessLive(session.process)) {
+    if (isProcessLive(session.process) && !this._ownsCancellation(session)) {
       console.log(`[Mysti] ${this.displayName}: Cancelling request for panel: ${session.panelId}`);
       void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
       session.process = null;

@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenCodeProvider } from '../../../src/providers/opencode/OpenCodeProvider';
+import { prepareOpenCodeNativeLaunch } from '../../../src/providers/opencode/OpenCodeNative';
 import { createMockContext } from '../../helpers/providerFactory';
 import { clearMockConfig } from '../../helpers/mockVscode';
 import type { NativeApprovalRequest } from '../../../src/providers/base/IProvider';
@@ -27,15 +28,20 @@ class FixtureProvider extends OpenCodeProvider {
   cleanupCount = 0;
   constructor() { super(createMockContext()); providers.push(this); }
   override getCliPath(): string { return '/inert/opencode'; }
+  // The shell gate path (macOS policy) runs on every OS against the fixture's
+  // emulated plugin bootstrap; the platform choice itself is tested separately.
+  platform: NodeJS.Platform = 'darwin';
   protected override async _prepareAcpLaunch(context: AcpNativeLaunchContext): Promise<AcpNativeLaunch> {
     await this.preparation;
-    const launch = await super._prepareAcpLaunch({ ...context, env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: 'inert-fixture' } });
+    const launch = await prepareOpenCodeNativeLaunch({ ...context, env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: 'inert-fixture' } },
+      this._getEffectiveModel(context.settings), this.platform);
     this.preparedModel = launch.model;
     return launch;
   }
   protected override _spawnCliProcess(args: string[], _cwd: string, env?: NodeJS.ProcessEnv): ChildProcess {
     this.launches.push({ args, env });
-    const child = spawn(process.execPath, [fixture, this.mode, this.marker, this.trace], { cwd: this.dir, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [fixture, this.mode, this.marker, this.trace], { cwd: this.dir, stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, OPENCODE_CONFIG_CONTENT: env?.OPENCODE_CONFIG_CONTENT ?? '' } });
     childClosures.push(new Promise(resolve => child.once('close', () => resolve())));
     return child;
   }
@@ -117,6 +123,33 @@ describe('OpenCode public ACP native turn', () => {
     } else if (mode === 'stop') { provider.cancelCurrentRequest('panel'); allow(true); await first; }
     else { await first; allow(true); }
     expect(request?.signal.aborted).toBe(true); expect(fs.existsSync(provider.marker)).toBe(false);
+  });
+  it.each(['no-plugin', 'extra-plugin', 'other-directory'])('refuses the turn before the prompt when the shell gate attestation shows %s', async mode => {
+    const provider = new FixtureProvider(); provider.mode = mode;
+    const handler = vi.fn(async () => true); provider.setNativeApprovalHost({ handlerForPanel: () => handler });
+    const chunks = await drain(provider);
+    expect(chunks.some(chunk => chunk.type === 'error' && chunk.content?.includes('did not attest'))).toBe(true);
+    expect(trace(provider).some(frame => frame.method === 'session/prompt')).toBe(false);
+    expect(handler).not.toHaveBeenCalled(); expect(fs.existsSync(provider.marker)).toBe(false);
+  });
+  it('Stop lets the shell-enabled agent cancel its own tools before teardown', async () => {
+    const provider = new FixtureProvider(); let request: NativeApprovalRequest | undefined;
+    provider.setNativeApprovalHost({ handlerForPanel: () => value => { request = value; return new Promise(() => {}); } });
+    const pending = drain(provider);
+    await vi.waitFor(() => expect(request).toBeDefined());
+    provider.cancelCurrentRequest('panel');
+    const chunks = await pending;
+    expect(trace(provider).some(frame => frame.method === 'session/cancel')).toBe(true);
+    expect(request?.signal.aborted).toBe(true); expect(fs.existsSync(provider.marker)).toBe(false);
+    expect(chunks.at(-1)?.type).toBe('done'); expect(chunks.some(chunk => chunk.type === 'error')).toBe(false);
+  });
+  it('platforms without verified shell run pure with no plugin', async () => {
+    const provider = new FixtureProvider(); provider.platform = 'linux';
+    provider.setNativeApprovalHost({ handlerForPanel: () => async () => true });
+    await drain(provider);
+    expect(provider.launches[0].args).toContain('--pure');
+    expect(JSON.parse(provider.launches[0].env!.OPENCODE_CONFIG_CONTENT!).plugin).toEqual([]);
+    expect(fs.readFileSync(provider.marker, 'utf8')).toBe('effect\n');
   });
   it('read-only denies native edit even when a host would allow it', async () => {
     const provider = new FixtureProvider(); const handler = vi.fn(async () => true);

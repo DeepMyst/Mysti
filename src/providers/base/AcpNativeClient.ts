@@ -85,6 +85,8 @@ export class AcpNativeClient {
   private _mode?: string;
   private _changingMode?: string;
   private _wake?: () => void;
+  private _cancelling = false;
+  private _cancelTimer?: ReturnType<typeof setTimeout>;
   usage?: UsageStats;
   private readonly _onData = (data: Buffer) => this._consume(data);
   // Native diagnostic output must not fill a pipe and stall permission RPCs.
@@ -98,6 +100,17 @@ export class AcpNativeClient {
   private readonly _onAbort = () => {
     this._approvals.dispose();
     const prompting = this._sessionId && this._prompting;
+    const grace = this._options.launch.cancelGraceMs;
+    if (prompting && grace) {
+      // Let the agent run its own cancellation first, bounded: the freeze and
+      // tree kill follow when its prompt ends, it exits, or the bound expires.
+      // Nothing it reports meanwhile is delivered; permission requests are
+      // answered cancelled.
+      this._cancelling = true;
+      this._write({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: this._sessionId } });
+      this._cancelTimer = setTimeout(() => this._finish(), grace);
+      return;
+    }
     // Terminate first: it freezes the agent before it can read the cancel and
     // exit, which would orphan a running tool's detached process group.
     this._finish(); this._options.terminate();
@@ -125,6 +138,8 @@ export class AcpNativeClient {
   }
 
   get sessionId(): string | undefined { return this._sessionId; }
+  /** True while a Stop waits for the agent's own cancellation; teardown follows. */
+  get cancelling(): boolean { return this._cancelling && !this._ended; }
   get hasPendingApproval(): boolean { return this._approvals.hasPending; }
   private _current(): boolean { return !this._ended && !this._disposed && !this._options.signal.aborted && this._options.isCurrent(); }
 
@@ -263,6 +278,7 @@ export class AcpNativeClient {
 
   private _permission(id: unknown, params: AcpObject): void {
     const key = idKey(id);
+    if (this._cancelling) { this._write({ jsonrpc: '2.0', id, result: { outcome: { outcome: 'cancelled' } } }); return; }
     if (this._seen.has(key) || this._unsupportedRequests.has(key)) { throw new Error('Replayed or conflicting ACP permission identity.'); }
     if (this._seen.size >= MAX_IDENTITIES || this._pendingApprovals.size >= 64) { throw new Error('ACP permission request limit exceeded.'); }
     this._seen.set(key, digest(params));
@@ -363,6 +379,7 @@ export class AcpNativeClient {
   }
 
   private _push(chunk: StreamChunk): void {
+    if (this._cancelling) { return; }
     if (this._chunks.length >= 10000) { this._fail('ACP output queue limit exceeded.'); return; }
     this._chunks.push(chunk); this._wake?.(); this._wake = undefined;
   }
@@ -373,10 +390,11 @@ export class AcpNativeClient {
     this._finish(); this._options.terminate();
   }
   private _finish(): void {
-    this._ended = true; this._prompting = false; clearInterval(this._clock);
+    this._ended = true; this._prompting = false; clearInterval(this._clock); clearTimeout(this._cancelTimer);
     this._approvals.dispose(); this._releasePendingListener();
     for (const pending of this._pending.values()) { clearTimeout(pending.timer); pending.reject(new Error('ACP process closed.')); }
     this._pending.clear(); this._wake?.(); this._wake = undefined;
+    if (this._cancelling) { this._options.terminate(); }
   }
   async *stream(): AsyncGenerator<StreamChunk> {
     while (true) {

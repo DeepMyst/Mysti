@@ -17,7 +17,12 @@ type AcpSession = PanelSessionState & { lastUsageStats?: UsageStats | null };
 
 /** Version-specific adapters prepare native policy; this class owns the turn. */
 export abstract class AcpNativeProvider extends BaseCliProvider {
+  private readonly _clients = new WeakMap<PanelSessionState, AcpNativeClient>();
   protected abstract _prepareAcpLaunch(context: AcpNativeLaunchContext): Promise<AcpNativeLaunch>;
+
+  protected override _ownsCancellation(session: PanelSessionState): boolean {
+    return this._clients.get(session)?.cancelling === true;
+  }
 
   protected override async _probeCliVersion(cliPath: string): Promise<string | undefined> {
     // A bootstrap wrapper may process environment/configuration before even
@@ -103,6 +108,7 @@ export abstract class AcpNativeProvider extends BaseCliProvider {
       session.process = child;
       client = new AcpNativeClient({ process: child, providerId: this.id, label: this.displayName,
         panelId: session.panelId, signal, settings: captured, handler, launch, isCurrent: current, terminate });
+      this._clients.set(session, client);
       const initialized = await client.initialize();
       if (!current()) { return; }
       const nativeSession = await client.newSession(cwd);
@@ -121,6 +127,7 @@ export abstract class AcpNativeProvider extends BaseCliProvider {
       }
       if (current()) { (session as AcpSession).lastUsageStats = client.usage ?? null; }
     } finally {
+      if (client && this._clients.get(session) === client) { this._clients.delete(session); }
       client?.dispose(); terminate();
       if (killing) { await killing; }
       if (closed) {
