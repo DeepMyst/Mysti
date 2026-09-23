@@ -159,6 +159,24 @@ describe('OpenCode public ACP native turn', { timeout: 30_000 }, () => {
     expect(fs.existsSync(provider.marker)).toBe(false);
     await pending;
   }, 20000);
+  it('dispose during the Stop grace kills the agent at once instead of waiting it out', async () => {
+    if (process.platform === 'win32') {
+      // The graced Stop exists only where shell is enabled; Windows never enables it.
+      expect(openCodeShellEnabled(settings(), 'win32')).toBe(false); return;
+    }
+    const provider = new FixtureProvider(); provider.mode = 'tool-ignores-cancel'; let request: NativeApprovalRequest | undefined;
+    provider.setNativeApprovalHost({ handlerForPanel: () => value => { request = value; return new Promise(() => {}); } });
+    const pending = drain(provider);
+    await vi.waitFor(() => expect(request).toBeDefined(), { timeout: 10000 });
+    const closed = childClosures.at(-1)!;
+    // The agent never answers the cancel, so only the 5 s grace would end it.
+    provider.cancelCurrentRequest('panel');
+    let exited = false; void closed.then(() => { exited = true; });
+    await new Promise(resolve => setTimeout(resolve, 500)); expect(exited).toBe(false);
+    const disposedAt = Date.now(); provider.dispose();
+    await closed; expect(Date.now() - disposedAt).toBeLessThan(3000);
+    await pending;
+  });
   it('platforms without verified shell run pure with no plugin', async () => {
     const provider = new FixtureProvider(); provider.platform = 'linux';
     provider.setNativeApprovalHost({ handlerForPanel: () => async () => true });
