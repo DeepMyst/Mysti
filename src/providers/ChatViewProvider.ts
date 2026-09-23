@@ -413,11 +413,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     artifactId: () => this._canvasArtifact?.id ?? null,
     originPanel: () => this._canvasChatOrigin,
     createServer: artifactId => this._canvasToolServer ? this._createCanvasMcpServer(artifactId) : null,
-    link: (panelId, endpoint, providerId) => {
-      const config = this._canvasLinker.link(panelId, endpoint);
-      if (providerId) { this._providerManager.setCanvasMcpConfig(panelId, config, providerId); }
-      else { this._providerManager.setCanvasMcpConfig(panelId, config); }
-    },
+    // A design-open link (no turn yet) goes to the origin panel's own backend.
+    link: (panelId, endpoint, providerId) => this._providerManager.setCanvasMcpConfig(
+      panelId, this._canvasLinker.link(panelId, endpoint), providerId ?? this._getPanelProvider(panelId)),
     unlink: panelId => {
       this._canvasLinker.unlink(panelId);
       this._providerManager.setCanvasMcpConfig(panelId, null);
@@ -4946,7 +4944,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // bearer; mint this turn's own for the backend that will consume it.
       const canvasArtifactId = this._canvasChatOrigin === panelId ? this._canvasArtifact?.id : undefined;
       if (canvasArtifactId) {
-        await this._canvasMcpSession.relink(canvasArtifactId, effectiveSettings.provider);
+        await this._canvasMcpSession.relink(canvasArtifactId, effectiveSettings.provider, request);
         if (!acceptsTurn()) { return; }
       }
       const stream = this._providerManager.sendMessage(
@@ -11821,8 +11819,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return this._canvasTools.context(authority);
   }
 
-  /** Retire only captured media; an obsolete finally cannot cancel a successor. */
+  /**
+   * Retire only captured media; an obsolete finally cannot cancel a successor.
+   * A settling request also revokes the MCP bearer it minted (only its own).
+   */
   private _retireCanvasMediaParent(panelId: string, request?: ForegroundRequest): void {
+    if (request) { this._canvasMcpSession.revoke(request); }
     const parent = this._canvasMediaParents?.get(panelId);
     const operations = [...this._canvasMediaOperations ?? []].filter(entry =>
       entry.request?.panelId === panelId && (!request || entry.request === request));

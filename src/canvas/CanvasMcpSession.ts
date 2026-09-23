@@ -29,12 +29,15 @@ export interface CanvasMcpSessionPorts {
  * the linked chat panel {@link close}s (synchronously revoking the previous
  * turn's bearer and transport) and then {@link relink}s for that turn's own
  * backend, so a delayed call from an earlier turn's CLI is refused rather
- * than admitted under its successor's authority.
+ * than admitted under its successor's authority. When that turn settles it
+ * {@link revoke}s its own bearer, so a finished turn holds no live credential.
  */
 export class CanvasMcpSession {
   private _generation = 0;
   private _server: CanvasMcpSessionServer | null = null;
   private _linkedPanel: string | null = null;
+  /** The turn that minted the current bearer; null for a design-open link. */
+  private _owner: object | null = null;
   private _stopping: Promise<void> = Promise.resolve();
   private readonly _stops = new WeakMap<CanvasMcpSessionServer, Promise<void>>();
   private _disposed = false;
@@ -42,9 +45,10 @@ export class CanvasMcpSession {
   public constructor(private readonly _ports: CanvasMcpSessionPorts) {}
 
   /** Only the latest design switch may publish a newly started endpoint. */
-  public async relink(artifactId: string, providerId?: string): Promise<void> {
+  public async relink(artifactId: string, providerId?: string, owner?: object): Promise<void> {
     if (this._disposed || this._ports.artifactId() !== artifactId) { return; }
     const generation = ++this._generation;
+    this._owner = owner ?? null;
     const origin = this._ports.originPanel();
     const current = () => !this._disposed && this._generation === generation
       && this._ports.artifactId() === artifactId && this._ports.originPanel() === origin;
@@ -81,9 +85,25 @@ export class CanvasMcpSession {
     }
   }
 
+  /**
+   * The turn `owner` has settled: stop the bearer it minted (or abort its
+   * pending mint). The config file stays linked, so a warm CLI process is not
+   * restarted for an accessory send after `done`; its calls are simply refused,
+   * and the next admission unlinks and mints afresh. A stale owner is a no-op.
+   */
+  public revoke(owner: object): void {
+    if (this._owner !== owner) { return; }
+    this._owner = null;
+    ++this._generation;
+    const server = this._server;
+    this._server = null;
+    if (server) { void this._stop(server); }
+  }
+
   /** Reusable after the canvas is reopened; invalidates pending work immediately. */
   public close(): Promise<void> {
     ++this._generation;
+    this._owner = null;
     this._detach();
     return this._stopping;
   }

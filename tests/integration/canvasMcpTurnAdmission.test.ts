@@ -71,7 +71,7 @@ async function harness() {
     const permissionManager = new PermissionManager('ask-permission');
     const configCalls: Array<[string, string | null, string | undefined]> = [];
     const sent: Sent[] = [];
-    let hold: Promise<void> | undefined;
+    const holds = new Map<string, Promise<void>>();
     /** The config the provider would read for this panel at spawn. */
     const configFor = (panelId: string, provider: string): Endpoint | null => {
         const last = configCalls.filter(([p, , id]) => p === panelId && (id === undefined || id === provider)).at(-1);
@@ -94,6 +94,7 @@ async function harness() {
         dispose: () => undefined,
         sendMessage: vi.fn(async function* (_c: string, _ctx: unknown, settings: Settings, _conv: unknown, _p: unknown, panelId: string): AsyncGenerator<StreamChunk> {
             sent.push({ panelId, provider: settings.provider!, endpoint: configFor(panelId, settings.provider!) });
+            const hold = holds.get(panelId);
             if (hold) { await hold; }
             yield { type: 'done' } as StreamChunk;
         }),
@@ -176,8 +177,20 @@ async function harness() {
     });
     return {
         p, sent, configCalls, posts,
-        setHold(value: Promise<void> | undefined) { hold = value; },
+        setHold(value: Promise<void> | undefined, panel = 'sidebar') {
+            if (value) { holds.set(panel, value); } else { holds.delete(panel); }
+        },
         run: (panel = 'sidebar', settings: Settings = SETTINGS) => p._handleSendMessage({ content: 'inert turn', context: [], settings: { ...settings } }, panel) as Promise<void>,
+        /** Start a turn whose provider stream stays open until `release()`. */
+        async held(panel = 'sidebar', settings: Settings = SETTINGS) {
+            let release!: () => void;
+            holds.set(panel, new Promise<void>(resolve => { release = resolve; }));
+            const count = sent.length;
+            const done = p._handleSendMessage({ content: 'inert turn', context: [], settings: { ...settings } }, panel) as Promise<void>;
+            await vi.waitFor(() => expect(sent.length).toBe(count + 1));
+            holds.delete(panel);
+            return { endpoint: sent[count].endpoint, release, done: () => { release(); return done; } };
+        },
         stop: (panel = 'sidebar') => p._handleMessage({ type: 'cancelRequest', panelId: panel, requestId: p._foregroundRequests.get(panel)?.requestId }),
     };
 }
@@ -185,17 +198,19 @@ async function harness() {
 describe('per-turn Canvas MCP admission (actual host send path)', { timeout: 20_000 }, () => {
     it('each ordinary turn is sent with a fresh credential and the predecessor is refused', async () => {
         const h = await harness();
-        await h.run();
-        const first = h.sent[0].endpoint!;
+        const turn1 = await h.held();
+        const first = turn1.endpoint!;
         expect(first).not.toBeNull();
         expect(await rawStatus(first)).toBe(200);
+        await turn1.done();
 
-        await h.run();
-        const second = h.sent[1].endpoint!;
+        const turn2 = await h.held();
+        const second = turn2.endpoint!;
         expect(second.token).not.toBe(first.token);
         expect(['refused', 410]).toContain(await rawStatus(first));
         expect(await rawStatus(second, first.token)).toBe(401);
         expect(await rawStatus(second)).toBe(200);
+        await turn2.done();
     });
 
     it('links the originating backend, not the globally active provider', async () => {
@@ -234,7 +249,10 @@ describe('per-turn Canvas MCP admission (actual host send path)', { timeout: 20_
 
     it('a sibling panel turn neither revokes nor relinks the linked panel', async () => {
         const h = await harness();
-        await h.run();
+        let release!: () => void;
+        h.setHold(new Promise<void>(resolve => { release = resolve; }));
+        const running = h.run();
+        await vi.waitFor(() => expect(h.sent).toHaveLength(1));
         const linked = h.sent[0].endpoint!;
         const before = h.configCalls.length;
         await h.run('second');
@@ -242,6 +260,8 @@ describe('per-turn Canvas MCP admission (actual host send path)', { timeout: 20_
         expect(h.configCalls.slice(before).filter(([panel]) => panel === 'second')).toHaveLength(0);
         expect(h.configCalls.slice(before)).toHaveLength(0);
         expect(await rawStatus(linked)).toBe(200);
+        release();
+        await running;
     });
 
     it('Stop still cancels the turn and retires its credential; the next turn gets a new one', async () => {
@@ -258,8 +278,99 @@ describe('per-turn Canvas MCP admission (actual host send path)', { timeout: 20_
         release();
         await running;
         h.setHold(undefined);
-        await h.run();
-        expect(h.sent[1].endpoint!.token).not.toBe(held.token);
-        expect(await rawStatus(h.sent[1].endpoint!)).toBe(200);
+        const next = await h.held();
+        expect(next.endpoint!.token).not.toBe(held.token);
+        expect(await rawStatus(next.endpoint!)).toBe(200);
+        await next.done();
+    });
+});
+
+describe('Canvas MCP credential lifetime beyond admission', { timeout: 20_000 }, () => {
+    it('natural completion refuses the finished turn credential without retiring accessory posts', async () => {
+        const h = await harness();
+        const turn = await h.held();
+        const finished = turn.endpoint!;
+        expect(await rawStatus(finished)).toBe(200);
+        const since = h.configCalls.length;
+        await turn.done();
+        // A late call from the finished turn's CLI is refused, not admitted.
+        expect(['refused', 410]).toContain(await rawStatus(finished));
+        // Accessory messages after `done` still own the foreground request.
+        expect(h.p._foregroundRequests.get('sidebar').isCurrent()).toBe(true);
+        // The config is not rewritten (no revision bump), so a warm process is
+        // not restarted merely because the turn ended; the next admission unlinks.
+        expect(h.configCalls.slice(since)).toHaveLength(0);
+        const next = await h.held();
+        expect(await rawStatus(next.endpoint!)).toBe(200);
+        await next.done();
+    });
+
+    it('an obsolete turn finishing late cannot revoke its successor credential', async () => {
+        const h = await harness();
+        const old = await h.held();
+        const successor = await h.held();
+        await old.done();
+        expect(await rawStatus(successor.endpoint!)).toBe(200);
+        await successor.done();
+        expect(['refused', 410]).toContain(await rawStatus(successor.endpoint!));
+    });
+
+    it('the design-open link targets the origin panel backend, not the globally active provider', async () => {
+        const h = await harness();
+        h.p._panelStates.get('sidebar').settingsOverrides = { provider: 'openai-codex' };
+        h.configCalls.length = 0;
+        await h.p._canvasArtifactSession.refreshTransport();
+        const links = h.configCalls.filter(([, config]) => config !== null);
+        expect(links).toHaveLength(1);
+        expect(links[0]).toEqual(['sidebar', expect.any(String), 'openai-codex']);
+    });
+
+    describe('lanes that run under child panel ids never receive the credential', () => {
+        /** Everything a lane could observe while it runs. */
+        const observe = async (h: Awaited<ReturnType<typeof harness>>, previous: Endpoint, since: number) => ({
+            previous: await rawStatus(previous),
+            minted: h.configCalls.slice(since).filter(([, config]) => config !== null).length,
+        });
+
+        it.each(['coordinator', 'brainstorm'] as const)('a %s turn revokes the ordinary predecessor and mints nothing', async lane => {
+            const h = await harness();
+            const ordinary = await h.held();
+            const since = h.configCalls.length;
+            let during: Awaited<ReturnType<typeof observe>> | undefined;
+            if (lane === 'coordinator') {
+                vi.spyOn(h.p, '_runMystiAgentic').mockImplementation(async () => { during = await observe(h, ordinary.endpoint!, since); });
+                await h.run('sidebar', { ...SETTINGS, provider: 'mysti' as Settings['provider'] });
+            } else {
+                h.p._brainstormManager = {
+                    cancelSession: () => undefined, getCurrentSession: () => undefined,
+                    startBrainstormSession: async function* () { during = await observe(h, ordinary.endpoint!, since); },
+                };
+                await h.p._handleBrainstormMessage({ content: 'inert brainstorm', context: [], settings: { ...SETTINGS } }, 'sidebar');
+            }
+            await ordinary.done();
+            expect(during).toEqual({ previous: expect.stringMatching(/refused|410/) as unknown as string, minted: 0 });
+            expect(h.configCalls.slice(since).filter(([, config]) => config !== null)).toHaveLength(0);
+            expect(new Set(h.configCalls.map(([panel]) => panel))).toEqual(new Set(['sidebar']));
+            expect(h.sent.map(s => s.panelId)).toEqual(['sidebar']);
+        });
+
+        it.each(['collaborator', 'mention'] as const)('%s children run with no live credential; only the parent lane is minted', async lane => {
+            const h = await harness();
+            const ordinary = await h.held();
+            const since = h.configCalls.length;
+            let during: Awaited<ReturnType<typeof observe>> | undefined;
+            if (lane === 'collaborator') {
+                vi.spyOn(h.p, '_runMentionCollaboration').mockImplementation(async () => { during = await observe(h, ordinary.endpoint!, since); return ''; });
+            } else {
+                vi.spyOn(h.p._mentionRouter, 'processMentions').mockImplementation(async function* () { during = await observe(h, ordinary.endpoint!, since); });
+            }
+            const mentions = [{ type: 'agent', value: 'openai-codex', ...(lane === 'collaborator' ? { role: 'critic' } : {}) }];
+            await h.p._handleSendMessage({ content: '@openai-codex review', context: [], settings: { ...SETTINGS }, mentions }, 'sidebar');
+            await ordinary.done();
+            expect(during).toEqual({ previous: expect.stringMatching(/refused|410/) as unknown as string, minted: 0 });
+            // The parent (main) lane of the same turn is the only one minted.
+            expect(h.configCalls.slice(since).filter(([, config]) => config !== null).map(([panel]) => panel)).toEqual(['sidebar']);
+            expect(new Set(h.configCalls.map(([panel]) => panel))).toEqual(new Set(['sidebar']));
+        });
     });
 });

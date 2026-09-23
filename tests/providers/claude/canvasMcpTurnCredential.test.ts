@@ -20,6 +20,8 @@ import { CanvasMcpSession } from '../../../src/canvas/CanvasMcpSession';
 import { CanvasMcpHttpServer } from '../../../src/services/CanvasMcpHttpServer';
 import { CanvasToolServer } from '../../../src/services/CanvasToolServer';
 import { CanvasSessionLinker } from '../../../src/managers/CanvasSessionLinker';
+import { BrainstormManager } from '../../../src/managers/BrainstormManager';
+import { CollaboratorPool } from '../../../src/services/CollaboratorPool';
 
 const fixture = path.resolve(__dirname, '../../fixtures/claudeCanvasMcpAgent.mjs');
 const settings: Settings = { provider: 'claude-code', mode: 'default', accessLevel: 'full-access', model: '', thinkingLevel: 'none', contextMode: 'auto' };
@@ -68,7 +70,7 @@ async function harness() {
     onError: error => { throw error; },
   });
   cleanups.push(async () => {
-    for (const panel of ['panel', 'other']) { provider.cancelCurrentRequest(panel); provider.disposePersistentProcess(panel); }
+    for (const panel of new Set(['panel', 'other', ...provider.children.keys()])) { provider.cancelCurrentRequest(panel); provider.disposePersistentProcess(panel); }
     for (const proc of [...provider.children.values()].flat()) {
       if (proc.exitCode === null && proc.signalCode === null) {
         const exited = new Promise<void>(resolve => proc.once('close', () => resolve()));
@@ -79,7 +81,7 @@ async function harness() {
     await fs.rm(root, { recursive: true, force: true });
   });
   /** What the host does per ordinary turn: revoke at admission, mint before send. */
-  const admitTurn = async () => { void mcp.close(); await mcp.relink('design-A'); };
+  const admitTurn = async (owner?: object) => { void mcp.close(); await mcp.relink('design-A', 'claude-code', owner); };
   const turn = async (panel = 'panel', content = 'go'): Promise<{ chunks: StreamChunk[]; report: Report | null }> => {
     const chunks: StreamChunk[] = [];
     for await (const chunk of provider.sendMessage(content, [], settings, null, undefined, panel)) { chunks.push(chunk); }
@@ -182,5 +184,45 @@ describe('Claude Canvas MCP per-turn credential', { timeout: 30_000 }, () => {
     await h.admitTurn();
     const next = await h.turn();
     expect(next.report).toMatchObject({ ok: true, token: `Bearer ${h.endpoints[1].token}` });
+  });
+});
+
+describe('Claude Canvas MCP credential across lanes and turn completion', { timeout: 30_000 }, () => {
+  it('child lanes of the linked panel spawn without the credential and leave the parent warm', async () => {
+    const h = await harness();
+    await h.admitTurn();
+    const parent = await h.turn();
+    expect(parent.report).toMatchObject({ ok: true });
+    // The derived panel ids the real lane code dispatches under.
+    const brainstorm = (BrainstormManager.prototype as unknown as { _childPanelId(s: string, a: string): string })
+      ._childPanelId.call(null, 'panel', 'claude-code');
+    const collaborator = (CollaboratorPool.prototype as unknown as { _childPanelId(o: object, s: object, n: number): string })
+      ._childPanelId.call(null, { panelId: 'panel', runId: 'run-1' }, { collaboratorId: 'critic' }, 0);
+    const mention = 'panel-subagent-claude-code'; // MentionRouter.processMentions: `${panelId}-subagent-${agentId}`
+    for (const child of [brainstorm, collaborator, mention]) {
+      expect(child).not.toBe('panel');
+      expect((await h.turn(child)).report).toMatchObject({ ok: false, token: null, error: 'no canvas mcp config' });
+    }
+    const again = await h.turn();
+    expect(again.report).toMatchObject({ ok: true, pid: parent.report!.pid });
+    expect(h.provider.children.get('panel')).toHaveLength(1);
+  });
+
+  it('natural completion refuses the credential yet an accessory send reuses the warm process', async () => {
+    const h = await harness();
+    const turn = {};
+    await h.admitTurn(turn);
+    const first = await h.turn();
+    expect(first.report).toMatchObject({ ok: true });
+    h.mcp.revoke(turn); // what the host does when the turn settles
+    const accessory = await h.turn('panel', '/compact');
+    expect(accessory.report!.pid).toBe(first.report!.pid);
+    expect(accessory.report!.ok).toBe(false); // the late call is refused
+    expect(accessory.chunks.filter(c => c.type === 'error')).toHaveLength(0);
+    expect(h.provider.children.get('panel')).toHaveLength(1);
+
+    await h.admitTurn({});
+    const next = await h.turn();
+    expect(next.report).toMatchObject({ ok: true, token: `Bearer ${h.endpoints[1].token}`, resume: 'fixture-session' });
   });
 });
