@@ -371,6 +371,28 @@ describe('canvas handoff — assets and the open design', () => {
       expect(warn.mock.calls[0][0]).toContain('disk full');
     });
 
+    it('restores the copy only when asked, as a new design while its original is open again', async () => {
+      provider._extensionContext.globalStorageUri = Uri.file(storage);
+      const { live, closing } = closeWithFailedSave();
+      await closing;
+      vi.restoreAllMocks();
+      provider._canvasArtifactSession = provider._createCanvasArtifactSession(
+        'canvas-panel', store, new CanvasOpExecutor(store, new CanvasJobRouter(() => {})),
+        provider._canvasBridge, provider._panelStates.get('canvas-panel').panel.webview,
+      );
+      await provider._canvasArtifactSession.initialize();
+      const reopened = provider._canvasArtifact as CanvasArtifact;
+      expect(reopened.id).toBe(live.id);
+      const before = JSON.stringify(reopened);
+      vi.spyOn(vscode.window, 'showQuickPick').mockImplementation(async (items: any) => (await items)[0]);
+
+      const outcome = await provider.restoreCanvasRecovery();
+      expect(outcome).toMatchObject({ ok: true, mode: 'new', name: 'Unsaved brand (recovered)' });
+      expect(provider._canvasArtifact).toBe(reopened);
+      expect(JSON.stringify(reopened)).toBe(before);
+      expect((await store.list()).map(s => s.name).sort()).toEqual(['Brand', 'Unsaved brand (recovered)']);
+    });
+
     it('shutdown closes the canvas and waits for its final save instead of dropping the debounce', async () => {
       const live = provider._canvasArtifact as CanvasArtifact;
       live.name = 'Edited just before quitting';

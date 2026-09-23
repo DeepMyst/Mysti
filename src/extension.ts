@@ -888,7 +888,8 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('mysti.openCanvas', () => {
       chatViewProvider.openCanvas();
-    })
+    }),
+    vscode.commands.registerCommand('mysti.restoreCanvasRecovery', () => chatViewProvider.restoreCanvasRecovery())
   );
 
   // Toggle autonomous mode command
