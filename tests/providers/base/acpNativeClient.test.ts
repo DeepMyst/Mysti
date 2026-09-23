@@ -182,18 +182,20 @@ describe('ACP inactivity and immediate process exit', () => {
 });
 
 describe('ACP Stop with a verified agent cancellation grace', () => {
-  async function prompting(cancelGraceMs?: number) {
+  async function prompting(cancelGraceMs?: number, events: string[] = []) {
     vi.useFakeTimers();
     const proc = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), exitCode: null, signalCode: null }) as unknown as ChildProcess;
     const terminate = vi.fn(); const controller = new AbortController(); const handler = vi.fn(async () => true);
     const client = new AcpNativeClient({ process: proc, providerId: 'fixture', label: 'fixture', panelId: 'panel', signal: controller.signal, handler,
-      settings: { mode: 'ask-before-edit', accessLevel: 'ask-permission' }, launch: { ...launch, cancelGraceMs }, isCurrent: () => true, terminate }); clients.push(client);
+      settings: { mode: 'ask-before-edit', accessLevel: 'ask-permission' }, launch: { ...launch, cancelGraceMs, onStop: () => events.push('onStop') },
+      isCurrent: () => true, terminate, interruptTools: () => events.push('interruptTools') }); clients.push(client);
     const written: Array<Record<string, unknown>> = []; let input = '';
     const reply = (frame: object) => (proc.stdout as PassThrough).write(JSON.stringify({ jsonrpc: '2.0', ...frame }) + '\n');
     proc.stdin!.on('data', data => {
       input += data.toString(); let line;
       while ((line = input.indexOf('\n')) >= 0) {
         const frame = JSON.parse(input.slice(0, line)); input = input.slice(line + 1); written.push(frame);
+        if (frame.method === 'session/cancel') { events.push('session/cancel'); }
         if (frame.method === 'initialize') { reply({ id: frame.id, result: { protocolVersion: 1, agentInfo: { name: 'fixture', version: '1.0.0' } } }); }
         if (frame.method === 'session/new') { reply({ id: frame.id, result: { sessionId: 'session' } }); }
       }
@@ -227,9 +229,18 @@ describe('ACP Stop with a verified agent cancellation grace', () => {
     await vi.advanceTimersByTimeAsync(1); await h.collecting; expect(h.terminate).toHaveBeenCalledOnce();
   });
 
+  it('revokes tool starts and kills current tools before it sends session/cancel', async () => {
+    const events: string[] = [];
+    const h = await prompting(5000, events);
+    h.controller.abort(); await vi.advanceTimersByTimeAsync(0);
+    expect(events).toEqual(['onStop', 'interruptTools', 'session/cancel']); expect(h.terminate).not.toHaveBeenCalled();
+  });
+
   it('keeps freeze-first teardown for agents without a verified grace', async () => {
-    const h = await prompting();
-    h.controller.abort();
+    const events: string[] = [];
+    const h = await prompting(undefined, events);
+    h.controller.abort(); await vi.advanceTimersByTimeAsync(0);
+    expect(events).toEqual(['session/cancel']);
     expect(h.terminate).toHaveBeenCalledOnce(); expect(h.client.cancelling).toBe(false);
     expect(h.written.at(-1)).toMatchObject({ method: 'session/cancel' });
   });

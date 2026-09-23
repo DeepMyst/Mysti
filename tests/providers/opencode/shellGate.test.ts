@@ -22,7 +22,7 @@ const tempDir = async () => { const dir = await fs.realpath(await fs.mkdtemp(pat
 async function gate() {
   const dir = await tempDir();
   const file = path.join(dir, 'gate.mjs');
-  await fs.writeFile(file, openCodeShellGatePlugin('fixture-nonce', path.join(dir, 'attested.json')));
+  await fs.writeFile(file, openCodeShellGatePlugin('fixture-nonce', path.join(dir, 'attested.json'), path.join(dir, 'stopped')));
   const hooks = await (await import(pathToFileURL(file).href)).default.server({ directory: dir }) as Hooks;
   const before = (callID: string, tool = 'bash') => hooks['tool.execute.before']({ tool, sessionID: 's', callID }, { args: { command: 'x' } });
   const asked = (callID: string, id: string, permission = 'bash') => hooks.event({ event: { type: 'permission.asked', properties: { id, sessionID: 's', permission, patterns: ['x'], tool: { messageID: 'm', callID } } } });
@@ -71,6 +71,13 @@ describe('OpenCode shell gate plugin', () => {
     await expect(g.spawn('call')).rejects.toThrow('did not submit for approval');
   });
 
+  it('refuses even an approved call once Stop has begun', async () => {
+    const g = await gate();
+    await g.before('call'); await g.asked('call', 'per_1'); await g.replied('per_1', 'once');
+    await fs.writeFile(path.join(g.dir, 'stopped'), '');
+    await expect(g.spawn('call')).rejects.toThrow('after Stop');
+  });
+
   it('refuses shells without a call identity and ignores other tools', async () => {
     const g = await gate();
     await g.before('call', 'read');
@@ -104,6 +111,19 @@ describe('OpenCode shell gate launch', () => {
     } finally { await launch.cleanup!(); }
   });
 
+  it('Stop revokes the gate synchronously for an already approved call', async () => {
+    const { cwd, launch } = await launchFor('darwin');
+    try {
+      const config = JSON.parse(launch.env!.OPENCODE_CONFIG_CONTENT!);
+      const hooks = await (await import(config.plugin[0])).default.server({ directory: cwd }) as Hooks;
+      await hooks['tool.execute.before']({ tool: 'bash', sessionID: 's', callID: 'call' }, { args: {} });
+      await hooks.event({ event: { type: 'permission.asked', properties: { id: 'per_1', sessionID: 's', permission: 'bash', tool: { callID: 'call' } } } });
+      await hooks.event({ event: { type: 'permission.replied', properties: { requestID: 'per_1', reply: 'once' } } });
+      launch.onStop!();
+      await expect(hooks['shell.env']({ cwd, sessionID: 's', callID: 'call' }, { env: {} })).rejects.toThrow('after Stop');
+    } finally { await launch.cleanup!(); }
+  });
+
   it.each([['another plugin', 'extra'], ['another directory', 'directory']] as const)('refuses the turn when the gate reports %s', async (_name, fault) => {
     const { cwd, launch } = await launchFor('darwin');
     try {
@@ -120,7 +140,7 @@ describe('OpenCode shell gate launch', () => {
     try {
       expect(launch.args).toContain('--pure'); expect(launch.env!.OPENCODE_PURE).toBe('true');
       expect(JSON.parse(launch.env!.OPENCODE_CONFIG_CONTENT!).plugin).toEqual([]);
-      expect(launch.configure).toBeUndefined(); expect(launch.cancelGraceMs).toBeUndefined();
+      expect(launch.configure).toBeUndefined(); expect(launch.cancelGraceMs).toBeUndefined(); expect(launch.onStop).toBeUndefined();
     } finally { await launch.cleanup!(); }
   });
 });

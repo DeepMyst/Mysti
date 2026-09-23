@@ -54,6 +54,8 @@ export interface AcpNativeClientOptions {
   launch: AcpNativeLaunch;
   isCurrent(): boolean;
   terminate(): void;
+  /** Kill the agent's current tool processes without stopping the agent (graced Stop only). */
+  interruptTools?(): void;
   inactivityTimeoutMs?: number;
   startupTimeoutMs?: number;
 }
@@ -102,11 +104,15 @@ export class AcpNativeClient {
     const prompting = this._sessionId && this._prompting;
     const grace = this._options.launch.cancelGraceMs;
     if (prompting && grace) {
-      // Let the agent run its own cancellation first, bounded: the freeze and
-      // tree kill follow when its prompt ends, it exits, or the bound expires.
-      // Nothing it reports meanwhile is delivered; permission requests are
-      // answered cancelled.
+      // Nothing already running may outlive Stop by the agent's reaction time:
+      // revoke new tool starts and kill current tool processes now. Then let
+      // the agent run its own cancellation (it reaches detached jobs that are
+      // no longer descendants), bounded: the freeze and tree kill follow when
+      // its prompt ends, it exits, or the bound expires. Nothing it reports
+      // meanwhile is delivered; permission requests are answered cancelled.
       this._cancelling = true;
+      try { this._options.launch.onStop?.(); } catch { /* The tool kill and tree kill still follow. */ }
+      this._options.interruptTools?.();
       this._write({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: this._sessionId } });
       this._cancelTimer = setTimeout(() => this._finish(), grace);
       return;

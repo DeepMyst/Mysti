@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenCodeProvider } from '../../../src/providers/opencode/OpenCodeProvider';
-import { prepareOpenCodeNativeLaunch } from '../../../src/providers/opencode/OpenCodeNative';
+import { openCodeShellEnabled, prepareOpenCodeNativeLaunch } from '../../../src/providers/opencode/OpenCodeNative';
 import { createMockContext } from '../../helpers/providerFactory';
 import { clearMockConfig } from '../../helpers/mockVscode';
 import type { NativeApprovalRequest } from '../../../src/providers/base/IProvider';
@@ -71,13 +71,14 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe('OpenCode public ACP native turn', () => {
+// Each case spawns a real fixture process; a loaded machine exceeds the 5 s default.
+describe('OpenCode public ACP native turn', { timeout: 30_000 }, () => {
   it('holds a file effect until the captured handler allows once, preserving model/image/usage', async () => {
     const provider = new FixtureProvider(); let request: NativeApprovalRequest | undefined; let allow!: (value: boolean) => void;
     provider.setNativeApprovalHost({ handlerForPanel: () => value => { request = value; return new Promise(resolve => { allow = resolve; }); } });
     const image: Attachment = { id: 'img', type: 'image', fileName: 'fixture.png', mimeType: 'image/png', size: 3, base64Data: 'aW1n' };
     const pending = drain(provider, settings(), 'panel', [image], '/init');
-    await vi.waitFor(() => expect(request).toBeDefined());
+    await vi.waitFor(() => expect(request).toBeDefined(), { timeout: 10000 });
     expect(fs.existsSync(provider.marker)).toBe(false); expect(request?.toolCall.input).toHaveProperty('diff');
     allow(true); const chunks = await pending;
     expect(fs.readFileSync(provider.marker, 'utf8')).toBe('effect\n');
@@ -116,12 +117,12 @@ describe('OpenCode public ACP native turn', () => {
     let request: NativeApprovalRequest | undefined; let allow!: (value: boolean) => void;
     provider.setNativeApprovalHost({ handlerForPanel: () => value => { request = value; return new Promise(resolve => { allow = resolve; }); } });
     const first = drain(provider);
-    await vi.waitFor(() => expect(request).toBeDefined());
+    await vi.waitFor(() => expect(request).toBeDefined(), { timeout: 10000 });
     if (mode === 'replacement') {
       provider.setNativeApprovalHost({ handlerForPanel: () => async () => false });
       const second = drain(provider); allow(true); await Promise.all([first, second]);
     } else if (mode === 'stop') { provider.cancelCurrentRequest('panel'); allow(true); await first; }
-    else { await first; allow(true); }
+    else { fs.writeFileSync(`${provider.marker}.crash`, ''); await first; allow(true); }
     expect(request?.signal.aborted).toBe(true); expect(fs.existsSync(provider.marker)).toBe(false);
   });
   it.each(['no-plugin', 'extra-plugin', 'other-directory'])('refuses the turn before the prompt when the shell gate attestation shows %s', async mode => {
@@ -136,13 +137,28 @@ describe('OpenCode public ACP native turn', () => {
     const provider = new FixtureProvider(); let request: NativeApprovalRequest | undefined;
     provider.setNativeApprovalHost({ handlerForPanel: () => value => { request = value; return new Promise(() => {}); } });
     const pending = drain(provider);
-    await vi.waitFor(() => expect(request).toBeDefined());
+    await vi.waitFor(() => expect(request).toBeDefined(), { timeout: 10000 });
     provider.cancelCurrentRequest('panel');
     const chunks = await pending;
     expect(trace(provider).some(frame => frame.method === 'session/cancel')).toBe(true);
     expect(request?.signal.aborted).toBe(true); expect(fs.existsSync(provider.marker)).toBe(false);
     expect(chunks.at(-1)?.type).toBe('done'); expect(chunks.some(chunk => chunk.type === 'error')).toBe(false);
   });
+  it('Stop kills a running approved tool at once, not after the agent reacts', async () => {
+    if (process.platform === 'win32') {
+      // Tool processes are only reachable here on POSIX; Windows never enables the graced shell path.
+      expect(openCodeShellEnabled(settings(), 'win32')).toBe(false); return;
+    }
+    const provider = new FixtureProvider(); provider.mode = 'tool-ignores-cancel'; let request: NativeApprovalRequest | undefined;
+    provider.setNativeApprovalHost({ handlerForPanel: () => value => { request = value; return new Promise(() => {}); } });
+    const pending = drain(provider);
+    await vi.waitFor(() => { expect(request).toBeDefined(); expect(fs.existsSync(`${provider.marker}.started`)).toBe(true); }, { timeout: 10000 });
+    provider.cancelCurrentRequest('panel');
+    // The agent never answers the cancel, so its 5 s grace is still running when the tool would write.
+    await new Promise(resolve => setTimeout(resolve, 3500));
+    expect(fs.existsSync(provider.marker)).toBe(false);
+    await pending;
+  }, 20000);
   it('platforms without verified shell run pure with no plugin', async () => {
     const provider = new FixtureProvider(); provider.platform = 'linux';
     provider.setNativeApprovalHost({ handlerForPanel: () => async () => true });

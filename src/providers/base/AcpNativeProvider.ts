@@ -6,7 +6,7 @@ import type { ChildProcess } from 'child_process';
 import type { AgentConfiguration, Attachment, ContextItem, Conversation, Settings, StreamChunk, UsageStats } from '../../types';
 import type { PersonaConfig } from './IProvider';
 import { getEnrichedEnv } from '../../utils/platform';
-import { killProcessTree } from '../../utils/processKill';
+import { killProcessDescendants, killProcessTree } from '../../utils/processKill';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
 import { BaseCliProvider, type PanelSessionState } from './BaseCliProvider';
 import { AcpNativeClient } from './AcpNativeClient';
@@ -107,7 +107,8 @@ export abstract class AcpNativeProvider extends BaseCliProvider {
       closed = new Promise(resolve => child!.once('close', () => resolve()));
       session.process = child;
       client = new AcpNativeClient({ process: child, providerId: this.id, label: this.displayName,
-        panelId: session.panelId, signal, settings: captured, handler, launch, isCurrent: current, terminate });
+        panelId: session.panelId, signal, settings: captured, handler, launch, isCurrent: current, terminate,
+        interruptTools: () => { void killProcessDescendants(child!).catch(error => console.warn(`[Mysti] ${this.displayName} ACP: tool cleanup failed`, error)); } });
       this._clients.set(session, client);
       const initialized = await client.initialize();
       if (!current()) { return; }

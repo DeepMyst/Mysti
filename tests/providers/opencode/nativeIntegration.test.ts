@@ -23,7 +23,8 @@ const CASE_BOUND_MS = 60000;
 const evidenceDir = (name: string) => path.join(project, 'out-test/release-evidence/FU_OPENCODE_20260923', `${name}-${Date.now()}`);
 const baseSettings: Settings = { provider: 'opencode', model: 'anthropic/claude-sonnet-4-5', mode: 'default', accessLevel: 'ask-permission', thinkingLevel: 'none', contextMode: 'auto' };
 type Scenario = 'allow-write' | 'deny-write' | 'cancel-write' | 'readonly-write' | 'zero-pattern-shell' | 'deny-read' | 'public-write' | 'project-authority' | 'ancestor-authority' | 'stop-active-shell'
-  | 'ungated-no-pattern' | 'shell-no-pattern' | 'shell-allow' | 'shell-deny' | 'shell-background' | 'stop-background' | 'stop-orphaned-background' | 'shell-readonly' | 'extra-plugin' | 'missing-gate';
+  | 'ungated-no-pattern' | 'shell-no-pattern' | 'shell-allow' | 'shell-deny' | 'shell-background' | 'stop-background' | 'stop-orphaned-background' | 'shell-readonly' | 'extra-plugin' | 'missing-gate'
+  | 'stop-ignore-term' | 'stop-slow-cancel' | 'allow-then-stop';
 const shellCommand = (scenario: Scenario, target: string, started: string): string | undefined => ({
   'zero-pattern-shell': `> ${target}`, 'ungated-no-pattern': `> ${target}`, 'shell-no-pattern': `> ${target}`,
   'shell-allow': `printf approved > ${target}`, 'shell-deny': `printf approved > ${target}`, 'shell-readonly': `printf approved > ${target}`,
@@ -31,10 +32,14 @@ const shellCommand = (scenario: Scenario, target: string, started: string): stri
   'stop-background': `(sleep 2; printf late > ${target}) & printf started > ${started}`,
   'stop-orphaned-background': `(sleep 3; printf late > ${target}) & printf started > ${started}`,
   'stop-active-shell': `printf started > ${started}; (sleep 2; printf late >> ${target}) & wait`,
+  // SIG_IGN is inherited: neither the shell nor its sleep dies of OpenCode's group SIGTERM.
+  'stop-ignore-term': `trap '' TERM; printf started > ${started}; sleep 1; printf late > ${target}`,
+  'stop-slow-cancel': `trap '' TERM; printf started > ${started}; sleep 1; printf late > ${target}`,
+  'allow-then-stop': `trap '' TERM; printf started > ${started}; sleep 1; printf late > ${target}`,
   'extra-plugin': `printf approved > ${target}`, 'missing-gate': `printf approved > ${target}`,
 } as Partial<Record<Scenario, string>>)[scenario];
 const publicPath = (scenario: Scenario) => scenario === 'public-write' || scenario.startsWith('shell-') || scenario.endsWith('-authority')
-  || scenario.startsWith('stop-') || scenario === 'extra-plugin' || scenario === 'missing-gate';
+  || scenario.startsWith('stop-') || scenario === 'extra-plugin' || scenario === 'missing-gate' || scenario === 'allow-then-stop';
 
 async function nativeCase(root: string, scenario: Scenario) {
   const directory = path.join(root, scenario);
@@ -110,7 +115,7 @@ async function nativeCase(root: string, scenario: Scenario) {
     + `(deny file-read* (subpath "${os.homedir()}"))`
     + `(deny file-write* (require-all (require-not (subpath "${root}")) (require-not (subpath "${writable}")) (require-not (subpath "/dev"))))`;
   if (publicPath(scenario)) {
-    let spawnedAt = 0; const frameTimes: number[] = [];
+    let spawnedAt = 0; const frameTimes: number[] = []; const sentFrames: Array<{ at: number; frame: unknown }> = [];
     let nativeClosed: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
     class NativeProvider extends OpenCodeProvider {
       override getCliPath() { return installed; }
@@ -134,6 +139,16 @@ async function nativeCase(root: string, scenario: Scenario) {
         spawnedAt = Date.now();
         const child = spawn('/usr/bin/sandbox-exec', ['-p', sandbox(path.dirname(childEnv.XDG_CONFIG_HOME!)), installed, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
         nativeClosed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+        const write = child.stdin.write.bind(child.stdin) as (chunk: unknown, ...rest: unknown[]) => boolean;
+        child.stdin.write = ((chunk: unknown, ...rest: unknown[]) => {
+          let frame: { method?: string } | undefined;
+          try { frame = JSON.parse(String(chunk)); sentFrames.push({ at: Date.now() - spawnedAt, frame }); } catch { /* Not a frame. */ }
+          // A busy agent reads the cancel late; Stop must not depend on when.
+          if (frame?.method === 'session/cancel' && (scenario === 'stop-slow-cancel' || scenario === 'allow-then-stop')) {
+            setTimeout(() => { if (child.stdin.writable) { write(chunk, ...rest); } }, 2000); return true;
+          }
+          return write(chunk, ...rest);
+        }) as typeof child.stdin.write;
         child.stderr.on('data', data => { stderr = (stderr + data).slice(-12000); });
         let pending = '';
         child.stdout.on('data', data => {
@@ -151,13 +166,18 @@ async function nativeCase(root: string, scenario: Scenario) {
     const folder = vscode.workspace.workspaceFolders![0];
     const oldCwd = folder.uri.fsPath;
     Object.defineProperty(folder.uri, 'fsPath', { configurable: true, value: work });
+    let stoppedActive = false;
     native.setNativeApprovalHost({ handlerForPanel: () => async request => {
       cards.push(request.toolCall); pendingChecks.push(existsSync(target), existsSync(started));
       await new Promise<void>(resolve => setTimeout(resolve, 150));
-      pendingChecks.push(existsSync(target), existsSync(started)); return scenario !== 'shell-deny';
+      pendingChecks.push(existsSync(target), existsSync(started));
+      if (scenario === 'allow-then-stop') {
+        // Stop right after the allow answer is written (it is written in a microtask).
+        stoppedActive = true; setTimeout(() => native.cancelCurrentRequest('native-panel'), 0);
+      }
+      return scenario !== 'shell-deny';
     } });
     const chunks: StreamChunk[] = [];
-    let stoppedActive = false;
     const activeStop = scenario.startsWith('stop-') ? setInterval(() => {
       if (existsSync(started)) {
         stoppedActive = true; clearInterval(activeStop);
@@ -170,14 +190,14 @@ async function nativeCase(root: string, scenario: Scenario) {
       for await (const chunk of native.sendMessage('inert fixture', [], settings, null, undefined, 'native-panel')) { chunks.push(chunk); }
       clearInterval(activeStop);
       // Outlive the native shell's delayed background write.
-      if (scenario.startsWith('stop-') || scenario === 'shell-background') { await new Promise(resolve => setTimeout(resolve, 5000)); }
+      if (scenario.startsWith('stop-') || scenario === 'shell-background' || scenario === 'allow-then-stop') { await new Promise(resolve => setTimeout(resolve, 5000)); }
       const errors = chunks.filter(chunk => chunk.type === 'error');
       if (errors.length) { failure ||= new Error(JSON.stringify(errors)); }
       initializedVersion = nativeFrames.find(frame => frame.result?.agentInfo)?.result?.agentInfo?.version;
       resultReceived = chunks.at(-1)?.type === 'done' && errors.length === 0;
       return { scenario, exit: await nativeClosed, initializedVersion, failure: failure instanceof Error ? failure.message : failure,
         resultReceived, modelCalls, declaredTools, cards, pendingChecks, stderr, nativeFrames, modelInputs, chunks, stoppedActive,
-        frameTimes, extraPluginRan: existsSync(path.join(work, 'extra-ran.txt')), started: existsSync(started),
+        frameTimes, sentFrames, extraPluginRan: existsSync(path.join(work, 'extra-ran.txt')), started: existsSync(started),
         exists: existsSync(target), content: existsSync(target) ? await fs.readFile(target, 'utf8') : undefined };
     } finally {
       clearTimeout(bounded); clearInterval(activeStop);
@@ -316,13 +336,15 @@ describe('installed OpenCode native permission boundary', () => {
     const evidence = evidenceDir('shell-stop');
     await fs.mkdir(evidence, { recursive: true });
     try {
-      for (const scenario of ['stop-active-shell', 'stop-background', 'stop-orphaned-background'] as const) {
+      for (const scenario of ['stop-active-shell', 'stop-background', 'stop-orphaned-background', 'stop-ignore-term', 'stop-slow-cancel', 'allow-then-stop'] as const) {
         const result = await nativeCase(root, scenario);
         await fs.writeFile(path.join(evidence, `${scenario}.json`), JSON.stringify(result, null, 2));
         const diagnostic = `${evidence}\n${JSON.stringify({ ...result, nativeFrames: undefined, stderr: undefined, modelInputs: undefined })}`;
         expect(result.initializedVersion, diagnostic).toBe(OPENCODE_ACP_VERSION);
         expect(result.cards, diagnostic).toHaveLength(1);
-        expect(result.stoppedActive, diagnostic).toBe(true); expect(result.started, diagnostic).toBe(true);
+        expect(result.stoppedActive, diagnostic).toBe(true);
+        // Allow-then-Stop may or may not reach the spawn; either way nothing runs on.
+        if (scenario !== 'allow-then-stop') { expect(result.started, diagnostic).toBe(true); }
         expect(result.exists, diagnostic).toBe(false);
       }
     } finally { await fs.rm(root, { recursive: true, force: true }); }

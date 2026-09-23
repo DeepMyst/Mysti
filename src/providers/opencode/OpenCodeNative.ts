@@ -1,5 +1,6 @@
 /** Mysti — SPDX-License-Identifier: Apache-2.0 */
 import fs from 'fs/promises';
+import { writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { randomBytes } from 'crypto';
@@ -56,11 +57,13 @@ export function openCodePermissionPolicy(settings: Pick<Settings, 'mode' | 'acce
  * - `shell.env` runs after the permission step and immediately before every
  *   spawn. It allows a call only after this call's own bash request was
  *   answered `once`. No request, a rejection, `always`, a reused or duplicate
- *   call id all throw, which aborts the spawn.
+ *   call id all throw, which aborts the spawn. So does the `stopped` file, which
+ *   Mysti writes the moment Stop begins: an approval answered just before Stop
+ *   cannot start its command while OpenCode has yet to read the cancel.
  */
-export function openCodeShellGatePlugin(nonce: string, attestation: string): string {
-  return `import { writeFileSync } from "node:fs";
-const NONCE = ${JSON.stringify(nonce)}, ATTESTATION = ${JSON.stringify(attestation)}, AGENT = ${JSON.stringify(OPENCODE_HOST_AGENT)};
+export function openCodeShellGatePlugin(nonce: string, attestation: string, stopped: string): string {
+  return `import { existsSync, writeFileSync } from "node:fs";
+const NONCE = ${JSON.stringify(nonce)}, ATTESTATION = ${JSON.stringify(attestation)}, STOPPED = ${JSON.stringify(stopped)}, AGENT = ${JSON.stringify(OPENCODE_HOST_AGENT)};
 export default {
   id: "mysti-shell-gate",
   server: async (input) => {
@@ -101,6 +104,7 @@ export default {
         const state = id === undefined ? undefined : calls.get(id);
         if (id !== undefined) calls.delete(id);
         if (state !== "approved") throw new Error("Mysti refused a shell command that OpenCode did not submit for approval.");
+        if (existsSync(STOPPED)) throw new Error("Mysti refused a shell command after Stop.");
       },
     };
   },
@@ -215,8 +219,9 @@ export async function prepareOpenCodeNativeLaunch(context: AcpNativeLaunchContex
     const shell = openCodeShellEnabled(context.settings, platform);
     const plugin = path.join(directory, 'mysti-shell-gate.mjs');
     const attestation = path.join(directory, 'shell-gate-attestation.json');
+    const stopped = path.join(directory, 'stopped');
     const nonce = randomBytes(32).toString('hex');
-    if (shell) { await fs.writeFile(plugin, openCodeShellGatePlugin(nonce, attestation), { mode: 0o600 }); }
+    if (shell) { await fs.writeFile(plugin, openCodeShellGatePlugin(nonce, attestation, stopped), { mode: 0o600 }); }
     const pluginSpec = pathToFileURL(plugin).href;
     const config = openCodeNativeConfig(context.settings, model, shell ? pluginSpec : undefined);
     return {
@@ -232,9 +237,10 @@ export async function prepareOpenCodeNativeLaunch(context: AcpNativeLaunchContex
       // On abort this release SIGTERMs each running shell's whole process group
       // (core cross-spawn-spawner killGroup, SIGKILL after 3 s). That reaches a
       // background job whose foreground shell already exited: it is no longer a
-      // descendant, so the tree kill alone misses it. Wait for the cancelled
-      // prompt result before the freeze and tree kill, bounded.
-      ...(shell ? { cancelGraceMs: 5000 } : {}),
+      // descendant, so the tree kill alone misses it. Stop therefore blocks new
+      // spawns and kills current descendants at once, then waits for the
+      // cancelled prompt result before the freeze and tree kill, bounded.
+      ...(shell ? { cancelGraceMs: 5000, onStop: () => writeFileSync(stopped, '', { mode: 0o600 }) } : {}),
       decodeUsage: decodeOpenCodeUsage,
       validateUpdate: update => validateOpenCodeConfigUpdate(update, model),
       validateSession(result) {
