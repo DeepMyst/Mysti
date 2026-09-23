@@ -1194,6 +1194,37 @@ describe('Sub-agent Retry re-runs the turn its card belongs to', () => {
     expect(provider._delayedChannelTurns.capture('sidebar').signal.aborted).toBe(false);
   });
 
+  it('never runs with more authority than the panel has now', async () => {
+    // The turn was sent at full access / edit-automatically; the user then lowers both.
+    await send('@codex task A');
+    const [first] = retryIds();
+    setMockConfig('accessLevel', 'read-only');
+    setMockConfig('defaultMode', 'quick-plan');
+    await retry(first);
+    expect(router.processMentions).toHaveBeenCalledTimes(2);
+    expect(router.processMentions.mock.calls[1][3]).toMatchObject({ accessLevel: 'read-only', mode: 'quick-plan' });
+    // Retrying the retry keeps the lowered level, and raising access later
+    // never lifts a retry above what its own turn had.
+    const lowered = { ...SETTINGS, accessLevel: 'ask-permission' as const, mode: 'ask-before-edit' as const };
+    await (h.provider as any)._handleSendMessage(
+      { content: '@codex task B', context: [], settings: lowered, mentions: [codex] }, 'sidebar');
+    const second = retryIds()[retryIds().length - 1];
+    setMockConfig('accessLevel', 'full-access');
+    setMockConfig('defaultMode', 'edit-automatically');
+    await retry(second);
+    expect(router.processMentions.mock.calls.at(-1)![3]).toMatchObject({ accessLevel: 'ask-permission', mode: 'ask-before-edit' });
+  });
+
+  it('refuses a turn whose agent is no longer registered', async () => {
+    await send('@codex task A');
+    const [first] = retryIds();
+    (h.provider as any)._providerManager.getAllProviderIds = () => ['claude-code'];
+    const mark = h.sidebarMessages.length;
+    await retry(first);
+    expect(router.processMentions).toHaveBeenCalledTimes(1);
+    expect(h.sidebarMessages.slice(mark).map(m => m.type)).toEqual(['systemNotice']);
+  });
+
   it('refuses while another turn is still running and leaves that turn alone', async () => {
     await send('@codex task A');
     const [first] = retryIds();

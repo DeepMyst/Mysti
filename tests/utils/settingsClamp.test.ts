@@ -7,6 +7,7 @@ import {
   clampSettingsToUserPolicy,
   clampSafetyMode,
   normalizeAuthoritySettings,
+  stricterAuthority,
   LEGACY_MODE_ALIASES,
   OPERATION_MODES,
   ACCESS_LEVELS,
@@ -360,5 +361,34 @@ describe('clampVisualTestSettings (Plan 27 N-1)', () => {
     const asked: string[] = [];
     clampVisualTestSettings({ ...user }, (s) => { asked.push(s); return undefined; });
     expect(asked.sort()).toEqual(['visualTest.enabled', 'visualTest.interactions']);
+  });
+});
+
+describe('stricterAuthority (sub-agent Retry replay)', () => {
+  const base = { thinkingLevel: 'none', contextMode: 'auto', model: 'm', provider: 'claude-code' } as const;
+  const s = (accessLevel: string, mode: string, autonomousMode?: boolean) =>
+    ({ ...base, accessLevel, mode, autonomousMode }) as unknown as Settings;
+
+  it('takes the more restrictive level of each field and never the looser one', () => {
+    const accesses = ['read-only', 'ask-permission', 'full-access'];
+    const modes = ['quick-plan', 'ask-before-edit', 'default', 'edit-automatically'];
+    for (const [ai, a] of accesses.entries()) {
+      for (const [bi, b] of accesses.entries()) {
+        for (const [mi, m] of modes.entries()) {
+          for (const [ni, n] of modes.entries()) {
+            const out = stricterAuthority(s(a, m), s(b, n));
+            expect(out.accessLevel).toBe(accesses[Math.min(ai, bi)]);
+            expect(out.mode).toBe(modes[Math.min(mi, ni)]);
+          }
+        }
+      }
+    }
+  });
+
+  it('keeps autonomy only when both have it, and coerces unknown values to ask', () => {
+    expect(stricterAuthority(s('full-access', 'default', true), s('full-access', 'default', false)).autonomousMode).toBe(false);
+    expect(stricterAuthority(s('full-access', 'default', true), s('full-access', 'default', true)).autonomousMode).toBe(true);
+    const out = stricterAuthority(s('toString', 'plan'), s('full-access', 'edit-automatically'));
+    expect(out).toMatchObject({ accessLevel: 'ask-permission', mode: 'quick-plan', model: 'm' });
   });
 });

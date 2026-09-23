@@ -61,7 +61,7 @@ import { CoordinatorRunBudget, resolveCoordinatorRunLimits } from '../coordinato
 import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
 import { MystiLocalTools } from '../services/MystiLocalTools';
 import { MystiMemoryStore } from '../services/MystiMemoryStore';
-import { clampSettingsToUserPolicy, normalizeAuthoritySettings } from '../utils/settingsClamp';
+import { clampSettingsToUserPolicy, normalizeAuthoritySettings, stricterAuthority } from '../utils/settingsClamp';
 import type { GatewayChatMessage } from '../services/DeepMystGatewayClient';
 import { ContextManager } from '../managers/ContextManager';
 import { ConversationManager } from '../managers/ConversationManager';
@@ -3960,7 +3960,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _handleRetrySubAgent(payload: unknown, panelId: string): Promise<void> {
     const panel = this._panelStates.get(panelId);
     if (!panel) { return; }
-    const retry = this._mentionRetries.claim(panelId, payload, panel.currentConversationId);
+    const claimed = this._mentionRetries.claim(panelId, payload, panel.currentConversationId);
+    // An agent that has since been unregistered is not re-run.
+    const retry = claimed && this._providerManager.getAllProviderIds().includes(claimed.mention.value as AgentType)
+      ? claimed : undefined;
     const live = this._foregroundRequests?.get(panelId);
     const busy = (live?.isCurrent() && !live.settled) || this._brainstormStopOwners?.has(panelId)
       || this._delayedChannelTurns.has(panelId);
@@ -3977,6 +3980,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._cancelledPanels.delete(panelId);
     const { id: retryId, turn, mention } = retry;
     const agentId = mention.value as AgentType;
+    // Replay the turn's own settings, but never above the panel's authority now.
+    const settings = stricterAuthority(turn.settings,
+      { ...this._getSettingsForPanel(panelId), autonomousMode: this._autonomousManager.isActive() });
     const conversation = turn.conversationId ? this._conversationManager.getConversation(turn.conversationId) : null;
 
     this._lifecycleManager.touchSession(panelId);
@@ -3999,7 +4005,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       request.post({ type: 'subAgentStarted', payload: { agentId, retryId } });
-      const stream = this._mentionRouter.processMentions(turn.content, [mention], turn.context, turn.settings,
+      const stream = this._mentionRouter.processMentions(turn.content, [mention], turn.context, settings,
         conversation, panelId, this._createSubAgentQuestionCallback(panelId, request));
       for await (const chunk of stream) {
         if (!request.isCurrent() || this._cancelledPanels.has(panelId)) { break; }
@@ -4012,7 +4018,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           case 'subagent_tool_use':
             // Same suspend-first gate as the main mention loop.
-            if (!(await this._gateSubAgentToolUse(chunk, turn.settings, panelId, request.post))) { break; }
+            if (!(await this._gateSubAgentToolUse(chunk, settings, panelId, request.post))) { break; }
             request.post({ type: 'subAgentToolUse', payload: { agentId: chunk.agentId, toolCall: chunk.toolCall } });
             break;
           case 'subagent_tool_result':

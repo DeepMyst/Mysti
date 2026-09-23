@@ -303,6 +303,24 @@ export function normalizeAuthoritySettings(settings: Settings): { settings: Sett
 }
 
 /**
+ * `stored` with its authority lowered to whichever of the two is MORE
+ * restrictive, field by field. For re-running captured work (a sub-agent
+ * Retry): the capture may have been taken at a level the user has since
+ * lowered, and replaying it must never restore that level. Autonomy survives
+ * only if both have it.
+ */
+export function stricterAuthority(stored: Settings, current: Settings): Settings {
+  const a = normalizeAuthoritySettings(stored).settings;
+  const b = normalizeAuthoritySettings(current).settings;
+  return {
+    ...a,
+    accessLevel: ACCESS_RANK[b.accessLevel] > ACCESS_RANK[a.accessLevel] ? b.accessLevel : a.accessLevel,
+    mode: MODE_RANK[b.mode] > MODE_RANK[a.mode] ? b.mode : a.mode,
+    autonomousMode: !!(a.autonomousMode && b.autonomousMode),
+  };
+}
+
+/**
  * Clamp runtime settings to the user's own policy. Returns the (possibly)
  * adjusted settings and which fields were clamped, so the caller can warn once.
  */
