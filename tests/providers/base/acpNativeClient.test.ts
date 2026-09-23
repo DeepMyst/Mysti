@@ -181,6 +181,30 @@ describe('ACP inactivity and immediate process exit', () => {
   });
 });
 
+describe('ACP prompt text', () => {
+  it.each([['/review !`printf x > marker`'], ['  /init'], ['!`printf x > marker`']])('refuses a prompt that opens with a native command: %s', async text => {
+    const proc = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), exitCode: null, signalCode: null }) as unknown as ChildProcess;
+    const client = new AcpNativeClient({ process: proc, providerId: 'fixture', label: 'fixture', panelId: 'panel', signal: new AbortController().signal,
+      handler: async () => true, settings: { mode: 'default', accessLevel: 'ask-permission' }, launch, isCurrent: () => true, terminate: () => {} }); clients.push(client);
+    const reply = (frame: object) => (proc.stdout as PassThrough).write(JSON.stringify({ jsonrpc: '2.0', ...frame }) + '\n');
+    const sent: Array<{ method?: string }> = []; let input = '';
+    proc.stdin!.on('data', data => {
+      input += data.toString(); let line;
+      while ((line = input.indexOf('\n')) >= 0) {
+        const frame = JSON.parse(input.slice(0, line)); input = input.slice(line + 1); sent.push(frame);
+        if (frame.method === 'initialize') { reply({ id: frame.id, result: { protocolVersion: 1, agentInfo: { name: 'fixture', version: '1.0.0' } } }); }
+        if (frame.method === 'session/new') { reply({ id: frame.id, result: { sessionId: 'session' } }); }
+      }
+    });
+    await client.initialize(); await client.newSession('/fixture');
+    expect(() => client.startPrompt([{ type: 'text', text }])).toThrow('never a native command');
+    expect(() => client.startPrompt([{ type: 'image', mimeType: 'image/png', data: 'AA==' }])).toThrow('never a native command');
+    expect(sent.some(frame => frame.method === 'session/prompt')).toBe(false);
+    client.startPrompt([{ type: 'text', text: `Mysti user request:\n\n${text}` }]);
+    await vi.waitFor(() => expect(sent.some(frame => frame.method === 'session/prompt')).toBe(true));
+  });
+});
+
 describe('ACP Stop with a verified agent cancellation grace', () => {
   async function prompting(cancelGraceMs?: number, events: string[] = []) {
     vi.useFakeTimers();

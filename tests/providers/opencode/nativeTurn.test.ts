@@ -159,6 +159,13 @@ describe('OpenCode public ACP native turn', { timeout: 30_000 }, () => {
     expect(fs.existsSync(provider.marker)).toBe(false);
     await pending;
   }, 20000);
+  it('sends a leading slash request as ordinary prefixed text, never a native command', async () => {
+    const provider = new FixtureProvider(); provider.setNativeApprovalHost({ handlerForPanel: () => async () => false });
+    for await (const _chunk of provider.sendMessage('/review !`printf x > injected`', [], settings(), null, undefined, 'panel')) { /* drain */ }
+    const prompt = trace(provider).find(frame => frame.method === 'session/prompt') as { params?: { prompt?: Array<{ text?: string }> } } | undefined;
+    expect(prompt?.params?.prompt?.[0]?.text).toMatch(/^Mysti user request:\n\n/);
+    expect(fs.existsSync(path.join(provider.dir, 'injected'))).toBe(false);
+  });
   it('dispose during the Stop grace kills the agent at once instead of waiting it out', async () => {
     if (process.platform === 'win32') {
       // The graced Stop exists only where shell is enabled; Windows never enables it.

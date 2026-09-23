@@ -216,6 +216,13 @@ export class AcpNativeClient {
 
   startPrompt(prompt: AcpObject[]): void {
     if (!this._sessionId || this._prompting) { throw new Error('ACP prompt ownership is unavailable.'); }
+    // Agents route a leading `/` to native commands before any tool policy, and
+    // OpenCode expands `!\`cmd\`` in command templates with no permission at all.
+    // Every prompt must open with ordinary text (the provider's fixed prefix).
+    const first = prompt[0];
+    if (first?.type !== 'text' || typeof first.text !== 'string' || /^\s*[/!]/.test(first.text)) {
+      throw new Error('ACP prompt must begin with ordinary text, never a native command.');
+    }
     this._prompting = true;
     // The RPC remains pending throughout permission review; stream inactivity,
     // not a fixed request timer, bounds model silence outside permission waits.
