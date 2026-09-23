@@ -1185,6 +1185,15 @@ describe('Sub-agent Retry re-runs the turn its card belongs to', () => {
     expect(posted[0].payload.message).toMatch(/can no longer be retried/);
   });
 
+  it('admits every foreground turn on a fresh scope, even without a prior cancel', () => {
+    const provider = h.provider as any;
+    const previous = provider._delayedChannelTurns.capture('sidebar');
+    const request = provider._admitForegroundRequest('sidebar');
+    expect(previous.signal.aborted).toBe(true);
+    expect(request.isCurrent()).toBe(true);
+    expect(provider._delayedChannelTurns.capture('sidebar').signal.aborted).toBe(false);
+  });
+
   it('refuses while another turn is still running and leaves that turn alone', async () => {
     await send('@codex task A');
     const [first] = retryIds();

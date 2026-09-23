@@ -25,6 +25,24 @@ describe('delayed channel turns', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('begins each turn on its own scope even if the previous one was never cancelled', async () => {
+    const stale = vi.fn();
+    const previous = turns.capture('panel');
+    turns.schedule('panel', stale, 500);
+    turns.reservePreparation('panel');
+    const next = turns.begin('panel');
+    expect(previous()).toBe(false);
+    expect(previous.signal.aborted).toBe(true);
+    expect(next()).toBe(true);
+    expect(next.signal).not.toBe(previous.signal);
+    expect(next.signal.aborted).toBe(false);
+    expect(turns.has('panel')).toBe(false);
+    // Later captures inside the same turn join it rather than rotating it.
+    expect(turns.capture('panel').signal).toBe(next.signal);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(stale).not.toHaveBeenCalled();
+  });
+
   it('owns at most one callback per panel', async () => {
     const old = vi.fn();
     const current = vi.fn();

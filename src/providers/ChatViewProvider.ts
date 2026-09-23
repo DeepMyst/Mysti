@@ -4048,7 +4048,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._retireCanvasMediaParent(panelId);
     this._revokeCanvasMcpTurn(panelId);
     const conversationId = panel.currentConversationId;
-    const scope = this._delayedChannelTurns.capture(panelId);
+    const scope = this._delayedChannelTurns.begin(panelId);
     this._foregroundRequests?.get(panelId)?.retire();
     const request: ForegroundRequest = new ForegroundRequest(requestId ?? crypto.randomUUID(),
       this._foregroundSequence = (this._foregroundSequence ?? 0) + 1, panelId,
