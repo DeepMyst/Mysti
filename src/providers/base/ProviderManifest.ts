@@ -139,7 +139,9 @@ export const PROVIDER_NPM_PACKAGES: Record<ProviderType, string | null> = {
   'hermes': null,        // curl | bash installer (hermes-agent.nousresearch.com)
   'continue': '@continuedev/cli',
   'openrouter': null,    // API-only, no CLI to update
-  'kimi-code': null      // curl | bash installer (code.kimi.com)
+  // Kimi Code 2.x publishes here; its official installer ships the same
+  // versions, and `kimi upgrade` (below) updates whichever one is installed.
+  'kimi-code': '@moonshot-ai/kimi-code'
 };
 
 /**
@@ -167,9 +169,24 @@ export const PROVIDER_SELF_UPDATE_COMMANDS: Partial<Record<ProviderType, string>
   // that Cursor is outdated (it is not on npm, so there is no version to
   // compare against). Offering an update for something never reported as
   // outdated would be a button that appears from nowhere.
+  //
+  // Kimi Code 2.x detects how it was installed (installer, npm, pnpm, bun,
+  // Homebrew) and runs the matching upgrade; it still asks before installing.
+  'kimi-code': 'kimi upgrade',
 };
 
-export function getProviderSelfUpdateCommand(providerId: string): string | undefined {
+/**
+ * The Python kimi-cli (1.x, `kimi, version 1.x.y`) has no `upgrade` command and
+ * is end-of-life; upstream's own notice says to run the Kimi Code installer,
+ * which also renames the old `kimi` to `kimi-legacy`. On Windows it is wrapped
+ * so it runs from cmd.exe as well as PowerShell (as kimi-cli itself does).
+ */
+export function getProviderSelfUpdateCommand(providerId: string, installedVersion?: string): string | undefined {
+  if (providerId === 'kimi-code' && /^\s*kimi,\s*version\s+1\./i.test(installedVersion ?? '')) {
+    return process.platform === 'win32'
+      ? 'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://code.kimi.com/kimi-code/install.ps1 | iex"'
+      : 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash';
+  }
   return PROVIDER_SELF_UPDATE_COMMANDS[providerId as ProviderType];
 }
 

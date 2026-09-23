@@ -758,7 +758,7 @@
           "default": "",
           "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._\\-:/\\[\\]]*$",
           "maxLength": 128,
-          "description": "Custom model for Kimi Code (e.g. kimi-for-coding, kimi-for-coding-highspeed, k3, kimi-k2.7-code). Passed to the CLI via the ANTHROPIC_MODEL env; the model is otherwise chosen inside Kimi with `/model`. Leave empty to use the account default."
+          "description": "Custom model for Kimi Code: a model alias from your Kimi config (e.g. kimi-code/k3) or a bare id (k3, kimi-for-coding, kimi-for-coding-highspeed) matched against the aliases Kimi reports. Applied to each new session with session/set_model. Leave empty to use default_model from your Kimi config."
         },
         "mysti.customModels": {
           "scope": "machine",

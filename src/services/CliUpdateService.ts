@@ -372,7 +372,7 @@ export class CliUpdateService implements vscode.Disposable {
     // A provider with its own updater uses it: for Claude Code the npm package
     // and the binary on PATH can be two different installs, so `npm i -g` there
     // updates a copy nothing runs.
-    const selfUpdate = getProviderSelfUpdateCommand(providerId);
+    const selfUpdate = getProviderSelfUpdateCommand(providerId, this._versions.peekStatus(providerId)?.version);
     if (selfUpdate) { return selfUpdate; }
 
     const packageName = getProviderNpmPackage(providerId);

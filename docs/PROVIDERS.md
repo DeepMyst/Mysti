@@ -512,9 +512,22 @@ every operation: Hermes v2026.9.21 asks only for denylisted shell commands and
 file edits, and Kimi Code 2.0.2 auto-approves in-repository writes, fetches,
 subagents and skills. Both honour inherited yolo/auto-approve user settings.
 Mysti therefore rejects every restricted tier for them before launch; only
-`full-access` with `default` or `edit-automatically` runs. Kimi Code 2.x keeps
-its configuration in `~/.kimi-code` and reads `KIMI_MODEL_*`; Mysti's
-credential/model detection still targets the 1.x `~/.kimi` layout (unfixed).
+`full-access` with `default` or `edit-automatically` runs.
+
+Kimi Code has two generations behind one `kimi` binary, told apart by
+`--version` (`2.0.2` vs `kimi, version 1.51.0`). Kimi Code 2.x (npm
+`@moonshot-ai/kimi-code` or the official installer in `~/.kimi-code/bin`) keeps
+its data in `~/.kimi-code` (`KIMI_CODE_HOME`); the Python kimi-cli 1.x uses
+`~/.kimi` (`KIMI_SHARE_DIR`). Both keep OAuth tokens in `credentials/*.json`,
+which Mysti checks for presence only. kimi-cli 1.52.0 is a tombstone that no
+longer runs `kimi acp`, so Mysti refuses it before launch and points at the
+installer; 1.51 and earlier still work. A selected model is applied with
+`session/set_model` after `session/new` (neither generation reads the
+`ANTHROPIC_MODEL` env Mysti used to set). Kimi Code 2.x applies a user's
+`default_permission_mode = "yolo"|"auto"` to ACP sessions while reporting mode
+`default`; Mysti now sends `session/set_mode default` first, which a local
+2.0.2 witness showed restores the per-tool permission request. Updates run
+`kimi upgrade` on 2.x and the Kimi Code installer on 1.x.
 
 ## Continue
 

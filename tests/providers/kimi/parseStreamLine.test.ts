@@ -7,7 +7,7 @@
  * KimiCodeProvider ACP parsing: the reactive JSON-RPC handshake
  * (initialize → session/new → session/prompt driven from parseStreamLine),
  * session/update mapping, permission auto-response, the diagnostic fallback
- * path, and Kimi-specific model env injection. Mirrors the Hermes ACP suite —
+ * path, and Kimi-specific model selection. Mirrors the Hermes ACP suite —
  * both backends speak the Agent Client Protocol over `<cli> acp`.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -110,7 +110,7 @@ describe('Kimi Code ACP handshake', () => {
       session
     );
     expect(chunk?.type).toBe('auth_error');
-    expect(chunk?.authCommand).toBe('kimi');
+    expect(chunk?.authCommand).toBe('kimi login');
     expect(chunk?.providerName).toBe('Kimi Code');
   });
 
@@ -405,7 +405,8 @@ describe('Kimi Code response boundary + interrupt + fallback + model env', () =>
   it('fallback diagnostics yield exactly one actionable error', () => {
     provider.buildCliArgs({} as Settings, session);
     expect(session.fallbackDiagnostics).toBe(true);
-    expect(provider.buildCliArgs({} as Settings, session)).toEqual(['acp', '--check']);
+    // Neither kimi-cli 1.x nor Kimi Code 2.x has `acp --check`; both reject it.
+    expect(provider.buildCliArgs({} as Settings, session)).toEqual(['--version']);
 
     const first = provider.parseStreamLine('ACP dependency missing', session);
     expect(first?.type).toBe('error');
@@ -413,11 +414,17 @@ describe('Kimi Code response boundary + interrupt + fallback + model env', () =>
     expect(provider.parseStreamLine('more output', session)).toBeNull();
   });
 
-  it('getExtraSpawnEnv injects ANTHROPIC_MODEL only when a model is selected', () => {
-    expect(provider.getExtraSpawnEnv(settings({ model: '' }))).toEqual({});
-    expect(provider.getExtraSpawnEnv(settings({ model: 'default' }))).toEqual({});
-    expect(provider.getExtraSpawnEnv(settings({ model: 'kimi-for-coding-highspeed' }))).toEqual({ ANTHROPIC_MODEL: 'kimi-for-coding-highspeed' });
+  it('the selected model is kept for session/set_model, not injected into the spawn env', () => {
+    // Kimi Code 2.0.2 ignores ANTHROPIC_MODEL (witnessed); see kimiCode2.test.ts.
+    expect(provider.getExtraSpawnEnv(settings({ model: 'kimi-for-coding-highspeed' }))).toEqual({});
+    provider.buildPersistentCliArgs(settings({ model: '' }), session);
+    expect(session.requestedModel).toBeNull();
+    provider.buildPersistentCliArgs(settings({ model: 'default' }), session);
+    expect(session.requestedModel).toBeNull();
+    provider.buildPersistentCliArgs(settings({ model: 'kimi-for-coding-highspeed' }), session);
+    expect(session.requestedModel).toBe('kimi-for-coding-highspeed');
     // An explicitly routed model wins.
-    expect(provider.getExtraSpawnEnv(settings({ model: 'x', routedModel: 'k3' }))).toEqual({ ANTHROPIC_MODEL: 'k3' });
+    provider.buildPersistentCliArgs(settings({ model: 'x', routedModel: 'k3' }), session);
+    expect(session.requestedModel).toBe('k3');
   });
 });
