@@ -82,9 +82,9 @@ async function harness() {
   });
   /** What the host does per ordinary turn: revoke at admission, mint before send. */
   const admitTurn = async (owner?: object) => { void mcp.close(); await mcp.relink('design-A', 'claude-code', owner); };
-  const turn = async (panel = 'panel', content = 'go'): Promise<{ chunks: StreamChunk[]; report: Report | null }> => {
+  const turn = async (panel = 'panel', content = 'go', value: Settings = settings): Promise<{ chunks: StreamChunk[]; report: Report | null }> => {
     const chunks: StreamChunk[] = [];
-    for await (const chunk of provider.sendMessage(content, [], settings, null, undefined, panel)) { chunks.push(chunk); }
+    for await (const chunk of provider.sendMessage(content, [], value, null, undefined, panel)) { chunks.push(chunk); }
     const text = chunks.filter(c => c.type === 'text').map(c => c.content).join('');
     return { chunks, report: text ? JSON.parse(text) as Report : null };
   };
@@ -168,6 +168,28 @@ describe('Claude Canvas MCP per-turn credential', { timeout: 30_000 }, () => {
     h.provider.setCanvasMcpConfig('other', null);
     expect(sessions.get('other')!.canvasMcpRevision).toBeUndefined();
     expect((await h.turn('other')).report!.pid).toBe(first.report!.pid);
+  });
+
+  it('a settings-change restart records the new settings, so later turns reuse that process', async () => {
+    const h = await harness();
+    const thinking: Settings = { ...settings, thinkingLevel: 'high' };
+    const first = await h.turn();
+    const changed = await h.turn('panel', 'go', thinking);
+    expect(changed.report!.pid).not.toBe(first.report!.pid);
+    // The respawned process was built from `thinking`; nothing changed since.
+    const again = await h.turn('panel', 'go', thinking);
+    const third = await h.turn('panel', 'go', thinking);
+    expect(again.report!.pid).toBe(changed.report!.pid);
+    expect(third.report!.pid).toBe(changed.report!.pid);
+    expect(h.provider.children.get('panel')).toHaveLength(2);
+
+    // A credential rotation still forces its own owned restart on top of that.
+    await h.admitTurn();
+    const rotated = await h.turn('panel', 'go', thinking);
+    expect(rotated.report).toMatchObject({ ok: true, token: `Bearer ${h.endpoints[0].token}` });
+    expect(rotated.report!.pid).not.toBe(changed.report!.pid);
+    expect((await h.turn('panel', 'go', thinking)).report!.pid).toBe(rotated.report!.pid);
+    expect(h.provider.children.get('panel')).toHaveLength(3);
   });
 
   it('Stop still ends a held turn, and the next admitted turn works', async () => {

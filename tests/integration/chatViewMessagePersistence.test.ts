@@ -695,7 +695,7 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
     expect(h.sidebarMessages.filter(message => message.type === 'responseComplete')).toHaveLength(completionCount);
   });
 
-  it('keeps preflight Stop sticky when a retry UI action clears the transient flag', async () => {
+  it('keeps preflight Stop sticky when a successor clears the transient flag', async () => {
     const stream = vi.fn(async function* () { yield { text: 'Must not start.' }; });
     const c = coordinator(stream);
     let entered!: () => void;
@@ -715,8 +715,9 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
     const owner = c.provider._mystiExecutionAborts.get('sidebar');
     expect(owner).toBeDefined();
     await c.provider._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
-    await c.provider._handleMessage({ type: 'retrySubAgent', panelId: 'sidebar', payload: { agentId: 'claude-code' } });
-    expect(c.provider._cancelledPanels.has('sidebar')).toBe(false);
+    // A retry no longer clears it (see 'Sub-agent Retry' below); a successor
+    // that owns the panel still does, and Stop must survive that.
+    c.provider._cancelledPanels.delete('sidebar');
     expect(owner.signal.aborted).toBe(true);
     resolveModel('obsolete-model');
     await work;
@@ -1101,5 +1102,192 @@ describe('Mysti fence helpers redact the directive nonce (Plan 18 F3)', () => {
     );
     expect(prompt).not.toContain('DIRN8');
     expect(prompt).toContain('[redacted]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sub-agent Retry belongs to the turn whose card was clicked. It used to
+// re-run the panel's LATEST mention turn, cleared whatever Stop flag was set,
+// and streamed without a foreground owner (so Stop, a replacement send and
+// panel close could not reach it).
+// ---------------------------------------------------------------------------
+describe('Sub-agent Retry re-runs the turn its card belongs to', () => {
+  let h: Harness;
+  const codex = { type: 'agent', value: 'openai-codex', displayName: '@codex', startIndex: 0, endIndex: 6 };
+  type Script = (content: string) => AsyncGenerator<Record<string, unknown>>;
+  let scripts: Script[];
+  let router: { processMentions: ReturnType<typeof vi.fn>; cancelSubAgents: ReturnType<typeof vi.fn> };
+  const failing: Script = async function* () {
+    yield { type: 'subagent_started', agentId: 'openai-codex' };
+    yield { type: 'subagent_error', agentId: 'openai-codex', content: 'boom' };
+  };
+
+  beforeEach(() => {
+    clearMockConfig();
+    h = createHarness();
+    scripts = [];
+    const provider = h.provider as any;
+    provider._providerManager.getAllProviderIds = () => ['openai-codex'];
+    provider._brainstormManager.cancelSession = vi.fn();
+    router = {
+      processMentions: vi.fn((content: string) => (scripts.shift() ?? failing)(content)),
+      cancelSubAgents: vi.fn(),
+    };
+    provider._mentionRouter = { ...router, stripMentions: (c: string) => c, formatSubAgentContext: () => '' };
+  });
+  afterEach(() => { h.dispose(); });
+
+  const send = (content: string) => (h.provider as any)._handleSendMessage(
+    { content, context: [], settings: SETTINGS, mentions: [codex] }, 'sidebar');
+  const retry = (retryId: unknown, agentId = 'openai-codex') => (h.provider as any)._handleMessage(
+    { type: 'retrySubAgent', panelId: 'sidebar', payload: { agentId, retryId } });
+  const retryIds = () => h.sidebarMessages.filter(m => m.type === 'subAgentStarted').map(m => m.payload?.retryId);
+
+  it('re-runs the clicked turn as its own owned foreground request', async () => {
+    await send('@codex task A');
+    await send('@codex task B');
+    const [first, second] = retryIds();
+    expect(typeof first).toBe('string');
+    expect(first).not.toBe(second);
+
+    const mark = h.sidebarMessages.length;
+    await retry(first);
+    expect(router.processMentions).toHaveBeenCalledTimes(3);
+    expect(router.processMentions.mock.calls[2][0]).toBe('@codex task A');
+    expect(router.processMentions.mock.calls[2][1]).toEqual([codex]);
+
+    const posted = h.sidebarMessages.slice(mark) as Array<{ type: string; payload?: any; requestId?: string }>;
+    const pending = posted.find(m => m.type === 'responsePending');
+    expect(pending?.requestId).toEqual(expect.any(String));
+    expect(posted.map(m => m.type)).toEqual(['responsePending', 'subAgentStarted', 'subAgentError', 'responseComplete']);
+    expect(posted.every(m => m.requestId === pending!.requestId)).toBe(true);
+    // The fresh card keeps the same turn id, so it can be retried again.
+    expect(posted[1].payload).toEqual({ agentId: 'openai-codex', retryId: first });
+  });
+
+  it('refuses an unknown or superseded turn visibly and leaves the Stop flag alone', async () => {
+    await send('@codex task A');
+    const [first] = retryIds();
+    const provider = h.provider as any;
+    provider._cancelledPanels.add('sidebar');
+    const mark = h.sidebarMessages.length;
+
+    await retry('not-a-turn');
+    await retry(first, 'claude-code');
+    await retry(undefined);
+    provider._panelStates.get('sidebar').currentConversationId = 'another-conversation';
+    await retry(first);
+
+    expect(router.processMentions).toHaveBeenCalledTimes(1);
+    expect(provider._cancelledPanels.has('sidebar')).toBe(true);
+    const posted = h.sidebarMessages.slice(mark);
+    expect(posted.map(m => m.type)).toEqual(['systemNotice', 'systemNotice', 'systemNotice', 'systemNotice']);
+    expect(posted[0].payload.message).toMatch(/can no longer be retried/);
+  });
+
+  it('admits every foreground turn on a fresh scope, even without a prior cancel', () => {
+    const provider = h.provider as any;
+    const previous = provider._delayedChannelTurns.capture('sidebar');
+    const request = provider._admitForegroundRequest('sidebar');
+    expect(previous.signal.aborted).toBe(true);
+    expect(request.isCurrent()).toBe(true);
+    expect(provider._delayedChannelTurns.capture('sidebar').signal.aborted).toBe(false);
+  });
+
+  it('never runs with more authority than the panel has now', async () => {
+    // The turn was sent at full access / edit-automatically; the user then lowers both.
+    await send('@codex task A');
+    const [first] = retryIds();
+    setMockConfig('accessLevel', 'read-only');
+    setMockConfig('defaultMode', 'quick-plan');
+    await retry(first);
+    expect(router.processMentions).toHaveBeenCalledTimes(2);
+    expect(router.processMentions.mock.calls[1][3]).toMatchObject({ accessLevel: 'read-only', mode: 'quick-plan' });
+    // Retrying the retry keeps the lowered level, and raising access later
+    // never lifts a retry above what its own turn had.
+    const lowered = { ...SETTINGS, accessLevel: 'ask-permission' as const, mode: 'ask-before-edit' as const };
+    await (h.provider as any)._handleSendMessage(
+      { content: '@codex task B', context: [], settings: lowered, mentions: [codex] }, 'sidebar');
+    const second = retryIds()[retryIds().length - 1];
+    setMockConfig('accessLevel', 'full-access');
+    setMockConfig('defaultMode', 'edit-automatically');
+    await retry(second);
+    expect(router.processMentions.mock.calls.at(-1)![3]).toMatchObject({ accessLevel: 'ask-permission', mode: 'ask-before-edit' });
+  });
+
+  it('refuses a turn whose agent is no longer registered', async () => {
+    await send('@codex task A');
+    const [first] = retryIds();
+    (h.provider as any)._providerManager.getAllProviderIds = () => ['claude-code'];
+    const mark = h.sidebarMessages.length;
+    await retry(first);
+    expect(router.processMentions).toHaveBeenCalledTimes(1);
+    expect(h.sidebarMessages.slice(mark).map(m => m.type)).toEqual(['systemNotice']);
+  });
+
+  it('refuses while another turn is still running and leaves that turn alone', async () => {
+    await send('@codex task A');
+    const [first] = retryIds();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const running = new Promise<void>(resolve => { entered = resolve; });
+    scripts.push(async function* () {
+      yield { type: 'subagent_started', agentId: 'openai-codex' };
+      entered();
+      await gate;
+      yield { type: 'subagent_text', agentId: 'openai-codex', content: 'STILL-MINE' };
+    });
+    const work = send('@codex task B');
+    await running;
+    const owner = (h.provider as any)._foregroundRequests.get('sidebar');
+    const mark = h.sidebarMessages.length;
+    await retry(first);
+    expect(h.sidebarMessages.slice(mark)).toEqual([
+      { type: 'systemNotice', payload: { message: expect.stringMatching(/current response/) } },
+    ]);
+    expect(owner.isCurrent()).toBe(true);
+    release();
+    await work;
+    expect(h.sidebarMessages.some(m => m.payload?.content === 'STILL-MINE' && (m as any).requestId === owner.requestId)).toBe(true);
+  });
+
+  it('Stop and a replacement send both end a running retry', async () => {
+    await send('@codex task A');
+    const [first] = retryIds();
+    const provider = h.provider as any;
+    for (const ending of ['stop', 'replace'] as const) {
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      let entered!: () => void;
+      const running = new Promise<void>(resolve => { entered = resolve; });
+      scripts.push(async function* () {
+        yield { type: 'subagent_started', agentId: 'openai-codex' };
+        entered();
+        await gate;
+        yield { type: 'subagent_text', agentId: 'openai-codex', content: `LATE-${ending}` };
+      });
+      const mark = h.sidebarMessages.length;
+      const work = retry(first);
+      await running;
+      const owner = provider._foregroundRequests.get('sidebar');
+      router.cancelSubAgents.mockClear();
+      if (ending === 'stop') {
+        await provider._handleMessage({ type: 'cancelRequest', panelId: 'sidebar', requestId: owner.requestId });
+      } else {
+        scripts.push(failing);
+        await send('@codex replacement');
+      }
+      expect(owner.isCurrent()).toBe(false);
+      expect(router.cancelSubAgents).toHaveBeenCalled();
+      release();
+      await work;
+      const posted = h.sidebarMessages.slice(mark);
+      expect(posted.some(m => m.payload?.content === `LATE-${ending}`)).toBe(false);
+      expect(posted.some(m => m.type === 'responseComplete' && (m as any).requestId === owner.requestId)).toBe(false);
+      if (ending === 'stop') {
+        expect(posted.some(m => m.type === 'requestCancelled' && (m as any).requestId === owner.requestId)).toBe(true);
+      }
+    }
   });
 });

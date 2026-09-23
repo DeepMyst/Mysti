@@ -901,7 +901,18 @@ export abstract class BaseCliProvider implements ICliProvider {
     if (!args) {
       return null;
     }
+    // Record exactly what this process is spawned with, on EVERY (re)spawn: a
+    // snapshot kept from an earlier process makes each later turn look changed
+    // and restart again. Use the EFFECTIVE model (which honors per-provider
+    // custom-model overrides like mysti.claudeCodeModel), not the raw dropdown
+    // value, or a custom model change would never respawn (issue #39).
     session.persistentCanvasMcpRevision = session.canvasMcpRevision;
+    session.persistentSettings = {
+      model: this._getEffectiveModel(settings),
+      permissionMode: this._derivePermissionMode(settings),
+      thinkingLevel: settings.thinkingLevel || 'none',
+      effortLevel: settings.effortLevel || '',
+    };
 
     const cliPath = this.getCliPath();
     const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -957,20 +968,6 @@ export abstract class BaseCliProvider implements ICliProvider {
     // The process is usable as soon as spawn() returns (stdin is buffered by the OS).
     session.persistentReady = true;
     session.lastHealthCheck = Date.now();
-
-    // Store settings snapshot so we can detect changes later.
-    // Use the EFFECTIVE model (which honors per-provider custom-model overrides
-    // like mysti.claudeCodeModel), not the raw dropdown value — otherwise a
-    // custom model set while a persistent process is already running would never
-    // trigger a respawn and would be silently ignored (issue #39).
-    if (!session.persistentSettings) {
-      session.persistentSettings = {
-        model: this._getEffectiveModel(settings),
-        permissionMode: this._derivePermissionMode(settings),
-        thinkingLevel: settings.thinkingLevel || 'none',
-        effortLevel: settings.effortLevel || '',
-      };
-    }
 
     console.log(`[Mysti] ${this.displayName}: Persistent process ready for panel: ${session.panelId}`);
 
@@ -1239,14 +1236,6 @@ export abstract class BaseCliProvider implements ICliProvider {
       console.log(`[Mysti] ${this.displayName}: Settings changed, respawning persistent process for panel: ${panelId}`);
       this.disposePersistentProcess(panelId);
     }
-
-    // Store settings snapshot before spawning (effective model, see above)
-    session.persistentSettings = {
-      model: this._getEffectiveModel(settings),
-      permissionMode: this._derivePermissionMode(settings),
-      thinkingLevel: settings.thinkingLevel || 'none',
-      effortLevel: settings.effortLevel || '',
-    };
 
     await this._getOrSpawnPersistentProcess(session, settings);
   }

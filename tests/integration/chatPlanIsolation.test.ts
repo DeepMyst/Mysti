@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { PendingPlanStore } from '../../src/chat/PendingPlanStore';
 import { DelayedChannelTurns } from '../../src/chat/DelayedChannelTurns';
+import { MentionRetryStore } from '../../src/chat/MentionRetryStore';
 import { SubAgentQuestionBroker } from '../../src/chat/SubAgentQuestionBroker';
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { clearMockConfig } from '../helpers/mockVscode';
@@ -59,7 +60,7 @@ function createHarness() {
     _semiAutoQuestionTimeouts: new Map(),
     _panelStates: panels,
     _lastUserMessage: new Map(),
-    _lastMentionContext: new Map(),
+    _mentionRetries: new MentionRetryStore(),
     _cancelledPanels: new Set(),
     _runningPanels: new Set(),
     _panelAutonomyLevel: new Map(),

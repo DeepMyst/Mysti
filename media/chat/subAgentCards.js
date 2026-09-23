@@ -123,7 +123,8 @@
       header.addEventListener('click', () => card.classList.toggle('collapsed'));
       messages.appendChild(card);
       records.set(payload.agentId, {
-        agentId: payload.agentId, card, content, status, rawText: '', text: null,
+        agentId: payload.agentId, retryId: isId(payload.retryId) ? payload.retryId : null,
+        card, content, status, rawText: '', text: null,
         renderTimer: null, timers: new Set(), tools: new Map(), questions: new Map(),
         generation: 0, terminal: false,
       });
@@ -207,8 +208,11 @@
       const generation = record.generation;
       button.addEventListener('click', () => {
         if (!isCurrent(record) || record.generation !== generation || button.disabled) { return; }
+        // Like the composer, Retry waits for a running response to finish.
+        if (ports.canRetry && !ports.canRetry()) { return; }
         button.disabled = true;
-        ports.postMessage({ type: 'retrySubAgent', payload: { agentId: record.agentId } });
+        // The host re-runs the turn this card came from, never "the latest".
+        ports.postMessage({ type: 'retrySubAgent', payload: { agentId: record.agentId, retryId: record.retryId } });
       });
       detail.appendChild(button);
       record.content.replaceChildren(detail);

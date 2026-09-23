@@ -25,9 +25,21 @@ export class DelayedChannelTurns {
   private _disposed = false;
 
   /**
-   * Capture the panel's current scope. The signal aborts synchronously when the
+   * Start a new turn's scope. Whatever scope is still live on the panel is
+   * cancelled first (its signal aborts, its timer and preparation go), so two
+   * turns never share a signal even if a caller forgot to cancel the old one.
+   */
+  public begin(panelId: string): PanelScope {
+    this.cancelPanel(panelId);
+    return this.capture(panelId);
+  }
+
+  /**
+   * Join the panel's current scope. The signal aborts synchronously when the
    * scope is cancelled (Stop, replacement send, conversation change, dispose),
    * so work owned by it can close its transport instead of ignoring a late reply.
+   * Work inside a turn (the send body, compaction, plan offers) joins; only
+   * begin() starts a turn, so joining never rotates the turn it belongs to.
    */
   public capture(panelId: string): PanelScope {
     if (this._disposed) { return Object.assign(() => false, { signal: AbortSignal.abort() }); }

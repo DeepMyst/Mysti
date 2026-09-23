@@ -9,7 +9,7 @@ const windows: JSDOM[] = [];
 type EventName = 'started' | 'chunk' | 'complete' | 'error' | 'toolUse' | 'toolResult' | 'retry' | 'askUserQuestion' | 'status';
 type Cards = Record<EventName, (payload: unknown) => void> & Record<'stop' | 'reset' | 'dispose', () => void>;
 
-function harness() {
+function harness(extraPorts: Record<string, unknown> = {}) {
   const dom = new JSDOM('<div id="messages"></div>', { runScripts: 'outside-only', url: 'https://mysti.test/' });
   windows.push(dom);
   const { document } = dom.window;
@@ -40,6 +40,7 @@ function harness() {
     renderMarkdown, renderDiagrams, highlight, renderQuestion, postMessage,
     setTimeout: (callback: () => void) => { const id = ++sequence; timers.set(id, callback); scheduled.push(callback); return id; },
     clearTimeout: (id: number) => timers.delete(id),
+    ...extraPorts,
   };
   const factory = (dom.window as unknown as { MystiSubAgentCards: { create(ports: unknown): Cards } }).MystiSubAgentCards;
   const cards = factory.create(ports);
@@ -193,18 +194,36 @@ describe('sub-agent cards own each attempt and its rendering', () => {
   it('renders plain text if a renderer fails and permits one retry request for the current error', () => {
     const h = harness();
     h.renderMarkdown.mockImplementation(() => { throw new Error('parser unavailable'); });
-    h.cards.started({ agentId: 'agent' });
+    h.cards.started({ agentId: 'agent', retryId: 'turn-1' });
     h.cards.chunk(text('agent', '<strong>plain</strong>'));
     h.flush();
     expect(h.card().querySelector('.subagent-text-output')?.textContent).toBe('<strong>plain</strong>');
     h.cards.error({ agentId: 'agent', error: 'failed' });
     const button = h.card().querySelector<HTMLButtonElement>('.subagent-retry-btn')!;
     button.click(); button.click();
-    expect(h.postMessage.mock.calls.map(call => call[0])).toEqual([{ type: 'retrySubAgent', payload: { agentId: 'agent' } }]);
+    expect(h.postMessage.mock.calls.map(call => call[0])).toEqual([{ type: 'retrySubAgent', payload: { agentId: 'agent', retryId: 'turn-1' } }]);
     h.cards.retry({ agentId: 'agent' });
     button.disabled = false;
     button.click();
     expect(h.postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('names the turn each card came from and waits for a running response before retrying', () => {
+    let busy = true;
+    const h = harness({ canRetry: () => !busy });
+    h.cards.started({ agentId: 'agent', retryId: 'turn-old' });
+    h.cards.error({ agentId: 'agent', error: 'failed' });
+    h.cards.started({ agentId: 'other', retryId: 'turn-new' });
+    h.cards.error({ agentId: 'other', error: 'failed' });
+    const oldButton = h.card(0).querySelector<HTMLButtonElement>('.subagent-retry-btn')!;
+    oldButton.click();
+    expect(h.postMessage).not.toHaveBeenCalled();
+    expect(oldButton.disabled).toBe(false);
+    busy = false;
+    oldButton.click();
+    expect(h.postMessage.mock.calls.map(call => call[0])).toEqual([
+      { type: 'retrySubAgent', payload: { agentId: 'agent', retryId: 'turn-old' } },
+    ]);
   });
 
   it('treats opaque tool IDs as data and displays cyclic or falsy outputs safely', () => {
