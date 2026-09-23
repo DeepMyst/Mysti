@@ -59,7 +59,13 @@ describe('OpenCode isolated native policy', () => {
     await expect(assertOpenCodeAuthorityAbsent([external])).rejects.toThrow('cannot isolate');
   });
   it('checks system and managed authority outside isolated XDG directories', () => {
-    expect(openCodeExternalAuthorityPaths({}, 'darwin', '/user', 'fixture')).toEqual([path.join('/user', '.opencode'), '/Library/Application Support/opencode', path.join('/Library/Managed Preferences', 'fixture', 'ai.opencode.managed.plist'), '/Library/Managed Preferences/ai.opencode.managed.plist']);
+    expect(openCodeExternalAuthorityPaths({}, 'darwin', '/user', 'fixture', '/user')).toEqual([path.join('/user', '.opencode'), '/Library/Application Support/opencode', path.join('/Library/Managed Preferences', 'fixture', 'ai.opencode.managed.plist'), '/Library/Managed Preferences/ai.opencode.managed.plist']);
+  });
+  it('checks the account home the child resolves as well as a custom host HOME', () => {
+    // The child gets no HOME, so it resolves home from the user database.
+    const paths = openCodeExternalAuthorityPaths({}, 'darwin', '/custom-home', 'fixture', '/account-home');
+    expect(paths.slice(0, 2)).toEqual([path.join('/custom-home', '.opencode'), path.join('/account-home', '.opencode')]);
+    expect(openCodeExternalAuthorityPaths({}, 'linux', '/same', 'fixture', '/same').filter(item => item.endsWith('.opencode'))).toEqual([path.join('/same', '.opencode')]);
   });
   it.each(['opencode.json', 'opencode.jsonc', '.opencode'])('rejects ancestor %s before allocating native authority', async name => {
     const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mysti-oc-ancestor-'))); dirs.push(dir);

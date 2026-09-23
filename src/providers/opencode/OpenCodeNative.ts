@@ -128,9 +128,20 @@ export function openCodeNativeConfig(settings: Pick<Settings, 'mode' | 'accessLe
   };
 }
 
-/** Sources outside XDG isolation are rejected without reading their contents. */
-export function openCodeExternalAuthorityPaths(env: NodeJS.ProcessEnv, platform = process.platform, userDirectory = os.homedir(), username = os.userInfo().username): string[] {
-  const paths = [path.join(userDirectory, '.opencode')];
+/** The account's home from the OS user database, which the child uses: it gets no HOME. */
+function accountHome(): string | undefined {
+  try { return os.userInfo().homedir || undefined; } catch { return undefined; }
+}
+
+/**
+ * Sources outside XDG isolation are rejected without reading their contents.
+ * The child receives no HOME/USERPROFILE, so it resolves home from the user
+ * database; the host's `os.homedir()` follows a custom HOME. Check both.
+ */
+export function openCodeExternalAuthorityPaths(env: NodeJS.ProcessEnv, platform = process.platform, userDirectory = os.homedir(), username = os.userInfo().username,
+  accountDirectory = accountHome()): string[] {
+  const homes = [...new Set([userDirectory, accountDirectory].filter((home): home is string => !!home))];
+  const paths = homes.map(home => path.join(home, '.opencode'));
   const managed = platform === 'darwin' ? '/Library/Application Support/opencode'
     : platform === 'win32' ? path.join(env.ProgramData || 'C:\\ProgramData', 'opencode') : '/etc/opencode';
   paths.push(managed);
