@@ -128,3 +128,104 @@ describe('Plan 31 — the ⋯ menu says what each item is', () => {
     } finally { await pg.context().close(); }
   }, 30000);
 });
+
+const SECTIONS: Array<[string, string, string]> = [
+  ['settings-btn', 'settings', 'settings-panel'],
+  ['agent-config-btn', 'agents', 'agent-config-panel'],
+  ['badges-btn', 'badges', 'badges-panel'],
+  ['about-btn', 'about', 'about-panel'],
+];
+
+describe('Plan 31 — in the chat, the four items open the Mysti tab', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('each posts openSettingsHub and nothing opens inline', async () => {
+    const pg = await openPage('chat');
+    try {
+      for (const [btn, section, panel] of SECTIONS) {
+        await clearPosted(pg);
+        await pg.click('#overflow-btn');
+        await pg.click(`#${btn}`);
+        expect((await posted(pg)).filter((m) => m.type === 'openSettingsHub')).toEqual([
+          { type: 'openSettingsHub', payload: { section }, panelId: null },
+        ]);
+        expect(await pg.$eval(`#${panel}`, (el) => getComputedStyle(el).display)).toBe('none');
+      }
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the chat never shows the tab chrome', async () => {
+    const pg = await openPage('chat');
+    try {
+      expect(await pg.$eval('#hub-nav', (el) => getComputedStyle(el).display)).toBe('none');
+      expect(await pg.$eval('#hub-binding', (el) => getComputedStyle(el).display)).toBe('none');
+    } finally { await pg.context().close(); }
+  }, 30000);
+});
+
+describe('Plan 31 — the Mysti tab', () => {
+  const visiblePanels = (pg: Page) => pg.$$eval('#settings-panel, #agent-config-panel, #badges-panel, #about-panel',
+    (els) => els.filter((e) => getComputedStyle(e).display !== 'none').map((e) => e.id));
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows the nav and exactly one section, and none of the chat', async () => {
+    const pg = await openPage('hub');
+    try {
+      expect(await pg.$eval('#hub-nav', (el) => getComputedStyle(el).display)).not.toBe('none');
+      expect(await visiblePanels(pg)).toEqual(['settings-panel']);
+      for (const sel of ['.header', '#workarea', '.input-area', '#overflow-menu', '#init-loading-overlay']) {
+        expect(await pg.$eval(sel, (el) => getComputedStyle(el).display), sel).toBe('none');
+      }
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('hubShow picks the section and names the chat', async () => {
+    const pg = await openPage('hub');
+    try {
+      await clearPosted(pg);
+      await send(pg, { type: 'hubShow', payload: { section: 'badges', chatTitle: 'Fix login' } });
+      expect(await visiblePanels(pg)).toEqual(['badges-panel']);
+      expect(await pg.textContent('#hub-binding')).toBe('Configuring: Fix login');
+      expect((await posted(pg)).map((m) => m.type)).toContain('requestBadges');
+      expect(await pg.$eval('.hub-nav-item.active', (el) => el.getAttribute('data-hub-section'))).toBe('badges');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('nav clicks switch sections; Connections opens its own tab', async () => {
+    const pg = await openPage('hub');
+    try {
+      await pg.click('.hub-nav-item[data-hub-section="agents"]');
+      expect(await visiblePanels(pg)).toEqual(['agent-config-panel']);
+      await clearPosted(pg);
+      await pg.click('.hub-nav-item[data-hub-connections]');
+      expect((await posted(pg)).map((m) => m.type)).toContain('openConnections');
+      expect(await visiblePanels(pg)).toEqual(['agent-config-panel']);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('when its chat closes it keeps the section, says so, and turns edits off', async () => {
+    const pg = await openPage('hub');
+    try {
+      await send(pg, { type: 'hubShow', payload: { section: 'settings', chatTitle: 'Fix login' } });
+      await send(pg, { type: 'hubShow', payload: { section: null, chatTitle: null } });
+      expect(await visiblePanels(pg)).toEqual(['settings-panel']);
+      expect(await pg.textContent('#hub-binding')).toMatch(/^No chat selected/);
+      expect(await pg.$eval('#settings-panel', (el) => getComputedStyle(el).pointerEvents)).toBe('none');
+      expect(await pg.$eval('#agent-config-panel', (el) => getComputedStyle(el).pointerEvents)).toBe('none');
+      await send(pg, { type: 'hubShow', payload: { section: 'about', chatTitle: 'Refactor' } });
+      expect(await pg.$eval('body', (el) => el.classList.contains('hub-unbound'))).toBe(false);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('stacks the nav above the section in a narrow tab', async () => {
+    const pg = await openPage('hub');
+    try {
+      await pg.setViewportSize({ width: 400, height: 700 });
+      const nav = await pg.$eval('#hub-nav', (el) => el.getBoundingClientRect().bottom);
+      const panel = await pg.$eval('#settings-panel', (el) => el.getBoundingClientRect().top);
+      expect(panel).toBeGreaterThanOrEqual(nav);
+      expect(await pg.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('boots both views without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  });
+});

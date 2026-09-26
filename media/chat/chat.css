@@ -9708,3 +9708,71 @@
       opacity: .85;
       flex: none;
     }
+
+    /* ===== Plan 31 — the Mysti tab (body.view-hub) =====
+       One of the four panels at a time beside a nav, full height. Everything
+       else on the page — the chat, its overlays, the setup screens — is off.
+       The panels keep their `.hidden` class; `.hub-active` wins over it. */
+    .hub-nav, .hub-binding { display: none; }
+    body.view-hub > :not(#app):not(script) { display: none !important; }
+    body.view-hub #app {
+      display: grid;
+      grid-template-columns: 190px minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    body.view-hub #app > * { display: none !important; }
+    body.view-hub #app > .hub-nav {
+      display: flex !important;
+      flex-direction: column;
+      gap: 2px;
+      grid-row: 1 / 3;
+      grid-column: 1;
+      padding: 12px 8px;
+      border-right: 1px solid var(--mysti-border);
+    }
+    body.view-hub #app > .hub-binding {
+      display: block !important;
+      grid-row: 1;
+      grid-column: 2;
+      padding: 10px 16px;
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      border-bottom: 1px solid var(--mysti-border);
+    }
+    body.view-hub #app > .hub-active {
+      display: block !important;
+      grid-row: 2;
+      grid-column: 2;
+      min-height: 0;
+      max-height: none;
+      overflow-y: auto;
+      border-bottom: none;
+    }
+    .hub-nav-item {
+      text-align: left;
+      padding: 6px 10px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--vscode-foreground);
+      font: inherit;
+      cursor: pointer;
+    }
+    .hub-nav-item:hover { background: var(--vscode-list-hoverBackground); }
+    .hub-nav-item:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+    .hub-nav-item.active {
+      background: var(--vscode-list-activeSelectionBackground);
+      color: var(--vscode-list-activeSelectionForeground);
+    }
+    /* No chat to apply an edit to: read, don't write. */
+    body.view-hub.hub-unbound #settings-panel,
+    body.view-hub.hub-unbound #agent-config-panel { pointer-events: none; opacity: .5; }
+    @media (max-width: 480px) {
+      body.view-hub #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); }
+      body.view-hub #app > .hub-nav {
+        grid-row: 1; flex-direction: row; flex-wrap: wrap;
+        border-right: none; border-bottom: 1px solid var(--mysti-border);
+      }
+      body.view-hub #app > .hub-binding { grid-row: 2; grid-column: 1; }
+      body.view-hub #app > .hub-active { grid-row: 3; grid-column: 1; }
+    }
