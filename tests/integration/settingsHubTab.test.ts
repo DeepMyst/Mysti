@@ -35,7 +35,7 @@ function fakePanel() {
 }
 
 interface HubProvider {
-  _hub: { panel: unknown; originPanelId: string | null } | null;
+  _hub: { panel: unknown; originPanelId: string | null; loadedFor?: unknown } | null;
   openSettingsHub(section: string, originPanelId: string): Promise<void>;
   _unbindHubFrom(panelId: string): void;
   _handleMessage(message: WebviewMessage): Promise<void>;
@@ -64,7 +64,13 @@ function harness(overrides: Record<string, unknown> = {}) {
   });
   const panels = new Map([['sidebar', chat('sidebar', 'c-side')], ['tab', chat('tab', 'c-tab')]]);
   const titles: Record<string, string> = { 'c-side': 'Fix login', 'c-tab': 'Refactor', 'c-new': 'New chat' };
-  const sendInitialState = vi.fn(async (_panelId: string, _forHub?: boolean) => undefined);
+  // As the real one: a tab load records which chat and conversation the tab now holds.
+  const sendInitialState = vi.fn(async (panelId: string, forHub?: boolean) => {
+    const hub = provider._hub;
+    if (forHub && hub?.originPanelId === panelId) {
+      hub.loadedFor = { panelId, conversationId: panels.get(panelId)?.currentConversationId ?? null };
+    }
+  });
   const provider = Object.assign(Object.create(ChatViewProvider.prototype), {
     _hub: null,
     _sidebarId: 'sidebar',
@@ -76,7 +82,7 @@ function harness(overrides: Record<string, unknown> = {}) {
     ...overrides,
   }) as unknown as HubProvider;
   const hubPosts = () => created[created.length - 1].webview.postMessage.mock.calls.map(c => c[0] as WebviewMessage);
-  return { provider, created, panels, sendInitialState, hubPosts };
+  return { provider, created, panels, titles, sendInitialState, hubPosts };
 }
 
 describe('Plan 31 — the Mysti tab lifecycle', () => {
@@ -266,6 +272,30 @@ describe('Plan 31 — clicks that land while the tab is still loading', () => {
     expect(state.autonomyLevel).toBe(shown);
   });
 
+  it("applies no edit to a chat whose state it does not show yet, then acts for it once it does", async () => {
+    const handleMessage = vi.fn(async (_m: unknown) => undefined);
+    const h = loading({ _handleMessage: handleMessage });
+    const first = h.provider.openSettingsHub('agents', 'sidebar');
+    await h.settle();
+    h.release.sidebar();
+    await first;
+    const hub = h.created[0];
+    // Rebound to 'tab', whose state is still loading: the tab still shows the
+    // sidebar chat's personas, model and title, so an edit now is for THAT.
+    const rebind = h.provider.openSettingsHub('agents', 'tab');
+    await h.settle();
+    await h.provider._receiveHubMessage({ type: 'updateAgentConfig', payload: { personaId: 'p', enabledSkills: [] } }, hub.webview);
+    await h.provider._receiveHubMessage({ type: 'updateSettings', payload: { model: 'from-sidebar-list' } }, hub.webview);
+    expect(handleMessage).not.toHaveBeenCalled();
+    // Links need no chat.
+    await h.provider._receiveHubMessage({ type: 'openExternal', payload: { url: 'https://example.com' } }, hub.webview);
+    expect(handleMessage).toHaveBeenCalledTimes(1);
+    h.release.tab();
+    await rebind;
+    await h.provider._receiveHubMessage({ type: 'updateAgentConfig', payload: { personaId: 'p', enabledSkills: [] } }, hub.webview);
+    expect(handleMessage).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'updateAgentConfig', panelId: 'tab' }));
+  });
+
   it('drops a load whose chat closed before it finished', async () => {
     const h = loading();
     const open = h.provider.openSettingsHub('settings', 'sidebar');
@@ -412,6 +442,41 @@ describe('Plan 31 — what crosses between the tab and its chat', () => {
     await t.provider._receivePanelMessage({ type: 'newConversation' }, 'sidebar', t.panels.get('sidebar')!.webview);
     expect(t.sendInitialState).toHaveBeenCalledWith('sidebar', true);
     expect(t.hub.webview.postMessage).toHaveBeenLastCalledWith({ type: 'hubShow', payload: { section: null, chatTitle: 'New chat' } });
+  });
+
+  it("applies no edit to its chat's new conversation until it shows that conversation", async () => {
+    const t = await bound();
+    t.handleMessage.mockImplementationOnce(async () => { t.panels.get('sidebar')!.currentConversationId = 'c-new'; });
+    const load = t.sendInitialState.getMockImplementation()!;
+    let finish!: () => void;
+    t.sendInitialState.mockImplementationOnce((id, forHub) => new Promise<undefined>((r) => {
+      finish = () => { void load(id, forHub).then(() => r(undefined)); };
+    }));
+    const follow = t.provider._receivePanelMessage({ type: 'newConversation' }, 'sidebar', t.panels.get('sidebar')!.webview);
+    await new Promise((r) => setTimeout(r, 0));
+    t.handleMessage.mockClear();
+    // The tab still shows the OLD conversation's persona & skills.
+    await t.fromHub({ type: 'updateAgentConfig', payload: { personaId: 'old', enabledSkills: ['s'] } });
+    expect(t.handleMessage).not.toHaveBeenCalled();
+    finish();
+    await follow;
+    await t.fromHub({ type: 'updateAgentConfig', payload: { personaId: null, enabledSkills: [] } });
+    expect(t.handleMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'updateAgentConfig', panelId: 'sidebar' }));
+  });
+
+  it('renames its header when its chat gets a generated title', async () => {
+    const t = await bound();
+    t.titles['c-side'] = 'Login redirect loop';
+    await t.provider._postToPanel('sidebar', { type: 'titleUpdated', payload: { conversationId: 'c-side', title: 'Login redirect loop' } });
+    expect(t.hubPosts().at(-1)).toEqual({ type: 'hubShow', payload: { section: null, chatTitle: 'Login redirect loop' } });
+    t.titles['c-side'] = 'Login loop';
+    t.provider._broadcastToAll({ type: 'titleUpdated', payload: { conversationId: 'c-side', title: 'Login loop' } });
+    expect(t.hubPosts().at(-1)).toEqual({ type: 'hubShow', payload: { section: null, chatTitle: 'Login loop' } });
+    // Another chat's title is not this header's.
+    const posted = t.hubPosts().length;
+    await t.provider._postToPanel('tab', { type: 'titleUpdated', payload: { conversationId: 'c-tab', title: 'x' } });
+    expect(t.hubPosts()).toHaveLength(posted);
+    expect(typesOf(t.hub.webview.postMessage)).not.toContain('titleUpdated');
   });
 
   it('lets a rebind that overtakes the follow refresh own the tab', async () => {

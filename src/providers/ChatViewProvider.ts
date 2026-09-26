@@ -411,6 +411,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     section: HubSection;
     /** The tab's state load in flight (or done) for `originPanelId`. */
     loading: Promise<void>;
+    /** The chat and conversation whose state the tab last received — what it shows. */
+    loadedFor: { panelId: string; conversationId: string | null } | null;
   } | null = null;
   private _vtTriggeredThisResponse: boolean = false;
   /** Per-panel nonce-bound scanner for the CLI-backend `<look:…>` tag. */
@@ -1441,6 +1443,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // A load the tab was rebound (or unbound) past while it waited is another
       // chat's data now — drop it rather than show it under the new chat's title.
       if (this._hub?.originPanelId !== panelId) { return; }
+      this._hub.loadedFor = { panelId, conversationId: panelState?.currentConversationId ?? null };
       void Promise.resolve(this._hub.panel.webview.postMessage(initialState)).catch(() => false);
       return;
     }
@@ -14000,7 +14003,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       panel.onDidDispose(() => {
         if (this._hub?.panel === panel) { this._hub = null; }
       });
-      this._hub = { panel, originPanelId, section, loading: Promise.resolve() };
+      this._hub = { panel, originPanelId, section, loading: Promise.resolve(), loadedFor: null };
     }
     const hub = this._hub;
     hub.section = section;
@@ -14027,6 +14030,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .catch(() => false);
   }
 
+  /**
+   * Plan 31: the chat the tab may act for — only once the tab holds that chat's
+   * CURRENT conversation. Right after a rebind or conversation switch the tab
+   * still shows the previous state and title, so an edit made then (a model
+   * from the other provider's list, the old conversation's personas) is not
+   * applied anywhere.
+   */
+  private _hubActingFor(): string | null {
+    const origin = this._hub?.originPanelId;
+    const state = origin ? this._panelStates.get(origin) : undefined;
+    const loaded = this._hub?.loadedFor;
+    return origin && state && loaded?.panelId === origin && loaded.conversationId === (state.currentConversationId ?? null)
+      ? origin : null;
+  }
+
   /** Plan 31: the chat the tab acts for is gone — the tab stays, read-only. */
   private _unbindHubFrom(panelId: string): void {
     if (!this._hub || this._hub.originPanelId !== panelId) { return; }
@@ -14044,8 +14062,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!this._hub || this._hub.panel.webview !== sender) { return; }
     const type = message && typeof message === 'object' ? (message as { type?: unknown }).type : undefined;
     if (typeof type !== 'string' || !HUB_INBOUND_TYPES.has(type)) { return; }
-    const origin = this._hub.originPanelId;
-    const live = origin && this._panelStates.has(origin) ? origin : null;
+    const live = this._hubActingFor();
     const target = live ?? (HUB_UNBOUND_TYPES.has(type) ? this._sidebarId : null);
     if (!target) { return; }
     const bound = bindIncomingMessage(message, target);
@@ -14102,12 +14119,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Plan 31: the tab hears what its chat hears — HUB_MIRROR_TYPES only. `null` = a broadcast. */
+  /** Plan 31: the tab hears what its chat hears — HUB_MIRROR_TYPES only, plus a title change as hubShow. `null` = a broadcast. */
   private _mirrorToHub(panelId: string | null, message: WebviewMessage): void {
-    if (!this._hub || !HUB_MIRROR_TYPES.has(message.type)) { return; }
+    if (!this._hub) { return; }
     if (panelId !== null && this._hub.originPanelId !== panelId) { return; }
     try {
-      void Promise.resolve(this._hub.panel.webview.postMessage(message)).catch(() => false);
+      if (message.type === 'titleUpdated') {
+        // A generated title renames the conversation the header names (its
+        // id is unchanged, so the conversation follow never sees it).
+        if (this._hubActingFor()) { this._postHubShow(null); }
+      } else if (HUB_MIRROR_TYPES.has(message.type)) {
+        void Promise.resolve(this._hub.panel.webview.postMessage(message)).catch(() => false);
+      }
     } catch { /* The tab never blocks delivery to its chat. */ }
   }
 
