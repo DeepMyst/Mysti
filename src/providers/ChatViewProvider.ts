@@ -14038,10 +14038,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * message, so a change made on one side of the chat/tab pair must reach the
    * other or the chat's next send silently undoes it. Posted directly, not via
    * `_postToPanel`, so it is never mirrored back to the side that made it.
+   * From the tab it goes to the chat the edit was APPLIED to, even if the tab
+   * was rebound or closed while it applied.
    */
   private _syncHubSettings(originPanelId: string, payload: unknown, fromHub: boolean): void {
-    if (!this._hub || this._hub.originPanelId !== originPanelId) { return; }
-    const target = fromHub ? this._panelStates.get(originPanelId)?.webview : this._hub.panel.webview;
+    const target = fromHub
+      ? this._panelStates.get(originPanelId)?.webview
+      : this._hub?.originPanelId === originPanelId ? this._hub.panel.webview : undefined;
     if (!target) { return; }
     void Promise.resolve(target.postMessage({ type: 'settingsSync', payload })).catch(() => false);
   }
@@ -14073,7 +14076,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _mirrorToHub(panelId: string | null, message: WebviewMessage): void {
     if (!this._hub || !HUB_MIRROR_TYPES.has(message.type)) { return; }
     if (panelId !== null && this._hub.originPanelId !== panelId) { return; }
-    void Promise.resolve(this._hub.panel.webview.postMessage(message)).catch(() => false);
+    try {
+      void Promise.resolve(this._hub.panel.webview.postMessage(message)).catch(() => false);
+    } catch { /* The tab never blocks delivery to its chat. */ }
   }
 
   /**

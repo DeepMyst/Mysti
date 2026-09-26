@@ -278,6 +278,18 @@ describe('Plan 31 — what crosses between the tab and its chat', () => {
     expect(typesOf(t.hub.webview.postMessage)).not.toContain('settingsSync');
   });
 
+  it('still tells its chat about an edit it applied when the tab is rebound meanwhile', async () => {
+    const t = await bound();
+    let finish!: () => void;
+    t.handleMessage.mockImplementationOnce(() => new Promise<undefined>((r) => { finish = () => r(undefined); }));
+    const edit = t.fromHub({ type: 'updateSettings', payload: { thinkingLevel: 'high' } });
+    await t.provider.openSettingsHub('agents', 'tab');
+    finish();
+    await edit;
+    expect(t.panels.get('sidebar')!.webview.postMessage).toHaveBeenCalledWith({ type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+    expect(typesOf(t.panels.get('tab')!.webview.postMessage)).not.toContain('settingsSync');
+  });
+
   it('re-binds persona and skill edits to its chat', async () => {
     const t = await bound();
     await t.fromHub({ type: 'updateAgentConfig', payload: { personaId: 'p', enabledSkills: [] } });
@@ -311,7 +323,7 @@ describe('Plan 31 — what crosses between the tab and its chat', () => {
     await t.fromHub({ type: 'updateSettings', payload: { thinkingLevel: 'high' } });
     await t.fromHub({ type: 'updateAgentConfig', payload: {} });
     expect(t.handleMessage).not.toHaveBeenCalled();
-    await t.fromHub({ type: 'openExternal', payload: 'https://example.com' });
+    await t.fromHub({ type: 'openExternal', payload: { url: 'https://example.com' } });
     expect(t.handleMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'openExternal' }));
   });
 
@@ -343,6 +355,19 @@ describe('Plan 31 — what crosses between the tab and its chat', () => {
     expect(t.hub.webview.postMessage).toHaveBeenLastCalledWith({ type: 'hubShow', payload: { section: null, chatTitle: 'New chat' } });
   });
 
+  it('lets a rebind that overtakes the follow refresh own the tab', async () => {
+    const t = await bound();
+    t.handleMessage.mockImplementation(async () => { t.panels.get('sidebar')!.currentConversationId = 'c-new'; });
+    let finish!: () => void;
+    t.sendInitialState.mockImplementationOnce(() => new Promise<undefined>((r) => { finish = () => r(undefined); }));
+    const follow = t.provider._receivePanelMessage({ type: 'newConversation' }, 'sidebar', t.panels.get('sidebar')!.webview);
+    await new Promise((r) => setTimeout(r, 0));
+    await t.provider.openSettingsHub('agents', 'tab');
+    finish();
+    await follow;
+    expect(t.hub.webview.postMessage).toHaveBeenLastCalledWith({ type: 'hubShow', payload: { section: 'agents', chatTitle: 'Refactor' } });
+  });
+
   it('does not refresh when the conversation did not change', async () => {
     const t = await bound();
     t.sendInitialState.mockClear();
@@ -358,6 +383,14 @@ describe('Plan 31 — what crosses between the tab and its chat', () => {
     await t.provider._postToPanel('tab', { type: 'modelsUpdated', payload: {} });
     expect(typesOf(t.hub.webview.postMessage)).toEqual(['agentConfigUpdated']);
     expect(t.panels.get('sidebar')!.webview.postMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('never blocks delivery to its chat when the tab throws', async () => {
+    const t = await bound();
+    t.hub.webview.postMessage.mockImplementation(() => { throw new Error('disposed'); });
+    await t.provider._postToPanel('sidebar', { type: 'agentConfigUpdated', payload: {} });
+    t.provider._broadcastToAll({ type: 'agentsUpdated', payload: {} });
+    expect(typesOf(t.panels.get('sidebar')!.webview.postMessage)).toEqual(['agentConfigUpdated', 'agentsUpdated']);
   });
 
   it('hears broadcast panel data but is never treated as a chat', async () => {
