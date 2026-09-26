@@ -8411,6 +8411,129 @@
     }
 
     /* ===== Plan 32 — onboarding ===== */
+    .wizard-step.hidden,
+    .wizard-section.hidden,
+    .wizard-mysti-status.hidden,
+    .wizard-signin-btn.hidden,
+    .wizard-nav-btn.hidden,
+    .wizard-filter-empty.hidden,
+    .wizard-group-label.hidden,
+    #setup-wizard .provider-card.hidden,
+    .help-empty.hidden {
+      display: none;
+    }
+
+    .wizard-stepper {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin: 0 0 20px;
+      padding: 0;
+      list-style: none;
+    }
+    .wizard-stepper li {
+      padding-top: 8px;
+      border-top: 3px solid var(--vscode-widget-border, var(--mysti-border));
+      font-size: 11px;
+      color: var(--mysti-dim);
+    }
+    .wizard-stepper li.done { border-top-color: var(--vscode-focusBorder); }
+    .wizard-stepper li.current {
+      border-top-color: var(--vscode-focusBorder);
+      color: var(--mysti-fg);
+      font-weight: 600;
+    }
+
+    .wizard-section { margin-bottom: 16px; }
+    .wizard-section-label,
+    .wizard-or {
+      margin: 0 0 8px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      text-align: left;
+      color: var(--mysti-dim);
+    }
+    .wizard-card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #setup-wizard .provider-card { padding: 10px 12px; }
+    #setup-wizard .provider-card-header { margin-bottom: 4px; }
+    #setup-wizard .provider-logo { width: 24px; height: 24px; }
+    #setup-wizard .provider-desc { margin: 0 0 8px; }
+
+    .wizard-fastpath.ready { border-color: var(--vscode-charts-green, var(--mysti-ok)); }
+    .wizard-mysti-status {
+      margin: 0;
+      font-size: 12px;
+      color: var(--mysti-dim);
+    }
+
+    .wizard-all { margin-bottom: 16px; }
+    .wizard-all > summary {
+      cursor: pointer;
+      padding: 4px 0;
+      color: var(--mysti-accent);
+      font-size: 13px;
+    }
+    .wizard-all > summary:focus-visible,
+    .wizard-filter:focus-visible,
+    .wizard-nav-btn:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
+    }
+    .wizard-field-label {
+      display: block;
+      margin: 10px 0 4px;
+      font-size: 12px;
+      color: var(--mysti-fg);
+    }
+    .wizard-filter {
+      width: 100%;
+      box-sizing: border-box;
+      margin-bottom: 12px;
+      padding: 5px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--vscode-input-border, var(--mysti-border));
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      font: inherit;
+    }
+    .wizard-group-label {
+      margin: 12px 0 0;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--mysti-dim);
+    }
+    .wizard-filter-empty { margin: 8px 0 0; font-size: 12px; color: var(--mysti-dim); }
+
+    .wizard-nav {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .wizard-nav-spacer { flex: 1; }
+    .wizard-nav-btn {
+      padding: 6px 16px;
+      border-radius: 4px;
+      border: 1px solid var(--vscode-button-border, transparent);
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      font: inherit;
+      cursor: pointer;
+    }
+    .wizard-nav-btn.primary {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    .wizard-nav-btn.primary:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+    .wizard-nav-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .sr-only {
       position: absolute;
       width: 1px;

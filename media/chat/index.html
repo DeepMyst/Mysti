@@ -929,14 +929,29 @@
     </div>
   </div>
 
-  <!-- Setup Wizard (Enhanced Onboarding) -->
+  <!-- Setup Wizard (Enhanced Onboarding; Plan 32: three steps) -->
   <div id="setup-wizard" class="setup-wizard hidden">
     <div class="wizard-content">
       <!-- Header -->
       <div class="wizard-header">
         <img src="{{resourceBase}}/Mysti-Logo.png" alt="Mysti" class="wizard-logo" />
         <h2>Welcome to Mysti</h2>
-        <p class="wizard-subtitle">Sign in to start now, or set up a local AI CLI</p>
+        <p class="wizard-subtitle">One chat for every AI coding agent you use. Connect one to start — it takes about a minute.</p>
+      </div>
+
+      <ol class="wizard-stepper" aria-label="Setup steps">
+        <li data-step="connect" class="current" aria-current="step">Connect</li>
+        <li data-step="mode">Mode</li>
+        <li data-step="task">First task</li>
+      </ol>
+
+      <section class="wizard-step" data-step="connect" aria-label="Connect an agent">
+      <!-- Plan 32 (D2): CLIs already on this machine come first — one click
+           to sign in. Filled by placeWizardCards(), which MOVES the existing
+           cards so their install/sign-in logic is reused, not re-implemented. -->
+      <div id="wizard-found" class="wizard-section hidden">
+        <h3 class="wizard-section-label">Found on this machine</h3>
+        <div id="wizard-found-list" class="wizard-card-list"></div>
       </div>
 
       <!-- Zero-install path (Plan 27 Gate 2).
@@ -952,9 +967,8 @@
           <p>The Mysti agent runs on your DeepMyst account (free works). No local CLI, no API key.</p>
         </div>
         <button id="wizard-signin-btn" class="wizard-signin-btn" type="button">Sign in to DeepMyst</button>
+        <p id="wizard-mysti-status" class="wizard-mysti-status hidden">Signed in · free model ready</p>
       </div>
-
-      <p class="wizard-or">or set up a local AI CLI</p>
 
       <!-- Prerequisites Warning -->
       <div id="wizard-prerequisites" class="wizard-prereq hidden">
@@ -966,13 +980,22 @@
         </div>
       </div>
 
+      <div id="wizard-recommended-section" class="wizard-section">
+        <h3 class="wizard-or">Or install one</h3>
+        <div id="wizard-recommended" class="wizard-card-list"></div>
+      </div>
+
+      <details id="wizard-all" class="wizard-all">
+        <summary>See all 15 agents</summary>
+        <label for="wizard-filter" class="wizard-field-label">Filter agents</label>
+        <input id="wizard-filter" type="search" class="wizard-filter" placeholder="Name, plan or “local”" autocomplete="off" />
       <!-- Provider Cards -->
       <!-- mysti:provider-literals:allow-start — static setup-wizard bootstrap
            cards shown before initialState/manifest exists (the wizard replaces
            initialState entirely). Runtime identity comes from the manifest. -->
       <div class="wizard-providers">
-        <!-- Claude Code -->
-        <div class="provider-card" data-provider="claude-code">
+        <h4 class="wizard-group-label" data-group="subscription">Use a plan you already pay for</h4>
+        <div class="provider-card" data-provider="claude-code" data-group="subscription" data-recommended>
           <div class="provider-card-header">
             <img src="{{resourceBase}}/icons/Claude.png" alt="Claude" class="provider-logo" />
             <div class="provider-info">
@@ -980,7 +1003,7 @@
               <span class="provider-status" data-status="unknown">Checking...</span>
             </div>
           </div>
-          <p class="provider-desc">Anthropic's Claude - powerful reasoning and code generation</p>
+          <p class="provider-desc">Claude plan or Anthropic API key</p>
           <div class="provider-steps hidden"></div>
           <div class="provider-progress hidden">
             <div class="progress-track"><div class="progress-bar"></div></div>
@@ -991,9 +1014,7 @@
             <button class="provider-action-btn primary" data-action="setup">Set Up</button>
           </div>
         </div>
-
-        <!-- OpenAI Codex -->
-        <div class="provider-card" data-provider="openai-codex">
+        <div class="provider-card" data-provider="openai-codex" data-group="subscription">
           <div class="provider-card-header">
             <img src="{{resourceBase}}/icons/openai_white.png" alt="OpenAI" class="provider-logo openai-logo" data-agent-logo="openai-codex" />
             <div class="provider-info">
@@ -1001,7 +1022,7 @@
               <span class="provider-status" data-status="unknown">Checking...</span>
             </div>
           </div>
-          <p class="provider-desc">OpenAI's Codex - ChatGPT-powered code assistant</p>
+          <p class="provider-desc">ChatGPT plan or OpenAI API key</p>
           <div class="provider-steps hidden"></div>
           <div class="provider-progress hidden">
             <div class="progress-track"><div class="progress-bar"></div></div>
@@ -1012,9 +1033,7 @@
             <button class="provider-action-btn primary" data-action="setup">Set Up</button>
           </div>
         </div>
-
-        <!-- Google Gemini -->
-        <div class="provider-card" data-provider="google-gemini">
+        <div class="provider-card" data-provider="google-gemini" data-group="subscription" data-recommended>
           <div class="provider-card-header">
             <img src="{{resourceBase}}/icons/gemini.png.webp" alt="Gemini" class="provider-logo gemini-logo" />
             <div class="provider-info">
@@ -1022,7 +1041,7 @@
               <span class="provider-status" data-status="unknown">Checking...</span>
             </div>
           </div>
-          <p class="provider-desc">Google's Gemini - multimodal AI with code capabilities</p>
+          <p class="provider-desc">Sign in with Google</p>
           <div class="provider-steps hidden"></div>
           <div class="provider-progress hidden">
             <div class="progress-track"><div class="progress-bar"></div></div>
@@ -1033,30 +1052,7 @@
             <button class="provider-action-btn primary" data-action="setup">Set Up</button>
           </div>
         </div>
-
-        <!-- Cline -->
-        <div class="provider-card" data-provider="cline">
-          <div class="provider-card-header">
-            <img src="{{resourceBase}}/icons/cline.png" alt="Cline" class="provider-logo cline-logo" />
-            <div class="provider-info">
-              <h3>Cline</h3>
-              <span class="provider-status" data-status="unknown">Checking...</span>
-            </div>
-          </div>
-          <p class="provider-desc">Autonomous coding agent with browser use, file editing, and command execution</p>
-          <div class="provider-steps hidden"></div>
-          <div class="provider-progress hidden">
-            <div class="progress-track"><div class="progress-bar"></div></div>
-            <span class="progress-msg"></span>
-          </div>
-          <div class="provider-error-details hidden"></div>
-          <div class="provider-card-actions">
-            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
-          </div>
-        </div>
-
-        <!-- GitHub Copilot -->
-        <div class="provider-card" data-provider="github-copilot">
+        <div class="provider-card" data-provider="github-copilot" data-group="subscription">
           <div class="provider-card-header">
             <img src="{{resourceBase}}/icons/copilot.png" alt="Copilot" class="provider-logo copilot-logo" />
             <div class="provider-info">
@@ -1064,7 +1060,7 @@
               <span class="provider-status" data-status="unknown">Checking...</span>
             </div>
           </div>
-          <p class="provider-desc">GitHub's Copilot - AI pair programmer with GitHub integration</p>
+          <p class="provider-desc">Copilot plan</p>
           <div class="provider-steps hidden"></div>
           <div class="provider-progress hidden">
             <div class="progress-track"><div class="progress-bar"></div></div>
@@ -1075,9 +1071,7 @@
             <button class="provider-action-btn primary" data-action="setup">Set Up</button>
           </div>
         </div>
-
-        <!-- Cursor -->
-        <div class="provider-card" data-provider="cursor">
+        <div class="provider-card" data-provider="cursor" data-group="subscription">
           <div class="provider-card-header">
             <img src="{{resourceBase}}/icons/cursor.png" alt="Cursor" class="provider-logo cursor-logo" />
             <div class="provider-info">
@@ -1085,7 +1079,7 @@
               <span class="provider-status" data-status="unknown">Checking...</span>
             </div>
           </div>
-          <p class="provider-desc">Cursor's headless agent - AI-powered coding with fast editing and multi-file changes</p>
+          <p class="provider-desc">Cursor account</p>
           <div class="provider-steps hidden"></div>
           <div class="provider-progress hidden">
             <div class="progress-track"><div class="progress-bar"></div></div>
@@ -1096,17 +1090,15 @@
             <button class="provider-action-btn primary" data-action="setup">Set Up</button>
           </div>
         </div>
-
-        <!-- OpenClaw -->
-        <div class="provider-card" data-provider="openclaw">
+        <div class="provider-card" data-provider="qwen-code" data-group="subscription">
           <div class="provider-card-header">
-            <img src="{{resourceBase}}/icons/openclaw.png" alt="OpenClaw" class="provider-logo openclaw-logo" />
+            <img src="{{resourceBase}}/icons/qwen.png" alt="Qwen" class="provider-logo qwen-logo" />
             <div class="provider-info">
-              <h3>OpenClaw</h3>
+              <h3>Qwen Code</h3>
               <span class="provider-status" data-status="unknown">Checking...</span>
             </div>
           </div>
-          <p class="provider-desc">Open-source personal AI assistant with multi-model support and Gateway streaming</p>
+          <p class="provider-desc">Qwen account</p>
           <div class="provider-steps hidden"></div>
           <div class="provider-progress hidden">
             <div class="progress-track"><div class="progress-bar"></div></div>
@@ -1117,66 +1109,7 @@
             <button class="provider-action-btn primary" data-action="setup">Set Up</button>
           </div>
         </div>
-
-        <div class="provider-card" data-provider="hermes">
-          <div class="provider-card-header">
-            <img src="{{resourceBase}}/icons/hermes.png" alt="Hermes" class="provider-logo hermes-logo" />
-            <div class="provider-info">
-              <h3>Hermes</h3>
-              <span class="provider-status" data-status="unknown">Checking...</span>
-            </div>
-          </div>
-          <p class="provider-desc">NousResearch's self-improving agent with skills, persistent memory, and 300+ models via Nous Portal, OpenRouter, or custom endpoints</p>
-          <div class="provider-steps hidden"></div>
-          <div class="provider-progress hidden">
-            <div class="progress-track"><div class="progress-bar"></div></div>
-            <span class="progress-msg"></span>
-          </div>
-          <div class="provider-error-details hidden"></div>
-          <div class="provider-card-actions">
-            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
-          </div>
-        </div>
-
-        <div class="provider-card" data-provider="continue">
-          <div class="provider-card-header">
-            <img src="{{resourceBase}}/icons/continue.png" alt="Continue" class="provider-logo continue-logo" />
-            <div class="provider-info">
-              <h3>Continue</h3>
-              <span class="provider-status" data-status="unknown">Checking...</span>
-            </div>
-          </div>
-          <p class="provider-desc">Open-source coding agent (cn CLI) — hub assistants, custom rules, and any model via ~/.continue/config.yaml</p>
-          <div class="provider-steps hidden"></div>
-          <div class="provider-progress hidden">
-            <div class="progress-track"><div class="progress-bar"></div></div>
-            <span class="progress-msg"></span>
-          </div>
-          <div class="provider-error-details hidden"></div>
-          <div class="provider-card-actions">
-            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
-          </div>
-        </div>
-        <div class="provider-card" data-provider="openrouter">
-          <div class="provider-card-header">
-            <img src="{{resourceBase}}/icons/openrouter.png" alt="OpenRouter" class="provider-logo openrouter-logo" />
-            <div class="provider-info">
-              <h3>OpenRouter</h3>
-              <span class="provider-status" data-status="unknown">Checking...</span>
-            </div>
-          </div>
-          <p class="provider-desc">Unified API to 300+ models (OpenAI-compatible) — free by default; add an OpenRouter key to use it.</p>
-          <div class="provider-steps hidden"></div>
-          <div class="provider-progress hidden">
-            <div class="progress-track"><div class="progress-bar"></div></div>
-            <span class="progress-msg"></span>
-          </div>
-          <div class="provider-error-details hidden"></div>
-          <div class="provider-card-actions">
-            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
-          </div>
-        </div>
-        <div class="provider-card" data-provider="kimi-code">
+        <div class="provider-card" data-provider="kimi-code" data-group="subscription">
           <div class="provider-card-header">
             <img src="{{resourceBase}}/icons/kimi.png" alt="Kimi Code" class="provider-logo kimi-logo" />
             <div class="provider-info">
@@ -1184,7 +1117,7 @@
               <span class="provider-status" data-status="unknown">Checking...</span>
             </div>
           </div>
-          <p class="provider-desc">Moonshot AI's terminal coding agent (kimi CLI) — Kimi K2.7 Code / K3 with up to 1M context, driven over the Agent Client Protocol.</p>
+          <p class="provider-desc">Kimi account</p>
           <div class="provider-steps hidden"></div>
           <div class="provider-progress hidden">
             <div class="progress-track"><div class="progress-bar"></div></div>
@@ -1195,9 +1128,165 @@
             <button class="provider-action-btn primary" data-action="setup">Set Up</button>
           </div>
         </div>
-
+        <h4 class="wizard-group-label" data-group="open">Open-source agents · bring a model</h4>
+        <div class="provider-card" data-provider="cline" data-group="open">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/cline.png" alt="Cline" class="provider-logo cline-logo" />
+            <div class="provider-info">
+              <h3>Cline</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Any provider key</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+        <div class="provider-card" data-provider="opencode" data-group="open">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/opencode.png" alt="OpenCode" class="provider-logo opencode-logo" />
+            <div class="provider-info">
+              <h3>OpenCode</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Any provider key</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+        <div class="provider-card" data-provider="openclaw" data-group="open">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/openclaw.png" alt="OpenClaw" class="provider-logo openclaw-logo" />
+            <div class="provider-info">
+              <h3>OpenClaw</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Runs a local gateway</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+        <div class="provider-card" data-provider="hermes" data-group="open">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/hermes.png" alt="Hermes" class="provider-logo hermes-logo" />
+            <div class="provider-info">
+              <h3>Hermes</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Nous Portal or your own key</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+        <div class="provider-card" data-provider="continue" data-group="open">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/continue.png" alt="Continue" class="provider-logo continue-logo" />
+            <div class="provider-info">
+              <h3>Continue</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Models from ~/.continue/config.yaml</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+        <h4 class="wizard-group-label" data-group="local">Run models on this machine</h4>
+        <div class="provider-card" data-provider="ollama" data-group="local" data-recommended>
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/ollama.png" alt="Ollama" class="provider-logo ollama-logo" />
+            <div class="provider-info">
+              <h3>Ollama</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Local models, works offline</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+        <div class="provider-card" data-provider="localai" data-group="local">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/localai.png" alt="LocalAI" class="provider-logo localai-logo" />
+            <div class="provider-info">
+              <h3>LocalAI</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Local models via Docker</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
+        <h4 class="wizard-group-label" data-group="key">One API key, many models</h4>
+        <div class="provider-card" data-provider="openrouter" data-group="key">
+          <div class="provider-card-header">
+            <img src="{{resourceBase}}/icons/openrouter.png" alt="OpenRouter" class="provider-logo openrouter-logo" />
+            <div class="provider-info">
+              <h3>OpenRouter</h3>
+              <span class="provider-status" data-status="unknown">Checking...</span>
+            </div>
+          </div>
+          <p class="provider-desc">Hundreds of models behind one key</p>
+          <div class="provider-steps hidden"></div>
+          <div class="provider-progress hidden">
+            <div class="progress-track"><div class="progress-bar"></div></div>
+            <span class="progress-msg"></span>
+          </div>
+          <div class="provider-error-details hidden"></div>
+          <div class="provider-card-actions">
+            <button class="provider-action-btn primary" data-action="setup">Set Up</button>
+          </div>
+        </div>
       </div>
       <!-- mysti:provider-literals:allow-end -->
+        <p id="wizard-filter-empty" class="wizard-filter-empty hidden">No agent matches that.</p>
+      </details>
 
       <!-- Auth Options Modal (for Gemini) -->
       <div id="auth-options-modal" class="auth-options-modal hidden">
@@ -1209,10 +1298,18 @@
         </div>
       </div>
 
+      </section>
+
+      <!-- Plan 32: steps 2 and 3 -->
+
       <!-- Footer -->
       <div class="wizard-footer">
-        <button class="wizard-skip-btn">Skip for now</button>
-        <p class="wizard-footer-hint">You can configure providers later in Settings</p>
+        <div class="wizard-nav">
+          <button type="button" class="wizard-skip-btn">Skip for now</button>
+          <span class="wizard-nav-spacer"></span>
+          <button type="button" id="wizard-back-btn" class="wizard-nav-btn hidden">Back</button>
+          <button type="button" id="wizard-next-btn" class="wizard-nav-btn primary" disabled>Continue</button>
+        </div>
         <button class="wizard-diagnose-btn">&#128269; Run Diagnostics</button>
         <div id="diagnostics-panel" class="diagnostics-panel hidden"></div>
       </div>

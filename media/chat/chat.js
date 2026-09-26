@@ -205,7 +205,11 @@
           nodeVersion: null,
           anyReady: false,
           activeSetup: null,
-          currentAuthProviderId: null
+          currentAuthProviderId: null,
+          // Plan 32
+          step: 'connect',
+          selected: null,
+          mystiReady: false
         }
       };
 
@@ -5120,6 +5124,9 @@
           case 'showWizard':
             handleShowWizard(message.payload);
             break;
+          case 'mystiReadyChanged':
+            setMystiReady(message.payload && message.payload.ready);
+            break;
           case 'wizardStatus':
             handleWizardStatus(message.payload);
             break;
@@ -6042,14 +6049,18 @@
         if (payload.panelId) {
           state.panelId = payload.panelId;
         }
+        var wasVisible = state.wizard.visible;
         state.wizard.visible = true;
         state.wizard.providers = payload.providers || [];
         state.wizard.npmAvailable = payload.npmAvailable;
         state.wizard.nodeVersion = payload.nodeVersion;
         state.wizard.anyReady = payload.anyReady;
+        state.wizard.mystiReady = !!payload.mystiReady;
 
         renderWizard();
         initWizardEventListeners();
+        // Plan 32: Get Started names a step; a re-show of an open wizard keeps its place.
+        showWizardStep(payload.step || (wasVisible ? state.wizard.step : 'connect'));
       }
 
       function handleWizardStatus(payload) {
@@ -6059,6 +6070,8 @@
 
         if (state.wizard.visible) {
           updateWizardProviderCards();
+          placeWizardCards();
+          updateWizardNav();
         }
       }
 
@@ -6104,8 +6117,11 @@
       }
 
       function handleWizardComplete(payload) {
-        hideWizard();
-        // Main UI will be shown via initialState
+        // Plan 32 (D4): choosing an agent no longer closes the wizard — it
+        // marks the choice, and Continue moves on to the mode step.
+        state.wizard.selected = (payload && payload.providerId) || null;
+        updateWizardProviderCards();
+        updateWizardNav();
       }
 
       function handleWizardDismissed() {
@@ -6131,6 +6147,8 @@
 
         // Update provider cards
         updateWizardProviderCards();
+        placeWizardCards();
+        setMystiReady(state.wizard.mystiReady);
       }
 
       function updateWizardProviderCards() {
@@ -6250,6 +6268,9 @@
         };
 
         var config = configs[status] || configs['not-installed'];
+        if (state.wizard.selected === provider.providerId && (status === 'ready' || status === 'complete')) {
+          config = { text: 'Selected', action: null, disabled: true, primary: false, success: true };
+        }
 
         btn.textContent = config.text;
         btn.disabled = config.disabled;
@@ -6579,6 +6600,10 @@
       }
 
       function initWizardEventListeners() {
+        // Plan 32: the wizard can be re-shown (Mysti: Get Started) while open;
+        // a second binding would make one click post every action twice.
+        if (state.wizard.listenersBound) { return; }
+        state.wizard.listenersBound = true;
         // Provider card action buttons
         var actionBtns = document.querySelectorAll('.provider-card .provider-action-btn');
         console.log('[Mysti Webview] initWizardEventListeners: found', actionBtns.length, 'action buttons');
@@ -7034,6 +7059,122 @@
           wizard.classList.add('hidden');
         }
         state.wizard.visible = false;
+      }
+
+      // ========================================
+      // Plan 32 — three-step wizard
+      // ========================================
+
+      var WIZARD_STEPS = ['connect', 'mode', 'task'];
+
+      function wizardAgentReady() {
+        return !!(state.wizard.anyReady || state.wizard.mystiReady);
+      }
+
+      /**
+       * Move each existing card into Found / Or install one; the rest stay
+       * grouped under "See all". Moving (not cloning) keeps each card's
+       * install / sign-in / retry wiring exactly as it was.
+       */
+      function placeWizardCards() {
+        var found = document.getElementById('wizard-found-list');
+        var rec = document.getElementById('wizard-recommended');
+        if (!found || !rec) { return; }
+        var byId = {};
+        (state.wizard.providers || []).forEach(function(p) { byId[p.providerId] = p; });
+        document.querySelectorAll('#setup-wizard .provider-card').forEach(function(card) {
+          var p = byId[card.getAttribute('data-provider')];
+          // ponytail: cards only move toward Found; one uninstalled mid-wizard stays where it is.
+          if (p && p.installed) {
+            if (card.parentNode !== found) { found.appendChild(card); }
+          } else if (card.hasAttribute('data-recommended') && card.parentNode !== found && card.parentNode !== rec) {
+            rec.appendChild(card);
+          }
+        });
+        document.getElementById('wizard-found').classList.toggle('hidden', !found.children.length);
+        document.getElementById('wizard-recommended-section').classList.toggle('hidden', !rec.children.length);
+        filterWizardCards();
+      }
+
+      function filterWizardCards() {
+        var input = document.getElementById('wizard-filter');
+        var q = input ? input.value.trim().toLowerCase() : '';
+        var list = document.querySelector('#setup-wizard .wizard-providers');
+        if (!list) { return; }
+        var visibleByGroup = {};
+        var any = false;
+        list.querySelectorAll('.provider-card').forEach(function(card) {
+          var group = card.getAttribute('data-group') || '';
+          var label = list.querySelector('.wizard-group-label[data-group="' + group + '"]');
+          var hay = (card.textContent + ' ' + (label ? label.textContent : '')).toLowerCase();
+          var show = !q || hay.indexOf(q) !== -1;
+          card.classList.toggle('hidden', !show);
+          if (show) { visibleByGroup[group] = true; any = true; }
+        });
+        list.querySelectorAll('.wizard-group-label').forEach(function(label) {
+          label.classList.toggle('hidden', !visibleByGroup[label.getAttribute('data-group')]);
+        });
+        var empty = document.getElementById('wizard-filter-empty');
+        if (empty) { empty.classList.toggle('hidden', any); }
+      }
+
+      function setMystiReady(ready) {
+        state.wizard.mystiReady = !!ready;
+        var block = document.querySelector('#setup-wizard .wizard-fastpath');
+        var btn = document.getElementById('wizard-signin-btn');
+        var status = document.getElementById('wizard-mysti-status');
+        if (block) { block.classList.toggle('ready', !!ready); }
+        if (btn) { btn.classList.toggle('hidden', !!ready); }
+        if (status) { status.classList.toggle('hidden', !ready); }
+        updateWizardNav();
+      }
+
+      function showWizardStep(step) {
+        if (WIZARD_STEPS.indexOf(step) === -1) { step = 'connect'; }
+        state.wizard.step = step;
+        var idx = WIZARD_STEPS.indexOf(step);
+        document.querySelectorAll('#setup-wizard .wizard-step').forEach(function(s) {
+          s.classList.toggle('hidden', s.getAttribute('data-step') !== step);
+        });
+        document.querySelectorAll('#setup-wizard .wizard-stepper li').forEach(function(li) {
+          var i = WIZARD_STEPS.indexOf(li.getAttribute('data-step'));
+          li.classList.toggle('done', i < idx);
+          li.classList.toggle('current', i === idx);
+          if (i === idx) { li.setAttribute('aria-current', 'step'); } else { li.removeAttribute('aria-current'); }
+        });
+        updateWizardNav();
+      }
+
+      function updateWizardNav() {
+        var back = document.getElementById('wizard-back-btn');
+        var next = document.getElementById('wizard-next-btn');
+        if (!back || !next) { return; }
+        var step = state.wizard.step || 'connect';
+        back.classList.toggle('hidden', step === 'connect');
+        next.textContent = step === 'task' ? 'Start chatting' : 'Continue';
+        next.disabled = step === 'connect' && !wizardAgentReady();
+        next.title = next.disabled ? 'Connect an agent first' : '';
+      }
+
+      function finishWizard() {
+        hideWizard();
+      }
+
+      var wizardFilterInput = document.getElementById('wizard-filter');
+      if (wizardFilterInput) { wizardFilterInput.addEventListener('input', filterWizardCards); }
+      var wizardNextBtn = document.getElementById('wizard-next-btn');
+      if (wizardNextBtn) {
+        wizardNextBtn.addEventListener('click', function() {
+          var i = WIZARD_STEPS.indexOf(state.wizard.step || 'connect');
+          if (i >= WIZARD_STEPS.length - 1) { finishWizard(); } else { showWizardStep(WIZARD_STEPS[i + 1]); }
+        });
+      }
+      var wizardBackBtn = document.getElementById('wizard-back-btn');
+      if (wizardBackBtn) {
+        wizardBackBtn.addEventListener('click', function() {
+          var i = WIZARD_STEPS.indexOf(state.wizard.step || 'connect');
+          showWizardStep(WIZARD_STEPS[Math.max(0, i - 1)]);
+        });
       }
 
       // ========================================

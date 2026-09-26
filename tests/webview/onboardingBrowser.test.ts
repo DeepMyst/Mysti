@@ -79,3 +79,95 @@ describe('/help card', () => {
     expect((await posted(pg)).some((m) => m.type === 'openWalkthrough')).toBe(true);
   });
 });
+
+const PROVIDERS = (installed: string[], ready: string[]) =>
+  ['claude-code', 'openai-codex', 'google-gemini', 'ollama', 'openrouter'].map((id) => ({
+    providerId: id, installed: installed.includes(id), authenticated: ready.includes(id),
+  }));
+
+async function wizard(pg: Page, over: Record<string, unknown> = {}): Promise<void> {
+  await send(pg, { type: 'showWizard', payload: {
+    panelId: 'sidebar', providers: PROVIDERS([], []), npmAvailable: true, anyReady: false, mystiReady: false, ...over,
+  } });
+}
+
+const cardIds = (pg: Page, sel: string) =>
+  pg.$$eval(sel, (c) => c.map((x) => x.getAttribute('data-provider')));
+
+describe('wizard step 1', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('puts found CLIs first, suggestions next, the rest behind See all', async () => {
+    const pg = await panel();
+    await wizard(pg, { providers: PROVIDERS(['openai-codex'], []) });
+    expect(await cardIds(pg, '#wizard-found-list .provider-card')).toEqual(['openai-codex']);
+    expect(await cardIds(pg, '#wizard-recommended .provider-card')).toEqual(['claude-code', 'google-gemini', 'ollama']);
+    expect(await pg.$$eval('#wizard-all .provider-card', (c) => c.length)).toBe(11);
+    expect(await pg.isVisible('#wizard-found')).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('hides the Found section when nothing is installed', async () => {
+    const pg = await panel();
+    await wizard(pg);
+    expect(await pg.isVisible('#wizard-found')).toBe(false);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps Continue disabled until an agent is ready, then enables it on DeepMyst sign-in', async () => {
+    const pg = await panel();
+    await wizard(pg);
+    expect(await pg.isDisabled('#wizard-next-btn')).toBe(true);
+    expect(await pg.isVisible('#wizard-mysti-status')).toBe(false);
+    await send(pg, { type: 'mystiReadyChanged', payload: { ready: true } });
+    expect(await pg.isDisabled('#wizard-next-btn')).toBe(false);
+    expect(await pg.isVisible('#wizard-mysti-status')).toBe(true);
+    expect(await pg.isVisible('#wizard-signin-btn')).toBe(false);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a CLI finishing sign-in enables Continue too', async () => {
+    const pg = await panel();
+    await wizard(pg, { providers: PROVIDERS(['openai-codex'], []) });
+    expect(await pg.isDisabled('#wizard-next-btn')).toBe(true);
+    await send(pg, { type: 'wizardStatus', payload: { providers: PROVIDERS(['openai-codex'], ['openai-codex']), npmAvailable: true, anyReady: true } });
+    expect(await pg.isDisabled('#wizard-next-btn')).toBe(false);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('choosing an agent marks it and leaves the wizard open', async () => {
+    const pg = await panel();
+    await wizard(pg, { providers: PROVIDERS(['claude-code'], ['claude-code']), anyReady: true });
+    await pg.click('#wizard-found-list .provider-card[data-provider="claude-code"] .provider-action-btn');
+    expect((await posted(pg)).some((m) => m.type === 'selectProvider')).toBe(true);
+    await send(pg, { type: 'wizardComplete', payload: { providerId: 'claude-code' } });
+    expect(await pg.isVisible('#setup-wizard')).toBe(true);
+    expect(await pg.textContent('#wizard-found-list .provider-action-btn')).toBe('Selected');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('filters the full list and hides empty groups', async () => {
+    const pg = await panel();
+    await wizard(pg);
+    await pg.click('#wizard-all > summary');
+    await pg.fill('#wizard-filter', 'offline');
+    // Ollama moved up to the suggestions; nothing left in the list says offline.
+    expect(await cardIds(pg, '#wizard-all .provider-card:not(.hidden)')).toEqual([]);
+    expect(await pg.isVisible('#wizard-filter-empty')).toBe(true);
+    await pg.fill('#wizard-filter', 'docker');
+    expect(await cardIds(pg, '#wizard-all .provider-card:not(.hidden)')).toEqual(['localai']);
+    expect(await pg.$$eval('#wizard-all .wizard-group-label:not(.hidden)', (l) => l.map((x) => x.getAttribute('data-group')))).toEqual(['local']);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('showing the wizard twice does not double-bind its buttons', async () => {
+    // Get Started can re-show an open wizard; a second binding would make one
+    // click start two `npm install -g` runs racing on the same prefix.
+    const pg = await panel();
+    await wizard(pg, { providers: PROVIDERS(['claude-code'], ['claude-code']), anyReady: true });
+    await wizard(pg, { providers: PROVIDERS(['claude-code'], ['claude-code']), anyReady: true, step: 'connect' });
+    await pg.click('#wizard-found-list .provider-card[data-provider="claude-code"] .provider-action-btn');
+    expect((await posted(pg)).filter((m) => m.type === 'selectProvider')).toHaveLength(1);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Skip for now still dismisses for good', async () => {
+    const pg = await panel();
+    await wizard(pg);
+    await pg.click('.wizard-skip-btn');
+    expect(await pg.isVisible('#setup-wizard')).toBe(false);
+    expect((await posted(pg)).filter((m) => m.type === 'dismissWizard').pop()!.payload).toEqual({ dontShowAgain: true });
+  });
+});

@@ -63,10 +63,10 @@ describe('webview handleShowWizard (B2)', () => {
   function runHandleShowWizard(state: any, payload: any): void {
     const src = extractFunction(html, 'handleShowWizard');
     const run = new Function(
-      'state', 'dismissInitLoading', 'renderWizard', 'initWizardEventListeners', 'payload',
+      'state', 'dismissInitLoading', 'renderWizard', 'initWizardEventListeners', 'showWizardStep', 'payload',
       `${src}\nhandleShowWizard(payload);`
     );
-    run(state, () => undefined, () => undefined, () => undefined, payload);
+    run(state, () => undefined, () => undefined, () => undefined, () => undefined, payload);
   }
 
   it('should adopt the panelId carried by the showWizard payload', () => {
