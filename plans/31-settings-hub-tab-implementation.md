@@ -191,7 +191,7 @@ git commit -m "feat(hub): the Mysti tab's trust boundary (Plan 31)"
 - Consumes: `isHubSection`, `HubSection` (Task 1).
 - Produces:
   - `getWebviewContent(webview, extensionUri, version = '0.0.0', opts: { view?: 'hub' } = {}): string`
-  - `ChatViewProvider._hub: { panel: vscode.WebviewPanel; originPanelId: string | null } | null`
+  - `ChatViewProvider._hub: { panel: vscode.WebviewPanel; originPanelId: string | null; section: HubSection; loading: Promise<void> } | null` — `section` is the last click's section and `loading` the in-flight `_sendInitialState(origin, true)`. These two fields were added in Task 2 review (a1ead01): a reveal awaits `loading` and then posts `hubShow(section)`, so the last click wins and `hubShow` never arrives before `initialState`. A load that a rebind, unbind or close overtook posts nothing. Later tasks read only `panel` and `originPanelId`. `dispose()` closes the tab before the chats.
   - `public async openSettingsHub(section: HubSection, originPanelId: string): Promise<void>`
   - `private _postHubShow(section: HubSection | null): void` — posts `{ type: 'hubShow', payload: { section, chatTitle: string | null } }`; `chatTitle === null` means unbound.
   - `private _unbindHubFrom(panelId: string): void`

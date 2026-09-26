@@ -28,6 +28,7 @@ function fakePanel() {
     webview,
     iconPath: undefined as unknown,
     reveal: vi.fn(),
+    dispose: vi.fn(),
     onDidDispose: (cb: () => void) => { on.dispose = cb; return { dispose() { /* noop */ } }; },
   };
   return { panel, webview, on };
@@ -158,6 +159,25 @@ describe('Plan 31 — the Mysti tab lifecycle', () => {
     await h.provider._handleMessage({ type: 'openSettingsHub', payload: {}, panelId: 'tab' } as WebviewMessage);
     expect(h.hubPosts().filter(m => m.type === 'hubShow')).toHaveLength(1);
   });
+
+  it('closes with the provider, and its chats closing then post nothing to it', async () => {
+    const stub = { dispose() { /* noop */ }, clear() { /* noop */ } };
+    const h = harness({
+      _nativeApprovalRegistration: stub, _nativeApprovalCards: stub, _subAgentQuestions: stub,
+      _delayedChannelTurns: stub, _pendingPlans: stub, _providerManager: stub,
+      _backgroundJobManager: stub, _channelBridge: stub,
+      _lastUserMessage: new Map(), _lastMentionContext: new Map(), _cancelledPanels: new Set(),
+      _pendingPlanSelections: new Map(),
+    });
+    await h.provider.openSettingsHub('settings', 'sidebar');
+    // A chat tab's own onDidDispose unbinds the hub, as the product's does.
+    Object.assign(h.panels.get('sidebar')!, { panel: { dispose: () => h.provider._unbindHubFrom('sidebar') } });
+    const posted = h.hubPosts().length;
+    (h.provider as unknown as { dispose(): void }).dispose();
+    expect(h.created[0].panel.dispose).toHaveBeenCalled();
+    expect(h.provider._hub).toBeNull();
+    expect(h.hubPosts()).toHaveLength(posted);
+  });
 });
 
 describe('Plan 31 — clicks that land while the tab is still loading', () => {
@@ -179,7 +199,7 @@ describe('Plan 31 — clicks that land while the tab is still loading', () => {
       },
       _extensionContext: { extension: { packageJSON: { version: '0.0.0' } }, globalState: { get: () => undefined } },
       _providerManager: { getProviders: () => [] },
-      _contextManager: { getContext: () => [] },
+      _contextManager: { getContext: () => [{ path: '/w/attached.ts' }] },
       _engagementManager: { getUsageStats: () => ({}), getAllBadges: () => [], getUnlockedCount: () => 0 },
       _buildManifestPayload: () => ({}),
     });
@@ -214,6 +234,18 @@ describe('Plan 31 — clicks that land while the tab is still loading', () => {
     expect(h.provider._hub!.originPanelId).toBe('tab');
     expect(posts.filter(m => m.type === 'initialState').map(m => (m.payload as { panelId: string }).panelId)).toEqual(['tab']);
     expect(posts.at(-1)).toEqual({ type: 'hubShow', payload: { section: 'agents', chatTitle: 'Refactor' } });
+  });
+
+  it("carries the chat's settings, not its transcript or attached context, and posts nothing to the chat", async () => {
+    const h = loading();
+    const open = h.provider.openSettingsHub('settings', 'sidebar');
+    await h.settle();
+    h.release.sidebar();
+    await open;
+    const state = h.hubPosts().find(m => m.type === 'initialState')!.payload as { conversation?: unknown; context: unknown[] };
+    expect(state.conversation).toBeUndefined();
+    expect(state.context).toEqual([]);
+    expect(h.panels.get('sidebar')!.webview.postMessage).not.toHaveBeenCalled();
   });
 
   it('drops a load whose chat closed before it finished', async () => {

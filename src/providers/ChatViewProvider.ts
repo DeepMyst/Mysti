@@ -1397,7 +1397,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       payload: {
         panelId,
         settings,
-        context: this._contextManager.getContext(panelId),
+        context: forHub ? [] : this._contextManager.getContext(panelId),
         conversation: forHub ? undefined : conversation,
         providers,
         providerAvailability,
@@ -15140,6 +15140,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._nativeApprovalCards.dispose();
     this._subAgentQuestions.dispose();
     this._delayedChannelTurns.dispose();
+
+    // Plan 31: the Mysti tab is not in `_panelStates` — close it first, so the
+    // chats closing below have no tab left to unbind (and post to).
+    this._hub?.panel.dispose();
+    this._hub = null;
 
     // Clean up all panel states
     for (const [, state] of this._panelStates) {
