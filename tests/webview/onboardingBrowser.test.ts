@@ -390,3 +390,19 @@ describe('rewind tip', () => {
     expect(await pg.$$eval('.mysti-tip[data-tip="rewind"]', (e) => e.length)).toBe(1);
   });
 });
+
+describe('composer and Brainstorm copy', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the composer teaches @ and /', async () => {
+    const pg = await panel();
+    expect(await pg.getAttribute('#message-input', 'placeholder')).toBe('Ask anything — @ to mention an agent or file, / for commands');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Brainstorm strategies are described in plain words', async () => {
+    const pg = await panel({ onboarding: { tips: { enabled: true, seen: [] }, gettingStarted: null } });
+    await send(pg, { type: 'agentChanged', payload: { agent: 'brainstorm' } });
+    const text = await pg.textContent('.bs-strategies');
+    expect(text).toContain('Both answer, then one merged reply. Fastest.');
+    expect(text).not.toMatch(/Facilitator-mediated|iterative convergence/);
+    expect(await pg.textContent('#brainstorm-strategy-hint')).toBe('Both answer, then one merged reply. Fastest.');
+  });
+});

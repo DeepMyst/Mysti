@@ -3113,11 +3113,11 @@
 
       var STRATEGY_LABELS = { 'quick': 'Quick', 'debate': 'Debate', 'red-team': 'Red team', 'perspectives': 'Perspectives', 'delphi': 'Delphi' };
       var strategyDescriptions = {
-        'quick': 'Direct synthesis without discussion (fastest)',
-        'debate': 'Agents critique each other with structured rebuttals',
-        'red-team': 'One proposes, one challenges, then defense',
-        'perspectives': 'Risk analysis vs. opportunity analysis lenses',
-        'delphi': 'Facilitator-mediated iterative convergence'
+        'quick': 'Both answer, then one merged reply. Fastest.',
+        'debate': 'They critique each other\u2019s answers before merging.',
+        'red-team': 'One proposes, the other attacks it, then it\u2019s defended.',
+        'perspectives': 'One looks for risks, the other for opportunities.',
+        'delphi': 'A facilitator runs rounds until they agree.'
       };
 
       if (brainstormStrategySelect) {
@@ -4308,7 +4308,7 @@
               if (ia) ia.classList.remove('enhancing');
               inputEl.placeholder = 'Enhancement timed out. Try again.';
               setTimeout(function() {
-                inputEl.placeholder = 'Ask Mysti...';
+                inputEl.placeholder = COMPOSER_PLACEHOLDER;
               }, 3000);
             }
           }, 30000);
@@ -12426,12 +12426,16 @@
       // disabled state, and the quick-actions visibility. Called IMMEDIATELY on
       // send (so Stop is available during the pre-first-token window), and on
       // every terminal path (complete/error/cancel). Idempotent.
-      /** Plan 28 Phase 2: the placeholder tells you the queue exists. */
+      /**
+       * Plan 28 Phase 2: the placeholder tells you the queue exists.
+       * Plan 32: at rest it teaches the two keys that make Mysti different.
+       */
+      var COMPOSER_PLACEHOLDER = 'Ask anything \u2014 @ to mention an agent or file, / for commands';
       function syncComposerAffordance() {
         if (!inputEl) return;
         inputEl.placeholder = state.isLoading
           ? 'Working \u2014 press Tab to queue this for next\u2026'
-          : 'Ask Mysti\u2026';
+          : COMPOSER_PLACEHOLDER;
       }
 
       function setProcessing(on) {
