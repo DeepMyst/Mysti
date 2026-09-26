@@ -337,6 +337,31 @@ describe('Plan 31 — the Mysti tab', () => {
     } finally { await pg.context().close(); }
   }, 30000);
 
+  it.skipIf(CHROMIUM_UNAVAILABLE)('personas, skills and badges work from the keyboard', async () => {
+    const pg = await openPage('hub', {
+      availablePersonas: [{ id: 'architect', name: 'Architect', description: '' }],
+      availableSkills: [{ id: 'tdd', name: 'TDD', description: '' }],
+    });
+    try {
+      await send(pg, { type: 'hubShow', payload: { section: 'agents', chatTitle: 'Fix login' } });
+      const card = '#persona-grid .persona-card';
+      const skill = '#skills-list .skill-item';
+      expect(await pg.$eval(card, (el) => [el.getAttribute('role'), el.getAttribute('aria-pressed')])).toEqual(['button', 'false']);
+      await pg.focus(card);
+      await pg.keyboard.press('Enter');
+      expect(await pg.$eval(card, (el) => el.getAttribute('aria-pressed'))).toBe('true');
+      await pg.focus(skill);
+      await pg.keyboard.press(' ');
+      expect(await pg.$eval(skill, (el) => el.getAttribute('aria-pressed'))).toBe('true');
+      await send(pg, { type: 'hubShow', payload: { section: 'badges', chatTitle: 'Fix login' } });
+      await send(pg, { type: 'badgesUpdate', payload: { badges: [{ id: 'b1', name: 'First', icon: '*', tier: 'bronze', unlocked: true, unlockedAt: 0 }], counts: { unlocked: 1, total: 1 } } });
+      await clearPosted(pg);
+      await pg.focus('#badges-grid .badge-item');
+      await pg.keyboard.press('Enter');
+      expect((await posted(pg)).map((m) => m.type)).toContain('getBadgeShareText');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('boots both views without throwing', async () => {
     expect(pageErrors).toEqual([]);
   });

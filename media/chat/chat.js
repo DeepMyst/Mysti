@@ -2223,6 +2223,12 @@
                escapeHtml(label + warn) + '</span>';
       }
 
+      /** Class and aria-pressed together, so what a screen reader hears matches what shows. */
+      function setPressed(el, cls, on) {
+        el.classList.toggle(cls, on);
+        el.setAttribute('aria-pressed', String(on));
+      }
+
       function renderAgentConfigPanel() {
         var personaGrid = document.getElementById('persona-grid');
         var skillsList = document.getElementById('skills-list');
@@ -2233,8 +2239,11 @@
         personaGrid.innerHTML = '';
         state.availablePersonas.forEach(function(p) {
           var card = document.createElement('div');
-          card.className = 'persona-card' + (state.agentConfig.personaId === p.id ? ' selected' : '');
+          card.className = 'persona-card';
           card.dataset.persona = p.id;
+          card.setAttribute('role', 'button');
+          card.tabIndex = 0;
+          setPressed(card, 'selected', state.agentConfig.personaId === p.id);
           card.title = p.description;
           card.innerHTML =
             '<span class="persona-card-icon">' + personaIconHtml(p) + '</span>' +
@@ -2253,8 +2262,11 @@
         state.availableSkills.forEach(function(s) {
           var isActive = state.agentConfig.enabledSkills.indexOf(s.id) !== -1;
           var item = document.createElement('div');
-          item.className = 'skill-item' + (isActive ? ' active' : '');
+          item.className = 'skill-item';
           item.dataset.skill = s.id;
+          item.setAttribute('role', 'button');
+          item.tabIndex = 0;
+          setPressed(item, 'active', isActive);
           item.title = s.description;
           item.innerHTML =
             '<div class="skill-toggle"></div>' +
@@ -2270,6 +2282,20 @@
 
         updateConfigSummary();
       }
+
+      // Plan 31: persona cards, skills and badges are <div role="button">s, and
+      // in the Mysti tab they are the page — Enter/Space press them.
+      ['persona-grid', 'skills-list', 'badges-grid'].forEach(function(id) {
+        var list = document.getElementById(id);
+        if (!list) { return; }
+        list.addEventListener('keydown', function(e) {
+          var t = e.target;
+          if ((e.key === 'Enter' || e.key === ' ') && t.parentNode === list && t.getAttribute('role') === 'button') {
+            e.preventDefault();
+            t.click();
+          }
+        });
+      });
 
       // Render agent recommendations from auto-suggest (compact inline widget)
       function renderRecommendations(payload) {
@@ -2411,7 +2437,7 @@
 
             // Update UI
             document.querySelectorAll('.persona-card').forEach(function(card) {
-              card.classList.remove('selected');
+              setPressed(card, 'selected', false);
             });
 
             // Hide inline suggestions if visible
@@ -2435,7 +2461,7 @@
 
         // Update UI
         document.querySelectorAll('.persona-card').forEach(function(card) {
-          card.classList.toggle('selected', card.dataset.persona === state.agentConfig.personaId);
+          setPressed(card, 'selected', card.dataset.persona === state.agentConfig.personaId);
         });
 
         updateConfigSummary();
@@ -2449,7 +2475,7 @@
 
         // Update persona cards UI
         document.querySelectorAll('.persona-card').forEach(function(card) {
-          card.classList.toggle('selected', card.dataset.persona === personaId);
+          setPressed(card, 'selected', card.dataset.persona === personaId);
         });
 
         updateConfigSummary();
@@ -2467,8 +2493,7 @@
 
         // Update UI
         document.querySelectorAll('.skill-item').forEach(function(item) {
-          var isActive = state.agentConfig.enabledSkills.indexOf(item.dataset.skill) !== -1;
-          item.classList.toggle('active', isActive);
+          setPressed(item, 'active', state.agentConfig.enabledSkills.indexOf(item.dataset.skill) !== -1);
         });
 
         updateConfigSummary();
@@ -5710,6 +5735,8 @@
 
           // Share button for unlocked badges
           if (b.unlocked) {
+            item.setAttribute('role', 'button');
+            item.tabIndex = 0;
             (function(badgeId) {
               item.addEventListener('click', function() {
                 if (document.body.classList.contains('hub-unbound')) { showToast('Open this tab from a chat to share a badge', 'info'); return; }
