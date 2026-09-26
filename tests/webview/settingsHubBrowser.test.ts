@@ -369,6 +369,70 @@ describe('Plan 31 — settingsSync keeps the chat and the tab in step', () => {
     } finally { await pg.context().close(); }
   }, 30000);
 
+  const CATALOG = { providers: [{ name: 'claude-code', models: [{ id: 'sonnet', name: 'Sonnet' }, { id: 'opus', name: 'Opus' }] }] };
+  const pickers = (pg: Page): Promise<string[]> => pg.$$eval(['#model-select', '#model-select-inline'].join(','),
+    (els) => els.map((el) => (el as HTMLSelectElement).value));
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('an unrelated sync keeps a settled model that is not in the catalog', async () => {
+    const pg = await openPage('chat', { ...CATALOG, settings: { ...INITIAL_SETTINGS, model: 'sonnet' } });
+    try {
+      await send(pg, { type: 'modelChanged', payload: { model: 'claude-special-1' } });
+      expect(await pickers(pg)).toEqual(['claude-special-1', 'claude-special-1']);
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pickers(pg)).toEqual(['claude-special-1', 'claude-special-1']);
+      expect((await sendFromComposer(pg, 'hello')).model).toBe('claude-special-1');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a custom model cleared on the other side leaves Custom…', async () => {
+    const pg = await openPage('chat', { ...CATALOG, settings: { ...INITIAL_SETTINGS, model: 'opus' },
+      providerSettings: { customModel: 'bar', codexProfile: '' } });
+    try {
+      expect(await pg.$eval('#model-select', (el) => (el as HTMLSelectElement).value)).toBe('__custom__');
+      await send(pg, { type: 'settingsSync', payload: { customModel: '' } });
+      expect(await pg.$eval('#model-select', (el) => (el as HTMLSelectElement).value)).toBe('opus');
+      expect(await pg.$eval('#custom-model-section', (el) => el.classList.contains('hidden'))).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a custom model typed here is not repainted back by a later sync', async () => {
+    const pg = await openPage('chat', { ...CATALOG, providerSettings: { customModel: 'bar', codexProfile: '' } });
+    try {
+      await pg.$eval('#custom-model-input', (el) => {
+        (el as HTMLInputElement).value = 'foo';
+        el.dispatchEvent(new Event('change'));
+      });
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pg.$eval('#custom-model-input', (el) => (el as HTMLInputElement).value)).toBe('foo');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a stock model picked here is not flipped back to Custom… by a later sync', async () => {
+    const pg = await openPage('chat', { ...CATALOG, providerSettings: { customModel: 'bar', codexProfile: '' } });
+    try {
+      await pg.$eval('#model-select', (el) => {
+        (el as HTMLSelectElement).value = 'opus';
+        el.dispatchEvent(new Event('change'));
+      });
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pickers(pg)).toEqual(['opus', 'opus']);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)("a provider setting changed on the other side repaints the provider's section", async () => {
+    const pg = await openPage('chat', {
+      settings: { ...INITIAL_SETTINGS, provider: 'openai-codex' },
+      providerManifest: { schemaVersion: 1, providers: [{ id: 'openai-codex',
+        settingsSections: [{ id: 'profile', label: 'Profile', type: 'text', settingKey: 'codexProfile' }] }] },
+      providerSettings: { customModel: '', codexProfile: 'old' },
+    });
+    try {
+      expect(await pg.$eval('#provider-settings-sections input', (el) => (el as HTMLInputElement).value)).toBe('old');
+      await send(pg, { type: 'settingsSync', payload: { codexProfile: 'work' } });
+      expect(await pg.$eval('#provider-settings-sections input', (el) => (el as HTMLInputElement).value)).toBe('work');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('still boots both views without throwing', async () => {
     expect(pageErrors).toEqual([]);
   });

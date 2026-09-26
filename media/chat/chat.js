@@ -2786,6 +2786,7 @@
           customModelError.style.display = 'none';
           customModelInput.style.borderColor = '';
           state.settings.model = modelSelect.value;
+          state.providerSettings = Object.assign({}, state.providerSettings, { customModel: '' });
           postMessageWithPanelId({ type: 'updateSettings', payload: { model: modelSelect.value, customModel: '' } });
         }
         syncInlineSelectors();
@@ -2812,6 +2813,8 @@
       customModelInput.addEventListener('change', function() {
         var val = customModelInput.value.trim();
         if (val && /^[a-zA-Z0-9][a-zA-Z0-9._\-:/[\]]*$/.test(val) && val.length <= 128) {
+          // Plan 31: a later settingsSync repaints from this, so keep it current.
+          state.providerSettings = Object.assign({}, state.providerSettings, { customModel: val });
           postMessageWithPanelId({ type: 'updateSettings', payload: { customModel: val } });
         }
       });
@@ -8594,9 +8597,15 @@
         ['provider', 'model', 'thinkingLevel', 'effortLevel', 'mode', 'accessLevel', 'contextMode'].forEach(function(k) {
           if (p[k] !== undefined) { state.settings[k] = p[k]; }
         });
-        if (p.customModel !== undefined) {
-          state.providerSettings = Object.assign({}, state.providerSettings, { customModel: p.customModel });
-        }
+        // customModel, plus any provider-declared key the chat already holds
+        // (codexProfile, ...), which the provider's settings section repaints.
+        Object.keys(p).forEach(function(k) {
+          if (k === 'customModel' || (state.providerSettings && Object.prototype.hasOwnProperty.call(state.providerSettings, k))) {
+            var patch = {};
+            patch[k] = p[k];
+            state.providerSettings = Object.assign({}, state.providerSettings, patch);
+          }
+        });
         var nested = {
           'agents.autoSuggest': ['agentSettings', 'autoSuggest'],
           'agents.maxTokenBudget': ['agentSettings', 'maxTokenBudget'],
@@ -8650,19 +8659,17 @@
           var provider = state.providers.find(function(p) { return p.name === state.settings.provider; });
           if (provider) {
             modelSelect.innerHTML = provider.models.map(function(m) {
-              return '<option value="' + m.id + '"' + (m.id === state.settings.model ? ' selected' : '') + '>' + m.name + '</option>';
+              return '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(m.name || m.id) + '</option>';
             }).join('');
             // Append "Custom..." option
             modelSelect.innerHTML += '<option value="__custom__">Custom...</option>';
           }
         }
 
-        // Restore custom model if set in provider settings
-        if (state.providerSettings && state.providerSettings.customModel) {
-          modelSelect.value = '__custom__';
-          customModelSection.classList.remove('hidden');
-          customModelInput.value = state.providerSettings.customModel;
-        }
+        // Custom model if set in provider settings, else the active model —
+        // re-appended when the catalog does not list it (settingsSync re-runs
+        // this rebuild, and a settled off-catalog model must survive it).
+        applyCustomModelState(state.providerSettings && state.providerSettings.customModel);
 
         // W4: render the selected provider's declarative settings sections
         // (values restored from state.providerSettings by settingKey)
