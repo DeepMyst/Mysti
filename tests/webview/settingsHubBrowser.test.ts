@@ -207,8 +207,8 @@ describe('Plan 31 — the Mysti tab', () => {
       await send(pg, { type: 'hubShow', payload: { section: null, chatTitle: null } });
       expect(await visiblePanels(pg)).toEqual(['settings-panel']);
       expect(await pg.textContent('#hub-binding')).toMatch(/^No chat selected/);
-      expect(await pg.$eval('#settings-panel', (el) => getComputedStyle(el).pointerEvents)).toBe('none');
-      expect(await pg.$eval('#agent-config-panel', (el) => getComputedStyle(el).pointerEvents)).toBe('none');
+      expect(await pg.$eval('#settings-panel select', (el) => getComputedStyle(el).pointerEvents)).toBe('none');
+      expect(await pg.$eval('#agent-config-panel button', (el) => getComputedStyle(el).pointerEvents)).toBe('none');
       await send(pg, { type: 'hubShow', payload: { section: 'about', chatTitle: 'Refactor' } });
       expect(await pg.$eval('body', (el) => el.classList.contains('hub-unbound'))).toBe(false);
     } finally { await pg.context().close(); }
@@ -241,6 +241,42 @@ describe('Plan 31 — the Mysti tab', () => {
       expect(await canFocus('#agent-config-panel')).toBe(false);
       await send(pg, { type: 'hubShow', payload: { section: 'settings', chatTitle: 'Fix login' } });
       expect(await canFocus('#settings-panel')).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('unbound, a long section still scrolls — read-only, not cut off', async () => {
+    const pg = await openPage('hub');
+    try {
+      await pg.setViewportSize({ width: 900, height: 300 });
+      await send(pg, { type: 'hubShow', payload: { section: 'settings', chatTitle: null } });
+      const dims = await pg.$eval('#settings-panel', (el) => [el.scrollHeight, el.clientHeight]);
+      expect(dims[0]).toBeGreaterThan(dims[1]);
+      const box = (await pg.$eval('#settings-panel', (el) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }));
+      await pg.mouse.move(box.x, box.y);
+      await pg.mouse.wheel(0, 400);
+      await pg.waitForFunction(() => document.getElementById('settings-panel')!.scrollTop > 0, undefined, { timeout: 2000 });
+      expect(await pg.$eval('#settings-panel', (el) => el.scrollTop)).toBeGreaterThan(0);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('unbound with nothing cached, Badges says why instead of spinning', async () => {
+    const pg = await openPage('hub');
+    try {
+      await send(pg, { type: 'hubShow', payload: { section: 'settings', chatTitle: null } });
+      await clearPosted(pg);
+      await pg.click('.hub-nav-item[data-hub-section="badges"]');
+      expect(await pg.$eval('#badges-spinner', (el) => getComputedStyle(el).display)).toBe('none');
+      expect(await pg.textContent('#badges-grid')).toMatch(/Open this tab from a chat/);
+      expect((await posted(pg)).map((m) => m.type)).not.toContain('requestBadges');
+      // Cached from an earlier chat: readable, and sharing says why it can't.
+      await send(pg, { type: 'badgesUpdate', payload: { badges: [{ id: 'b1', name: 'First', icon: '*', tier: 'bronze', unlocked: true, unlockedAt: 0 }], counts: { unlocked: 1, total: 1 } } });
+      await clearPosted(pg);
+      await pg.click('#badges-grid .badge-item');
+      expect((await posted(pg)).map((m) => m.type)).not.toContain('getBadgeShareText');
+      expect(await pg.$$eval('.mysti-toast', (els) => els.map((e) => e.textContent))).toContain('Open this tab from a chat to share a badge');
     } finally { await pg.context().close(); }
   }, 30000);
 

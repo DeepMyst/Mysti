@@ -9766,9 +9766,12 @@
       background: var(--vscode-list-activeSelectionBackground);
       color: var(--vscode-list-activeSelectionForeground);
     }
-    /* No chat to apply an edit to: read, don't write. */
+    /* No chat to apply an edit to: read, don't write. The panel itself is the
+       scroller, so it stays hit-testable; only what is inside it goes dead. */
     body.view-hub.hub-unbound #settings-panel,
-    body.view-hub.hub-unbound #agent-config-panel { pointer-events: none; opacity: .5; }
+    body.view-hub.hub-unbound #agent-config-panel { opacity: .5; }
+    body.view-hub.hub-unbound #settings-panel > *,
+    body.view-hub.hub-unbound #agent-config-panel > * { pointer-events: none; }
     @media (max-width: 480px) {
       body.view-hub #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); }
       body.view-hub #app > .hub-nav {

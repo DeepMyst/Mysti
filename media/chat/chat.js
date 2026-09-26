@@ -2051,6 +2051,13 @@
         // Render instantly from cache, then refresh in background
         if (cachedBadges && cachedBadgeCounts) {
           updateBadgesUI(cachedBadges, cachedBadgeCounts);
+        } else if (document.body.classList.contains('hub-unbound')) {
+          // No chat to ask for them: the host drops requestBadges, so don't spin forever.
+          var sp0 = document.getElementById('badges-spinner');
+          if (sp0) { sp0.classList.add('hidden'); }
+          var grid0 = document.getElementById('badges-grid');
+          if (grid0) { grid0.textContent = 'Open this tab from a chat to load badges.'; }
+          return;
         } else {
           var sp = document.getElementById('badges-spinner');
           if (sp) { sp.classList.remove('hidden'); }
@@ -2076,10 +2083,11 @@
         if (!IS_HUB || !payload) { return; }
         var bound = typeof payload.chatTitle === 'string';
         document.body.classList.toggle('hub-unbound', !bound);
-        // Read-only for the keyboard too, not just the pointer (chat.css).
+        // Read-only for the keyboard too, not just the pointer (chat.css). The
+        // children, not the panel: the panel is the scroller and must still scroll.
         ['settings-panel', 'agent-config-panel'].forEach(function(id) {
           var el = document.getElementById(id);
-          if (el) { el.inert = !bound; }
+          if (el) { Array.prototype.forEach.call(el.children, function(c) { c.inert = !bound; }); }
         });
         var label = document.getElementById('hub-binding');
         if (label) {
@@ -5686,6 +5694,7 @@
           if (b.unlocked) {
             (function(badgeId) {
               item.addEventListener('click', function() {
+                if (document.body.classList.contains('hub-unbound')) { showToast('Open this tab from a chat to share a badge', 'info'); return; }
                 postMessageWithPanelId({ type: 'getBadgeShareText', payload: { badgeId: badgeId } });
               });
             })(b.id);
