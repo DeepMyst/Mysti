@@ -19,6 +19,10 @@ import * as crypto from 'crypto';
 import { SubAgentQuestionBroker, parseSubAgentResponse } from '../chat/SubAgentQuestionBroker';
 import { bindIncomingMessage } from '../chat/incomingMessage';
 import { CoordinatorRunOutput } from '../chat/CoordinatorRunOutput';
+import {
+  onboardingSnapshot, markTipSeen, hideGettingStarted, recordAgentMention,
+  isTipId, isWizardStep, hasChosenMode, type WizardStep,
+} from '../chat/onboarding';
 import { settleWithin } from '../utils/settleWithin';
 import { clampEffort } from '../utils/effort';
 import { MystiTagScanner, type MystiDirective, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_SKILL_KINDS, MYSTI_CAPABILITY_KINDS, MYSTI_CONNECT_KINDS, MYSTI_VISUAL_KINDS, MYSTI_VISUAL_ACT_KINDS, MYSTI_CANVAS_KINDS } from '../utils/mystiDelegateParser';
@@ -260,6 +264,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _panelStates: Map<string, PanelState> = new Map();
   private readonly _sidebarId = 'sidebar';
+  /** Plan 32: a Get Started request that arrived before the sidebar view existed. */
+  private _pendingOnboardingStep?: WizardStep;
   private _extensionUri: vscode.Uri;
   private _extensionContext: vscode.ExtensionContext;
   private _contextManager: ContextManager;
@@ -1248,7 +1254,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!fullStatus.anyReady) {
           // No providers installed — show the setup wizard. Include panelId so
           // wizard responses route to the right panel (B2).
-          this._postToPanel(panelId, { type: 'showWizard', payload: { ...fullStatus, panelId } });
+          this._postToPanel(panelId, { type: 'showWizard', payload: { ...fullStatus, panelId, mystiReady } });
           // D-1: do NOT return. The wizard is an overlay, not a wall — returning
           // here meant the panel never received `initialState`, so dismissing
           // the wizard revealed an empty, unusable chat with no settings, no
@@ -1376,6 +1382,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     const providerAvailability = this._buildProviderAvailability(wizardStatus);
 
+    // Plan 32: the walkthrough's "Connect an agent" step completes on this key.
+    const agentReady = wizardStatus.anyReady || mystiReady;
+    void vscode.commands.executeCommand('setContext', 'mysti.agentReady', agentReady);
+    const onboarding = await onboardingSnapshot({
+      store: this._extensionContext.globalState,
+      tipsEnabled: config.get<boolean>('tips.enabled', true),
+      hasCompletedSetup: this._extensionContext.globalState.get<boolean>('mysti.hasCompletedSetup', false),
+      agentReady,
+      modeChosen: hasChosenMode(config),
+      messagesSent: Number(this._engagementManager.getUsageStats()?.totalMessages) || 0,
+    });
+
     this._postToPanel(panelId, {
       type: 'initialState',
       payload: {
@@ -1385,6 +1403,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         conversation,
         providers,
         providerAvailability,
+        onboarding,
         // Plan 02 Phase 1: capability manifest — the webview renders from
         // capabilities, never from provider-name literals (Phase 2 consumes).
         providerManifest: this._buildManifestPayload(),
@@ -1443,6 +1462,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Fetch DeepMyst's dynamic in-app messages and push them to the panel once
     // they arrive (never blocks the render; no-op when signed out).
     void this._pushInAppMessages(panelId);
+
+    // Plan 32: a Get Started request that arrived while the sidebar was still
+    // resolving is delivered now that its chat exists underneath the wizard.
+    if (panelId === this._sidebarId && this._pendingOnboardingStep) {
+      const step = this._pendingOnboardingStep;
+      this._pendingOnboardingStep = undefined;
+      await this._postOnboarding(panelId, step);
+    }
   }
 
   /**
@@ -2414,6 +2441,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           msg.panelId
         );
         break;
+
+      case 'tipSeen': {
+        const id = (msg.payload as { id?: unknown } | undefined)?.id;
+        if (isTipId(id)) { await markTipSeen(this._extensionContext.globalState, id); }
+        break;
+      }
+
+      case 'tipsOff':
+        await vscode.workspace.getConfiguration('mysti').update('tips.enabled', false, vscode.ConfigurationTarget.Global);
+        break;
+
+      case 'hideGettingStarted':
+        await hideGettingStarted(this._extensionContext.globalState);
+        break;
+
+      case 'openWalkthrough':
+        void vscode.commands.executeCommand('workbench.action.openWalkthrough', 'DeepMyst.mysti#mysti.gettingStarted', false);
+        break;
+
+      case 'requestOnboarding': {
+        const step = (msg.payload as { step?: unknown } | undefined)?.step;
+        await this.showOnboarding(isWizardStep(step) ? step : undefined, msg.panelId);
+        break;
+      }
 
       case 'dismissWizard':
         await this._handleDismissWizard(
@@ -4146,6 +4197,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Track engagement: message sent
     const badgeEvents = this._engagementManager.trackMessageSent(settings.provider);
     this._emitBadgeUnlocks(panelId, badgeEvents);
+    // Plan 32: ticks "Mention another agent" on the Getting-started card.
+    if (mentions?.some(m => m.type === 'agent')) {
+      void recordAgentMention(this._extensionContext.globalState);
+    }
 
     // Get the panel's conversation
     const panelState = this._panelStates.get(panelId);
@@ -8771,7 +8826,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public setDeepMystAuth(auth: DeepMystAuthManager): void {
     this._deepMystAuth = auth;
     // A sign-in/out invalidates any cached connection list.
-    auth.onDidChangeAuth(() => { this._connectionsCache = undefined; this._mcpToolsCache = undefined; });
+    auth.onDidChangeAuth(() => {
+      this._connectionsCache = undefined; this._mcpToolsCache = undefined;
+      // Plan 32: an open wizard enables Continue the moment sign-in lands.
+      const ready = this._mystiCoordinator?.status().ready === true;
+      this._broadcastToAll({ type: 'mystiReadyChanged', payload: { ready } });
+      if (ready) { void vscode.commands.executeCommand('setContext', 'mysti.agentReady', true); }
+    });
   }
 
   /**
@@ -14639,6 +14700,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Send initial state anyway - user can configure later
     this._sendInitialState(panelId);
+  }
+
+  /**
+   * Plan 32: `Mysti: Get Started`, the walkthrough's buttons and the
+   * Getting-started card. Always opens the wizard — deliberately ignores
+   * `mysti.setupWizardDismissed`, which only stops the wizard raising ITSELF
+   * on panel load.
+   */
+  public async showOnboarding(step?: WizardStep, panelId: string = this._sidebarId): Promise<void> {
+    if (panelId === this._sidebarId) {
+      await vscode.commands.executeCommand('mysti.chatView.focus');
+    }
+    if (!this._panelStates.has(panelId)) {
+      // The sidebar view is still resolving; `_sendInitialState` flushes this.
+      this._pendingOnboardingStep = step ?? 'connect';
+      return;
+    }
+    await this._postOnboarding(panelId, step ?? 'connect');
+  }
+
+  private async _postOnboarding(panelId: string, step: WizardStep): Promise<void> {
+    const status = await this._setupManager.getWizardStatus();
+    const mystiReady = this._mystiCoordinator?.status().ready === true;
+    this._postToPanel(panelId, { type: 'showWizard', payload: { ...status, panelId, mystiReady, step } });
   }
 
   /**

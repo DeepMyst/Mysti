@@ -14,6 +14,7 @@
 import * as vscode from 'vscode';
 import * as nodePath from 'path';
 import { ChatViewProvider } from './providers/ChatViewProvider';
+import { isWizardStep } from './chat/onboarding';
 import { ContextManager } from './managers/ContextManager';
 import { ConversationManager } from './managers/ConversationManager';
 import { ProviderManager } from './managers/ProviderManager';
@@ -671,6 +672,9 @@ export async function activate(context: vscode.ExtensionContext) {
   // Plan 04: DeepMyst sign-in / sign-out + Connections panel
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.deepmyst.signIn', () => deepMystAuthManager.signIn()),
+    // Plan 32: the walkthrough passes a step (`mysti.getStarted?["mode"]`); anything else opens step 1.
+    vscode.commands.registerCommand('mysti.getStarted', (step?: unknown) =>
+      chatViewProvider.showOnboarding(isWizardStep(step) ? step : undefined)),
     vscode.commands.registerCommand('mysti.deepmyst.signOut', () => deepMystAuthManager.signOut()),
     vscode.commands.registerCommand('mysti.openConnections', () => connectionsPanelManager.open()),
   );

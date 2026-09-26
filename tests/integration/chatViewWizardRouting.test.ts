@@ -339,4 +339,82 @@ describe('ChatViewProvider message routing', () => {
       expect(getMockConfigUpdates()['qwenCodeModel']).toBe('');
     });
   });
+
+  // =========================================================================
+  // Plan 32 — onboarding wiring
+  // =========================================================================
+  describe('Plan 32 onboarding wiring', () => {
+    function useStore(): Map<string, unknown> {
+      const m = new Map<string, unknown>();
+      (h.provider as any)._extensionContext.globalState = {
+        get: (k: string, d?: unknown) => (m.has(k) ? m.get(k) : d),
+        update: async (k: string, v: unknown) => { m.set(k, v); },
+      };
+      return m;
+    }
+
+    it('initialState carries the onboarding snapshot', async () => {
+      useStore();
+      await (h.provider as any)._sendInitialState('sidebar');
+      const init = h.sidebarMessages.find(m => m.type === 'initialState');
+      expect(init!.payload.onboarding.tips).toEqual({ enabled: true, seen: [] });
+      expect(init!.payload.onboarding.gettingStarted.items.connect).toBe(false);
+    });
+
+    it('showWizard says whether the Mysti agent is ready', async () => {
+      await (h.provider as any)._sendInitialState('sidebar');
+      expect(h.sidebarMessages.find(m => m.type === 'showWizard')!.payload.mystiReady).toBe(false);
+    });
+
+    it('tipSeen stores known ids only', async () => {
+      const m = useStore();
+      await (h.provider as any)._handleMessage({ type: 'tipSeen', panelId: 'sidebar', payload: { id: 'rewind' } });
+      await (h.provider as any)._handleMessage({ type: 'tipSeen', panelId: 'sidebar', payload: { id: 'x'.repeat(5000) } });
+      expect(m.get('mysti.tips.seen')).toEqual(['rewind']);
+    });
+
+    it('tipsOff turns the setting off globally', async () => {
+      await (h.provider as any)._handleMessage({ type: 'tipsOff', panelId: 'sidebar' });
+      expect(getMockConfigUpdates()['tips.enabled']).toBe(false);
+    });
+
+    it('hideGettingStarted persists', async () => {
+      const m = useStore();
+      await (h.provider as any)._handleMessage({ type: 'hideGettingStarted', panelId: 'sidebar' });
+      expect(m.get('mysti.gettingStarted')).toBe('hidden');
+    });
+
+    it('Get Started opens the wizard on the requested step even after a dismissal', async () => {
+      const m = useStore();
+      m.set('mysti.setupWizardDismissed', true);
+      await h.provider.showOnboarding('mode');
+      const shown = h.sidebarMessages.filter(x => x.type === 'showWizard').pop();
+      expect(shown!.payload).toMatchObject({ panelId: 'sidebar', step: 'mode', mystiReady: false });
+    });
+
+    it('requestOnboarding from a panel opens the wizard in that panel', async () => {
+      await (h.provider as any)._handleMessage({ type: 'requestOnboarding', panelId: 'sidebar', payload: { step: 'bogus' } });
+      const shown = h.sidebarMessages.filter(x => x.type === 'showWizard').pop();
+      expect(shown!.payload.step).toBe('connect');
+    });
+
+    it('a Get Started request made before the sidebar exists is delivered after its initialState', async () => {
+      (h.provider as any)._panelStates.delete('sidebar');
+      await h.provider.showOnboarding('task');
+      expect(h.sidebarMessages.some(x => x.type === 'showWizard')).toBe(false);
+      (h.provider as any)._panelStates.set('sidebar', {
+        id: 'sidebar',
+        webview: { postMessage: (message: WebviewMessage) => { h.sidebarMessages.push(message as any); return Promise.resolve(true); } },
+        currentConversationId: null,
+        isSidebar: true,
+      });
+      (h.provider as any)._extensionContext.globalState = {
+        get: (k: string, d?: unknown) => (k === 'mysti.setupWizardDismissed' ? true : d),
+        update: async () => undefined,
+      };
+      await (h.provider as any)._sendInitialState('sidebar');
+      const shown = h.sidebarMessages.filter(x => x.type === 'showWizard');
+      expect(shown.map(x => x.payload.step)).toEqual(['task']);
+    });
+  });
 });

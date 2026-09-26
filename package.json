@@ -121,6 +121,11 @@
         "category": "Mysti"
       },
       {
+        "command": "mysti.getStarted",
+        "title": "Get Started",
+        "category": "Mysti"
+      },
+      {
         "command": "mysti.openChat",
         "title": "Open Chat",
         "shortTitle": "Chat",
@@ -775,6 +780,11 @@
           "default": 200,
           "minimum": 0,
           "description": "Maximum checkpoints to retain per workspace before the oldest are pruned (0 = unlimited)."
+        },
+        "mysti.tips.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a one-line tip the first time you meet a Mysti feature: approvals, @-mentions, rewind, Brainstorm and compaction. Each tip appears once."
         },
         "mysti.compaction.enabled": {
           "type": "boolean",
