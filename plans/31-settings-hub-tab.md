@@ -1,7 +1,7 @@
 # Plan 31 — Settings Hub Tab
 
 - **Date:** 2026-09-26
-- **Status:** DESIGN — approved in chat, awaiting spec review
+- **Status:** APPROVED 2026-09-26 — implementation plan: `plans/31-settings-hub-tab-implementation.md`
 - **Trigger:** User report: clicking a ⋯ menu item opens an inline panel above the chat; with several things open the sidebar gets crowded and unreadable. Wanted: menu items open in a new tab, and a menu that is easier to work with.
 
 Symbols are the stable reference; line numbers drift.
@@ -41,7 +41,8 @@ Settings, Personas & skills, Badges and About leave the chat column. They open i
 - **The tab:** left nav (Settings · Personas & skills · Connections · Badges · About); one section at a time on the right at full height with its own scroll; a header line "Configuring: \<chat title\>".
 - **Rebinding:** opening the tab from another chat's ⋯ menu binds it to that chat; the header updates.
 - **Connections** in the nav opens the existing Connections tab (`mysti.openConnections`); it is not rebuilt inside the hub.
-- **Bound chat closed:** the header reads "No chat selected"; Personas & skills and the per-chat Settings rows (agent, model) are disabled; global rows stay editable. Opening the tab from any chat rebinds it.
+- **Bound chat closed:** the header reads "No chat selected"; Settings and Personas & skills turn read-only (there is no chat to apply an edit to, and applying it to some other chat would be a surprise); Badges and About stay readable and their links work. Opening the tab from any chat rebinds it.
+- **Bound chat switches conversation** (new, switch, delete, fork, import): the tab refreshes to the chat's current conversation — its title and its personas & skills.
 - **Unchanged:** the composer controls, the ⌘K palette entries (they click the same buttons, which now open the tab), the Active Mode strip, the Runs/Changes docks.
 
 ### Host (`src/chat/settingsHub.ts` + `ChatViewProvider`)
@@ -52,12 +53,14 @@ Settings, Personas & skills, Badges and About leave the chat column. They open i
 export type HubSection = 'settings' | 'agents' | 'badges' | 'about';
 /** Webview → host types the hub may send; each is re-bound to the origin chat. */
 export const HUB_INBOUND_TYPES: ReadonlySet<string>;   // the 11 types listed in Current state
+/** The subset that needs no chat; still honoured after the origin closes. */
+export const HUB_UNBOUND_TYPES: ReadonlySet<string>;   // openExternal, openSettingKey, openConnections
 /** Host → origin-chat types that are also copied to the hub. */
 export const HUB_MIRROR_TYPES: ReadonlySet<string>;    // see below
 export function isHubSection(v: unknown): v is HubSection;
 ```
 
-`HUB_MIRROR_TYPES` = `modelsUpdated`, `providerAvailability`, `manifestUpdated`, `agentConfigUpdated`, `agentsUpdated`, `badgesUpdate`, `badgeShareCopied`, `settingsError`, `providerSwitched`, `agentChanged`, `modelChanged`, `settingsSync`.
+`HUB_MIRROR_TYPES` = `modelsUpdated`, `providerAvailability`, `manifestUpdated`, `agentConfigUpdated`, `agentsUpdated`, `badgesUpdate`, `badgeShareCopied`, `settingsError`, `providerSwitched`, `agentChanged`, `modelChanged`. (`settingsSync` is not mirrored; it is posted directly to one side, below.)
 
 A type joins `HUB_INBOUND_TYPES` only if a control inside one of the four panels sends it. Everything else from the hub — `sendMessage`, `permissionResponse`, `cancelRequest`, `newConversation`, `autonomyLevelChanged`, `uiReady`, … — is **dropped**, so a hidden card or boot side effect in the hub can never act on the chat's behalf.
 
@@ -68,10 +71,11 @@ A type joins `HUB_INBOUND_TYPES` only if a control inside one of the four panels
   - If `_hub` exists: set `originPanelId`, `reveal()`, and if the origin changed, re-send initial state (below). Otherwise `createWebviewPanel('mysti.settingsHub', 'Mysti', ViewColumn.Beside, { enableScripts, localResourceRoots, retainContextWhenHidden })`, html = `getWebviewContent(webview, extensionUri, version, { view: 'hub' })`, icon = Mysti logo.
   - Post `{ type: 'hubShow', payload: { section, chatTitle } }` (`chatTitle` from the origin's current conversation, or `null`; `section: null` keeps the section currently shown).
   - `onDidDispose` → `_hub = null`.
-- **The hub is not registered in `_panelStates`.** It gets its own `onDidReceiveMessage` that checks `sender === _hub.panel.webview`, drops the message if `_hub.originPanelId` is null (except `openExternal`, `openConnections`, `openSettingKey`, which need no chat) or its type is not in `HUB_INBOUND_TYPES`, then calls `bindIncomingMessage(message, _hub.originPanelId)` and `_handleMessage`. Loops over `_panelStates` (broadcast, dispose, cancel) therefore never see it as a chat.
-- **Initial state:** `_sendInitialState(panelId, target = panelId)`. With `target !== panelId` it builds the payload for `panelId`, strips the conversation messages, posts only to the hub, and skips the panel's side effects (context restore, wizard decision, pre-spawn).
+- **The hub is not registered in `_panelStates`.** It gets its own `onDidReceiveMessage` that checks `sender === _hub.panel.webview`, drops the message if the origin is null or no longer in `_panelStates` (except `HUB_UNBOUND_TYPES`, which need no chat) or its type is not in `HUB_INBOUND_TYPES`, then calls `bindIncomingMessage(message, _hub.originPanelId)` and `_handleMessage`. Loops over `_panelStates` (broadcast, dispose, cancel) therefore never see it as a chat.
+- **Initial state:** `_sendInitialState(panelId, forHub = false)`. With `forHub` it builds the payload for `panelId`, strips the conversation, posts only to the hub, and skips the panel's side effects (context restore, wizard, demotion notice, and everything after the `initialState` post).
 - **Mirroring:** `_mirrorToHub(panelId, message)` posts to the hub when `_hub?.originPanelId === panelId` and `message.type ∈ HUB_MIRROR_TYPES`. Called from `_postToPanel` and from `_broadcastToAll` (with the matching types).
-- **Settings sync:** after `_handleUpdateSettings(payload, panelId)` completes for the bound chat, post `{ type: 'settingsSync', payload }` to whichever side did **not** send it — the origin chat when the hub sent it, the hub when the chat sent it.
+- **Settings sync:** after an `updateSettings` for the bound chat is handled, post `{ type: 'settingsSync', payload }` directly to whichever side did **not** send it — the origin chat when the hub sent it (`_receiveHubMessage`), the hub when the chat sent it (`_receivePanelMessage`).
+- **Conversation follow:** `_receivePanelMessage` notes the origin's `currentConversationId` before handling a message; if it changed, the hub gets a fresh initial state and `hubShow { section: null }` (new title).
 - **Origin disposed:** in each chat panel's dispose path, if `_hub?.originPanelId === panelId`, set it to `null` and post `hubShow { section: null, chatTitle: null }`.
 - New chat → host message `openSettingsHub { section }`, handled as `openSettingsHub(section, msg.panelId)` after `isHubSection` validation.
 
@@ -83,8 +87,8 @@ A type joins `HUB_INBOUND_TYPES` only if a control inside one of the four panels
 - **`chat.js`:**
   - `var IS_HUB = document.body.classList.contains('view-hub')`.
   - Chat view: the four buttons post `openSettingsHub { section }` instead of toggling.
-  - Hub view: nav clicks and `hubShow` show exactly one of the four panels; header shows the title or "No chat selected"; per-chat rows disabled when unbound.
-  - `settingsSync`: merge into `state.settings`, then refresh the controls. The settings-to-controls block of `initializeState` (thinking/provider/model/custom-model/provider sections/`syncInlineSelectors`/brainstorm/permission rows) is extracted into `applySettingsToControls()` and called from both; `initializeState` behavior is unchanged.
+  - Hub view: nav clicks and `hubShow` show exactly one of the four panels; header shows the title or "No chat selected"; Settings and Personas & skills are read-only when unbound.
+  - `settingsSync`: merge into `state.settings` (and the dotted keys into `agentSettings` / `permissionSettings` / `brainstorm*` / `providerSettings`), then refresh the controls. The settings-to-controls block of `initializeState` (thinking/provider/model/custom-model/provider sections/`syncInlineSelectors`/brainstorm/permission rows) is extracted into `applySettingsToControls()` and called from both; `initializeState` behavior is unchanged.
 
 ## Testing
 
