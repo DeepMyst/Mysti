@@ -258,3 +258,114 @@ describe('Plan 31 — clicks that land while the tab is still loading', () => {
     expect(h.hubPosts()).toEqual([{ type: 'hubShow', payload: { section: null, chatTitle: null } }]);
   });
 });
+
+describe('Plan 31 — what crosses between the tab and its chat', () => {
+  async function bound() {
+    const handleMessage = vi.fn(async (_m: unknown) => undefined);
+    const h = harness({ _handleMessage: handleMessage });
+    await h.provider.openSettingsHub('settings', 'sidebar');
+    const hub = h.created[0];
+    const fromHub = (m: unknown) => h.provider._receiveHubMessage(m, hub.webview);
+    return { ...h, hub, fromHub, handleMessage };
+  }
+
+  it('applies a settings change from the tab as its chat, and tells only that chat', async () => {
+    const t = await bound();
+    await t.fromHub({ type: 'updateSettings', payload: { thinkingLevel: 'high' }, panelId: 'forged' });
+    expect(t.handleMessage).toHaveBeenCalledWith({ type: 'updateSettings', payload: { thinkingLevel: 'high' }, panelId: 'sidebar' });
+    expect(t.panels.get('sidebar')!.webview.postMessage).toHaveBeenCalledWith({ type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+    expect(t.panels.get('tab')!.webview.postMessage).not.toHaveBeenCalled();
+    expect(typesOf(t.hub.webview.postMessage)).not.toContain('settingsSync');
+  });
+
+  it('re-binds persona and skill edits to its chat', async () => {
+    const t = await bound();
+    await t.fromHub({ type: 'updateAgentConfig', payload: { personaId: 'p', enabledSkills: [] } });
+    expect(t.handleMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'updateAgentConfig', panelId: 'sidebar' }));
+  });
+
+  it.each([
+    'sendMessage', 'permissionResponse', 'cancelRequest', 'newConversation',
+    'autonomyLevelChanged', 'uiReady', 'openSettingsHub', 'toggleAutonomous',
+  ])('never lets the tab send %s', async (type) => {
+    const t = await bound();
+    await t.fromHub({ type, payload: {} });
+    expect(t.handleMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([null, undefined, 42, 'updateSettings', [], {}, { type: 7 }])('drops a malformed message: %j', async (m) => {
+    const t = await bound();
+    await t.fromHub(m);
+    expect(t.handleMessage).not.toHaveBeenCalled();
+  });
+
+  it('drops a message from any webview that is not the tab', async () => {
+    const t = await bound();
+    await t.provider._receiveHubMessage({ type: 'updateSettings', payload: {} }, t.panels.get('tab')!.webview);
+    expect(t.handleMessage).not.toHaveBeenCalled();
+  });
+
+  it('after its chat closes, applies no edit anywhere but still opens links', async () => {
+    const t = await bound();
+    t.provider._unbindHubFrom('sidebar');
+    await t.fromHub({ type: 'updateSettings', payload: { thinkingLevel: 'high' } });
+    await t.fromHub({ type: 'updateAgentConfig', payload: {} });
+    expect(t.handleMessage).not.toHaveBeenCalled();
+    await t.fromHub({ type: 'openExternal', payload: 'https://example.com' });
+    expect(t.handleMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'openExternal' }));
+  });
+
+  it('treats a chat that vanished without a dispose event as closed', async () => {
+    const t = await bound();
+    t.panels.delete('sidebar');
+    await t.fromHub({ type: 'updateSettings', payload: {} });
+    expect(t.handleMessage).not.toHaveBeenCalled();
+  });
+
+  it('copies a settings change made in its chat to the tab', async () => {
+    const t = await bound();
+    await t.provider._receivePanelMessage({ type: 'updateSettings', payload: { model: 'm2' } }, 'sidebar', t.panels.get('sidebar')!.webview);
+    expect(t.hub.webview.postMessage).toHaveBeenCalledWith({ type: 'settingsSync', payload: { model: 'm2' } });
+  });
+
+  it('ignores settings changes in a chat it is not bound to', async () => {
+    const t = await bound();
+    await t.provider._receivePanelMessage({ type: 'updateSettings', payload: { model: 'm2' } }, 'tab', t.panels.get('tab')!.webview);
+    expect(typesOf(t.hub.webview.postMessage)).not.toContain('settingsSync');
+  });
+
+  it('follows its chat to a new conversation', async () => {
+    const t = await bound();
+    t.handleMessage.mockImplementation(async () => { t.panels.get('sidebar')!.currentConversationId = 'c-new'; });
+    t.sendInitialState.mockClear();
+    await t.provider._receivePanelMessage({ type: 'newConversation' }, 'sidebar', t.panels.get('sidebar')!.webview);
+    expect(t.sendInitialState).toHaveBeenCalledWith('sidebar', true);
+    expect(t.hub.webview.postMessage).toHaveBeenLastCalledWith({ type: 'hubShow', payload: { section: null, chatTitle: 'New chat' } });
+  });
+
+  it('does not refresh when the conversation did not change', async () => {
+    const t = await bound();
+    t.sendInitialState.mockClear();
+    await t.provider._receivePanelMessage({ type: 'requestBadges' }, 'sidebar', t.panels.get('sidebar')!.webview);
+    expect(t.sendInitialState).not.toHaveBeenCalled();
+  });
+
+  it("mirrors panel data for its chat, never chat output or another chat's data", async () => {
+    const t = await bound();
+    t.hub.webview.postMessage.mockClear();
+    await t.provider._postToPanel('sidebar', { type: 'agentConfigUpdated', payload: {} });
+    await t.provider._postToPanel('sidebar', { type: 'responseChunk', payload: {} });
+    await t.provider._postToPanel('tab', { type: 'modelsUpdated', payload: {} });
+    expect(typesOf(t.hub.webview.postMessage)).toEqual(['agentConfigUpdated']);
+    expect(t.panels.get('sidebar')!.webview.postMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('hears broadcast panel data but is never treated as a chat', async () => {
+    const t = await bound();
+    t.hub.webview.postMessage.mockClear();
+    t.provider._broadcastToAll({ type: 'agentsUpdated', payload: {} });
+    t.provider._broadcastToAll({ type: 'activeModeActivity', payload: {} });
+    expect(typesOf(t.hub.webview.postMessage)).toEqual(['agentsUpdated']);
+    expect([...t.panels.keys()]).toEqual(['sidebar', 'tab']);
+  });
+});

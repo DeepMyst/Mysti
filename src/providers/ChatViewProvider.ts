@@ -18,7 +18,9 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { SubAgentQuestionBroker, parseSubAgentResponse } from '../chat/SubAgentQuestionBroker';
 import { bindIncomingMessage } from '../chat/incomingMessage';
-import { isHubSection, type HubSection } from '../chat/settingsHub';
+import {
+  HUB_INBOUND_TYPES, HUB_MIRROR_TYPES, HUB_UNBOUND_TYPES, isHubSection, type HubSection,
+} from '../chat/settingsHub';
 import { CoordinatorRunOutput } from '../chat/CoordinatorRunOutput';
 import { settleWithin } from '../utils/settleWithin';
 import { clampEffort } from '../utils/effort';
@@ -1532,8 +1534,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!state || state.webview !== sender) { return; }
     const bound = bindIncomingMessage(message, panelId);
     if (!bound) { return; }
+    const conversationBefore = state.currentConversationId;
     try {
       await this._handleMessage(bound as unknown as WebviewMessage);
+      await this._syncHubAfterChatMessage(panelId, bound, conversationBefore);
     } catch (error) {
       // VS Code event emitters do not await async listeners. Contain rejected
       // handlers here without logging the untrusted payload or its credentials.
@@ -14005,15 +14009,78 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._postHubShow(null);
   }
 
-  /** Plan 31: a message from the Mysti tab (routing lands in Task 3). */
-  private async _receiveHubMessage(_message: unknown, _sender: vscode.Webview): Promise<void> {
-    return;
+  /**
+   * Plan 31: a message from the Mysti tab. Applied AS the chat it acts for —
+   * `bindIncomingMessage` stamps the origin's id, whatever the tab claimed —
+   * and only for HUB_INBOUND_TYPES; with no live chat, only HUB_UNBOUND_TYPES
+   * (links), so an edit is never applied to some other chat by default.
+   */
+  private async _receiveHubMessage(message: unknown, sender: vscode.Webview): Promise<void> {
+    if (!this._hub || this._hub.panel.webview !== sender) { return; }
+    const type = message && typeof message === 'object' ? (message as { type?: unknown }).type : undefined;
+    if (typeof type !== 'string' || !HUB_INBOUND_TYPES.has(type)) { return; }
+    const origin = this._hub.originPanelId;
+    const live = origin && this._panelStates.has(origin) ? origin : null;
+    const target = live ?? (HUB_UNBOUND_TYPES.has(type) ? this._sidebarId : null);
+    if (!target) { return; }
+    const bound = bindIncomingMessage(message, target);
+    if (!bound) { return; }
+    try {
+      await this._handleMessage(bound as unknown as WebviewMessage);
+      if (live && bound.type === 'updateSettings') { this._syncHubSettings(live, bound.payload, true); }
+    } catch (error) {
+      console.error('[Mysti] Mysti tab action failed:', bound.type, error instanceof Error ? error.name : 'Unknown error');
+    }
+  }
+
+  /**
+   * Plan 31: the chat posts its OWN copy of `state.settings` with every
+   * message, so a change made on one side of the chat/tab pair must reach the
+   * other or the chat's next send silently undoes it. Posted directly, not via
+   * `_postToPanel`, so it is never mirrored back to the side that made it.
+   */
+  private _syncHubSettings(originPanelId: string, payload: unknown, fromHub: boolean): void {
+    if (!this._hub || this._hub.originPanelId !== originPanelId) { return; }
+    const target = fromHub ? this._panelStates.get(originPanelId)?.webview : this._hub.panel.webview;
+    if (!target) { return; }
+    void Promise.resolve(target.postMessage({ type: 'settingsSync', payload })).catch(() => false);
+  }
+
+  /** Plan 31: keep the Mysti tab in step with what its chat just did. */
+  private async _syncHubAfterChatMessage(
+    panelId: string,
+    bound: { type: string; payload?: unknown },
+    conversationBefore: string | null | undefined,
+  ): Promise<void> {
+    if (!this._hub || this._hub.originPanelId !== panelId) { return; }
+    if (bound.type === 'updateSettings') { this._syncHubSettings(panelId, bound.payload, false); }
+    // New / switch / delete / fork / import all land here as a changed id —
+    // no list of message types to drift.
+    if (this._panelStates.get(panelId)?.currentConversationId !== conversationBefore) {
+      // Through `loading`, as openSettingsHub does: a click meanwhile waits for
+      // this state, and a rebind, unbind or close that overtakes it wins.
+      const hub = this._hub;
+      hub.loading = this._sendInitialState(panelId, true).catch((error) => {
+        console.error('[Mysti] Mysti tab state failed:', error instanceof Error ? error.name : 'Unknown error');
+      });
+      await hub.loading;
+      if (this._hub !== hub || hub.originPanelId !== panelId) { return; }
+      this._postHubShow(null);
+    }
+  }
+
+  /** Plan 31: the tab hears what its chat hears — HUB_MIRROR_TYPES only. `null` = a broadcast. */
+  private _mirrorToHub(panelId: string | null, message: WebviewMessage): void {
+    if (!this._hub || !HUB_MIRROR_TYPES.has(message.type)) { return; }
+    if (panelId !== null && this._hub.originPanelId !== panelId) { return; }
+    void Promise.resolve(this._hub.panel.webview.postMessage(message)).catch(() => false);
   }
 
   /**
    * Send message to a specific panel
    */
   private _postToPanel(panelId: string, message: WebviewMessage) {
+    this._mirrorToHub(panelId, message);
     const state = this._panelStates.get(panelId);
     try {
       return state ? Promise.resolve(state.webview.postMessage(message)).catch(() => false) : Promise.resolve(false);
@@ -14192,6 +14259,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private _broadcastToAll(message: WebviewMessage) {
+    this._mirrorToHub(null, message);
     this._panelStates.forEach(state => {
       state.webview.postMessage(message);
     });
