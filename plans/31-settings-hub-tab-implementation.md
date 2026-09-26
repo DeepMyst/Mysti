@@ -64,20 +64,21 @@ describe('Plan 31 — what the Mysti tab may say for its chat', () => {
   it('is exactly what the four panels send', () => {
     expect([...HUB_INBOUND_TYPES].sort()).toEqual([
       'createAgent', 'getBadgeShareText', 'importSkills', 'openConnections', 'openExternal',
-      'openSettingKey', 'requestAgentLists', 'requestBadges', 'requestModels',
-      'updateAgentConfig', 'updateSettings',
+      'requestAgentLists', 'requestBadges', 'requestModels', 'updateAgentConfig', 'updateSettings',
     ]);
   });
 
   it.each([
     'sendMessage', 'permissionResponse', 'cancelRequest', 'newConversation', 'autonomyLevelChanged',
     'uiReady', 'openSettingsHub', 'toggleAutonomous', 'confirmAutonomousActivation', 'askUserQuestionResponse',
+    // Sent only by the chat-output refusal card, which the tab never renders.
+    'openSettingKey',
   ])('never includes %s', (type) => {
     expect(HUB_INBOUND_TYPES.has(type)).toBe(false);
   });
 
   it('keeps only chat-free types once the chat is gone', () => {
-    expect([...HUB_UNBOUND_TYPES].sort()).toEqual(['openConnections', 'openExternal', 'openSettingKey']);
+    expect([...HUB_UNBOUND_TYPES].sort()).toEqual(['openConnections', 'openExternal']);
     for (const t of HUB_UNBOUND_TYPES) { expect(HUB_INBOUND_TYPES.has(t)).toBe(true); }
   });
 
@@ -140,17 +141,18 @@ const HUB_SECTIONS: ReadonlySet<string> = new Set<HubSection>(['settings', 'agen
  * Webview → host types the tab may send; each is re-bound to the origin chat.
  * A type belongs here only if a control inside one of the four panels sends
  * it. Everything else — sendMessage, permissionResponse, autonomyLevelChanged
- * (posted by initializeState itself), uiReady — is dropped, so a hidden card
- * or a boot side effect in the tab can never act for the chat.
+ * (posted by initializeState itself), uiReady, openSettingKey (the chat-output
+ * refusal card's button) — is dropped, so a hidden card or a boot side effect
+ * in the tab can never act for the chat.
  */
 export const HUB_INBOUND_TYPES: ReadonlySet<string> = new Set([
   'updateSettings', 'requestModels', 'updateAgentConfig', 'requestAgentLists',
   'createAgent', 'importSkills', 'requestBadges', 'getBadgeShareText',
-  'openExternal', 'openSettingKey', 'openConnections',
+  'openExternal', 'openConnections',
 ]);
 
 /** The subset that needs no chat, still honoured after the origin chat closes. */
-export const HUB_UNBOUND_TYPES: ReadonlySet<string> = new Set(['openExternal', 'openSettingKey', 'openConnections']);
+export const HUB_UNBOUND_TYPES: ReadonlySet<string> = new Set(['openExternal', 'openConnections']);
 
 /** Host → origin-chat types the tab also receives. Chat output never is. */
 export const HUB_MIRROR_TYPES: ReadonlySet<string> = new Set([

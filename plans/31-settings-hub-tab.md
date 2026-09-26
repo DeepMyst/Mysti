@@ -27,7 +27,7 @@ Settings, Personas & skills, Badges and About leave the chat column. They open i
 - The ⌘K palette (`buildPaletteEntries` area) routes "Personas and skills" and "All settings…" by `.click()`-ing `#agent-config-btn` / `#settings-btn`.
 - Settings are mixed-scope. `_handleUpdateSettings`: mode, thinking, effort, access → global config; model, provider → `panelState.settingsOverrides` (per panel). Agent config (`updateAgentConfig`) → the panel's current conversation.
 - **The chat sends `state.settings` with every `sendMessage`.** A setting changed elsewhere and not merged into that chat's `state.settings` is silently overwritten by its next send. This is the constraint the sync in §Host drives from.
-- Every control inside the four panels posts only: `updateSettings`, `requestModels`, `updateAgentConfig`, `requestAgentLists`, `createAgent`, `importSkills`, `requestBadges`, `getBadgeShareText`, `openExternal`, `openSettingKey`, `openConnections`. The autonomy **level** picker is in the composer popup, not the settings panel; the panel's autonomy rows (safety mode, timeout behavior, semi-auto timeout) are plain `updateSettings`.
+- Every control inside the four panels posts only: `updateSettings`, `requestModels`, `updateAgentConfig`, `requestAgentLists`, `createAgent`, `importSkills`, `requestBadges`, `getBadgeShareText`, `openExternal`, `openConnections`. (`openSettingKey` is sent only by the chat-output refusal card, which the hub never renders, so it is not on the list.) The autonomy **level** picker is in the composer popup, not the settings panel; the panel's autonomy rows (safety mode, timeout behavior, semi-auto timeout) are plain `updateSettings`.
 - `initializeState` posts `autonomyLevelChanged` as a side effect.
 - Webview → host routing: `_receivePanelMessage` checks `state.webview === sender`, then `bindIncomingMessage(message, panelId)` stamps the host-known panel id. This is the single place a message acquires its panel identity.
 - Precedent for a secondary editor tab: `openVisualTestDashboard(config, originPanelId)` (singleton, `ViewColumn.Beside`, `_vtDashboardChatOrigin`).
@@ -52,9 +52,9 @@ Settings, Personas & skills, Badges and About leave the chat column. They open i
 ```ts
 export type HubSection = 'settings' | 'agents' | 'badges' | 'about';
 /** Webview → host types the hub may send; each is re-bound to the origin chat. */
-export const HUB_INBOUND_TYPES: ReadonlySet<string>;   // the 11 types listed in Current state
+export const HUB_INBOUND_TYPES: ReadonlySet<string>;   // the 10 types listed in Current state
 /** The subset that needs no chat; still honoured after the origin closes. */
-export const HUB_UNBOUND_TYPES: ReadonlySet<string>;   // openExternal, openSettingKey, openConnections
+export const HUB_UNBOUND_TYPES: ReadonlySet<string>;   // openExternal, openConnections
 /** Host → origin-chat types that are also copied to the hub. */
 export const HUB_MIRROR_TYPES: ReadonlySet<string>;    // see below
 export function isHubSection(v: unknown): v is HubSection;

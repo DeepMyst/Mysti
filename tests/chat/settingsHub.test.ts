@@ -16,20 +16,21 @@ describe('Plan 31 — what the Mysti tab may say for its chat', () => {
   it('is exactly what the four panels send', () => {
     expect([...HUB_INBOUND_TYPES].sort()).toEqual([
       'createAgent', 'getBadgeShareText', 'importSkills', 'openConnections', 'openExternal',
-      'openSettingKey', 'requestAgentLists', 'requestBadges', 'requestModels',
-      'updateAgentConfig', 'updateSettings',
+      'requestAgentLists', 'requestBadges', 'requestModels', 'updateAgentConfig', 'updateSettings',
     ]);
   });
 
   it.each([
     'sendMessage', 'permissionResponse', 'cancelRequest', 'newConversation', 'autonomyLevelChanged',
     'uiReady', 'openSettingsHub', 'toggleAutonomous', 'confirmAutonomousActivation', 'askUserQuestionResponse',
+    // Sent only by the chat-output refusal card, which the tab never renders.
+    'openSettingKey',
   ])('never includes %s', (type) => {
     expect(HUB_INBOUND_TYPES.has(type)).toBe(false);
   });
 
   it('keeps only chat-free types once the chat is gone', () => {
-    expect([...HUB_UNBOUND_TYPES].sort()).toEqual(['openConnections', 'openExternal', 'openSettingKey']);
+    expect([...HUB_UNBOUND_TYPES].sort()).toEqual(['openConnections', 'openExternal']);
     for (const t of HUB_UNBOUND_TYPES) { expect(HUB_INBOUND_TYPES.has(t)).toBe(true); }
   });
 
