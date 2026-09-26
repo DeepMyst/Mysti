@@ -406,3 +406,101 @@ describe('composer and Brainstorm copy', () => {
     expect(await pg.textContent('#brainstorm-strategy-hint')).toBe('Both answer, then one merged reply. Fastest.');
   });
 });
+
+describe('final-review fixes', () => {
+  const ON = { onboarding: { tips: { enabled: true, seen: [] }, gettingStarted: null } };
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a host mode change reaches the next turn and stands unattended down', async () => {
+    const pg = await panel({ autonomyLevel: 'semi-autonomous', settings: {
+      provider: 'claude-code', model: '', mode: 'edit-automatically', thinkingLevel: 'none', effortLevel: 'high',
+      accessLevel: 'full-access', contextMode: 'auto', autonomousMode: false } });
+    await send(pg, { type: 'modeChanged', payload: { mode: 'quick-plan', accessLevel: 'read-only' } });
+    expect((await posted(pg)).filter((m) => m.type === 'autonomyLevelChanged').pop()!.payload).toEqual({ level: 'manual' });
+    await pg.fill('#message-input', 'hello');
+    await pg.click('#send-btn');
+    const sent = (await posted(pg)).filter((m) => m.type === 'sendMessage').pop();
+    expect(sent!.payload.settings).toMatchObject({ mode: 'quick-plan', accessLevel: 'read-only' });
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('an installed but signed-out CLI does not enable Continue', async () => {
+    const pg = await panel();
+    // What the host really sends: anyReady counts INSTALLED CLIs.
+    await wizard(pg, { providers: PROVIDERS(['openai-codex'], []), anyReady: true });
+    expect(await pg.isDisabled('#wizard-next-btn')).toBe(true);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('finishing sign-in inside the wizard enables Continue and asks for fresh status', async () => {
+    const pg = await panel();
+    await wizard(pg, { providers: PROVIDERS(['openai-codex'], []), anyReady: true });
+    await send(pg, { type: 'providerSetupStep', payload: { providerId: 'openai-codex', step: 'complete', progress: 100 } });
+    expect(await pg.isDisabled('#wizard-next-btn')).toBe(false);
+    await send(pg, { type: 'setupComplete', payload: { providerId: 'openai-codex' } });
+    expect((await posted(pg)).some((m) => m.type === 'requestWizardStatus')).toBe(true);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Continue switches to a ready agent when the chat is on one that is not', async () => {
+    const pg = await panel({ settings: { ...(INITIAL_STATE.settings as object), provider: 'mysti' } });
+    await wizard(pg, { providers: PROVIDERS(['openai-codex'], ['openai-codex']), anyReady: true, mystiReady: false });
+    await pg.click('#wizard-next-btn');
+    expect((await posted(pg)).filter((m) => m.type === 'selectProvider').pop()!.payload).toEqual({ providerId: 'openai-codex' });
+    expect(await pg.isVisible('.wizard-step[data-step="mode"]')).toBe(true);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Continue leaves a ready chat agent alone', async () => {
+    const pg = await panel();
+    await wizard(pg, { providers: PROVIDERS(['claude-code', 'openai-codex'], ['claude-code', 'openai-codex']), anyReady: true });
+    await pg.click('#wizard-next-btn');
+    expect((await posted(pg)).some((m) => m.type === 'selectProvider')).toBe(false);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a second initialState replaces the conversation instead of appending it', async () => {
+    const conversation = { id: 'c1', messages: [
+      { id: 'u1', role: 'user', content: 'hi', timestamp: 1 },
+      { id: 'a1', role: 'assistant', content: 'hello', timestamp: 2 },
+    ] };
+    const pg = await panel({ conversation });
+    const before = await pg.$$eval('#messages .message', (m) => m.length);
+    await send(pg, { type: 'initialState', payload: { ...INITIAL_STATE, conversation } });
+    expect(await pg.$$eval('#messages .message', (m) => m.length)).toBe(before);
+    expect(before).toBeGreaterThan(0);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the card after the wizard reflects what the wizard just did', async () => {
+    const pg = await panel({ onboarding: { tips: { enabled: true, seen: [] },
+      gettingStarted: { items: { connect: false, mode: false, task: false, mention: false } } } });
+    await wizard(pg, { providers: PROVIDERS([], []), anyReady: false, mystiReady: false });
+    await send(pg, { type: 'mystiReadyChanged', payload: { ready: true } });
+    await pg.click('#wizard-next-btn');
+    await pg.click('#wizard-next-btn'); // accept the mode shown
+    expect((await posted(pg)).filter((m) => m.type === 'updateSettings').pop()!.payload)
+      .toEqual({ mode: 'ask-before-edit', accessLevel: 'ask-permission' });
+    await pg.click('#wizard-next-btn');
+    expect(await pg.textContent('#getting-started .gs-count')).toBe('2 of 4 done');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Escape inside a wizard field does not dismiss the wizard', async () => {
+    const pg = await panel();
+    await wizard(pg);
+    await pg.click('#wizard-all > summary');
+    await pg.click('#wizard-filter');
+    await pg.keyboard.press('Escape');
+    expect(await pg.isVisible('#setup-wizard')).toBe(true);
+    expect((await posted(pg)).some((m) => m.type === 'dismissWizard')).toBe(false);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the permission tip does not blame the mode for a card that always asks', async () => {
+    const pg = await panel(ON);
+    await send(pg, { type: 'permissionRequest', payload: {
+      id: 'f1', toolName: 'mcp', actionType: 'web-request', expiresAt: 0, forceInteractive: true, details: {} } });
+    const text = await pg.textContent('.mysti-tip[data-tip="permission"]');
+    expect(text).not.toContain('because you’re on');
+    expect(text).toContain('always asks');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Start chatting puts the keyboard in the composer', async () => {
+    const pg = await panel();
+    await wizard(pg, { providers: PROVIDERS(['claude-code'], ['claude-code']), anyReady: true, step: 'task' });
+    await pg.click('#wizard-next-btn');
+    expect(await pg.evaluate(() => document.activeElement && document.activeElement.id)).toBe('message-input');
+  });
+});

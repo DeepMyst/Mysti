@@ -800,18 +800,26 @@ export class SlashCommandManager {
 
       // ---- Settings ----
       case 'settings:mode': {
+        // Plan 32: every branch also tells the PANEL. The webview sends its
+        // own copy of mode/access with each turn, so a config-only write left
+        // the next turn running at the old authority under a reply saying
+        // otherwise.
         if (trimmedArgs) {
-          if (isTrustStop(trimmedArgs)) {
-            // Plan 32: the same pair the mode pill writes. A mode-only write
-            // would leave access on whatever tier it was on before.
+          const stop = trimmedArgs.toLowerCase();
+          if (isTrustStop(stop)) {
+            // The same pair the mode pill writes: a mode-only write would leave
+            // access on whatever tier it was on before.
             const current = vscode.workspace.getConfiguration('mysti').get<OperationMode>('defaultMode');
-            await callbacks.updateSettings({ ...authorityForTrust(trimmedArgs, current) });
-            const copy = TRUST_COPY[trimmedArgs];
+            const authority = authorityForTrust(stop, current);
+            await callbacks.updateSettings({ ...authority });
+            callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { ...authority } });
+            const copy = TRUST_COPY[stop];
             return `Mode: ${copy.label}. ${copy.permits}`;
           }
           const modes = ['ask-before-edit', 'edit-automatically', 'quick-plan', 'detailed-plan'];
           if (modes.includes(trimmedArgs)) {
             await callbacks.updateSettings({ mode: trimmedArgs });
+            callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { mode: trimmedArgs } });
             return `Mode changed to: ${trimmedArgs}`;
           }
           return `Invalid mode. Use plan, ask, auto or full (or a raw mode: ${modes.join(', ')}).`;
@@ -819,6 +827,7 @@ export class SlashCommandManager {
         const selectedMode = await this._selectOperationMode();
         if (selectedMode) {
           await callbacks.updateSettings({ mode: selectedMode });
+          callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { mode: selectedMode } });
           return `Mode changed to: ${selectedMode}`;
         }
         return;
@@ -846,6 +855,7 @@ export class SlashCommandManager {
           const levels = ['read-only', 'ask-permission', 'full-access'];
           if (levels.includes(trimmedArgs)) {
             await callbacks.updateSettings({ accessLevel: trimmedArgs });
+            callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { accessLevel: trimmedArgs } });
             return `Access level changed to: ${trimmedArgs}`;
           }
           return `Invalid level. Available: ${levels.join(', ')}`;
@@ -853,6 +863,7 @@ export class SlashCommandManager {
         const selectedAccess = await this._selectAccessLevel();
         if (selectedAccess) {
           await callbacks.updateSettings({ accessLevel: selectedAccess });
+          callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { accessLevel: selectedAccess } });
           return `Access level changed to: ${selectedAccess}`;
         }
         return;

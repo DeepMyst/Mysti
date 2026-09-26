@@ -75,6 +75,24 @@ describe('/mode speaks the four mode names', () => {
   });
 });
 
+describe('/mode reaches the panel, not just the config', () => {
+  it('/mode full tells the panel the new pair', async () => {
+    const posted: unknown[] = [];
+    await makeManager().executeCommand('settings:mode', 'full', 'p', callbacks([], posted) as any);
+    expect(posted).toEqual([{ type: 'modeChanged', payload: { mode: 'edit-automatically', accessLevel: 'full-access' } }]);
+  });
+  it('/mode takes any case', async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    await makeManager().executeCommand('settings:mode', 'Plan', 'p', callbacks(updates, []) as any);
+    expect(updates).toEqual([{ mode: 'quick-plan', accessLevel: 'read-only' }]);
+  });
+  it('/access tells the panel too', async () => {
+    const posted: unknown[] = [];
+    await makeManager().executeCommand('settings:access', 'read-only', 'p', callbacks([], posted) as any);
+    expect(posted).toEqual([{ type: 'modeChanged', payload: { accessLevel: 'read-only' } }]);
+  });
+});
+
 describe('/help opens the help card', () => {
   it('posts showHelp and returns no text', async () => {
     const posted: unknown[] = [];

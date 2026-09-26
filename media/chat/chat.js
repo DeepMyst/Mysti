@@ -3427,6 +3427,10 @@
         document.addEventListener('keydown', function(e) {
           if (e.key !== 'Escape') { return; }
           var wizard = document.getElementById('setup-wizard');
+          // Plan 32: Escape in a wizard field clears or leaves the field; it
+          // must not persist a dismissal of the whole wizard.
+          var field = e.target && e.target.closest && e.target.closest('#setup-wizard input, #setup-wizard textarea, #setup-wizard select');
+          if (field) { return; }
           if (wizard && !wizard.classList.contains('hidden')) {
             var skip = document.querySelector('.wizard-skip-btn');
             if (skip) { e.preventDefault(); skip.click(); }
@@ -5108,8 +5112,16 @@
             }
             break;
           case 'modeChanged':
-            // Update mode when plan is executed
-            state.settings.mode = message.payload.mode;
+            // Update mode when a plan is executed, or when /mode or /access
+            // changed it on the host (Plan 32) — the next turn sends THESE.
+            if (message.payload.mode) { state.settings.mode = message.payload.mode; }
+            if (message.payload.accessLevel) { state.settings.accessLevel = message.payload.accessLevel; }
+            // Same stand-down as applyChatMode: unattended running is a
+            // duration granted on Auto or Full only.
+            var modeNow = deriveChatMode();
+            if (modeNow !== 'auto' && modeNow !== 'full' && state.autonomyLevel !== 'manual') {
+              setAutonomyLevel('manual');
+            }
             updateBehaviorIndicator();
             updateBehaviorHint();
             renderModeOptions();
@@ -5858,6 +5870,9 @@
       }
 
       function handleSetupComplete(payload) {
+        // Plan 32: an OAuth/browser sign-in ends here with no wizardStatus of
+        // its own; ask for one so the wizard's cards and Continue catch up.
+        if (state.wizard.visible) { postMessageWithPanelId({ type: 'requestWizardStatus' }); }
         reviveSetupRetry();   // terminal
         state.setup.isReady = true;
         state.setup.currentStep = 'ready';
@@ -6123,6 +6138,10 @@
         }
 
         updateWizardProviderCard(payload.providerId);
+        if (state.wizard.visible) {
+          placeWizardCards();
+          updateWizardNav();
+        }
 
         // Also update install modal if it's open for this provider
         if (currentInstallProviderId === payload.providerId) {
@@ -7086,8 +7105,35 @@
 
       var WIZARD_STEPS = ['connect', 'mode', 'task'];
 
+      /** Signed in, not merely installed (`anyReady` counts installed CLIs). */
+      function wizardReadyClis() {
+        return (state.wizard.providers || [])
+          .filter(function(p) { return p.installed && p.authenticated; })
+          .map(function(p) { return p.providerId; });
+      }
+
+      function wizardAgentIsReady(id) {
+        if (id === 'mysti') { return !!state.wizard.mystiReady; }
+        return wizardReadyClis().indexOf(id) !== -1;
+      }
+
       function wizardAgentReady() {
-        return !!(state.wizard.anyReady || state.wizard.mystiReady);
+        return !!state.wizard.mystiReady || wizardReadyClis().length > 0;
+      }
+
+      /**
+       * Plan 32 (D4 as amended): Continue never leaves the chat on an agent
+       * that cannot answer. If neither "Use This" nor the chat's current agent
+       * is ready, switch to the Mysti agent when signed in, else the first
+       * signed-in CLI.
+       */
+      function ensureWizardAgent() {
+        var current = state.settings && state.settings.provider;
+        if (state.wizard.selected || current === 'brainstorm' || wizardAgentIsReady(current)) { return; }
+        var pick = state.wizard.mystiReady ? 'mysti' : wizardReadyClis()[0];
+        if (!pick) { return; }
+        state.wizard.selected = pick;
+        postMessageWithPanelId({ type: 'selectProvider', payload: { providerId: pick } });
       }
 
       /**
@@ -7248,7 +7294,14 @@
 
       function finishWizard() {
         hideWizard();
+        // The card's snapshot predates the wizard; tick what it just did.
+        var gs = state.onboarding && state.onboarding.gettingStarted;
+        if (gs && gs.items) {
+          if (wizardAgentReady()) { gs.items.connect = true; }
+          if (state.wizard.modeChosen) { gs.items.mode = true; }
+        }
         renderGettingStarted();
+        if (inputEl) { inputEl.focus(); }
       }
 
       /**
@@ -7343,7 +7396,14 @@
       var wizardNextBtn = document.getElementById('wizard-next-btn');
       if (wizardNextBtn) {
         wizardNextBtn.addEventListener('click', function() {
-          var i = WIZARD_STEPS.indexOf(state.wizard.step || 'connect');
+          var step = state.wizard.step || 'connect';
+          if (step === 'connect') { ensureWizardAgent(); }
+          if (step === 'mode') {
+            // Continuing IS the choice, even when it is the mode already shown.
+            var chosen = document.querySelector('#setup-wizard input[name="wizard-mode"]:checked');
+            if (chosen) { applyChatMode(chosen.value); state.wizard.modeChosen = true; }
+          }
+          var i = WIZARD_STEPS.indexOf(step);
           if (i >= WIZARD_STEPS.length - 1) { finishWizard(); } else { showWizardStep(WIZARD_STEPS[i + 1]); }
         });
       }
@@ -9002,6 +9062,10 @@
         // Initialize sticky progress observer for scroll-aware sticking
         initStickyProgressObserver();
 
+        // Plan 32: initialState is authoritative for the transcript. It can now
+        // reach a LIVE panel (Get Started opened the wizard over a chat, which
+        // re-sends initialState on close), and appending duplicated every message.
+        if (messagesEl.querySelector('.message')) { clearMessages(); }
         if (state.conversation && state.conversation.messages) {
           state.conversation.messages.forEach(function(msg) { addMessage(msg); });
         }
@@ -11102,11 +11166,13 @@
         // Plan 32: explain the very first approval, once.
         if (claimTip('permission')) {
           var pm = chatModeById(deriveChatMode()) || chatModeById('ask');
-          var canRemember = !request.forceInteractive && !request.remoteOrigin;
-          messagesEl.appendChild(buildTip('permission',
-            '<strong>Your first approval.</strong> Mysti is asking because you\u2019re on <strong>' + escapeHtml(pm.label) + '</strong>.' +
-            (canRemember ? ' \u201cYes, and don\u2019t ask again\u201d skips this kind of action for the rest of the session.' : '') +
-            ' Change mode from the pill below.'));
+          var forced = request.forceInteractive || request.remoteOrigin;
+          messagesEl.appendChild(buildTip('permission', forced
+            // A forced card asks on every mode, so the mode is not the reason.
+            ? '<strong>Your first approval.</strong> This kind of action always asks, whatever your mode.'
+            : '<strong>Your first approval.</strong> Mysti is asking because you\u2019re on <strong>' + escapeHtml(pm.label) + '</strong>.' +
+              ' \u201cYes, and don\u2019t ask again\u201d skips this kind of action for the rest of the session.' +
+              ' Change mode from the pill below.'));
         }
 
         // Render permission card

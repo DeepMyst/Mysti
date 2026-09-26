@@ -1382,14 +1382,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     const providerAvailability = this._buildProviderAvailability(wizardStatus);
 
-    // Plan 32: the walkthrough's "Connect an agent" step completes on this key.
-    const agentReady = wizardStatus.anyReady || mystiReady;
-    void vscode.commands.executeCommand('setContext', 'mysti.agentReady', agentReady);
+    // Plan 32: "ready" means SIGNED IN — `anyReady` only says a CLI is
+    // installed. The walkthrough's Connect step completes when any agent is
+    // ready; the Getting-started card asks whether THIS chat's agent is.
+    const signedIn = (id: string) => wizardStatus.providers.some(p => p.providerId === id && p.installed && p.authenticated);
+    const anyAgentReady = mystiReady || wizardStatus.providers.some(p => p.installed && p.authenticated);
+    void vscode.commands.executeCommand('setContext', 'mysti.agentReady', anyAgentReady);
+    const chatAgentReady = agentForWebview === 'mysti' ? mystiReady
+      : agentForWebview === 'brainstorm' ? anyAgentReady
+        : signedIn(agentForWebview);
     const onboarding = await onboardingSnapshot({
       store: this._extensionContext.globalState,
       tipsEnabled: config.get<boolean>('tips.enabled', true),
       hasCompletedSetup: this._extensionContext.globalState.get<boolean>('mysti.hasCompletedSetup', false),
-      agentReady,
+      agentReady: chatAgentReady,
       modeChosen: hasChosenMode(config),
       messagesSent: Number(this._engagementManager.getUsageStats()?.totalMessages) || 0,
     });

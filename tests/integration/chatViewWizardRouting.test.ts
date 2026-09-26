@@ -398,6 +398,25 @@ describe('ChatViewProvider message routing', () => {
       expect(shown!.payload.step).toBe('connect');
     });
 
+    it('"connect" means the chat\'s own agent is signed in, not that some CLI is installed', async () => {
+      useStore();
+      const status = { anyReady: true, npmAvailable: true, nodeVersion: 'v20', complete: true,
+        providers: [{ providerId: 'claude-code', installed: true, authenticated: false }] };
+      const sm = (h.provider as any)._setupManager;
+      sm.getWizardStatusCached = () => ({ ...status });
+      sm.getWizardStatus = async () => ({ ...status });
+      const calls: unknown[][] = [];
+      const cmds = (await import('../helpers/mockVscode')).commands as any;
+      const orig = cmds.executeCommand;
+      cmds.executeCommand = (...a: unknown[]) => { calls.push(a); return Promise.resolve(); };
+      try {
+        await (h.provider as any)._sendInitialState('sidebar');
+      } finally { cmds.executeCommand = orig; }
+      const init = h.sidebarMessages.find(m => m.type === 'initialState');
+      expect(init!.payload.onboarding.gettingStarted.items.connect).toBe(false);
+      expect(calls).toContainEqual(['setContext', 'mysti.agentReady', false]);
+    });
+
     it('a Get Started request made before the sidebar exists is delivered after its initialState', async () => {
       (h.provider as any)._panelStates.delete('sidebar');
       await h.provider.showOnboarding('task');
