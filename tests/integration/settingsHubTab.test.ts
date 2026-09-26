@@ -185,9 +185,10 @@ describe('Plan 31 — clicks that land while the tab is still loading', () => {
    * The REAL `_sendInitialState`, held at its first wait (the provider probe,
    * up to 4s in the product) until the test lets a given chat's load finish.
    */
-  function loading() {
+  function loading(overrides: Record<string, unknown> = {}) {
     const release: Record<string, () => void> = {};
     const h = harness({
+      _panelAutonomyLevel: new Map<string, string>(),
       _sendInitialState: (ChatViewProvider.prototype as unknown as Record<string, unknown>)._sendInitialState,
       _getPanelProvider: (panelId: string) => panelId,
       _getPanelAgent: () => 'claude-code',
@@ -202,6 +203,7 @@ describe('Plan 31 — clicks that land while the tab is still loading', () => {
       _contextManager: { getContext: () => [{ path: '/w/attached.ts' }] },
       _engagementManager: { getUsageStats: () => ({}), getAllBadges: () => [], getUnlockedCount: () => 0 },
       _buildManifestPayload: () => ({}),
+      ...overrides,
     });
     const settle = () => new Promise((r) => setTimeout(r, 0));
     return { ...h, release, settle };
@@ -248,6 +250,22 @@ describe('Plan 31 — clicks that land while the tab is still loading', () => {
     expect(h.panels.get('sidebar')!.webview.postMessage).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['semi-autonomous', 'semi-autonomous'],
+    ['manual', 'manual'],
+    [undefined, 'manual'],
+    // Not reported on every path (Ctrl+Shift+A, deactivation), so never trusted.
+    ['autonomous', 'manual'],
+  ])("carries its chat's own autonomy level (%s), not the global config's", async (level, shown) => {
+    const h = loading({ _panelAutonomyLevel: new Map(level ? [['sidebar', level]] : []) });
+    const open = h.provider.openSettingsHub('settings', 'sidebar');
+    await h.settle();
+    h.release.sidebar();
+    await open;
+    const state = h.hubPosts().find(m => m.type === 'initialState')!.payload as { autonomyLevel?: string };
+    expect(state.autonomyLevel).toBe(shown);
+  });
+
   it('drops a load whose chat closed before it finished', async () => {
     const h = loading();
     const open = h.provider.openSettingsHub('settings', 'sidebar');
@@ -260,9 +278,9 @@ describe('Plan 31 — clicks that land while the tab is still loading', () => {
 });
 
 describe('Plan 31 — what crosses between the tab and its chat', () => {
-  async function bound() {
+  async function bound(overrides: Record<string, unknown> = {}) {
     const handleMessage = vi.fn(async (_m: unknown) => undefined);
-    const h = harness({ _handleMessage: handleMessage });
+    const h = harness({ _handleMessage: handleMessage, ...overrides });
     await h.provider.openSettingsHub('settings', 'sidebar');
     const hub = h.created[0];
     const fromHub = (m: unknown) => h.provider._receiveHubMessage(m, hub.webview);
@@ -338,6 +356,37 @@ describe('Plan 31 — what crosses between the tab and its chat', () => {
     const t = await bound();
     await t.provider._receivePanelMessage({ type: 'updateSettings', payload: { model: 'm2' } }, 'sidebar', t.panels.get('sidebar')!.webview);
     expect(t.hub.webview.postMessage).toHaveBeenCalledWith({ type: 'settingsSync', payload: { model: 'm2' } });
+  });
+
+  it('tells the other side only what the host applied, never a value it refused', async () => {
+    const t = await bound({
+      _providerManager: { getAllProviderIds: () => ['claude-code', 'openai-codex'] },
+      _permissionManager: { refreshConfig: vi.fn() },
+      postMessage: vi.fn(),
+    });
+    const real = (ChatViewProvider.prototype as unknown as {
+      _handleUpdateSettings(s: unknown, p?: string): Promise<void>;
+    })._handleUpdateSettings;
+    t.handleMessage.mockImplementation((m) => {
+      const msg = m as { payload: unknown; panelId: string };
+      return real.call(t.provider, msg.payload, msg.panelId);
+    });
+    const refused = {
+      customModel: 'bad model!', codexProfile: 'bad profile!', 'brainstorm.strategy': 'chaos',
+      'permission.timeoutBehavior': 'yolo', 'semiAutonomous.timeout': 5,
+    };
+    await t.fromHub({ type: 'updateSettings', payload: {
+      ...refused, showSuggestions: false, 'brainstorm.agents': ['claude-code', 'bogus', 'openai-codex'],
+    } });
+    expect(t.panels.get('sidebar')!.webview.postMessage).toHaveBeenCalledWith({ type: 'settingsSync', payload: {
+      showSuggestions: false, 'brainstorm.agents': ['claude-code', 'openai-codex'],
+    } });
+    // Same rule from the chat's side: a lone refused key is not relayed as applied.
+    await t.provider._receivePanelMessage({ type: 'updateSettings', payload: { 'brainstorm.agents': ['claude-code'] } },
+      'sidebar', t.panels.get('sidebar')!.webview);
+    expect(t.hub.webview.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({ 'brainstorm.agents': expect.anything() }),
+    }));
   });
 
   it('ignores settings changes in a chat it is not bound to', async () => {

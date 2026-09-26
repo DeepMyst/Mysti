@@ -8601,10 +8601,6 @@
        */
       function applySettingsSync(p) {
         if (!p || typeof p !== 'object') { return; }
-        // An unposted custom-model edit here (Custom… picked, or a value still
-        // being typed) survives a sync that does not touch the model.
-        var keepCustomDraft = modelSelect.value === '__custom__' && !customModelSection.classList.contains('hidden')
-          && p.provider === undefined && p.model === undefined && p.customModel === undefined;
         ['provider', 'model', 'thinkingLevel', 'effortLevel', 'mode', 'accessLevel', 'contextMode'].forEach(function(k) {
           if (p[k] !== undefined) { state.settings[k] = p[k]; }
         });
@@ -8632,7 +8628,12 @@
         });
         if (p['brainstorm.agents'] !== undefined) { state.brainstormAgents = p['brainstorm.agents']; }
         if (p['brainstorm.strategy'] !== undefined) { state.brainstormStrategy = p['brainstorm.strategy']; }
-        applySettingsToControls(keepCustomDraft);
+        // The tab never hears autonomyLevelChanged; its chat posts this key on
+        // every move into or out of semi-autonomous (boot level: initialState).
+        if (IS_HUB && p['permission.timeoutBehavior'] !== undefined) {
+          state.autonomyLevel = p['permission.timeoutBehavior'] === 'semi-autonomous' ? 'semi-autonomous' : 'manual';
+        }
+        applySettingsToControls(p);
         // Mode/access also drive the composer's trust pill.
         if (p.mode !== undefined || p.accessLevel !== undefined) {
           renderModeOptions();
@@ -8644,8 +8645,14 @@
        * Plan 31: paint every settings control from `state`. Shared by
        * initializeState and settingsSync. Posts NOTHING — the autonomy-level
        * report stays in initializeState, where it belongs to panel boot.
+       * `p` (a settingsSync payload) limits the controls a user can have an
+       * uncommitted edit in — the model picker, provider fields, brainstorm
+       * boxes, number inputs — to the keys it carries, so the edit survives.
        */
-      function applySettingsToControls(keepCustomDraft) {
+      function applySettingsToControls(p) {
+        function carries(keys) {
+          return !p || keys.some(function(k) { return p[k] !== undefined; });
+        }
         thinkingSelect.value = state.settings.thinkingLevel;
         if (contextModeLabel) {
           contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
@@ -8666,7 +8673,8 @@
         }
 
         // Populate model dropdown based on selected provider
-        if (state.providers && state.providers.length > 0) {
+        var modelKeys = ['provider', 'model', 'customModel'];
+        if (carries(modelKeys) && state.providers && state.providers.length > 0) {
           var provider = state.providers.find(function(p) { return p.name === state.settings.provider; });
           if (provider) {
             modelSelect.innerHTML = provider.models.map(function(m) {
@@ -8680,15 +8688,15 @@
         // Custom model if set in provider settings, else the active model —
         // re-appended when the catalog does not list it (settingsSync re-runs
         // this rebuild, and a settled off-catalog model must survive it).
-        if (keepCustomDraft) {
-          modelSelect.value = '__custom__';
-        } else {
+        if (carries(modelKeys)) {
           applyCustomModelState(state.providerSettings && state.providerSettings.customModel);
         }
 
         // W4: render the selected provider's declarative settings sections
         // (values restored from state.providerSettings by settingKey)
-        renderProviderSettingsSections(state.settings.provider);
+        if (carries(['provider'].concat(Object.keys(state.providerSettings || {})))) {
+          renderProviderSettingsSections(state.settings.provider);
+        }
 
         // Mirror model + effort into the prompt-box quick pickers now that both
         // the model list and the effort selector have been populated.
@@ -8711,12 +8719,12 @@
         }
 
         // Initialize agent settings UI
-        if (state.agentSettings) {
+        if (state.agentSettings && carries(['agents.autoSuggest', 'agents.maxTokenBudget', 'showSuggestions'])) {
           updateAgentSettingsUI();
         }
 
         // Initialize brainstorm agents UI
-        if (state.brainstormAgents) {
+        if (state.brainstormAgents && carries(['brainstorm.agents'])) {
           updateBrainstormAgentsUI();
         }
         // Initialize brainstorm strategy dropdown
@@ -8736,14 +8744,8 @@
             var tbValue = state.permissionSettings.timeoutBehavior;
             tbSelect.value = (tbValue === 'semi-autonomous') ? 'auto-reject' : (tbValue || 'auto-reject');
           }
-          // Plan 31: the tab never hears autonomyLevelChanged, only this config,
-          // so it reads the level from here — or it would offer the manual row,
-          // whose edit overwrites semi-autonomous in config.
-          if (IS_HUB) {
-            state.autonomyLevel = state.permissionSettings.timeoutBehavior === 'semi-autonomous' ? 'semi-autonomous' : 'manual';
-          }
           var saTimeoutInput = document.getElementById('semi-auto-timeout-input');
-          if (saTimeoutInput) {
+          if (saTimeoutInput && carries(['semiAutonomous.timeout'])) {
             saTimeoutInput.value = state.permissionSettings.semiAutonomousTimeout || 60;
           }
           // Autonomy sub-settings visibility depends on current autonomy level

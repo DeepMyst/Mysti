@@ -1418,6 +1418,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         brainstormStrategy,
         providerSettings,
         permissionSettings,
+        // Plan 31: the tab never hears its chat's autonomyLevelChanged, and
+        // `permissionSettings` is global config that outlives a reload, so the
+        // tab gets the chat's own level. Semi or manual only: 'autonomous' is
+        // not reported on every path (Ctrl+Shift+A, deactivation) and may be stale.
+        ...(forHub ? {
+          autonomyLevel: this._panelAutonomyLevel.get(panelId) === 'semi-autonomous' ? 'semi-autonomous' : 'manual',
+        } : {}),
         githubStarCount: this._getCachedGithubStarCount(),
         usageStats: this._engagementManager.getUsageStats(),
         badges: this._engagementManager.getAllBadges(),
@@ -6333,6 +6340,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Keys it refuses are DELETED from `settings` (a filtered brainstorm pair is
+   * replaced by what was saved), so a caller that relays the payload — Plan 31
+   * settingsSync — relays only what was applied.
+   */
   private async _handleUpdateSettings(settings: Partial<Settings>, panelId?: string) {
     const config = vscode.workspace.getConfiguration('mysti');
 
@@ -6458,8 +6470,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           } else {
             console.warn(`[Mysti] Invalid custom model "${customModel}": ${validation.error}`);
             this.postMessage({ type: 'settingsError', payload: { error: validation.error || 'Invalid model name' } });
+            delete settingsAny['customModel'];
           }
         }
+      } else {
+        delete settingsAny['customModel'];
       }
     }
 
@@ -6477,6 +6492,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } else {
           console.warn(`[Mysti] Invalid Codex profile "${profile}": ${validation.error}`);
           this.postMessage({ type: 'settingsError', payload: { error: validation.error || 'Invalid profile name' } });
+          delete settingsAny['codexProfile'];
         }
       }
     }
@@ -6499,8 +6515,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const validAgents: string[] = this._providerManager.getAllProviderIds();
       const filtered = agents.filter(a => validAgents.includes(a));
       if (filtered.length === 2) {
+        settingsAny['brainstorm.agents'] = filtered;
         await config.update('brainstorm.agents', filtered, vscode.ConfigurationTarget.Global);
         console.log(`[Mysti] Updated brainstorm agents to: ${filtered.join(', ')}`);
+      } else {
+        delete settingsAny['brainstorm.agents'];
       }
     }
 
@@ -6511,6 +6530,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (validStrategies.includes(strategy)) {
         await config.update('brainstorm.strategy', strategy, vscode.ConfigurationTarget.Global);
         console.log(`[Mysti] Updated brainstorm strategy to: ${strategy}`);
+      } else {
+        delete settingsAny['brainstorm.strategy'];
       }
     }
 
@@ -6522,6 +6543,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await config.update('permission.timeoutBehavior', behavior, vscode.ConfigurationTarget.Global);
         this._permissionManager.refreshConfig();
         console.log(`[Mysti] Updated permission timeout behavior to: ${behavior}`);
+      } else {
+        delete settingsAny['permission.timeoutBehavior'];
       }
     }
 
@@ -6532,6 +6555,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await config.update('semiAutonomous.timeout', timeout, vscode.ConfigurationTarget.Global);
         this._permissionManager.refreshConfig();
         console.log(`[Mysti] Updated semi-autonomous timeout to: ${timeout}s`);
+      } else {
+        delete settingsAny['semiAutonomous.timeout'];
       }
     }
 

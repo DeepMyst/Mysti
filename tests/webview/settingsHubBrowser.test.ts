@@ -461,10 +461,14 @@ describe('Plan 31 — settingsSync keeps the chat and the tab in step', () => {
     } finally { await pg.context().close(); }
   }, 30000);
 
+  const autonomyRows = (pg: Page): Promise<boolean[]> => pg.$$eval(['#manual-timeout-section', '#semi-auto-settings'].join(','),
+    (els) => els.map((el) => !el.classList.contains('hidden')));
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('the tab offers the semi-autonomous row, not the manual one, while the chat runs semi-autonomous', async () => {
-    const visible = (pg: Page): Promise<boolean[]> => pg.$$eval(['#manual-timeout-section', '#semi-auto-settings'].join(','),
-      (els) => els.map((el) => !el.classList.contains('hidden')));
-    const pg = await openPage('hub', { permissionSettings: { timeoutBehavior: 'semi-autonomous', semiAutonomousTimeout: 60 } });
+    const visible = autonomyRows;
+    const pg = await openPage('hub', {
+      permissionSettings: { timeoutBehavior: 'semi-autonomous', semiAutonomousTimeout: 60 }, autonomyLevel: 'semi-autonomous',
+    });
     try {
       expect(await visible(pg)).toEqual([false, true]);
       await send(pg, { type: 'settingsSync', payload: { 'permission.timeoutBehavior': 'auto-reject' } });
@@ -488,6 +492,45 @@ describe('Plan 31 — settingsSync keeps the chat and the tab in step', () => {
       await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'low' } });
       expect(await pg.$eval('#custom-model-input', (el) => (el as HTMLInputElement).value)).toBe('my-mod');
       expect(await pg.evaluate(() => document.activeElement && document.activeElement.id)).toBe('custom-model-input');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)("the tab shows its chat's own autonomy level, not the global config's", async () => {
+    // Config still says semi-autonomous (set by another chat, or before a
+    // reload), but the chat this tab acts for boots manual.
+    const pg = await openPage('hub', {
+      permissionSettings: { timeoutBehavior: 'semi-autonomous', semiAutonomousTimeout: 60 }, autonomyLevel: 'manual',
+    });
+    try {
+      expect(await autonomyRows(pg)).toEqual([true, false]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('an unrelated sync keeps edits not yet committed here', async () => {
+    const pg = await openPage('hub', {
+      settings: { ...INITIAL_SETTINGS, provider: 'openai-codex' },
+      providerManifest: { schemaVersion: 1, providers: [
+        { id: 'claude-code', displayName: 'Claude Code', color: '#000' },
+        { id: 'openai-codex', displayName: 'Codex', color: '#000',
+          settingsSections: [{ id: 'profile', label: 'Profile', type: 'text', settingKey: 'codexProfile' }] },
+      ] },
+      providerSettings: { customModel: '', codexProfile: 'old' },
+      brainstormAgents: ['claude-code', 'openai-codex'],
+      permissionSettings: { timeoutBehavior: 'semi-autonomous', semiAutonomousTimeout: 60 }, autonomyLevel: 'semi-autonomous',
+    });
+    try {
+      // Typed but not committed: no change event yet (a second fill would blur, and commit, the first).
+      await pg.$eval('#provider-settings-sections input', (el) => { (el as HTMLInputElement).value = 'half'; });
+      await pg.$eval('#semi-auto-timeout-input', (el) => { (el as HTMLInputElement).value = '12'; });
+      // One box unticked on the way to picking another — not posted until two are ticked.
+      await pg.$eval('input[name="brainstorm-agent"][value="claude-code"]', (el) => {
+        (el as HTMLInputElement).checked = false;
+        el.dispatchEvent(new Event('change'));
+      });
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pg.$eval('#provider-settings-sections input', (el) => (el as HTMLInputElement).value)).toBe('half');
+      expect(await pg.$eval('#semi-auto-timeout-input', (el) => (el as HTMLInputElement).value)).toBe('12');
+      expect(await pg.$eval('input[name="brainstorm-agent"][value="claude-code"]', (el) => (el as HTMLInputElement).checked)).toBe(false);
     } finally { await pg.context().close(); }
   }, 30000);
 
