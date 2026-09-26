@@ -2073,7 +2073,9 @@
           if (el) { el.classList.toggle('hub-active', key === section); }
         });
         document.querySelectorAll('.hub-nav-item[data-hub-section]').forEach(function(b) {
-          b.classList.toggle('active', b.getAttribute('data-hub-section') === section);
+          var on = b.getAttribute('data-hub-section') === section;
+          b.classList.toggle('active', on);
+          if (on) { b.setAttribute('aria-current', 'page'); } else { b.removeAttribute('aria-current'); }
         });
         if (section === 'badges') { refreshBadgesPanel(); }
       }

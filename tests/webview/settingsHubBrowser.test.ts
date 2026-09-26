@@ -169,6 +169,8 @@ describe('Plan 31 — the Mysti tab', () => {
     const pg = await openPage('hub');
     try {
       expect(await pg.$eval('#hub-nav', (el) => getComputedStyle(el).display)).not.toBe('none');
+      // Before the host's first hubShow, the label claims nothing either way.
+      expect(await pg.textContent('#hub-binding')).toBe('');
       expect(await visiblePanels(pg)).toEqual(['settings-panel']);
       for (const sel of ['.header', '#workarea', '.input-area', '#overflow-menu', '#init-loading-overlay']) {
         expect(await pg.$eval(sel, (el) => getComputedStyle(el).display), sel).toBe('none');
@@ -185,6 +187,8 @@ describe('Plan 31 — the Mysti tab', () => {
       expect(await pg.textContent('#hub-binding')).toBe('Configuring: Fix login');
       expect((await posted(pg)).map((m) => m.type)).toContain('requestBadges');
       expect(await pg.$eval('.hub-nav-item.active', (el) => el.getAttribute('data-hub-section'))).toBe('badges');
+      expect(await pg.$$eval('.hub-nav-item[aria-current="page"]', (els) => els.map((e) => e.getAttribute('data-hub-section'))))
+        .toEqual(['badges']);
     } finally { await pg.context().close(); }
   }, 30000);
 

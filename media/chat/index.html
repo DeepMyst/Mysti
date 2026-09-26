@@ -89,13 +89,13 @@
          body.view-hub (webviewContent.ts), which hides the chat and shows these
          beside ONE of the four panels below. Hidden in the chat itself. -->
     <nav id="hub-nav" class="hub-nav" aria-label="Mysti sections">
-      <button class="hub-nav-item" data-hub-section="settings">Settings</button>
-      <button class="hub-nav-item" data-hub-section="agents">Personas &amp; skills</button>
-      <button class="hub-nav-item" data-hub-connections="1">Connections</button>
-      <button class="hub-nav-item" data-hub-section="badges">Badges</button>
-      <button class="hub-nav-item" data-hub-section="about">About</button>
+      <button type="button" class="hub-nav-item" data-hub-section="settings">Settings</button>
+      <button type="button" class="hub-nav-item" data-hub-section="agents">Personas &amp; skills</button>
+      <button type="button" class="hub-nav-item" data-hub-connections="1">Connections</button>
+      <button type="button" class="hub-nav-item" data-hub-section="badges">Badges</button>
+      <button type="button" class="hub-nav-item" data-hub-section="about">About</button>
     </nav>
-    <div id="hub-binding" class="hub-binding" role="status">No chat selected</div>
+    <div id="hub-binding" class="hub-binding" role="status"></div>
 
     <!-- Plan 28 Phase 5: the header went from twelve icons to four. Nothing
          was deleted — the rest moved here, keeping their ids so every handler
