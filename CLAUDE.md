@@ -535,6 +535,7 @@ The chat webview is one of several embedded-HTML panels (each built by a
 assets under `media/chat/`):
 
 - `src/webview/webviewContent.ts` / `media/chat/` — the main chat interface (built by `ChatViewProvider`)
+- The **Mysti tab** (Plan 31) is that same page with `body.view-hub` (`getWebviewContent(..., { view: 'hub' })`): Settings / Personas & skills / Badges / About beside a nav, bound to the chat that opened it. It is NOT in `_panelStates`; what it may send and hear is `src/chat/settingsHub.ts`, and `settingsSync` keeps the chat's own `state.settings` copy current
 - `src/webview/canvasContent.ts` + `src/webview/canvas/` — Canvas design workspace (webpack-bundled renderer, `dist/canvasWebview.js`)
 - `src/webview/connectionsContent.ts` — DeepMyst Connections (brokered MCP tools)
 - `src/webview/visualTestDashboardContent.ts` — `look`/`act` visual test dashboard
