@@ -9442,7 +9442,9 @@
       box-shadow: 0 6px 20px rgba(0,0,0,.35);
     }
     .overflow-menu.hidden { display: none; }
-    .overflow-menu .icon-btn { width: 100%; justify-content: flex-start; }
+    .overflow-menu .icon-btn { width: 100%; justify-content: flex-start; gap: 8px; padding: 5px 8px; position: relative; }
+    /* Plan 31: the menu says what each item is. */
+    .overflow-label { font-size: 12px; white-space: nowrap; }
 
     /* ── the command palette ───────────────────────────────────────────── */
     .palette {

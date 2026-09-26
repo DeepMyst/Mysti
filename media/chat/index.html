@@ -87,18 +87,21 @@
 
     <!-- Plan 28 Phase 5: the header went from twelve icons to four. Nothing
          was deleted — the rest moved here, keeping their ids so every handler
-         and every test that binds them still does. -->
+         and every test that binds them still does.
+         Plan 31: each item now carries its label; four of them open the Mysti tab. -->
     <div id="overflow-menu" class="overflow-menu hidden">
         <button id="new-tab-btn" class="icon-btn" title="Open in new tab">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zM10 .5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 16 1.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zM.5 10a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 14.5v-4a.5.5 0 0 1 .5-.5zm15 0a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z"/>
           </svg>
+          <span class="overflow-label">Open in new tab</span>
         </button>
         <button id="export-conversation-btn" class="icon-btn export-conversation-btn" title="Export conversation as Markdown">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M4.406 1.342A5.53 5.53 0 0 1 8 0c2.69 0 4.923 2 5.166 4.579C14.758 4.804 16 6.137 16 7.773 16 9.569 14.502 11 12.687 11H10a.5.5 0 0 1 0-1h2.688C13.979 10 15 8.988 15 7.773c0-1.216-1.02-2.228-2.313-2.228h-.5v-.5C12.188 2.825 10.328 1 8 1a4.53 4.53 0 0 0-2.941 1.1c-.757.652-1.153 1.438-1.153 2.055v.448l-.445.049C2.064 4.805 1 5.952 1 7.318 1 8.785 2.23 10 3.781 10H6a.5.5 0 0 1 0 1H3.781C1.708 11 0 9.366 0 7.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383z"/>
             <path d="M7.646 15.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 14.293V5.5a.5.5 0 0 0-1 0v8.793l-2.146-2.147a.5.5 0 0 0-.708.708l3 3z" transform="rotate(180, 8, 10.5)"/>
           </svg>
+          <span class="overflow-label">Export conversation</span>
         </button>
         <button id="active-mode-btn" class="icon-btn" title="Active Mode" style="display: none;">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -107,6 +110,7 @@
             <path d="M5.254 8.222a3 3 0 0 1 5.492 0 .5.5 0 0 1-.916.398 2 2 0 0 0-3.66 0 .5.5 0 0 1-.916-.398z"/>
             <circle cx="8" cy="11" r="1.5"/>
           </svg>
+          <span class="overflow-label">Active Mode</span>
           <span class="active-mode-btn-dot" id="active-mode-btn-dot"></span>
         </button>
         <button id="agent-config-btn" class="icon-btn" title="Agent Configuration">
@@ -114,12 +118,14 @@
             <path d="M11 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>
             <path fill-rule="evenodd" d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm8-7a7 7 0 0 0-5.468 11.37C3.242 11.226 4.805 10 8 10s4.757 1.225 5.468 2.37A7 7 0 0 0 8 1z"/>
           </svg>
+          <span class="overflow-label">Personas &amp; skills</span>
         </button>
         <button id="badges-btn" class="icon-btn" title="My Badges">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2H8.5v1.5A2.5 2.5 0 0 1 11 10v.5a.5.5 0 0 1-.5.5h-5a.5.5 0 0 1-.5-.5V10a2.5 2.5 0 0 1 2.5-2.5V6H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5zM2 2a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1h5V2H2zm9 0v3h3a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1h-3zM6 10v.5h4V10a1.5 1.5 0 0 0-1.5-1.5h-1A1.5 1.5 0 0 0 6 10z"/>
             <path d="M5 12h6v2.5a.5.5 0 0 1-.765.424L8 13.65l-2.235 1.274A.5.5 0 0 1 5 14.5V12z"/>
           </svg>
+          <span class="overflow-label">Badges</span>
         </button>
         <button id="about-btn" class="icon-btn" title="About Mysti">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -127,17 +133,20 @@
             <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588z"/>
             <circle cx="8" cy="4.5" r="1"/>
           </svg>
+          <span class="overflow-label">About</span>
         </button>
         <button id="connections-btn" class="icon-btn" title="DeepMyst Connections">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M6 0a.5.5 0 0 1 .5.5V3h3V.5a.5.5 0 0 1 1 0V3h.5A1.5 1.5 0 0 1 12 4.5v2a3.5 3.5 0 0 1-3 3.46V14a2 2 0 1 1-4 0v-4.04a3.5 3.5 0 0 1-3-3.46v-2A1.5 1.5 0 0 1 4.5 3H5V.5A.5.5 0 0 1 6 0zM4.5 4a.5.5 0 0 0-.5.5v2a2.5 2.5 0 0 0 5 0v-2a.5.5 0 0 0-.5-.5h-4z"/>
           </svg>
+          <span class="overflow-label">Connections</span>
         </button>
         <button id="settings-btn" class="icon-btn" title="Settings">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
             <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319z"/>
           </svg>
+          <span class="overflow-label">Settings</span>
         </button>
     </div>
 
