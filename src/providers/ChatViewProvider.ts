@@ -18,6 +18,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { SubAgentQuestionBroker, parseSubAgentResponse } from '../chat/SubAgentQuestionBroker';
 import { bindIncomingMessage } from '../chat/incomingMessage';
+import { isHubSection, type HubSection } from '../chat/settingsHub';
 import { CoordinatorRunOutput } from '../chat/CoordinatorRunOutput';
 import { settleWithin } from '../utils/settleWithin';
 import { clampEffort } from '../utils/effort';
@@ -400,6 +401,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // Visual test dashboard tracking
   private _vtDashboardPanelId: string | null = null;
   private _vtDashboardChatOrigin: string | null = null;
+  /** Plan 31: the Mysti tab, and the chat it acts for (null once that chat closes). Never in `_panelStates`. */
+  private _hub: { panel: vscode.WebviewPanel; originPanelId: string | null } | null = null;
   private _vtTriggeredThisResponse: boolean = false;
   /** Per-panel nonce-bound scanner for the CLI-backend `<look:…>` tag. */
   private _vtScanners: Map<string, MystiTagScanner> = new Map();
@@ -1186,6 +1189,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.onDidDispose(() => {
       if (this._panelStates.get(this._sidebarId)?.webview === webviewView.webview) {
         this._panelStates.delete(this._sidebarId);
+        this._unbindHubFrom(this._sidebarId);
         this._cancelQueuedChannelTurn(this._sidebarId);
         this._providerManager.cancelRequest(this._sidebarId);
         this._abortMystiDirect(this._sidebarId);
@@ -1205,19 +1209,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._tryPreSpawnPersistentProcess(this._sidebarId);
   }
 
-  private async _sendInitialState(panelId: string) {
+  private async _sendInitialState(panelId: string, forHub = false) {
     // Critical: Wait for agents to load before building initial state
     await this._agentInitPromise;
 
     // Plan 07 A5: restore this panel's persisted context files (re-reading
     // content fresh) off the critical path; broadcast when ready.
-    void this._contextManager.restorePanelContext(panelId)
-      .then((items) => {
-        if (items.length) {
-          this._postToPanel(panelId, { type: 'contextUpdated', payload: items });
-        }
-      })
-      .catch(() => { /* best-effort */ });
+    if (!forHub) {
+      void this._contextManager.restorePanelContext(panelId)
+        .then((items) => {
+          if (items.length) {
+            this._postToPanel(panelId, { type: 'contextUpdated', payload: items });
+          }
+        })
+        .catch(() => { /* best-effort */ });
+    }
 
     // First-run stall fix: every discovery/network step on the way to the first
     // post is BOUNDED so the "Preparing your workspace" overlay can never get
@@ -1242,7 +1248,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // the coordinator (signed in to DeepMyst, or an OpenRouter key set) must get
     // a chat, not an "install a CLI" wall — Mysti needs no local CLI to answer.
     const mystiReady = this._mystiCoordinator?.status().ready === true;
-    if (!wizardDismissed && !wizardStatus.anyReady && !mystiReady) {
+    if (!forHub && !wizardDismissed && !wizardStatus.anyReady && !mystiReady) {
       const fullStatus = await this._withTimeout(this._setupManager.getWizardStatus(), 6000);
       if (fullStatus) {
         if (!fullStatus.anyReady) {
@@ -1289,18 +1295,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // simply came back on a different agent than the one that was chosen, on
     // every open, with nothing said. Say it, and name both ends so the reason
     // is actionable rather than mysterious.
-    if (demotedFrom && demotedFrom !== selectedProvider) {
-      const fromName = this._providerManager.getProvider(demotedFrom)?.displayName ?? demotedFrom;
-      const toName = this._providerManager.getProvider(selectedProvider)?.displayName ?? selectedProvider;
-      setTimeout(() => {
-        this._postToPanel(panelId, {
-          type: 'systemNotice',
-          payload: {
-            message: `${fromName} isn't installed or signed in, so this panel is using ${toName}. `
-              + `Your saved choice is unchanged — install ${fromName} and reopen to go back to it.`
-          }
-        });
-      }, 0);
+    // Plan 31: the Mysti tab never repeats the notice — its chat already showed it.
+    if (!forHub) {
+      if (demotedFrom && demotedFrom !== selectedProvider) {
+        const fromName = this._providerManager.getProvider(demotedFrom)?.displayName ?? demotedFrom;
+        const toName = this._providerManager.getProvider(selectedProvider)?.displayName ?? selectedProvider;
+        setTimeout(() => {
+          this._postToPanel(panelId, {
+            type: 'systemNotice',
+            payload: {
+              message: `${fromName} isn't installed or signed in, so this panel is using ${toName}. `
+                + `Your saved choice is unchanged — install ${fromName} and reopen to go back to it.`
+            }
+          });
+        }, 0);
+      }
     }
 
     const settings: Settings = {
@@ -1376,13 +1385,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     const providerAvailability = this._buildProviderAvailability(wizardStatus);
 
-    this._postToPanel(panelId, {
+    const initialState: WebviewMessage = {
       type: 'initialState',
       payload: {
         panelId,
         settings,
         context: this._contextManager.getContext(panelId),
-        conversation,
+        conversation: forHub ? undefined : conversation,
         providers,
         providerAvailability,
         // Plan 02 Phase 1: capability manifest — the webview renders from
@@ -1409,7 +1418,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // firstChunkRendered) are posted regardless of this flag.
         performanceLogging: config.get<boolean>('debug.performanceLogging', false)
       }
-    });
+    };
+    if (forHub) {
+      // Plan 31: the tab gets the chat's settings — not its transcript, and none
+      // of the chat's side effects below (active mode, checkpoints, in-app messages).
+      void Promise.resolve(this._hub?.panel.webview.postMessage(initialState)).catch(() => false);
+      return;
+    }
+    this._postToPanel(panelId, initialState);
 
     // Send active mode initial state (provider-independent)
     this._postToPanel(panelId, {
@@ -2335,6 +2351,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'openConnections':
         vscode.commands.executeCommand('mysti.openConnections');
         break;
+
+      case 'openSettingsHub': {
+        // Plan 31: a ⋯ item in a chat — open the Mysti tab acting for that chat.
+        const section = (msg.payload as { section?: unknown } | undefined)?.section;
+        if (isHubSection(section)) { await this.openSettingsHub(section, msg.panelId); }
+        break;
+      }
 
       case 'setCoordinatorModel':
         // Mysti-agent model picker (full OpenRouter catalog + gateway models).
@@ -13836,6 +13859,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Cleanup on dispose
     panel.onDidDispose(() => {
       this._panelStates.delete(panelId);
+      this._unbindHubFrom(panelId);
       this._cancelQueuedChannelTurn(panelId);
       this._cancelPendingSubAgentQuestions(panelId);
       this._lastUserMessage.delete(panelId);
@@ -13908,6 +13932,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Pre-spawn persistent process so first message is instant
     this._tryPreSpawnPersistentProcess(panelId);
+  }
+
+  /**
+   * Plan 31: open (or reveal) the Mysti tab on `section`, acting for the chat
+   * `originPanelId`. There is one tab; opening it from another chat rebinds it.
+   * `_hub` is assigned BEFORE the first await, so a second click that lands
+   * while the first is still loading reveals the same tab.
+   */
+  public async openSettingsHub(section: HubSection, originPanelId: string): Promise<void> {
+    if (!this._panelStates.has(originPanelId)) { return; }
+    let rebind = true;
+    if (this._hub) {
+      rebind = this._hub.originPanelId !== originPanelId;
+      this._hub.originPanelId = originPanelId;
+      this._hub.panel.reveal();
+    } else {
+      const panel = vscode.window.createWebviewPanel('mysti.settingsHub', 'Mysti', vscode.ViewColumn.Beside, {
+        enableScripts: true,
+        localResourceRoots: [this._extensionUri],
+        retainContextWhenHidden: true,
+      });
+      panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
+      const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
+      panel.webview.html = getWebviewContent(panel.webview, this._extensionUri, version, { view: 'hub' });
+      panel.webview.onDidReceiveMessage((message: unknown) => this._receiveHubMessage(message, panel.webview));
+      panel.onDidDispose(() => {
+        if (this._hub?.panel === panel) { this._hub = null; }
+      });
+      this._hub = { panel, originPanelId };
+    }
+    if (rebind) { await this._sendInitialState(originPanelId, true); }
+    this._postHubShow(section);
+  }
+
+  /** Plan 31: tell the tab which section to show and which chat it acts for (`chatTitle: null` = none). */
+  private _postHubShow(section: HubSection | null): void {
+    if (!this._hub) { return; }
+    const origin = this._hub.originPanelId;
+    const conversationId = origin ? this._panelStates.get(origin)?.currentConversationId : null;
+    const chatTitle = origin
+      ? (conversationId ? this._conversationManager.getConversation(conversationId)?.title : undefined) || 'Untitled chat'
+      : null;
+    void Promise.resolve(this._hub.panel.webview.postMessage({ type: 'hubShow', payload: { section, chatTitle } }))
+      .catch(() => false);
+  }
+
+  /** Plan 31: the chat the tab acts for is gone — the tab stays, read-only. */
+  private _unbindHubFrom(panelId: string): void {
+    if (!this._hub || this._hub.originPanelId !== panelId) { return; }
+    this._hub.originPanelId = null;
+    this._postHubShow(null);
+  }
+
+  /** Plan 31: a message from the Mysti tab (routing lands in Task 3). */
+  private async _receiveHubMessage(_message: unknown, _sender: vscode.Webview): Promise<void> {
+    return;
   }
 
   /**
