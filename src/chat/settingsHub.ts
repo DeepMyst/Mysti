@@ -27,6 +27,13 @@ export const HUB_INBOUND_TYPES: ReadonlySet<string> = new Set([
   'openExternal', 'openConnections',
 ]);
 
+/**
+ * `updateSettings` keys the tab never applies: no control in it sets them (the
+ * chat's own composer does), so one arriving from the tab is a boot or
+ * keyboard side effect — Shift+Tab's rung cycle once raised access unseen.
+ */
+export const HUB_CHAT_ONLY_SETTINGS: readonly string[] = ['mode', 'accessLevel', 'contextMode'];
+
 /** The subset that needs no chat, still honoured after the origin chat closes. */
 export const HUB_UNBOUND_TYPES: ReadonlySet<string> = new Set(['openExternal', 'openConnections']);
 

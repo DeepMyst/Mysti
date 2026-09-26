@@ -308,6 +308,16 @@ describe('Plan 31 — what crosses between the tab and its chat', () => {
     expect(typesOf(t.panels.get('tab')!.webview.postMessage)).not.toContain('settingsSync');
   });
 
+  it("never lets the tab set its chat's trust level or context mode", async () => {
+    // No control in the tab sets them; the chat's own composer does.
+    const t = await bound();
+    await t.fromHub({ type: 'updateSettings', payload: {
+      mode: 'edit-automatically', accessLevel: 'full-access', contextMode: 'manual', thinkingLevel: 'high',
+    } });
+    expect(t.handleMessage).toHaveBeenCalledWith({ type: 'updateSettings', payload: { thinkingLevel: 'high' }, panelId: 'sidebar' });
+    expect(t.panels.get('sidebar')!.webview.postMessage).toHaveBeenCalledWith({ type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+  });
+
   it('re-binds persona and skill edits to its chat', async () => {
     const t = await bound();
     await t.fromHub({ type: 'updateAgentConfig', payload: { personaId: 'p', enabledSkills: [] } });

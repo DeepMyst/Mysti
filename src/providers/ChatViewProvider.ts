@@ -19,7 +19,7 @@ import * as crypto from 'crypto';
 import { SubAgentQuestionBroker, parseSubAgentResponse } from '../chat/SubAgentQuestionBroker';
 import { bindIncomingMessage } from '../chat/incomingMessage';
 import {
-  HUB_INBOUND_TYPES, HUB_MIRROR_TYPES, HUB_UNBOUND_TYPES, isHubSection, type HubSection,
+  HUB_CHAT_ONLY_SETTINGS, HUB_INBOUND_TYPES, HUB_MIRROR_TYPES, HUB_UNBOUND_TYPES, isHubSection, type HubSection,
 } from '../chat/settingsHub';
 import { CoordinatorRunOutput } from '../chat/CoordinatorRunOutput';
 import { settleWithin } from '../utils/settleWithin';
@@ -14050,6 +14050,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!target) { return; }
     const bound = bindIncomingMessage(message, target);
     if (!bound) { return; }
+    if (bound.type === 'updateSettings' && bound.payload && typeof bound.payload === 'object') {
+      const payload = { ...(bound.payload as Record<string, unknown>) };
+      for (const key of HUB_CHAT_ONLY_SETTINGS) { delete payload[key]; }
+      bound.payload = payload;
+    }
     try {
       await this._handleMessage(bound as unknown as WebviewMessage);
       if (live && bound.type === 'updateSettings') { this._syncHubSettings(live, bound.payload, true); }

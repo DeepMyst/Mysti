@@ -3516,6 +3516,9 @@
         // Scoped to the composer and the panel background so ordinary reverse-
         // tab navigation still works inside the settings panel and the popup.
         document.addEventListener('keydown', function(e) {
+          // Plan 31: the Mysti tab has no trust pill, so the rung never moves
+          // from there, and Shift+Tab stays ordinary reverse focus navigation.
+          if (IS_HUB) { return; }
           if (e.key !== 'Tab' || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) { return; }
           var el = document.activeElement;
           var onComposer = el && el.id === 'message-input';
@@ -12683,7 +12686,7 @@
       }
       function applyChatMode(id) {
         var def = chatModeById(id);
-        if (!def) return;
+        if (!def || IS_HUB) return;
         // Mirrors `authorityForTrust(stop, current)`: a user already on
         // detailed-plan keeps it when they land on Plan, rather than being
         // silently downgraded to quick-plan by a round trip through the pill.

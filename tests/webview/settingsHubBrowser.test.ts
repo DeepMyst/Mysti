@@ -301,6 +301,19 @@ describe('Plan 31 — the Mysti tab', () => {
     } finally { await pg.context().close(); }
   }, 30000);
 
+  it.skipIf(CHROMIUM_UNAVAILABLE)("Shift+Tab never changes its chat's trust level", async () => {
+    // The tab has no trust pill: the chat's Shift+Tab rung cycle would change
+    // mode/access (up to full-access) with nothing on screen to show it.
+    const pg = await openPage('hub', { settings: { ...INITIAL_SETTINGS, mode: 'edit-automatically' } });
+    try {
+      await send(pg, { type: 'hubShow', payload: { section: 'settings', chatTitle: 'Fix login' } });
+      await pg.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); });
+      await clearPosted(pg);
+      await pg.keyboard.press('Shift+Tab');
+      expect(await posted(pg)).toEqual([]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('boots both views without throwing', async () => {
     expect(pageErrors).toEqual([]);
   });
