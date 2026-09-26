@@ -4941,6 +4941,9 @@
           case 'slashCommandResult':
             addSystemMessage(message.payload.result);
             break;
+          case 'showHelp':
+            renderHelpCard();
+            break;
           case 'sessionCleared':
             sessionIndicator.style.display = 'none';
             sessionIndicator.className = 'session-indicator';
@@ -12449,6 +12452,77 @@
         }
 
         messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      /**
+       * Plan 32 — `/help` as a searchable card. The host only says "show it";
+       * the list is static so it can never drift from what the host thinks
+       * the webview can render. Copy only — nothing here is user text.
+       */
+      var HELP_SECTIONS = [
+        { name: 'Get work done', rows: [
+          ['Enter', 'Send. Shift+Enter starts a new line.'],
+          ['@file.ts', 'Attach a file to this message.'],
+          ['Mode pill', 'Plan, Ask, Auto or Full: how much it may do without asking.'],
+          ['\u2318\u21e7N / Ctrl+Shift+N', 'Open another chat in its own tab.']
+        ] },
+        { name: 'Work with other agents', rows: [
+          ['@codex', 'Send just this message to another agent.'],
+          ['Agent pill', 'Switch the agent for this whole chat.'],
+          ['/brainstorm', 'Two agents work on one answer. Uses more tokens.']
+        ] },
+        { name: 'Undo and long chats', rows: [
+          ['\u21ba on a message', 'Rewind that turn\u2019s file changes, or fork the chat from there.'],
+          ['/compact', 'Summarize older turns to free up room.'],
+          ['Context ring', 'How full this chat is. It compacts itself at your threshold (75% by default).']
+        ] },
+        { name: 'Commands', rows: [
+          ['/', 'Every command \u2014 Mysti\u2019s and your agent\u2019s own.'],
+          ['/clear', 'Start this chat over.'],
+          ['/mode auto', 'Change mode by typing: plan, ask, auto or full.']
+        ] }
+      ];
+      var HELP_ALIASES = { undo: 'rewind', revert: 'rewind', cost: 'tokens', money: 'tokens', safe: 'mode', safety: 'mode' };
+      var helpCardCount = 0;
+
+      function renderHelpCard() {
+        var card = document.createElement('section');
+        card.className = 'help-card';
+        card.setAttribute('aria-label', 'Mysti help');
+        var uid = 'help-search-' + (++helpCardCount);
+        card.innerHTML =
+          '<div class="help-head"><img src="' + LOGO_URI + '" alt="" class="help-logo" /><span class="help-title">Mysti help</span></div>' +
+          '<label for="' + uid + '" class="sr-only">Search help</label>' +
+          '<input id="' + uid + '" type="search" class="help-search" placeholder="Search help \u2014 try \u201cundo\u201d or \u201ccost\u201d" autocomplete="off" />' +
+          '<div class="help-sections"></div>' +
+          '<p class="help-empty hidden">Nothing matches. The tour and the docs cover more.</p>' +
+          '<div class="help-foot"><button type="button" class="help-tour">Take the tour</button>' +
+          '<a href="https://github.com/DeepMyst/Mysti#readme" target="_blank" rel="noopener">Read the docs</a></div>';
+        var sections = card.querySelector('.help-sections');
+        function draw(q) {
+          var needle = HELP_ALIASES[q] || q;
+          var html = '';
+          HELP_SECTIONS.forEach(function(s) {
+            var rows = s.rows.filter(function(r) {
+              return !needle || (r[0] + ' ' + r[1]).toLowerCase().indexOf(needle) !== -1;
+            });
+            if (!rows.length) { return; }
+            html += '<div class="help-section"><h4>' + escapeHtml(s.name) + '</h4><dl>' + rows.map(function(r) {
+              return '<div class="help-row"><dt><code>' + escapeHtml(r[0]) + '</code></dt><dd>' + escapeHtml(r[1]) + '</dd></div>';
+            }).join('') + '</dl></div>';
+          });
+          sections.innerHTML = html;
+          card.querySelector('.help-empty').classList.toggle('hidden', !!html);
+        }
+        draw('');
+        card.querySelector('.help-search').addEventListener('input', function(e) {
+          draw(e.target.value.trim().toLowerCase());
+        });
+        card.querySelector('.help-tour').addEventListener('click', function() {
+          postMessageWithPanelId({ type: 'openWalkthrough' });
+        });
+        messagesEl.appendChild(card);
+        scrollToBottom();
       }
 
       function clearMessages() {

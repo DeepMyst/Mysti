@@ -25,8 +25,10 @@ import type {
   SlashCommandSection,
   ProviderType,
   WebviewMessage,
-  ModelInfo
+  ModelInfo,
+  OperationMode
 } from '../types';
+import { isTrustStop, authorityForTrust, TRUST_COPY } from '../utils/trustLadder';
 import {
   NATIVE_COMMANDS,
   nativeCommandId,
@@ -653,7 +655,9 @@ export class SlashCommandManager {
         return 'Conversation and session cleared';
 
       case 'cmd:help':
-        return this._getHelpText();
+        // Plan 32: the webview renders a searchable help card.
+        callbacks.postToPanel(panelId, { type: 'showHelp' });
+        return;
 
       case 'cmd:compact':
         // C7: fire-and-forget — compaction progress/result is reported via
@@ -797,13 +801,20 @@ export class SlashCommandManager {
       // ---- Settings ----
       case 'settings:mode': {
         if (trimmedArgs) {
-          const modes = ['ask-before-edit', 'edit-automatically', 'quick-plan', 'detailed-plan'];
-          const targetMode = trimmedArgs === 'plan' ? 'quick-plan' : trimmedArgs;
-          if (modes.includes(targetMode)) {
-            await callbacks.updateSettings({ mode: targetMode });
-            return `Mode changed to: ${targetMode}`;
+          if (isTrustStop(trimmedArgs)) {
+            // Plan 32: the same pair the mode pill writes. A mode-only write
+            // would leave access on whatever tier it was on before.
+            const current = vscode.workspace.getConfiguration('mysti').get<OperationMode>('defaultMode');
+            await callbacks.updateSettings({ ...authorityForTrust(trimmedArgs, current) });
+            const copy = TRUST_COPY[trimmedArgs];
+            return `Mode: ${copy.label}. ${copy.permits}`;
           }
-          return `Invalid mode. Available modes: ${modes.join(', ')} (or 'plan' for quick-plan)`;
+          const modes = ['ask-before-edit', 'edit-automatically', 'quick-plan', 'detailed-plan'];
+          if (modes.includes(trimmedArgs)) {
+            await callbacks.updateSettings({ mode: trimmedArgs });
+            return `Mode changed to: ${trimmedArgs}`;
+          }
+          return `Invalid mode. Use plan, ask, auto or full (or a raw mode: ${modes.join(', ')}).`;
         }
         const selectedMode = await this._selectOperationMode();
         if (selectedMode) {
@@ -1038,7 +1049,7 @@ export class SlashCommandManager {
       {
         id: 'cmd:help',
         label: '/help',
-        description: 'Show available commands',
+        description: 'Search Mysti help',
         section: 'commands',
         icon: 'question',
         provider: 'all',
@@ -1482,21 +1493,6 @@ export class SlashCommandManager {
       return `Switched to ${agentName} (model auto-switched to ${newModel})`;
     }
     return `Switched to ${agentName}`;
-  }
-
-  private _getHelpText(): string {
-    // C7: /compact is listed unconditionally — it works on every provider
-    // (native CLI compact or client-side summarization).
-    return 'Available commands:\n' +
-      '/clear - Clear conversation and session\n' +
-      '/help - Show this help message\n' +
-      '/context - Show current context items\n' +
-      '/mode [mode] - Show/change mode (ask-before-edit, edit-automatically, quick-plan, detailed-plan)\n' +
-      '/exit-plan-mode - Exit plan mode\n' +
-      '/model [model] - Show/change AI model\n' +
-      '/agent [agent] - Switch provider\n' +
-      '/brainstorm [on|off|status] - Toggle brainstorm mode\n' +
-      '/compact - Compact conversation context';
   }
 
   /**
