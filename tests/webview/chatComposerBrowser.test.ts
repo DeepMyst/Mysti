@@ -1058,26 +1058,26 @@ describe('every panel still opens after the header diet', () => {
    * Phase 5 moved eight buttons out of the header and into an overflow menu.
    * They kept their ids so their handlers still bind — but "the handler binds"
    * and "the panel opens" are different claims, and this is the one that
-   * matters. Each button is clicked and the panel it owns must become visible.
+   * matters. Each button is clicked and the panel it owns must open.
+   * Plan 31: "open" now means the Mysti tab on that section — the button asks
+   * the host for it, and nothing un-hides inline over the transcript.
    */
-  const PANELS: Array<[string, string]> = [
-    ['settings-btn', 'settings-panel'],
-    ['about-btn', 'about-panel'],
-    ['badges-btn', 'badges-panel'],
-    ['agent-config-btn', 'agent-config-panel'],
+  const PANELS: Array<[string, string, string]> = [
+    ['settings-btn', 'settings', 'settings-panel'],
+    ['about-btn', 'about', 'about-panel'],
+    ['badges-btn', 'badges', 'badges-panel'],
+    ['agent-config-btn', 'agents', 'agent-config-panel'],
   ];
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('opens each panel its button owns', async () => {
-    for (const [btn, panel] of PANELS) {
-      // Close everything first so one panel's state cannot mask another's.
-      await page!.evaluate(() => {
-        document.querySelectorAll('.settings-panel, .about-panel, .badges-panel, .agent-config-panel')
-          .forEach((e) => e.classList.add('hidden'));
-      });
+    for (const [btn, section, panel] of PANELS) {
+      await clearPosted();
       await page!.evaluate((id) => document.getElementById(id)!
         .dispatchEvent(new MouseEvent('click', { bubbles: true })), btn);
-      const open = await page!.$eval(`#${panel}`, (e) => !e.classList.contains('hidden'));
-      expect(open, `${btn} did not open #${panel}`).toBe(true);
+      const asks = (await posted()).filter((m) => m.type === 'openSettingsHub');
+      expect(asks.map((m) => m.payload), `${btn} did not open the ${section} section`).toEqual([{ section }]);
+      const inline = await page!.$eval(`#${panel}`, (e) => !e.classList.contains('hidden'));
+      expect(inline, `${btn} opened #${panel} inline`).toBe(false);
     }
   }, 30000);
 

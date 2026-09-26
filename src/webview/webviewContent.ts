@@ -42,7 +42,12 @@ function _loadHtmlTemplate(extensionUri: vscode.Uri): string {
   return _htmlTemplateCache;
 }
 
-export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri, version: string = '0.0.0'): string {
+export function getWebviewContent(
+  webview: vscode.Webview,
+  extensionUri: vscode.Uri,
+  version: string = '0.0.0',
+  opts: { view?: 'hub' } = {},
+): string {
   const nonce = getNonce();
 
   // Base URI for everything under resources/ (library scripts, logos, icons).
@@ -149,6 +154,10 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   let html = _loadHtmlTemplate(extensionUri);
   for (const [key, value] of Object.entries(replacements)) {
     html = html.split(`{{${key}}}`).join(value);
+  }
+  // Plan 31: the Mysti tab is this same page in a hub layout (chat.css `.view-hub`).
+  if (opts.view === 'hub') {
+    html = html.replace('<body>', '<body class="view-hub">');
   }
   return html;
 }

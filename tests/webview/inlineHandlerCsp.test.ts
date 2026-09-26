@@ -121,7 +121,7 @@ interface Rig {
  */
 function runBindings(): Rig {
   const start = chatJs.indexOf("var badgeToastEl = document.getElementById('badge-toast');");
-  const end = chatJs.indexOf("      settingsBtn.addEventListener('click', function() {");
+  const end = chatJs.indexOf("      var agentConfigBtn = document.getElementById('agent-config-btn');");
   expect(start, 'D-1 binding block not found in chat.js').toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   const block = chatJs.slice(start, end);
@@ -202,7 +202,7 @@ describe('D-1: the five rebound handlers do what the dead attributes did', () =>
 
   it('binds defensively — a missing element must not throw at load', () => {
     const start = chatJs.indexOf("var badgeToastEl = document.getElementById('badge-toast');");
-    const end = chatJs.indexOf("      settingsBtn.addEventListener('click', function() {");
+    const end = chatJs.indexOf("      var agentConfigBtn = document.getElementById('agent-config-btn');");
     expect(start, 'D-1 binding block not found in chat.js').toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const block = chatJs.slice(start, end);

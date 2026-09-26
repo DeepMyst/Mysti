@@ -1197,11 +1197,8 @@
       const sendBtn = document.getElementById('send-btn');
       const stopBtn = document.getElementById('stop-btn');
       const settingsBtn = document.getElementById('settings-btn');
-      const settingsPanel = document.getElementById('settings-panel');
       const aboutBtn = document.getElementById('about-btn');
-      const aboutPanel = document.getElementById('about-panel');
       const badgesBtn = document.getElementById('badges-btn');
-      const badgesPanel = document.getElementById('badges-panel');
       const newConversationBtn = document.getElementById('new-conversation-btn');
       const newTabBtn = document.getElementById('new-tab-btn');
       const thinkingSelect = document.getElementById('thinking-select');
@@ -2042,69 +2039,95 @@
         });
       }
 
-      settingsBtn.addEventListener('click', function() {
-        settingsPanel.classList.toggle('hidden');
-        // Close other panels when settings opens
-        var agentConfigPanel = document.getElementById('agent-config-panel');
-        if (!settingsPanel.classList.contains('hidden')) {
-          if (agentConfigPanel) { agentConfigPanel.classList.add('hidden'); }
-          if (aboutPanel) { aboutPanel.classList.add('hidden'); }
-          if (badgesPanel) { badgesPanel.classList.add('hidden'); }
-        }
-      });
-
-      // About panel toggle
-      if (aboutBtn && aboutPanel) {
-        aboutBtn.addEventListener('click', function() {
-          aboutPanel.classList.toggle('hidden');
-          // Close other panels when about opens
-          if (!aboutPanel.classList.contains('hidden')) {
-            settingsPanel.classList.add('hidden');
-            if (badgesPanel) { badgesPanel.classList.add('hidden'); }
-            var agentConfigPanel = document.getElementById('agent-config-panel');
-            if (agentConfigPanel) { agentConfigPanel.classList.add('hidden'); }
-          }
-        });
-      }
-
-      // Badges panel toggle
-      if (badgesBtn && badgesPanel) {
-        badgesBtn.addEventListener('click', function() {
-          badgesPanel.classList.toggle('hidden');
-          // Close other panels when badges opens
-          if (!badgesPanel.classList.contains('hidden')) {
-            settingsPanel.classList.add('hidden');
-            if (aboutPanel) { aboutPanel.classList.add('hidden'); }
-            var agentConfigPanel = document.getElementById('agent-config-panel');
-            if (agentConfigPanel) { agentConfigPanel.classList.add('hidden'); }
-            // Render instantly from cache, then refresh in background
-            if (cachedBadges && cachedBadgeCounts) {
-              updateBadgesUI(cachedBadges, cachedBadgeCounts);
-            } else {
-              // Show spinner while waiting for data
-              var sp = document.getElementById('badges-spinner');
-              if (sp) { sp.classList.remove('hidden'); }
-            }
-            vscode.postMessage({ type: 'requestBadges' });
-          }
-        });
-      }
-
-      // Agent config panel toggle
+      // Agent config refs (the reset button below binds to configResetBtn)
       var agentConfigBtn = document.getElementById('agent-config-btn');
-      var agentConfigPanel = document.getElementById('agent-config-panel');
       var configResetBtn = document.getElementById('config-reset-btn');
 
-      if (agentConfigBtn && agentConfigPanel) {
-        agentConfigBtn.addEventListener('click', function() {
-          agentConfigPanel.classList.toggle('hidden');
-          // Close other panels when config opens
-          if (!agentConfigPanel.classList.contains('hidden')) {
-            settingsPanel.classList.add('hidden');
-            if (aboutPanel) { aboutPanel.classList.add('hidden'); }
-            if (badgesPanel) { badgesPanel.classList.add('hidden'); }
-          }
+      // ======================================================================
+      // Plan 31 — the Mysti tab. In the chat these four open the tab (acting
+      // for THIS chat) instead of stacking a panel over the transcript. The tab
+      // is this same page with body.view-hub: one panel at a time beside a nav.
+      // The host decides what the tab may send — see src/chat/settingsHub.ts.
+      // ======================================================================
+      var IS_HUB = document.body.classList.contains('view-hub');
+      var HUB_PANELS = { settings: 'settings-panel', agents: 'agent-config-panel', badges: 'badges-panel', about: 'about-panel' };
+      var hubSection = 'settings';
+
+      function openHubSection(section) {
+        postMessageWithPanelId({ type: 'openSettingsHub', payload: { section: section } });
+      }
+      settingsBtn.addEventListener('click', function() { openHubSection('settings'); });
+      if (aboutBtn) { aboutBtn.addEventListener('click', function() { openHubSection('about'); }); }
+      if (badgesBtn) { badgesBtn.addEventListener('click', function() { openHubSection('badges'); }); }
+      if (agentConfigBtn) { agentConfigBtn.addEventListener('click', function() { openHubSection('agents'); }); }
+
+      function refreshBadgesPanel() {
+        // Render instantly from cache, then refresh in background
+        if (cachedBadges && cachedBadgeCounts) {
+          updateBadgesUI(cachedBadges, cachedBadgeCounts);
+        } else if (document.body.classList.contains('hub-unbound')) {
+          // No chat to ask for them: the host drops requestBadges, so don't spin forever.
+          var sp0 = document.getElementById('badges-spinner');
+          if (sp0) { sp0.classList.add('hidden'); }
+          var grid0 = document.getElementById('badges-grid');
+          if (grid0) { grid0.textContent = 'Open this tab from a chat to load badges.'; }
+          return;
+        } else {
+          var sp = document.getElementById('badges-spinner');
+          if (sp) { sp.classList.remove('hidden'); }
+        }
+        postMessageWithPanelId({ type: 'requestBadges' });
+      }
+
+      function showHubSection(section) {
+        if (!HUB_PANELS[section]) { return; }
+        hubSection = section;
+        Object.keys(HUB_PANELS).forEach(function(key) {
+          var el = document.getElementById(HUB_PANELS[key]);
+          if (el) { el.classList.toggle('hub-active', key === section); }
         });
+        document.querySelectorAll('.hub-nav-item[data-hub-section]').forEach(function(b) {
+          var on = b.getAttribute('data-hub-section') === section;
+          b.classList.toggle('active', on);
+          if (on) { b.setAttribute('aria-current', 'page'); } else { b.removeAttribute('aria-current'); }
+        });
+        if (section === 'badges') { refreshBadgesPanel(); }
+      }
+
+      /** Host → tab: which section, and which chat it acts for (`chatTitle: null` = none). */
+      function handleHubShow(payload) {
+        if (!IS_HUB || !payload) { return; }
+        var bound = typeof payload.chatTitle === 'string';
+        document.body.classList.toggle('hub-unbound', !bound);
+        // Read-only for the keyboard too, not just the pointer (chat.css). The
+        // children, not the panel: the panel is the scroller and must still scroll.
+        ['settings-panel', 'agent-config-panel'].forEach(function(id) {
+          var el = document.getElementById(id);
+          if (el) { Array.prototype.forEach.call(el.children, function(c) { c.inert = !bound; }); }
+        });
+        var label = document.getElementById('hub-binding');
+        if (label) {
+          label.textContent = bound
+            ? 'Configuring: ' + payload.chatTitle
+            : 'No chat selected — open this tab from a chat’s ⋯ menu to edit';
+        }
+        showHubSection(payload.section || hubSection);
+      }
+
+      if (IS_HUB) {
+        var hubNav = document.getElementById('hub-nav');
+        if (hubNav) {
+          hubNav.addEventListener('click', function(e) {
+            var item = e.target && e.target.closest ? e.target.closest('.hub-nav-item') : null;
+            if (!item) { return; }
+            if (item.hasAttribute('data-hub-connections')) {
+              postMessageWithPanelId({ type: 'openConnections' });
+              return;
+            }
+            showHubSection(item.getAttribute('data-hub-section'));
+          });
+        }
+        showHubSection(hubSection);
       }
 
       // Reset agent config
@@ -4352,6 +4375,9 @@
         // producer that draws it.
         try { observeRun(message); } catch (err) { console.warn('[Mysti Webview] runs observer:', err); }
         switch (message.type) {
+          case 'hubShow':
+            handleHubShow(message.payload);
+            break;
           case 'initialState':
             initializeState(message.payload);
             // Ask for any outstanding update notices. Kept out of initialState
@@ -5711,6 +5737,7 @@
           if (b.unlocked) {
             (function(badgeId) {
               item.addEventListener('click', function() {
+                if (document.body.classList.contains('hub-unbound')) { showToast('Open this tab from a chat to share a badge', 'info'); return; }
                 postMessageWithPanelId({ type: 'getBadgeShareText', payload: { badgeId: badgeId } });
               });
             })(b.id);
@@ -5721,6 +5748,8 @@
       }
 
       function showExportToast(text) {
+        // The tab hides the composer that holds #export-toast.
+        if (IS_HUB) { showToast(text, 'info'); return; }
         var toast = document.getElementById('export-toast');
         if (!toast) return;
         toast.textContent = text;
