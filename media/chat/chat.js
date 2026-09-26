@@ -7231,6 +7231,76 @@
 
       function finishWizard() {
         hideWizard();
+        renderGettingStarted();
+      }
+
+      /**
+       * Plan 32 — the Getting-started card at the top of an EMPTY chat. The
+       * host decides whether it renders (`state.onboarding.gettingStarted`,
+       * null once hidden or all done); it is rebuilt with the welcome screen
+       * and never updates mid-conversation.
+       */
+      function renderGettingStarted() {
+        var old = document.getElementById('getting-started');
+        if (old) { old.remove(); }
+        var gs = state.onboarding && state.onboarding.gettingStarted;
+        var welcome = messagesEl.querySelector('.welcome-container');
+        if (!gs || !welcome) { return; }
+        var it = gs.items || {};
+        var mode = chatModeById(deriveChatMode()) || chatModeById('ask');
+        var agentName = getAgentDisplayName(state.settings && state.settings.provider);
+        var rows = [
+          { done: !!it.connect, title: 'Connect an agent',
+            text: it.connect ? (agentName || 'Your agent') + ' is ready' : 'Pick one \u2014 or use the Mysti agent with nothing to install.',
+            action: it.connect ? null : 'connect', label: 'Connect' },
+          { done: !!it.mode, title: 'Choose how much Mysti may do',
+            text: 'You\u2019re on ' + mode.label + '. ' + mode.desc, action: 'mode', label: 'Change' },
+          { done: !!it.task, title: 'Send a first task', text: 'Pick a card below, or type in the box.' },
+          { done: !!it.mention, title: 'Mention another agent', text: 'Type @ in the box to send one message to a different agent.' }
+        ];
+        var doneCount = rows.filter(function(r) { return r.done; }).length;
+        var el = document.createElement('section');
+        el.id = 'getting-started';
+        el.className = 'getting-started';
+        el.setAttribute('aria-label', 'Getting started');
+        el.innerHTML =
+          '<div class="gs-head"><div><div class="gs-title">Getting started</div>' +
+          '<div class="gs-count">' + doneCount + ' of 4 done</div></div>' +
+          '<button type="button" class="gs-close" aria-label="Hide getting started">&times;</button></div>' +
+          '<div class="gs-bar" aria-hidden="true"><div class="gs-bar-fill" style="width:' + (doneCount * 25) + '%"></div></div>' +
+          '<ol class="gs-list">' + rows.map(function(r) {
+            return '<li class="gs-item' + (r.done ? ' done' : '') + '">' +
+              '<span class="gs-check" aria-hidden="true"></span>' +
+              '<span class="gs-text"><span class="gs-item-title">' + escapeHtml(r.title) +
+              (r.done ? '<span class="sr-only"> (done)</span>' : '') + '</span>' +
+              '<span class="gs-item-sub">' + escapeHtml(r.text) + '</span></span>' +
+              (r.action ? '<button type="button" class="gs-action" data-action="' + r.action + '">' + r.label + '</button>' : '') +
+              '</li>';
+          }).join('') + '</ol>' +
+          '<div class="gs-foot"><button type="button" class="gs-tour">Take the full tour</button>' +
+          '<button type="button" class="gs-hide">Hide</button></div>';
+        function hide() {
+          state.onboarding.gettingStarted = null;
+          el.remove();
+          postMessageWithPanelId({ type: 'hideGettingStarted' });
+        }
+        el.querySelector('.gs-close').addEventListener('click', hide);
+        el.querySelector('.gs-hide').addEventListener('click', hide);
+        el.querySelector('.gs-tour').addEventListener('click', function() {
+          postMessageWithPanelId({ type: 'openWalkthrough' });
+        });
+        el.querySelectorAll('.gs-action').forEach(function(b) {
+          b.addEventListener('click', function(e) {
+            // Stop here: the document-level click-away would close the popup this opens.
+            e.stopPropagation();
+            if (b.getAttribute('data-action') === 'mode') {
+              behaviorIndicator.click();
+            } else {
+              postMessageWithPanelId({ type: 'requestOnboarding', payload: { step: 'connect' } });
+            }
+          });
+        });
+        welcome.insertBefore(el, welcome.querySelector('.welcome-suggestions'));
       }
 
       var wizardTaskSend = document.getElementById('wizard-task-send');
@@ -8918,6 +8988,7 @@
         if (state.conversation && state.conversation.messages) {
           state.conversation.messages.forEach(function(msg) { addMessage(msg); });
         }
+        renderGettingStarted();
 
         // Preload workspace files for @-mention autocomplete
         postMessageWithPanelId({ type: 'getWorkspaceFiles' });
@@ -12761,6 +12832,7 @@
         subAgentCards.reset();
         messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Mysti" class="welcome-logo" /><h2>Welcome to Mysti</h2><p>Your AI coding team. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div><div class="welcome-spread"><h3>Spread the Word</h3><div class="about-links spread-links"><a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> Star on GitHub</a><a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti&ssr=false#review-details" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.254.008.045-.236 2.101-.574.028.166-.978 4.607z"/><circle cx="8" cy="4.5" r="1"/></svg> Rate on Marketplace</a><a id="share-on-x" href="#" class="spread-link" title="Share on X / Twitter"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Share on X</a></div></div></div>';
         renderWelcomeSuggestions();
+        renderGettingStarted();
         // A rebuilt message list invalidates any open rewind menu's anchor.
         if (typeof closeRewindMenu === 'function') { closeRewindMenu(); }
         // Reset all streaming buffers

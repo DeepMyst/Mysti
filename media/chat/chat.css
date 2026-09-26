@@ -8645,6 +8645,75 @@
     }
     .wizard-link-btn:hover { text-decoration: underline; }
     .wizard-link-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+
+    .getting-started {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin: 0 0 16px;
+      padding: 12px 14px;
+      border: 1px solid var(--mysti-border);
+      border-radius: 8px;
+      background: var(--mysti-surface);
+      text-align: left;
+    }
+    .gs-head { display: flex; justify-content: space-between; align-items: flex-start; }
+    .gs-title { font-weight: 600; color: var(--mysti-fg); }
+    .gs-count { font-size: 12px; color: var(--mysti-dim); }
+    .gs-close {
+      width: 24px;
+      height: 24px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--mysti-dim);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .gs-close:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--mysti-fg); }
+    .gs-bar { height: 4px; border-radius: 2px; background: var(--mysti-surface-2); }
+    .gs-bar-fill { height: 4px; border-radius: 2px; background: var(--mysti-accent); }
+    .gs-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+    .gs-item { display: flex; align-items: flex-start; gap: 10px; }
+    .gs-check {
+      flex: 0 0 14px;
+      height: 14px;
+      margin-top: 2px;
+      box-sizing: border-box;
+      border-radius: 50%;
+      border: 1.5px solid var(--mysti-dim);
+    }
+    .gs-item.done .gs-check { border-color: var(--mysti-accent); background: var(--mysti-accent); }
+    .gs-text { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .gs-item-title { font-weight: 600; color: var(--mysti-fg); }
+    .gs-item.done .gs-item-title { font-weight: 400; color: var(--mysti-dim); }
+    .gs-item-sub { font-size: 12px; color: var(--mysti-dim); }
+    .gs-action {
+      flex: 0 0 auto;
+      padding: 3px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--vscode-button-border, var(--mysti-border));
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .gs-foot { display: flex; justify-content: space-between; align-items: center; }
+    .gs-tour, .gs-hide {
+      padding: 0;
+      border: none;
+      background: none;
+      font: inherit;
+      cursor: pointer;
+    }
+    .gs-tour { color: var(--mysti-accent); }
+    .gs-hide { color: var(--mysti-dim); }
+    .gs-close:focus-visible, .gs-action:focus-visible, .gs-tour:focus-visible, .gs-hide:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
+    }
     .sr-only {
       position: absolute;
       width: 1px;

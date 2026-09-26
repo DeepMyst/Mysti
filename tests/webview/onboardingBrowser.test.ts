@@ -243,3 +243,56 @@ describe('wizard steps 2 and 3', () => {
     expect((await posted(pg)).some((m) => m.type === 'openWalkthrough')).toBe(true);
   });
 });
+
+describe('getting started card', () => {
+  const gs = (items: Record<string, boolean>) =>
+    ({ onboarding: { tips: { enabled: true, seen: [] }, gettingStarted: { items } } });
+  const FRESH = { connect: true, mode: false, task: false, mention: false };
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('renders in the empty chat with the right count', async () => {
+    const pg = await panel(gs(FRESH));
+    expect(await pg.textContent('#getting-started .gs-count')).toBe('1 of 4 done');
+    expect(await pg.$$eval('#getting-started .gs-item.done', (e) => e.length)).toBe(1);
+    expect(await pg.textContent('#getting-started .gs-item.done .gs-item-sub')).toMatch(/ is ready$/);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('is absent when the host says null', async () => {
+    const pg = await panel({ onboarding: { tips: { enabled: true, seen: [] }, gettingStarted: null } });
+    expect(await pg.$('#getting-started')).toBeNull();
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('comes back on a new empty chat until hidden', async () => {
+    const pg = await panel(gs(FRESH));
+    await send(pg, { type: 'conversationChanged', payload: { messages: [] } });
+    expect(await pg.$('#getting-started')).not.toBeNull();
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Hide removes it, tells the host, and it stays gone on a new chat', async () => {
+    const pg = await panel(gs(FRESH));
+    await pg.click('#getting-started .gs-hide');
+    expect(await pg.$('#getting-started')).toBeNull();
+    expect((await posted(pg)).some((m) => m.type === 'hideGettingStarted')).toBe(true);
+    await send(pg, { type: 'conversationChanged', payload: { messages: [] } });
+    expect(await pg.$('#getting-started')).toBeNull();
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Change opens the mode picker', async () => {
+    const pg = await panel(gs(FRESH));
+    await pg.click('#getting-started .gs-action[data-action="mode"]');
+    expect(await pg.isVisible('#behavior-popup')).toBe(true);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Connect asks the host to open the wizard', async () => {
+    const pg = await panel(gs({ connect: false, mode: false, task: false, mention: false }));
+    await pg.click('#getting-started .gs-action[data-action="connect"]');
+    const req = (await posted(pg)).filter((m) => m.type === 'requestOnboarding').pop();
+    expect(req!.payload).toEqual({ step: 'connect' });
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('finishing the wizard lands on the card', async () => {
+    const pg = await panel(gs(FRESH));
+    await wizard(pg, { providers: PROVIDERS(['claude-code'], ['claude-code']), anyReady: true, step: 'task' });
+    await pg.click('#wizard-next-btn');
+    expect(await pg.isVisible('#getting-started')).toBe(true);
+  });
+});
