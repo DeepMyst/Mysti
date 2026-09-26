@@ -161,9 +161,19 @@ describe('Plan 31 — the Mysti tab lifecycle', () => {
     const h = harness();
     await h.provider._handleMessage({ type: 'openSettingsHub', payload: { section: 'badges' }, panelId: 'tab' } as WebviewMessage);
     expect(h.created).toHaveLength(1);
+    expect(h.provider._hub!.originPanelId).toBe('tab');
+    expect(h.hubPosts().at(-1)).toEqual({ type: 'hubShow', payload: { section: 'badges', chatTitle: 'Refactor' } });
     await h.provider._handleMessage({ type: 'openSettingsHub', payload: { section: 'connections' }, panelId: 'tab' } as WebviewMessage);
     await h.provider._handleMessage({ type: 'openSettingsHub', payload: {}, panelId: 'tab' } as WebviewMessage);
     expect(h.hubPosts().filter(m => m.type === 'hubShow')).toHaveLength(1);
+  });
+
+  it('binds to the chat whose webview asked, whatever panel id the message claims', async () => {
+    const h = harness();
+    await h.provider._receivePanelMessage({ type: 'openSettingsHub', payload: { section: 'badges' }, panelId: 'sidebar' },
+      'tab', h.panels.get('tab')!.webview);
+    expect(h.provider._hub!.originPanelId).toBe('tab');
+    expect(h.hubPosts().at(-1)).toEqual({ type: 'hubShow', payload: { section: 'badges', chatTitle: 'Refactor' } });
   });
 
   it('closes with the provider, and its chats closing then post nothing to it', async () => {
@@ -183,6 +193,57 @@ describe('Plan 31 — the Mysti tab lifecycle', () => {
     expect(h.created[0].panel.dispose).toHaveBeenCalled();
     expect(h.provider._hub).toBeNull();
     expect(h.hubPosts()).toHaveLength(posted);
+  });
+});
+
+describe('Plan 31 — the chat it acts for closing', () => {
+  /** Every manager the chats' dispose paths touch: any method is a no-op returning []. */
+  const inert = new Proxy({}, { get: () => () => [] });
+  function closeable() {
+    const managers = ['_delayedChannelTurns', '_channelBridge', '_providerManager', '_permissionManager',
+      '_backgroundJobManager', '_subAgentQuestions', '_pendingPlans', '_contextManager', '_brainstormManager',
+      '_collaborationManager', '_visualTestManager', '_compactionManager'];
+    const maps = ['_lastUserMessage', '_lastSendSettings', '_lastMentionContext', '_vtNonces', '_vtScanners',
+      '_pendingPlanSelections', '_panelAutonomyLevel', '_mystiRunGen', '_mystiAbortControllers', '_mystiActiveDelegationRuns'];
+    const sets = ['_runningPanels', '_cancelledPanels', '_pendingUiReadyPanels'];
+    const h = harness({
+      ...Object.fromEntries(managers.map((k) => [k, inert])),
+      ...Object.fromEntries(maps.map((k) => [k, new Map()])),
+      ...Object.fromEntries(sets.map((k) => [k, new Set()])),
+      _tryPreSpawnPersistentProcess: () => undefined,
+    });
+    Object.assign((h.provider as unknown as { _conversationManager: object })._conversationManager, {
+      createNewConversation: () => ({ id: 'c-new' }),
+      getCurrentConversation: () => ({ id: 'c-side' }),
+    });
+    return h;
+  }
+
+  it('unbinds when the editor-tab chat it acts for closes', async () => {
+    const h = closeable();
+    (h.provider as unknown as { openInNewTab(): void }).openInNewTab();
+    const chat = h.created[0];
+    const chatId = [...h.panels.keys()].find((k) => k.startsWith('panel_'))!;
+    await h.provider.openSettingsHub('settings', chatId);
+    expect(h.hubPosts().at(-1)).toEqual({ type: 'hubShow', payload: { section: 'settings', chatTitle: 'New chat' } });
+    chat.on.dispose!();
+    expect(h.provider._hub!.originPanelId).toBeNull();
+    expect(h.hubPosts().at(-1)).toEqual({ type: 'hubShow', payload: { section: null, chatTitle: null } });
+  });
+
+  it('unbinds when the sidebar chat it acts for closes', async () => {
+    const h = closeable();
+    let closeView!: () => void;
+    const view = {
+      webview: { options: {}, html: '', postMessage: vi.fn(async () => true), onDidReceiveMessage: () => ({ dispose() { /* noop */ } }) },
+      onDidDispose: (cb: () => void) => { closeView = cb; return { dispose() { /* noop */ } }; },
+    };
+    (h.provider as unknown as { resolveWebviewView(v: unknown, c: unknown, t: unknown): void }).resolveWebviewView(view, {}, {});
+    await h.provider.openSettingsHub('settings', 'sidebar');
+    expect(h.hubPosts().at(-1)).toEqual({ type: 'hubShow', payload: { section: 'settings', chatTitle: 'Fix login' } });
+    closeView();
+    expect(h.provider._hub!.originPanelId).toBeNull();
+    expect(h.hubPosts().at(-1)).toEqual({ type: 'hubShow', payload: { section: null, chatTitle: null } });
   });
 });
 
@@ -270,6 +331,26 @@ describe('Plan 31 — clicks that land while the tab is still loading', () => {
     await open;
     const state = h.hubPosts().find(m => m.type === 'initialState')!.payload as { autonomyLevel?: string };
     expect(state.autonomyLevel).toBe(shown);
+  });
+
+  it.each([
+    // The configured provider ('sidebar' here) is not installed: the chat got the demotion notice.
+    ['a demoted provider', { anyReady: true, providers: [{ providerId: 'gemini', installed: true }] }],
+    // Nothing is ready: the chat got the setup wizard.
+    ['no ready provider', { anyReady: false, providers: [] }],
+  ])('posts nothing to its chat for %s — the chat already showed it', async (_case, status) => {
+    const h = loading({
+      _setupManager: {
+        ensureProviderStatusFresh: async () => undefined,
+        getWizardStatusCached: () => status,
+        getWizardStatus: async () => status,
+      },
+      _providerManager: { getProviders: () => [], getProvider: () => undefined },
+    });
+    await h.provider.openSettingsHub('settings', 'sidebar');
+    await h.settle();
+    expect(typesOf(h.created[0].webview.postMessage)).toContain('initialState');
+    expect(h.panels.get('sidebar')!.webview.postMessage).not.toHaveBeenCalled();
   });
 
   it("applies no edit to a chat whose state it does not show yet, then acts for it once it does", async () => {

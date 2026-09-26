@@ -380,10 +380,14 @@ describe('Plan 31 — settingsSync keeps the chat and the tab in step', () => {
   it.skipIf(CHROMIUM_UNAVAILABLE)("a change made in the tab rides the chat's next send", async () => {
     const pg = await openPage('chat');
     try {
-      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high', mode: 'default', accessLevel: 'full-access' } });
+      await send(pg, { type: 'settingsSync', payload: {
+        thinkingLevel: 'high', mode: 'default', accessLevel: 'full-access', effortLevel: 'low', contextMode: 'manual',
+      } });
       expect(await pg.$eval('#thinking-select', (el) => (el as HTMLSelectElement).value)).toBe('high');
       const settings = await sendFromComposer(pg, 'hello');
-      expect(settings).toMatchObject({ thinkingLevel: 'high', mode: 'default', accessLevel: 'full-access' });
+      expect(settings).toMatchObject({
+        thinkingLevel: 'high', mode: 'default', accessLevel: 'full-access', effortLevel: 'low', contextMode: 'manual',
+      });
     } finally { await pg.context().close(); }
   }, 30000);
 
@@ -433,6 +437,15 @@ describe('Plan 31 — settingsSync keeps the chat and the tab in step', () => {
   const CATALOG = { providers: [{ name: 'claude-code', models: [{ id: 'sonnet', name: 'Sonnet' }, { id: 'opus', name: 'Opus' }] }] };
   const pickers = (pg: Page): Promise<string[]> => pg.$$eval(['#model-select', '#model-select-inline'].join(','),
     (els) => els.map((el) => (el as HTMLSelectElement).value));
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)("a model picked on the other side is the one the chat's next send carries", async () => {
+    const pg = await openPage('chat', { ...CATALOG, settings: { ...INITIAL_SETTINGS, model: 'sonnet' } });
+    try {
+      await send(pg, { type: 'settingsSync', payload: { model: 'opus', customModel: '' } });
+      expect(await pickers(pg)).toEqual(['opus', 'opus']);
+      expect((await sendFromComposer(pg, 'hello')).model).toBe('opus');
+    } finally { await pg.context().close(); }
+  }, 30000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('an unrelated sync keeps a settled model that is not in the catalog', async () => {
     const pg = await openPage('chat', { ...CATALOG, settings: { ...INITIAL_SETTINGS, model: 'sonnet' } });
