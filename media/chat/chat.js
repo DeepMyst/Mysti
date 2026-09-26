@@ -8764,6 +8764,12 @@
         perfSetEnabled(!!payload.performanceLogging);
         var savedAgentSettings = state.agentSettings;
         state = Object.assign({}, state, payload);
+        // An unconfigured conversation's `agentConfig: undefined` does not
+        // survive JSON — without this, a rebound (or followed) Mysti tab kept
+        // the previous conversation's persona and skills, and saved them there.
+        if (!payload.agentConfig) {
+          state.agentConfig = { personaId: null, enabledSkills: [] };
+        }
         if (payload.agentSettings) {
           state.agentSettings = Object.assign({}, savedAgentSettings, payload.agentSettings);
         }

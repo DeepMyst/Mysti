@@ -314,6 +314,29 @@ describe('Plan 31 — the Mysti tab', () => {
     } finally { await pg.context().close(); }
   }, 30000);
 
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a chat with no personas or skills configured clears the previous chat’s', async () => {
+    const lists = {
+      availablePersonas: [{ id: 'architect', name: 'Architect', description: '' }],
+      availableSkills: [{ id: 'tdd', name: 'TDD', description: '' }],
+    };
+    const pg = await openPage('hub', { ...lists, agentConfig: { personaId: 'architect', enabledSkills: ['tdd'] } });
+    try {
+      const shown = () => pg.$$eval('#persona-grid .persona-card.selected, #skills-list .skill-item.active',
+        (els) => els.map((e) => (e as HTMLElement).dataset.persona || (e as HTMLElement).dataset.skill));
+      expect(await shown()).toEqual(['architect', 'tdd']);
+      // Rebound (or followed) to a conversation never configured: the host's
+      // `agentConfig: undefined` does not survive JSON, so the key is absent.
+      await send(pg, { type: 'initialState', payload: { settings: { ...INITIAL_SETTINGS }, context: [], ...lists } });
+      expect(await shown()).toEqual([]);
+      await send(pg, { type: 'hubShow', payload: { section: 'agents', chatTitle: 'Refactor' } });
+      await clearPosted(pg);
+      await pg.click('#skills-list .skill-item');
+      expect((await posted(pg)).filter((m) => m.type === 'updateAgentConfig')).toEqual([
+        expect.objectContaining({ payload: { personaId: null, enabledSkills: ['tdd'] } }),
+      ]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('boots both views without throwing', async () => {
     expect(pageErrors).toEqual([]);
   });
