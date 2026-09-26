@@ -98,6 +98,10 @@ async function openPage(view: 'chat' | 'hub', extra: Record<string, unknown> = {
   await pg.setViewportSize({ width: 900, height: 700 });
   await pg.goto(`file://${file}`, { waitUntil: 'load' });
   await send(pg, { type: 'initialState', payload: { settings: { ...INITIAL_SETTINGS }, messages: [], context: [], conversations: [], ...extra } });
+  // Boot ends with uiReady, posted in the NEXT animation frame. Under load that
+  // frame can land after a test's clearPosted and read as a post of its own.
+  await pg.waitForFunction(() => (window as unknown as { __posted: Array<{ type: string }> }).__posted
+    .some((m) => m.type === 'uiReady'));
   return pg;
 }
 
@@ -298,6 +302,74 @@ describe('Plan 31 — the Mysti tab', () => {
   }, 30000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('boots both views without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  });
+});
+
+describe('Plan 31 — settingsSync keeps the chat and the tab in step', () => {
+  async function sendFromComposer(pg: Page, text: string): Promise<Record<string, unknown>> {
+    await clearPosted(pg);
+    await pg.fill('#message-input', text);
+    await pg.keyboard.press('Enter');
+    const sends = (await posted(pg)).filter((m) => m.type === 'sendMessage');
+    expect(sends).toHaveLength(1);
+    return (sends[0].payload as { settings: Record<string, unknown> }).settings;
+  }
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)("a change made in the tab rides the chat's next send", async () => {
+    const pg = await openPage('chat');
+    try {
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high', mode: 'default', accessLevel: 'full-access' } });
+      expect(await pg.$eval('#thinking-select', (el) => (el as HTMLSelectElement).value)).toBe('high');
+      const settings = await sendFromComposer(pg, 'hello');
+      expect(settings).toMatchObject({ thinkingLevel: 'high', mode: 'default', accessLevel: 'full-access' });
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('an agent chosen in the tab becomes the chat agent', async () => {
+    const pg = await openPage('chat');
+    try {
+      await send(pg, { type: 'settingsSync', payload: { provider: 'openai-codex' } });
+      const settings = await sendFromComposer(pg, 'hello');
+      expect(settings.provider).toBe('openai-codex');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('updates the nested rows, and applying it posts nothing back', async () => {
+    const pg = await openPage('hub', {
+      permissionSettings: { timeoutBehavior: 'auto-reject', semiAutonomousTimeout: 60 },
+      brainstormStrategy: 'quick',
+    });
+    try {
+      await clearPosted(pg);
+      await send(pg, { type: 'settingsSync', payload: {
+        'permission.timeoutBehavior': 'auto-accept', 'semiAutonomous.timeout': 90, 'brainstorm.strategy': 'debate',
+      } });
+      expect(await pg.$eval('#timeout-behavior-select', (el) => (el as HTMLSelectElement).value)).toBe('auto-accept');
+      expect(await pg.$eval('#semi-auto-timeout-input', (el) => (el as HTMLInputElement).value)).toBe('90');
+      expect(await pg.$eval('#brainstorm-strategy-select', (el) => (el as HTMLSelectElement).value)).toBe('debate');
+      expect(await posted(pg)).toEqual([]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('initialState still reports the autonomy level exactly once', async () => {
+    const pg = await openPage('chat', { permissionSettings: { timeoutBehavior: 'auto-reject', semiAutonomousTimeout: 60 } });
+    try {
+      expect((await posted(pg)).filter((m) => m.type === 'autonomyLevelChanged')).toHaveLength(1);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('ignores a malformed payload', async () => {
+    const pg = await openPage('chat');
+    try {
+      await send(pg, { type: 'settingsSync', payload: null });
+      await send(pg, { type: 'settingsSync', payload: 'thinkingLevel' });
+      const settings = await sendFromComposer(pg, 'hello');
+      expect(settings.thinkingLevel).toBe('none');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('still boots both views without throwing', async () => {
     expect(pageErrors).toEqual([]);
   });
 });

@@ -4358,6 +4358,9 @@
           case 'hubShow':
             handleHubShow(message.payload);
             break;
+          case 'settingsSync':
+            applySettingsSync(message.payload);
+            break;
           case 'initialState':
             initializeState(message.payload);
             // Ask for any outstanding update notices. Kept out of initialState
@@ -8580,27 +8583,49 @@
         });
       }
 
-      function initializeState(payload) {
-        dismissInitLoading();
-        // Perf: the mysti.debug.performanceLogging flag rides the
-        // initialState payload (starts/stops heap sampling + chunk timing).
-        perfSetEnabled(!!payload.performanceLogging);
-        var savedAgentSettings = state.agentSettings;
-        state = Object.assign({}, state, payload);
-        if (payload.agentSettings) {
-          state.agentSettings = Object.assign({}, savedAgentSettings, payload.agentSettings);
+      /**
+       * Plan 31: a setting changed on the other side of the chat/Mysti-tab pair.
+       * The chat posts `state.settings` with every message, so a change it never
+       * heard about would be silently undone by its next send. `p` is exactly
+       * the `updateSettings` payload the other side sent.
+       */
+      function applySettingsSync(p) {
+        if (!p || typeof p !== 'object') { return; }
+        ['provider', 'model', 'thinkingLevel', 'effortLevel', 'mode', 'accessLevel', 'contextMode'].forEach(function(k) {
+          if (p[k] !== undefined) { state.settings[k] = p[k]; }
+        });
+        if (p.customModel !== undefined) {
+          state.providerSettings = Object.assign({}, state.providerSettings, { customModel: p.customModel });
         }
-
-        // Plan 02 Phase 2: only trust a manifest whose schema matches the
-        // one this webview build was generated against.
-        if (state.providerManifest && state.providerManifest.schemaVersion !== EXPECTED_MANIFEST_SCHEMA_VERSION) {
-          console.warn('[Mysti Webview] Ignoring provider manifest with unexpected schemaVersion:', state.providerManifest.schemaVersion);
-          state.providerManifest = null;
+        var nested = {
+          'agents.autoSuggest': ['agentSettings', 'autoSuggest'],
+          'agents.maxTokenBudget': ['agentSettings', 'maxTokenBudget'],
+          'showSuggestions': ['agentSettings', 'showSuggestions'],
+          'permission.timeoutBehavior': ['permissionSettings', 'timeoutBehavior'],
+          'semiAutonomous.timeout': ['permissionSettings', 'semiAutonomousTimeout']
+        };
+        Object.keys(nested).forEach(function(k) {
+          if (p[k] === undefined) { return; }
+          var patch = {};
+          patch[nested[k][1]] = p[k];
+          state[nested[k][0]] = Object.assign({}, state[nested[k][0]], patch);
+        });
+        if (p['brainstorm.agents'] !== undefined) { state.brainstormAgents = p['brainstorm.agents']; }
+        if (p['brainstorm.strategy'] !== undefined) { state.brainstormStrategy = p['brainstorm.strategy']; }
+        applySettingsToControls();
+        // Mode/access also drive the composer's trust pill.
+        if (p.mode !== undefined || p.accessLevel !== undefined) {
+          renderModeOptions();
+          syncUnattendedAvailability();
         }
-        // Build every manifest-derived surface (provider dropdown, brainstorm
-        // options, mention short-id map) before values are applied below.
-        applyProviderManifest();
+      }
 
+      /**
+       * Plan 31: paint every settings control from `state`. Shared by
+       * initializeState and settingsSync. Posts NOTHING — the autonomy-level
+       * report stays in initializeState, where it belongs to panel boot.
+       */
+      function applySettingsToControls() {
         thinkingSelect.value = state.settings.thinkingLevel;
         if (contextModeLabel) {
           contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
@@ -8654,8 +8679,6 @@
         // Update provider availability (disable unavailable providers)
         updateProviderAvailability();
 
-        updateContext(state.context);
-
         // Initialize agent configuration
         if (state.availablePersonas && state.availableSkills) {
           // Set agentConfig from conversation or use default
@@ -8698,7 +8721,35 @@
           // Autonomy sub-settings visibility depends on current autonomy level
           showAutonomySubSettings(state.autonomyLevel);
           updateAutonomyIndicator();
+        }
+      }
 
+      function initializeState(payload) {
+        dismissInitLoading();
+        // Perf: the mysti.debug.performanceLogging flag rides the
+        // initialState payload (starts/stops heap sampling + chunk timing).
+        perfSetEnabled(!!payload.performanceLogging);
+        var savedAgentSettings = state.agentSettings;
+        state = Object.assign({}, state, payload);
+        if (payload.agentSettings) {
+          state.agentSettings = Object.assign({}, savedAgentSettings, payload.agentSettings);
+        }
+
+        // Plan 02 Phase 2: only trust a manifest whose schema matches the
+        // one this webview build was generated against.
+        if (state.providerManifest && state.providerManifest.schemaVersion !== EXPECTED_MANIFEST_SCHEMA_VERSION) {
+          console.warn('[Mysti Webview] Ignoring provider manifest with unexpected schemaVersion:', state.providerManifest.schemaVersion);
+          state.providerManifest = null;
+        }
+        // Build every manifest-derived surface (provider dropdown, brainstorm
+        // options, mention short-id map) before values are applied below.
+        applyProviderManifest();
+
+        applySettingsToControls();
+
+        updateContext(state.context);
+
+        if (state.permissionSettings) {
           // Send authoritative autonomy level to backend (prevents stale config issues)
           postMessageWithPanelId({
             type: 'autonomyLevelChanged',
