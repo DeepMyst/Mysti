@@ -660,6 +660,12 @@
         if (state.mentionItems.length > 0) {
           mentionMenu.classList.remove('hidden');
           state.mentionMenuVisible = true;
+          // Plan 32: say once what an agent pick vs a file pick does.
+          if (!mentionMenu.querySelector('.mysti-tip') && claimTip('mention')) {
+            mentionMenu.insertBefore(buildTip('mention',
+              '<strong>Pick an agent</strong> to send it just this message \u2014 your chat stays where it is. ' +
+              '<strong>Pick a file</strong> to attach it.'), mentionMenu.firstChild);
+          }
 
           // Position the menu above the input area using fixed positioning
           var inputArea = document.querySelector('.input-area');
@@ -821,6 +827,8 @@
         state.mentionRoleAgent = null;
         if (mentionMenu) {
           mentionMenu.classList.add('hidden');
+          var mentionTip = mentionMenu.querySelector('.mysti-tip');
+          if (mentionTip) { mentionTip.remove(); }
         }
         state.mentionMenuVisible = false;
         state.mentionQuery = null;
@@ -3103,6 +3111,7 @@
       var brainstormStrategyHint = document.getElementById('brainstorm-strategy-hint');
       var brainstormStrategySection = document.getElementById('brainstorm-strategy-section');
 
+      var STRATEGY_LABELS = { 'quick': 'Quick', 'debate': 'Debate', 'red-team': 'Red team', 'perspectives': 'Perspectives', 'delphi': 'Delphi' };
       var strategyDescriptions = {
         'quick': 'Direct synthesis without discussion (fastest)',
         'debate': 'Agents critique each other with structured rebuttals',
@@ -3285,6 +3294,7 @@
         if (provider === 'brainstorm') {
           strategyIndicator.classList.remove('hidden');
           updateStrategyIndicator();
+          maybeShowBrainstormTip();
         } else {
           strategyIndicator.classList.add('hidden');
         }
@@ -4420,6 +4430,13 @@
                 var sp = card.querySelector('.subagent-tool-spinner');
                 if (sp) { sp.outerHTML = '<span class="subagent-tool-icon completed">&#10003;</span>'; }
               });
+              // Plan 32: the first turn that edited files learns it can be undone.
+              // ponytail: keyed on .edit-report-card, so only FILE_EDIT_TOOLS backends trigger it.
+              if (finalizedEl.querySelector('.edit-report-card') && state.checkpointsAvailable !== false && claimTip('rewind')) {
+                finalizedEl.insertAdjacentElement('afterend', buildTip('rewind',
+                  '<strong>Changed your mind?</strong> The \u21ba on your message rewinds this turn\u2019s file changes, ' +
+                  'or forks the chat from there. Mysti keeps its own snapshots, so your git history is untouched.'));
+              }
             }
             // review[34]: the default agentic run ends with responseComplete (not
             // handleMystiComplete), which never cleared the per-delegation thinking
@@ -11003,9 +11020,94 @@
       // Permission Handling Functions
       // ========================================
 
+      // ========================================
+      // Plan 32 — once-only tips
+      // ========================================
+      // Each tip is marked seen the moment it SHOWS (not when dismissed) and at
+      // most one appears per webview session, so a tip can never nag. All tip
+      // copy is literal; no user or model text is interpolated into it.
+      var TIP_INFO_SVG = '<svg class="mysti-tip-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"></circle><path d="M8 7.2v4M8 4.9v.1"></path></svg>';
+
+      function canShowTip(id) {
+        var t = state.onboarding && state.onboarding.tips;
+        return !!t && t.enabled === true && (t.seen || []).indexOf(id) === -1 && !state.tipShownThisSession;
+      }
+
+      function claimTip(id) {
+        if (!canShowTip(id)) { return false; }
+        state.tipShownThisSession = true;
+        state.onboarding.tips.seen = (state.onboarding.tips.seen || []).concat([id]);
+        postMessageWithPanelId({ type: 'tipSeen', payload: { id: id } });
+        return true;
+      }
+
+      /** `extra` = optional { label, onClick } shown between Got it and Turn off tips. */
+      function buildTip(id, html, extra) {
+        var el = document.createElement('div');
+        el.className = 'mysti-tip';
+        el.setAttribute('role', 'note');
+        el.setAttribute('data-tip', id);
+        el.innerHTML = TIP_INFO_SVG +
+          '<div class="mysti-tip-body"><p class="mysti-tip-text">' + html + '</p>' +
+          '<div class="mysti-tip-actions"><button type="button" class="mysti-tip-ok">Got it</button>' +
+          (extra ? '<button type="button" class="mysti-tip-extra">' + escapeHtml(extra.label) + '</button>' : '') +
+          '<button type="button" class="mysti-tip-off">Turn off tips</button></div></div>';
+        el.querySelector('.mysti-tip-ok').addEventListener('click', function() { el.remove(); });
+        if (extra) {
+          el.querySelector('.mysti-tip-extra').addEventListener('click', function() { el.remove(); extra.onClick(); });
+        }
+        el.querySelector('.mysti-tip-off').addEventListener('click', function() {
+          if (state.onboarding && state.onboarding.tips) { state.onboarding.tips.enabled = false; }
+          postMessageWithPanelId({ type: 'tipsOff' });
+          document.querySelectorAll('.mysti-tip').forEach(function(n) { n.remove(); });
+        });
+        return el;
+      }
+
+      function maybeShowBrainstormTip() {
+        if (!messagesEl || !claimTip('brainstorm')) { return; }
+        var names = (state.brainstormAgents || []).map(function(id) { return getAgentDisplayName(id) || id; });
+        var current = state.brainstormStrategy || 'quick';
+        var tip = buildTip('brainstorm',
+          '<strong>Your first Brainstorm.</strong> Every message runs both agents' +
+          (names.length === 2 ? ' (' + escapeHtml(names[0]) + ' and ' + escapeHtml(names[1]) + ')' : '') +
+          ', so it costs more than one. Pick how they work together:',
+          { label: 'Change agents', onClick: function() { settingsBtn.click(); } });
+        var list = document.createElement('fieldset');
+        list.className = 'bs-strategies';
+        list.innerHTML = '<legend class="sr-only">Brainstorm strategy</legend>' +
+          Object.keys(strategyDescriptions).map(function(k) {
+            return '<label class="bs-strategy"><input type="radio" name="bs-strategy" value="' + k + '"' +
+              (k === current ? ' checked' : '') + ' /><span><strong>' + escapeHtml(STRATEGY_LABELS[k] || k) + '</strong> ' +
+              escapeHtml(strategyDescriptions[k]) + '</span></label>';
+          }).join('');
+        list.querySelectorAll('input').forEach(function(r) {
+          r.addEventListener('change', function() {
+            state.brainstormStrategy = r.value;
+            if (brainstormStrategySelect) { brainstormStrategySelect.value = r.value; }
+            if (brainstormStrategyHint) { brainstormStrategyHint.textContent = strategyDescriptions[r.value] || ''; }
+            updateStrategyIndicator();
+            postMessageWithPanelId({ type: 'updateSettings', payload: { 'brainstorm.strategy': r.value } });
+          });
+        });
+        tip.querySelector('.mysti-tip-body').insertBefore(list, tip.querySelector('.mysti-tip-actions'));
+        messagesEl.appendChild(tip);
+        scrollToBottom();
+      }
+
       function handlePermissionRequest(request) {
         // Store in state
         state.pendingPermissions.set(request.id, request);
+
+        // Plan 32: explain the very first approval, once.
+        if (claimTip('permission')) {
+          var pm = chatModeById(deriveChatMode()) || chatModeById('ask');
+          var canRemember = !request.forceInteractive && !request.remoteOrigin;
+          messagesEl.appendChild(buildTip('permission',
+            '<strong>Your first approval.</strong> Mysti is asking because you\u2019re on <strong>' + escapeHtml(pm.label) + '</strong>.' +
+            (canRemember ? ' \u201cYes, and don\u2019t ask again\u201d skips this kind of action for the rest of the session.' : '') +
+            ' Change mode from the pill below.'));
+        }
 
         // Render permission card
         var card = renderPermissionCard(request);
@@ -13336,6 +13438,16 @@
             }
 
             renderCompactionDivider(event);
+            if (claimTip('compaction')) {
+              messagesEl.appendChild(buildTip('compaction',
+                '<strong>This chat was compacted.</strong> Older turns were summarized so the agent has room to keep going. ' +
+                'Your files didn\u2019t change. Starting on something unrelated? A new chat is faster and costs less.',
+                { label: 'New chat', onClick: function() {
+                  var b = document.getElementById('new-conversation-btn');
+                  if (b) { b.click(); }
+                } }));
+              scrollToBottom();
+            }
 
             setTimeout(function() {
               statusEl.classList.add('hidden');

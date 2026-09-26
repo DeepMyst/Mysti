@@ -8710,6 +8710,38 @@
     }
     .gs-tour { color: var(--mysti-accent); }
     .gs-hide { color: var(--mysti-dim); }
+    .mysti-tip {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      margin: 8px 0;
+      padding: 10px 12px;
+      border: 1px solid var(--vscode-focusBorder);
+      border-radius: 6px;
+      background: var(--mysti-surface-2);
+      color: var(--mysti-fg);
+      font-size: 12px;
+      text-align: left;
+    }
+    #mention-menu .mysti-tip { margin: 0; border-width: 0 0 1px; border-radius: 0; }
+    .mysti-tip-icon { flex: 0 0 16px; margin-top: 1px; color: var(--mysti-accent); }
+    .mysti-tip-body { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .mysti-tip-text { margin: 0; line-height: 1.5; }
+    .mysti-tip-actions { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+    .mysti-tip-actions button {
+      padding: 0;
+      border: none;
+      background: none;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      color: var(--mysti-accent);
+    }
+    .mysti-tip-actions .mysti-tip-off { color: var(--mysti-dim); }
+    .mysti-tip-actions button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    .bs-strategies { margin: 0; padding: 0; border: none; display: flex; flex-direction: column; gap: 4px; }
+    .bs-strategy { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+    .bs-strategy input { margin: 2px 0 0; accent-color: var(--vscode-focusBorder); }
     .gs-close:focus-visible, .gs-action:focus-visible, .gs-tour:focus-visible, .gs-hide:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 2px;

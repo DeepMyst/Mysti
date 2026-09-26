@@ -296,3 +296,97 @@ describe('getting started card', () => {
     expect(await pg.isVisible('#getting-started')).toBe(true);
   });
 });
+
+describe('once-only tips', () => {
+  const on = (seen: string[] = []) => ({ onboarding: { tips: { enabled: true, seen }, gettingStarted: null } });
+  const perm = (id: string) => ({ type: 'permissionRequest', payload: {
+    id, toolName: 'Bash', actionType: 'bash-command', expiresAt: 0, details: { command: 'npm test' } } });
+  const compacted = { type: 'compactionStatus', payload: { status: 'complete', beforeTokens: 142000, afterTokens: 18000 } };
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the first permission card gets a tip, marked seen on show, and never a second', async () => {
+    const pg = await panel(on());
+    await send(pg, perm('p1'));
+    expect(await pg.$$eval('.mysti-tip[data-tip="permission"]', (e) => e.length)).toBe(1);
+    expect(await pg.textContent('.mysti-tip[data-tip="permission"]')).toContain('you’re on Ask');
+    expect((await posted(pg)).filter((m) => m.type === 'tipSeen').map((m) => m.payload)).toEqual([{ id: 'permission' }]);
+    await send(pg, perm('p2'));
+    expect(await pg.$$eval('.mysti-tip', (e) => e.length)).toBe(1);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a tip already seen, or tips turned off, shows nothing', async () => {
+    const seen = await panel(on(['permission']));
+    await send(seen, perm('p1'));
+    expect(await seen.$('.mysti-tip')).toBeNull();
+    const off = await panel({ onboarding: { tips: { enabled: false, seen: [] }, gettingStarted: null } });
+    await send(off, perm('p1'));
+    expect(await off.$('.mysti-tip')).toBeNull();
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('no tips before the host has said anything about them', async () => {
+    const pg = await panel();
+    await send(pg, perm('p1'));
+    expect(await pg.$('.mysti-tip')).toBeNull();
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('only one tip per session', async () => {
+    const pg = await panel(on());
+    await send(pg, perm('p1'));
+    await send(pg, compacted);
+    expect(await pg.$('.mysti-tip[data-tip="compaction"]')).toBeNull();
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the compaction tip offers a new chat; Turn off tips removes it and tells the host', async () => {
+    const pg = await panel(on());
+    await send(pg, compacted);
+    expect(await pg.isVisible('.mysti-tip[data-tip="compaction"] .mysti-tip-extra')).toBe(true);
+    await pg.click('.mysti-tip .mysti-tip-off');
+    expect(await pg.$('.mysti-tip')).toBeNull();
+    expect((await posted(pg)).some((m) => m.type === 'tipsOff')).toBe(true);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Got it just closes the tip', async () => {
+    const pg = await panel(on());
+    await send(pg, compacted);
+    await pg.click('.mysti-tip .mysti-tip-ok');
+    expect(await pg.$('.mysti-tip')).toBeNull();
+    expect((await posted(pg)).some((m) => m.type === 'tipsOff')).toBe(false);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the mention menu carries its tip and drops it on close', async () => {
+    const pg = await panel(on());
+    await send(pg, { type: 'workspaceFiles', payload: ['/w/src/config.ts'] });
+    await pg.click('#message-input');
+    await pg.keyboard.type('@c');
+    expect(await pg.$('#mention-menu .mysti-tip[data-tip="mention"]')).not.toBeNull();
+    await pg.keyboard.press('Escape');
+    expect(await pg.$('#mention-menu .mysti-tip')).toBeNull();
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('switching to Brainstorm offers the strategy inline', async () => {
+    const pg = await panel(on());
+    await send(pg, { type: 'agentChanged', payload: { agent: 'brainstorm' } });
+    expect(await pg.isChecked('.bs-strategies input[value="quick"]')).toBe(true);
+    await pg.check('.bs-strategies input[value="debate"]');
+    const upd = (await posted(pg)).filter((m) => m.type === 'updateSettings').pop();
+    expect(upd!.payload).toEqual({ 'brainstorm.strategy': 'debate' });
+  });
+});
+
+describe('rewind tip', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('follows the first turn that edited a file, once', async () => {
+    const pg = await panel({ onboarding: { tips: { enabled: true, seen: [] }, gettingStarted: null } });
+    async function editTurn(n: number) {
+      await send(pg, { type: 'responseStarted', payload: {} });
+      await send(pg, { type: 'responseChunk', payload: { type: 'text', content: 'Renaming.' } });
+      await send(pg, { type: 'toolUse', payload: { id: `t${n}`, name: 'Edit', status: 'running',
+        input: { file_path: '/w/src/config.ts', old_string: 'loadConfig', new_string: 'loadSettings' } } });
+      await send(pg, { type: 'toolResult', payload: { id: `t${n}`, status: 'completed', output: 'ok' } });
+      await send(pg, { type: 'responseComplete', payload: { message: { id: `m${n}`, role: 'assistant', content: 'Renamed.', timestamp: Date.now() } } });
+    }
+    await editTurn(1);
+    expect(await pg.$$eval('.edit-report-card', (e) => e.length)).toBeGreaterThan(0);
+    expect(await pg.$$eval('.mysti-tip[data-tip="rewind"]', (e) => e.length)).toBe(1);
+    await editTurn(2);
+    expect(await pg.$$eval('.mysti-tip[data-tip="rewind"]', (e) => e.length)).toBe(1);
+  });
+});
