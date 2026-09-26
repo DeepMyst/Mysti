@@ -433,6 +433,64 @@ describe('Plan 31 — settingsSync keeps the chat and the tab in step', () => {
     } finally { await pg.context().close(); }
   }, 30000);
 
+  it.skipIf(CHROMIUM_UNAVAILABLE)('timeout, semi-auto timeout and token limit changed here survive an unrelated sync', async () => {
+    const pg = await openPage('hub', {
+      permissionSettings: { timeoutBehavior: 'auto-reject', semiAutonomousTimeout: 60 },
+      agentSettings: { autoSuggest: true, maxTokenBudget: 4000, showSuggestions: true },
+    });
+    try {
+      await pg.$eval('#timeout-behavior-select', (el) => {
+        (el as HTMLSelectElement).value = 'auto-accept';
+        el.dispatchEvent(new Event('change'));
+      });
+      await pg.$eval('#semi-auto-timeout-input', (el) => {
+        (el as HTMLInputElement).value = '120';
+        el.dispatchEvent(new Event('change'));
+      });
+      await clearPosted(pg);
+      await pg.click('#token-limit-toggle');
+      expect(await posted(pg)).toEqual([expect.objectContaining({ payload: { 'agents.maxTokenBudget': 0 } })]);
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pg.$eval('#timeout-behavior-select', (el) => (el as HTMLSelectElement).value)).toBe('auto-accept');
+      expect(await pg.$eval('#semi-auto-timeout-input', (el) => (el as HTMLInputElement).value)).toBe('120');
+      expect(await pg.$eval('#token-limit-toggle', (el) => el.classList.contains('active'))).toBe(false);
+      // Turning the limit back on still restores the budget it had.
+      await clearPosted(pg);
+      await pg.click('#token-limit-toggle');
+      expect(await posted(pg)).toEqual([expect.objectContaining({ payload: { 'agents.maxTokenBudget': 4000 } })]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the tab offers the semi-autonomous row, not the manual one, while the chat runs semi-autonomous', async () => {
+    const visible = (pg: Page): Promise<boolean[]> => pg.$$eval(['#manual-timeout-section', '#semi-auto-settings'].join(','),
+      (els) => els.map((el) => !el.classList.contains('hidden')));
+    const pg = await openPage('hub', { permissionSettings: { timeoutBehavior: 'semi-autonomous', semiAutonomousTimeout: 60 } });
+    try {
+      expect(await visible(pg)).toEqual([false, true]);
+      await send(pg, { type: 'settingsSync', payload: { 'permission.timeoutBehavior': 'auto-reject' } });
+      expect(await visible(pg)).toEqual([true, false]);
+      await send(pg, { type: 'settingsSync', payload: { 'permission.timeoutBehavior': 'semi-autonomous' } });
+      expect(await visible(pg)).toEqual([false, true]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a half-finished custom model edit survives an unrelated sync', async () => {
+    const pg = await openPage('hub', { ...CATALOG, settings: { ...INITIAL_SETTINGS, model: 'sonnet' } });
+    try {
+      await pg.$eval('#model-select', (el) => {
+        (el as HTMLSelectElement).value = '__custom__';
+        el.dispatchEvent(new Event('change'));
+      });
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pg.$eval('#model-select', (el) => (el as HTMLSelectElement).value)).toBe('__custom__');
+      expect(await pg.$eval('#custom-model-section', (el) => el.classList.contains('hidden'))).toBe(false);
+      await pg.fill('#custom-model-input', 'my-mod');
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'low' } });
+      expect(await pg.$eval('#custom-model-input', (el) => (el as HTMLInputElement).value)).toBe('my-mod');
+      expect(await pg.evaluate(() => document.activeElement && document.activeElement.id)).toBe('custom-model-input');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('still boots both views without throwing', async () => {
     expect(pageErrors).toEqual([]);
   });

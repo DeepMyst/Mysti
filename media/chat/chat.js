@@ -2847,13 +2847,17 @@
           if (state.agentSettings.tokenLimitEnabled) {
             tokenLimitToggle.classList.add('active');
             if (tokenBudgetSection) tokenBudgetSection.classList.remove('hidden');
-            // Restore budget value when enabled
-            var budgetValue = state.agentSettings.maxTokenBudget || 2000;
+            // Restore budget value when enabled (the input keeps the last one)
+            var budgetValue = state.agentSettings.maxTokenBudget
+              || parseInt(tokenBudgetInput && tokenBudgetInput.value, 10) || 2000;
+            // Plan 31: a later settingsSync repaints from state, so keep it current.
+            state.agentSettings.maxTokenBudget = budgetValue;
             postMessageWithPanelId({ type: 'updateSettings', payload: { 'agents.maxTokenBudget': budgetValue } });
           } else {
             tokenLimitToggle.classList.remove('active');
             if (tokenBudgetSection) tokenBudgetSection.classList.add('hidden');
             // Set to 0 (unlimited) when disabled
+            state.agentSettings.maxTokenBudget = 0;
             postMessageWithPanelId({ type: 'updateSettings', payload: { 'agents.maxTokenBudget': 0 } });
           }
         });
@@ -3001,6 +3005,8 @@
       if (timeoutBehaviorSelect) {
         timeoutBehaviorSelect.addEventListener('change', function() {
           var value = timeoutBehaviorSelect.value;
+          // Plan 31: a later settingsSync repaints from state, so keep it current.
+          state.permissionSettings = Object.assign({}, state.permissionSettings, { timeoutBehavior: value });
           postMessageWithPanelId({ type: 'updateSettings', payload: { 'permission.timeoutBehavior': value } });
         });
       }
@@ -3012,6 +3018,7 @@
         semiAutoTimeoutInput.addEventListener('change', function() {
           var val = parseInt(semiAutoTimeoutInput.value, 10);
           if (val >= 10 && val <= 300) {
+            state.permissionSettings = Object.assign({}, state.permissionSettings, { semiAutonomousTimeout: val });
             postMessageWithPanelId({ type: 'updateSettings', payload: { 'semiAutonomous.timeout': val } });
           }
         });
@@ -8594,6 +8601,10 @@
        */
       function applySettingsSync(p) {
         if (!p || typeof p !== 'object') { return; }
+        // An unposted custom-model edit here (Custom… picked, or a value still
+        // being typed) survives a sync that does not touch the model.
+        var keepCustomDraft = modelSelect.value === '__custom__' && !customModelSection.classList.contains('hidden')
+          && p.provider === undefined && p.model === undefined && p.customModel === undefined;
         ['provider', 'model', 'thinkingLevel', 'effortLevel', 'mode', 'accessLevel', 'contextMode'].forEach(function(k) {
           if (p[k] !== undefined) { state.settings[k] = p[k]; }
         });
@@ -8621,7 +8632,7 @@
         });
         if (p['brainstorm.agents'] !== undefined) { state.brainstormAgents = p['brainstorm.agents']; }
         if (p['brainstorm.strategy'] !== undefined) { state.brainstormStrategy = p['brainstorm.strategy']; }
-        applySettingsToControls();
+        applySettingsToControls(keepCustomDraft);
         // Mode/access also drive the composer's trust pill.
         if (p.mode !== undefined || p.accessLevel !== undefined) {
           renderModeOptions();
@@ -8634,7 +8645,7 @@
        * initializeState and settingsSync. Posts NOTHING — the autonomy-level
        * report stays in initializeState, where it belongs to panel boot.
        */
-      function applySettingsToControls() {
+      function applySettingsToControls(keepCustomDraft) {
         thinkingSelect.value = state.settings.thinkingLevel;
         if (contextModeLabel) {
           contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
@@ -8669,7 +8680,11 @@
         // Custom model if set in provider settings, else the active model —
         // re-appended when the catalog does not list it (settingsSync re-runs
         // this rebuild, and a settled off-catalog model must survive it).
-        applyCustomModelState(state.providerSettings && state.providerSettings.customModel);
+        if (keepCustomDraft) {
+          modelSelect.value = '__custom__';
+        } else {
+          applyCustomModelState(state.providerSettings && state.providerSettings.customModel);
+        }
 
         // W4: render the selected provider's declarative settings sections
         // (values restored from state.providerSettings by settingKey)
@@ -8720,6 +8735,12 @@
             // If semi-autonomous was set (meaning autonomous is active), show as auto-reject in the dropdown
             var tbValue = state.permissionSettings.timeoutBehavior;
             tbSelect.value = (tbValue === 'semi-autonomous') ? 'auto-reject' : (tbValue || 'auto-reject');
+          }
+          // Plan 31: the tab never hears autonomyLevelChanged, only this config,
+          // so it reads the level from here — or it would offer the manual row,
+          // whose edit overwrites semi-autonomous in config.
+          if (IS_HUB) {
+            state.autonomyLevel = state.permissionSettings.timeoutBehavior === 'semi-autonomous' ? 'semi-autonomous' : 'manual';
           }
           var saTimeoutInput = document.getElementById('semi-auto-timeout-input');
           if (saTimeoutInput) {
