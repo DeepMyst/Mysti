@@ -2077,67 +2077,72 @@
       {
         "id": "mysti.gettingStarted",
         "title": "Get Started with Mysti",
-        "description": "Set up your multi-agent AI coding assistant in 2 minutes",
+        "description": "Connect an agent, then learn the five things that make Mysti different.",
         "steps": [
           {
             "id": "mysti.walkthrough.openChat",
-            "title": "Open the Mysti Panel",
-            "description": "Click the Mysti icon in the Activity Bar or press ``Cmd+Shift+M`` (``Ctrl+Shift+M`` on Windows/Linux) to open the chat panel.\n\n[Open Mysti](command:mysti.openChat)",
+            "title": "Open the Mysti panel",
+            "description": "Click the Mysti icon in the Activity Bar, or press ``Cmd+Shift+M`` (``Ctrl+Shift+M`` on Windows and Linux).\n[Open Mysti](command:mysti.openChat)",
             "media": {
-              "image": "docs/screenshots/quick-actions-welcome.png",
-              "altText": "Mysti chat panel with welcome screen"
+              "svg": "media/walkthrough/open.svg",
+              "altText": "The keys Cmd, Shift and M"
             },
             "completionEvents": [
-              "onCommand:mysti.openChat"
+              "onCommand:mysti.openChat",
+              "onView:mysti.chatView"
             ]
           },
           {
-            "id": "mysti.walkthrough.setupProvider",
-            "title": "Set Up an AI Provider",
-            "description": "Install and authenticate at least one AI CLI tool. Claude Code is recommended for the best experience.\n\n[Open Settings](command:workbench.action.openSettings?%5B%22mysti.defaultProvider%22%5D)",
+            "id": "mysti.walkthrough.connect",
+            "title": "Connect an agent",
+            "description": "Mysti drives the AI coding tools you already use — Claude Code, Codex, Gemini and 12 more — or runs its own agent on a free DeepMyst account with nothing to install.\n[Connect an agent](command:mysti.getStarted)",
             "media": {
-              "image": "docs/screenshots/settings-panel.png",
-              "altText": "Mysti settings panel showing provider options"
+              "svg": "media/walkthrough/connect.svg",
+              "altText": "A list of agents: Claude Code ready, Codex waiting for sign-in, and the Mysti agent"
             },
             "completionEvents": [
-              "onSettingChanged:mysti.defaultProvider"
+              "onContext:mysti.agentReady"
             ]
           },
           {
-            "id": "mysti.walkthrough.firstMessage",
-            "title": "Send Your First Message",
-            "description": "Ask Mysti to explain code, fix a bug, write tests, or generate new features. You're Mysting now!\n\n[Open Chat](command:mysti.openChat)",
+            "id": "mysti.walkthrough.mode",
+            "title": "Choose how much it may do",
+            "description": "**Plan** only reads. **Ask** checks with you before each edit. **Auto** edits inside the workspace. **Full** does everything. Every turn is checkpointed either way.\n[Choose a mode](command:mysti.getStarted?%5B%22mode%22%5D)",
             "media": {
-              "image": "docs/screenshots/user-experience.png",
-              "altText": "Mysti chat with AI response"
+              "svg": "media/walkthrough/mode.svg",
+              "altText": "The four modes, with Ask selected"
             },
             "completionEvents": [
-              "onCommand:mysti.openChat"
+              "onSettingChanged:mysti.accessLevel",
+              "onSettingChanged:mysti.defaultMode"
             ]
+          },
+          {
+            "id": "mysti.walkthrough.mention",
+            "title": "Talk to a second agent",
+            "description": "Start a message with ``@codex`` or ``@gemini`` to send just that message to another agent. ``@file.ts`` attaches a file instead.\n[Try it in chat](command:mysti.openChat)",
+            "media": {
+              "svg": "media/walkthrough/mention.svg",
+              "altText": "A message addressed to @codex"
+            }
           },
           {
             "id": "mysti.walkthrough.brainstorm",
-            "title": "Try Multi-Agent Brainstorm",
-            "description": "Enable Brainstorm Mode to have two AI agents collaborate, debate, and synthesize solutions together. Pick any 2 of 15 providers.\n\n[Open Settings](command:workbench.action.openSettings?%5B%22mysti.brainstorm.enabled%22%5D)",
+            "title": "Brainstorm with two agents",
+            "description": "Two agents answer, challenge each other, and agree on one answer. Pick **Brainstorm** from the agent menu, or type ``/brainstorm``. Five ways to run it: quick, debate, red team, perspectives and Delphi.\n[Open Mysti](command:mysti.openChat)",
             "media": {
-              "image": "docs/screenshots/brainstorm-mode.png",
-              "altText": "Brainstorm mode with two AI agents collaborating"
-            },
-            "completionEvents": [
-              "onSettingChanged:mysti.brainstorm.enabled"
-            ]
+              "svg": "media/walkthrough/brainstorm.svg",
+              "altText": "Two agent answers merging into one"
+            }
           },
           {
-            "id": "mysti.walkthrough.star",
-            "title": "Star Mysti on GitHub",
-            "description": "If Mysti is useful, [star it on GitHub](https://github.com/DeepMyst/Mysti) to help other developers discover it!\n\nJoin the community and help shape the future of multi-agent AI coding.",
+            "id": "mysti.walkthrough.rewind",
+            "title": "Rewind a turn",
+            "description": "Click the ↺ on any message you sent and choose **Rewind code to here**. Mysti keeps its own snapshots — your git history is untouched.\n[Open Mysti](command:mysti.openChat)",
             "media": {
-              "image": "resources/Mysti-Logo.png",
-              "altText": "Mysti logo"
-            },
-            "completionEvents": [
-              "onLink:https://github.com/DeepMyst/Mysti"
-            ]
+              "svg": "media/walkthrough/rewind.svg",
+              "altText": "The message menu with Rewind code to here highlighted"
+            }
           }
         ]
       }

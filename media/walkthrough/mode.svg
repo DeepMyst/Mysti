@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 300" role="img" aria-label="Four modes: Plan, Ask, Auto and Full. Ask is selected."><style>text{font-family:var(--vscode-font-family);font-size:14px}.fg{fill:var(--vscode-foreground)}.dim{fill:var(--vscode-descriptionForeground)}.accent{fill:var(--vscode-textLink-foreground)}.card{fill:var(--vscode-editor-background);stroke:var(--vscode-widget-border,var(--vscode-editorWidget-border))}.chip{fill:var(--vscode-editorWidget-background,var(--vscode-editor-background));stroke:var(--vscode-widget-border,var(--vscode-editorWidget-border))}.sel{fill:var(--vscode-button-background)}.selfg{fill:var(--vscode-button-foreground)}.hl{fill:var(--vscode-list-activeSelectionBackground)}.hlfg{fill:var(--vscode-list-activeSelectionForeground,var(--vscode-foreground))}.ok{fill:var(--vscode-charts-green)}.line{stroke:var(--vscode-descriptionForeground);fill:none;stroke-width:1.5}</style>
+<rect class="chip" x="72" y="96" width="336" height="52" rx="10"/>
+<text class="dim" x="114" y="128" text-anchor="middle">Plan</text>
+<rect class="sel" x="160" y="102" width="76" height="40" rx="7"/><text class="selfg" x="198" y="128" text-anchor="middle" style="font-weight:600">Ask</text>
+<text class="dim" x="282" y="128" text-anchor="middle">Auto</text>
+<text class="dim" x="366" y="128" text-anchor="middle">Full</text>
+<text class="dim" x="240" y="192" text-anchor="middle">Ask checks with you before every edit and command</text>
+<text class="dim" x="240" y="216" text-anchor="middle">Every turn is checkpointed either way</text>
+</svg>
