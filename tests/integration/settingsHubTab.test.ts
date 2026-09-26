@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import type { WebviewMessage } from '../../src/types';
+import { getWebviewContent } from '../../src/webview/webviewContent';
 
 vi.mock('../../src/webview/webviewContent', () => ({ getWebviewContent: vi.fn(() => '<html></html>') }));
 
@@ -84,8 +85,9 @@ describe('Plan 31 — the Mysti tab lifecycle', () => {
     expect(h.created).toHaveLength(1);
     expect(win.createWebviewPanel).toHaveBeenCalledWith(
       'mysti.settingsHub', 'Mysti', vscode.ViewColumn.Beside,
-      expect.objectContaining({ enableScripts: true, retainContextWhenHidden: true }),
+      expect.objectContaining({ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [expect.anything()] }),
     );
+    expect(getWebviewContent).toHaveBeenCalledWith(expect.anything(), expect.anything(), '0.0.0', { view: 'hub' });
     expect(h.sendInitialState).toHaveBeenCalledWith('sidebar', true);
     expect(h.hubPosts()).toContainEqual({ type: 'hubShow', payload: { section: 'settings', chatTitle: 'Fix login' } });
   });
@@ -155,5 +157,72 @@ describe('Plan 31 — the Mysti tab lifecycle', () => {
     await h.provider._handleMessage({ type: 'openSettingsHub', payload: { section: 'connections' }, panelId: 'tab' } as WebviewMessage);
     await h.provider._handleMessage({ type: 'openSettingsHub', payload: {}, panelId: 'tab' } as WebviewMessage);
     expect(h.hubPosts().filter(m => m.type === 'hubShow')).toHaveLength(1);
+  });
+});
+
+describe('Plan 31 — clicks that land while the tab is still loading', () => {
+  /**
+   * The REAL `_sendInitialState`, held at its first wait (the provider probe,
+   * up to 4s in the product) until the test lets a given chat's load finish.
+   */
+  function loading() {
+    const release: Record<string, () => void> = {};
+    const h = harness({
+      _sendInitialState: (ChatViewProvider.prototype as unknown as Record<string, unknown>)._sendInitialState,
+      _getPanelProvider: (panelId: string) => panelId,
+      _getPanelAgent: () => 'claude-code',
+      _getPanelModel: () => '',
+      _withTimeout: (p: Promise<unknown>) => p,
+      _setupManager: {
+        ensureProviderStatusFresh: (panelId: string) => new Promise<void>((r) => { release[panelId] = r; }),
+        getWizardStatusCached: () => ({ anyReady: true, providers: [] }),
+      },
+      _extensionContext: { extension: { packageJSON: { version: '0.0.0' } }, globalState: { get: () => undefined } },
+      _providerManager: { getProviders: () => [] },
+      _contextManager: { getContext: () => [] },
+      _engagementManager: { getUsageStats: () => ({}), getAllBadges: () => [], getUnlockedCount: () => 0 },
+      _buildManifestPayload: () => ({}),
+    });
+    const settle = () => new Promise((r) => setTimeout(r, 0));
+    return { ...h, release, settle };
+  }
+
+  it('shows the LAST section clicked, and never before the state it belongs to', async () => {
+    const h = loading();
+    const first = h.provider.openSettingsHub('settings', 'sidebar');
+    const second = h.provider.openSettingsHub('about', 'sidebar');
+    await h.settle();
+    expect(h.hubPosts()).toEqual([]);
+    h.release.sidebar();
+    await Promise.all([first, second]);
+    const posts = h.hubPosts();
+    expect(posts[0].type).toBe('initialState');
+    const sections = posts.filter(m => m.type === 'hubShow').map(m => (m.payload as { section: string }).section);
+    expect([...new Set(sections)]).toEqual(['about']);
+  });
+
+  it("never shows one chat's state under another chat's title when a rebind overtakes a load", async () => {
+    const h = loading();
+    const first = h.provider.openSettingsHub('settings', 'sidebar');
+    const second = h.provider.openSettingsHub('agents', 'tab');
+    await h.settle();
+    h.release.tab();
+    await second;
+    h.release.sidebar();
+    await first;
+    const posts = h.hubPosts();
+    expect(h.provider._hub!.originPanelId).toBe('tab');
+    expect(posts.filter(m => m.type === 'initialState').map(m => (m.payload as { panelId: string }).panelId)).toEqual(['tab']);
+    expect(posts.at(-1)).toEqual({ type: 'hubShow', payload: { section: 'agents', chatTitle: 'Refactor' } });
+  });
+
+  it('drops a load whose chat closed before it finished', async () => {
+    const h = loading();
+    const open = h.provider.openSettingsHub('settings', 'sidebar');
+    await h.settle();
+    h.provider._unbindHubFrom('sidebar');
+    h.release.sidebar();
+    await open;
+    expect(h.hubPosts()).toEqual([{ type: 'hubShow', payload: { section: null, chatTitle: null } }]);
   });
 });

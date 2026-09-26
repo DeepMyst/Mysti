@@ -402,7 +402,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _vtDashboardPanelId: string | null = null;
   private _vtDashboardChatOrigin: string | null = null;
   /** Plan 31: the Mysti tab, and the chat it acts for (null once that chat closes). Never in `_panelStates`. */
-  private _hub: { panel: vscode.WebviewPanel; originPanelId: string | null } | null = null;
+  private _hub: {
+    panel: vscode.WebviewPanel;
+    originPanelId: string | null;
+    /** The section the LAST click asked for — posted once the state it belongs to has landed. */
+    section: HubSection;
+    /** The tab's state load in flight (or done) for `originPanelId`. */
+    loading: Promise<void>;
+  } | null = null;
   private _vtTriggeredThisResponse: boolean = false;
   /** Per-panel nonce-bound scanner for the CLI-backend `<look:…>` tag. */
   private _vtScanners: Map<string, MystiTagScanner> = new Map();
@@ -1422,7 +1429,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (forHub) {
       // Plan 31: the tab gets the chat's settings — not its transcript, and none
       // of the chat's side effects below (active mode, checkpoints, in-app messages).
-      void Promise.resolve(this._hub?.panel.webview.postMessage(initialState)).catch(() => false);
+      // A load the tab was rebound (or unbound) past while it waited is another
+      // chat's data now — drop it rather than show it under the new chat's title.
+      if (this._hub?.originPanelId !== panelId) { return; }
+      void Promise.resolve(this._hub.panel.webview.postMessage(initialState)).catch(() => false);
       return;
     }
     this._postToPanel(panelId, initialState);
@@ -13938,7 +13948,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Plan 31: open (or reveal) the Mysti tab on `section`, acting for the chat
    * `originPanelId`. There is one tab; opening it from another chat rebinds it.
    * `_hub` is assigned BEFORE the first await, so a second click that lands
-   * while the first is still loading reveals the same tab.
+   * while the first is still loading reveals the same tab — and waits for that
+   * load, so the LAST click's section is what shows, after the state it needs.
    */
   public async openSettingsHub(section: HubSection, originPanelId: string): Promise<void> {
     if (!this._panelStates.has(originPanelId)) { return; }
@@ -13960,10 +13971,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       panel.onDidDispose(() => {
         if (this._hub?.panel === panel) { this._hub = null; }
       });
-      this._hub = { panel, originPanelId };
+      this._hub = { panel, originPanelId, section, loading: Promise.resolve() };
     }
-    if (rebind) { await this._sendInitialState(originPanelId, true); }
-    this._postHubShow(section);
+    const hub = this._hub;
+    hub.section = section;
+    if (rebind) {
+      hub.loading = this._sendInitialState(originPanelId, true).catch((error) => {
+        console.error('[Mysti] Mysti tab state failed:', error instanceof Error ? error.name : 'Unknown error');
+      });
+    }
+    await hub.loading;
+    // Rebound, unbound or closed while loading: that newer event owns the tab.
+    if (this._hub !== hub || hub.originPanelId !== originPanelId) { return; }
+    this._postHubShow(hub.section);
   }
 
   /** Plan 31: tell the tab which section to show and which chat it acts for (`chatTitle: null` = none). */
