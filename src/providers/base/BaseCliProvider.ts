@@ -2257,6 +2257,7 @@ export abstract class BaseCliProvider implements ICliProvider {
 
   private _cleanStderr(stderr: string): string {
     return stderr
+      // eslint-disable-next-line no-control-regex -- stripping ANSI color escapes is the point
       .replace(/\x1b\[[0-9;]*m/g, '')
       .split('\n')
       .filter(line => {

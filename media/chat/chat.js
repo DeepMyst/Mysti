@@ -2076,6 +2076,11 @@
         if (!IS_HUB || !payload) { return; }
         var bound = typeof payload.chatTitle === 'string';
         document.body.classList.toggle('hub-unbound', !bound);
+        // Read-only for the keyboard too, not just the pointer (chat.css).
+        ['settings-panel', 'agent-config-panel'].forEach(function(id) {
+          var el = document.getElementById(id);
+          if (el) { el.inert = !bound; }
+        });
         var label = document.getElementById('hub-binding');
         if (label) {
           label.textContent = bound
@@ -5691,6 +5696,8 @@
       }
 
       function showExportToast(text) {
+        // The tab hides the composer that holds #export-toast.
+        if (IS_HUB) { showToast(text, 'info'); return; }
         var toast = document.getElementById('export-toast');
         if (!toast) return;
         toast.textContent = text;

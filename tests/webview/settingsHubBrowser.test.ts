@@ -225,6 +225,38 @@ describe('Plan 31 — the Mysti tab', () => {
     } finally { await pg.context().close(); }
   }, 30000);
 
+  it.skipIf(CHROMIUM_UNAVAILABLE)('unbound, Settings and Personas are out of keyboard reach too', async () => {
+    const pg = await openPage('hub');
+    try {
+      const canFocus = (sel: string) => pg.$eval(sel, (el) => {
+        const c = el.querySelector('select, input, button') as HTMLElement;
+        c.focus();
+        const ok = document.activeElement === c;
+        c.blur();
+        return ok;
+      });
+      await send(pg, { type: 'hubShow', payload: { section: 'settings', chatTitle: null } });
+      expect(await canFocus('#settings-panel')).toBe(false);
+      await pg.click('.hub-nav-item[data-hub-section="agents"]');
+      expect(await canFocus('#agent-config-panel')).toBe(false);
+      await send(pg, { type: 'hubShow', payload: { section: 'settings', chatTitle: 'Fix login' } });
+      expect(await canFocus('#settings-panel')).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows the feedback the host mirrors to it (settingsError, badgeShareCopied)', async () => {
+    const pg = await openPage('hub');
+    try {
+      const shown = (text: string) => pg.evaluate((t) => Array.from(document.querySelectorAll('body *'))
+        .some((el) => el.children.length === 0 && (el.textContent || '').includes(t) && el.getClientRects().length > 0), text);
+      await send(pg, { type: 'hubShow', payload: { section: 'settings', chatTitle: 'Fix login' } });
+      await send(pg, { type: 'settingsError', payload: { error: 'Invalid Codex profile name' } });
+      expect(await shown('Invalid Codex profile name')).toBe(true);
+      await send(pg, { type: 'badgeShareCopied' });
+      expect(await shown('Badge share text copied')).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('boots both views without throwing', async () => {
     expect(pageErrors).toEqual([]);
   });

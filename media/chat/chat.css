@@ -9712,9 +9712,11 @@
     /* ===== Plan 31 — the Mysti tab (body.view-hub) =====
        One of the four panels at a time beside a nav, full height. Everything
        else on the page — the chat, its overlays, the setup screens — is off.
-       The panels keep their `.hidden` class; `.hub-active` wins over it. */
+       The panels keep their `.hidden` class; `.hub-active` wins over it.
+       Toasts (showToast, on body) stay: the host mirrors settingsError and
+       badgeShareCopied to the tab so the user sees them there. */
     .hub-nav, .hub-binding { display: none; }
-    body.view-hub > :not(#app):not(script) { display: none !important; }
+    body.view-hub > :not(#app):not(script):not(.mysti-toast) { display: none !important; }
     body.view-hub #app {
       display: grid;
       grid-template-columns: 190px minmax(0, 1fr);
