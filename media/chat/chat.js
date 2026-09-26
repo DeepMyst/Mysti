@@ -1475,6 +1475,22 @@
         return suggestion.message || '';
       }
 
+      /** Send a welcome suggestion with its persona/skills (welcome cards + wizard step 3). */
+      function sendQuickAction(s) {
+        // Provider-specific message at click time (the provider may have changed).
+        var message = getProviderMessage(s, state.settings.provider);
+        postMessageWithPanelId({
+          type: 'quickActionWithConfig',
+          payload: {
+            content: message,
+            context: state.context,
+            settings: state.settings,
+            suggestedPersona: s.suggestedPersona || null,
+            suggestedSkills: s.suggestedSkills || []
+          }
+        });
+      }
+
       function renderWelcomeSuggestions() {
         var container = document.getElementById('welcome-suggestions');
         if (!container) return;
@@ -1494,21 +1510,7 @@
             '<div class="welcome-card-title">' + escapeHtml(s.title) + '</div>' +
             '<div class="welcome-card-desc">' + escapeHtml(s.description) + '</div>';
 
-          card.onclick = function() {
-            // Get provider-specific message at click time (provider may have changed)
-            var message = getProviderMessage(s, state.settings.provider);
-            // Send with suggested persona and skills for auto-configuration
-            postMessageWithPanelId({
-              type: 'quickActionWithConfig',
-              payload: {
-                content: message,
-                context: state.context,
-                settings: state.settings,
-                suggestedPersona: s.suggestedPersona || null,
-                suggestedSkills: s.suggestedSkills || []
-              }
-            });
-          };
+          card.onclick = function() { sendQuickAction(s); };
 
           container.appendChild(card);
         });
@@ -7142,6 +7144,8 @@
           li.classList.toggle('current', i === idx);
           if (i === idx) { li.setAttribute('aria-current', 'step'); } else { li.removeAttribute('aria-current'); }
         });
+        if (step === 'mode') { renderWizardModeStep(); }
+        if (step === 'task') { renderWizardTaskStep(); }
         updateWizardNav();
       }
 
@@ -7156,8 +7160,95 @@
         next.title = next.disabled ? 'Connect an agent first' : '';
       }
 
+      // Step 2 — what each mode lets Mysti do without asking (mirrors the
+      // trust ladder in src/utils/trustLadder.ts: Auto gates bash, delete,
+      // web requests and delegation; Plan never writes).
+      var WIZARD_CAP_ROWS = ['Reads your code', 'Edits files', 'Runs commands', 'Reaches the network'];
+      var WIZARD_CAPS = {
+        plan: ['yes', 'never', 'never', 'never'],
+        ask: ['yes', 'asks', 'asks', 'asks'],
+        auto: ['yes', 'workspace', 'asks', 'asks'],
+        full: ['yes', 'yes', 'yes', 'yes']
+      };
+      var WIZARD_CAP_TEXT = { yes: 'Without asking', workspace: 'In this workspace', asks: 'Asks you first', never: 'Never' };
+
+      function renderWizardCaps(id) {
+        var def = chatModeById(id) || chatModeById('ask');
+        var title = document.getElementById('wizard-caps-title');
+        var dl = document.getElementById('wizard-caps');
+        if (title) { title.textContent = 'On ' + def.label + ', Mysti'; }
+        if (dl) {
+          dl.innerHTML = WIZARD_CAPS[def.id].map(function(v, i) {
+            return '<div class="wizard-cap" data-cap="' + v + '"><dt>' + WIZARD_CAP_ROWS[i] + '</dt><dd>' + WIZARD_CAP_TEXT[v] + '</dd></div>';
+          }).join('');
+        }
+        var warn = document.getElementById('wizard-full-warning');
+        if (warn) { warn.classList.toggle('hidden', def.id !== 'full'); }
+      }
+
+      function renderWizardModeStep() {
+        var fs = document.querySelector('#setup-wizard .wizard-modes');
+        if (!fs) { return; }
+        var current = deriveChatMode();
+        if (!fs.querySelector('.wizard-mode')) {
+          CHAT_MODES.forEach(function(m) {
+            var label = document.createElement('label');
+            label.className = 'wizard-mode';
+            label.innerHTML = '<input type="radio" name="wizard-mode" value="' + m.id + '" />' +
+              '<span class="wizard-mode-text"><span class="wizard-mode-label">' + escapeHtml(m.label) +
+              (m.id === 'ask' ? ' <span class="wizard-chip">Recommended</span>' : '') + '</span>' +
+              '<span class="wizard-mode-desc">' + escapeHtml(m.desc) + '</span></span>';
+            label.querySelector('input').addEventListener('change', function() {
+              // The same pair the mode pill writes (Plan 32 D5).
+              applyChatMode(m.id);
+              renderWizardCaps(m.id);
+            });
+            fs.appendChild(label);
+          });
+        }
+        fs.querySelectorAll('input[name="wizard-mode"]').forEach(function(r) { r.checked = r.value === current; });
+        renderWizardCaps(current);
+      }
+
+      // Step 3 — four of the welcome suggestions, by id.
+      var WIZARD_TASK_IDS = ['understand', 'review', 'tests', 'debug'];
+      function renderWizardTaskStep() {
+        var box = document.getElementById('wizard-tasks');
+        if (!box || box.children.length) { return; }
+        WIZARD_TASK_IDS.forEach(function(id) {
+          var s = WELCOME_SUGGESTIONS.filter(function(x) { return x.id === id; })[0];
+          if (!s) { return; }
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'welcome-card';
+          b.innerHTML = '<div class="welcome-card-icon"><img src="' + (ICON_URIS[s.icon] || '') + '" alt="" /></div>' +
+            '<div class="welcome-card-title">' + escapeHtml(s.title) + '</div>' +
+            '<div class="welcome-card-desc">' + escapeHtml(s.description) + '</div>';
+          b.addEventListener('click', function() { finishWizard(); sendQuickAction(s); });
+          box.appendChild(b);
+        });
+      }
+
       function finishWizard() {
         hideWizard();
+      }
+
+      var wizardTaskSend = document.getElementById('wizard-task-send');
+      if (wizardTaskSend) {
+        wizardTaskSend.addEventListener('click', function() {
+          var box = document.getElementById('wizard-task-input');
+          var text = box ? box.value.trim() : '';
+          if (!text) { if (box) { box.focus(); } return; }
+          finishWizard();
+          inputEl.value = text;
+          sendMessage();
+        });
+      }
+      var wizardTourBtn = document.getElementById('wizard-tour-btn');
+      if (wizardTourBtn) {
+        wizardTourBtn.addEventListener('click', function() {
+          postMessageWithPanelId({ type: 'openWalkthrough' });
+        });
       }
 
       var wizardFilterInput = document.getElementById('wizard-filter');

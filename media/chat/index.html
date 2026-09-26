@@ -1300,7 +1300,35 @@
 
       </section>
 
-      <!-- Plan 32: steps 2 and 3 -->
+      <!-- Plan 32: step 2 — the same four modes as the mode pill -->
+      <section class="wizard-step hidden" data-step="mode" aria-labelledby="wizard-mode-title">
+        <h2 id="wizard-mode-title" class="wizard-step-title">How much should Mysti do on its own?</h2>
+        <p class="wizard-step-sub">Change it any time from the mode pill under the chat box.</p>
+        <fieldset class="wizard-modes"><legend class="sr-only">Mode</legend></fieldset>
+        <h3 id="wizard-caps-title" class="wizard-section-label">On Ask, Mysti</h3>
+        <dl id="wizard-caps" class="wizard-caps"></dl>
+        <p id="wizard-full-warning" class="wizard-warning hidden">Full runs any command without asking. Keep it for projects you could throw away.</p>
+        <p class="wizard-note"><strong>Every turn is checkpointed.</strong> Rewind a turn’s file changes from the ↺ on your message. Your own git history is never touched.</p>
+      </section>
+
+      <!-- Plan 32: step 3 — a first task and three things worth knowing -->
+      <section class="wizard-step hidden" data-step="task" aria-labelledby="wizard-task-title">
+        <h2 id="wizard-task-title" class="wizard-step-title">Give it a first task</h2>
+        <p class="wizard-step-sub">Pick one to send now, or write your own. It runs on this workspace.</p>
+        <div id="wizard-tasks" class="wizard-tasks"></div>
+        <label for="wizard-task-input" class="wizard-field-label">Or write your own</label>
+        <div class="wizard-task-compose">
+          <textarea id="wizard-task-input" rows="2" placeholder="Explain what this project does"></textarea>
+          <button type="button" id="wizard-task-send" class="wizard-nav-btn primary">Send</button>
+        </div>
+        <h3 class="wizard-section-label">Three things worth knowing</h3>
+        <ul class="wizard-tips">
+          <li><span class="wizard-tip-key" aria-hidden="true">@</span><span><strong>Mention an agent.</strong> Start a message with @codex or @gemini to send just that message to another agent.</span></li>
+          <li><span class="wizard-tip-key" aria-hidden="true">/</span><span><strong>Slash for commands.</strong> Mysti’s own, plus your agent’s — like /compact.</span></li>
+          <li><span class="wizard-tip-key" aria-hidden="true">⇄</span><span><strong>Brainstorm.</strong> Two agents answer, challenge each other, then agree on one answer.</span></li>
+        </ul>
+        <button type="button" id="wizard-tour-btn" class="wizard-link-btn">Take the full tour · 2 min</button>
+      </section>
 
       <!-- Footer -->
       <div class="wizard-footer">

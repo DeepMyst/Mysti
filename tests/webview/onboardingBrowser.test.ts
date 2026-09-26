@@ -171,3 +171,75 @@ describe('wizard step 1', () => {
     expect((await posted(pg)).filter((m) => m.type === 'dismissWizard').pop()!.payload).toEqual({ dontShowAgain: true });
   });
 });
+
+describe('wizard steps 2 and 3', () => {
+  async function atStep(step: string): Promise<Page> {
+    const pg = await panel();
+    await wizard(pg, { providers: PROVIDERS(['claude-code'], ['claude-code']), anyReady: true, step });
+    return pg;
+  }
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('opens on the step Get Started asked for', async () => {
+    const pg = await atStep('mode');
+    expect(await pg.isVisible('.wizard-step[data-step="mode"]')).toBe(true);
+    expect(await pg.isVisible('.wizard-step[data-step="connect"]')).toBe(false);
+    expect(await pg.getAttribute('.wizard-stepper li[data-step="mode"]', 'aria-current')).toBe('step');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('mode step starts on the current mode and writes the pill pair', async () => {
+    const pg = await atStep('mode');
+    expect(await pg.isChecked('input[name="wizard-mode"][value="ask"]')).toBe(true);
+    expect(await pg.textContent('#wizard-caps-title')).toBe('On Ask, Mysti');
+    await pg.check('input[name="wizard-mode"][value="full"]');
+    const upd = (await posted(pg)).filter((m) => m.type === 'updateSettings').pop();
+    expect(upd!.payload).toEqual({ mode: 'edit-automatically', accessLevel: 'full-access' });
+    expect(await pg.isVisible('#wizard-full-warning')).toBe(true);
+    expect(await pg.textContent('#wizard-caps-title')).toBe('On Full, Mysti');
+    expect(await pg.$$eval('#wizard-caps .wizard-cap dd', (d) => d.map((x) => x.textContent))).toEqual(
+      ['Without asking', 'Without asking', 'Without asking', 'Without asking']);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Auto edits in the workspace but asks before commands', async () => {
+    const pg = await atStep('mode');
+    await pg.check('input[name="wizard-mode"][value="auto"]');
+    expect(await pg.$$eval('#wizard-caps .wizard-cap dd', (d) => d.map((x) => x.textContent))).toEqual(
+      ['Without asking', 'In this workspace', 'Asks you first', 'Asks you first']);
+    expect(await pg.isVisible('#wizard-full-warning')).toBe(false);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Back and Continue walk the steps; the last button starts chatting', async () => {
+    const pg = await atStep('connect');
+    await pg.click('#wizard-next-btn');
+    expect(await pg.isVisible('.wizard-step[data-step="mode"]')).toBe(true);
+    expect(await pg.isVisible('#wizard-back-btn')).toBe(true);
+    await pg.click('#wizard-next-btn');
+    expect(await pg.textContent('#wizard-next-btn')).toBe('Start chatting');
+    await pg.click('#wizard-back-btn');
+    expect(await pg.isVisible('.wizard-step[data-step="mode"]')).toBe(true);
+    await pg.click('#wizard-next-btn');
+    await pg.click('#wizard-next-btn');
+    expect(await pg.isVisible('#setup-wizard')).toBe(false);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a starter task closes the wizard and sends the task', async () => {
+    const pg = await atStep('task');
+    expect(await pg.$$eval('#wizard-tasks .welcome-card', (c) => c.length)).toBe(4);
+    await pg.click('#wizard-tasks .welcome-card >> nth=0');
+    expect(await pg.isVisible('#setup-wizard')).toBe(false);
+    expect((await posted(pg)).some((m) => m.type === 'quickActionWithConfig')).toBe(true);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a written task closes the wizard and is sent', async () => {
+    const pg = await atStep('task');
+    await pg.fill('#wizard-task-input', 'Explain the build');
+    await pg.click('#wizard-task-send');
+    expect(await pg.isVisible('#setup-wizard')).toBe(false);
+    expect((await posted(pg)).some((m) => m.type === 'sendMessage' && m.payload.content === 'Explain the build')).toBe(true);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the tour button asks the host to open the walkthrough', async () => {
+    const pg = await atStep('task');
+    await pg.click('#wizard-tour-btn');
+    expect((await posted(pg)).some((m) => m.type === 'openWalkthrough')).toBe(true);
+  });
+});
