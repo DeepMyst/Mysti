@@ -90,11 +90,11 @@ export interface MessagePersistExtras {
 }
 
 /**
- * A detached copy for parking. The stored value came from JSON, so a JSON round
+ * A detached copy of stored data. The value came from JSON, so a JSON round
  * trip is faithful; if it somehow is not serialisable, keeping the live object
  * is still better than keeping nothing.
  */
-function snapshotForPark(raw: unknown): unknown {
+function snapshotStoredValue(raw: unknown): unknown {
   try {
     return JSON.parse(JSON.stringify(raw));
   } catch {
@@ -116,10 +116,11 @@ export class ConversationManager {
   /**
    * True when this instance must NOT write the store: either the stored blob
    * was written by a newer Mysti (overwriting it would destroy that history)
-   * or globalState could not be read at all (so we do not know what we would
-   * be overwriting).
+   * or globalState could not be read or backed up safely.
    */
   private _persistenceDisabled = false;
+  /** Every live-key write waits for the recovery copy to be acknowledged. */
+  private _recoveryReady: Promise<boolean> | null = null;
   /** One notification per instance — a broken store must not spam toasts. */
   private _notifiedLoadFailure = false;
 
@@ -1010,18 +1011,19 @@ export class ConversationManager {
       return;
     }
 
-    // Snapshot BEFORE validation. `_coerceStoredEntry` used to repair entries in
-    // place, so the blob handed to `_parkUnreadableBlob` after the loop had
-    // already had the very elements the park exists to preserve stripped out of
-    // it — while the toast it raises says "Nothing was deleted".
-    const snapshot = snapshotForPark(raw);
+    // Restore detached entries. Message updates mutate objects in place, so
+    // sharing them with the memento could change the original history even
+    // while a pending or failed recovery copy prevents live-key writes.
+    const storedEntries = snapshotStoredValue(raw.conversations) as unknown[];
 
     const restored = new Map<string, Conversation>();
     let dropped = 0;
     let droppedMessages = 0;
-    for (const entry of raw.conversations) {
+    let duplicates = 0;
+    for (const entry of storedEntries) {
       const coerced = this._coerceStoredEntry(entry);
       if (!coerced) { dropped++; continue; }
+      if (restored.has(coerced[0])) { duplicates++; continue; }
       droppedMessages += coerced[2];
       restored.set(coerced[0], coerced[1]);
     }
@@ -1031,7 +1033,7 @@ export class ConversationManager {
     this._currentConversationId =
       typeof currentId === 'string' && restored.has(currentId) ? currentId : null;
 
-    if (dropped > 0 || droppedMessages > 0) {
+    if (dropped > 0 || droppedMessages > 0 || duplicates > 0) {
       const parts: string[] = [];
       if (dropped > 0) {
         parts.push(`${dropped} stored conversation ${dropped === 1 ? 'entry was' : 'entries were'} not readable`);
@@ -1044,7 +1046,10 @@ export class ConversationManager {
       if (droppedMessages > 0) {
         parts.push(`${droppedMessages} stored message${droppedMessages === 1 ? ' was' : 's were'} not readable`);
       }
-      this._parkUnreadableBlob(snapshot, parts.join(' and '));
+      if (duplicates > 0) {
+        parts.push(`${duplicates} stored conversation ${duplicates === 1 ? 'entry reused an ID' : 'entries reused IDs'}`);
+      }
+      this._parkUnreadableBlob(snapshotStoredValue(raw), parts.join(' and '));
 
       // Rewrite the live key from what we could read. Without this the stored
       // value stays malformed, so EVERY later activation parks another full
@@ -1068,8 +1073,7 @@ export class ConversationManager {
     if (typeof id !== 'string' || id.length === 0) { return null; }
     if (!isRecord(value) || !Array.isArray(value.messages)) { return null; }
 
-    // A COPY. Repairing `value` in place mutates the object the memento handed
-    // back, which is the same object `_parkUnreadableBlob` is about to keep.
+    // Keep entry repairs local; stored data and recovery copies stay intact.
     const conversation = { ...value } as unknown as Conversation;
     if (typeof conversation.id !== 'string' || conversation.id.length === 0) {
       conversation.id = id;
@@ -1084,26 +1088,35 @@ export class ConversationManager {
 
   /**
    * Keep an unreadable blob instead of destroying it, and say so once.
-   * The parked copy is written under its own key, so the ordinary save that
-   * follows (a fresh conversation) never overwrites the only copy.
+   * The constructor stays synchronous, but all saves wait for the parked copy
+   * to succeed before they can replace the original live key.
    */
   private _parkUnreadableBlob(raw: unknown, reason: string): void {
-    const parkKey = `${CONVERSATIONS_CORRUPT_KEY_PREFIX}${Date.now()}`;
+    const parkKey = `${CONVERSATIONS_CORRUPT_KEY_PREFIX}${Date.now()}.${randomUUID()}`;
     console.error(
-      `[Mysti] Saved chat history could not be read (${reason}); keeping the stored value under "${parkKey}".`
+      `[Mysti] Saved chat history could not be read (${reason}); saving a recovery copy under "${parkKey}".`
     );
-    this._loadDiagnostic = `${reason} — the unreadable value was kept under the storage key "${parkKey}"`;
-    try {
-      void Promise.resolve(this._extensionContext.globalState.update(parkKey, raw))
-        .then(undefined, (err: unknown) =>
-          console.error('[Mysti] Failed to keep a copy of the unreadable chat history:', err));
-    } catch (err) {
-      console.error('[Mysti] Failed to keep a copy of the unreadable chat history:', err);
-    }
-    this._notifyLoadFailure(
-      `Mysti could not read part of your saved chat history (${reason}). `
-      + `Nothing was deleted: the stored value was kept under the storage key "${parkKey}".`
-    );
+    this._loadDiagnostic = `${reason} — the original history is preserved while a recovery copy is saved`;
+    this._recoveryReady = (async () => {
+      try {
+        await this._extensionContext.globalState.update(parkKey, raw);
+        this._loadDiagnostic = `${reason} — the unreadable value was kept under the storage key "${parkKey}"`;
+        this._notifyLoadFailure(
+          `Mysti could not read part of your saved chat history (${reason}). `
+          + `Nothing was deleted: the stored value was kept under the storage key "${parkKey}".`
+        );
+        return true;
+      } catch (err) {
+        this._persistenceDisabled = true;
+        console.error('[Mysti] Failed to keep a copy of the unreadable chat history:', err);
+        this._loadDiagnostic = `${reason} — the recovery copy could not be saved; the original history is unchanged and saving is disabled`;
+        this._notifyLoadFailure(
+          'Mysti could not save a recovery copy of your unreadable chat history. '
+          + 'The original history is unchanged. New messages in this session will not be saved.'
+        );
+        return false;
+      }
+    })();
   }
 
   /**
@@ -1141,6 +1154,10 @@ export class ConversationManager {
    */
   private async _saveConversations(): Promise<boolean> {
     if (this._persistenceDisabled) { return false; }
+    if (this._recoveryReady) {
+      if (!await this._recoveryReady) { return false; }
+      this._recoveryReady = null;
+    }
     try {
       await this._extensionContext.globalState.update(CONVERSATIONS_KEY, {
         schemaVersion: CONVERSATIONS_SCHEMA_VERSION,

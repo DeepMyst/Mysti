@@ -30,6 +30,7 @@ CONTRIBUTING.md
 out-test/**
 out-vscode-test/**
 tests-vscode/**
+tests-runtime/**
 tsconfig.vscode-test.json
 .vscode-test.mjs
 .github/**

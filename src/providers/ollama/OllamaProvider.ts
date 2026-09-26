@@ -78,6 +78,9 @@ export class OllamaProvider extends BaseCliProvider {
   readonly config: ProviderConfig = {
     name: 'ollama',
     displayName: 'Ollama',
+    // Trained maxima (ollama.com/library), used only before the first turn:
+    // Ollama runs at the num_ctx it loaded, which each turn reports via
+    // /api/ps (see _loadedContextLength) — 4k on a <24 GiB machine by default.
     models: [
       {
         id: 'qwen3-coder',
@@ -101,7 +104,7 @@ export class OllamaProvider extends BaseCliProvider {
         id: 'deepseek-coder-v2',
         name: 'DeepSeek Coder V2',
         description: 'Strong code generation and understanding',
-        contextWindow: 128000
+        contextWindow: 163840
       },
       {
         id: 'qwen2.5-coder',
@@ -138,6 +141,7 @@ export class OllamaProvider extends BaseCliProvider {
     sessionKind: 'none',           // stateless HTTP requests
     emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
     emitsUsage: true,
+    usageConvention: 'none',   // prompt_eval_count/eval_count are flat counts.
     modelSelection: 'custom-only'  // models live on the user's Ollama server
   };
 
@@ -220,6 +224,26 @@ export class OllamaProvider extends BaseCliProvider {
 
   getCliPath(): string {
     return this._getEndpoint();
+  }
+
+  /**
+   * The window Ollama actually loaded `model` with: `/api/ps` `context_length`,
+   * the runtime num_ctx after its VRAM-tier default (4k / 32k / 256k), the
+   * model's trained cap and any out-of-memory reduction. The trained maximum
+   * the catalog lists is up to 64x too big — and Ollama silently cuts the
+   * middle out of an over-long prompt, so fill never reached the threshold.
+   */
+  private async _loadedContextLength(endpoint: string, model: string): Promise<number | undefined> {
+    try {
+      const response = await fetch(`${endpoint}/api/ps`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS) });
+      if (!response.ok) { return undefined; }
+      const data = await response.json() as { models?: Array<{ name?: string; model?: string; context_length?: number }> };
+      const bare = (id?: string) => id?.replace(/:latest$/, '');
+      const loaded = data.models?.find(m => bare(m.name) === bare(model) || bare(m.model) === bare(model));
+      return typeof loaded?.context_length === 'number' && loaded.context_length > 0 ? loaded.context_length : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -469,7 +493,8 @@ export class OllamaProvider extends BaseCliProvider {
 
       const storedUsage = session.lastUsageStats;
       session.lastUsageStats = null;
-      yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
+      const contextWindow = await this._loadedContextLength(endpoint, model) ?? (contextLength > 0 ? contextLength : undefined);
+      yield { type: 'done', ...(storedUsage ? { usage: storedUsage } : {}), ...(contextWindow ? { contextWindow } : {}) };
 
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {

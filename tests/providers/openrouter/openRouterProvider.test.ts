@@ -99,6 +99,25 @@ describe('OpenRouterProvider', () => {
       expect(done!.usage).toEqual({ input_tokens: 12, output_tokens: 4 });
     });
 
+    it("reports the window of the model that ANSWERED — a router's pick, not the router", async () => {
+      const client = mockClient([{ model: 'nvidia/nemotron-3-super-120b-a12b:free' }, { text: 'ok' }, { done: true }]) as any;
+      client.listAllModels = async () => [
+        { id: 'openrouter/free', contextLength: 200000 },
+        { id: 'nvidia/nemotron-3-super-120b-a12b:free', contextLength: 262144 },
+      ];
+      provider.setClient(client);
+      const chunks = await collect(provider.sendMessage('hi', [], settings(), null, undefined, 'p1'));
+      expect(chunks.find(c => c.type === 'done')!.contextWindow).toBe(262144);
+    });
+
+    it('falls back to the requested slug — a paid or typed-in id is no longer measured against 200k', async () => {
+      const client = mockClient([{ text: 'ok' }, { done: true }]) as any;
+      client.listAllModels = async () => [{ id: 'stealth/space-bunny-alpha', contextLength: 1000000 }];
+      provider.setClient(client);
+      const chunks = await collect(provider.sendMessage('hi', [], settings({ model: 'stealth/space-bunny-alpha' }), null, undefined, 'p1'));
+      expect(chunks.find(c => c.type === 'done')!.contextWindow).toBe(1000000);
+    });
+
     it('maps a stream error event to an error chunk (no done)', async () => {
       provider.setClient(mockClient([{ text: 'partial' }, { error: 'rate-limited (HTTP 429)' }]));
       const chunks = await collect(provider.sendMessage('hi', [], settings(), null, undefined, 'p1'));

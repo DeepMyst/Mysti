@@ -212,3 +212,89 @@ describe('DeepMystAuthManager', () => {
     mgr.dispose();
   });
 });
+
+describe('DeepMystAuthManager entitlement (fails closed)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const flush = () => new Promise(r => setImmediate(r));
+  const answer = (body: Record<string, unknown>) =>
+    ({ ok: true, status: 200, json: async () => body });
+
+  async function signedIn() {
+    const { context, secrets } = makeContext();
+    await secrets.store('mysti.deepmyst.apiKey', GOOD_KEY);
+    const mgr = new DeepMystAuthManager(context);
+    await mgr.initialize();
+    return mgr;
+  }
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('is false before any answer, and starts only one check however often it is asked', async () => {
+    fetchMock.mockResolvedValue(answer({ entitled: true, tier: 'pro' }));
+    const mgr = await signedIn();
+    expect(mgr.hasEntitlement()).toBe(false);
+    expect(mgr.hasEntitlement()).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await flush();
+    expect(mgr.hasEntitlement()).toBe(true);
+    mgr.dispose();
+  });
+
+  it.each([
+    ['a 503', () => fetchMock.mockResolvedValue({ ok: false, status: 503 })],
+    ['a 404', () => fetchMock.mockResolvedValue({ ok: false, status: 404 })],
+    ['a network error', () => fetchMock.mockRejectedValue(new Error('ECONNREFUSED'))],
+  ])('treats %s as NOT entitled', async (_label, arrange) => {
+    arrange();
+    const mgr = await signedIn();
+    const e = await mgr.ensureActiveAccount();
+    expect(e.entitled).toBe(false);
+    expect(mgr.hasEntitlement()).toBe(false);
+    mgr.dispose();
+  });
+
+  it('retries a failed check after 30s, not 5 minutes', async () => {
+    const t0 = 1_000_000;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(t0);
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce(answer({ entitled: true, tier: 'pro' }));
+    const mgr = await signedIn();
+    await mgr.ensureActiveAccount();
+    now.mockReturnValue(t0 + 29_000);
+    expect(mgr.hasEntitlement()).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    now.mockReturnValue(t0 + 31_000);
+    mgr.hasEntitlement();
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mgr.hasEntitlement()).toBe(true);
+    mgr.dispose();
+  });
+
+  it('keeps a stale server "yes" while it refreshes, so a paying user is not flipped off', async () => {
+    const t0 = 1_000_000;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(t0);
+    fetchMock.mockResolvedValue(answer({ entitled: true, tier: 'pro' }));
+    const mgr = await signedIn();
+    await mgr.ensureActiveAccount();
+    now.mockReturnValue(t0 + 6 * 60_000);
+    expect(mgr.hasEntitlement()).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    mgr.dispose();
+  });
+
+  it('derives NOT entitled when the server omits both `entitled` and a balance', async () => {
+    fetchMock.mockResolvedValue(answer({ tier: 'free' }));
+    const mgr = await signedIn();
+    expect((await mgr.ensureActiveAccount()).entitled).toBe(false);
+    mgr.dispose();
+  });
+});

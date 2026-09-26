@@ -45,6 +45,8 @@ export interface QwenSessionState extends PanelSessionState {
   activeToolCalls: Map<number, { id: string; name: string; inputJson: string }>;
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
   hasStreamedText: boolean;
+  /** The model `system/init` says the CLI resolved — `coder-model` under Qwen OAuth, whatever was asked. */
+  reportedModel?: string;
 }
 
 /**
@@ -60,18 +62,27 @@ export class QwenCodeProvider extends BaseCliProvider {
   readonly config: ProviderConfig = {
     name: 'qwen-code',
     displayName: 'Qwen Code',
+    // Windows from Qwen Code's own tokenLimit table (v0.23–0.24.5), which is
+    // also what drives its compaction. Verified 2026-09-25.
     models: [
       {
         id: 'qwen3-coder',
         name: 'Qwen3 Coder',
         description: 'Primary Qwen coding model',
-        contextWindow: 131072
+        contextWindow: 262144
       },
       {
         id: 'qwen3-coder-plus',
         name: 'Qwen3 Coder Plus',
         description: 'Enhanced Qwen coding model',
-        contextWindow: 131072
+        contextWindow: 1000000
+      },
+      {
+        // The only id Qwen OAuth accepts; any other --model falls back to it.
+        id: 'coder-model',
+        name: 'Qwen Coder (OAuth)',
+        description: 'The model Qwen OAuth sign-in runs (Qwen 3.7 Max)',
+        contextWindow: 1000000
       },
       {
         id: 'qwen3-coder-next',
@@ -103,6 +114,7 @@ export class QwenCodeProvider extends BaseCliProvider {
     sessionKind: 'cli-resume',
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'none',   // Qwen's message_delta usage carries no cache fields.
     modelSelection: 'full'
   };
 
@@ -503,6 +515,9 @@ export class QwenCodeProvider extends BaseCliProvider {
       // Handle system events (session init)
       if (data.type === 'system') {
         if (data.subtype === 'init') {
+          if (typeof data.model === 'string' && data.model) {
+            (session as QwenSessionState).reportedModel = data.model;
+          }
           const sessionId = data.session_id || data.sessionId;
           if (sessionId && !session.sessionId) {
             session.sessionId = sessionId;
@@ -572,6 +587,10 @@ export class QwenCodeProvider extends BaseCliProvider {
   }
 
   // --- Usage Stats ---
+
+  protected override takeReportedContextWindow(panelId?: string): number | undefined {
+    return this._catalogWindow((this._getSession(panelId) as QwenSessionState).reportedModel);
+  }
 
   getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number } | null {
     const session = this._getSession(panelId) as QwenSessionState;

@@ -13,7 +13,7 @@
  * Plan 22 §3.1 — the JSX subset, verified rather than assumed.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   cleanJsxText,
@@ -508,6 +508,17 @@ describe('PageCompiler — failure is total, never partial', () => {
 });
 
 describe('PageCompiler — compilePartial', () => {
+  const hasRoot = (source: string) => /return\s*\(?\s*<[A-Za-z][^<]*>/.test(source);
+  beforeEach(() => {
+    // Keep the compiler's repair deadline stable while checking correctness.
+    // Worker scheduling should not decide which source prefixes are repairable.
+    vi.spyOn(Date, 'now').mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('is identical to compile on a complete source', () => {
     const full = PAGE_SCAFFOLDS[0].jsx;
     const a = compilePartial(full);
@@ -519,7 +530,6 @@ describe('PageCompiler — compilePartial', () => {
     // A root exists only once `return (` is followed by a complete opening tag —
     // before that there is genuinely nothing to render, and saying so beats
     // guessing a provisional root that would jump when the real one arrives.
-    const hasRoot = (src: string) => /return\s*\(?\s*<[A-Za-z][^<]*>/.test(src);
     for (const scaffold of PAGE_SCAFFOLDS) {
       for (let pct = 5; pct <= 100; pct += 5) {
         const cut = scaffold.jsx.slice(0, Math.floor(scaffold.jsx.length * pct / 100));
@@ -527,7 +537,7 @@ describe('PageCompiler — compilePartial', () => {
         expect(r.ok, `${scaffold.id}@${pct}%: ${r.ok ? '' : r.error}`).toBe(hasRoot(cut));
       }
     }
-  }, 30_000);
+  });
 
   it('has no root to show while a page is still declaring local bindings', () => {
     const dashboard = PAGE_SCAFFOLDS.find(s => s.id === 'dashboard')!.jsx;
@@ -548,7 +558,7 @@ describe('PageCompiler — compilePartial', () => {
       expect(counts[i]).toBeGreaterThanOrEqual(counts[i - 1]);
     }
     expect(counts[counts.length - 1]).toBe([...walk(ok(full))].length);
-  }, 30_000);
+  });
 
   it('cuts back past a half-written attribute', () => {
     const r = compilePartial('function Page(){ return (<UI.Screen><UI.Card sty');
@@ -589,60 +599,66 @@ describe('PageCompiler — compilePartial', () => {
     expect(compilePartial('   ').ok).toBe(false);
   });
 
-  it('never throws on adversarial input, and stays bounded', () => {
-    const inputs = [
-      '<'.repeat(4000),
-      '<a>'.repeat(400),
-      '{'.repeat(2000),
-      'function Page(){ return (<div title="a > b"><p>x',
-      '\u0000\uffff<<//>>{{}}',
-      'function Page(){ return (<div>{\'unclosed</div>); }',
-      '/* unterminated comment <div>',
-      '"unterminated string <div>',
-    ];
-    const started = Date.now();
-    for (const input of inputs) {
-      expect(() => compilePartial(input)).not.toThrow();
-    }
-    // 25 s, not 6: this guards against an UNBOUNDED (ReDoS-class) blow-up, and a
-    // real one runs for minutes. Under 3x worker-pool contention the sibling test
-    // below measured 13.7x amplification, so a 6 s ceiling was a scheduling test.
-    expect(Date.now() - started).toBeLessThan(25_000);
-  }, 30_000);
+  it.each([
+    '<'.repeat(4000),
+    '<a>'.repeat(400),
+    '{'.repeat(2000),
+    'function Page(){ return (<div title="a > b"><p>x',
+    '\u0000\uffff<<//>>{{}}',
+    'function Page(){ return (<div>{\'unclosed</div>); }',
+    '/* unterminated comment <div>',
+    '"unterminated string <div>',
+  ])('never throws on adversarial input %#', (input) => {
+    expect(() => compilePartial(input)).not.toThrow();
+  });
 
-  it('handles EVERY byte-level prefix of every scaffold, not just tidy ones', () => {
+  it('stops after 32 repair attempts even when the clock does not advance', () => {
+    const source = `function Page(){ return (<div>{unsupported}${'<p/>'.repeat(100)}`;
+    const result = compilePartial(source);
+    expect(result.ok).toBe(false);
+    if (!result.ok) { expect(result.error).toMatch(/no compilable prefix/); }
+    // One deadline read plus one per attempt: malformed output cannot cause
+    // unlimited reparsing just by supplying more tag boundaries.
+    expect(Date.now).toHaveBeenCalledTimes(33);
+  });
+
+  it('stops repairing when the 200 ms deadline has elapsed', () => {
+    const source = 'function Page(){ return (<div><p>partial';
+    expect(compilePartial(source).ok).toBe(true);
+
+    vi.mocked(Date.now).mockReset().mockReturnValueOnce(0).mockReturnValue(201);
+    const result = compilePartial(source);
+    expect(result.ok).toBe(false);
+    if (!result.ok) { expect(result.error).toMatch(/no compilable prefix/); }
+    expect(Date.now).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(PAGE_SCAFFOLDS)('handles EVERY byte-level prefix of $id, not just tidy ones', (scaffold) => {
     // A stream cuts wherever the token boundary falls: mid-entity, mid-attribute
     // name, between a `<` and its tag, inside `{{`. Sampling at 5% steps walks
     // past exactly the offsets where prefix repair is hardest.
-    const started = Date.now();
     const shrinks: string[] = [];
     const badMids: string[] = [];
-    let compiled = 0;
-    for (const scaffold of PAGE_SCAFFOLDS) {
-      const src = scaffold.jsx;
-      let prev = 0;
-      for (let i = 1; i <= src.length; i++) {
-        const r = compilePartial(src.slice(0, i));
-        if (!r.ok) { continue; }
-        compiled++;
-        const nodes = [...walk(r.doc)];
-        // A partial may only ever gain nodes as more source arrives; a shrink
-        // means repair invented a tree the next chunk contradicts, which is
-        // what makes a streaming preview flicker.
-        if (nodes.length < prev) { shrinks.push(`${scaffold.id}@${i}: ${prev} → ${nodes.length}`); }
-        prev = nodes.length;
-        for (const n of nodes) { if (!isMid(n.mid)) { badMids.push(`${scaffold.id}@${i}: ${n.mid}`); } }
-      }
-      // The last prefix is the whole page, so the sweep must land on it exactly.
-      expect(prev, scaffold.id).toBe([...walk(ok(src))].length);
+    const src = scaffold.jsx;
+    let prev = 0;
+    for (let i = 1; i <= src.length; i++) {
+      const prefix = src.slice(0, i);
+      const r = compilePartial(prefix);
+      expect(r.ok, `${scaffold.id}@${i}: ${r.ok ? '' : r.error}`).toBe(hasRoot(prefix));
+      if (!r.ok) { continue; }
+      const nodes = [...walk(r.doc)];
+      // A partial may only ever gain nodes as more source arrives; a shrink
+      // means repair invented a tree the next chunk contradicts, which is
+      // what makes a streaming preview flicker.
+      if (nodes.length < prev) { shrinks.push(`${scaffold.id}@${i}: ${prev} → ${nodes.length}`); }
+      prev = nodes.length;
+      for (const n of nodes) { if (!isMid(n.mid)) { badMids.push(`${scaffold.id}@${i}: ${n.mid}`); } }
     }
+    // The last prefix is the whole page, so the sweep must land on it exactly.
+    expect(prev, scaffold.id).toBe([...walk(ok(src))].length);
     expect(shrinks.slice(0, 5)).toEqual([]);
     expect(badMids.slice(0, 5)).toEqual([]);
-    expect(compiled).toBeGreaterThan(3000);
-    expect(Date.now() - started).toBeLessThan(25_000);
-    // ~6.9k prefixes, each a real Babel parse: well inside budget alone, but the
-    // 5s default is not survivable when the whole suite runs it in parallel.
-  }, 30_000);
+  });
 
   it('repairPrefix refuses to invent content it cannot close honestly', () => {
     expect(repairPrefix('<div><p sty')).toBeNull();       // mid-tag

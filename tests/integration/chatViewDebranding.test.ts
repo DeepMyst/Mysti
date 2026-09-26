@@ -66,8 +66,13 @@ interface Harness {
     getStrategy: ReturnType<typeof vi.fn>;
     getThreshold: ReturnType<typeof vi.fn>;
     getUsage: ReturnType<typeof vi.fn>;
+    getLastFill: ReturnType<typeof vi.fn>;
     executeClientSummarization: ReturnType<typeof vi.fn>;
     updateUsageAfterCompaction: ReturnType<typeof vi.fn>;
+    cliOwnsHistory: ReturnType<typeof vi.fn>;
+    mystiSendsFullHistory: ReturnType<typeof vi.fn>;
+    keepsNoHistory: ReturnType<typeof vi.fn>;
+    canAutoCompact: ReturnType<typeof vi.fn>;
   };
   conversationManager: { getConversation: ReturnType<typeof vi.fn> };
   lifecycleManager: { requestShutdown: ReturnType<typeof vi.fn> };
@@ -116,7 +121,7 @@ function createHarness(): Harness {
     getConversation: vi.fn(() => null),
   } as any;
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     // Known ids resolve to a minimal config so per-panel provider overrides
     // survive _getPanelProvider's registry validation.
     getProvider: vi.fn((name: string) =>
@@ -126,6 +131,11 @@ function createHarness(): Harness {
     ),
     getProviderInstance: () => undefined,
     getAllProviders: () => [],
+    // _resolveModelForProvider asks which OTHER provider claims a model id, so
+    // it can tell a leftover from the previous agent apart from a genuinely
+    // hand-typed one. Curated lists are empty here, so nothing is ever claimed
+    // and the keep-validated/custom precedence above stays the path under test.
+    getProviders: vi.fn(() => ALL_PROVIDER_IDS.map(name => ({ name, models: [], defaultModel: 'mock-default-model' }))),
     getAllProviderIds: vi.fn(() => [...ALL_PROVIDER_IDS]),
     getModelContextWindow: vi.fn(() => 200000),
     // Smart-compaction reseed uses BOTH: dispose the persistent process (so a
@@ -148,6 +158,8 @@ function createHarness(): Harness {
       totalCacheReadTokens: 0,
       totalCacheCreationTokens: 0,
     })),
+    // Manual compaction reads the LAST measured fill, not the lifetime totals.
+    getLastFill: vi.fn(() => ({ input_tokens: 1000, output_tokens: 500 })),
     executeClientSummarization: vi.fn(async () => ({
       success: true, beforeTokens: 1000, afterTokens: 200, duration: 5,
     })),
@@ -155,6 +167,10 @@ function createHarness(): Harness {
     resetUsage: vi.fn(),
     isSmartActive: vi.fn(() => false),
     evaluateCompaction: vi.fn(() => ({ act: false, smart: false })),
+    canAutoCompact: vi.fn(() => true),
+    cliOwnsHistory: vi.fn(() => false),
+    mystiSendsFullHistory: vi.fn(() => true),
+    keepsNoHistory: vi.fn(() => false),
     appendHistory: vi.fn(),
     executeSmartSummarization: vi.fn(async () => null),
   } as any;
@@ -196,28 +212,29 @@ function createHarness(): Harness {
     brainstormManager: noop,
   });
 
-  const provider = new ChatViewProvider(
-    extensionContext.extensionUri,
+  const provider = new ChatViewProvider({
+    extensionUri: extensionContext.extensionUri,
     extensionContext,
     contextManager,
     conversationManager,
     providerManager,
-    noop,                  // suggestionManager
-    noop,                  // brainstormManager
+    suggestionManager: noop,
+    brainstormManager: noop,
     permissionManager,
     setupManager,
-    noop,                  // telemetryManager
-    noop,                  // autonomousManager
-    { learnFromPermissionDecision: vi.fn() } as any,
+    telemetryManager: noop,
+    autonomousManager: noop,
+    memoryManager: { learnFromPermissionDecision: vi.fn() } as any,
     compactionManager,
     lifecycleManager,
     slashCommandManager,
     activeModeManager,
     engagementManager,
-    noop,                  // projectContextManager
-    noop,                  // visualTestManager
-    noop,                  // canvasManager
-    createModelRegistryStub() as any // modelRegistry (Plan 01) — subscribed to in the constructor
+    projectContextManager: noop,
+    visualTestManager: noop,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: undefined as any
+  } // modelRegistry (Plan 01) — subscribed to in the constructor
   );
 
   // Register a fake sidebar panel (normally done in resolveWebviewView)
@@ -395,8 +412,9 @@ describe('ChatViewProvider de-branding (Plan 02 Phase 2)', () => {
       expect(status!.payload.error).toBe('Not enough conversation history to compact');
     });
 
-    it('executeManualCompaction runs client summarization for non-native providers', async () => {
+    it('executeManualCompaction runs same-model summarization where Mysti sends the whole history', async () => {
       h.sidebarPanelState.currentConversationId = 'c1';
+      h.sidebarPanelState.settingsOverrides = { agent: 'ollama' };
       h.conversationManager.getConversation.mockReturnValue({
         id: 'c1',
         messages: [
@@ -417,8 +435,31 @@ describe('ChatViewProvider de-branding (Plan 02 Phase 2)', () => {
       expect(complete!.payload.strategy).toBe('client-summarize');
     });
 
-    it('smart-compaction reseed disposes the persistent process BEFORE clearing the session (so Claude actually reseeds)', async () => {
+    it('native /compact posts the backend-reported summary and token count, not the raw stream text', async () => {
       h.sidebarPanelState.currentConversationId = 'c1';
+      h.sidebarPanelState.settingsOverrides = { agent: 'claude-code' };
+      h.conversationManager.getConversation.mockReturnValue({
+        id: 'c1',
+        messages: [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }],
+      });
+      h.compactionManager.getStrategy.mockReturnValue('native-cli');
+      (h.compactionManager as any).executeNativeCompaction = vi.fn(async function* () {
+        yield { type: 'compaction', compactionEvent: { beforeTokens: 49210, summary: '1. Primary Request:\n   None yet.' } };
+        yield { type: 'done' };
+      });
+
+      await (h.provider as any)._getSlashCommandCallbacks().executeManualCompaction('sidebar');
+
+      const complete = h.sidebarMessages.find(m => m.type === 'compactionStatus' && m.payload?.status === 'complete');
+      expect(complete!.payload.strategy).toBe('native-cli');
+      // The CLI's own count beats our estimate (1000 in this harness).
+      expect(complete!.payload.beforeTokens).toBe(49210);
+      expect(complete!.payload.summary).toBe('1. Primary Request:\n   None yet.');
+    });
+
+    it('a smart-compaction reseed of a Mysti-owned history disposes the persistent process BEFORE clearing the session', async () => {
+      h.sidebarPanelState.currentConversationId = 'c1';
+      h.sidebarPanelState.settingsOverrides = { agent: 'ollama' };
       h.conversationManager.getConversation.mockReturnValue({
         id: 'c1',
         messages: [
@@ -447,6 +488,149 @@ describe('ChatViewProvider de-branding (Plan 02 Phase 2)', () => {
       expect(order).toEqual(['dispose', 'clear']);
       // Smart path taken → the same-model client summarizer is NOT used.
       expect(h.compactionManager.executeClientSummarization).not.toHaveBeenCalled();
+    });
+
+    const threeTurns = () => {
+      h.sidebarPanelState.currentConversationId = 'c1';
+      h.sidebarPanelState.settingsOverrides = { agent: 'claude-code' };
+      h.conversationManager.getConversation.mockReturnValue({
+        id: 'c1',
+        messages: [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }],
+      });
+    };
+
+    // Smart compaction used to summarize Mysti's chat text (no tool results)
+    // and then kill and restart the CLI, throwing its real context away.
+    it('never restarts a CLI-owned session: with smart on, Claude takes its native /compact', async () => {
+      threeTurns();
+      h.compactionManager.getStrategy.mockReturnValue('native-cli');
+      h.compactionManager.cliOwnsHistory.mockReturnValue(true);
+      h.compactionManager.mystiSendsFullHistory.mockReturnValue(false);
+      h.compactionManager.isSmartActive.mockReturnValue(true);
+      const native = vi.fn(async function* () { yield { type: 'done' }; });
+      (h.compactionManager as any).executeNativeCompaction = native;
+
+      await (h.provider as any)._getSlashCommandCallbacks().executeManualCompaction('sidebar');
+
+      expect(native).toHaveBeenCalledTimes(1);
+      expect(h.compactionManager.executeSmartSummarization).not.toHaveBeenCalled();
+      expect(h.providerManager.disposePersistentProcess).not.toHaveBeenCalled();
+      expect(h.providerManager.clearSessionForProvider).not.toHaveBeenCalled();
+    });
+
+    it('a CLI that compacts itself (no /compact from Mysti) gets a notice, and nothing is summarized', async () => {
+      threeTurns();
+      h.compactionManager.cliOwnsHistory.mockReturnValue(true);
+      h.compactionManager.mystiSendsFullHistory.mockReturnValue(false);
+      h.compactionManager.isSmartActive.mockReturnValue(true);
+
+      await (h.provider as any)._getSlashCommandCallbacks().executeManualCompaction('sidebar');
+
+      expect(h.compactionManager.executeClientSummarization).not.toHaveBeenCalled();
+      expect(h.compactionManager.executeSmartSummarization).not.toHaveBeenCalled();
+      expect(h.sidebarMessages.some(m => m.type === 'compactionStatus')).toBe(false);
+      const notice = h.sidebarMessages.find(m => m.type === 'systemNotice');
+      expect(notice?.payload.message).toMatch(/compacts it automatically/);
+    });
+
+    it('a prompt-history backend without smart compaction is never summarized through the agent CLI', async () => {
+      threeTurns();
+      h.compactionManager.cliOwnsHistory.mockReturnValue(false);
+      h.compactionManager.mystiSendsFullHistory.mockReturnValue(false);
+
+      await (h.provider as any)._getSlashCommandCallbacks().executeManualCompaction('sidebar');
+
+      expect(h.compactionManager.executeClientSummarization).not.toHaveBeenCalled();
+      const notice = h.sidebarMessages.find(m => m.type === 'systemNotice');
+      expect(notice?.payload.message).toMatch(/only the most recent messages/);
+    });
+
+    it('refuses a manual compaction while a reply is still streaming (it would cancel the reply)', async () => {
+      threeTurns();
+      (h.provider as any)._runningPanels.add('sidebar');
+
+      await (h.provider as any)._getSlashCommandCallbacks().executeManualCompaction('sidebar');
+
+      expect(h.compactionManager.executeClientSummarization).not.toHaveBeenCalled();
+      expect(h.sidebarMessages.some(m => m.type === 'compactionStatus')).toBe(false);
+      expect(h.sidebarMessages.find(m => m.type === 'systemNotice')?.payload.message).toMatch(/in progress/);
+    });
+
+    // The running lock is only set once a reply streams; mentions,
+    // collaborators and retrieval run before that, in the send's preparation.
+    it('refuses a manual compaction while a send is still being prepared', async () => {
+      threeTurns();
+      const release = (h.provider as any)._delayedChannelTurns.reservePreparation('sidebar');
+
+      await (h.provider as any)._getSlashCommandCallbacks().executeManualCompaction('sidebar');
+      release();
+
+      expect(h.compactionManager.executeClientSummarization).not.toHaveBeenCalled();
+      expect(h.sidebarMessages.find(m => m.type === 'systemNotice')?.payload.message).toMatch(/in progress/);
+    });
+
+    // A coordinator panel runs no CLI session of its fallback backend: judging
+    // it by that backend sent `/compact` to an unused Claude session or showed
+    // "Gemini manages its own context".
+    it('compacts a Mysti-agent panel with the gateway summarizer and restarts no CLI session', async () => {
+      threeTurns();
+      h.sidebarPanelState.settingsOverrides = { agent: 'mysti' };
+      h.compactionManager.cliOwnsHistory.mockReturnValue(true);        // the fallback would be Claude
+      h.compactionManager.getStrategy.mockReturnValue('native-cli');
+      h.compactionManager.isSmartActive.mockReturnValue(true);
+      h.compactionManager.executeSmartSummarization.mockResolvedValue({
+        success: true, beforeTokens: 5000, afterTokens: 400, strategy: 'client-summarize', duration: 7,
+      });
+      const native = vi.fn(async function* () { yield { type: 'done' }; });
+      (h.compactionManager as any).executeNativeCompaction = native;
+
+      await (h.provider as any)._getSlashCommandCallbacks().executeManualCompaction('sidebar');
+
+      expect(h.compactionManager.executeSmartSummarization).toHaveBeenCalledTimes(1);
+      expect(native).not.toHaveBeenCalled();
+      expect(h.providerManager.disposePersistentProcess).not.toHaveBeenCalled();
+      expect(h.providerManager.clearSessionForProvider).not.toHaveBeenCalled();
+    });
+
+    it('tells a Mysti-agent panel without smart compaction that only the gateway can compact it', async () => {
+      threeTurns();
+      h.sidebarPanelState.settingsOverrides = { agent: 'mysti' };
+      h.compactionManager.cliOwnsHistory.mockReturnValue(true);
+
+      await (h.provider as any)._getSlashCommandCallbacks().executeManualCompaction('sidebar');
+
+      expect(h.compactionManager.executeClientSummarization).not.toHaveBeenCalled();
+      expect(h.sidebarMessages.find(m => m.type === 'systemNotice')?.payload.message)
+        .toMatch(/the Mysti agent only the most recent messages/);
+    });
+
+    it('does not compact a brainstorm panel (each agent keeps its own session)', async () => {
+      threeTurns();
+      h.sidebarPanelState.settingsOverrides = { agent: 'brainstorm' };
+
+      await (h.provider as any)._getSlashCommandCallbacks().executeManualCompaction('sidebar');
+
+      expect(h.compactionManager.executeClientSummarization).not.toHaveBeenCalled();
+      expect(h.sidebarMessages.find(m => m.type === 'systemNotice')?.payload.message).toMatch(/brainstorm/);
+    });
+
+    // Stop ends the /compact stream, which still yields a bare `done`.
+    it('reports a native /compact ended by Stop as stopped, not complete, and keeps the last fill', async () => {
+      threeTurns();
+      h.compactionManager.getStrategy.mockReturnValue('native-cli');
+      h.compactionManager.cliOwnsHistory.mockReturnValue(true);
+      const provider = h.provider as any;
+      (h.compactionManager as any).executeNativeCompaction = vi.fn(async function* () {
+        provider._stoppedCompactions.add('sidebar');   // what the Stop handler records
+        yield { type: 'done' };
+      });
+
+      await provider._getSlashCommandCallbacks().executeManualCompaction('sidebar');
+
+      const statuses = h.sidebarMessages.filter(m => m.type === 'compactionStatus').map(m => m.payload.status);
+      expect(statuses).not.toContain('complete');
+      expect(h.sidebarMessages.find(m => m.payload?.status === 'error')?.payload.error).toMatch(/stopped/);
+      expect(h.compactionManager.resetUsage).not.toHaveBeenCalled();
     });
   });
 });

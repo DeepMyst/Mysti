@@ -115,6 +115,8 @@ function composeHtml(): string {
   if (!html.includes(bootTag)) { throw new Error('boot script tag not found — harness is out of date with index.html'); }
   html = html.replace(bootTag, () => `${stub}${bootTag}`);
   html = html
+    .replace('<script nonce="n" src="{{markdownRendererJsUri}}"></script>', () => `<script>${read('media/chat/markdownRenderer.js')}</script>`)
+    .replace('<script nonce="n" src="{{subAgentCardsJsUri}}"></script>', () => `<script>${read('media/chat/subAgentCards.js')}</script>`)
     .replace('<script nonce="n" src="{{chatJsUri}}"></script>', () => `<script>${read('media/chat/chat.js')}</script>`)
     .replace('<script nonce="n" src="{{deskJsUri}}"></script>', () => `<script>${read('media/chat/desk.js')}</script>`);
 
@@ -228,6 +230,42 @@ afterAll(async () => {
 });
 
 describe('chat webview boots', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows the actual timeout denial when a forced card overrides auto-accept', async () => {
+    const pg = await newPanelPage();
+    try {
+      await pg.evaluate(() => {
+        const receive = (type: string, payload: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        receive('permissionRequest', {
+          id: 'native-timeout', actionType: 'file-edit', title: 'Write', description: 'Write a file',
+          details: {}, expiresAt: Date.now() + 30000, forceInteractive: true,
+        });
+        receive('permissionExpired', { requestId: 'native-timeout', behavior: 'auto-accept', approved: false });
+      });
+      expect(await pg.locator('.permission-card[data-id="native-timeout"] .permission-footer').textContent()).toContain('Auto-denied (timeout)');
+    } finally { await pg.context().close(); }
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a forced native permission supports approve or deny without a hidden session-grant shortcut', async () => {
+    const pg = await newPanelPage();
+    try {
+      await pg.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: {
+        type: 'permissionRequest', payload: {
+          id: 'native-card', actionType: 'file-edit', title: 'Write', description: 'Write a file',
+          details: {}, expiresAt: 0, forceInteractive: true,
+        },
+      } })));
+      const card = pg.locator('.permission-card[data-id="native-card"]');
+      expect(await card.locator('[data-action="always-allow"]').count()).toBe(0);
+      await card.focus();
+      await pg.keyboard.press('2');
+      const replies = () => pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string; payload?: unknown }> }).__posted
+        .filter(message => message.type === 'permissionResponse'));
+      expect(await replies()).toEqual([]);
+      await pg.keyboard.press('3');
+      expect(await replies()).toMatchObject([{ payload: { requestId: 'native-card', decision: 'deny', scope: 'this-action' } }]);
+    } finally { await pg.context().close(); }
+  });
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('loads chat.js with no uncaught exception', async () => {
     // Phase 1 removed three elements whose listeners were bound unguarded.
     // This is the assertion that would have caught shipping that half-done.
@@ -554,7 +592,9 @@ describe('Plan 28 Phase 5 — the chrome diet and the palette', () => {
     for (const id of ['agent-select-btn', 'context-usage', 'behavior-indicator']) {
       expect(await page!.$eval(`#${id}`, (e) => getComputedStyle(e).display), id).not.toBe('none');
     }
-    for (const id of ['slash-cmd-btn', 'tools-menu-btn', 'model-select-inline', 'effort-select-inline']) {
+    // Model + effort are back as one pill (tested below); with no model list
+    // on this page it hides itself, which is why the count above is still 3.
+    for (const id of ['slash-cmd-btn', 'tools-menu-btn']) {
       expect(await page!.$(`#${id}`), id).not.toBeNull();     // still in the DOM
       expect(await page!.$eval(`#${id}`, (e) => getComputedStyle(e).display), id).toBe('none');
     }
@@ -628,6 +668,10 @@ describe('Plan 28 Phase 6 — a team is a verb', () => {
       el.insertAdjacentHTML('beforeend',
         '<div class="message-footer"><span class="message-footer-action" data-second-opinion="1">Second opinion</span></div>');
     });
+    // A not-installed agent would only answer with an install card.
+    await page!.evaluate(() => {
+      document.querySelector('#agent-menu .agent-menu-item[data-agent="cursor"]')?.classList.add('disabled');
+    });
     await page!.click('#probe-answer .message-footer-action');
     const menu = await page!.$('#second-opinion-menu');
     expect(menu).not.toBeNull();
@@ -637,6 +681,19 @@ describe('Plan 28 Phase 6 — a team is a verb', () => {
     expect(offered.length).toBeGreaterThan(0);
     expect(offered).not.toContain('claude-code');
     expect(offered).not.toContain('brainstorm');
+    expect(offered).not.toContain('cursor');
+
+    // The list was clipped by the panel edge: it must sit inside the window and
+    // scroll whatever does not fit.
+    const box = await page!.$eval('#second-opinion-menu', (el) => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, vh: window.innerHeight, open: el.matches(':popover-open'),
+        overflowY: getComputedStyle(el).overflowY };
+    });
+    expect(box.open).toBe(true);
+    expect(box.top).toBeGreaterThanOrEqual(0);
+    expect(box.bottom).toBeLessThanOrEqual(box.vh);
+    expect(box.overflowY).toBe('auto');
 
     // It says plainly that it does not merge the answers.
     expect(await page!.textContent('.second-opinion-note')).toContain('does not merge');
@@ -653,6 +710,35 @@ describe('Plan 28 Phase 6 — a team is a verb', () => {
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
     expect(pageErrors).toEqual([]);
+  }, 20000);
+});
+
+describe('a compaction reads as a divider, not a wall of text', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('folds the markdown summary under a one-line divider', async () => {
+    await send({ type: 'compactionStatus', payload: {
+      status: 'complete', strategy: 'native-cli', beforeTokens: 49210, contextWindow: 200000, threshold: 75,
+      summary: '1. Primary Request and Intent:\n   None yet.\n\n2. Pending Tasks:\n   - wait for a request',
+    } });
+    const card = await page!.$eval('.compaction-divider:last-of-type', (el) => ({
+      tag: el.tagName,
+      open: (el as HTMLDetailsElement).open,
+      label: el.querySelector('.compaction-divider-label')!.textContent,
+      // Rendered, not escaped: the numbered sections are a real list.
+      listItems: el.querySelectorAll('.compaction-summary ol > li').length,
+    }));
+    expect(card.tag).toBe('DETAILS');
+    expect(card.open).toBe(false);
+    expect(card.label).toBe('Conversation compacted · was 49.2k tokens');
+    expect(card.listItems).toBe(2);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows before → after only when the context actually shrank', async () => {
+    await send({ type: 'compactionStatus', payload: {
+      status: 'complete', strategy: 'client-summarize', beforeTokens: 60000, afterTokens: 3000,
+      contextWindow: 200000, threshold: 75, summary: 'Short summary.',
+    } });
+    expect(await page!.$eval('.compaction-divider:last-of-type .compaction-divider-label', (el) => el.textContent))
+      .toBe('Conversation compacted · 60.0k → 3.0k tokens');
   }, 20000);
 });
 
@@ -748,6 +834,88 @@ describe('Plan 28 Phase 7 — a silent backend says so', () => {
     expect(await page2!.$('#stall-card')).not.toBeNull();
     await fire({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'done' } } });
     expect(await page2!.$('#stall-card')).toBeNull();
+  }, 30000);
+});
+
+describe('the composer shows model, effort and prompt cache the way Claude does', () => {
+  let pg: import('playwright').Page | undefined;
+  const fire = (m: Record<string, unknown>) =>
+    pg!.evaluate((x) => { window.dispatchEvent(new MessageEvent('message', { data: x })); }, m);
+  const turn = (extra: Record<string, unknown> = {}) =>
+    fire({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'ok' }, ...extra } });
+  const chip = () => pg!.$eval('#cache-indicator', (e) => ({
+    shown: getComputedStyle(e).display !== 'none',
+    text: (e.textContent || '').trim(),
+    title: e.getAttribute('title'),
+    cold: e.classList.contains('cold'),
+  }));
+  const pickModel = (id: string) => pg!.evaluate((v) => {
+    const el = document.getElementById('model-select-inline') as HTMLSelectElement;
+    el.value = v;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, id);
+
+  beforeAll(async () => {
+    if (CHROMIUM_UNAVAILABLE) { return; }
+    // Its own page under a mocked clock: the cache TTL is an hour of wall time.
+    pg = await browser!.newPage();
+    await pg.clock.install();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-cache-'));
+    spawnedDirs.push(dir);
+    const file = path.join(dir, 'chat.html');
+    fs.writeFileSync(file, composeHtml(), 'utf8');
+    await pg.goto(`file://${file}`, { waitUntil: 'load' });
+    await fire({ type: 'initialState', payload: {
+      settings: { provider: 'claude-code', model: 'claude-opus-5-5', mode: 'ask-before-edit', thinkingLevel: 'none',
+        effortLevel: 'xhigh', accessLevel: 'ask-permission', contextMode: 'auto', autonomousMode: false },
+      providers: [{ name: 'claude-code', models: [
+        { id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'claude-sonnet-5', name: 'Sonnet 5' }] }],
+      providerManifest: { schemaVersion: 1, providers: [{ id: 'claude-code',
+        capabilities: { effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], effortDefault: 'high' } }] },
+      messages: [], context: [], conversations: [],
+    } });
+  }, 60000);
+
+  afterAll(async () => { await pg?.close(); });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows the model and its effort as one pill', async () => {
+    expect(await pg!.$eval('#model-pill', (e) => getComputedStyle(e).display)).not.toBe('none');
+    expect(await pg!.$eval('#model-select-inline', (e) => (e as HTMLSelectElement).selectedOptions[0]?.text)).toBe('Opus 5.5');
+    expect(await pg!.$eval('#effort-select-inline', (e) => (e as HTMLSelectElement).selectedOptions[0]?.text)).toBe('Extra High');
+    // The coordinator's button is Mysti's half, not Claude's.
+    expect(await pg!.$eval('#mysti-model-btn', (e) => getComputedStyle(e).display)).toBe('none');
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('says nothing about the cache until a turn touches it', async () => {
+    await turn();
+    expect((await chip()).shown).toBe(false);
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('counts down while warm, then says cold', async () => {
+    await turn({ promptCache: { ttlMs: 60 * 60 * 1000 } });
+    expect(await chip()).toEqual({ shown: true, text: '60m', cold: false, title: 'Prompt cache warm, about 60 min left.' });
+    await pg!.clock.fastForward('20:00');
+    expect((await chip()).text).toBe('40m');
+    // A turn that touched no cache does not restart the clock.
+    await turn();
+    await pg!.clock.fastForward('41:00');
+    const cold = await chip();
+    expect(cold).toMatchObject({ shown: true, text: 'cold', cold: true });
+    expect(cold.title).toContain('last turn 61 min ago');
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('belongs to the model that wrote it', async () => {
+    await turn({ promptCache: { ttlMs: 5 * 60 * 1000 } });
+    expect((await chip()).text).toBe('5m');
+    await pickModel('claude-sonnet-5');
+    expect((await chip()).shown).toBe(false);
+    await pickModel('claude-opus-5-5');
+    expect((await chip()).text).toBe('5m');
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('clears with the conversation', async () => {
+    await fire({ type: 'conversationChanged', payload: null });
+    expect((await chip()).shown).toBe(false);
   }, 30000);
 });
 
@@ -1386,4 +1554,72 @@ describe('an availability blip cannot rewrite the saved agent', () => {
       await ctx.close();
     }
   }, 30000);
+});
+
+describe('sub-agent cards through the shipped chat message boundary', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('retry and conversation change discard old rendering state', async () => {
+    const pg = await newPanelPage();
+    const errors: string[] = [];
+    pg.on('pageerror', error => errors.push(String(error)));
+    try {
+      await pg.evaluate(() => {
+        const receive = (type: string, payload?: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        receive('subAgentStarted', { agentId: 'openai-codex' });
+        receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: 'old attempt' });
+        receive('subAgentRetry', { agentId: 'openai-codex' });
+        receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: '**new attempt**' });
+        receive('subAgentComplete', { agentId: 'openai-codex' });
+      });
+      expect(await pg.locator('.subagent-text-output strong').textContent()).toBe('new attempt');
+      expect(await pg.locator('.subagent-card').textContent()).not.toContain('old attempt');
+      await pg.evaluate(() => {
+        const receive = (type: string, payload?: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        receive('subAgentStarted', { agentId: 'openai-codex' });
+        receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: 'old conversation' });
+        receive('conversationChanged', { messages: [] });
+        receive('subAgentStarted', { agentId: 'openai-codex' });
+        receive('subAgentChunk', { agentId: 'openai-codex', chunkType: 'text', content: 'new conversation' });
+        receive('subAgentComplete', { agentId: 'openai-codex' });
+      });
+      expect(await pg.locator('.subagent-card').count()).toBe(1);
+      expect((await pg.locator('.subagent-text-output').textContent())?.trim()).toBe('new conversation');
+      expect(errors).toEqual([]);
+    } finally { await pg.context().close(); }
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('simultaneous real question controls keep separate selections and stop invalidates saved callbacks', async () => {
+    const pg = await newPanelPage();
+    const errors: string[] = [];
+    pg.on('pageerror', error => errors.push(String(error)));
+    try {
+      await pg.evaluate(() => {
+        const receive = (type: string, payload?: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
+        for (const agentId of ['openai-codex', 'claude-code']) {
+          receive('subAgentStarted', { agentId });
+          receive('subAgentAskUserQuestion', { agentId, questionData: {
+            toolCallId: agentId + '-delivery', questions: [{ question: 'Continue?', header: 'Choice', options: [{ label: 'Yes' }, { label: 'No' }] }],
+          } });
+        }
+      });
+      const cards = pg.locator('.subagent-card');
+      await cards.nth(0).locator('input[type="radio"][value="Yes"]').check();
+      await cards.nth(1).locator('input[type="radio"][value="No"]').check();
+      expect(await cards.nth(0).locator('input[type="radio"][value="Yes"]').isChecked()).toBe(true);
+      await cards.nth(0).locator('.auq-submit-btn').click();
+      const replies = await pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string; payload?: unknown }> }).__posted
+        .filter(message => message.type === 'subAgentQuestionResponse'));
+      expect(replies).toEqual([{ type: 'subAgentQuestionResponse', panelId: null, payload: {
+        agentId: 'openai-codex', toolCallId: 'openai-codex-delivery', answers: { Choice: 'Yes' },
+      } }]);
+      await pg.evaluate(() => {
+        const submit = document.querySelector<HTMLButtonElement>('.subagent-card[data-agent-id="claude-code"] .auq-submit-btn')!;
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'requestCancelled' } }));
+        submit.click();
+      });
+      expect(await pg.locator('.ask-user-question-container').count()).toBe(0);
+      expect(await pg.evaluate(() => (window as unknown as { __posted: Array<{ type: string }> }).__posted
+        .filter(message => message.type === 'subAgentQuestionResponse').length)).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await pg.context().close(); }
+  });
 });

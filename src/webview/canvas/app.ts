@@ -90,8 +90,14 @@ const BOARD_ERROR_TEXT_ID = 'board-error-text';
 /** The "add a page from a template" disclosure: its button and its list. */
 const ADD_PAGE_ID = 'btn-add-page';
 const SCAFFOLD_MENU_ID = 'scaffold-menu';
-/** The top bar's capability chips. */
+/** The capability chips — in the Activity tab, beside the agent they describe. */
 const CAPABILITY_CHIPS_ID = 'capability-chips';
+/** The dock's two tabs, their panels, and the count that interrupts. */
+const TAB_IDS = { inspector: 'tab-inspector', activity: 'tab-activity' } as const;
+const PANEL_IDS = { inspector: 'insp-panel-inspector', activity: 'activity-body' } as const;
+const ACTIVITY_BADGE_ID = 'activity-badge';
+/** The focused artboard's name, in the top bar's identity zone. */
+const PAGE_CHIP_ID = 'page-chip';
 /**
  * How long a transient notice (a rejected op, an unwired intent) stays in the
  * alert region. A failed RUNTIME fetch is deliberately not transient: nothing
@@ -172,6 +178,8 @@ export class CanvasApp {
   private _pendingRender: { rail: boolean; inspector: boolean } = { rail: false, inspector: false };
   /** Whether the template disclosure is open. The DOM mirrors this, not vice versa. */
   private _scaffoldsOpen = false;
+  /** Which dock tab is showing. The human's choice; nothing auto-switches it. */
+  private _dockTab: 'inspector' | 'activity' = 'inspector';
 
   constructor(opts: CanvasAppOptions) {
     const { boot, env, post } = opts;
@@ -225,11 +233,17 @@ export class CanvasApp {
           // artboard may have moved - both are pure redraws off the store.
           this._renderInspector({ deferWhileFocused: true });
           this._live.refresh();
+          // The format select READS BACK a document property now, so an agent
+          // reformatting an artboard has to move it. Left out, the control
+          // would keep showing the last format a human picked while the board
+          // showed a different one — the preview/property conflation this
+          // redesign removed, growing back in the other direction.
+          this._syncArtboardProps();
           // A structural op can introduce a `legacy` artboard, which needs a
           // JSX compiler the boot-time fetch had no way to know about.
           this._ensureBabel();
         },
-        staged: m => this._live.onStaged(m.records),
+        staged: m => { this._live.onStaged(m.records); this._syncActivityBadge(); },
         receipt: m => {
           this._store.noteReceipt(m.receipt);
           // The shell ships a `role="alert"` banner for exactly this. The toast
@@ -237,7 +251,7 @@ export class CanvasApp {
           // hid it, taking the status pill and its state dot with it.
           if (m.receipt.error) { this._showBoardNotice(m.receipt.error.slice(0, 120), NOTICE_MS); }
         },
-        job: m => this._live.onJob(m.event),
+        job: m => { this._live.onJob(m.event); this._syncActivityBadge(); },
         agentCursor: m => this._live.onAgentCursor({ pageId: m.pageId, mid: m.mid, label: m.label }),
         // The undo stack is decided host-side over the real op log (ops arrive
         // from transports this webview never sees), so it is pushed, never
@@ -387,6 +401,14 @@ export class CanvasApp {
         world: world ?? null,
         overlay: this._el(BOARD_OVERLAY_ID),
         rail: this._el(STAGED_RAIL_ID),
+      },
+      // "N to review" must open the thing it names, and the queue now lives one
+      // level deeper than a pane: it is in the inspector's Activity TAB. A
+      // switch alone would reveal the dock still showing the Inspector tab —
+      // the button would open a panel that does not contain what it counted.
+      revealReview: () => {
+        this._showPane('inspector');
+        this._setDockTab('activity');
       },
       send: body => this._client.send(body),
       transform: () => this._board.transform,
@@ -609,11 +631,17 @@ export class CanvasApp {
   private _el(id: string): DomElement | null { return this._env.doc.getElementById(id); }
 
   private _wireChrome(): void {
+    // The format IS the artboard's, so picking one writes it — scope
+    // `'artboard'`, never `'preview'`. The dropdown used to mean BOTH ("show me
+    // this on mobile" and "this artboard is a mobile screen") and the only thing
+    // telling them apart was a button called Apply; until you pressed it the
+    // board was showing something the artboard was not, which is a mode. Undo
+    // is the safety net here exactly as it is for every other edit.
     const device = this._el('device-select');
     if (device) {
       const select = asValueElement(device);
       this._fillOptions(select, this._boot.devices.map(d => ({ value: d.formatId, label: d.label })));
-      select.addEventListener('change', () => this._onDevice(select.value, 'preview'));
+      select.addEventListener('change', () => this._onDevice(select.value, 'artboard'));
     }
     const theme = this._el('theme-select');
     if (theme) {
@@ -622,12 +650,13 @@ export class CanvasApp {
       if (this._boot.activeThemeId) { select.value = this._boot.activeThemeId; }
       select.addEventListener('change', () => this._onTheme(select.value));
     }
-    // The artifact-state twin of the device dropdown (3.5): "this artboard IS a
-    // mobile screen", as opposed to "show me this artboard on mobile".
-    this._el('btn-apply-device')?.addEventListener('click', () => {
-      const select = device ? asValueElement(device) : null;
-      if (select) { this._onDevice(select.value, 'artboard'); }
-    });
+    // The dock's tabs. Inspector is the selection; Activity is the agent — all
+    // of it, in one place, instead of a status pill, a queue inside the pages
+    // rail, a composer and a timeline that never agreed with each other.
+    for (const tab of ['inspector', 'activity'] as const) {
+      this._el(TAB_IDS[tab])?.addEventListener('click', () => this._setDockTab(tab));
+    }
+    this._setDockTab(this._dockTab);
     this._el('btn-present')?.addEventListener('click', () => {
       this._client.send({ t: 'canvas/present', pageId: this._view.focusedPageId ?? undefined });
     });
@@ -668,6 +697,97 @@ export class CanvasApp {
         this._el(id)?.addEventListener('change', () => this._onSwitchChanged(pane));
       }
     }
+  }
+
+  /**
+   * Force one side pane visible, whichever switch is live at this width.
+   *
+   * `_writeSwitch` is the painting half of the layout contract and answers to
+   * `BoardLayout`; this is the imperative half, for the one case where a
+   * control has to open a pane the human closed. It goes through the same
+   * `change` event a human's click fires, so `CanvasApp`'s own listener updates
+   * the second authority (the `*-collapsed` class on `#app`) rather than the
+   * pane staying `display: none` under a checked switch.
+   */
+  private _showPane(pane: 'rail' | 'inspector'): void {
+    const ids = PANE_SWITCH_IDS[pane];
+    const docked = paneIsDocked(this._layout.mode, pane);
+    // A docked switch means "hide me"; an overlay switch means "show me". Only
+    // the one that is live at this width is written — a stale `hidden:checked`
+    // left over from a wider layout would silently re-collapse the pane the
+    // moment the panel is widened again.
+    this._setChecked(docked ? ids.docked : ids.overlay, docked ? false : true);
+    this._setChecked(docked ? ids.overlay : ids.docked, false);
+    // The switches are one authority; `CanvasApp`'s `*-collapsed` class on
+    // `#app` is the other, and it only learns about a flip through this
+    // handler. Calling it directly rather than synthesising a `change` keeps
+    // that in one code path instead of depending on a DOM event constructor.
+    this._onSwitchChanged(pane);
+  }
+
+  /**
+   * Show one dock tab.
+   *
+   * Deliberately NOT called from any agent path. A staged change raises the
+   * badge and stops there: yanking the panel to Activity while someone is
+   * editing a padding value is the same interruption the old shell committed
+   * by pushing the staged queue into the pages rail, one layer further in.
+   */
+  private _setDockTab(tab: 'inspector' | 'activity'): void {
+    this._dockTab = tab;
+    for (const name of ['inspector', 'activity'] as const) {
+      const on = name === tab;
+      const button = this._el(TAB_IDS[name]);
+      if (button) {
+        const kept = (button.className || '').split(' ').filter(c => c && c !== 'active');
+        button.className = on ? [...kept, 'active'].join(' ') : kept.join(' ');
+        button.setAttribute('aria-selected', on ? 'true' : 'false');
+      }
+      const panel = this._el(PANEL_IDS[name]);
+      if (panel) { panel.hidden = !on; }
+    }
+  }
+
+  /**
+   * The count of staged changes waiting on a human, on the Activity tab.
+   *
+   * This is the ONLY thing in the shell that interrupts on the agent's behalf,
+   * which is why it is a number and not a panel. Zero hides it: a badge reading
+   * "0" is an interruption that says nothing.
+   */
+  private _syncActivityBadge(): void {
+    const badge = this._el(ACTIVITY_BADGE_ID);
+    if (!badge) { return; }
+    const count = this._live?.stagedCount ?? 0;
+    badge.textContent = String(count);
+    badge.hidden = count === 0;
+  }
+
+  /**
+   * Put the focused artboard's own values on the two controls that write them.
+   *
+   * The device select is a DOCUMENT property now, so it has to read back as
+   * one: left unsynced it would keep showing the last format anyone picked
+   * while the board showed a different artboard — the same conflation, moved
+   * one pane over.
+   */
+  private _syncArtboardProps(): void {
+    const artifact = this._store.artifact;
+    const page = this._view.focusedPageId ? this._store.page(this._view.focusedPageId) : null;
+    const chip = this._el(PAGE_CHIP_ID);
+    if (chip) { chip.textContent = page?.actionTitle?.trim() || ''; }
+    const device = this._el('device-select');
+    if (device && artifact) {
+      const format = page?.format ?? artifact.format;
+      const select = asValueElement(device);
+      // Only when the catalog actually has it: a custom size is not in the
+      // dropdown, and writing an unknown value silently blanks a <select>.
+      if (this._boot.devices.some(d => d.formatId === format.formatId)) {
+        select.value = format.formatId;
+      }
+    }
+    const props = this._el('artboard-props');
+    if (props) { props.hidden = !artifact || artifact.pages.length === 0; }
   }
 
   /* ------------------------------ responsive ------------------------------ */
@@ -928,6 +1048,8 @@ export class CanvasApp {
     this._renderRail();
     this._renderInspector();
     this._live.refresh();
+    this._syncArtboardProps();
+    this._syncActivityBadge();
     const empty = this._el('board-empty');
     const isEmpty = artifact.pages.length === 0;
     if (empty) { empty.hidden = !isEmpty; }

@@ -49,6 +49,9 @@ const FAMILY_RATES: Array<{ match: RegExp; rate: ModelRate }> = [
   // collide with "claude-sonnet-4-5" or "claude-sonnet-4.5": both carry the
   // minor version between "sonnet-" and the 5.
   { match: /sonnet-5/i, rate: { inputPerMTok: 2, outputPerMTok: 10 } },
+  // Opus 5.5 is cheaper than the rest of the Opus line ($4/$20 vs $5/$25), so
+  // it must be matched before the generic /opus/ rule or it over-bills by 25%.
+  { match: /opus-5[-.]5/i, rate: { inputPerMTok: 4, outputPerMTok: 20 } },
   { match: /opus/i, rate: { inputPerMTok: 5, outputPerMTok: 25 } },
   { match: /sonnet/i, rate: { inputPerMTok: 3, outputPerMTok: 15 } },
   { match: /haiku/i, rate: { inputPerMTok: 1, outputPerMTok: 5 } },
@@ -62,6 +65,11 @@ const FAMILY_RATES: Array<{ match: RegExp; rate: ModelRate }> = [
   { match: /flash/i, rate: { inputPerMTok: 0.1, outputPerMTok: 0.4 } },
   { match: /gemini/i, rate: { inputPerMTok: 1.25, outputPerMTok: 5 } },
   // ---- OpenAI (continued) ----
+  // GPT-6 tiers differ by up to 100x (live OpenRouter catalog 2026-09-25):
+  // Luna $0.10/$0.50, Sol $2/$10, Astra $10/$50. The generic rule below billed
+  // every tier at Astra's rate.
+  { match: /gpt-6-luna/i, rate: { inputPerMTok: 0.1, outputPerMTok: 0.5 } },
+  { match: /gpt-6-sol/i, rate: { inputPerMTok: 2, outputPerMTok: 10 } },
   // GPT-6 Astra (2026-09-03). Standard rate, which applies at or below 272K
   // input tokens; above that the whole request repriced to $20/$75. We bill the
   // standard rate here — the ledger has no per-request input size at match time,
@@ -77,31 +85,15 @@ const FAMILY_RATES: Array<{ match: RegExp; rate: ModelRate }> = [
 ];
 
 /**
- * DeepMyst gateway catalog rates for the cheap compactor models — these are
- * what a smart-compaction summarizer call actually costs when routed through
- * the gateway, and are cheaper than first-party for the same model.
+ * Look up the per-MTok rate for a model id. Returns `null` for an unknown model
+ * so callers can skip economic reasoning. There is no separate gateway rate:
+ * DeepMyst bills models at cost (e.g. claude-haiku-4-5 at $1/$5), so a call
+ * through the gateway costs the same as first-party.
  */
-const GATEWAY_RATES: Array<{ match: RegExp; rate: ModelRate }> = [
-  { match: /haiku/i, rate: { inputPerMTok: 0.25, outputPerMTok: 1.25 } },
-  { match: /4o-mini|gpt-4o-mini/i, rate: { inputPerMTok: 0.15, outputPerMTok: 0.6 } },
-  { match: /flash/i, rate: { inputPerMTok: 0.075, outputPerMTok: 0.3 } },
-];
-
-/**
- * Look up the per-MTok rate for a model id. Pass `{ viaGateway: true }` to get
- * the (cheaper) DeepMyst-gateway rate for the compactor model. Returns `null`
- * for an unknown model so callers can skip economic reasoning.
- */
-export function getModelRate(modelId: string | undefined, opts?: { viaGateway?: boolean }): ModelRate | null {
+export function getModelRate(modelId: string | undefined): ModelRate | null {
   if (!modelId) { return null; }
   const id = modelId.trim();
   if (!id) { return null; }
-  if (opts?.viaGateway) {
-    for (const { match, rate } of GATEWAY_RATES) {
-      if (match.test(id)) { return rate; }
-    }
-    // Fall through to family rate if the gateway table has no specific entry.
-  }
   for (const { match, rate } of FAMILY_RATES) {
     if (match.test(id)) { return rate; }
   }

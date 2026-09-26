@@ -28,77 +28,81 @@
 </head>
 <body>
   <div id="app" class="app">
+    <!--
+      ONE row, three zones: identity · state · actions. It was two rows of
+      eleven controls, and the second row was paid for out of the board — the
+      one surface the panel exists to show. What left: the Device select and
+      its Apply button (a format is a property of an artboard, so it now lives
+      on the artboard's own name chip and in the inspector's Format row), the
+      Theme select (a document property — inspector), and the capability chips
+      (they describe the agent, so they sit beside it in the Activity tab).
+      Nothing here wraps; the ladder in `canvas.css` §5 sheds in a stated order.
+    -->
     <header class="topbar">
-      <div class="topbar-row topbar-title">
-        <!-- Pane switches. Exactly one of each pair is rendered at a time; the
-             ladder in canvas.css §5 decides which, and each is named for the
-             action it actually performs at that width. -->
-        <label class="pane-toggle pane-toggle-hide-rail" title="Hide the pages panel">
-          <input type="checkbox" id="rail-hidden" class="pane-switch sr-only" aria-label="Hide the pages panel">
-          <span class="i i-panel-left" aria-hidden="true"></span>
-        </label>
-        <label class="pane-toggle pane-toggle-show-rail" title="Show the pages panel">
-          <input type="checkbox" id="rail-shown" class="pane-switch sr-only" aria-label="Show the pages panel">
-          <span class="i i-panel-left" aria-hidden="true"></span>
-        </label>
+      <!-- ── identity ────────────────────────────────────────────────────── -->
+      <!-- Pane switches. Exactly one of each pair is rendered at a time; the
+           ladder in canvas.css §5 decides which, and each is named for the
+           action it actually performs at that width. -->
+      <label class="pane-toggle pane-toggle-hide-rail" title="Hide the pages panel">
+        <input type="checkbox" id="rail-hidden" class="pane-switch sr-only" aria-label="Hide the pages panel">
+        <span class="i i-panel-left" aria-hidden="true"></span>
+      </label>
+      <label class="pane-toggle pane-toggle-show-rail" title="Show the pages panel">
+        <input type="checkbox" id="rail-shown" class="pane-switch sr-only" aria-label="Show the pages panel">
+        <span class="i i-panel-left" aria-hidden="true"></span>
+      </label>
 
-        <span class="brand">
-          <span class="i i-brand" aria-hidden="true"></span>
-          <span class="brand-text">Canvas</span>
-        </span>
-        <span id="artifact-name" class="artifact-name">Untitled</span>
+      <span class="brand">
+        <span class="i i-brand" aria-hidden="true"></span>
+        <span class="brand-text">Canvas</span>
+      </span>
+      <span id="artifact-name" class="artifact-name">Untitled</span>
+      <!-- The focused artboard, so the bar says WHICH page the tools act on.
+           Empty until the board has a selection; `:empty` hides it. -->
+      <span id="page-chip" class="page-chip"></span>
 
-        <!-- The agent, legibly: what it is doing, for how long, and how to stop
-             it. The region is permanent (so updates are announced); its chrome
-             appears only while `#agent-activity` is unhidden. -->
-        <div class="agent-status" id="agent-status" role="status" aria-live="polite">
-          <span class="agent-dot" aria-hidden="true"></span>
-          <span id="agent-activity" class="agent-activity" hidden></span>
-          <span id="agent-elapsed" class="agent-elapsed" hidden></span>
-          <button type="button" class="agent-cancel" id="btn-agent-cancel" hidden>Stop</button>
-        </div>
+      <span class="topbar-gap" aria-hidden="true"></span>
+
+      <!-- ── state ───────────────────────────────────────────────────────── -->
+      <!-- The agent, legibly: what it is doing, for how long, and how to stop
+           it. The region is permanent (so updates are announced); its chrome
+           appears only while `#agent-activity` is unhidden. This is the GLANCE;
+           the detail lives in exactly one place, the Activity tab. -->
+      <div class="agent-status" id="agent-status" role="status" aria-live="polite">
+        <span class="agent-dot" aria-hidden="true"></span>
+        <span id="agent-activity" class="agent-activity" hidden></span>
+        <span id="agent-elapsed" class="agent-elapsed" hidden></span>
+        <button type="button" class="agent-cancel" id="btn-agent-cancel" hidden>Stop</button>
       </div>
 
-      <div class="topbar-row topbar-tools">
-        <span class="field">
-          <label class="field-label" for="device-select">Device</label>
-          <select id="device-select" class="select" aria-label="Preview device"></select>
-          <button type="button" class="btn btn-quiet" id="btn-apply-device"
-                  title="Make this the selected artboard's real device">Apply</button>
-        </span>
-        <span class="field">
-          <label class="field-label" for="theme-select">Theme</label>
-          <select id="theme-select" class="select" aria-label="Design system"></select>
-        </span>
+      <span class="topbar-gap" aria-hidden="true"></span>
 
-        <div id="capability-chips" class="chips" title="Connected capabilities"></div>
+      <!-- ── actions ─────────────────────────────────────────────────────── -->
+      <!--
+        Undo / redo / save-version. The buttons are BUILT by `historyUi.ts`
+        from the host-pushed `canvas/history` snapshot: the webview keeps no
+        mirror of the undo stack, because it never sees the ops that arrive
+        over MCP, over a `<canvas:NONCE>` directive, or from a background job.
+        The host is one bordered group, so history reads as one object rather
+        than three peers of Present and Export.
+      -->
+      <div id="history-toolbar" class="history-toolbar"></div>
 
-        <span class="topbar-sep" aria-hidden="true"></span>
+      <button type="button" class="btn btn-present" id="btn-present" title="Present the design full-screen">
+        <span class="i i-play" aria-hidden="true"></span><span class="btn-text">Present</span>
+      </button>
+      <button type="button" class="btn btn-export" id="btn-export" title="Export the design">
+        <span class="i i-export" aria-hidden="true"></span><span class="btn-text">Export</span>
+      </button>
 
-        <!--
-          Undo / redo / save-version. The buttons are BUILT by `historyUi.ts`
-          from the host-pushed `canvas/history` snapshot: the webview keeps no
-          mirror of the undo stack, because it never sees the ops that arrive
-          over MCP, over a `<canvas:NONCE>` directive, or from a background job.
-        -->
-        <div id="history-toolbar" class="history-toolbar"></div>
-
-        <button type="button" class="btn" id="btn-present" title="Present the design full-screen">
-          <span class="i i-play" aria-hidden="true"></span><span class="btn-text">Present</span>
-        </button>
-        <button type="button" class="btn" id="btn-export" title="Export the design">
-          <span class="i i-export" aria-hidden="true"></span><span class="btn-text">Export</span>
-        </button>
-
-        <label class="pane-toggle pane-toggle-hide-insp" title="Hide the inspector">
-          <input type="checkbox" id="inspector-hidden" class="pane-switch sr-only" aria-label="Hide the inspector">
-          <span class="i i-panel-right" aria-hidden="true"></span>
-        </label>
-        <label class="pane-toggle pane-toggle-show-insp" title="Show the inspector">
-          <input type="checkbox" id="inspector-shown" class="pane-switch sr-only" aria-label="Show the inspector">
-          <span class="i i-panel-right" aria-hidden="true"></span>
-        </label>
-      </div>
+      <label class="pane-toggle pane-toggle-hide-insp" title="Hide the inspector">
+        <input type="checkbox" id="inspector-hidden" class="pane-switch sr-only" aria-label="Hide the inspector">
+        <span class="i i-panel-right" aria-hidden="true"></span>
+      </label>
+      <label class="pane-toggle pane-toggle-show-insp" title="Show the inspector">
+        <input type="checkbox" id="inspector-shown" class="pane-switch sr-only" aria-label="Show the inspector">
+        <span class="i i-panel-right" aria-hidden="true"></span>
+      </label>
     </header>
 
     <div class="body">
@@ -133,8 +137,6 @@
         </div>
         <div class="scaffold-menu" id="scaffold-menu" hidden></div>
         <div class="rail-list" id="rail-list"></div>
-        <!-- Staged agent suggestions (accept / reject), drawn by `liveness.ts`. -->
-        <div class="staged-rail" id="staged-rail" hidden></div>
       </aside>
 
       <!-- Center: the live board -->
@@ -211,7 +213,21 @@
         </div>
       </main>
 
-      <!-- Right: inspector -->
+      <!--
+        Right: the dock. TWO tabs, one scroll region each.
+
+        It was three stacked scroll regions in a 300px column (body, steering
+        composer, version timeline capped at 40% of the height) plus a fourth
+        surface — the staged queue — inside the pages rail, where a review
+        action about the BOARD was shoving the navigation. Plan 22's thesis is
+        that the agent is a cursor; five surfaces for one actor is the opposite.
+
+        So: Inspector is the selection. Activity is the agent — its
+        capabilities, its staged changes, the steering composer and the version
+        timeline, in one scroll. Every id below is the id the modules already
+        look up, so `liveness.ts` and `historyUi.ts` find their hosts here with
+        no wiring change; only their PLACE moved.
+      -->
       <aside class="pane inspector" id="inspector" aria-label="Inspector">
         <div class="pane-head">
           <span class="pane-title">Inspector</span>
@@ -222,20 +238,61 @@
             <span class="i i-close" aria-hidden="true"></span>
           </label>
         </div>
-        <!-- Host for a future tab strip (page / theme). Empty and hidden until
-             something wires it — the shell ships no control that does nothing. -->
-        <div class="insp-tabs" id="insp-tabs" hidden></div>
-        <div class="insp-body" id="insp-body"></div>
+
+        <div class="insp-tabs" id="insp-tabs" role="tablist" aria-label="Inspector and agent activity">
+          <button type="button" class="insp-tab active" id="tab-inspector" role="tab"
+                  aria-selected="true" aria-controls="insp-body">Inspector</button>
+          <button type="button" class="insp-tab" id="tab-activity" role="tab"
+                  aria-selected="false" aria-controls="activity-body">Activity<span
+                  class="tab-badge" id="activity-badge" hidden></span></button>
+        </div>
+
         <!--
-          The steering dock: "tell Mysti what to change". `liveness.ts` fills
-          this host — and when the shell does not ship one it falls back to
-          `#inspector` AND clears it, which would cost the pane its head, its
-          body and its timeline. So it is shipped deliberately, empty: an
-          `:empty` dock renders as nothing at all until there is a composer.
+          Tab 1 — the selection, and never empty.
+
+          The artboard strip is STATIC and always present, because an artboard
+          is always focused while there are pages: the pane can no longer answer
+          "nothing selected" to the commonest state in the product. It also
+          means the format stays reachable while an element is selected, which
+          a purely selection-driven panel cannot offer.
+
+          These two selects are where the top bar's Device and Theme controls
+          went. The Apply button is GONE, not moved: one `<select>` that was
+          both a preview toggle and a document property, told apart only by a
+          confirm button, is a mode. Picking a format now IS applying it, and
+          undo is the safety net exactly as it is for every other edit.
         -->
-        <div class="agent-comment" id="agent-comment"></div>
-        <!-- Named checkpoints, with parent-rendered (script-free) thumbnails. -->
-        <div class="version-timeline" id="version-timeline"></div>
+        <div class="insp-panel" id="insp-panel-inspector" role="tabpanel" aria-labelledby="tab-inspector">
+          <div class="artboard-props" id="artboard-props">
+            <span class="artboard-props-title">Artboard</span>
+            <span class="field">
+              <label class="field-label" for="device-select">Format</label>
+              <select id="device-select" class="select" aria-label="Artboard format"></select>
+            </span>
+            <span class="field">
+              <label class="field-label" for="theme-select">Design system</label>
+              <select id="theme-select" class="select" aria-label="Design system"></select>
+            </span>
+          </div>
+          <div class="insp-body" id="insp-body"></div>
+        </div>
+
+        <!-- Tab 2 — the agent's ONE home. -->
+        <div class="activity-body" id="activity-body" role="tabpanel" aria-labelledby="tab-activity" hidden>
+          <div id="capability-chips" class="chips" aria-label="Connected capabilities"></div>
+          <!-- Staged agent suggestions (accept / reject), drawn by `liveness.ts`. -->
+          <div class="staged-rail" id="staged-rail" hidden></div>
+          <!--
+            The steering dock: "tell Mysti what to change". `liveness.ts` fills
+            this host — and when the shell does not ship one it falls back to
+            `#inspector` AND clears it, which would cost the pane its head, its
+            tabs and both bodies. So it is shipped deliberately, empty: an
+            `:empty` dock renders as nothing at all until there is a composer.
+          -->
+          <div class="agent-comment" id="agent-comment"></div>
+          <!-- Named checkpoints, with parent-rendered (script-free) thumbnails. -->
+          <div class="version-timeline" id="version-timeline"></div>
+        </div>
       </aside>
 
       <!-- Scrims: dismiss an overlay pane with a pointer. Rendered only in the

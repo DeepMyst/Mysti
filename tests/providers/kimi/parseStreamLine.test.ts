@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { ChildProcess } from 'child_process';
+import { Writable } from 'node:stream';
 import { TestableKimiProvider } from '../../helpers/providerFactory';
 import { createKimiSession } from '../../helpers/sessionFactory';
 import type { KimiCodeSessionState } from '../../../src/providers/kimi/KimiCodeProvider';
@@ -28,10 +29,7 @@ function settings(overrides?: Partial<Settings>): Settings {
 function fakeProc(): { proc: ChildProcess; written: string[] } {
   const written: string[] = [];
   const proc = {
-    stdin: {
-      writable: true,
-      write: (chunk: string) => { written.push(chunk); return true; }
-    }
+    stdin: new Writable({ write(chunk, _encoding, callback) { written.push(String(chunk)); callback(); } })
   } as unknown as ChildProcess;
   return { proc, written };
 }
@@ -174,6 +172,13 @@ describe('Kimi Code ACP session updates', () => {
 
   const update = (u: Record<string, unknown>) =>
     JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: u } });
+
+  it("takes the window from ACP usage_update.size (the model lives in the agent's own config)", () => {
+    (provider as any)._panelSessions.set(session.panelId, session);
+    expect(provider.parseStreamLine(update({ sessionUpdate: 'usage_update', used: 36000, size: 1048576 }), session)).toBeNull();
+    expect((provider as any).takeReportedContextWindow(session.panelId)).toBe(1048576);
+    expect((provider as any).takeReportedContextWindow(session.panelId)).toBeUndefined();
+  });
 
   it('maps agent_message_chunk to text', () => {
     const chunk = provider.parseStreamLine(

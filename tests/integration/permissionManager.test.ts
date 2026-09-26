@@ -37,6 +37,14 @@ describe('PermissionManager', () => {
       expect(webviewMessages).toHaveLength(0); // No UI shown
     });
 
+    it('waits for an explicit native approval even when its tool is classified as a read', async () => {
+      const result = pm.requestPermission('file-read', 'Read', 'desc', {}, postToWebview, 'native-read', 'panel', true);
+      expect(pm.getPendingCount()).toBe(1);
+      const request = pm.getPendingRequests()[0];
+      pm.handleResponse({ requestId: request.id, decision: 'deny' });
+      expect(await result).toBe(false);
+    });
+
     it('should auto-approve when session upgraded to full-access', async () => {
       pm.resetSessionAccessLevel('full-access');
       const result = await pm.requestPermission('file-edit', 'Edit', 'desc', {}, postToWebview);
@@ -58,6 +66,21 @@ describe('PermissionManager', () => {
   });
 
   describe('requestPermission — blocking flow', () => {
+    it.each(['approve', 'cancel', 'dispose', 'throw'] as const)(
+      'settles and clears timers when delivery synchronously triggers %s', async action => {
+        const result = pm.requestPermission('file-edit', 'Edit file', 'desc', {}, message => {
+          const { payload } = message as { payload: { id: string } };
+          if (action === 'approve') { pm.handleResponse({ requestId: payload.id, decision: 'approve' }); }
+          else if (action === 'cancel') { pm.cancelRequest(payload.id); }
+          else if (action === 'dispose') { pm.dispose(); }
+          else { throw new Error('Webview closed'); }
+        });
+        expect(await result).toBe(action === 'approve');
+        expect(pm.getPendingCount()).toBe(0);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+    );
+
     it('should post permissionRequest to webview and block', async () => {
       let resolved = false;
       const promise = pm.requestPermission('file-edit', 'Edit file', 'desc', {}, postToWebview)
@@ -91,6 +114,16 @@ describe('PermissionManager', () => {
   });
 
   describe('always-allow decision', () => {
+    it('a forced card cannot grant authority to later ordinary requests', async () => {
+      const first = pm.requestPermission('file-edit', 'Native edit', 'desc', {}, postToWebview, 'native', 'panel', true);
+      pm.handleResponse({ requestId: pm.getPendingRequests()[0].id, decision: 'always-allow' });
+      expect(await first).toBe(true);
+      const second = pm.requestPermission('file-edit', 'Edit', 'desc', {}, postToWebview, 'ordinary', 'panel');
+      expect(pm.getPendingCount()).toBe(1);
+      pm.cancelAllRequests();
+      expect(await second).toBe(false);
+    });
+
     it('records a grant WITHOUT raising the session access level', async () => {
       // Plan 27 §25: always-allow used to set the scope to `full-access`, so
       // `sessionAccessLevel` reported an escalation the user never chose and
@@ -123,6 +156,19 @@ describe('PermissionManager', () => {
   });
 
   describe('timeout behavior', () => {
+    it('settles even when the webview throws while receiving expiry', async () => {
+      setMockConfig('permission.timeout', 1);
+      pm.refreshConfig();
+      let delivered = 0;
+      const result = pm.requestPermission('file-edit', 'Edit', 'desc', {}, () => {
+        if (++delivered > 1) { throw new Error('Webview disposed'); }
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await result).toBe(false);
+      expect(pm.getPendingCount()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
     it('should auto-reject after timeout (default behavior)', async () => {
       setMockConfig('permission.timeout', 5);
       setMockConfig('permission.timeoutBehavior', 'auto-reject');
@@ -170,6 +216,22 @@ describe('PermissionManager', () => {
       expect(await promise).toBe(false); // denied, NOT auto-accepted
       const expired = webviewMessages.find((m: any) => m.type === 'permissionExpired') as any;
       expect(expired.payload.approved).toBe(false);
+    });
+
+    it.each([false, true])('does not advertise an expiry with require-action (forced=%s)', async forced => {
+      setMockConfig('permission.timeout', 5);
+      setMockConfig('permission.timeoutBehavior', 'require-action');
+      pm.dispose();
+      pm = new PermissionManager('ask-permission');
+
+      const result = pm.requestPermission('file-edit', 'Edit', 'desc', {}, postToWebview, 'tool', 'panel', forced);
+      const request = pm.getPendingRequests()[0];
+      expect(webviewMessages).toContainEqual({ type: 'permissionRequest', payload: expect.objectContaining({ id: request.id, expiresAt: 0 }) });
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(pm.getPendingCount()).toBe(1);
+      pm.cancelRequest(request.id);
+      expect(await result).toBe(false);
     });
 
     it('should wait forever with require-action', async () => {
@@ -253,6 +315,14 @@ describe('PermissionManager', () => {
   });
 
   describe('dispose', () => {
+    it('denies late requests even with configured full access', async () => {
+      pm.resetSessionAccessLevel('full-access');
+      pm.dispose();
+      expect(await pm.requestPermission('file-read', 'Read', 'desc', {}, postToWebview)).toBe(false);
+      expect(await pm.requestPermission('file-edit', 'Edit', 'desc', {}, postToWebview)).toBe(false);
+      expect(webviewMessages).toEqual([]);
+    });
+
     it('should reject all pending promises and clear state', async () => {
       const promise = pm.requestPermission('file-edit', 'Edit', 'desc', {}, postToWebview);
       pm.dispose();

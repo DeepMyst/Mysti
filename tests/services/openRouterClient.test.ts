@@ -3,7 +3,7 @@
  * deterministic and fast — no network, no real backoff waits.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { OpenRouterClient, OPENROUTER_FREE_ROUTER } from '../../src/services/OpenRouterClient';
+import { OpenRouterClient, OPENROUTER_FREE_ROUTER, isFreeModelId } from '../../src/services/OpenRouterClient';
 
 function jsonResponse(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -237,5 +237,21 @@ describe('OpenRouterClient', () => {
       expect(bodies[0].tool_choice).toBe('auto');
       expect(bodies[1].tools).toBeUndefined();
     });
+  });
+});
+
+describe('isFreeModelId (Plan 30 §1.6)', () => {
+  const catalog = [
+    { id: 'stealth/space-bunny-alpha', supportsTools: true, free: true },
+    { id: 'anthropic/claude-opus-5.5', supportsTools: true, free: false },
+  ];
+  it('treats a zero-priced catalog model as free even without :free', () => {
+    expect(isFreeModelId('stealth/space-bunny-alpha', catalog)).toBe(true);
+    expect(isFreeModelId('openrouter/stealth/space-bunny-alpha', catalog)).toBe(true);
+  });
+  it('still honours the :free suffix and flags paid models', () => {
+    expect(isFreeModelId('openrouter/openai/gpt-oss-120b:free', [])).toBe(true);
+    expect(isFreeModelId('anthropic/claude-opus-5.5', catalog)).toBe(false);
+    expect(isFreeModelId('claude-haiku-4-5', catalog)).toBe(false);
   });
 });

@@ -15,6 +15,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { asRecord, asRecords, asString, asFiniteNumber, isRecord, errorMessage } from '../utils/valueGuards';
+import type { ProviderManager } from './ProviderManager';
 import {
   CANVAS_DIR,
   CANVAS_ASSETS_DIR,
@@ -42,7 +44,6 @@ import type {
   DesignSpec,
   DesignAssetRef,
   Settings,
-  StreamChunk,
   Attachment,
   StitchScreenRef,
   CanvasArtifact,
@@ -57,19 +58,8 @@ import type { BrowserManager } from '../services/BrowserManager';
 import type { ScreenshotService } from '../services/ScreenshotService';
 import { DevServerManager } from '../managers/DevServerManager';
 
-// ProviderManager type — avoid circular import
-interface ProviderManagerLike {
-  sendMessage(
-    content: string,
-    context: any[],
-    settings: Settings,
-    conversation: any,
-    persona?: any,
-    panelId?: string,
-    agentConfig?: any,
-    attachments?: Attachment[]
-  ): AsyncGenerator<StreamChunk>;
-}
+// Type-only dependency keeps this seam aligned without a runtime import cycle.
+type ProviderManagerLike = Pick<ProviderManager, 'sendMessage'>;
 
 /**
  * Manages canvas sessions, persistence, snapshot serialization,
@@ -282,7 +272,7 @@ export class CanvasManager {
   // ========================================================================
 
   buildSnapshot(
-    canvasJson: any,
+    canvasJson: unknown,
     imageBase64: string,
     selectedRegion?: { imageBase64: string; bounds: { left: number; top: number; width: number; height: number } }
   ): CanvasSnapshot {
@@ -375,7 +365,7 @@ export class CanvasManager {
     enhancedPrompt: string;
     background?: string;
     provider?: string;
-    genOptions?: Record<string, any>;
+    genOptions?: Parameters<ImageGenerationService['generate']>[1];
     result?: { revisedPrompt?: string };
   }, captureDir?: string | null): void {
     const dir = captureDir || this._lastCaptureDir;
@@ -403,30 +393,32 @@ export class CanvasManager {
     }
   }
 
-  private _extractObjects(canvasJson: any): CanvasObjectSummary[] {
+  private _extractObjects(canvasJson: unknown): CanvasObjectSummary[] {
     const objects: CanvasObjectSummary[] = [];
-    const fabricObjects = canvasJson?.objects || [];
+    const fabricObjects = asRecords(asRecord(canvasJson)?.objects);
     for (const obj of fabricObjects) {
       objects.push(this._fabricObjToSummary(obj));
     }
     return objects;
   }
 
-  private _fabricObjToSummary(obj: any): CanvasObjectSummary {
-    const type = this._mapFabricType(obj.type);
+  private _fabricObjToSummary(obj: Record<string, unknown>): CanvasObjectSummary {
+    const type = this._mapFabricType(asString(obj.type) ?? '');
     const summary: CanvasObjectSummary = {
-      id: obj.id || obj.name || crypto.randomUUID(),
+      id: asString(obj.id) || asString(obj.name) || crypto.randomUUID(),
       type,
-      position: { left: obj.left || 0, top: obj.top || 0 },
-      size: { width: obj.width || 0, height: obj.height || 0 },
+      position: { left: asFiniteNumber(obj.left) ?? 0, top: asFiniteNumber(obj.top) ?? 0 },
+      size: { width: asFiniteNumber(obj.width) ?? 0, height: asFiniteNumber(obj.height) ?? 0 },
     };
-    if (obj.text) { summary.content = obj.text; }
-    if (obj.label) { summary.label = obj.label; }
-    if (obj.description) { summary.description = obj.description; }
-    if (obj.metadata) { summary.metadata = obj.metadata; }
-    if (obj.src) { summary.imagePath = obj.src; }
-    if (obj.objects) {
-      summary.children = obj.objects.map((child: any) => child.id || child.name || 'unknown');
+    if (typeof obj.text === 'string') { summary.content = obj.text; }
+    if (typeof obj.label === 'string') { summary.label = obj.label; }
+    if (typeof obj.description === 'string') { summary.description = obj.description; }
+    if (isRecord(obj.metadata)) {
+      summary.metadata = Object.fromEntries(Object.entries(obj.metadata).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+    }
+    if (typeof obj.src === 'string') { summary.imagePath = obj.src; }
+    if (Array.isArray(obj.objects)) {
+      summary.children = asRecords(obj.objects).map(child => asString(child.id) || asString(child.name) || 'unknown');
     }
     return summary;
   }
@@ -586,10 +578,10 @@ Return ONLY the JSON object.`;
     try {
       const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+        const parsed = asRecord(JSON.parse(jsonMatch[0]));
         return {
-          prompt: parsed.prompt || userPrompt,
-          background: parsed.background === 'transparent' ? 'transparent' : parsed.background === 'opaque' ? 'opaque' : 'auto',
+          prompt: asString(parsed?.prompt) || userPrompt,
+          background: parsed?.background === 'transparent' ? 'transparent' : parsed?.background === 'opaque' ? 'opaque' : 'auto',
         };
       }
     } catch {
@@ -690,12 +682,13 @@ Return ONLY the JSON array, no other text.`;
     try {
       const jsonMatch = aiResponse.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.slice(0, 4).map((v: any) => ({
-            prompt: v.prompt || userPrompt,
-            background: v.background || 'auto',
-            description: v.description || '',
+        const parsed: unknown = JSON.parse(jsonMatch[0]);
+        const variations = asRecords(parsed).slice(0, 4);
+        if (variations.length > 0) {
+          return variations.map(v => ({
+            prompt: asString(v.prompt) || userPrompt,
+            background: v.background === 'transparent' || v.background === 'opaque' ? v.background : 'auto',
+            description: asString(v.description) || '',
           }));
         }
       }
@@ -761,10 +754,10 @@ Return ONLY the JSON array, no other text.`;
             imageBase64: result.imageBase64,
             description: sp.description,
           }))
-          .catch((err: any) => ({
+          .catch((err: unknown) => ({
             success: false as const,
             index: i,
-            error: err.message,
+            error: errorMessage(err),
             description: sp.description,
           }));
       });
@@ -794,8 +787,8 @@ Return ONLY the JSON array, no other text.`;
       }
 
       yield { type: 'canvas_reimagine_complete', canvasId: request.canvasId };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId: request.canvasId, error: err.message };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId: request.canvasId, error: errorMessage(err) };
     }
   }
 
@@ -840,15 +833,15 @@ Return ONLY the JSON array, no other text.`;
               description: `Stitch variant ${i + 1}`,
             },
           };
-        } catch (err: any) {
-          console.warn(`[Mysti] Stitch: Failed to download variant ${i} screenshot:`, err.message);
-          yield { type: 'canvas_error', canvasId, error: `Variant ${i + 1} download failed: ${err.message}` };
+        } catch (err: unknown) {
+          console.warn(`[Mysti] Stitch: Failed to download variant ${i} screenshot:`, errorMessage(err));
+          yield { type: 'canvas_error', canvasId, error: `Variant ${i + 1} download failed: ${errorMessage(err)}` };
         }
       }
 
       yield { type: 'canvas_reimagine_complete', canvasId };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: `Stitch reimagine failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: `Stitch reimagine failed: ${errorMessage(err)}` };
     }
   }
 
@@ -882,7 +875,7 @@ Return ONLY the JSON array, no other text.`;
         mediaType: 'image',
       });
 
-      const genOptions: Record<string, any> = {};
+      const genOptions: NonNullable<Parameters<ImageGenerationService['generate']>[1]> = {};
       if (frameBounds) { genOptions.frameBounds = { width: frameBounds.width, height: frameBounds.height }; }
       if (smart.background !== 'auto') { genOptions.background = smart.background; }
       if (regionImageBase64) { genOptions.referenceImageBase64 = regionImageBase64; }
@@ -911,8 +904,8 @@ Return ONLY the JSON array, no other text.`;
         },
         progress: 100,
       };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: err.message };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: errorMessage(err) };
     }
   }
 
@@ -981,8 +974,8 @@ Return ONLY the JSON array, no other text.`;
         durationSeconds: result.durationSeconds,
         label: result.revisedPrompt || prompt,
       };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: err.message };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: errorMessage(err) };
     }
   }
 
@@ -1092,8 +1085,8 @@ Return ONLY the JSON array, no other text.`;
 
       yield { type: 'canvas_stitch_html_ready', canvasId, stitchHtml: htmlContent, stitchScreenRef: ref };
       yield { type: 'canvas_mockup_complete', canvasId, designNodes: [node], designTheme: DesignSpecManager.getDefaultTheme() };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: `Stitch generation failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: `Stitch generation failed: ${errorMessage(err)}` };
     }
   }
 
@@ -1164,8 +1157,8 @@ Return ONLY the JSON array, no other text.`;
 
       yield { type: 'canvas_stitch_html_ready', canvasId, stitchHtml: htmlContent, stitchScreenRef: newRef };
       yield { type: 'canvas_mockup_complete', canvasId, designNodes: [node], designTheme: DesignSpecManager.getDefaultTheme() };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: `Stitch edit failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: `Stitch edit failed: ${errorMessage(err)}` };
     }
   }
 
@@ -1244,8 +1237,8 @@ Return ONLY the JSON array, no other text.`;
 
       yield { type: 'canvas_stitch_variants_ready', canvasId, variantCount: nodes.length };
       yield { type: 'canvas_mockup_complete', canvasId, designNodes: nodes, designTheme: DesignSpecManager.getDefaultTheme() };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: `Stitch variants failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: `Stitch variants failed: ${errorMessage(err)}` };
     }
   }
 
@@ -1265,12 +1258,16 @@ Return ONLY the JSON array, no other text.`;
 
       // Convert DNA to DesignTheme (best-effort mapping)
       const theme = DesignSpecManager.getDefaultTheme();
-      if (dna.colors && typeof dna.colors === 'object') {
-        Object.assign(theme.colors, dna.colors);
+      if (isRecord(dna.colors)) {
+        for (const [name, color] of Object.entries(dna.colors)) {
+          if (typeof color === 'string' && !['__proto__', 'constructor', 'prototype'].includes(name)) {
+            theme.colors[name] = color;
+          }
+        }
       }
-      if (dna.typography && typeof dna.typography === 'object') {
-        const typo = dna.typography as Record<string, any>;
-        if (typo.fontFamily) theme.typography.fontFamily = typo.fontFamily;
+      if (isRecord(dna.typography)) {
+        const family = asString(dna.typography.fontFamily);
+        if (family) { theme.typography.fontFamily = family; }
       }
 
       // Write DESIGN.md to workspace
@@ -1298,18 +1295,18 @@ Return ONLY the JSON array, no other text.`;
       }
 
       yield { type: 'canvas_stitch_design_dna', canvasId, designTheme: theme };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: `Design DNA extraction failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: `Design DNA extraction failed: ${errorMessage(err)}` };
     }
   }
 
   private _buildDesignMdContent(projectId: string, dna: Record<string, unknown>): string {
-    const title = (dna.projectTitle as string) || 'Untitled Project';
-    const atmosphere = (dna.atmosphere as string) || 'Modern, clean aesthetic';
-    const colors = dna.colors as Record<string, string> | undefined;
-    const typography = dna.typography as Record<string, any> | undefined;
-    const components = dna.components as Record<string, any> | undefined;
-    const layout = dna.layout as Record<string, any> | undefined;
+    const title = asString(dna.projectTitle) || 'Untitled Project';
+    const atmosphere = asString(dna.atmosphere) || 'Modern, clean aesthetic';
+    const colors = asRecord(dna.colors);
+    const typography = asRecord(dna.typography);
+    const components = asRecord(dna.components);
+    const layout = asRecord(dna.layout);
 
     let md = `# Design System: ${title}\n**Project ID:** ${projectId}\n\n`;
     md += `## 1. Visual Theme & Atmosphere\n${atmosphere}\n\n`;
@@ -1424,8 +1421,8 @@ Return ONLY the JSON array, no other text.`;
 
       const theme = DesignSpecManager.getDefaultTheme();
       yield { type: 'canvas_mockup_complete', canvasId, designNodes: allPageNodes, designTheme: theme };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: err.message };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: errorMessage(err) };
     }
   }
 
@@ -1587,8 +1584,8 @@ Respond helpfully about the selected region. If the user asks for changes, descr
           yield { type: 'canvas_prompt_response', canvasId: request.canvasId, content: chunk.content };
         }
       }
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId: request.canvasId, error: err.message };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId: request.canvasId, error: errorMessage(err) };
     }
   }
 
@@ -1629,10 +1626,10 @@ Respond helpfully about the selected region. If the user asks for changes, descr
     const workspaceRoot = this._getWorkspaceRoot();
     if (!workspaceRoot) { return { externalizedJson: canvasJsonStr, assetPaths: [] }; }
 
-    let parsed: any;
+    let parsed: unknown;
     try { parsed = JSON.parse(canvasJsonStr); } catch { return { externalizedJson: canvasJsonStr, assetPaths: [] }; }
 
-    const objects = parsed.objects;
+    const objects = asRecord(parsed)?.objects;
     if (!Array.isArray(objects)) { return { externalizedJson: canvasJsonStr, assetPaths: [] }; }
 
     const assetPaths: string[] = [];
@@ -1640,6 +1637,7 @@ Respond helpfully about the selected region. If the user asks for changes, descr
     try { await vscode.workspace.fs.createDirectory(dirUri); } catch { /* exists */ }
 
     for (const obj of objects) {
+      if (!isRecord(obj)) { continue; }
       // Externalize image src (data URI → asset file)
       if (obj.src && typeof obj.src === 'string' && obj.src.startsWith('data:')) {
         const ref = await this._externalizeDataUri(obj.src, workspaceRoot);
@@ -1648,7 +1646,7 @@ Respond helpfully about the selected region. If the user asks for changes, descr
 
       // Externalize video data (raw base64 → asset file)
       if (obj.videoData && typeof obj.videoData === 'string' && !obj.videoData.startsWith(CANVAS_ASSET_REF_PREFIX)) {
-        const mimeType = obj.videoMimeType || 'video/mp4';
+        const mimeType = asString(obj.videoMimeType) || 'video/mp4';
         const ref = await this._externalizeBase64(obj.videoData, mimeType, workspaceRoot);
         if (ref) { obj.videoData = ref; assetPaths.push(ref); }
       }
@@ -1706,13 +1704,14 @@ Respond helpfully about the selected region. If the user asks for changes, descr
    * so the webview can render them directly.
    */
   async rehydrateAssets(canvasJsonStr: string): Promise<string> {
-    let parsed: any;
+    let parsed: unknown;
     try { parsed = JSON.parse(canvasJsonStr); } catch { return canvasJsonStr; }
 
-    const objects = parsed.objects;
+    const objects = asRecord(parsed)?.objects;
     if (!Array.isArray(objects)) { return canvasJsonStr; }
 
     for (const obj of objects) {
+      if (!isRecord(obj)) { continue; }
       // Rehydrate image src
       if (obj.src && typeof obj.src === 'string' && obj.src.startsWith(CANVAS_ASSET_REF_PREFIX)) {
         const assetPath = obj.src.substring(CANVAS_ASSET_REF_PREFIX.length);
@@ -1991,9 +1990,9 @@ Return ONLY the SVG markup wrapped in <svg>...</svg> tags. No explanation.`;
     try {
       yield { type: 'canvas_svg_progress', canvasId, content: 'Converting to SVG...', progress: 30 };
       fullResponse = await imageService.analyzeImage(imageBase64, svgPrompt);
-    } catch (err: any) {
-      console.log(`[Mysti] Canvas SVG: Vision API error: ${err.message}`);
-      yield { type: 'canvas_error', canvasId, error: `SVG conversion failed: ${err.message}` };
+    } catch (err: unknown) {
+      console.log(`[Mysti] Canvas SVG: Vision API error: ${errorMessage(err)}`);
+      yield { type: 'canvas_error', canvasId, error: `SVG conversion failed: ${errorMessage(err)}` };
       return;
     }
 
@@ -2150,7 +2149,7 @@ Return ONLY the SVG markup wrapped in <svg>...</svg> tags. No explanation.`;
         if (componentFile) {
           await codeGenService.openInEditor(componentFile.filePath, workspaceRoot);
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.log('[Mysti] Canvas: failed to write code files:', err);
       }
     }
@@ -2209,8 +2208,8 @@ Return ONLY the SVG markup wrapped in <svg>...</svg> tags. No explanation.`;
           try {
             await codeGenService.writeToWorkspace(files, workspaceRoot);
             await codeGenService.openInEditor(files[0].filePath, workspaceRoot);
-          } catch (err: any) {
-            console.warn('[Mysti] Failed to write Stitch HTML file:', err.message);
+          } catch (err: unknown) {
+            console.warn('[Mysti] Failed to write Stitch HTML file:', errorMessage(err));
           }
         }
 
@@ -2266,8 +2265,8 @@ Return ONLY the SVG markup wrapped in <svg>...</svg> tags. No explanation.`;
           if (componentFile) {
             await codeGenService.openInEditor(componentFile.filePath, workspaceRoot);
           }
-        } catch (err: any) {
-          console.warn('[Mysti] Failed to write code files:', err.message);
+        } catch (err: unknown) {
+          console.warn('[Mysti] Failed to write code files:', errorMessage(err));
         }
       }
 
@@ -2276,8 +2275,8 @@ Return ONLY the SVG markup wrapped in <svg>...</svg> tags. No explanation.`;
         generatedFiles: files, componentProps: props,
         framework, componentName, progress: 100,
       };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: `Stitch code generation failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: `Stitch code generation failed: ${errorMessage(err)}` };
     }
   }
 
@@ -2368,8 +2367,8 @@ Return ONLY the updated component code in a single code block:
         progress: 100,
       };
 
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: `Element edit failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: `Element edit failed: ${errorMessage(err)}` };
     }
   }
 
@@ -2435,8 +2434,8 @@ Return ONLY the updated component code in a single code block:
         progress: 100,
       };
 
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: `Element edit failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: `Element edit failed: ${errorMessage(err)}` };
     }
   }
 
@@ -2478,9 +2477,9 @@ Return ONLY the updated component code in a single code block:
           yield { type: 'canvas_integrate_complete', canvasId, content: `Component "${componentName}" integrated`, progress: 100 };
         }
       }
-    } catch (err: any) {
-      console.log(`[Mysti] Canvas: Integration failed: ${err.message}`);
-      yield { type: 'canvas_error', canvasId, error: `Integration failed: ${err.message}` };
+    } catch (err: unknown) {
+      console.log(`[Mysti] Canvas: Integration failed: ${errorMessage(err)}`);
+      yield { type: 'canvas_error', canvasId, error: `Integration failed: ${errorMessage(err)}` };
     }
   }
 
@@ -2672,11 +2671,11 @@ Return ONLY the updated component code in a single code block:
         url,
         progress: 100,
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Clean up browser on error
       try { await browserManager.close(panelId); } catch { /* ignore */ }
 
-      const message = err.message || String(err);
+      const message = errorMessage(err);
       if (message.includes('playwright') || message.includes('Cannot find module')) {
         yield { type: 'canvas_error', canvasId, error: 'Playwright not installed. Run: npm install playwright && npx playwright install chromium' };
       } else {
@@ -2766,7 +2765,11 @@ Theme description: "${prompt}"`;
       let fullResponse = '';
       const stream = providerManager.sendMessage(
         systemPrompt, [], settings,
-        { id: `theme-${canvasId}`, messages: [] },
+        {
+          id: `theme-${canvasId}`, title: 'Canvas theme', messages: [],
+          createdAt: Date.now(), updatedAt: Date.now(), mode: settings.mode,
+          provider: settings.provider, model: settings.model,
+        },
         undefined, undefined, undefined, undefined
       );
 
@@ -2785,8 +2788,8 @@ Theme description: "${prompt}"`;
       }
 
       yield { type: 'canvas_theme_complete', canvasId, designTheme: theme };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: `Theme generation failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: `Theme generation failed: ${errorMessage(err)}` };
     }
   }
 
@@ -2854,8 +2857,8 @@ Theme description: "${prompt}"`;
         componentName,
         framework,
       };
-    } catch (err: any) {
-      yield { type: 'canvas_error', canvasId, error: `Code generation failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'canvas_error', canvasId, error: `Code generation failed: ${errorMessage(err)}` };
     }
   }
 
@@ -2915,8 +2918,8 @@ Theme description: "${prompt}"`;
           yield { type: 'canvas_asset_generated', canvasId, asset: { ...asset } };
         }
         // Video assets are handled separately by VideoGenerationService
-      } catch (err: any) {
-        console.warn(`[Mysti] Asset generation failed for ${asset.id}:`, err.message);
+      } catch (err: unknown) {
+        console.warn(`[Mysti] Asset generation failed for ${asset.id}:`, errorMessage(err));
       }
     }
   }
@@ -2970,13 +2973,13 @@ Theme description: "${prompt}"`;
 
   private _resolveStyleToken(value: string | undefined, theme: DesignTheme, useVars = false): string {
     if (!value) { return ''; }
-    if (theme.colors[value]) {
+    if (Object.hasOwn(theme.colors, value) && typeof theme.colors[value] === 'string') {
       if (useVars) { return `var(--color-${value.replace(/([A-Z])/g, '-$1').toLowerCase()})`; }
       return theme.colors[value];
     }
-    if ((theme.shadows as any)[value]) {
+    if (Object.hasOwn(theme.shadows, value)) {
       if (useVars) { return `var(--shadow-${value})`; }
-      return (theme.shadows as any)[value];
+      return theme.shadows[value as keyof DesignTheme['shadows']];
     }
     return value;
   }
@@ -3080,7 +3083,7 @@ Theme description: "${prompt}"`;
     lines[lines.length - 1] += '>';
 
     if (node.text) {
-      const typoStyle = node.typography ? this._cssToReactStyle(this._nodeStyleToCSS({ ...node, layout: { display: 'block' }, style: {}, children: undefined } as any, theme, useVars)) : '';
+      const typoStyle = node.typography ? this._cssToReactStyle(this._nodeStyleToCSS({ ...node, layout: { display: 'block' }, style: {}, children: undefined }, theme, useVars)) : '';
       lines.push(`${pad}  <span${typoStyle ? ` style={{${typoStyle}}}` : ''}>{${JSON.stringify(node.text)}}</span>`);
     }
 

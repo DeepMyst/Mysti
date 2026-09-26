@@ -85,8 +85,44 @@ beforeAll(() => {
 describe('every slash-menu entry does something', () => {
   it('the menu is not empty and the parser still works', () => {
     // Guards against the regexes silently matching nothing, which would make
-    // every assertion below vacuously true.
-    expect(menuEntries(slash).length).toBeGreaterThanOrEqual(16);
+    // every assertion below vacuously true. Plan 29 moved four entries
+    // (review, critique, panel, brainstorm) out of the `cmd:` family and into
+    // sessions, which the block below covers on its own terms.
+    expect(menuEntries(slash).length).toBeGreaterThanOrEqual(12);
+  });
+
+  /**
+   * Plan 29's session entries are generated from SESSION_SHAPES rather than
+   * written out one by one, so the `cmd:`-only scan above cannot see them —
+   * exactly the blind spot that let provider entries ship dead. They are alive
+   * by a different contract: picking one opens the webview's agent picker, and
+   * running it posts `startSession`, which the extension must receive.
+   */
+  it('every session shape is offered, and the picker that runs it is live', () => {
+    const catalog = fs.readFileSync(path.join(ROOT, 'src', 'managers', 'sessionShapes.ts'), 'utf8');
+    const shapes = [...catalog.matchAll(/id:\s*'(review|panel|critique|race|brainstorm)',/g)].map(m => m[1]);
+    expect(new Set(shapes).size, 'a session shape lost its catalog entry').toBe(5);
+
+    // The menu builds its Sessions section from that catalog, so one table
+    // feeds both the offer and the dispatch.
+    expect(slash).toContain('SESSION_SHAPES.map');
+
+    // The webview turns a `session:` pick into the picker rather than firing
+    // the command — without this branch every session entry is a dead row.
+    expect(js).toContain("cmd.id.indexOf('session:') === 0");
+    expect(js).toContain('openSessionPicker');
+
+    // …and the picker's Run reaches a handler on the extension side.
+    expect(js).toContain("type: 'startSession'");
+    expect(provider).toContain("case 'startSession'");
+
+    // Per-lane Stop, likewise: the button must reach something.
+    expect(js).toContain("type: 'stopSessionLane'");
+    expect(provider).toContain("case 'stopSessionLane'");
+
+    // And the events the run emits must have a receiver.
+    expect(provider).toContain("type: 'sessionEvent'");
+    expect(js).toContain("case 'sessionEvent'");
   });
 
   it('no menu entry posts a message that nothing receives', () => {

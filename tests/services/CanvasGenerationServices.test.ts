@@ -14,7 +14,7 @@
  * - F-11: key injection via setKeys() drives isAvailable (no settings/env reads).
  * - F-7:  CodeGenerationService.regenerateWithProps embeds the current source.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { ImageGenerationService } from '../../src/services/ImageGenerationService';
 import { VideoGenerationService } from '../../src/services/VideoGenerationService';
 import { CodeGenerationService } from '../../src/services/CodeGenerationService';
@@ -67,6 +67,125 @@ describe('ImageGenerationService key injection (F-11)', () => {
     expect(svc.isAvailable).toBe(true);
     svc.setKeys({});
     expect(svc.isAvailable).toBe(false);
+  });
+});
+
+describe('generation response validation', () => {
+  function stubResponse(service: object, value: unknown) {
+    const request = vi.fn(async () => JSON.stringify(value));
+    Object.defineProperty(service, '_httpsRequest', { value: request });
+    return request;
+  }
+
+  it.each([false, true])('preserves a successful GPT image response (reference image: %s)', async withReference => {
+    setMockConfig('canvas.imageGenerationProvider', 'gpt-image-1.5');
+    const service = new ImageGenerationService();
+    service.setKeys({ openai: 'test-key' });
+    const response = { data: [{ b64_json: 'IMAGE64', revised_prompt: 'A cat on a sunny windowsill' }] };
+    const request = vi.fn(async () => JSON.stringify(response));
+    Object.defineProperty(service, withReference ? '_httpsRequestBuffer' : '_httpsRequest', { value: request });
+
+    await expect(service.generate('A cat', withReference ? { referenceImageBase64: 'AAAA' } : undefined))
+      .resolves.toEqual({ imageBase64: 'IMAGE64', revisedPrompt: 'A cat on a sunny windowsill' });
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({
+      hostname: 'api.openai.com', path: withReference ? '/v1/images/edits' : '/v1/images/generations',
+    }), expect.anything());
+  });
+
+  it('preserves a successful OpenAI vision response', async () => {
+    const service = new ImageGenerationService();
+    service.setKeys({ openai: 'key' });
+    stubResponse(service, { choices: [{ message: { content: 'A blue navigation bar above the page.' } }] });
+    await expect(service.analyzeImage('IMAGE64', 'Describe the page')).resolves.toBe('A blue navigation bar above the page.');
+  });
+
+  it('completes the Sora create, poll and download flow with typed response data', async () => {
+    setMockConfig('canvas.videoGenerationProvider', 'sora');
+    const service = new VideoGenerationService();
+    service.setKeys({ openai: 'test-key' });
+    const responses = [
+      { id: 'video-123', status: 'queued' },
+      { id: 'video-123', status: 'in_progress' },
+      { id: 'video-123', status: 'completed', revised_prompt: 'A cat walking through a garden' },
+    ];
+    const request = vi.fn(async () => {
+      const response = responses.shift();
+      if (!response) { throw new Error('Unexpected additional Sora request'); }
+      return JSON.stringify(response);
+    });
+    const download = vi.fn(async () => 'VIDEO64');
+    Object.defineProperties(service, {
+      _httpsRequest: { value: request },
+      _sleep: { value: async () => undefined },
+      _downloadSoraVideo: { value: download },
+    });
+
+    await expect(service.generate('A cat', { durationSeconds: 8 })).resolves.toEqual({
+      videoBase64: 'VIDEO64', mimeType: 'video/mp4', durationSeconds: 8,
+      revisedPrompt: 'A cat walking through a garden',
+    });
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(request).toHaveBeenNthCalledWith(1, expect.objectContaining({ method: 'POST', path: '/v1/videos' }), expect.any(String));
+    expect(request).toHaveBeenNthCalledWith(2, expect.objectContaining({ method: 'GET', path: '/v1/videos/video-123' }));
+    expect(download).toHaveBeenCalledWith('test-key', 'video-123');
+  });
+
+  it('skips malformed Gemini candidates and returns the first actual text', async () => {
+    const service = new ImageGenerationService();
+    service.setKeys({ gemini: 'key' });
+    stubResponse(service, { candidates: [null, { content: { parts: [null, { text: {} }, { text: 'description' }] } }] });
+    await expect(service.analyzeImage('', 'describe')).resolves.toBe('description');
+  });
+
+  it('refuses structured OpenAI vision content where plain text is required', async () => {
+    const service = new ImageGenerationService();
+    service.setKeys({ openai: 'key' });
+    stubResponse(service, { choices: [{ message: { content: { injected: true } } }] });
+    await expect(service.analyzeImage('', 'describe')).rejects.toThrow('No text response');
+  });
+
+  it('refuses non-string generated image data', async () => {
+    const service = new ImageGenerationService();
+    service.setKeys({ openai: 'key' });
+    stubResponse(service, { data: [{ b64_json: { invalid: true } }] });
+    await expect(service.generate('a cat')).rejects.toThrow('No image data');
+  });
+
+  it('skips malformed Gemini image parts without returning an empty image', async () => {
+    const service = new ImageGenerationService();
+    service.setKeys({ gemini: 'key' });
+    stubResponse(service, { candidates: [{ content: { parts: [
+      { inlineData: { mimeType: 'image/png' } },
+      { inlineData: { mimeType: 'image/png', data: 'AAAA' } },
+      { text: 42 },
+    ] } }] });
+    await expect(service.generate('a cat')).resolves.toEqual({ imageBase64: 'AAAA', revisedPrompt: undefined });
+  });
+
+  it.each(['sora', 'veo'])('rejects malformed %s job identifiers before polling', async provider => {
+    setMockConfig('canvas.videoGenerationProvider', provider);
+    const service = new VideoGenerationService();
+    service.setKeys({ openai: 'key', gemini: 'key' });
+    const request = stubResponse(service, { id: 42, name: { invalid: true } });
+    await expect(service.generate('a clip')).rejects.toThrow(/No (video ID|operation name)/);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a non-object API response at the boundary', async () => {
+    const service = new ImageGenerationService();
+    service.setKeys({ openai: 'key' });
+    stubResponse(service, null);
+    await expect(service.generate('a cat')).rejects.toThrow('Expected a JSON object');
+  });
+
+  it('reports a string rejection from a generation adapter without losing its message', async () => {
+    const service = new CodeGenerationService();
+    const imageService = new ImageGenerationService();
+    vi.spyOn(imageService, 'analyzeImage').mockRejectedValue('service offline');
+    const chunks = await drain(service.regenerateWithProps({
+      svgMarkup: '', modifiedProps: [], framework: 'react', componentName: 'Card', imageService,
+    }));
+    expect(chunks.at(-1)).toEqual({ type: 'error', content: 'Regeneration failed: service offline' });
   });
 });
 

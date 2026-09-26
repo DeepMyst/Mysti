@@ -86,6 +86,9 @@ export class TestableGeminiProvider extends GeminiProvider {
   public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
     return super.buildCliArgs(settings, session);
   }
+  public getExtraSpawnEnv(settings: Settings): Record<string, string> {
+    return super.getExtraSpawnEnv(settings);
+  }
 }
 
 export class TestableClineProvider extends ClineProvider {
@@ -125,6 +128,14 @@ export class TestableOpenClawProvider extends OpenClawProvider {
   }
   public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
     return super.buildCliArgs(settings, session);
+  }
+  /** `openclaw agent` reads the prompt from a file, not stdin — see _deliverPrompt. */
+  public deliverPrompt(
+    proc: Parameters<OpenClawProvider['_deliverPromptForTest']>[0],
+    prompt: string,
+    session: PanelSessionState
+  ): Promise<void> {
+    return this._deliverPromptForTest(proc, prompt, session);
   }
 }
 

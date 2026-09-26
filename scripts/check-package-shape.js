@@ -60,13 +60,12 @@
 'use strict';
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const { execFileSync } = require('child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const VSCE = '@vscode/vsce@3.9.2';
+const VSCE = path.join(REPO_ROOT, 'node_modules', '@vscode', 'vsce', 'vsce');
 
 // ---------------------------------------------------------------------------
 // Allowlist: large binary / vendored assets that are ALLOWED to ship.
@@ -217,8 +216,8 @@ function openZip(vsixPath) {
 
 function vsceLs(extraArgs) {
   const out = execFileSync(
-    process.platform === 'win32' ? 'npx.cmd' : 'npx',
-    ['--yes', VSCE, 'ls', ...extraArgs],
+    process.execPath,
+    [VSCE, 'ls', ...extraArgs],
     { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }
   );
   return out.split('\n').map(s => s.trim()).filter(Boolean).map(s => s.replace(/\\/g, '/'));
@@ -356,17 +355,20 @@ function assertRuntimeRequiresResolve(archive, present) {
   }
 
   let parse;
-  try { ({ parse } = require('@babel/parser')); } catch {
-    notes.push('D: SKIPPED - @babel/parser is not installed. A regex scan here would be worse than nothing (a minified bundle carries require() calls inside string literals), so this assertion declines to guess.');
+  try { ({ parse } = require('@babel/parser')); } catch (err) {
+    fail('D (runtime requires resolve)', `Cannot load @babel/parser: ${err.message}. Run npm ci with the supported Node version before checking packages.`);
     return;
   }
 
   const specs = new Set();
   for (const f of distJs) {
     let src;
-    try { src = archive.readText(f.rel); } catch { continue; }
+    try { src = archive.readText(f.rel); } catch (err) {
+      fail('D (runtime requires resolve)', `Could not read ${f.rel}: ${err.message}`);
+      continue;
+    }
     let ast;
-    try { ast = parse(src, { sourceType: 'unambiguous', errorRecovery: true }); } catch (err) {
+    try { ast = parse(src, { sourceType: 'unambiguous' }); } catch (err) {
       fail('D (runtime requires resolve)', `Could not parse ${f.rel}: ${err.message.split('\n')[0]}`);
       return;
     }
@@ -392,6 +394,23 @@ function assertRuntimeRequiresResolve(archive, present) {
   } else {
     notes.push(`D: all ${specs.size} runtime require target(s) resolve (builtin, host-provided, shipped, or a guarded optional).`);
   }
+}
+
+/** Validate artifact contents independently of the build machine's source tree. */
+function inspectArchive(archive, manifest) {
+  failures.length = 0;
+  notes.length = 0;
+  const present = new Set(archive.files.map(f => f.rel));
+  const main = typeof manifest.main === 'string' ? manifest.main.replace(/^\.\//, '') : null;
+  if (!main || !present.has(main)) {
+    fail('D (runtime requires resolve)', `The extension entrypoint is missing: ${main ?? '(no main field)'}`);
+  }
+  assertWalkthroughAssets(present, manifest);
+  assertNoSourceMaps(archive.files);
+  assertNoDeclarations(archive.files);
+  assertRuntimeRequiresResolve(archive, present);
+  assertLargeAssetsAllowlisted(archive.files);
+  return { failures: [...failures], notes: [...notes] };
 }
 
 /** Collect `require("<literal>")` call expressions. AST only - no string literals. */
@@ -514,7 +533,7 @@ function assertFlagParity(manifest) {
     withDeps = vsceLs([]);
     withoutDeps = vsceLs(['--no-dependencies']);
   } catch (err) {
-    notes.push(`F: SKIPPED - could not run \`vsce ls\` (${String(err.message).split('\n')[0]}).`);
+    fail('F (packaging flags are not load-bearing)', `Could not run the installed vsce: ${String(err.message).split('\n')[0]}. Run npm ci before checking packages.`);
     return;
   }
 
@@ -595,29 +614,23 @@ function main() {
     }
   }
 
-  const manifest = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
-
   let archive;
+  let manifest;
   try {
     archive = loadArchive(vsixPath);
+    manifest = JSON.parse(archive.readText('package.json'));
   } catch (err) {
     console.error(`[package-shape] Could not read the package: ${err.message}`);
     process.exit(2);
   }
 
-  const present = new Set(archive.files.map(f => f.rel));
-
   console.log(`[package-shape] Source:  ${archive.source}`);
   console.log(`[package-shape] Entries: ${archive.files.length}`);
   console.log('');
 
-  assertWalkthroughAssets(present, manifest);
-  assertNoSourceMaps(archive.files);
-  assertNoDeclarations(archive.files);
-  assertRuntimeRequiresResolve(archive, present);
+  inspectArchive(archive, manifest);
   assertNoPhantomDeps(manifest);
   if (skipParity) { notes.push('F: SKIPPED (--skip-parity).'); } else { assertFlagParity(manifest); }
-  assertLargeAssetsAllowlisted(archive.files);
 
   for (const n of notes) { console.log(`[package-shape] ok   ${n}`); }
 
@@ -639,4 +652,6 @@ function main() {
   process.exit(1);
 }
 
-main();
+module.exports = { inspectArchive, loadArchive };
+
+if (require.main === module) { main(); }

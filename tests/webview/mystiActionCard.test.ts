@@ -68,14 +68,54 @@ class El {
   /** Present only so a regression that reaches for it fails loudly. */
   set innerHTML(_v: string) { throw new Error('innerHTML written in the action card'); }
 
+  attrs: Record<string, string> = {};
+  src = '';
+  style: Record<string, string> = {};
+  popover: string | null = null;
+  popoverTargetElement: El | null = null;
+  popoverOpen = false;
+
   appendChild(child: El): El { this.children.push(child); return child; }
+  prepend(child: El): void { this.children.unshift(child); }
+  /** Text arguments become text-only children, so allText() still sees them. */
+  append(...nodes: Array<El | string>): void {
+    for (const n of nodes) {
+      if (typeof n === 'string') { const t = new El('#text'); t.textContent = n; this.children.push(t); }
+      else { this.children.push(n); }
+    }
+  }
+  setAttribute(name: string, value: string): void { this.attrs[name] = value; }
   addEventListener(type: string, fn: (ev?: unknown) => void): void {
     (this.listeners[type] ||= []).push(fn);
   }
-  /** Browser-faithful: a disabled button dispatches nothing. */
+  removeEventListener(): void {}
+  getBoundingClientRect() { return { top: 600, bottom: 630, left: 40, right: 240 }; }
+  focus(): void { fakeDocument.activeElement = this; }
+  private _fire(type: string, ev: unknown): void {
+    for (const fn of this.listeners[type] || []) { fn(ev); }
+  }
+  showPopover(): void {
+    if (this.popoverOpen) { return; }
+    this._fire('beforetoggle', { newState: 'open' });
+    this.popoverOpen = true;
+    this._fire('toggle', { newState: 'open' });
+  }
+  hidePopover(): void {
+    if (!this.popoverOpen) { return; }
+    this._fire('beforetoggle', { newState: 'closed' });
+    this.popoverOpen = false;
+    this._fire('toggle', { newState: 'closed' });
+  }
+  /** Browser-faithful: a disabled button dispatches nothing, and an enabled
+   *  popover invoker toggles its target natively (no click listener needed). */
   click(): void {
     if (this.disabled) { return; }
     for (const fn of this.listeners['click'] || []) { fn(); }
+    const target = this.popoverTargetElement;
+    if (target) { if (target.popoverOpen) { target.hidePopover(); } else { target.showPopover(); } }
+  }
+  keydown(key: string): void {
+    this._fire('keydown', { key, preventDefault: () => undefined });
   }
   *walk(): Generator<El> {
     yield this;
@@ -94,6 +134,12 @@ class El {
   }
 }
 
+const fakeDocument: { activeElement: El | null; createElement: (tag: string) => El } = {
+  activeElement: null,
+  createElement: (tag: string) => new El(tag),
+};
+const fakeWindow = { innerWidth: 400, innerHeight: 700, addEventListener() {}, removeEventListener() {} };
+
 interface Rendered {
   card: El;
   posted: Array<{ type: string; payload?: any }>;
@@ -105,7 +151,7 @@ beforeAll(() => {
 });
 
 function render(payload: unknown, lastSentContent = 'fix the login bug'): Rendered {
-  const src = extractFunction(chatJs, 'renderMystiActionCard');
+  const src = extractFunction(chatJs, 'placeMenuNear') + '\n' + extractFunction(chatJs, 'renderMystiActionCard');
   // The label/message table lives beside the function; pull it in verbatim.
   const tableStart = chatJs.indexOf('var MYSTI_ACTION_LABELS = {');
   const tableEnd = chatJs.indexOf('};', tableStart) + 2;
@@ -113,20 +159,22 @@ function render(payload: unknown, lastSentContent = 'fix the login bug'): Render
 
   const messagesEl = new El('div');
   const posted: Array<{ type: string; payload?: any }> = [];
-  const document = { createElement: (tag: string) => new El(tag) };
+  fakeDocument.activeElement = null;
   const state = { lastSentContent, activeAgent: 'mysti' };
 
   const fn = new Function(
-    'document', 'messagesEl', 'state', 'postMessageWithPanelId', 'hideLoading', 'scrollToBottom', 'payload',
+    'document', 'window', 'messagesEl', 'state', 'postMessageWithPanelId', 'hideLoading', 'scrollToBottom', 'getAgentLogo', 'payload',
     `${table}\n${src}\nrenderMystiActionCard(payload);`,
   );
   fn(
-    document,
+    fakeDocument,
+    fakeWindow,
     messagesEl,
     state,
     (msg: { type: string; payload?: any }) => posted.push(msg),
     () => undefined,
     () => undefined,
+    (id: string) => (id === 'claude-code' ? 'logo/claude.png' : ''),
     payload,
   );
 
@@ -198,7 +246,7 @@ describe('renderMystiActionCard (Plan 25)', () => {
     expect(posted).toEqual([{ type: 'openOpenRouterSettings' }]);
   });
 
-  it('hides the agent list until asked, then lists exactly the agents given', () => {
+  it('keeps the agent menu closed until asked, then lists exactly the agents given', () => {
     const { card } = render({
       reason: 'credits',
       message: 'out of credits',
@@ -207,13 +255,78 @@ describe('renderMystiActionCard (Plan 25)', () => {
       retryable: false,
     });
 
-    const list = card.findAll(el => el.className === 'mysti-action-agents')[0];
-    expect(list).toBeDefined();
-    expect(list.hidden).toBe(true);
+    const menu = card.findAll(el => el.className === 'mysti-action-agents')[0];
+    expect(menu.popover).toBe('auto'); // top layer + native outside-click/Escape dismissal
+    expect(menu.popoverOpen).toBe(false);
+
+    const toggle = card.buttons().find(b => b.textContent === 'Switch to another agent')!;
+    expect(toggle.popoverTargetElement).toBe(menu);
+    expect(toggle.attrs['aria-expanded']).toBe('false');
+    toggle.click();
+    expect(menu.popoverOpen).toBe(true);
+    expect(toggle.attrs['aria-expanded']).toBe('true');
+
+    const items = card.findAll(el => el.className === 'mysti-action-agent');
+    expect(items.map(c => c.textContent)).toEqual(['Claude Code', 'OpenAI Codex']);
+    // Each row carries the agent's logo when it has one, like the agent menu.
+    expect(items[0].children.map(c => c.src)).toEqual(['logo/claude.png']);
+    expect(items[1].children).toEqual([]);
+  });
+
+  it('opens toward the side with more room — up, when the card sits above the composer', () => {
+    // Fake button rect: top 600 / bottom 630 in a 700px window.
+    const { card } = render({
+      reason: 'signin', message: 'Sign in', actions: ['signIn', 'switchAgent'], agents: AGENTS, retryable: false,
+    });
+    card.buttons().find(b => b.textContent === 'Switch to another agent')!.click();
+    const menu = card.findAll(el => el.className === 'mysti-action-agents')[0];
+    expect(menu.style.top).toBe('auto');
+    expect(menu.style.bottom).toBe('106px'); // 700 - 600 + 6px gap
+    expect(menu.style.left).toBe('40px');
+  });
+
+  it('focuses the first agent on open and moves with the arrow keys, wrapping', () => {
+    const { card } = render({
+      reason: 'signin', message: 'Sign in', actions: ['signIn', 'switchAgent'], agents: AGENTS, retryable: false,
+    });
+    card.buttons().find(b => b.textContent === 'Switch to another agent')!.click();
+    const menu = card.findAll(el => el.className === 'mysti-action-agents')[0];
+    const items = card.findAll(el => el.className === 'mysti-action-agent');
+
+    expect(fakeDocument.activeElement).toBe(items[0]);
+    menu.keydown('ArrowDown');
+    expect(fakeDocument.activeElement).toBe(items[1]);
+    menu.keydown('ArrowDown');
+    expect(fakeDocument.activeElement).toBe(items[0]);
+    menu.keydown('ArrowUp');
+    expect(fakeDocument.activeElement).toBe(items[1]);
+  });
+
+  it('carries the unsent prompt to the new agent even when retrying Mysti is pointless', () => {
+    // Signed out: nothing to retry on Mysti, but "hi" must not be lost on switch.
+    const { card, posted } = render({
+      reason: 'signin', message: 'Sign in', actions: ['signIn', 'switchAgent'], agents: AGENTS, retryable: false,
+    }, 'hi');
 
     card.buttons().find(b => b.textContent === 'Switch to another agent')!.click();
-    expect(list.hidden).toBe(false);
-    expect(list.children.map(c => c.textContent)).toEqual(['Claude Code', 'OpenAI Codex']);
+    expect(card.allText()).toMatch(/Send\s+“hi”\s+to/);
+    card.findAll(el => el.className === 'mysti-action-agent')[0].click();
+
+    expect(posted).toEqual([{ type: 'switchAgentAndRetry', payload: { agentId: 'claude-code', retryContent: 'hi' } }]);
+    expect(card.labels()).not.toContain('Retry');
+  });
+
+  it('never carries this panel\'s last prompt into a background job\'s switch', () => {
+    const { card, posted } = render({
+      reason: 'credits', message: 'out of credits', actions: ['topUp', 'switchAgent'], agents: AGENTS,
+      retryable: false, jobId: 'job-1',
+    }, 'unrelated foreground prompt');
+
+    card.buttons().find(b => b.textContent === 'Switch to another agent')!.click();
+    expect(card.allText()).not.toMatch(/unrelated/);
+    card.findAll(el => el.className === 'mysti-action-agent')[0].click();
+
+    expect(posted).toEqual([{ type: 'switchAgentAndRetry', payload: { agentId: 'claude-code', retryContent: '' } }]);
   });
 
   it('switches agent AND carries the failed prompt through, so nothing is retyped', () => {

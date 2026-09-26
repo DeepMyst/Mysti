@@ -389,6 +389,13 @@ describe('MystiLocalExec.bash', () => {
     expect(r.output).toContain('exit 1');
     expect(r.output).toContain('boom');
   });
+  it('clamps combined bash output to 30k, keeping the tail (Plan 30 §4.4)', async () => {
+    const sb = fakeSandbox(true, { code: 1, stdout: 'o'.repeat(30_000), stderr: 'e'.repeat(29_000) + 'FINAL-ERROR' });
+    const r = await makeExec(sb).bash('npm test', ctx());
+    expect(r.output.length).toBeLessThan(30_300);
+    expect(r.output).toContain('FINAL-ERROR');
+    expect(r.output).toContain('output clamped');
+  });
   it('refuses when disabled or untrusted (no screen, no run)', async () => {
     const sb = fakeSandbox(true);
     expect((await makeExec(sb).bash('npm test', ctx({ enabled: false }))).ok).toBe(false);

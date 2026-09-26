@@ -13,6 +13,8 @@
 
 import * as vscode from 'vscode';
 import * as https from 'https';
+import * as http from 'http';
+import { asRecord, asRecords, asString, parseJsonObject, errorMessage } from '../utils/valueGuards';
 import type { VideoGenerationProvider } from '../types';
 import {
   CANVAS_VIDEO_POLL_INTERVAL_MS,
@@ -155,11 +157,11 @@ export class VideoGenerationService {
       },
     }, createBody);
 
-    const created = JSON.parse(createResponse);
+    const created = parseJsonObject(createResponse);
     if (created.error) {
-      throw new Error(`Sora error: ${created.error.message}`);
+      throw new Error(`Sora error: ${errorMessage(created.error)}`);
     }
-    const videoId = created.id;
+    const videoId = asString(created.id);
     if (!videoId) {
       throw new Error('Sora: No video ID in creation response');
     }
@@ -176,7 +178,7 @@ export class VideoGenerationService {
       videoBase64: videoContent,
       mimeType: 'video/mp4',
       durationSeconds: duration,
-      revisedPrompt: videoData.revised_prompt,
+      revisedPrompt: asString(videoData.revised_prompt),
     };
   }
 
@@ -184,7 +186,7 @@ export class VideoGenerationService {
     apiKey: string,
     videoId: string,
     onProgress?: (message: string, progress: number) => void
-  ): Promise<any> {
+  ): Promise<Record<string, unknown>> {
     const startTime = Date.now();
     let attempt = 0;
 
@@ -202,9 +204,9 @@ export class VideoGenerationService {
         headers: { 'Authorization': `Bearer ${apiKey}` },
       });
 
-      const status = JSON.parse(response);
+      const status = parseJsonObject(response);
       if (status.error) {
-        throw new Error(`Sora polling error: ${status.error.message}`);
+        throw new Error(`Sora polling error: ${errorMessage(status.error)}`);
       }
 
       if (status.status === 'completed') {
@@ -280,7 +282,7 @@ export class VideoGenerationService {
     const aspectRatio = options?.frameBounds
       ? (options.frameBounds.height > options.frameBounds.width ? '9:16' : '16:9')
       : '16:9';
-    const params: Record<string, any> = {
+    const params: { aspectRatio: string; resolution: string; durationSeconds?: number } = {
       aspectRatio,
       resolution: '720p',
     };
@@ -309,12 +311,12 @@ export class VideoGenerationService {
       },
     }, createBody);
 
-    const created = JSON.parse(createResponse);
+    const created = parseJsonObject(createResponse);
     if (created.error) {
-      throw new Error(`Veo error: ${created.error.message}`);
+      throw new Error(`Veo error: ${errorMessage(created.error)}`);
     }
 
-    const operationName = created.name;
+    const operationName = asString(created.name);
     if (!operationName) {
       throw new Error('Veo: No operation name in creation response');
     }
@@ -325,13 +327,14 @@ export class VideoGenerationService {
 
     // Step 3: Download the video from the returned URI
     onProgress?.('Downloading video...', 85);
-    const genResponse = result.response?.generateVideoResponse || result.generateVideoResponse || {};
-    const samples = genResponse.generatedSamples || [];
+    const genResponse = asRecord(asRecord(result.response)?.generateVideoResponse) || asRecord(result.generateVideoResponse);
+    const samples = asRecords(genResponse?.generatedSamples);
     if (samples.length === 0) {
       throw new Error('Veo: No video in generation response');
     }
 
-    const videoUri = samples[0].video?.uri || samples[0].video?.gcsUri;
+    const video = asRecord(samples[0].video);
+    const videoUri = asString(video?.uri) || asString(video?.gcsUri);
     if (!videoUri) {
       throw new Error('Veo: No video URI in response');
     }
@@ -350,7 +353,7 @@ export class VideoGenerationService {
     apiKey: string,
     operationName: string,
     onProgress?: (message: string, progress: number) => void
-  ): Promise<any> {
+  ): Promise<Record<string, unknown>> {
     const startTime = Date.now();
     let attempt = 0;
 
@@ -369,12 +372,12 @@ export class VideoGenerationService {
         headers: { 'x-goog-api-key': apiKey },
       });
 
-      const status = JSON.parse(response);
+      const status = parseJsonObject(response);
       if (status.error) {
-        throw new Error(`Veo polling error: ${status.error.message}`);
+        throw new Error(`Veo polling error: ${errorMessage(status.error)}`);
       }
 
-      if (status.done) {
+      if (status.done === true) {
         return status;
       }
     }
@@ -417,12 +420,12 @@ export class VideoGenerationService {
         return;
       }
       const parsedUrl = new URL(url);
-      const mod = parsedUrl.protocol === 'https:' ? https : require('http');
+      const mod = parsedUrl.protocol === 'https:' ? https : http;
       const headers: Record<string, string> = {};
       if (apiKey && parsedUrl.hostname === 'generativelanguage.googleapis.com') {
         headers['x-goog-api-key'] = apiKey;
       }
-      const req = mod.request(url, { headers }, (res: any) => {
+      const req = mod.request(url, { headers }, (res) => {
         if (res.statusCode === 302 || res.statusCode === 301) {
           const redirect = res.headers.location;
           if (redirect) {
@@ -458,8 +461,8 @@ export class VideoGenerationService {
           const data = Buffer.concat(chunks).toString('utf-8');
           if (res.statusCode && res.statusCode >= 400) {
             try {
-              const errBody = JSON.parse(data);
-              reject(new Error(errBody.error?.message || `HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
+              const errBody = parseJsonObject(data);
+              reject(new Error(asString(asRecord(errBody.error)?.message) || `HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
             } catch {
               reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
             }

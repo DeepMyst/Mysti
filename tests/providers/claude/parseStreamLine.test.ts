@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { TestableClaudeProvider } from '../../helpers/providerFactory';
 import { createClaudeSession } from '../../helpers/sessionFactory';
 import type { ClaudeSessionState } from '../../../src/providers/claude/ClaudeCodeProvider';
+import { reportedContextWindow } from '../../../src/providers/claude/ClaudeCodeProvider';
 
 describe('ClaudeCodeProvider.parseStreamLine', () => {
   let provider: TestableClaudeProvider;
@@ -431,6 +432,35 @@ describe('ClaudeCodeProvider.parseStreamLine', () => {
   // Compact Boundary
   // ==========================================================================
 
+  describe('reported context window', () => {
+    it('takes the window the CLI resolved for the model init named — not a helper model', () => {
+      (provider as any)._panelSessions.set(session.panelId, session);
+      provider.parseStreamLine(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-opus-5-5', session_id: 's1' }), session);
+      provider.parseStreamLine(JSON.stringify({
+        type: 'result',
+        result: 'hi',
+        modelUsage: {
+          // A background Haiku call reads less but must never win.
+          'claude-haiku-4-5': { inputTokens: 900, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, contextWindow: 200000 },
+          'claude-opus-5-5': { inputTokens: 2, cacheReadInputTokens: 10135, cacheCreationInputTokens: 25612, contextWindow: 1000000 },
+        },
+      }), session);
+
+      expect((provider as any).takeReportedContextWindow(session.panelId)).toBe(1000000);
+      // Taken once: a later turn that reports nothing must not inherit it.
+      expect((provider as any).takeReportedContextWindow(session.panelId)).toBeUndefined();
+    });
+
+    it('falls back to the model that read the most prompt when init named none', () => {
+      expect(reportedContextWindow({
+        'claude-haiku-4-5': { inputTokens: 50, contextWindow: 200000 },
+        'claude-sonnet-5': { inputTokens: 5, cacheReadInputTokens: 40000, contextWindow: 1000000 },
+      })).toBe(1000000);
+      expect(reportedContextWindow(undefined)).toBeUndefined();
+      expect(reportedContextWindow({ 'claude-sonnet-5': { inputTokens: 5 } })).toBeUndefined();
+    });
+  });
+
   describe('compact boundary', () => {
     it('should handle compact_boundary system event', () => {
       const line = JSON.stringify({
@@ -438,10 +468,30 @@ describe('ClaudeCodeProvider.parseStreamLine', () => {
         subtype: 'compact_boundary',
         compact_metadata: { pre_tokens: 50000 },
       });
+      // Held back: it goes out WITH the summary, as one compaction chunk.
       const result = provider.parseStreamLine(line, session);
-      expect(result?.type).toBe('text');
-      expect(result?.content).toContain('50k tokens');
+      expect(result).toBeNull();
       expect(session.awaitingCompactSummary).toBe(true);
+    });
+
+    it('reports the summary as a compaction chunk, trimmed to what a person should read', () => {
+      provider.parseStreamLine(JSON.stringify({
+        type: 'system', subtype: 'compact_boundary', compact_metadata: { pre_tokens: 49210 },
+      }), session);
+      const content = 'This session is being continued from a previous conversation that ran out of context. '
+        + 'The summary below covers the earlier portion of the conversation.\n\n'
+        + 'Analysis:\nThe user only said hi.\n\n'
+        + 'Summary:\n1. Primary Request and Intent:\n   None yet.\n\n9. Optional Next Step:\n   Wait.\n\n'
+        + 'If you need specific details from before compaction (like exact code snippets), read the full transcript at: /Users/x/t.jsonl\n'
+        + 'Continue the conversation from where it left off without asking the user any further questions. '
+        + 'Resume directly — do not acknowledge the summary.';
+
+      const result = provider.parseStreamLine(JSON.stringify({ type: 'user', message: { content } }), session);
+
+      expect(result?.type).toBe('compaction');
+      expect(result?.compactionEvent?.beforeTokens).toBe(49210);
+      expect(result?.compactionEvent?.summary).toBe('1. Primary Request and Intent:\n   None yet.\n\n9. Optional Next Step:\n   Wait.');
+      expect(session.awaitingCompactSummary).toBe(false);
     });
   });
 

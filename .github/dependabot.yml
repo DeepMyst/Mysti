@@ -4,9 +4,8 @@
 # of single-package PRs gets muted, and a muted bot is worse than none.
 #
 # Security advisories are NOT affected by the schedule below — Dependabot opens
-# those as soon as they land, which is the behaviour worth having here given
-# that the production tree currently carries advisories reached transitively
-# through @google/stitch-sdk -> @modelcontextprotocol/sdk.
+# those as soon as they land, including advisories in transitive runtime
+# dependencies. Vendored assets must be rebuilt when their locked inputs change.
 version: 2
 
 updates:
@@ -46,6 +45,10 @@ updates:
           - "@vscode/test-*"
           - mocha
     ignore:
+      # These declarations describe the oldest supported editor, not the newest
+      # development toolchain. Raise them with engines.vscode and the host matrix.
+      - dependency-name: "@types/vscode"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # `playwright` is a webpack external and its browser binaries are NOT
       # shipped; the user installs them separately with `npx playwright install
       # chromium`. A major bump can change the driver protocol out from under an

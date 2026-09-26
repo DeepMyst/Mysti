@@ -25,10 +25,13 @@
  * CLI's `/help` output would be mostly entries that break the turn. Verified
  * against the installed binaries:
  *
- *   Claude Code   local commands carry a `supportsNonInteractive` flag; the
- *                 ones without it abort with `cmd_unavailable_headless`.
- *                 `prompt`-type commands (skills, plugins, `.claude/commands`,
- *                 MCP prompts) always expand, which is how `/design` works.
+ *   Claude Code   REPORTS its own list in the `system`/`init` stream-json event
+ *                 (`slash_commands` + `skills`), so the catalog below is only a
+ *                 pre-first-turn fallback. The `supportsNonInteractive` flag in
+ *                 the binary is necessary but NOT sufficient: `/effort` and
+ *                 `/rename` carry it and still answer "isn't available in this
+ *                 environment", because the reported list also honours
+ *                 isEnabled/isHidden. Verified by running them.
  *   Gemini/Qwen   `handleSlashCommand` in non-interactive mode keeps ONLY
  *                 results of type `submit_prompt` and throws `FatalInputError`
  *                 on anything else. Of the builtins that is `/init` alone;
@@ -81,6 +84,25 @@ export interface NativeCommandSpec {
   argumentHint?: string;
   execution: NativeCommandExecution;
   keywords?: string[];
+  /**
+   * Metadata, not a menu entry: supplies a real description for a command the
+   * backend REPORTS, but is never shown on its own.
+   *
+   * For commands whose availability varies by CLI version. Claude Code 2.1.263
+   * offers `/effort` and `/rename`; 2.1.154 reports neither and answers "isn't
+   * available in this environment". Listing them unconditionally would offer a
+   * broken row on the older CLI, and omitting them entirely would render them
+   * in the menu as a bare "Claude Code command".
+   */
+  metadataOnly?: boolean;
+  /**
+   * Set on a REPORTED command that the backend called a skill. A skill's real
+   * description lives outside anything Mysti can read (Claude Code compresses
+   * them into the binary), so the report's own labelling stands rather than
+   * being overwritten by a same-named catalog entry — `design` is both a
+   * bundled skill and a local Claude Design command, and they are not the same.
+   */
+  isSkill?: boolean;
 }
 
 /** `native:<provider>:<name>` — Mysti-scoped so two CLIs can both own `/compact`. */
@@ -149,6 +171,18 @@ export function parseAcpAvailableCommands(update: Record<string, unknown>): Nati
   return out;
 }
 
+/**
+ * A backend's OWN report of what commands it has, or `null` for a backend that
+ * does not report (or has not yet).
+ *
+ * The distinction matters: an empty ARRAY means "this session has no commands",
+ * which is authoritative and should empty the menu section; `null` means "we do
+ * not know yet", which should fall back to the curated catalog. Collapsing the
+ * two would either blank the menu before the first turn or keep showing
+ * commands a backend has told us it does not have.
+ */
+export type ReportedNativeCommands = NativeCommandSpec[] | null;
+
 /** Bounded so a misbehaving agent cannot flood the slash menu. */
 const MAX_ACP_COMMANDS = 100;
 
@@ -170,6 +204,55 @@ export function isValidNativeCommandName(name: string): boolean {
 }
 
 /**
+ * Read Claude Code's `system`/`init` report into command specs.
+ *
+ * `slash_commands` is the authoritative set for THIS session — it already
+ * accounts for the installed version, enabled plugins, bundled skills and MCP
+ * prompts, and it honours isEnabled/isHidden, which the binary's
+ * `supportsNonInteractive` flag does not. `skills` is the subset that are
+ * skills, used only to label the row.
+ *
+ * Names are validated the same way an ACP agent's are. They come from a local
+ * CLI rather than a remote agent, but they still end up in a `/name` sent back
+ * to that CLI, and a name that cannot be addressed is dropped rather than
+ * repaired.
+ */
+export function parseClaudeInitCommands(
+  slashCommands: unknown,
+  skills: unknown
+): ReportedNativeCommands {
+  if (!Array.isArray(slashCommands)) { return null; }
+
+  const skillNames = new Set(
+    Array.isArray(skills) ? skills.filter((s): s is string => typeof s === 'string') : []
+  );
+
+  const out: NativeCommandSpec[] = [];
+  const seen = new Set<string>();
+  for (const raw of slashCommands.slice(0, MAX_REPORTED_COMMANDS)) {
+    if (typeof raw !== 'string') { continue; }
+    const name = raw.trim().replace(/^\//, '');
+    if (!isValidNativeCommandName(name) || seen.has(name)) { continue; }
+    seen.add(name);
+    const isSkill = skillNames.has(name);
+    out.push({
+      name,
+      // The report carries names only. A catalog entry for the same name
+      // supplies the real description and execution; this is what an
+      // uncatalogued one falls back to.
+      description: isSkill ? 'Skill provided by Claude Code' : 'Claude Code command',
+      icon: isSkill ? 'sparkle' : 'terminal',
+      execution: { kind: 'passthrough' },
+      isSkill,
+    });
+  }
+  return out;
+}
+
+/** Bounded so a pathological report cannot flood the slash menu. */
+const MAX_REPORTED_COMMANDS = 200;
+
+/**
  * Curated built-in commands per provider.
  *
  * TOTAL Record on purpose (same rule as PROVIDER_NPM_PACKAGES): a new provider
@@ -179,12 +262,20 @@ export function isValidNativeCommandName(name: string): boolean {
  */
 export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
   // ---------------------------------------------------------------------------
-  // Claude Code — the richest surface. The passthrough entries are exactly the
-  // built-ins whose definition carries `supportsNonInteractive`, plus the
-  // `prompt`-type commands, which expand in any mode. Deliberately absent:
-  // /config /theme /vim /login /logout /doctor /status /resume /todos /diff and
-  // friends — all `local`/`local-jsx` without the flag, so the CLI answers
-  // "<cmd> isn't available in this environment." and the turn is wasted.
+  // Claude Code — a FALLBACK only, shown until the CLI reports its real list in
+  // the init event (see ClaudeCodeProvider.getDynamicNativeCommands). Every
+  // pass-through entry here was run against the CLI and confirmed to work.
+  //
+  // Deliberately absent, each verified: /effort and /rename ("isn't available
+  // in this environment" — they carry supportsNonInteractive but are not in the
+  // reported list); /review (gone from 2.1.263, it now comes from the
+  // code-review plugin and arrives via the live report when installed);
+  // /config /theme /vim /login /doctor /status /resume /diff (no flag at all).
+  //
+  // Skills — /design and the rest — are compiled INTO the binary as
+  // `SKILL-<hash>.md.zst` and extracted at runtime, so no directory scan can
+  // find them. They reach the menu through the live report, which is the whole
+  // reason that path exists.
   // ---------------------------------------------------------------------------
   'claude-code': [
     {
@@ -210,14 +301,6 @@ export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
       keywords: ['usage', 'cost', 'stats', 'limits'],
     },
     {
-      name: 'effort',
-      description: 'Set effort level for model usage',
-      icon: 'rocket',
-      argumentHint: '<low|medium|high|xhigh|max>',
-      execution: { kind: 'passthrough' },
-      keywords: ['effort', 'reasoning', 'thinking'],
-    },
-    {
       name: 'goal',
       description: 'Set a goal — keep working until the condition is met',
       icon: 'target',
@@ -233,14 +316,6 @@ export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
       keywords: ['init', 'claude.md', 'memory', 'docs'],
     },
     {
-      name: 'review',
-      description: 'Review a pull request',
-      icon: 'git-pull-request',
-      argumentHint: '[pr-number]',
-      execution: { kind: 'passthrough' },
-      keywords: ['review', 'pr', 'pull request'],
-    },
-    {
       name: 'security-review',
       description: 'Complete a security review of the pending changes on the current branch',
       icon: 'shield',
@@ -253,14 +328,6 @@ export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
       icon: 'refresh',
       execution: { kind: 'passthrough' },
       keywords: ['skills', 'reload', 'refresh'],
-    },
-    {
-      name: 'rename',
-      description: 'Rename the current conversation',
-      icon: 'edit',
-      argumentHint: '<name>',
-      execution: { kind: 'passthrough' },
-      keywords: ['rename', 'title', 'name'],
     },
     // Mysti already owns these across every provider and panel; routing them to
     // the backend would clear one CLI's session while Mysti's own transcript,
@@ -279,6 +346,27 @@ export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
       execution: { kind: 'mysti', commandId: 'model:switch' },
       keywords: ['model', 'opus', 'sonnet', 'haiku'],
     },
+    // ---------------------------------------------------------------------
+    // Metadata only — never shown until the CLI reports the name. Descriptions
+    // are the CLI's own, read out of the 2.1.263 binary. Availability varies by
+    // release (2.1.154 reports none of these), which is precisely why they are
+    // not offered on their own.
+    // ---------------------------------------------------------------------
+    { name: 'effort', description: 'Set effort level for model usage', icon: 'rocket', argumentHint: '<low|medium|high|xhigh|max>', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['effort', 'reasoning'] },
+    { name: 'rename', description: 'Rename the current conversation', icon: 'edit', argumentHint: '<name>', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['rename', 'title'] },
+    { name: 'autocompact', description: 'Set how full the context gets before auto-summarizing', icon: 'settings', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['autocompact', 'context'] },
+    { name: 'insights', description: 'Generate a report analyzing your Claude Code sessions', icon: 'graph', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['insights', 'report'] },
+    { name: 'recap', description: 'Generate a one-line session recap now', icon: 'note', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['recap', 'summary'] },
+    { name: 'advisor', description: 'Let Claude consult a stronger model at key moments', icon: 'lightbulb', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['advisor', 'consult'] },
+    { name: 'reload-plugins', description: 'Activate pending plugin changes in the current session', icon: 'refresh', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['plugins', 'reload'] },
+    { name: 'skill-doctor', description: 'Show which loaded skills are unused and costing context', icon: 'pulse', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['skills', 'context', 'doctor'] },
+    { name: 'team-onboarding', description: 'Help teammates ramp on Claude Code with a guide from your usage', icon: 'organization', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['team', 'onboarding'] },
+    { name: 'usage-credits', description: 'Configure usage credits or request them from your admin when you hit a limit', icon: 'credit-card', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['credits', 'usage', 'limit'] },
+    { name: 'color', description: 'Set the prompt bar color for this session', icon: 'paintcan', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['color', 'theme'] },
+    { name: 'import', description: 'Import config from another AI coding agent', icon: 'cloud-download', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['import', 'config', 'migrate'] },
+    { name: 'debug', description: 'Enable debug logging for this session and help diagnose issues', icon: 'bug', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['debug', 'logging'] },
+    { name: 'mcp', description: 'Manage MCP servers', icon: 'plug', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['mcp', 'servers'] },
+    { name: 'config', description: 'Open settings', icon: 'settings-gear', execution: { kind: 'passthrough' }, metadataOnly: true, keywords: ['config', 'settings'] },
   ],
 
   // ---------------------------------------------------------------------------
@@ -353,6 +441,16 @@ export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
       execution: { kind: 'mysti', commandId: 'model:switch' },
       keywords: ['model', 'flash', 'pro'],
     },
+    {
+      // Added in Gemini CLI 0.58. Mapped rather than passed through: Mysti
+      // already drives Gemini's plan mode with `--approval-mode`, and letting
+      // the CLI flip it behind Mysti's back would desync the two.
+      name: 'plan',
+      description: 'Switch to Plan Mode and view current plan',
+      icon: 'map',
+      execution: { kind: 'mysti', commandId: 'settings:mode' },
+      keywords: ['plan', 'mode', 'planning'],
+    },
   ],
 
   // ---------------------------------------------------------------------------
@@ -387,6 +485,15 @@ export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
       execution: { kind: 'mysti', commandId: 'settings:access' },
       keywords: ['approval', 'permission', 'access', 'yolo'],
     },
+    {
+      // Qwen 0.23 declares `/plan` as interactive-only, so it is mapped to
+      // Mysti's mode setting rather than sent to a CLI that would refuse it.
+      name: 'plan',
+      description: 'Switch to plan mode or exit plan mode',
+      icon: 'map',
+      execution: { kind: 'mysti', commandId: 'settings:mode' },
+      keywords: ['plan', 'mode'],
+    },
   ],
 
   // ---------------------------------------------------------------------------
@@ -419,9 +526,14 @@ export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
   ],
 
   // ---------------------------------------------------------------------------
-  // GitHub Copilot — 22 interactive commands, all of which return UI intents
-  // (`add-timeline-entry`, `show-dialog`) rather than prompts. The ones that
-  // matter are reachable as flags Mysti already sets (--model, --add-dir).
+  // GitHub Copilot — its interactive commands return UI intents
+  // (`add-timeline-entry`, `show-dialog`) rather than prompts, and `copilot -p`
+  // passes almost all of them to the MODEL as prose. Verified against 1.0.83:
+  // `-p "/context"` and `-p "/model"` made the model go read files and
+  // documentation, while `-p "/compact"` WAS intercepted (it answered "Nothing
+  // to compact"). Even so `/compact` stays mapped to Mysti's own compaction,
+  // which is provider-neutral and works on every backend; the entries below are
+  // reached as flags Mysti already sets (--model, --add-dir).
   // ---------------------------------------------------------------------------
   'github-copilot': [
     {
@@ -451,6 +563,14 @@ export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
       icon: 'new-folder',
       execution: { kind: 'mysti', commandId: 'context:attach' },
       keywords: ['directory', 'folder', 'allow', 'access'],
+    },
+    {
+      // Present since Copilot CLI 1.0 (the 0.0.x line had no /compact).
+      name: 'compact',
+      description: 'Summarize the conversation to free up context',
+      icon: 'fold',
+      execution: { kind: 'mysti', commandId: 'cmd:compact' },
+      keywords: ['compact', 'summarize', 'context'],
     },
   ],
 
@@ -609,6 +729,13 @@ export interface NativeCommandSource {
  * file-backed commands must say so with `[]`.
  */
 export const NATIVE_COMMAND_SOURCES: Record<ProviderType, NativeCommandSource[]> = {
+  // Only what the user actually authored. Deliberately NOT scanned:
+  // `~/.claude/plugins/marketplaces/*/plugins/*/commands`, which holds every
+  // plugin the marketplace has ever offered rather than the ones installed
+  // (`installed_plugins.json` is `{plugins:{}}` on a machine that has browsed
+  // one). Listing those would advertise dozens of commands the CLI does not
+  // have — the same defect as a stale catalog. Installed plugin commands arrive
+  // accurately in the init report instead.
   'claude-code': [
     { scope: 'project', dir: '.claude/commands', ext: '.md', nested: true, execution: { kind: 'passthrough' } },
     { scope: 'user', dir: '.claude/commands', ext: '.md', nested: true, execution: { kind: 'passthrough' } },
@@ -617,13 +744,23 @@ export const NATIVE_COMMAND_SOURCES: Record<ProviderType, NativeCommandSource[]>
   ],
   // Gemini/Qwen custom commands are TOML and DO expand in non-interactive mode
   // (they resolve to `submit_prompt`), so they pass through natively.
+  // Skills arrived in both after the versions this catalog was first built
+  // against (Gemini 0.58, Qwen 0.23). Qwen's registry makes the contract
+  // explicit: a command of kind `file`, `skill` or `mcp-prompt` defaults to
+  // `["interactive","non_interactive","acp"]`, while a BUILT_IN defaults to
+  // interactive-only — which is exactly why so few builtins are listed above
+  // and why these pass through.
   'google-gemini': [
     { scope: 'project', dir: '.gemini/commands', ext: '.toml', nested: true, execution: { kind: 'passthrough' } },
     { scope: 'user', dir: '.gemini/commands', ext: '.toml', nested: true, execution: { kind: 'passthrough' } },
+    { scope: 'project', dir: '.gemini/skills', ext: '.md', skillDirs: true, execution: { kind: 'passthrough' } },
+    { scope: 'user', dir: '.gemini/skills', ext: '.md', skillDirs: true, execution: { kind: 'passthrough' } },
   ],
   'qwen-code': [
     { scope: 'project', dir: '.qwen/commands', ext: '.toml', nested: true, execution: { kind: 'passthrough' } },
     { scope: 'user', dir: '.qwen/commands', ext: '.toml', nested: true, execution: { kind: 'passthrough' } },
+    { scope: 'project', dir: '.qwen/skills', ext: '.md', skillDirs: true, execution: { kind: 'passthrough' } },
+    { scope: 'user', dir: '.qwen/skills', ext: '.md', skillDirs: true, execution: { kind: 'passthrough' } },
   ],
   // `codex exec` cannot expand a slash command, so Mysti sends the prompt file
   // the user wrote. Same for Cursor and Cline.
@@ -652,12 +789,22 @@ export const NATIVE_COMMAND_SOURCES: Record<ProviderType, NativeCommandSource[]>
     { scope: 'project', dir: '.opencode/command', ext: '.md', nested: true, execution: { kind: 'expand' } },
     { scope: 'user', dir: '.config/opencode/command', ext: '.md', nested: true, execution: { kind: 'expand' } },
   ],
+  // Copilot CLI 1.0 has no custom-command or prompt directory of its own.
   'github-copilot': [],
-  'openclaw': [],
+  // `openclaw agent --json` runs one turn and does not parse a slash command,
+  // so a skill is sent as its own text rather than as `/name`.
+  'openclaw': [
+    { scope: 'project', dir: '.openclaw/skills', ext: '.md', skillDirs: true, execution: { kind: 'expand' } },
+    { scope: 'user', dir: '.openclaw/skills', ext: '.md', skillDirs: true, execution: { kind: 'expand' } },
+  ],
   // Hermes and Kimi report their commands live over ACP instead of from disk.
   'hermes': [],
   'kimi-code': [],
-  'continue': [],
+  // `cn -p` is headless print mode with no slash parser — same treatment.
+  'continue': [
+    { scope: 'project', dir: '.continue/skills', ext: '.md', skillDirs: true, execution: { kind: 'expand' } },
+    { scope: 'user', dir: '.continue/skills', ext: '.md', skillDirs: true, execution: { kind: 'expand' } },
+  ],
   'ollama': [],
   'localai': [],
   'openrouter': [],

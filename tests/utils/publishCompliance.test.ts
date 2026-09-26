@@ -120,7 +120,7 @@ describe('O-2: NOTICE attributes every vendored asset and ships', () => {
   });
 
   it('every path NOTICE attributes still exists (no stale entries)', () => {
-    const paths = notice().match(/resources\/[\w./-]+\.js/g) ?? [];
+    const paths = notice().match(/resources\/[\w./-]+\.js\b/g) ?? [];
     expect(paths.length).toBeGreaterThan(0);
     for (const rel of new Set(paths)) {
       expect(exists(rel), `NOTICE attributes ${rel}, which is gone`).toBe(true);
@@ -136,9 +136,13 @@ describe('O-2: NOTICE attributes every vendored asset and ships', () => {
     const react = read('resources/canvas-sandbox/react.production.min.js');
     const babel = read('resources/canvas-sandbox/babel.min.js');
 
-    // Anchor to mermaid's OWN package metadata — the bundle embeds its
-    // dependencies' `version:"…"` strings too, and the first one is not mermaid.
-    const mermaidV = /name:"mermaid",version:"(\d+\.\d+\.\d+)"/.exec(mermaid)?.[1];
+    // The rebuilt bundle records exact source packages in its provenance;
+    // minification can remove package metadata from the JavaScript itself.
+    const provenance = JSON.parse(read('resources/mermaid.provenance.json'));
+    const mermaidV = provenance.packages['node_modules/mermaid']?.version;
+    const embeddedSanitizerV = provenance.packages['node_modules/dompurify']?.version;
+    expect(mermaid).toContain('mermaid.min.js.LICENSE.txt');
+    expect(read('resources/mermaid.min.js.LICENSE.txt')).toContain(`DOMPurify ${embeddedSanitizerV}`);
     const markedV = /marked v(\d+\.\d+\.\d+)/.exec(marked)?.[1];
     const dompurifyV = /DOMPurify (\d+\.\d+\.\d+)/.exec(dompurify)?.[1];
     const reactV = /"(18\.\d+\.\d+)"/.exec(react)?.[1];

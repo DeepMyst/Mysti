@@ -13,7 +13,11 @@
 
 import * as vscode from 'vscode';
 import * as https from 'https';
+import { asRecord, asRecords, asString, parseJsonObject, errorMessage } from '../utils/valueGuards';
 import type { ImageGenerationProvider } from '../types';
+
+type GeminiRequestPart = { text: string } | { inline_data: { mime_type: string; data: string } };
+type OpenAIRequestPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 
 interface GenerateOptions {
   size?: string;
@@ -97,7 +101,7 @@ export class ImageGenerationService {
 
   private async _analyzeWithGemini(imageBase64: string, prompt: string): Promise<string> {
     const apiKey = this._getGeminiKey();
-    const parts: any[] = [{ text: prompt }];
+    const parts: GeminiRequestPart[] = [{ text: prompt }];
     if (imageBase64) {
       parts.push({
         inline_data: {
@@ -128,16 +132,16 @@ export class ImageGenerationService {
       },
     }, body);
 
-    const parsed = JSON.parse(response);
+    const parsed = parseJsonObject(response);
     if (parsed.error) {
-      throw new Error(`Gemini vision error: ${parsed.error.message}`);
+      throw new Error(`Gemini vision error: ${errorMessage(parsed.error)}`);
     }
 
-    const candidates = parsed.candidates || [];
+    const candidates = asRecords(parsed.candidates);
     for (const candidate of candidates) {
-      const parts = candidate.content?.parts || [];
+      const parts = asRecords(asRecord(candidate.content)?.parts);
       for (const part of parts) {
-        if (part.text) { return part.text; }
+        if (typeof part.text === 'string' && part.text) { return part.text; }
       }
     }
 
@@ -146,7 +150,7 @@ export class ImageGenerationService {
 
   private async _analyzeWithOpenAI(imageBase64: string, prompt: string): Promise<string> {
     const apiKey = this._getOpenAIKey();
-    const content: any[] = [{ type: 'text', text: prompt }];
+    const content: OpenAIRequestPart[] = [{ type: 'text', text: prompt }];
     if (imageBase64) {
       content.push({
         type: 'image_url',
@@ -173,12 +177,12 @@ export class ImageGenerationService {
       },
     }, body);
 
-    const parsed = JSON.parse(response);
+    const parsed = parseJsonObject(response);
     if (parsed.error) {
-      throw new Error(`OpenAI vision error: ${parsed.error.message}`);
+      throw new Error(`OpenAI vision error: ${errorMessage(parsed.error)}`);
     }
 
-    const text = parsed.choices?.[0]?.message?.content;
+    const text = asString(asRecord(asRecords(parsed.choices)[0]?.message)?.content);
     if (!text) {
       throw new Error('OpenAI vision: No text response received');
     }
@@ -263,15 +267,15 @@ export class ImageGenerationService {
         },
       }, body);
 
-      const parsed = JSON.parse(response);
+      const parsed = parseJsonObject(response);
       if (parsed.error) {
-        throw new Error(`GPT Image error: ${parsed.error.message}`);
+        throw new Error(`GPT Image error: ${errorMessage(parsed.error)}`);
       }
-      const imageData = parsed.data?.[0];
-      if (!imageData?.b64_json) {
+      const imageData = asRecords(parsed.data)[0];
+      if (typeof imageData?.b64_json !== 'string' || !imageData.b64_json) {
         throw new Error('GPT Image: No image data in response');
       }
-      return { imageBase64: imageData.b64_json, revisedPrompt: imageData.revised_prompt };
+      return { imageBase64: imageData.b64_json, revisedPrompt: asString(imageData.revised_prompt) };
     }
 
     // Text-only generation (no reference image)
@@ -295,19 +299,19 @@ export class ImageGenerationService {
       },
     }, body);
 
-    const parsed = JSON.parse(response);
+    const parsed = parseJsonObject(response);
     if (parsed.error) {
-      throw new Error(`GPT Image error: ${parsed.error.message}`);
+      throw new Error(`GPT Image error: ${errorMessage(parsed.error)}`);
     }
 
-    const imageData = parsed.data?.[0];
-    if (!imageData?.b64_json) {
+    const imageData = asRecords(parsed.data)[0];
+    if (typeof imageData?.b64_json !== 'string' || !imageData.b64_json) {
       throw new Error('GPT Image: No image data in response');
     }
 
     return {
       imageBase64: imageData.b64_json,
-      revisedPrompt: imageData.revised_prompt,
+      revisedPrompt: asString(imageData.revised_prompt),
     };
   }
 
@@ -320,7 +324,7 @@ export class ImageGenerationService {
     if (!apiKey) { throw new Error('Gemini API key not configured. Add your Gemini key via the Canvas API-key settings.'); }
 
     // Map frame dimensions to Gemini aspect ratio
-    const generationConfig: Record<string, any> = {
+    const generationConfig: { responseModalities: string[]; imageConfig?: { aspectRatio: string } } = {
       responseModalities: ['TEXT', 'IMAGE'],
     };
     if (options?.frameBounds) {
@@ -330,7 +334,7 @@ export class ImageGenerationService {
       };
     }
 
-    const parts: any[] = [{ text: `Generate an image: ${prompt}` }];
+    const parts: GeminiRequestPart[] = [{ text: `Generate an image: ${prompt}` }];
     if (options?.referenceImageBase64) {
       parts.push({
         inline_data: {
@@ -357,20 +361,22 @@ export class ImageGenerationService {
       },
     }, body);
 
-    const parsed = JSON.parse(response);
+    const parsed = parseJsonObject(response);
     if (parsed.error) {
-      throw new Error(`Nano Banana error: ${parsed.error.message}`);
+      throw new Error(`Nano Banana error: ${errorMessage(parsed.error)}`);
     }
 
     // Extract image from response parts
-    const candidates = parsed.candidates || [];
+    const candidates = asRecords(parsed.candidates);
     for (const candidate of candidates) {
-      const parts = candidate.content?.parts || [];
+      const parts = asRecords(asRecord(candidate.content)?.parts);
       for (const part of parts) {
-        if (part.inlineData?.mimeType?.startsWith('image/')) {
+        const inlineData = asRecord(part.inlineData);
+        const imageBase64 = asString(inlineData?.data);
+        if (asString(inlineData?.mimeType)?.startsWith('image/') && imageBase64) {
           return {
-            imageBase64: part.inlineData.data,
-            revisedPrompt: parts.find((p: any) => p.text)?.text,
+            imageBase64,
+            revisedPrompt: asString(parts.find(p => typeof p.text === 'string' && p.text)?.text),
           };
         }
       }
@@ -466,8 +472,8 @@ export class ImageGenerationService {
           const data = Buffer.concat(chunks).toString('utf-8');
           if (res.statusCode && res.statusCode >= 400) {
             try {
-              const errBody = JSON.parse(data);
-              reject(new Error(errBody.error?.message || `HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
+              const errBody = parseJsonObject(data);
+              reject(new Error(asString(asRecord(errBody.error)?.message) || `HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
             } catch {
               reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
             }
@@ -495,8 +501,8 @@ export class ImageGenerationService {
           const data = Buffer.concat(chunks).toString('utf-8');
           if (res.statusCode && res.statusCode >= 400) {
             try {
-              const errBody = JSON.parse(data);
-              reject(new Error(errBody.error?.message || `HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
+              const errBody = parseJsonObject(data);
+              reject(new Error(asString(asRecord(errBody.error)?.message) || `HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
             } catch {
               reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
             }

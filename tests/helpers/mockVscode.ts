@@ -208,6 +208,7 @@ export const window = {
     show: () => {},
     dispose: () => {},
   }),
+  onDidCloseTerminal: (_listener: (terminal: unknown) => void) => ({ dispose: () => {} }),
 };
 
 /** Restore the stubbable `window` members to their defaults (use in afterEach). */

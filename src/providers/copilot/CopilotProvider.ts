@@ -17,6 +17,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
 import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from '../base/BaseCliProvider';
+import { allowsUnrestrictedNativeTools } from '../base/NativeApprovalPolicy';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -47,6 +48,8 @@ const COPILOT_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
 export interface CopilotSessionState extends PanelSessionState {
   activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
+  /** Copilot's `tokenLimit` for this model and tier, until taken. */
+  reportedContextWindow?: number;
 }
 
 /**
@@ -60,50 +63,55 @@ export class CopilotProvider extends BaseCliProvider {
   readonly config: ProviderConfig = {
     name: 'github-copilot',
     displayName: 'GitHub Copilot',
+    // Copilot serves models in context TIERS and Mysti never passes
+    // `--context long_context`, so these are the DEFAULT tier (CLI ≥ 1.0.89
+    // enforces it end to end): ~200k for Claude, 272k for GPT-6 Astra, not the
+    // 1M+ API figures. Copilot's own `tokenLimit` (session.usage_info /
+    // session.truncation) is reported each turn and wins over these.
     models: [
       {
         id: 'gpt-6-astra',
         name: 'GPT-6 Astra',
         description: 'OpenAI flagship — Copilot Pro+, Max, Business and Enterprise',
-        contextWindow: 1050000,
+        contextWindow: 272000,
         releasedAt: '2026-09-04'
       },
       {
         id: 'claude-sonnet-5',
         name: 'Claude Sonnet 5',
         description: 'Best balance of speed and intelligence',
-        contextWindow: 1000000
+        contextWindow: 200000
       },
       {
         id: 'claude-opus-5',
         name: 'Claude Opus 5',
         description: 'Anthropic flagship for complex agentic and coding work',
-        contextWindow: 1000000
+        contextWindow: 200000
       },
       {
         id: 'claude-fable-5.1',
         name: 'Claude Fable 5.1',
         description: "Anthropic's most capable model",
-        contextWindow: 1000000,
+        contextWindow: 200000,
         releasedAt: '2026-09-01'
       },
       {
         id: 'claude-fable-5',
         name: 'Claude Fable 5',
         description: 'Previous Fable flagship',
-        contextWindow: 1000000
+        contextWindow: 200000
       },
       {
         id: 'claude-opus-4.8',
         name: 'Claude Opus 4.8',
         description: 'Previous-generation Opus flagship',
-        contextWindow: 1000000
+        contextWindow: 200000
       },
       {
         id: 'claude-opus-4.7',
         name: 'Claude Opus 4.7',
         description: 'Autonomous long-horizon Opus',
-        contextWindow: 1000000
+        contextWindow: 200000
       },
       {
         id: 'claude-haiku-4.5',
@@ -115,14 +123,14 @@ export class CopilotProvider extends BaseCliProvider {
         id: 'gemini-3.8-flash',
         name: 'Gemini 3.8 Flash',
         description: "Google's most intelligent Flash model",
-        contextWindow: 1048576,
+        contextWindow: 1000000,
         releasedAt: '2026-09-02'
       },
       {
         id: 'gemini-3.7-flash',
         name: 'Gemini 3.7 Flash',
         description: 'Strong coding and agent workflows',
-        contextWindow: 1048576
+        contextWindow: 1000000
       },
       {
         id: 'gpt-5.1',
@@ -145,7 +153,11 @@ export class CopilotProvider extends BaseCliProvider {
     supportsThinking: false,
     // Flag/reality alignment (Plan 02 Phase 1): the Copilot CLI emits plain
     // text — no tool events ever fire, so no tool cards / permission gating.
-    supportsToolUse: false,
+    // True since Copilot CLI 1.0, whose `--output-format json` carries
+    // tool.execution_start / tool.execution_complete. On 0.0.x the stream is
+    // plain text and no tool_use chunk is ever produced, so this flag simply
+    // describes a capability that stream cannot exercise.
+    supportsToolUse: true,
     supportsSessions: true,
     supportsAutoInstall: true,
     supportsPromptEnhancement: false,
@@ -156,8 +168,14 @@ export class CopilotProvider extends BaseCliProvider {
     effortDefault: 'medium',
     planMode: 'detected',
     sessionKind: 'prompt-history',  // fabricated --resume IDs (F4/B5) — honest value until Plan 00 Batch 2.4 lands
-    emitsToolResults: false,        // plain-text output: no tool events at all
-    emitsUsage: true,
+    emitsToolResults: true,         // 1.0 JSONL: tool.execution_complete carries the result
+    // Copilot reports no honest token count on EITHER path: 1.0's JSONL carries
+    // `session.usage_checkpoint`, which bills in nano AIU rather than tokens
+    // (deliberately dropped in parseStreamLine), and 0.0.x streams plain text
+    // with no usage event at all. Declaring true meant the context pie kept
+    // whatever the previously-active provider had left in it.
+    emitsUsage: false,
+    usageConvention: 'none',   // Copilot bills in nano AIU; no token split exists to report.
     modelSelection: 'full'
   };
 
@@ -424,8 +442,7 @@ export class CopilotProvider extends BaseCliProvider {
       const totalTime = Date.now() - startTime;
       console.log(`[Mysti] Copilot: ✅ Request completed in ${totalTime}ms`);
 
-      const storedUsage = this.getStoredUsage(panelId);
-      yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
+      yield this._doneChunk(panelId);
     } catch (error) {
       yield this.handleError(error);
     } finally {
@@ -453,10 +470,30 @@ export class CopilotProvider extends BaseCliProvider {
     }
   }
 
+  /**
+   * True when the installed Copilot CLI emits the structured JSON stream.
+   *
+   * Added in 1.0; the 0.0.x line has no `--output-format` at all and passing it
+   * aborts the run. When the version could not be probed, assume the CURRENT
+   * CLI — 0.0.x predates the 1.0 release by a long way, and guessing old would
+   * leave every current install on the plain-text path with no permission gate.
+   */
+  private _supportsJsonOutput(): boolean {
+    const major = this._getCliMajorVersion();
+    return major === null || major >= 1;
+  }
+
   protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
-    // Note: Copilot CLI uses -p flag for prompt (set in sendMessage override)
-    // No --output-format flag exists - CLI outputs plain text
+    // Note: Copilot CLI uses -p flag for prompt (set in sendMessage override).
+    //
+    // Copilot CLI 1.0 added `--output-format json` (JSONL, one object per line)
+    // — the 0.0.x line had none, which is why this provider used to scrape
+    // plain text. The structured stream is what finally gives Mysti tool
+    // events, and therefore a working permission gate; see _addPermissionFlags.
     const args: string[] = [];
+    if (this._supportsJsonOutput()) {
+      args.push('--output-format', 'json');
+    }
 
     // Add model selection (custom model override or dropdown selection)
     const effectiveModel = this._getEffectiveModel(settings);
@@ -528,14 +565,9 @@ export class CopilotProvider extends BaseCliProvider {
       return;
     }
 
-    // The stream-level permission gate CANNOT protect Copilot: the CLI emits
-    // plain text (no JSON tool events), so parseStreamLine never produces
-    // tool_use chunks and ChatViewProvider's gate never fires. Only allow all
-    // tools for combinations where the gate is intentionally off anyway
-    // (mirrors shouldGateToolUse in utils/permissionClassifier.ts).
-    const gateIntentionallyOff =
-      mode === 'edit-automatically' ||
-      (accessLevel === 'full-access' && mode !== 'ask-before-edit');
+    // Fully autonomous policy is independent of stream format. Auto-edit is
+    // not full autonomy: commands/deletes/network still require approval.
+    const gateIntentionallyOff = allowsUnrestrictedNativeTools(settings);
 
     if (gateIntentionallyOff) {
       args.push('--allow-all-tools');
@@ -543,13 +575,118 @@ export class CopilotProvider extends BaseCliProvider {
       return;
     }
 
-    // Ask-tier combinations (ask-before-edit mode, or ask-permission access):
-    // deny-by-default. Until Copilot CLI exposes structured tool events there
-    // is no way to prompt the user, so fail closed instead of silently
-    // executing shell commands and file writes with --allow-all-tools.
+    // Ask-tier combinations (ask-before-edit mode, or ask-permission access).
+    //
+    // Copilot 1.0+ retains the stream-event pause path. These notifications
+    // carry no blocking native permission response; a pause cannot guarantee
+    // that the tool has not already executed. Native approval needs an ACP
+    // request/response bridge before this path can provide that guarantee.
+    if (this._supportsJsonOutput()) {
+      args.push('--allow-all-tools');
+      console.log(`[Mysti] Copilot: Ask-tier gated by Mysti's stream gate [mode=${mode}, access=${accessLevel}]`);
+      return;
+    }
+
+    // Copilot 0.0.x emits plain text with no tool events, so there is nothing
+    // to gate on and no way to prompt. Fail closed rather than silently running
+    // shell commands and file writes under --allow-all-tools.
     args.push('--deny-tool', 'shell');
     args.push('--deny-tool', 'write');
-    console.log(`[Mysti] Copilot: Ask-tier permissions cannot be prompted (plain-text CLI output) — denying shell/write tools (fail closed) [mode=${mode}, access=${accessLevel}]`);
+    console.log(`[Mysti] Copilot: Ask-tier permissions cannot be prompted on this CLI (plain-text output) — denying shell/write tools (fail closed) [mode=${mode}, access=${accessLevel}]`);
+  }
+
+  /**
+   * Copilot CLI 1.0 stream events.
+   *
+   * Returns `undefined` for an event this vocabulary does not cover, so the
+   * caller falls through to the older shapes; `null` means "handled, nothing to
+   * render". The two are NOT interchangeable here.
+   */
+  private _parseModernEvent(
+    data: Record<string, unknown>,
+    session: CopilotSessionState
+  ): StreamChunk | null | undefined {
+    const type = typeof data.type === 'string' ? data.type : '';
+    if (!type.includes('.')) {
+      return undefined;
+    }
+    const payload = (data.data ?? {}) as Record<string, unknown>;
+
+    switch (type) {
+      // The delta. `assistant.message` repeats the whole answer afterwards, so
+      // rendering both would print it twice.
+      case 'assistant.message_delta': {
+        const delta = payload.deltaContent;
+        return typeof delta === 'string' && delta ? { type: 'text', content: delta } : null;
+      }
+
+      case 'tool.execution_start': {
+        const id = String(payload.toolCallId ?? `copilot-${Date.now()}`);
+        const name = String(payload.toolName ?? 'tool');
+        const input = (payload.arguments ?? {}) as Record<string, unknown>;
+        session.activeToolCalls.set(id, { id, name, input });
+        // This is what Mysti's permission gate intercepts. Copilot had no such
+        // event before 1.0, which is why the gate could never fire for it.
+        return { type: 'tool_use', toolCall: { id, name, input, status: 'running' } };
+      }
+
+      case 'tool.execution_complete': {
+        const id = String(payload.toolCallId ?? '');
+        const active = session.activeToolCalls.get(id);
+        session.activeToolCalls.delete(id);
+        const result = (payload.result ?? {}) as Record<string, unknown>;
+        const content = typeof result.content === 'string' ? result.content : JSON.stringify(result.content ?? '');
+        return {
+          type: 'tool_result',
+          toolCall: {
+            id,
+            name: active?.name ?? String(payload.toolName ?? 'tool'),
+            input: active?.input ?? {},
+            output: content,
+            status: payload.success === false ? 'failed' : 'completed',
+          },
+        };
+      }
+
+      // The limit Copilot actually truncates and compacts at — the model's
+      // window on the tier in use, which no static table can know.
+      case 'session.usage_info':
+      case 'session.truncation': {
+        const limit = payload.tokenLimit;
+        if (typeof limit === 'number' && limit > 0) { session.reportedContextWindow = limit; }
+        return null;
+      }
+
+      case 'session.usage_checkpoint': {
+        // Copilot bills in "nano AIU" rather than tokens; there is no honest
+        // token count to report, so nothing is stored and nothing is rendered.
+        return null;
+      }
+
+      // Streamed piecemeal by assistant.tool_call_delta and delivered whole by
+      // tool.execution_start — the partial JSON fragments are not renderable.
+      case 'assistant.tool_call_delta':
+      case 'tool.execution_partial_result':
+      case 'assistant.message':
+      case 'assistant.message_start':
+      case 'assistant.turn_start':
+      case 'assistant.turn_end':
+      case 'assistant.idle':
+      case 'model.call_start':
+      case 'model.call_finished':
+      case 'user.message':
+      case 'session.tools_updated':
+      case 'session.auto_mode_resolved':
+      case 'session.mcp_servers_loaded':
+      case 'session.mcp_server_status_changed':
+      case 'session.background_tasks_changed':
+        return null;
+
+      default:
+        // An unrecognised dotted event is still Copilot 1.0 telemetry, not text
+        // to print at the user.
+        return null;
+    }
   }
 
   /**
@@ -569,6 +706,18 @@ export class CopilotProvider extends BaseCliProvider {
     // Try to parse as JSON first (in case Copilot CLI adds JSON support in future)
     try {
       const data = JSON.parse(line);
+
+      // Copilot CLI 1.0 JSONL. Captured from 1.0.83:
+      //   {"type":"assistant.message_delta","data":{"deltaContent":"Okay"}}
+      //   {"type":"tool.execution_start","data":{"toolCallId":"call_…","toolName":"bash",
+      //                                          "arguments":{"command":"ls"}}}
+      //   {"type":"tool.execution_complete","data":{"toolCallId":"call_…","success":true,
+      //                                             "result":{"content":"…"}}}
+      //   {"type":"session.usage_checkpoint","data":{…}}
+      const modern = this._parseModernEvent(data, copilotSession);
+      if (modern !== undefined) {
+        return modern;
+      }
 
       // Handle JSON events if they exist
       switch (data.type) {
@@ -652,8 +801,10 @@ export class CopilotProvider extends BaseCliProvider {
         case 'result':
           if (data.stats) {
             copilotSession.lastUsageStats = {
-              input_tokens: data.stats.input_tokens || data.stats.total_tokens || 0,
-              output_tokens: data.stats.output_tokens || 0
+              // NOT `|| data.stats.total_tokens`: total includes the completion,
+              // so the old fallback booked output tokens as context fill.
+              input_tokens: Number(data.stats.input_tokens ?? 0),
+              output_tokens: Number(data.stats.output_tokens ?? 0)
             };
             console.log('[Mysti] Copilot: Captured usage stats:', copilotSession.lastUsageStats);
           }
@@ -704,6 +855,13 @@ export class CopilotProvider extends BaseCliProvider {
   /**
    * Get stored usage stats from the last message and clear them
    */
+  protected override takeReportedContextWindow(panelId?: string): number | undefined {
+    const session = this._getSession(panelId) as CopilotSessionState;
+    const window = session.reportedContextWindow;
+    session.reportedContextWindow = undefined;
+    return window;
+  }
+
   getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number } | null {
     const session = this._getSession(panelId) as CopilotSessionState;
     const usage = session.lastUsageStats;

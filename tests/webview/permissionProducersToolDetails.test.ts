@@ -92,15 +92,14 @@ function assertAllProducersSpread(text: string): string[] {
 }
 
 const EXPECTED_PRODUCERS = [
-  '_runMentionCollaboration',  // @agent:role collaboration gate (onGate)
+  'constructor',             // blocking native provider requests
   '_gateSubAgentToolUse',      // legacy @agent sub-agent gate
-  '_handleSendMessage',        // CLI stream gate (covered elsewhere too)
-  '_runMystiDelegation',       // Mysti coordinator delegation (onGate)
-  '_runMystiOrchestration',    // Mysti orchestration (onGate)
+  '_handleSendMessageForTurn', // CLI stream gate (covered elsewhere too)
+  '_requestCollaboratorPermission', // role, delegation, orchestration and session gates
 ];
 
 describe('tool-use permission producers all send toolInput (static over ChatViewProvider.ts)', () => {
-  it('finds the five known producers, each spreading _permissionToolDetails over its own toolCall', () => {
+  it('finds the known producers, each spreading _permissionToolDetails over its own toolCall', () => {
     const producers = assertAllProducersSpread(SRC);
     for (const name of EXPECTED_PRODUCERS) {
       expect(producers, `producer ${name} not found as a "wants to:" card`).toContain(name);
@@ -116,16 +115,16 @@ describe('tool-use permission producers all send toolInput (static over ChatView
 
   it('the checker itself is sensitive: removing one spread makes it throw naming the producer', () => {
     // Mutate a copy of the source: strip the spread from the collaboration site only.
-    const marker = '`${spec.label || spec.agentId} wants to: ${toolCall.name}`,\n        { command: preview, riskLevel, ...this._permissionToolDetails(toolCall) },';
-    expect(SRC).toContain(marker);
-    const mutated = SRC.replace(marker, marker.replace(', ...this._permissionToolDetails(toolCall)', ''));
-    expect(mutated).not.toBe(SRC);
-    expect(() => assertAllProducersSpread(mutated)).toThrow(/_runMentionCollaboration: permission card does not spread/);
+    const call = permissionCalls(SRC).find(c => enclosingMethod(SRC, c.index) === '_requestCollaboratorPermission');
+    expect(call).toBeDefined();
+    const mutated = SRC.slice(0, call!.index) + SRC.slice(call!.index).replace('...this._permissionToolDetails(toolCall),', '');
+    expect(mutated === SRC).toBe(false);
+    expect(() => assertAllProducersSpread(mutated)).toThrow(/_requestCollaboratorPermission: permission card does not spread/);
   });
 
   it('the checker recognises the sub-agent shape (chunk.toolCall) and the stream gate', () => {
     const calls = permissionCalls(SRC).filter(c => isToolUseCard(c.args));
     const exprs = new Set(calls.map(c => toolCallExpr(c.args)));
-    expect(exprs).toEqual(new Set(['toolCall', 'chunk.toolCall']));
+    expect(exprs).toEqual(new Set(['toolCall', 'chunk.toolCall', 'request.toolCall']));
   });
 });

@@ -35,7 +35,7 @@ import {
   DEEPMYST_DEFAULT_WEB_URL,
 } from '../services/DeepMystClient';
 import type { EntitlementState } from '../types';
-import { SMART_GATEWAY_DEFAULT_URL, SMART_ENTITLEMENT_TTL_MS } from '../constants';
+import { SMART_GATEWAY_DEFAULT_URL, SMART_ENTITLEMENT_TTL_MS, SMART_ENTITLEMENT_ERROR_TTL_MS } from '../constants';
 
 /** SecretStorage key under which the DeepMyst API key is stored. */
 const SECRET_KEY = 'mysti.deepmyst.apiKey';
@@ -62,6 +62,7 @@ export class DeepMystAuthManager implements vscode.Disposable {
   private _cachedKey: string | undefined;
   /** Cached entitlement (tier + free-monthly allowance) for smart compaction. */
   private _entitlement: EntitlementState | undefined;
+  private _entitlementRefresh: Promise<EntitlementState> | undefined;
   /**
    * In-flight browser sign-ins, keyed by their CSRF `state` → resolver. A user
    * may click "Sign in" several times (e.g. while the browser/Clerk is slow),
@@ -135,34 +136,39 @@ export class DeepMystAuthManager implements vscode.Disposable {
   }
 
   /**
-   * Synchronous gate for premium features: true when the user is entitled —
-   * paid OR within the free monthly allowance. Uses the cached entitlement; with
-   * none cached it optimistically allows a signed-in user and kicks a background
-   * refresh (the entitlement endpoint may not be deployed yet — see
-   * {@link ensureActiveAccount}'s graceful fallback).
+   * Synchronous gate for premium features. FAILS CLOSED: true only when the
+   * DeepMyst endpoint itself said so. With no answer yet, or only a failed
+   * check, it is false and a background refresh is started. A stale server
+   * answer is still honored while that refresh runs, so an entitled user is
+   * not flipped off every TTL. The gateway has no credit check of its own, so
+   * this is the only gate in front of platform-key spend.
    */
   hasEntitlement(): boolean {
     if (!this.isSignedIn()) { return false; }
-    if (this._entitlement && Date.now() - this._entitlement.checkedAt < SMART_ENTITLEMENT_TTL_MS) {
-      return this._entitlement.entitled;
+    const e = this._entitlement;
+    if (!e || !this._isEntitlementFresh(e)) {
+      this._entitlementRefresh ??= this.ensureActiveAccount().finally(() => { this._entitlementRefresh = undefined; });
     }
-    void this.ensureActiveAccount();   // refresh in the background
-    return true;                        // optimistic until the check returns
+    return !!e && e.source === 'endpoint' && e.entitled;
+  }
+
+  private _isEntitlementFresh(e: EntitlementState): boolean {
+    const ttl = e.source === 'endpoint' ? SMART_ENTITLEMENT_TTL_MS : SMART_ENTITLEMENT_ERROR_TTL_MS;
+    return Date.now() - e.checkedAt < ttl;
   }
 
   /**
-   * Check the user's tier + free-monthly allowance against DeepMyst
-   * (GET /api/v1/me). Cached for SMART_ENTITLEMENT_TTL_MS. Graceful fallback: if
-   * the endpoint 404s or is unreachable, a signed-in user is treated as entitled
-   * (tier 'free', source 'fallback') so smart compaction works before the
-   * entitlement endpoint ships and tightens once it does. Never throws.
+   * Check the user's entitlement against DeepMyst (GET /api/v1/me/entitlement).
+   * A server answer is cached for SMART_ENTITLEMENT_TTL_MS. Anything else — a
+   * 404, a 5xx, a timeout, a network error — is NOT entitled (source
+   * 'fallback') and is retried after SMART_ENTITLEMENT_ERROR_TTL_MS. Never throws.
    */
   async ensureActiveAccount(force = false): Promise<EntitlementState> {
     if (!this.isSignedIn()) {
       this._entitlement = { entitled: false, tier: 'signed-out', source: 'fallback', checkedAt: Date.now() };
       return this._entitlement;
     }
-    if (!force && this._entitlement && Date.now() - this._entitlement.checkedAt < SMART_ENTITLEMENT_TTL_MS) {
+    if (!force && this._entitlement && this._isEntitlementFresh(this._entitlement)) {
       return this._entitlement;
     }
     const key = this._cachedKey as string;
@@ -185,10 +191,10 @@ export class DeepMystAuthManager implements vscode.Disposable {
         const freeRemaining = numOrUndef(o.free_remaining ?? o.freeRemaining);
         const freeLimit = numOrUndef(o.free_limit ?? o.freeLimit);
         // Prefer the server's explicit `entitled`; otherwise derive (paid tier
-        // OR within the free monthly allowance).
+        // OR a positive credit balance). A missing balance is not a yes.
         const entitled = typeof o.entitled === 'boolean'
           ? o.entitled
-          : ((tier !== 'free' && tier !== 'signed-out') || freeRemaining === undefined || freeRemaining > 0);
+          : ((tier !== 'free' && tier !== 'signed-out') || (freeRemaining !== undefined && freeRemaining > 0));
         this._entitlement = {
           entitled,
           tier,
@@ -202,11 +208,11 @@ export class DeepMystAuthManager implements vscode.Disposable {
         // fail-open on a rejected key (only on a not-deployed / unreachable endpoint).
         this._entitlement = { entitled: false, tier: 'unauthorized', source: 'endpoint', checkedAt: Date.now() };
       } else {
-        // 404 (endpoint not deployed yet) or 5xx → graceful lenient fallback.
-        this._entitlement = { entitled: true, tier: 'free', source: 'fallback', checkedAt: Date.now() };
+        // 404 / 5xx: no answer, so no entitlement. Retried after the error TTL.
+        this._entitlement = { entitled: false, tier: 'unavailable', source: 'fallback', checkedAt: Date.now() };
       }
     } catch {
-      this._entitlement = { entitled: true, tier: 'free', source: 'fallback', checkedAt: Date.now() };
+      this._entitlement = { entitled: false, tier: 'unavailable', source: 'fallback', checkedAt: Date.now() };
     }
     this._onDidChangeAuth.fire(this.getState());
     return this._entitlement;

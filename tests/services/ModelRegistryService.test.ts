@@ -185,6 +185,23 @@ describe('ModelRegistryService', () => {
     registry.dispose();
   });
 
+  it('a discovered entry that does not know the window keeps the curated one', async () => {
+    const { context } = makeContext();
+    const registry = new ModelRegistryService(context);
+    registry.setProviderSource(makeSource(CURATED));
+
+    // What the Claude/Gemini/OpenRouter/OpenClaw adapters emit when the API
+    // omits the field: the key is present, the value undefined.
+    await registry._setDiscoveredModels('claude-code', [
+      { id: 'claude-opus-4-5-20251101', name: 'Opus 4.5 (discovered)', contextWindow: undefined },
+    ]);
+
+    expect(registry.getContextWindow('claude-code', 'claude-opus-4-5-20251101')).toBe(200000);
+    expect(registry.getModels('claude-code').models.find(m => m.id === 'claude-opus-4-5-20251101')?.name)
+      .toBe('Opus 4.5 (discovered)');
+    registry.dispose();
+  });
+
   it('drops invalid / non-string custom-model entries from the merged view', () => {
     setMockConfig('customModels', { 'claude-code': ['bad model', 'has;semicolon', 42, '', 'good-model'] });
     const { context } = makeContext();

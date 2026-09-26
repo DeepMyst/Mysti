@@ -87,6 +87,20 @@ describe('cross-vendor instruction files are read', () => {
     expect(mgr.getCrossVendorInstructions()).toEqual([]);
   });
 
+  // The CLI already loads its own file; sending it again doubled it in context
+  // and, on a resumed session, added another copy every turn.
+  it('leaves out the family the target CLI already loads itself', () => {
+    write('AGENTS.md', 'agents'); write('CLAUDE.md', 'claude'); write('GEMINI.md', 'gemini');
+    expect(mgr.getCrossVendorInstructions('CLAUDE.md').map(o => o.label)).toEqual(['AGENTS.md', 'GEMINI.md']);
+    expect(mgr.getCrossVendorInstructions('AGENTS.md').map(o => o.label)).toEqual(['CLAUDE.md', 'GEMINI.md']);
+    expect(mgr.getCrossVendorInstructions(undefined).map(o => o.label)).toEqual(['AGENTS.md', 'CLAUDE.md', 'GEMINI.md']);
+  });
+
+  it('skips the .claude/CLAUDE.md fallback too when CLAUDE.md is the native file', () => {
+    write(path.join('.claude', 'CLAUDE.md'), 'nested');
+    expect(mgr.getCrossVendorInstructions('CLAUDE.md')).toEqual([]);
+  });
+
   it('caps a huge third-party file and SAYS it truncated', () => {
     write('AGENTS.md', 'x'.repeat(20_000));
     const [only] = mgr.getCrossVendorInstructions();
@@ -103,18 +117,20 @@ describe('they are fenced, not trusted', () => {
     // Anchor on the CALL SITE: the first bare occurrence is the definition.
     const idx = src.indexOf('const projectInstructions = this._fenceUntrustedSystemBlock(');
     expect(idx, 'the projectInstructions fence call was not found').toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 1400);
-    expect(block).toContain('getCrossVendorInstructions()');
+    const block = src.slice(idx, idx + 2200);
+    expect(block).toContain('getCrossVendorInstructions(');
     // Inside the fence call's array argument — not appended to
     // fullSystemContext as a separate, unfenced entry.
     const call = block.slice(0, block.indexOf(');') + 2);
-    expect(call, 'the call is outside the fence argument list').toContain('getCrossVendorInstructions()');
+    expect(call, 'the call is outside the fence argument list').toContain('getCrossVendorInstructions(');
   });
 
   it('they respect the existing projectContext gate — no new setting', () => {
     const src = fs.readFileSync(
       path.join(__dirname, '..', '..', 'src', 'providers', 'ChatViewProvider.ts'), 'utf-8');
-    expect(src).toContain('projectContextEnabled ? this._projectContextManager.getCrossVendorInstructions() : []');
+    expect(src).toMatch(/projectContextEnabled\s*\?\s*this\._projectContextManager\.getCrossVendorInstructions\(/);
+    // ...and it passes the target backend's own file, so that file is skipped.
+    expect(src).toMatch(/getCrossVendorInstructions\(\s*this\._providerManager\.getProviderInstance\(effectiveSettings\.provider\)\?\.capabilities\?\.nativeInstructionFile\)/);
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8'));
     const props = Object.keys(pkg.contributes.configuration.properties);
     expect(props.filter(k => /agentsMd|claudeMd|geminiMd|crossVendor/i.test(k))).toEqual([]);

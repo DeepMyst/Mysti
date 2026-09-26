@@ -245,19 +245,22 @@ describe('CliDiscoveryService', () => {
   });
 
   describe('invalidation', () => {
-    it('invalidate() drops everything; next read re-probes', async () => {
+    it('invalidate() marks everything stale; next read re-probes', async () => {
       const claude = fakeProvider('claude-code');
       service = new CliDiscoveryService(new FakeSource([claude]));
 
       await service.getStatus('claude-code');
       service.invalidate();
-      expect(service.peekStatus('claude-code')).toBeUndefined();
+      expect(service.getCachedStatus('claude-code')).toBeUndefined();
+      // Stale-while-revalidate: last-known survives, so an installed CLI does
+      // not read as "not installed" until the re-probe lands.
+      expect(service.peekStatus('claude-code')).toMatchObject({ found: true });
 
       await service.getStatus('claude-code');
       expect(claude.discoverCli).toHaveBeenCalledTimes(2);
     });
 
-    it('invalidate(providerId) drops only that provider', async () => {
+    it('invalidate(providerId) marks only that provider stale', async () => {
       const claude = fakeProvider('claude-code');
       const codex = fakeProvider('openai-codex');
       service = new CliDiscoveryService(new FakeSource([claude, codex]));
@@ -266,8 +269,8 @@ describe('CliDiscoveryService', () => {
       await service.getStatus('openai-codex');
 
       service.invalidate('claude-code');
-      expect(service.peekStatus('claude-code')).toBeUndefined();
-      expect(service.peekStatus('openai-codex')).toBeDefined();
+      expect(service.getCachedStatus('claude-code')).toBeUndefined();
+      expect(service.getCachedStatus('openai-codex')).toBeDefined();
     });
 
     it('invalidates on mysti.* configuration changes only', async () => {
@@ -278,10 +281,10 @@ describe('CliDiscoveryService', () => {
       await service.getStatus('claude-code');
 
       fireConfigurationChange('editor.fontSize');
-      expect(service.peekStatus('claude-code')).toBeDefined();
+      expect(service.getCachedStatus('claude-code')).toBeDefined();
 
       fireConfigurationChange('mysti.claudeCodePath');
-      expect(service.peekStatus('claude-code')).toBeUndefined();
+      expect(service.getCachedStatus('claude-code')).toBeUndefined();
       logSpy.mockRestore();
     });
 
@@ -302,6 +305,22 @@ describe('CliDiscoveryService', () => {
       expect(result).toMatchObject({ found: false });
       // ...but the stale result must not have been cached
       expect(service.peekStatus('claude-code')).toBeUndefined();
+    });
+
+    it('onDidChange fires when a re-probe flips a CLI to installed — and only then', async () => {
+      const cursor = fakeProvider('cursor', { found: false });
+      service = new CliDiscoveryService(new FakeSource([cursor]));
+      const changes: Array<{ providerId: string; found: boolean }> = [];
+      service.onDidChange((s) => changes.push({ providerId: s.providerId, found: s.found }));
+
+      await service.getStatus('cursor');         // first probe: nothing to compare with
+      await service.refresh('cursor');           // same answer: no change
+      expect(changes).toEqual([]);
+
+      cursor.discoverCli.mockResolvedValue({ found: true, path: '/usr/local/bin/cursor-agent' });
+      service.invalidate('cursor');              // what an install does
+      await service.refresh('cursor');
+      expect(changes).toEqual([{ providerId: 'cursor', found: true }]);
     });
 
     it('stops listening after dispose()', async () => {

@@ -40,12 +40,17 @@
  *     text rather than silently swallowing the coordinator's output.
  */
 
+import type { EffortLevel } from '../types';
+
 export type MystiDirectiveKind = 'delegate' | 'read' | 'ls' | 'grep' | 'diag' | 'remember' | 'write' | 'edit' | 'bash' | 'patch' | 'connect' | 'mcptool' | 'findtool' | 'skill' | 'publish' | 'skillrun' | 'look' | 'act' | 'canvas' | 'canvaspage' | 'desk';
 
 export type ModelTier = 'fast' | 'strong';
 
+/** Plan 30: what a delegate may do. The host can only narrow it, never widen it. */
+export type DelegateAccess = 'read-only' | 'write';
+
 export type MystiDirective =
-  | { kind: 'delegate'; agent: string; task: string; tier?: ModelTier }
+  | { kind: 'delegate'; agent: string; task: string; tier?: ModelTier; model?: string; effort?: EffortLevel; access?: DelegateAccess }
   | { kind: 'read'; path: string; startLine?: number; endLine?: number }
   | { kind: 'ls'; path: string }
   | { kind: 'grep'; pattern: string; include?: string }
@@ -123,6 +128,35 @@ export interface TagScanResult {
 
 /** Read-only + delegate directive kinds — always active in the coordinator loop. */
 export const ALL_MYSTI_KINDS: MystiDirectiveKind[] = ['delegate', 'read', 'ls', 'grep', 'diag', 'remember'];
+
+const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** Model ids are echoed back in routing notes and can reach a CLI `--model` slot: no spaces, quotes, newlines, or a leading `-`/`.`. */
+const MODEL_ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}$/;
+
+/**
+ * Build a delegate directive from raw, MODEL-AUTHORED fields (both the text tag
+ * and the native tool call land here). Unknown tier/effort/access values are
+ * DROPPED, not rejected — a typo degrades to default routing instead of voiding
+ * the delegation (review[2]). `model` is only shape-checked here; the host
+ * validates it against the target's real model list before using it.
+ */
+export function delegateDirective(
+  agentRaw: unknown,
+  taskRaw: unknown,
+  f: { tier?: unknown; model?: unknown; effort?: unknown; access?: unknown },
+): Extract<MystiDirective, { kind: 'delegate' }> | null {
+  const agent = typeof agentRaw === 'string' ? agentRaw.trim() : '';
+  const task = typeof taskRaw === 'string' ? taskRaw.trim() : '';
+  if (!agent || !task) { return null; }
+  const tier = f.tier === 'fast' || f.tier === 'strong' ? f.tier : undefined;
+  const model = typeof f.model === 'string' && MODEL_ID_SHAPE.test(f.model.trim()) ? f.model.trim() : undefined;
+  const effort = EFFORT_LEVELS.includes(f.effort as EffortLevel) ? f.effort as EffortLevel : undefined;
+  const access = f.access === 'read-only' || f.access === 'write' ? f.access : undefined;
+  return {
+    kind: 'delegate', agent, task,
+    ...(tier ? { tier } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(access ? { access } : {}),
+  };
+}
 
 /**
  * Local EXECUTION directive kinds (Plan 19 Phase 0) — gated `write`/`edit`.
@@ -240,10 +274,9 @@ export class MystiTagScanner {
   private static _kindRegex(kind: MystiDirectiveKind, esc: string): RegExp {
     switch (kind) {
       case 'delegate':
-        // review[2]: accept ANY tier value ("([^"]*)") so an unknown tier (e.g.
-        // tier="medium") still matches the tag — `_parse` validates it and falls
-        // back to default routing rather than voiding the whole delegation.
-        return new RegExp(`^<delegate:${esc}\\s+agent\\s*=\\s*"([^"]+)"(?:\\s+tier\\s*=\\s*"([^"]*)")?\\s*>([\\s\\S]*?)<\\/delegate>$`);
+        // Plan 30: attributes as ONE linear blob split by _parseAttrs — order-
+        // independent, and every repetition anchored by a mandatory `="…"`.
+        return new RegExp(`^<delegate:${esc}((?:\\s+[a-zA-Z]+\\s*=\\s*"[^"]*")*)\\s*>([\\s\\S]*?)<\\/delegate>$`);
       case 'read':
         return new RegExp(`^<read:${esc}(?:\\s+lines\\s*=\\s*"(\\d+)\\s*-\\s*(\\d+)")?\\s*>([\\s\\S]*?)<\\/read>$`);
       case 'ls':
@@ -508,13 +541,8 @@ export class MystiTagScanner {
     }
     switch (hit.kind) {
       case 'delegate': {
-        const agent = m[1].trim();
-        // Validate the (now permissively-captured) tier: anything other than the
-        // known tiers degrades to default routing (undefined) — review[2].
-        const rawTier = m[2];
-        const tier: ModelTier | undefined = rawTier === 'fast' || rawTier === 'strong' ? rawTier : undefined;
-        const task = m[3].trim();
-        return agent && task ? { kind: 'delegate', agent, task, ...(tier ? { tier } : {}) } : null;
+        const a = MystiTagScanner._parseAttrs(m[1]);
+        return delegateDirective(a.agent, m[2], a);
       }
       case 'read': {
         const path = m[3].trim();

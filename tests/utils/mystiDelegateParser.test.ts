@@ -213,7 +213,6 @@ describe('DelegateScanner (incremental)', () => {
 // ============================================================================
 // Plan 17 P0.1 — MystiTagScanner (multi-tag: delegate + read/ls/grep/diag)
 // ============================================================================
-import { MystiTagScanner, type MystiDirective } from '../../src/utils/mystiDelegateParser';
 
 function scanAll(input: string, nonce = N) {
   const s = new MystiTagScanner(nonce);
@@ -756,5 +755,35 @@ describe('MystiTagScanner desk kind (Plan 21)', () => {
   it('does not run away on an unterminated tag', () => {
     const r = scanKinds(`<desk:${N} peer="alice" verb="locate">{"token":"x"`, withDesk);
     expect(r.directives).toHaveLength(0);
+  });
+});
+
+describe('delegate attributes (Plan 30 §2)', () => {
+  const N = 'abc12345';
+  const scan = (tag: string) => {
+    const s = new MystiTagScanner(N, ['delegate']);
+    const r = s.feed(tag);
+    return r.directive ?? s.flush().directive;
+  };
+
+  it('parses model, effort and access in any order', () => {
+    expect(scan(`<delegate:${N} access="read-only" agent="mysti" effort="low" model="stealth/space-bunny-alpha">find X</delegate>`)).toEqual({
+      kind: 'delegate', agent: 'mysti', task: 'find X', model: 'stealth/space-bunny-alpha', effort: 'low', access: 'read-only',
+    });
+  });
+
+  it('drops unknown values instead of voiding the delegation', () => {
+    expect(scan(`<delegate:${N} agent="codex" tier="medium" effort="ultra" access="root" model="bad model">t</delegate>`))
+      .toEqual({ kind: 'delegate', agent: 'codex', task: 't' });
+  });
+
+  it('still requires an agent and a task', () => {
+    expect(scan(`<delegate:${N} tier="fast">t</delegate>`)).toBeFalsy();
+  });
+
+  it('drops a model id that could read as a flag or a path (T11)', () => {
+    expect(scan(`<delegate:${N} agent="codex" model="--yolo">t</delegate>`)).toEqual({ kind: 'delegate', agent: 'codex', task: 't' });
+    expect(scan(`<delegate:${N} agent="codex" model="../x">t</delegate>`)).toEqual({ kind: 'delegate', agent: 'codex', task: 't' });
+    expect(scan(`<delegate:${N} agent="codex" model="gpt-6-sol">t</delegate>`)).toMatchObject({ model: 'gpt-6-sol' });
   });
 });

@@ -45,16 +45,18 @@ describe('CodexProvider.buildCliArgs', () => {
     expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
-  it('should use full-auto for default + full-access', () => {
+  it('should use --sandbox workspace-write for default + full-access', () => {
     const args = provider.buildCliArgs(defaultSettings({
       accessLevel: 'full-access',
     }), createCodexSession());
-    expect(args).toContain('--full-auto');
+    expect(args[args.indexOf('--sandbox') + 1]).toBe('workspace-write');
+    expect(args).not.toContain('--full-auto');
   });
 
-  it('should use full-auto as fallback for ask-permission', () => {
+  it('should use --sandbox workspace-write as fallback for ask-permission', () => {
     const args = provider.buildCliArgs(defaultSettings(), createCodexSession());
-    expect(args).toContain('--full-auto');
+    expect(args[args.indexOf('--sandbox') + 1]).toBe('workspace-write');
+    expect(args).not.toContain('--full-auto');
   });
 
   it('should map effort to -c model_reasoning_effort', () => {
@@ -84,5 +86,15 @@ describe('stdin marker (Plan 18 Wave 3)', () => {
     const provider = new TestableCodexProvider();
     const args = provider.buildCliArgs(defaultSettings(), createCodexSession());
     expect(args[args.length - 1]).toBe('-');
+  });
+});
+
+describe('codexConfiguredContextWindow', () => {
+  it('reads a top-level model_context_window — the one case Codex runs past 272k', async () => {
+    const { codexConfiguredContextWindow } = await import('../../../src/providers/codex/CodexProvider');
+    expect(codexConfiguredContextWindow('model = "gpt-6-astra"\nmodel_context_window = 800_000 # raised\n')).toBe(800000);
+    expect(codexConfiguredContextWindow('model = "gpt-6-astra"\n')).toBeUndefined();
+    // Inside a [profiles.x] table it is not the top-level setting.
+    expect(codexConfiguredContextWindow('[profiles.big]\nmodel_context_window = 800000\n')).toBeUndefined();
   });
 });

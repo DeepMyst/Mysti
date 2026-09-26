@@ -80,7 +80,7 @@ function makeProvider(): any {
   const extensionContext = createMockExtensionContext();
   const noop = {} as any;
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProvider: vi.fn(() => ({ name: 'claude-code', models: [], defaultModel: 'm' })),
     getProviderInstance: () => undefined,
     getAllProviders: () => [],
@@ -98,33 +98,39 @@ function makeProvider(): any {
     memoryManager: noop,
     brainstormManager: noop,
   });
-  return new ChatViewProvider(
-    extensionContext.extensionUri,
+  return new ChatViewProvider({
+    extensionUri: extensionContext.extensionUri,
     extensionContext,
-    { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
-    { getCurrentConversation: () => null, getConversation: vi.fn(() => null) } as any,
+    contextManager: { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
+    conversationManager: { getCurrentConversation: () => null, getConversation: vi.fn(() => null) } as any,
     providerManager,
-    noop, noop,
-    new PermissionManager('ask-permission'),
-    {
+    suggestionManager: noop,
+    brainstormManager: noop,
+    permissionManager: new PermissionManager('ask-permission'),
+    setupManager: {
       getWizardStatus: async () => ({ anyReady: false, providers: [] }),
       getWizardStatusCached: () => ({ anyReady: false, providers: [], complete: false }),
       ensureProviderStatusFresh: async () => undefined,
       onWizardStatusUpdated: () => ({ dispose: () => {} }),
     } as any,
-    noop, noop,
-    { learnFromPermissionDecision: vi.fn() } as any,
-    {
+    telemetryManager: noop,
+    autonomousManager: noop,
+    memoryManager: { learnFromPermissionDecision: vi.fn() } as any,
+    compactionManager: {
       getStrategy: vi.fn(() => 'client-summarize'),
       getUsage: vi.fn(() => ({ totalInputTokens: 0, totalOutputTokens: 0 })),
+      getLastFill: vi.fn(() => null),
       resetUsage: vi.fn(),
       evaluateCompaction: vi.fn(() => ({ act: false, smart: false })),
+      canAutoCompact: () => true,
+      cliOwnsHistory: () => false,
+      mystiSendsFullHistory: () => false,
       appendHistory: vi.fn(),
       isSmartActive: vi.fn(() => false),
     } as any,
-    { onLifecycleEvent: () => undefined } as any,
+    lifecycleManager: { onLifecycleEvent: () => undefined } as any,
     slashCommandManager,
-    {
+    activeModeManager: {
       onStatusChanged: () => undefined,
       onChannelChanged: () => undefined,
       onActivity: () => undefined,
@@ -132,8 +138,12 @@ function makeProvider(): any {
       isConnected: () => false,
       isInstalled: () => false,
     } as any,
-    noop, noop, noop, noop, createModelRegistryStub() as any,
-  );
+    engagementManager: noop,
+    projectContextManager: noop,
+    visualTestManager: noop,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: undefined as any
+  });
 }
 
 describe('canvas handoff — assets and the open design', () => {

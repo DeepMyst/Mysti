@@ -351,16 +351,18 @@ export class ProjectContextManager {
    * large one would otherwise silently consume the context window. The cap is
    * announced in the injected text rather than truncating in silence.
    */
-  public getCrossVendorInstructions(): Array<{ label: string; content: string }> {
+  public getCrossVendorInstructions(skipFamily?: string): Array<{ label: string; content: string }> {
     if (!this._workspaceRoot) { return []; }
     const root = this._workspaceRoot;
 
     // label -> first existing candidate. Order is the vendor's own convention.
+    // `skipFamily` is the file the target CLI already loads itself
+    // (ProviderCapabilities.nativeInstructionFile), so it is not sent twice.
     const families: Array<{ label: string; candidates: string[] }> = [
       { label: 'AGENTS.md', candidates: ['AGENTS.md'] },
       { label: 'CLAUDE.md', candidates: ['CLAUDE.md', path.join('.claude', 'CLAUDE.md')] },
       { label: 'GEMINI.md', candidates: ['GEMINI.md'] },
-    ];
+    ].filter(f => f.label !== skipFamily);
 
     const out: Array<{ label: string; content: string }> = [];
     for (const family of families) {

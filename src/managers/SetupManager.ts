@@ -106,6 +106,10 @@ export class SetupManager {
     this._extensionContext = context;
     this._providerManager = providerManager;
     this._discoveryService = discoveryService;
+    // An install or sign-in that flips a CLI's state reaches every panel now,
+    // on the same event the background refresh uses — the agent menu used to
+    // keep "Not Installed" until some unrelated read refreshed it.
+    discoveryService?.onDidChange(() => this._onWizardStatusUpdatedEmitter.fire(this.getWizardStatusCached()));
   }
 
   // ============================================================================
@@ -572,8 +576,7 @@ export class SetupManager {
 
           const localDiscovery = await provider.discoverCli();
           if (localDiscovery.found) {
-            // Install mutated CLI state — drop the cached discovery status
-            this._discoveryService?.invalidate(providerId);
+            await this._recordInstall(providerId);
             return { success: true };
           }
         }
@@ -606,8 +609,7 @@ export class SetupManager {
 
             const localDiscovery = await provider.discoverCli();
             if (localDiscovery.found) {
-              // Install mutated CLI state — drop the cached discovery status
-              this._discoveryService?.invalidate(providerId);
+              await this._recordInstall(providerId);
               return { success: true, attemptNumber: result.attemptNumber };
             }
           }
@@ -636,8 +638,7 @@ export class SetupManager {
         };
       }
 
-      // Install mutated CLI state — drop the cached discovery status
-      this._discoveryService?.invalidate(providerId);
+      await this._recordInstall(providerId);
       return { success: true };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1311,6 +1312,41 @@ export class SetupManager {
         });
       });
     });
+  }
+
+  /**
+   * Install mutated CLI state: drop the cached status (so an older in-flight
+   * probe cannot write "not found" over it), then re-probe at once — that
+   * probe flipping the status is what tells the panels. Merely invalidating
+   * waited for someone else's read.
+   */
+  private async _recordInstall(providerId: string): Promise<void> {
+    this._discoveryService?.invalidate(providerId);
+    await this._discoveryService?.refresh(providerId);
+  }
+
+  /**
+   * An install the user runs in a terminal (or a download page) ends where
+   * Mysti cannot see it, so re-probe that one CLI until it appears; the probe
+   * flipping it is what updates the panels. Stops once found, when the
+   * terminal closes (after one last look), or after ten minutes. A not-found
+   * probe is a PATH lookup — it skips the auth check.
+   * ponytail: fixed 5s poll; VS Code's onDidEndTerminalShellExecution could
+   * replace it once the engine floor reaches 1.93.
+   */
+  watchForInstall(providerId: string, terminal?: vscode.Terminal, intervalMs = 5000, timeoutMs = 10 * 60_000): void {
+    const discovery = this._discoveryService;
+    if (!discovery) { return; }
+    const deadline = Date.now() + timeoutMs;
+    const check = async (): Promise<void> => {
+      const [status] = await discovery.refresh(providerId).catch(() => []);
+      if (status?.found || Date.now() > deadline) { stop(); }
+    };
+    const timer = setInterval(() => { void check(); }, intervalMs);
+    const closed = vscode.window.onDidCloseTerminal((t) => {
+      if (terminal && t === terminal) { stop(); void discovery.refresh(providerId).catch(() => []); }
+    });
+    function stop(): void { clearInterval(timer); closed.dispose(); }
   }
 
   /**

@@ -51,6 +51,13 @@ export interface CodexSessionState extends PanelSessionState {
   stderrTail: string;
 }
 
+/** Top-level `model_context_window` in a Codex config.toml (tables ignored), if set. */
+export function codexConfiguredContextWindow(toml: string): number | undefined {
+  const topLevel = toml.split(/^\s*\[/m)[0];
+  const match = /^\s*model_context_window\s*=\s*(\d[\d_]*)\s*(?:#.*)?$/m.exec(topLevel);
+  return match ? Number(match[1].replace(/_/g, '')) : undefined;
+}
+
 /**
  * OpenAI Codex CLI provider implementation
  * Requires ChatGPT Plus/Pro subscription or API key for authentication
@@ -70,51 +77,49 @@ export class CodexProvider extends BaseCliProvider {
   readonly config: ProviderConfig = {
     name: 'openai-codex',
     displayName: 'OpenAI Codex',
+    // Windows are what the Codex CLI RUNS these models at — `context_window`
+    // in its own catalog (~/.codex/models_cache.json, verified 2026-09-25;
+    // every rollout reports model_context_window 258,400 = 95% of it) — not
+    // the API maximum (1.05M). Declaring the API figure made the pie read a
+    // quarter of the real fill and the threshold never fire before Codex's
+    // own compaction. `model_context_window` in config.toml can raise it; see
+    // takeReportedContextWindow.
     models: [
       {
-        // Released 2026-09-03. Codex CLI added support in v0.153.1 but keeps it
-        // OUT of its own model picker (Trusted Access Programme on-ramp), so it
-        // will never arrive by discovery — this curated entry is the only way it
-        // reaches the dropdown. Deliberately NOT the defaultModel: selecting it
-        // without Trusted Access, or on a CLI older than 0.153.1, fails.
+        // Released 2026-09-03. Deliberately NOT the defaultModel: selecting it
+        // without Trusted Access, or on a CLI older than 0.153.0, fails.
         id: 'gpt-6-astra',
         name: 'GPT-6 Astra',
-        description: 'Flagship reasoning + coding model. Requires Trusted Access and Codex CLI 0.153.1+',
-        contextWindow: 1050000,
+        description: 'Flagship reasoning + coding model. Requires Trusted Access and Codex CLI 0.153.0+',
+        contextWindow: 272000,
         releasedAt: '2026-09-03'
       },
       {
         id: 'gpt-5.6-sol',
         name: 'GPT-5.6 Sol',
         description: 'Flagship for complex coding, computer use, research and cybersecurity',
-        contextWindow: 1100000
+        contextWindow: 272000
       },
       {
         id: 'gpt-5.6-terra',
         name: 'GPT-5.6 Terra',
         description: 'Balanced everyday work — the successor to GPT-5.4',
-        contextWindow: 1100000
+        contextWindow: 272000
       },
       {
         id: 'gpt-5.6-luna',
         name: 'GPT-5.6 Luna',
         description: 'Fastest and most affordable — the successor to GPT-5.4 mini',
-        contextWindow: 1100000
+        contextWindow: 272000
       },
-      // The two below have no published context window. Leaving it undefined
-      // falls back to 200k, which only makes compaction fire EARLIER than
-      // needed — the safe direction. Overstating a window instead overflows the
-      // model and hard-fails the turn, so never guess upward here.
       {
         id: 'gpt-5.5',
         name: 'GPT-5.5',
-        description: 'Previous-generation flagship'
-      },
-      {
-        id: 'gpt-5.3-codex-spark',
-        name: 'GPT-5.3 Codex Spark',
-        description: 'Text-only research preview tuned for real-time coding'
+        description: 'Previous-generation flagship',
+        contextWindow: 272000
       }
+      // gpt-5.3-codex-spark: retired the week of 2026-09-14 (gone from Codex's
+      // catalog). A user who still has it selected keeps it as a custom id.
     ],
     defaultModel: 'gpt-5.6-sol'
   };
@@ -137,8 +142,10 @@ export class CodexProvider extends BaseCliProvider {
     effortDefault: 'medium',
     planMode: 'detected',
     sessionKind: 'prompt-history',     // no actual resume today (F15) — history replayed into the prompt
+    nativeInstructionFile: 'AGENTS.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'openai',   // Codex reports cached_input_tokens as a SUBSET of input_tokens (OpenAI convention).
     modelSelection: 'full'
   };
 
@@ -225,6 +232,21 @@ export class CodexProvider extends BaseCliProvider {
   /**
    * Get stored usage stats from turn.completed and clear them
    */
+  /**
+   * Codex prints no window on stdout, but a top-level `model_context_window`
+   * in config.toml is what it then runs with — the one case the catalog's
+   * 272k is wrong.
+   * ponytail: profiles, `-c` overrides and the CLI's clamp to the model's
+   * max_context_window are not modelled; add when someone relies on them.
+   */
+  protected override takeReportedContextWindow(): number | undefined {
+    try {
+      return codexConfiguredContextWindow(fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8'));
+    } catch {
+      return undefined;
+    }
+  }
+
   getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null {
     const session = this._getSession(panelId) as CodexSessionState;
     const usage = session.lastUsageStats;
@@ -356,7 +378,6 @@ export class CodexProvider extends BaseCliProvider {
    *
    * Key flags from codex exec --help:
    * - --sandbox, -s: read-only | workspace-write | danger-full-access
-   * - --full-auto: workspace-write sandbox with auto-approve on request
    * - --dangerously-bypass-approvals-and-sandbox: skip all confirmations (DANGEROUS)
    * - --json: output JSONL events to stdout
    * - --model, -m: override configured model
@@ -437,17 +458,13 @@ export class CodexProvider extends BaseCliProvider {
       return;
     }
 
-    // default mode + full-access = full-auto (no explicit edit restriction)
-    if (mode === 'default' && accessLevel === 'full-access') {
-      args.push('--full-auto');
-      console.log('[Mysti] Codex: Using full-auto mode (default + full-access)');
-      return;
-    }
-
-    // All other combinations: bypass CLI permissions to prevent stdin hang.
-    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-    args.push('--full-auto');
-    console.log(`[Mysti] Codex: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
+    // Everything else: workspace-write sandbox. `codex exec` already never asks
+    // for approval when headless (exec/src/lib.rs, rust-v0.153.4), so there is
+    // no stdin prompt to hang on; the stream-level tool-use gate in
+    // ChatViewProvider handles permission prompts. NOT `--full-auto`: Codex
+    // 0.153.4 removed it and rejects the whole invocation at argument parsing.
+    args.push('--sandbox', 'workspace-write');
+    console.log(`[Mysti] Codex: workspace-write sandbox (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**

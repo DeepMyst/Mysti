@@ -212,7 +212,10 @@ describe('CliUpdateService', () => {
     it('builds the command from the in-repo package literal only', () => {
       const svc = new CliUpdateService(ctx.context, makeVersions([]), npm);
       expect(svc.getUpdateCommand('openai-codex')).toBe('npm install -g @openai/codex@latest');
-      expect(svc.getUpdateCommand('claude-code')).toBe('npm install -g @anthropic-ai/claude-code@latest');
+      // Claude Code is detected via npm but must be updated with its OWN
+      // installer: `npm i -g` writes /usr/local/bin while the native installer
+      // writes ~/.local/bin, which is what PATH (and therefore Mysti) resolves.
+      expect(svc.getUpdateCommand('claude-code')).toBe('claude install latest');
     });
 
     it('returns undefined for a non-npm or unknown provider, so no card can offer a command', () => {
@@ -247,7 +250,9 @@ describe('CliUpdateService', () => {
 
       const [cmd, args, opts] = execFileMock.mock.calls[0];
       expect(cmd).toBe('/usr/bin/npm');
-      expect(args).toEqual(['view', '@openai/codex', 'version']);
+      // `engines.node` rides along so the newest release can be checked against
+      // the running Node in the SAME call — see the engine-gating tests below.
+      expect(args).toEqual(['view', '@openai/codex', 'version', 'engines.node', '--json']);
       expect((opts as { shell?: boolean }).shell).toBeUndefined();
     });
   });
@@ -313,3 +318,196 @@ describe('CliUpdateService', () => {
     expect(spy2).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Node-engine gating (2026-09-06)
+//
+// "Latest published" and "latest installable" are not the same version, and
+// offering the former is offering a command that fails. openclaw 2026.9.2
+// requires Node >=22.22.3; on a Node 22.20.0 machine `npm i -g openclaw@latest`
+// aborts in a preinstall hook — and, batched with other packages in one
+// `npm i -g`, took every one of them down with it and installed nothing.
+// ---------------------------------------------------------------------------
+import { satisfiesNodeRange, parseNpmViewEntries } from '../../src/services/CliUpdateService';
+
+describe('satisfiesNodeRange', () => {
+  it('handles the ranges package authors actually write', () => {
+    // The real openclaw range, against the real Node that failed on it.
+    const openclaw = '>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0';
+    expect(satisfiesNodeRange('22.20.0', openclaw)).toBe(false);
+    expect(satisfiesNodeRange('22.22.3', openclaw)).toBe(true);
+    expect(satisfiesNodeRange('22.23.2', openclaw)).toBe(true);
+    expect(satisfiesNodeRange('23.0.0', openclaw)).toBe(false);
+    expect(satisfiesNodeRange('24.15.0', openclaw)).toBe(true);
+    expect(satisfiesNodeRange('26.0.0', openclaw)).toBe(true);
+  });
+
+  it('handles a bare lower bound and partial versions', () => {
+    expect(satisfiesNodeRange('22.20.0', '>=22.19.0')).toBe(true);
+    expect(satisfiesNodeRange('22.20.0', '>=24')).toBe(false);
+    expect(satisfiesNodeRange('22.20.0', '>=20 <23')).toBe(true);
+    expect(satisfiesNodeRange('v22.20.0', '>=22.19.0')).toBe(true);
+  });
+
+  it('treats an absent or wildcard range as satisfied', () => {
+    expect(satisfiesNodeRange('22.20.0', undefined)).toBe(true);
+    expect(satisfiesNodeRange('22.20.0', '')).toBe(true);
+    expect(satisfiesNodeRange('22.20.0', '*')).toBe(true);
+  });
+
+  /**
+   * This function only ever DOWNGRADES what Mysti offers, so "I could not read
+   * that" has to mean "offer the latest and let npm speak". Failing closed would
+   * silently hide good updates behind a range syntax nobody anticipated.
+   */
+  it('fails OPEN on a range it cannot parse', () => {
+    expect(satisfiesNodeRange('22.20.0', '^22 || lts/*')).toBe(true);
+    expect(satisfiesNodeRange('22.20.0', 'weird nonsense')).toBe(true);
+  });
+});
+
+describe('parseNpmViewEntries', () => {
+  it('reads every shape npm actually emits', () => {
+    // One match, two fields.
+    expect(parseNpmViewEntries('{"version":"1.2.3","engines.node":">=20"}'))
+      .toEqual([{ version: '1.2.3', engines: '>=20' }]);
+    // Many matches.
+    expect(parseNpmViewEntries('[{"version":"1.0.0"},{"version":"1.1.0","engines.node":">=22"}]'))
+      .toEqual([{ version: '1.0.0', engines: undefined }, { version: '1.1.0', engines: '>=22' }]);
+    // One match, one field: a bare JSON string.
+    expect(parseNpmViewEntries('"1.2.3"')).toEqual([{ version: '1.2.3' }]);
+    // An older npm prints it unquoted.
+    expect(parseNpmViewEntries('1.2.3\n')).toEqual([{ version: '1.2.3' }]);
+  });
+
+  it('drops rows without a usable version rather than trusting them', () => {
+    expect(parseNpmViewEntries('[{"engines.node":">=20"},{"version":42},{"version":"2.0.0"}]'))
+      .toEqual([{ version: '2.0.0', engines: undefined }]);
+    expect(parseNpmViewEntries('')).toEqual([]);
+    expect(parseNpmViewEntries('not json at all')).toEqual([{ version: 'not json at all' }]);
+  });
+});
+
+describe('offering an update that can actually be installed', () => {
+  let ctx: ReturnType<typeof makeContext>;
+  const npm = { getNpmPath: () => '/usr/bin/npm' };
+
+  beforeEach(() => {
+    execFileMock.mockReset();
+    ctx = makeContext();
+  });
+
+  /**
+   * Answer npm per SPEC, so the range query used to find an older compatible
+   * release is distinguishable from the plain latest lookup.
+   */
+  function stubRegistry(bySpec: Record<string, string>) {
+    execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+      const spec = args[1];
+      const result = bySpec[spec];
+      if (result === undefined) { cb(new Error(`E404 ${spec}`)); } else { cb(null, result); }
+      return { on: () => undefined };
+    });
+  }
+
+  /** The exact openclaw situation that installed nothing at all. */
+  it('offers the newest release this Node can install, not the newest published', async () => {
+    stubRegistry({
+      'openclaw': JSON.stringify({
+        version: '2026.9.2',
+        'engines.node': `>=${bump(process.versions.node)} <99`,
+      }),
+      'openclaw@<2026.9.2': JSON.stringify([
+        { version: '2026.6.30', 'engines.node': '>=18.0.0' },
+        { version: '2026.6.34', 'engines.node': '>=18.0.0' },
+        { version: '2026.8.1', 'engines.node': `>=${bump(process.versions.node)} <99` },
+      ]),
+    });
+
+    const svc = new CliUpdateService(
+      ctx.context,
+      makeVersions([{ providerId: 'openclaw', found: true, version: '2026.2.13' }]),
+      npm
+    );
+    await svc.checkAll();
+
+    const [update] = svc.getUpdates();
+    expect(update.latest).toBe('2026.9.2');
+    expect(update.installable).toBe('2026.6.34');
+    expect(update.blockedByNodeEngine).toBe(true);
+    expect(update.requiredNode).toContain('>=');
+
+    // …and the command pins that version rather than saying @latest, which is
+    // the command that aborts in a preinstall hook.
+    expect(svc.getUpdateCommand('openclaw')).toBe('npm install -g openclaw@2026.6.34');
+  });
+
+  it('uses @latest when the newest release runs on this Node', async () => {
+    stubRegistry({
+      'openclaw': JSON.stringify({ version: '2026.9.2', 'engines.node': '>=18.0.0' }),
+    });
+    const svc = new CliUpdateService(
+      ctx.context,
+      makeVersions([{ providerId: 'openclaw', found: true, version: '2026.2.13' }]),
+      npm
+    );
+    await svc.checkAll();
+
+    const [update] = svc.getUpdates();
+    expect(update.installable).toBe('2026.9.2');
+    expect(update.blockedByNodeEngine).toBe(false);
+    expect(svc.getUpdateCommand('openclaw')).toBe('npm install -g openclaw@latest');
+    // Only one registry call: the fallback search is not made when it is moot.
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * When even the newest compatible release is not ahead of what is installed,
+   * there is nothing to offer — and nagging with an uninstallable version would
+   * be worse than silence.
+   */
+  it('says nothing when no installable release is newer than what is installed', async () => {
+    stubRegistry({
+      'openclaw': JSON.stringify({
+        version: '2026.9.2',
+        'engines.node': `>=${bump(process.versions.node)} <99`,
+      }),
+      'openclaw@<2026.9.2': JSON.stringify([
+        { version: '2026.6.30', 'engines.node': `>=${bump(process.versions.node)} <99` },
+      ]),
+    });
+    const svc = new CliUpdateService(
+      ctx.context,
+      makeVersions([{ providerId: 'openclaw', found: true, version: '2026.6.34' }]),
+      npm
+    );
+    await svc.checkAll();
+    expect(svc.getUpdates()).toEqual([]);
+  });
+
+  it('never steers onto a prerelease', async () => {
+    stubRegistry({
+      'openclaw': JSON.stringify({
+        version: '2026.9.2',
+        'engines.node': `>=${bump(process.versions.node)} <99`,
+      }),
+      'openclaw@<2026.9.2': JSON.stringify([
+        { version: '2026.6.34', 'engines.node': '>=18.0.0' },
+        { version: '2026.7.1-beta.6', 'engines.node': '>=18.0.0' },
+      ]),
+    });
+    const svc = new CliUpdateService(
+      ctx.context,
+      makeVersions([{ providerId: 'openclaw', found: true, version: '2026.2.13' }]),
+      npm
+    );
+    await svc.checkAll();
+    expect(svc.getUpdates()[0].installable).toBe('2026.6.34');
+  });
+});
+
+/** A Node version one minor above the running one — guaranteed incompatible. */
+function bump(nodeVersion: string): string {
+  const [major, minor] = nodeVersion.replace(/^v/, '').split('.').map(Number);
+  return `${major}.${minor + 1}.0`;
+}

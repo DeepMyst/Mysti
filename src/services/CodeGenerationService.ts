@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { errorMessage } from '../utils/valueGuards';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
@@ -114,9 +115,9 @@ export class CodeGenerationService {
         opts.imageBase64 || '',
         systemPrompt + '\n\n' + userPrompt
       );
-    } catch (err: any) {
-      console.log(`[Mysti] CodeGen: Vision API error: ${err.message}`);
-      yield { type: 'error', content: `Code generation failed: ${err.message}` };
+    } catch (err: unknown) {
+      console.log(`[Mysti] CodeGen: Vision API error: ${errorMessage(err)}`);
+      yield { type: 'error', content: `Code generation failed: ${errorMessage(err)}` };
       return;
     }
 
@@ -191,8 +192,8 @@ Use \`\`\`component and \`\`\`story code fences.`;
     let fullResponse = '';
     try {
       fullResponse = await opts.imageService.analyzeImage('', systemPrompt + '\n\n' + prompt);
-    } catch (err: any) {
-      yield { type: 'error', content: `Regeneration failed: ${err.message}` };
+    } catch (err: unknown) {
+      yield { type: 'error', content: `Regeneration failed: ${errorMessage(err)}` };
       return;
     }
 

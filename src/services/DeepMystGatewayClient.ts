@@ -30,6 +30,8 @@
  */
 
 import type { GatewayCompletion } from '../types';
+import { applyCacheBreakpoints, readCacheTokens } from './PromptCache';
+import { createAbortScope } from '../utils/abortScope';
 import { ToolCallAccumulator, type AccumulatedToolCall, type ToolCallDelta } from '../utils/toolCallAccumulator';
 
 export interface GatewayChatMessage {
@@ -47,7 +49,7 @@ export interface GatewayChatMessage {
 export interface GatewayStreamEvent {
   text?: string;
   reasoning?: string;
-  usage?: { inputTokens?: number; outputTokens?: number };
+  usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number };
   done?: boolean;
   error?: string;
   /**
@@ -122,16 +124,17 @@ export class DeepMystGatewayClient {
     }
 
     const timeoutMs = params.timeoutMs ?? 60_000;
-    const signal = composeSignal(timeoutMs, params.signal);
+    const abortScope = createAbortScope([params.signal], timeoutMs);
 
     const body = {
       model: params.model,
-      messages: params.messages,
+      messages: applyCacheBreakpoints(params.messages, params.model),
       max_tokens: params.maxTokens ?? 1024,
       stream: false,
     };
 
     try {
+      abortScope.signal.throwIfAborted();
       const res = await fetch(`${this._baseUrl()}/v1/chat/completions`, {
         method: 'POST',
         headers: {
@@ -140,7 +143,7 @@ export class DeepMystGatewayClient {
           Accept: 'application/json',
         },
         body: JSON.stringify(body),
-        signal,
+        signal: abortScope.signal,
       });
 
       if (!res.ok) {
@@ -153,18 +156,22 @@ export class DeepMystGatewayClient {
       const data = await res.json() as GatewayChatResponse;
       const text = data?.choices?.[0]?.message?.content ?? '';
       const usage = data?.usage;
+      const cacheTokens = readCacheTokens(usage);
 
       return {
         text: typeof text === 'string' ? text : '',
         costUsd,
         inputTokens: usage?.prompt_tokens,
         outputTokens: usage?.completion_tokens,
+        ...cacheTokens,
         model: typeof data?.model === 'string' ? data.model : undefined,
       };
     } catch (err) {
       const error = errMessage(err);
       console.warn(`[Mysti] DeepMyst gateway chat failed: ${error}`);
       return { text: '', failed: true, error };
+    } finally {
+      abortScope.dispose();
     }
   }
 
@@ -198,126 +205,139 @@ export class DeepMystGatewayClient {
     };
     const disarmIdle = () => { if (idleTimer) { clearTimeout(idleTimer); idleTimer = undefined; } };
 
-    armIdle();
-    let res: Response;
+    const abortScope = createAbortScope([params.signal, idle.signal]);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let res: Response | undefined;
     try {
-      res = await fetch(`${this._baseUrl()}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${key}`,
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-        },
-        body: JSON.stringify({
-          model: params.model,
-          messages: params.messages,
-          max_tokens: params.maxTokens ?? 2048,
-          stream: true,
-          stream_options: { include_usage: true },
-          ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
-          ...(params.tools && params.tools.length ? { tools: params.tools, tool_choice: 'auto' } : {}),
-        }),
-        signal: composeAbort(idle.signal, params.signal),
-      });
-    } catch (err) {
-      disarmIdle();
-      yield { error: errMessage(err) };
-      return;
-    }
-
-    if (!res.ok || !res.body) {
-      disarmIdle();
-      if (!res.ok) {
-        const detail = redactSecrets(await safeText(res));
-        yield { error: `HTTP ${res.status}${detail ? `: ${detail}` : ''}` };
-      } else {
-        yield { error: 'DeepMyst stream had no body' };
+      armIdle();
+      try {
+        abortScope.signal.throwIfAborted();
+        res = await fetch(`${this._baseUrl()}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+          },
+          body: JSON.stringify({
+            model: params.model,
+            // Explicit prompt-cache breakpoints on the stable prefix — the ReAct
+            // loop re-sends the system prompt on every round-trip and Anthropic
+            // models cache nothing without one. See src/services/PromptCache.ts.
+            messages: applyCacheBreakpoints(params.messages, params.model),
+            max_tokens: params.maxTokens ?? 2048,
+            stream: true,
+            stream_options: { include_usage: true },
+            ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
+            ...(params.tools && params.tools.length ? { tools: params.tools, tool_choice: 'auto' } : {}),
+          }),
+          signal: abortScope.signal,
+        });
+      } catch (err) {
+        disarmIdle();
+        yield { error: errMessage(err) };
+        return;
       }
-      return;
-    }
 
-    // Real billed cost (P0.8): the gateway sets X-DeepMyst-Cost-USD on the
-    // response head when it can price the call — surface it when present.
-    const costUsd = parseFloatHeader(res.headers.get('x-deepmyst-cost-usd'));
-    if (costUsd !== undefined) { yield { costUsd }; }
+      if (!res.ok || !res.body) {
+        if (!res.ok) {
+          const detail = redactSecrets(await safeText(res));
+          yield { error: `HTTP ${res.status}${detail ? `: ${detail}` : ''}` };
+        } else {
+          yield { error: 'DeepMyst stream had no body' };
+        }
+        return;
+      }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let sentModel = false;
-    // Truncation guard: a clean SSE close that emitted text but NEVER sent
-    // [DONE] or a finish_reason (e.g. a Render worker recycle / early generator
-    // end) is almost certainly a cut-off answer, not a complete one.
-    let sawText = false;
-    let sawTerminal = false; // observed [DONE] or any finish_reason
-    // Plan 19 P4: accumulate native tool_call deltas; emit once at the boundary.
-    const toolAcc = new ToolCallAccumulator();
-    let emittedTools = false;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) { break; }
-        armIdle(); // a chunk arrived — reset the idle watchdog (never kill a live stream)
-        buffer += decoder.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, nl).trim();
-          buffer = buffer.slice(nl + 1);
-          if (!line.startsWith('data:')) { continue; }
-          const data = line.slice(5).trim();
+      // Real billed cost (P0.8): the gateway sets X-DeepMyst-Cost-USD on the
+      // response head when it can price the call — surface it when present.
+      const costUsd = parseFloatHeader(res.headers.get('x-deepmyst-cost-usd'));
+      if (costUsd !== undefined) { yield { costUsd }; }
+
+      reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let sentModel = false;
+      // Truncation guard: a clean SSE close that emitted text but NEVER sent
+      // [DONE] or a finish_reason (e.g. a Render worker recycle / early generator
+      // end) is almost certainly a cut-off answer, not a complete one.
+      let sawText = false;
+      let sawTerminal = false; // observed [DONE] or any finish_reason
+      // Plan 19 P4: accumulate native tool_call deltas; emit once at the boundary.
+      const toolAcc = new ToolCallAccumulator();
+      let emittedTools = false;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { break; }
+          armIdle(); // a chunk arrived — reset the idle watchdog (never kill a live stream)
+          buffer += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            if (!line.startsWith('data:')) { continue; }
+            const data = line.slice(5).trim();
+            if (data === '[DONE]') {
+              if (!emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
+              yield { done: true };
+              return;
+            }
+            const parsed = parseSseData(data);
+            if (parsed.error) { yield { error: parsed.error }; return; }
+            // Surface the concrete model the router resolved to, once.
+            if (parsed.model && !sentModel) { sentModel = true; yield { model: parsed.model }; }
+            if (parsed.text) { sawText = true; yield { text: parsed.text }; }
+            if (parsed.reasoning) { yield { reasoning: parsed.reasoning }; }
+            if (parsed.toolCallDeltas) { toolAcc.add(parsed.toolCallDeltas); }
+            if (parsed.usage) { yield { usage: parsed.usage }; }
+            if (parsed.finishReason) {
+              sawTerminal = true;
+              if (parsed.finishReason === 'tool_calls' && !emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
+              yield { finishReason: parsed.finishReason };
+            }
+          }
+        }
+        // Flush a final data frame that arrived without a trailing newline (abrupt
+        // close without [DONE]) so its last delta isn't silently dropped.
+        const tail = buffer.trim();
+        if (tail.startsWith('data:')) {
+          const data = tail.slice(5).trim();
           if (data === '[DONE]') {
-            if (!emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
-            yield { done: true };
-            return;
-          }
-          const parsed = parseSseData(data);
-          if (parsed.error) { yield { error: parsed.error }; return; }
-          // Surface the concrete model the router resolved to, once.
-          if (parsed.model && !sentModel) { sentModel = true; yield { model: parsed.model }; }
-          if (parsed.text) { sawText = true; yield { text: parsed.text }; }
-          if (parsed.reasoning) { yield { reasoning: parsed.reasoning }; }
-          if (parsed.toolCallDeltas) { toolAcc.add(parsed.toolCallDeltas); }
-          if (parsed.usage) { yield { usage: parsed.usage }; }
-          if (parsed.finishReason) {
             sawTerminal = true;
-            if (parsed.finishReason === 'tool_calls' && !emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
-            yield { finishReason: parsed.finishReason };
+          } else if (data) {
+            const parsed = parseSseData(data);
+            if (parsed.error) { yield { error: parsed.error }; return; }
+            // Mirror the main loop (review [20]): an abrupt close can carry the
+            // final usage/finish_reason/reasoning in this frame — don't drop them.
+            if (parsed.model && !sentModel) { sentModel = true; yield { model: parsed.model }; }
+            if (parsed.reasoning) { yield { reasoning: parsed.reasoning }; }
+            if (parsed.text) { sawText = true; yield { text: parsed.text }; }
+            if (parsed.toolCallDeltas) { toolAcc.add(parsed.toolCallDeltas); }
+            if (parsed.usage) { yield { usage: parsed.usage }; }
+            if (parsed.finishReason) { sawTerminal = true; yield { finishReason: parsed.finishReason }; }
           }
         }
+      } catch (err) {
+        yield { error: errMessage(err) };
+        return;
       }
-      // Flush a final data frame that arrived without a trailing newline (abrupt
-      // close without [DONE]) so its last delta isn't silently dropped.
-      const tail = buffer.trim();
-      if (tail.startsWith('data:')) {
-        const data = tail.slice(5).trim();
-        if (data === '[DONE]') {
-          sawTerminal = true;
-        } else if (data) {
-          const parsed = parseSseData(data);
-          if (parsed.error) { yield { error: parsed.error }; return; }
-          // Mirror the main loop (review [20]): an abrupt close can carry the
-          // final usage/finish_reason/reasoning in this frame — don't drop them.
-          if (parsed.model && !sentModel) { sentModel = true; yield { model: parsed.model }; }
-          if (parsed.reasoning) { yield { reasoning: parsed.reasoning }; }
-          if (parsed.text) { sawText = true; yield { text: parsed.text }; }
-          if (parsed.toolCallDeltas) { toolAcc.add(parsed.toolCallDeltas); }
-          if (parsed.usage) { yield { usage: parsed.usage }; }
-          if (parsed.finishReason) { sawTerminal = true; yield { finishReason: parsed.finishReason }; }
-        }
-      }
-    } catch (err) {
-      yield { error: errMessage(err) };
-      return;
+      // Clean close with text but no [DONE]/finish_reason ⇒ likely truncated: flag
+      // 'length' so the consumer auto-continues rather than accepting the partial
+      // reply as final. No text at all ⇒ nothing to continue (keep prior behavior).
+      if (!emittedTools && toolAcc.hasAny()) { yield { toolCalls: toolAcc.finalize() }; }
+      if (sawText && !sawTerminal) { yield { finishReason: 'length' }; }
+      yield { done: true };
     } finally {
       disarmIdle();
-      try { reader.releaseLock(); } catch { /* ignore */ }
+      abortScope.dispose();
+      if (reader) {
+        void reader.cancel().catch(() => {});
+        try { reader.releaseLock(); } catch { /* already released */ }
+      } else if (res?.body) {
+        void res.body.cancel().catch(() => {});
+      }
     }
-    // Clean close with text but no [DONE]/finish_reason ⇒ likely truncated: flag
-    // 'length' so the consumer auto-continues rather than accepting the partial
-    // reply as final. No text at all ⇒ nothing to continue (keep prior behavior).
-    if (!emittedTools && toolAcc.hasAny()) { yield { toolCalls: toolAcc.finalize() }; }
-    if (sawText && !sawTerminal) { yield { finishReason: 'length' }; }
-    yield { done: true };
   }
 }
 
@@ -332,7 +352,12 @@ function parseSseData(data: string): GatewayStreamEvent {
     error?: { message?: string; code?: number | string; type?: string } | string;
     model?: string;
     choices?: Array<{ delta?: { content?: string; reasoning?: string; tool_calls?: ToolCallDelta[] } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      prompt_tokens_details?: { cached_tokens?: number };
+      cache_creation_input_tokens?: number;
+    };
   };
   try { json = JSON.parse(data); } catch { return {}; }
   if (json.error) {
@@ -351,14 +376,29 @@ function parseSseData(data: string): GatewayStreamEvent {
   if (delta?.content) { out.text = delta.content; }
   if (typeof delta?.reasoning === 'string' && delta.reasoning) { out.reasoning = delta.reasoning; }
   if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length) { out.toolCallDeltas = delta.tool_calls; }
-  if (json.usage) { out.usage = { inputTokens: json.usage.prompt_tokens, outputTokens: json.usage.completion_tokens }; }
+  if (json.usage) {
+    // cached_tokens is a SUBSET of prompt_tokens — reported alongside, never
+    // summed into it. Unread before this, so coordinator cache hits were
+    // invisible to the ledger, the savings chip and the warmth decision.
+    out.usage = {
+      inputTokens: json.usage.prompt_tokens,
+      outputTokens: json.usage.completion_tokens,
+      ...readCacheTokens(json.usage),
+    };
+  }
   if (typeof choice.finish_reason === 'string' && choice.finish_reason) { out.finishReason = choice.finish_reason; }
   return out;
 }
 
 interface GatewayChatResponse {
   choices?: Array<{ message?: { content?: string } }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+    cache_creation_input_tokens?: number;
+  };
   model?: string;
 }
 
@@ -405,27 +445,4 @@ function isAllowedHost(urlStr: string): boolean {
   } catch {
     return false;
   }
-}
-
-/** Compose the caller's signal with a timeout, leak-free (AbortSignal.any). */
-function composeSignal(timeoutMs: number, caller?: AbortSignal): AbortSignal {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  if (!caller) { return timeout; }
-  if (typeof (AbortSignal as { any?: unknown }).any === 'function') {
-    return AbortSignal.any([caller, timeout]);
-  }
-  return caller.aborted ? caller : timeout;
-}
-
-/**
- * Combine an internal abort signal (e.g. the idle watchdog) with an optional
- * caller signal, leak-free (AbortSignal.any). Unlike composeSignal this carries
- * NO built-in timeout — the primary signal owns the deadline semantics.
- */
-function composeAbort(primary: AbortSignal, caller?: AbortSignal): AbortSignal {
-  if (!caller) { return primary; }
-  if (typeof (AbortSignal as { any?: unknown }).any === 'function') {
-    return AbortSignal.any([caller, primary]);
-  }
-  return caller.aborted ? caller : primary;
 }

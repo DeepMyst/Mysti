@@ -52,6 +52,13 @@ describe('modelSupportsToolCalls', () => {
     expect(modelSupportsToolCalls(undefined)).toBe(false);
     expect(modelSupportsToolCalls('')).toBe(false);
   });
+
+  it('trusts the catalog for a model no name pattern knows (Plan 30)', () => {
+    expect(modelSupportsToolCalls('stealth/space-bunny-alpha')).toBe(false);
+    expect(modelSupportsToolCalls('stealth/space-bunny-alpha', true)).toBe(true);
+    expect(modelSupportsToolCalls('stealth/space-bunny-alpha', false)).toBe(false);
+    expect(modelSupportsToolCalls(undefined, true)).toBe(false);
+  });
 });
 
 describe('toolCallToDirective', () => {
@@ -256,5 +263,30 @@ describe('toolCallToDirective — canvas_*', () => {
   it('leaves the non-canvas namespace untouched', () => {
     expect(toolCallToDirective('mcp__GMAIL_SEND', { to: 'a@b' })).toMatchObject({ kind: 'mcptool' });
     expect(toolCallToDirective('canvasify', {})).toMatchObject({ error: expect.stringContaining('Unknown tool') });
+  });
+});
+
+describe('canvas tools on demand (Plan 30 §4.1)', () => {
+  const canvasNames = (canvas: boolean | 'open') =>
+    coordinatorToolSchemas(false, [], false, {}, canvas).map(t => t.function.name).filter(n => n.startsWith('canvas_'));
+
+  it('sends only canvas_open while no canvas is open', () => {
+    expect(canvasNames('open')).toEqual(['canvas_open']);
+  });
+  it('sends the full set once a canvas is open, and none when disabled', () => {
+    expect(canvasNames(true).length).toBeGreaterThan(20);
+    expect(canvasNames(false)).toEqual([]);
+  });
+  it('saves most of the canvas schema bytes', () => {
+    const size = (canvas: boolean | 'open') => JSON.stringify(coordinatorToolSchemas(false, [], false, {}, canvas)).length;
+    expect(size(true) - size('open')).toBeGreaterThan(12_000);
+  });
+});
+
+describe('native delegate call (Plan 30 §2)', () => {
+  it('carries the new fields through the same validator', () => {
+    expect(toolCallToDirective('delegate', { agent: 'mysti', task: 't', access: 'read-only', effort: 'xhigh', model: 'x/y' }))
+      .toEqual({ kind: 'delegate', agent: 'mysti', task: 't', access: 'read-only', effort: 'xhigh', model: 'x/y' });
+    expect(toolCallToDirective('delegate', { agent: 'mysti' })).toEqual({ error: 'delegate: "agent" and "task" are required.' });
   });
 });

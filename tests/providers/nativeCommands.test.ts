@@ -27,6 +27,7 @@ import {
   nativeCommandId,
   parseNativeCommandId,
   parseAcpAvailableCommands,
+  parseClaudeInitCommands,
 } from '../../src/providers/base/NativeCommands';
 
 const PROVIDER_IDS = Object.keys(NATIVE_COMMANDS);
@@ -81,8 +82,48 @@ describe('native command catalog', () => {
   });
 
   it('marks argument-taking commands so they prefill instead of firing early', () => {
-    const review = NATIVE_COMMANDS['claude-code'].find((c) => c.name === 'review');
-    expect(review?.argumentHint).toBeTruthy();
+    const goal = NATIVE_COMMANDS['claude-code'].find((c) => c.name === 'goal');
+    expect(goal?.argumentHint).toBe('<condition>');
+  });
+
+  /**
+   * `/effort` and `/rename` are the case metadata-only exists for: BOTH were run
+   * against a live CLI, and the answer depends on the release — 2.1.154 says
+   * "isn't available in this environment", 2.1.263 runs them. So they carry a
+   * real description for when the CLI reports them, and are never offered on
+   * their own. `/review` is different: it was removed outright in 2.1.263, so it
+   * is gone from the catalog and arrives only if the code-review plugin is installed.
+   */
+  it('offers no Claude command whose availability varies by release', () => {
+    const byName = new Map(NATIVE_COMMANDS['claude-code'].map((c) => [c.name, c]));
+    expect(byName.get('effort')?.metadataOnly).toBe(true);
+    expect(byName.get('rename')?.metadataOnly).toBe(true);
+    expect(byName.has('review')).toBe(false);
+  });
+
+  /**
+   * The catalog is a pre-first-turn fallback for Claude Code, so what it offers
+   * UNPROMPTED must stay small and verified — every entry below was run against
+   * the CLI and worked on both 2.1.154 and 2.1.263.
+   */
+  it('keeps the Claude fallback to commands confirmed against the live CLI', () => {
+    const offered = NATIVE_COMMANDS['claude-code']
+      .filter((c) => c.execution.kind === 'passthrough' && !c.metadataOnly)
+      .map((c) => c.name)
+      .sort();
+    expect(offered).toEqual(
+      ['compact', 'context', 'goal', 'init', 'reload-skills', 'security-review', 'usage']
+    );
+  });
+
+  /** Metadata-only entries are descriptions, so each needs a real one. */
+  it('gives every metadata-only entry a genuine description', () => {
+    for (const [provider, commands] of Object.entries(NATIVE_COMMANDS)) {
+      for (const cmd of commands.filter((c) => c.metadataOnly)) {
+        expect(cmd.description.length, `${provider}/${cmd.name}`).toBeGreaterThan(10);
+        expect(cmd.description, `${provider}/${cmd.name}`).not.toMatch(/^Claude Code command$/);
+      }
+    }
   });
 
   /**
@@ -96,6 +137,45 @@ describe('native command catalog', () => {
       const bad = NATIVE_COMMANDS[provider].filter((c) => c.execution.kind === 'passthrough');
       expect(bad.map((c) => c.name), `${provider} has no headless slash parser`).toEqual([]);
     }
+  });
+
+  /**
+   * Every CLI's command set was re-verified against its LATEST release, not the
+   * version that happened to be installed — the two had drifted badly (Gemini
+   * 0.28 -> 0.58, Copilot 0.0.372 -> 1.0.83, Qwen 0.11 -> 0.23, Cline 1.0 -> 3.0).
+   * These are the entries that only exist in the newer releases; they are all
+   * Mysti-mapped, so they stay correct on an older CLI too.
+   */
+  it('carries the commands the latest CLI releases added', () => {
+    const gemini = NATIVE_COMMANDS['google-gemini'].find((c) => c.name === 'plan');
+    expect(gemini?.execution).toEqual({ kind: 'mysti', commandId: 'settings:mode' });
+
+    const qwen = NATIVE_COMMANDS['qwen-code'].find((c) => c.name === 'plan');
+    expect(qwen?.execution).toEqual({ kind: 'mysti', commandId: 'settings:mode' });
+
+    const copilot = NATIVE_COMMANDS['github-copilot'].find((c) => c.name === 'compact');
+    expect(copilot?.execution).toEqual({ kind: 'mysti', commandId: 'cmd:compact' });
+  });
+
+  /**
+   * Skills directories appeared in four more CLIs since this catalog was first
+   * written. Where the CLI resolves `/name` itself the skill passes through;
+   * where its headless mode has no slash parser the skill's own text is sent.
+   */
+  it('discovers skills for every CLI that grew a skills directory', () => {
+    const dirOf = (p: keyof typeof NATIVE_COMMAND_SOURCES) =>
+      NATIVE_COMMAND_SOURCES[p].filter((src) => src.skillDirs);
+
+    expect(dirOf('claude-code').map((s) => s.dir)).toContain('.claude/skills');
+    expect(dirOf('google-gemini').map((s) => s.dir)).toContain('.gemini/skills');
+    expect(dirOf('qwen-code').map((s) => s.dir)).toContain('.qwen/skills');
+    expect(dirOf('continue').map((s) => s.dir)).toContain('.continue/skills');
+    expect(dirOf('openclaw').map((s) => s.dir)).toContain('.openclaw/skills');
+
+    // Gemini and Qwen resolve a skill by name; Continue and OpenClaw cannot.
+    expect(dirOf('google-gemini').every((s) => s.execution.kind === 'passthrough')).toBe(true);
+    expect(dirOf('continue').every((s) => s.execution.kind === 'expand')).toBe(true);
+    expect(dirOf('openclaw').every((s) => s.execution.kind === 'expand')).toBe(true);
   });
 
   it('gives API-only providers no CLI commands at all', () => {
@@ -128,6 +208,46 @@ describe('native command ids', () => {
     expect(parseNativeCommandId('native:claude-code')).toBeNull();
     expect(parseNativeCommandId('native:claude-code:')).toBeNull();
     expect(parseNativeCommandId('native::compact')).toBeNull();
+  });
+});
+
+describe("Claude Code's system/init report", () => {
+  /**
+   * The only accurate source for Claude Code. Bundled skills — `/design` and the
+   * rest — are compiled into the binary as `SKILL-<hash>.md.zst` and extracted
+   * at runtime, so no directory scan can ever see them; the CLI naming them in
+   * `slash_commands` is how they reach the menu.
+   */
+  it('reads the reported commands and labels the skills among them', () => {
+    const parsed = parseClaudeInitCommands(
+      ['compact', 'context', 'design', 'code-review'],
+      ['design', 'code-review'],
+    );
+    expect(parsed?.map((c) => c.name)).toEqual(['compact', 'context', 'design', 'code-review']);
+    const design = parsed!.find((c) => c.name === 'design')!;
+    expect(design.description).toContain('Skill');
+    expect(design.execution).toEqual({ kind: 'passthrough' });
+    expect(parsed!.find((c) => c.name === 'compact')!.description).not.toContain('Skill');
+  });
+
+  /**
+   * `null` (no report yet) and `[]` (a session with no commands) are different
+   * claims: the first falls back to the catalog, the second empties the section.
+   */
+  it('separates "not reported yet" from "reported nothing"', () => {
+    expect(parseClaudeInitCommands(undefined, undefined)).toBeNull();
+    expect(parseClaudeInitCommands('not-an-array', [])).toBeNull();
+    expect(parseClaudeInitCommands([], [])).toEqual([]);
+  });
+
+  it('tolerates a leading slash, duplicates and junk entries', () => {
+    const parsed = parseClaudeInitCommands(['/compact', 'compact', 42, '', 'bad name', 'ok'], null);
+    expect(parsed?.map((c) => c.name)).toEqual(['compact', 'ok']);
+  });
+
+  it('bounds the reported list', () => {
+    const many = Array.from({ length: 500 }, (_, i) => `cmd${i}`);
+    expect(parseClaudeInitCommands(many, [])!.length).toBeLessThanOrEqual(200);
   });
 });
 

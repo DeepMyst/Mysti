@@ -30,6 +30,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { allowsUnrestrictedNativeTools } from '../base/NativeApprovalPolicy';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -88,6 +89,7 @@ export class ContinueProvider extends BaseCliProvider {
     sessionKind: 'prompt-history',
     emitsToolResults: false,
     emitsUsage: false,           // headless stdout carries no token stats
+    usageConvention: 'none',   // headless stdout carries no token stats at all.
     modelSelection: 'custom-only' // hub slug (owner/package) via --model
   };
 
@@ -240,9 +242,7 @@ export class ContinueProvider extends BaseCliProvider {
       return;
     }
 
-    const gateIntentionallyOff =
-      mode === 'edit-automatically' ||
-      (accessLevel === 'full-access' && mode !== 'ask-before-edit');
+    const gateIntentionallyOff = allowsUnrestrictedNativeTools(settings);
 
     if (gateIntentionallyOff) {
       args.push('--auto');

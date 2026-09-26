@@ -91,6 +91,7 @@ export class ManusProvider extends BaseCliProvider {
     sessionKind: 'none',
     emitsToolResults: false,
     emitsUsage: false,
+    usageConvention: 'none',   // Legacy/unregistered.
     modelSelection: 'full',
   };
 

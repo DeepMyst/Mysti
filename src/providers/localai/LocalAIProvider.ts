@@ -83,7 +83,10 @@ export class LocalAIProvider extends BaseCliProvider {
         id: 'gpt-4',
         name: 'GPT-4 (LocalAI)',
         description: 'LocalAI model configured as gpt-4',
-        contextWindow: 128000
+        // A name the user maps to any local model — not OpenAI's GPT-4. LocalAI
+        // caps an unset `context_size` at 8192 (DefaultAutoContextSize), and
+        // its own gpt-4 AIO config uses 8192. 128k overstated it 16x.
+        contextWindow: 8192
       },
       {
         id: 'ggml-gpt4all-j',
@@ -118,6 +121,7 @@ export class LocalAIProvider extends BaseCliProvider {
     sessionKind: 'none',           // stateless HTTP requests
     emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
     emitsUsage: true,
+    usageConvention: 'auto',   // OpenAI-compatible server fronting arbitrary local models.
     modelSelection: 'custom-only'  // models live on the user's LocalAI server
   };
 

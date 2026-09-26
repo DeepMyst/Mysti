@@ -91,6 +91,15 @@ export class CliDiscoveryService implements vscode.Disposable {
   /** Fires with the refreshed statuses after an explicit refresh() completes. */
   public readonly onDidUpdate: vscode.Event<CliStatus[]> = this._onDidUpdateEmitter.event;
 
+  private readonly _onDidChangeEmitter = new vscode.EventEmitter<CliStatus>();
+  /**
+   * Fires when a probe flips a provider's installed or signed-in state — an
+   * install or sign-in finishing. Without it a panel only learned of an
+   * install when some unrelated read happened to start a background refresh.
+   * Not fired for the first probe of a provider (nothing to compare with).
+   */
+  public readonly onDidChange: vscode.Event<CliStatus> = this._onDidChangeEmitter.event;
+
   constructor(source: DiscoveryProviderSource, options?: { ttlMs?: number }) {
     this._source = source;
     this._ttlMs = options?.ttlMs ?? CLI_DISCOVERY_TTL_MS;
@@ -212,20 +221,28 @@ export class CliDiscoveryService implements vscode.Disposable {
   }
 
   /**
-   * Drop cached entries (one provider or all). In-flight probes started
-   * before the invalidation will not write their (now stale) results.
-   * Called on mysti.* config changes, wizard install/auth mutations, and
-   * manual refresh.
+   * Mark cached entries stale (one provider or all) so the next read
+   * re-probes. In-flight probes started before the invalidation will not
+   * write their (now stale) results. Called on mysti.* config changes, wizard
+   * install/auth mutations, and manual refresh.
+   *
+   * Stale, not DELETED: every agent/model pick writes a mysti.* setting, and
+   * deleting made each installed CLI read as "not installed" to peekStatus
+   * consumers until the re-probe landed — the Mysti sign-in card then said no
+   * other agent was installed while the agent menu listed several.
    */
   public invalidate(providerId?: string): void {
     this._clock++;
     if (providerId) {
       this._invalidateTicks.set(providerId, this._clock);
-      this._cache.delete(providerId);
     } else {
       this._invalidateAllTick = this._clock;
       this._invalidateTicks.clear();
-      this._cache.clear();
+    }
+    for (const [id, status] of this._cache) {
+      if (!providerId || id === providerId) {
+        this._cache.set(id, { ...status, checkedAt: 0 });
+      }
     }
   }
 
@@ -235,6 +252,7 @@ export class CliDiscoveryService implements vscode.Disposable {
     }
     this._disposables.length = 0;
     this._onDidUpdateEmitter.dispose();
+    this._onDidChangeEmitter.dispose();
     this._cache.clear();
     this._inflight.clear();
   }
@@ -293,7 +311,11 @@ export class CliDiscoveryService implements vscode.Disposable {
         };
 
         if (!this._isInvalidatedSince(providerId, startTick)) {
+          const prev = this._cache.get(providerId);
           this._cache.set(providerId, status);
+          if (prev && (prev.found !== status.found || prev.authenticated !== status.authenticated)) {
+            this._onDidChangeEmitter.fire(status);
+          }
         }
         return status;
       } finally {

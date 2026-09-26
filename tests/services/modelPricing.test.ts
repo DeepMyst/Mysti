@@ -70,12 +70,27 @@ describe('ModelPricing.getModelRate', () => {
     expect(getModelRate('')).toBeNull();
   });
 
-  it('uses the cheaper gateway rate for the compactor model', () => {
-    expect(getModelRate('claude-haiku-4-5', { viaGateway: true })).toEqual({ inputPerMTok: 0.25, outputPerMTok: 1.25 });
-    // Gateway haiku is strictly cheaper than first-party haiku.
-    const fp = getModelRate('claude-haiku-4-5')!;
-    const gw = getModelRate('claude-haiku-4-5', { viaGateway: true })!;
-    expect(gw.inputPerMTok).toBeLessThan(fp.inputPerMTok);
+  // DeepMyst bills at cost: its catalog once carried Haiku 3.5's $0.25/$1.25
+  // for haiku-4-5 (a 4x undercount, fixed and pinned there by
+  // test_haiku_not_at_haiku_35_rate). Mysti copied that number as a "gateway
+  // discount"; there is none.
+  it('prices the compactor model (Haiku 4.5) at $1/$5, the rate DeepMyst actually bills', () => {
+    expect(getModelRate('claude-haiku-4-5')).toEqual({ inputPerMTok: 1, outputPerMTok: 5 });
+  });
+
+  it('prices Opus 5.5 at $4/$20, below the rest of the Opus line', () => {
+    expect(getModelRate('claude-opus-5-5')).toEqual({ inputPerMTok: 4, outputPerMTok: 20 });
+    expect(getModelRate('claude-opus-5.5')).toEqual({ inputPerMTok: 4, outputPerMTok: 20 });
+    expect(getModelRate('claude-opus-5')).toEqual({ inputPerMTok: 5, outputPerMTok: 25 });
+    expect(getModelRate('claude-opus-4-8')).toEqual({ inputPerMTok: 5, outputPerMTok: 25 });
+  });
+});
+
+describe('GPT-6 tiers (Plan 30 §3)', () => {
+  it('prices each tier separately', () => {
+    expect(getModelRate('openai/gpt-6-luna')).toEqual({ inputPerMTok: 0.1, outputPerMTok: 0.5 });
+    expect(getModelRate('openai/gpt-6-sol')).toEqual({ inputPerMTok: 2, outputPerMTok: 10 });
+    expect(getModelRate('openai/gpt-6-astra')).toEqual({ inputPerMTok: 10, outputPerMTok: 50 });
   });
 });
 

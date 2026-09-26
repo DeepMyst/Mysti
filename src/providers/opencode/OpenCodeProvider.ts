@@ -41,6 +41,37 @@ export interface OpenCodeSessionState extends PanelSessionState {
 }
 
 /**
+ * `opencode models [--verbose]` output → models. An id line is a bare
+ * `provider/model`; with --verbose, the JSON record after it carries
+ * `limit.context`. Unparseable records keep the id without a window.
+ */
+export function parseOpencodeModels(raw: string): ModelInfo[] {
+  const models: ModelInfo[] = [];
+  let current: ModelInfo | undefined;
+  let record = '';
+  const flush = () => {
+    if (!current) { return; }
+    try {
+      const context = JSON.parse(record)?.limit?.context;
+      if (typeof context === 'number' && context > 0) { current.contextWindow = context; }
+    } catch { /* plain listing, or not JSON: id only */ }
+    if (!models.some(m => m.id === current!.id)) { models.push(current); }
+  };
+  for (const line of raw.split('\n')) {
+    const id = line.trim();
+    if (id && !id.includes(' ') && /^[^{}[\]"]+\/\S+$/.test(id)) {
+      flush();
+      current = { id, name: id };
+      record = '';
+    } else {
+      record += line + '\n';
+    }
+  }
+  flush();
+  return models;
+}
+
+/**
  * OpenCode CLI provider implementation
  * Supports multiple LLM backends via OpenCode's unified interface
  * (OpenAI, Anthropic, Gemini, Groq, AWS Bedrock, Azure OpenAI, OpenRouter)
@@ -79,8 +110,10 @@ export class OpenCodeProvider extends BaseCliProvider {
     thinkingLevelEffective: false,
     planMode: 'detected',
     sessionKind: 'cli-resume',
+    nativeInstructionFile: 'AGENTS.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'none',   // step-finish tokens are flat input/output.
     modelSelection: 'custom-only'  // provider/model free-form — no meaningful static dropdown
   };
 
@@ -109,23 +142,19 @@ export class OpenCodeProvider extends BaseCliProvider {
   }
 
   /**
-   * Live model discovery (Plan 01 Phase 3) via `opencode models`, which prints
-   * one `provider/model` id per line — exactly the form the `-m`/`--model` flag
-   * accepts. Returns null on any failure so the registry keeps its curated/cached
-   * list. Never throws.
+   * Live model discovery (Plan 01 Phase 3) via `opencode models --verbose`:
+   * each `provider/model` id (exactly the form `-m` accepts) followed by its
+   * models.dev record, whose `limit.context` is the window OpenCode compacts
+   * against. The plain listing dropped it, so every OpenCode model read as
+   * 200k. Falls back to the plain listing for a CLI without --verbose.
+   * Returns null on any failure so the registry keeps its curated/cached list.
+   * Never throws.
    */
   async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
-    const raw = await this._runCliForDiscovery(['models'], timeoutMs);
+    const raw = await this._runCliForDiscovery(['models', '--verbose'], timeoutMs)
+      ?? await this._runCliForDiscovery(['models'], timeoutMs);
     if (!raw) { return null; }
-    const seen = new Set<string>();
-    const models: ModelInfo[] = [];
-    for (const line of raw.split('\n')) {
-      const id = line.trim();
-      // Keep only `provider/model`-shaped ids; skip headers/blank/log lines.
-      if (!id || id.includes(' ') || !id.includes('/') || seen.has(id)) { continue; }
-      seen.add(id);
-      models.push({ id, name: id });
-    }
+    const models = parseOpencodeModels(raw);
     return models.length > 0 ? models : null;
   }
 

@@ -13,6 +13,7 @@
 
 import type * as vscode from 'vscode';
 import type { NativeCommandSpec } from './NativeCommands';
+import type { UsageConvention } from '../../services/TokenAccounting';
 import type {
   ContextItem,
   Attachment,
@@ -32,6 +33,26 @@ import type {
   InstallMethod,
   SlashCommandDefinition
 } from '../../types';
+
+/** A native tool request whose issuing process is waiting for this decision. */
+export interface NativeApprovalRequest {
+  /** Unique host key, independent of native IDs reused by other processes or turns. */
+  id: string;
+  nativeRequestId: string | number;
+  providerId: string;
+  panelId: string;
+  toolCall: NonNullable<StreamChunk['toolCall']>;
+  defaultDecision: 'allow' | 'ask' | 'deny';
+  /** Aborted when this request settles or its turn/process/handler is disposed. */
+  signal: AbortSignal;
+}
+
+export type NativeApprovalHandler = (request: NativeApprovalRequest) => Promise<boolean | 'cancelled'>;
+
+/** Resolve once per turn so later registrations cannot acquire an old request. */
+export interface NativeApprovalHost {
+  handlerForPanel(panelId: string, turnSignal?: AbortSignal): NativeApprovalHandler | undefined;
+}
 
 /**
  * Result of CLI discovery attempt
@@ -91,8 +112,23 @@ export interface ProviderCapabilities {
   supportsStreaming: boolean;
   supportsThinking: boolean;
   supportsToolUse: boolean;
+  /** Native request/response approval is implemented; tool notifications are display-only. */
+  supportsNativeApproval?: boolean;
   supportsSessions: boolean;
   supportsNativeCompact?: boolean;
+  /**
+   * The project instruction file this CLI already loads into its own context
+   * (checked against the installed CLIs). Mysti leaves it out of the
+   * instructions it sends that backend, so the file is not in context twice,
+   * or re-sent every turn on a resumed session.
+   */
+  nativeInstructionFile?: 'AGENTS.md' | 'CLAUDE.md' | 'GEMINI.md';
+  /**
+   * True when Mysti sends this backend no conversation history and it keeps
+   * none of its own (each turn stands alone, e.g. Cursor). There is nothing
+   * to compact, even though its sessionKind is 'none'.
+   */
+  sendsNoHistory?: boolean;
   supportsPersistentProcess?: boolean;
   supportsImages?: boolean;
   supportsFileAttachments?: boolean;
@@ -155,6 +191,15 @@ export interface ProviderCapabilities {
   emitsToolResults: boolean;
   /** False where done.usage is never supplied (OpenClaw) — footer shows "n/a", context bar resets */
   emitsUsage: boolean;
+  /**
+   * How this backend splits prompt tokens between cached and uncached buckets.
+   * NOT cosmetic: `anthropic` buckets are disjoint (prompt = input + creation +
+   * read) while `openai` reports cached tokens as a SUBSET of input, so a single
+   * shared formula is wrong for one of them in whichever direction it is written.
+   * `auto` means the backend fronts other vendors' models and the convention is
+   * resolved per-turn from the model id. See src/services/TokenAccounting.ts.
+   */
+  usageConvention: UsageConvention;
   /** Model-dropdown semantics (kills silent no-op dropdowns, F18) */
   modelSelection: ModelSelectionMode;
   /** OpenClaw gateway channel delegation (C4) */
@@ -449,6 +494,7 @@ export interface ICliProvider {
   // Lifecycle
   initialize(): Promise<void>;
   dispose(): void;
+  setNativeApprovalHost?(host: NativeApprovalHost | undefined): void;
 
   // CLI Discovery
   discoverCli(): Promise<CliDiscoveryResult>;
@@ -502,13 +548,29 @@ export interface ICliProvider {
   hasSession(panelId?: string): boolean;
   getSessionId(panelId?: string): string | null;
 
-  // Process suspension (SIGSTOP/SIGCONT for pre-execution permission enforcement)
+  // Best-effort process pause/resume for legacy notification streams.
   suspendProcess(panelId?: string): boolean;
   resumeProcess(panelId?: string): boolean;
   getStoredUsage?(panelId?: string): { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null;
 
   // Utility
   enhancePrompt?(prompt: string): Promise<string>;
+
+  /**
+   * The model this provider would actually run for `settings` — i.e. what its
+   * own resolution settles on, including a per-provider custom-model override
+   * (`mysti.codexModel` and friends) that outranks the picker, and any
+   * cross-provider guard the provider applies to `settings.model`.
+   *
+   * `undefined` means "no --model flag; the CLI picks", which for display
+   * purposes is the provider's default model.
+   *
+   * Exists so message attribution can name the model that RAN. Stamping
+   * `settings.model` instead was how a panel on Codex with
+   * `mysti.codexModel: gpt-6-astra` labelled every reply with the picker's
+   * value — a model the turn never touched.
+   */
+  getEffectiveModelForSettings(settings: Settings): string | undefined;
 
   // Optional: alternative install methods for non-npm providers
   getInstallMethods?(): InstallMethod[];
@@ -523,6 +585,12 @@ export interface ICliProvider {
    * not a table in this repo — is the authority on what `/name` exists.
    */
   getDynamicNativeCommands?(panelId?: string): NativeCommandSpec[];
+
+  /**
+   * True once the backend has reported its command list for this panel, making
+   * that report authoritative over Mysti's curated catalog.
+   */
+  hasReportedNativeCommands?(panelId?: string): boolean;
 
   // Persistent process management
   preSpawnPersistentProcess?(panelId: string, settings: Settings): Promise<void>;

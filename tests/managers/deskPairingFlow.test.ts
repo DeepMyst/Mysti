@@ -87,12 +87,14 @@ describe('demandedGroups', () => {
     expect(demandedGroups(a)).toEqual(demandedGroups(b));
   });
 
-  it('returns exactly CHALLENGE_GROUPS distinct, in-range, sorted indices', () => {
+  it.each(Array.from({ length: 20 }, (_, batch) => batch))(
+    'returns exactly CHALLENGE_GROUPS distinct, in-range, sorted indices (batch %i)', (batch) => {
     // Driven with synthetic strings rather than real key pairs: the function
     // takes a STRING, and minting 200 keys to produce 200 strings costs two
     // 5200-round SHA-512 chains each for no extra coverage. This runs 5,000
-    // cases in the time 200 real pairs took to time out.
-    for (let i = 0; i < 5_000; i++) {
+    // cases, partitioned so one shared-runner deadline does not cover all
+    // 25,000 assertions. Every synthetic input is still exercised once.
+    for (let i = batch * 250; i < (batch + 1) * 250; i++) {
       const sn = `case-${i}-${(i * 2654435761) % 1e9}`;
       const d = demandedGroups(sn);
       expect(d, sn).toHaveLength(CHALLENGE_GROUPS);

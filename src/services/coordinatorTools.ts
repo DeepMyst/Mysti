@@ -22,6 +22,8 @@
  */
 
 import type { MystiDirective } from '../utils/mystiDelegateParser';
+import { delegateDirective } from '../utils/mystiDelegateParser';
+import { replaceAsciiControlCharacters } from '../utils/controlCharacters';
 import { CANVAS_TOOLS } from '../managers/CanvasToolDispatch';
 import { CANVAS_FORMATS } from '../managers/CanvasFormats';
 import type { CanvasArtifact } from '../types';
@@ -41,7 +43,14 @@ const READ_TOOLS: CoordinatorTool[] = [
   { type: 'function', function: { name: 'grep', description: 'Search file contents across the repo by regex.', parameters: { type: 'object', properties: { pattern: str('regex'), include: str('optional path glob, e.g. src/**') }, required: ['pattern'] } } },
   { type: 'function', function: { name: 'diag', description: 'Live compiler/linter diagnostics from the editor (or a single file path).', parameters: { type: 'object', properties: { target: str('"all" or a file path') }, required: [] } } },
   { type: 'function', function: { name: 'remember', description: 'Persist a durable project fact across sessions/backends. Use sparingly.', parameters: { type: 'object', properties: { fact: str('the fact') }, required: ['fact'] } } },
-  { type: 'function', function: { name: 'delegate', description: 'Hand a self-contained task to a specialist coding backend.', parameters: { type: 'object', properties: { agent: str('backend id'), task: str('self-contained task text'), tier: { type: 'string', enum: ['fast', 'strong'] } }, required: ['agent', 'task'] } } },
+  { type: 'function', function: { name: 'delegate', description: 'Hand a self-contained task to a subagent: "mysti" (a fresh Mysti worker; only its short report comes back), "advisor" (a strong model for plans and reviews, read-only), or an installed coding backend. Several read-only delegates in one turn run in parallel.', parameters: { type: 'object', properties: {
+    agent: str('"mysti", "advisor", or a backend id'),
+    task: str('self-contained task text — the subagent sees only this and the attached files'),
+    tier: { type: 'string', enum: ['fast', 'strong'] },
+    model: str('optional exact model id for the target'),
+    effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    access: { type: 'string', enum: ['read-only', 'write'] },
+  }, required: ['agent', 'task'] } } },
 ];
 
 /** Gated local execution tools — only when local execution is enabled. */
@@ -424,7 +433,7 @@ export function sanitizeMcpInputSchema(raw: unknown, depth = 0): Record<string, 
 
     if (key === 'description') {
       const text = typeof value === 'string'
-        ? value.replace(/[\r\n\t\f\v\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, SCHEMA_MAX_DESC)
+        ? replaceAsciiControlCharacters(value, ' ').replace(/\s+/g, ' ').trim().slice(0, SCHEMA_MAX_DESC)
         : '';
       if (text) { out.description = text; }
       continue;
@@ -552,12 +561,13 @@ export const MCP_RESIDENT_SCHEMA_COUNT = 5;
  *   exposed as `mcp__<name>` functions so the model can call them natively.
  * @param connectEnabled whether to offer the `connect` tool (DeepMyst wired).
  * @param visual whether to offer `look` (render + observe) and `act` (interact).
- * @param canvasBound whether this run can reach a canvas — bound to an open
- *   artifact, OR merely able to open one. Canvas schemas are offered only then,
- *   so a coding-only run is not paying for ~20 irrelevant tools. Pass true from
- *   a cold chat that could design (`canvas_open` is the first schema in the
- *   list) — that is what turns "design me a login screen" into a canvas instead
- *   of prose. The text lane's `<canvas:NONCE>` / `<canvaspage:NONCE>` scanning
+ * @param canvas whether/how this run can reach a canvas: `false` offers none,
+ *   `'open'` offers only `canvas_open` (a cold chat that could design — that is
+ *   what turns "design me a login screen" into a canvas instead of prose),
+ *   and `true` offers the full ~30-schema vocabulary once a canvas is actually
+ *   bound. The other 29 schemas are ~12k characters that no round-trip needs
+ *   before a canvas exists (Plan 30 §4.1), so they ride only after `canvas_open`
+ *   binds one. The text lane's `<canvas:NONCE>` / `<canvaspage:NONCE>` scanning
  *   is separate and stays on always, per Plan 20 §3.3 item 3.
  */
 export function coordinatorToolSchemas(
@@ -565,7 +575,7 @@ export function coordinatorToolSchemas(
   mcpTools: McpToolInfo[] = [],
   connectEnabled = false,
   visual: { look?: boolean; act?: boolean } = {},
-  canvasBound = false,
+  canvas: boolean | 'open' = false,
   skillsEnabled = false,
 ): CoordinatorTool[] {
   const base = execEnabled ? [...READ_TOOLS, ...EXEC_TOOLS] : [...READ_TOOLS];
@@ -573,7 +583,11 @@ export function coordinatorToolSchemas(
   if (connectEnabled) { base.push(CONNECT_TOOL); }
   if (visual.look) { base.push(LOOK_TOOL); }
   if (visual.look && visual.act) { base.push(ACT_TOOL); }
-  if (canvasBound) { base.push(...CANVAS_TOOL_SCHEMAS); }
+  // Plan 30 §4.1: the 30 canvas schemas are ~3.7k tokens on EVERY round-trip.
+  // Until a canvas is open only the opener rides along — it is what lets a cold
+  // chat start a design (Plan 22) — and the rest follow once one is open.
+  if (canvas === true) { base.push(...CANVAS_TOOL_SCHEMAS); }
+  else if (canvas === 'open') { base.push(CANVAS_OPEN_TOOL); }
 
   // External MCP tools are namespaced `mcp__<name>` so they can never collide
   // with a built-in tool.
@@ -607,8 +621,14 @@ export function coordinatorToolSchemas(
  * text-directive protocol (a broken native path would break the coordinator).
  */
 const TOOL_CAPABLE = /(gpt|claude|gemini|gemma|nemotron|qwen|mistral|command-r|codestral|deepseek|grok|kimi|llama-3\.[1-9]|llama-4|phi-[34]|mixtral)/i;
-export function modelSupportsToolCalls(modelId: string | undefined): boolean {
-  return !!modelId && TOOL_CAPABLE.test(modelId);
+/**
+ * @param catalogSupportsTools the OpenRouter catalog's own `supported_parameters`
+ *   verdict for this model, when known. Authoritative when present — it is how
+ *   a model no name pattern recognizes (a stealth or brand-new release) still
+ *   gets native tools instead of silently losing them to an unmatched regex.
+ */
+export function modelSupportsToolCalls(modelId: string | undefined, catalogSupportsTools?: boolean): boolean {
+  return !!modelId && (catalogSupportsTools === true || TOOL_CAPABLE.test(modelId));
 }
 
 function asStr(v: unknown): string { return typeof v === 'string' ? v : (v === null || v === undefined ? '' : String(v)); }
@@ -661,13 +681,8 @@ export function toolCallToDirective(name: string, args: Record<string, unknown>)
       if (!fact) { return { error: 'remember: "fact" is required.' }; }
       return { kind: 'remember', fact };
     }
-    case 'delegate': {
-      const agent = asStr(a.agent).trim();
-      const task = asStr(a.task).trim();
-      if (!agent || !task) { return { error: 'delegate: "agent" and "task" are required.' }; }
-      const tier = a.tier === 'fast' || a.tier === 'strong' ? a.tier : undefined;
-      return { kind: 'delegate', agent, task, ...(tier ? { tier } : {}) };
-    }
+    case 'delegate':
+      return delegateDirective(a.agent, a.task, a) ?? { error: 'delegate: "agent" and "task" are required.' };
     case 'write': {
       const path = asStr(a.path).trim();
       if (!path) { return { error: 'write: "path" is required.' }; }

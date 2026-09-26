@@ -78,6 +78,7 @@
  */
 
 import * as crypto from 'crypto';
+import { hasControlCharacters } from '../utils/controlCharacters';
 import type { DeskCallResult } from '../types';
 import {
   LIMITS,
@@ -194,8 +195,7 @@ const MAX_PAYLOAD_KEY_CHARS = 128;
  * header argues against. So: every C0/C1 control except tab/newline/carriage
  * return, every bidi override or isolate, every zero-width character.
  */
-const PROSE_UNSAFE_RE =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u2066-\u2069\u202A-\u202E\uFEFF]/;
+const PROSE_UNSAFE_RE = /[\u061C\u200B-\u200F\u2066-\u2069\u202A-\u202E\uFEFF]/;
 
 /**
  * Failures this module can produce itself. A peer-supplied token arrives
@@ -414,7 +414,7 @@ function screenPayloadValue(v: unknown, key: string | undefined, depth: number):
   if (t === 'string') {
     const s = v as string;
     if (key !== undefined && PATH_KEYS.has(key)) { return validatePath(s, key).ok; }
-    return !PROSE_UNSAFE_RE.test(s);
+    return !hasControlCharacters(s, { allowTextWhitespace: true }) && !PROSE_UNSAFE_RE.test(s);
   }
   if (Array.isArray(v)) {
     if (v.length > LIMITS.arrayItems) { return false; }

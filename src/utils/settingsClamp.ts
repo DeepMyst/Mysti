@@ -402,7 +402,7 @@ export const AUTHORITY_BEARING_SETTINGS: readonly string[] = [
   // effort, model catalog — and, per the official docs, a profile MAY carry an
   // `approval_policy`). It does NOT decide the sandbox Mysti runs Codex in:
   // every `CodexProvider._addSandboxFlags` branch passes an explicit
-  // `--sandbox` / `--full-auto` / `--dangerously-bypass-approvals-and-sandbox`
+  // `--sandbox` / `--dangerously-bypass-approvals-and-sandbox`
   // before `--profile`, and flag-vs-profile precedence is not stated in the
   // official configuration docs we could find
   // (https://learn.chatgpt.com/docs/config-file/config-advanced). Machine

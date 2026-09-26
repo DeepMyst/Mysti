@@ -146,6 +146,32 @@ export const PROVIDER_NPM_PACKAGES: Record<ProviderType, string | null> = {
  * installer, local server, or API-only). Unknown ids return undefined rather
  * than throwing — callers treat "no package" as "not update-checkable".
  */
+/**
+ * How to update a provider whose npm package is NOT the install that runs.
+ *
+ * Only meaningful for providers Mysti can already detect as outdated (i.e. ones
+ * with an npm package to compare against); this map changes the command, not
+ * the detection. For Claude Code the two are not even the same install. Its native installer puts the current build in
+ * `~/.local/bin` (first on PATH), while `npm i -g @anthropic-ai/claude-code`
+ * writes `/usr/local/bin` — so an npm update can leave the binary Mysti and the
+ * shell actually run completely untouched.
+ *
+ * In-repo literals. Nothing from the registry, the user or a model is ever
+ * interpolated into these strings.
+ */
+export const PROVIDER_SELF_UPDATE_COMMANDS: Partial<Record<ProviderType, string>> = {
+  'claude-code': 'claude install latest',
+  // Cursor has `cursor-agent update`, but it is deliberately NOT here: this map
+  // changes HOW an outdated provider is updated, and Mysti has no way to detect
+  // that Cursor is outdated (it is not on npm, so there is no version to
+  // compare against). Offering an update for something never reported as
+  // outdated would be a button that appears from nowhere.
+};
+
+export function getProviderSelfUpdateCommand(providerId: string): string | undefined {
+  return PROVIDER_SELF_UPDATE_COMMANDS[providerId as ProviderType];
+}
+
 export function getProviderNpmPackage(providerId: string): string | undefined {
   return (PROVIDER_NPM_PACKAGES as Record<string, string | null>)[providerId] ?? undefined;
 }

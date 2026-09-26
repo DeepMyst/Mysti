@@ -458,6 +458,14 @@ describe('renderMessageFooter', () => {
     expect(bare.querySelector('.message-footer')).toBeNull();
   });
 
+  it('should render paid advisor/subagent spend as an approximate pill (Plan 30 I2)', () => {
+    const footer = runFooter(manifestState(true), new FakeElement('div'), { input_tokens: 1, output_tokens: 2, paidUsd: 0.1234 }, { provider: 'agent-a' }, []);
+    expect(footer!.innerHTML).toContain('paid ~$0.12');
+    expect(footer!.innerHTML).toContain('Paid model calls this turn (advisor/subagents)');
+    const none = runFooter(manifestState(true), new FakeElement('div'), { input_tokens: 1, output_tokens: 2 }, { provider: 'agent-a' }, []);
+    expect(none!.innerHTML).not.toContain('paid ~$');
+  });
+
   it('should replace an existing footer instead of stacking (live done after restore)', () => {
     const messageEl = new FakeElement('div');
     runFooter(manifestState(true), messageEl, { input_tokens: 1, output_tokens: 2 }, { provider: 'agent-a' }, []);

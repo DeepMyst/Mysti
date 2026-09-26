@@ -319,14 +319,20 @@ describe('canvas agent status (real browser)', () => {
 
   /* ───────── SYNC-5 — the review button opens the queue it names ───────── */
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('SYNC-5 · clicking “N to review” reveals the collapsed pane holding the queue', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('SYNC-5 · clicking “N to review” reveals the collapsed pane AND the tab holding the queue', async () => {
     await freshApp();
     await staged(3);
 
-    // The human closed the Pages panel to get more board.
+    // The queue lives in the inspector's Activity tab now, not the pages rail:
+    // a review action is about the board, and putting it inside navigation
+    // meant the agent shoved the page list every time it produced work. So the
+    // human here closes the INSPECTOR, and the reveal has to undo two things —
+    // the collapsed pane and the unselected tab. A pane reveal alone would open
+    // a dock still showing the Inspector tab: the button would have opened a
+    // panel that does not contain the thing it just counted.
     await page!.evaluate(() => {
-      (document.getElementById('rail-hidden') as HTMLInputElement).checked = true;
-      (document.getElementById('rail-hidden') as HTMLInputElement)
+      (document.getElementById('inspector-hidden') as HTMLInputElement).checked = true;
+      (document.getElementById('inspector-hidden') as HTMLInputElement)
         .dispatchEvent(new Event('change', { bubbles: true }));
     });
     await page!.waitForTimeout(30);
@@ -343,12 +349,16 @@ describe('canvas agent status (real browser)', () => {
 
     const revealed = await page!.evaluate(() => ({
       queue: document.getElementById('staged-rail')!.getBoundingClientRect().width,
-      railDisplay: getComputedStyle(document.getElementById('pages-rail')!).display,
+      inspectorDisplay: getComputedStyle(document.getElementById('inspector')!).display,
+      activityHidden: (document.getElementById('activity-body') as HTMLElement).hidden,
+      tabSelected: document.getElementById('tab-activity')!.getAttribute('aria-selected'),
       rows: document.querySelectorAll('#staged-rail .staged-row').length,
     }));
     // Before the fix the click flipped `aria-expanded` on a queue that stayed
     // inside a `display:none` aside, so nothing appeared at all.
-    expect(revealed.railDisplay).not.toBe('none');
+    expect(revealed.inspectorDisplay).not.toBe('none');
+    expect(revealed.activityHidden, 'the Activity tab is the one holding the queue').toBe(false);
+    expect(revealed.tabSelected).toBe('true');
     expect(revealed.queue, 'the queue the button names must be on screen').toBeGreaterThan(0);
     expect(revealed.rows).toBe(3);
   }, 120_000);

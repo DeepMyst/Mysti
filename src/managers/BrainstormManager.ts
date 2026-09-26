@@ -12,9 +12,9 @@
  */
 
 import * as vscode from 'vscode';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID as uuidv4 } from 'crypto';
 import { ProviderManager } from './ProviderManager';
-import type { PersonaConfig } from '../providers/base/IProvider';
+import type { NativeApprovalHandler, PersonaConfig } from '../providers/base/IProvider';
 import { getProviderDisplayMeta } from '../providers/base/ProviderManifest';
 import type {
   ContextItem,
@@ -65,6 +65,8 @@ export class BrainstormManager {
   private _providerManager: ProviderManager;
   // Per-panel session tracking for isolated brainstorm sessions
   private _panelSessions: Map<string, BrainstormSession> = new Map();
+  private _activeRuns = new Map<string, AbortController>();
+  private readonly _nativeApprovals = new Map<AbortController, NativeApprovalHandler | undefined>();
 
   constructor(context: vscode.ExtensionContext, providerManager: ProviderManager) {
     this._extensionContext = context;
@@ -214,6 +216,49 @@ export class BrainstormManager {
     panelId?: string
   ): AsyncGenerator<BrainstormStreamChunk> {
     const sessionId = panelId || 'default';
+    if (this._activeRuns.has(sessionId)) {
+      this.cancelSession(sessionId);
+    }
+    const controller = new AbortController();
+    this._activeRuns.set(sessionId, controller);
+    this._nativeApprovals.set(controller, this._providerManager.captureNativeApprovalHandler(sessionId, controller.signal));
+    let completed = false;
+    try {
+      // The outer iterator also listens for Stop while provider discovery or
+      // a child stream is pending. A cancelled run cannot start another phase.
+      for await (const chunk of this._iterateWithSilenceTimeout(
+        this._startBrainstormSession(query, context, settings, sessionId, controller.signal),
+        null,
+        controller.signal
+      )) {
+        if (chunk.type === 'done') { completed = true; }
+        yield chunk;
+      }
+      completed = true;
+    } catch (error) {
+      if (!controller.signal.aborted) { throw error; }
+      yield { type: 'done' };
+    } finally {
+      // A consumer breaking out of the stream is also an unclean end. Never
+      // let an older run's cleanup cancel its replacement in the same panel.
+      if (this._activeRuns.get(sessionId) === controller) {
+        if (!completed && !controller.signal.aborted) {
+          this.cancelSession(sessionId);
+        }
+        this._activeRuns.delete(sessionId);
+      }
+      controller.abort();
+      this._nativeApprovals.delete(controller);
+    }
+  }
+
+  private async *_startBrainstormSession(
+    query: string,
+    context: ContextItem[],
+    settings: Settings,
+    sessionId: string,
+    signal: AbortSignal
+  ): AsyncGenerator<BrainstormStreamChunk> {
     const brainstormConfig = this._getConfig();
 
     // B8: Validate no duplicate agents
@@ -228,6 +273,7 @@ export class BrainstormManager {
 
     // Validate provider availability and authentication
     const { available, unavailable, unavailableReasons } = await this._validateProviderAvailability(brainstormConfig.agents);
+    signal.throwIfAborted();
 
     if (unavailable.length > 0) {
       const reasons = unavailable.map(id => unavailableReasons.get(id) || id).join('; ');
@@ -251,6 +297,7 @@ export class BrainstormManager {
 
     // Validate synthesis agent
     const synthesisAvailable = await this._validateProviderAvailability([brainstormConfig.synthesisAgent]);
+    signal.throwIfAborted();
     if (synthesisAvailable.unavailable.length > 0) {
       console.warn(`[Mysti] Brainstorm: Synthesis agent ${brainstormConfig.synthesisAgent} unavailable, using ${available[0]}`);
       validatedConfig.synthesisAgent = available[0];
@@ -298,11 +345,12 @@ export class BrainstormManager {
       }
 
       // Complete
-      yield { type: 'phase_change', phase: 'complete' };
       session.phase = 'complete';
+      yield { type: 'phase_change', phase: 'complete' };
       yield { type: 'done' };
 
     } catch (error) {
+      if (signal.aborted) { throw error; }
       console.error('[Mysti] Brainstorm: Error in session', error);
       yield {
         type: 'agent_error',
@@ -402,7 +450,7 @@ export class BrainstormManager {
         });
 
       const contributions = new Map<AgentType, string>();
-      for await (const chunk of this._interleaveGenerators(generators)) {
+      for await (const chunk of this._interleaveGenerators(generators, this._activeRuns.get(sessionId)?.signal)) {
         yield chunk;
         // Accumulate contributions from discussion_text chunks
         if (chunk.type === 'discussion_text' && chunk.agentId && chunk.content) {
@@ -594,7 +642,7 @@ export class BrainstormManager {
       this._streamAgentResponse(innovatorAgent, innovatorPrompt, context, settings, sessionId)
     ];
 
-    yield* this._interleaveGenerators(generators);
+    yield* this._interleaveGenerators(generators, this._activeRuns.get(sessionId)?.signal);
 
     // Check if we have responses to cross-review
     const completeAgents = this._getCompleteAgents(sessionId);
@@ -634,7 +682,7 @@ export class BrainstormManager {
     ];
 
     const contributions = new Map<AgentType, string>();
-    for await (const chunk of this._interleaveGenerators(crossReviewGens)) {
+    for await (const chunk of this._interleaveGenerators(crossReviewGens, this._activeRuns.get(sessionId)?.signal)) {
       yield chunk;
       if (chunk.type === 'discussion_text' && chunk.agentId && chunk.content) {
         const existing = contributions.get(chunk.agentId) || '';
@@ -741,7 +789,7 @@ export class BrainstormManager {
         });
 
       const refinerContributions = new Map<AgentType, string>();
-      for await (const chunk of this._interleaveGenerators(refinerGens)) {
+      for await (const chunk of this._interleaveGenerators(refinerGens, this._activeRuns.get(sessionId)?.signal)) {
         yield chunk;
         if (chunk.type === 'discussion_text' && chunk.agentId && chunk.content) {
           const existing = refinerContributions.get(chunk.agentId) || '';
@@ -822,21 +870,27 @@ export class BrainstormManager {
       this._streamAgentResponse(agent, query, context, settings, sessionId)
     );
 
-    yield* this._interleaveGenerators(generators);
+    yield* this._interleaveGenerators(generators, this._activeRuns.get(sessionId)?.signal);
   }
 
   /**
    * B1: Iterate an async generator with a resettable silence timeout.
-   * If no chunk is received for `timeoutMs`, rejects with an error.
+   * If no chunk is received for `timeoutMs`, rejects with an error. A null
+   * timeout applies cancellation alone to the outer session iterator.
    */
   private async *_iterateWithSilenceTimeout<T>(
     generator: AsyncGenerator<T>,
-    timeoutMs: number = BRAINSTORM_SILENCE_TIMEOUT_MS
+    timeoutMs: number | null = BRAINSTORM_SILENCE_TIMEOUT_MS,
+    signal?: AbortSignal
   ): AsyncGenerator<T> {
     const iterator = generator[Symbol.asyncIterator]();
     // Single resettable timer: cleared after every chunk (before re-arming) and on
     // completion/error, so chatty streams don't accumulate one live timer per chunk.
     let silenceTimer: ReturnType<typeof setTimeout> | undefined;
+    let completed = false;
+    let rejectPending: ((reason: unknown) => void) | undefined;
+    const onAbort = () => rejectPending?.(signal?.reason);
+    signal?.addEventListener('abort', onAbort, { once: true });
     const clearSilenceTimer = () => {
       if (silenceTimer !== undefined) {
         clearTimeout(silenceTimer);
@@ -845,18 +899,42 @@ export class BrainstormManager {
     };
     try {
       while (true) {
-        const result = await Promise.race([
-          iterator.next(),
-          new Promise<never>((_, reject) => {
+        signal?.throwIfAborted();
+        const pending: Promise<IteratorResult<T>>[] = [];
+        if (signal) {
+          // Keep only the current wait reachable from the abort listener. A
+          // shared never-settling abort promise accumulates a race per chunk.
+          pending.push(new Promise<never>((_, reject) => { rejectPending = reject; }));
+        }
+        // next() executes source code synchronously until its first await; it
+        // may trigger Stop itself. The abort receiver must already be armed.
+        pending.push(iterator.next());
+        if (timeoutMs !== null) {
+          pending.push(new Promise<never>((_, reject) => {
             silenceTimer = setTimeout(() => reject(new Error(`Agent silent for ${Math.round(timeoutMs / 1000)}s — aborting`)), timeoutMs);
-          })
-        ]);
+          }));
+        }
+        const result = await Promise.race(pending);
+        rejectPending = undefined;
         clearSilenceTimer();
-        if (result.done) { return; }
+        signal?.throwIfAborted();
+        if (result.done) {
+          completed = true;
+          return;
+        }
         yield result.value;
       }
     } finally {
       clearSilenceTimer();
+      rejectPending = undefined;
+      signal?.removeEventListener('abort', onAbort);
+      if (!completed) {
+        // return() can remain queued behind a provider's hung next(). Request
+        // cleanup without waiting; cancelRequest terminates its process.
+        try {
+          void iterator.return?.(undefined)?.catch(() => { /* cleanup errors are non-fatal */ });
+        } catch { /* synchronous cleanup errors are non-fatal */ }
+      }
     }
   }
 
@@ -891,6 +969,7 @@ export class BrainstormManager {
    * reach every child — including a synthesis agent that isn't in `agents`.
    */
   private _registerChild(sessionId: string, agentId: AgentType): string {
+    this._activeRuns.get(sessionId)?.signal.throwIfAborted();
     const childPanelId = this._childPanelId(sessionId, agentId);
     const session = this._panelSessions.get(sessionId);
     if (session) {
@@ -900,6 +979,42 @@ export class BrainstormManager {
       }
     }
     return childPanelId;
+  }
+
+  /** Every strategy/phase uses the same explicit parent approval destination. */
+  private async *_sendChildMessage(
+    sessionId: string,
+    agentId: AgentType,
+    prompt: string,
+    context: ContextItem[],
+    settings: Settings,
+    persona?: PersonaConfig
+  ): AsyncGenerator<import('../types').StreamChunk> {
+    const controller = this._activeRuns.get(sessionId);
+    controller?.signal.throwIfAborted();
+    const parent = controller ? this._nativeApprovals.get(controller) : undefined;
+    const childPanelId = this._registerChild(sessionId, agentId);
+    let active = true;
+    const registration = this._providerManager.setNativeApprovalHandlerForPanel(childPanelId, async request => {
+      if (!active || controller?.signal.aborted || request.signal.aborted) { return 'cancelled'; }
+      if (request.panelId !== childPanelId || request.defaultDecision === 'deny' || !parent) { return false; }
+      const approved = await parent({ ...request, panelId: sessionId });
+      return active && !controller?.signal.aborted && !request.signal.aborted ? approved : 'cancelled';
+    });
+    const retire = () => {
+      active = false;
+      registration.dispose();
+      controller?.signal.removeEventListener('abort', retire);
+    };
+    controller?.signal.addEventListener('abort', retire, { once: true });
+    try {
+      controller?.signal.throwIfAborted();
+      yield* this._providerManager.sendMessageToProvider(
+        agentId, prompt, context, this._childSettings(settings, agentId), null, persona, childPanelId
+      );
+    } finally {
+      retire();
+    }
   }
 
   /**
@@ -914,25 +1029,18 @@ export class BrainstormManager {
   ): AsyncGenerator<BrainstormStreamChunk> {
     const session = this._panelSessions.get(sessionId)!;
     const agentResponse = session.agentResponses.get(agent.id)!;
+    const signal = this._activeRuns.get(sessionId)?.signal;
     agentResponse.status = 'streaming';
 
     try {
-      const stream = this._providerManager.sendMessageToProvider(
-        agent.id,
-        query,
-        context,
-        this._childSettings(settings, agent.id),
-        null,
-        agent.persona,
-        this._registerChild(sessionId, agent.id)
-      );
+      const stream = this._sendChildMessage(sessionId, agent.id, query, context, settings, agent.persona);
 
       let agentUsage: import('../types').UsageStats | undefined;
       // Providers emit tool_use twice per tool (start/stop pair) — surface
       // each tool invocation once.
       const surfacedToolIds = new Set<string>();
       // B1: Wrap with silence-based timeout
-      for await (const chunk of this._iterateWithSilenceTimeout(stream)) {
+      for await (const chunk of this._iterateWithSilenceTimeout(stream, BRAINSTORM_SILENCE_TIMEOUT_MS, signal)) {
         if (chunk.type === 'text' && chunk.content) {
           agentResponse.content += chunk.content;
           yield {
@@ -964,13 +1072,7 @@ export class BrainstormManager {
         } else if (chunk.type === 'done' && chunk.usage) {
           agentUsage = chunk.usage;
         } else if (chunk.type === 'error') {
-          agentResponse.status = 'error';
-          yield {
-            type: 'agent_error',
-            agentId: agent.id,
-            content: chunk.content
-          };
-          return;
+          throw new Error(chunk.content || `Agent ${agent.id} reported an error`);
         }
       }
 
@@ -982,6 +1084,8 @@ export class BrainstormManager {
       };
 
     } catch (error) {
+      if (signal?.aborted) { throw error; }
+      this._providerManager.cancelRequest(this._childPanelId(sessionId, agent.id));
       agentResponse.status = 'error';
       yield {
         type: 'agent_error',
@@ -1003,19 +1107,12 @@ export class BrainstormManager {
     role: DiscussionRole,
     roundNumber: number
   ): AsyncGenerator<BrainstormStreamChunk> {
+    const signal = this._activeRuns.get(sessionId)?.signal;
     try {
-      const stream = this._providerManager.sendMessageToProvider(
-        agent.id,
-        prompt,
-        context,
-        this._childSettings(settings, agent.id),
-        null,
-        agent.persona,
-        this._registerChild(sessionId, agent.id)
-      );
+      const stream = this._sendChildMessage(sessionId, agent.id, prompt, context, settings, agent.persona);
 
       // B1: Wrap with silence-based timeout
-      for await (const chunk of this._iterateWithSilenceTimeout(stream)) {
+      for await (const chunk of this._iterateWithSilenceTimeout(stream, BRAINSTORM_SILENCE_TIMEOUT_MS, signal)) {
         if (chunk.type === 'text' && chunk.content) {
           yield {
             type: 'discussion_text',
@@ -1024,10 +1121,14 @@ export class BrainstormManager {
             discussionRole: role,
             roundNumber
           };
+        } else if (chunk.type === 'error') {
+          throw new Error(chunk.content || `Discussion agent ${agent.id} reported an error`);
         }
       }
 
     } catch (error) {
+      if (signal?.aborted) { throw error; }
+      this._providerManager.cancelRequest(this._childPanelId(sessionId, agent.id));
       yield {
         type: 'discussion_error',
         agentId: agent.id,
@@ -1048,20 +1149,13 @@ export class BrainstormManager {
     sessionId: string
   ): AsyncGenerator<BrainstormStreamChunk> {
     const session = this._panelSessions.get(sessionId)!;
+    const signal = this._activeRuns.get(sessionId)?.signal;
     const synthesisPrompt = this._buildSynthesisPrompt(sessionId);
 
     console.log(`[Mysti] Brainstorm: Synthesis by ${synthesisAgentId}`);
 
     try {
-      const stream = this._providerManager.sendMessageToProvider(
-        synthesisAgentId,
-        synthesisPrompt,
-        context,
-        this._childSettings(settings, synthesisAgentId),
-        null,
-        undefined,
-        this._registerChild(sessionId, synthesisAgentId)
-      );
+      const stream = this._sendChildMessage(sessionId, synthesisAgentId, synthesisPrompt, context, settings);
 
       let synthesis = '';
       // 5.1: wrap in the silence timeout like every other brainstorm stream
@@ -1070,7 +1164,7 @@ export class BrainstormManager {
       // at stream end as failure — providers surface CLI failures as
       // {type:'error'} chunks, not throws, so an error-only stream completed
       // "normally" with an empty synthesis and the fallback chain never fired.
-      for await (const chunk of this._iterateWithSilenceTimeout(stream)) {
+      for await (const chunk of this._iterateWithSilenceTimeout(stream, BRAINSTORM_SILENCE_TIMEOUT_MS, signal)) {
         if (chunk.type === 'text' && chunk.content) {
           synthesis += chunk.content;
           yield {
@@ -1087,6 +1181,7 @@ export class BrainstormManager {
 
       session.unifiedSolution = synthesis;
     } catch (error) {
+      if (signal?.aborted) { throw error; }
       // W4 review: a silence-timeout abandons the stream but the child CLI
       // kept running — cancel it before failing over.
       this._providerManager.cancelRequest(this._childPanelId(sessionId, synthesisAgentId));
@@ -1100,20 +1195,12 @@ export class BrainstormManager {
           content: `Primary synthesis agent (${synthesisAgentId}) failed. Retrying with ${fallbackAgent.displayName}...`
         };
         try {
-          const fallbackStream = this._providerManager.sendMessageToProvider(
-            fallbackAgent.id,
-            synthesisPrompt,
-            context,
-            this._childSettings(settings, fallbackAgent.id),
-            null,
-            undefined,
-            this._registerChild(sessionId, fallbackAgent.id)
-          );
+          const fallbackStream = this._sendChildMessage(sessionId, fallbackAgent.id, synthesisPrompt, context, settings);
 
           let synthesis = '';
           // 5.1: same hardening as the primary loop — silence timeout, error
           // chunks and empty output all fail over to the concatenation path.
-          for await (const chunk of this._iterateWithSilenceTimeout(fallbackStream)) {
+          for await (const chunk of this._iterateWithSilenceTimeout(fallbackStream, BRAINSTORM_SILENCE_TIMEOUT_MS, signal)) {
             if (chunk.type === 'text' && chunk.content) {
               synthesis += chunk.content;
               yield { type: 'synthesis_text', content: chunk.content };
@@ -1126,7 +1213,8 @@ export class BrainstormManager {
           }
           session.unifiedSolution = synthesis;
           return;
-        } catch {
+        } catch (error) {
+          if (signal?.aborted) { throw error; }
           // Both failed — cancel the abandoned fallback child too (W4 review).
           this._providerManager.cancelRequest(this._childPanelId(sessionId, fallbackAgent.id));
         }
@@ -1789,7 +1877,8 @@ Your updated recommendation incorporating insights from the facilitator summary.
    *     suspended at a yield forever.
    */
   private async *_interleaveGenerators(
-    generators: AsyncGenerator<BrainstormStreamChunk>[]
+    generators: AsyncGenerator<BrainstormStreamChunk>[],
+    signal?: AbortSignal
   ): AsyncGenerator<BrainstormStreamChunk> {
     type IteratorType = AsyncIterator<BrainstormStreamChunk>;
     type ResultType = {
@@ -1835,6 +1924,7 @@ Your updated recommendation incorporating insights from the facilitator summary.
 
     try {
       while (active.size > 0) {
+        signal?.throwIfAborted();
         const activePending = Array.from(active)
           .filter(it => pending.has(it))
           .map(it => pending.get(it)!);
@@ -1842,6 +1932,7 @@ Your updated recommendation incorporating insights from the facilitator summary.
         if (activePending.length === 0) {break;}
 
         await Promise.race(activePending);
+        signal?.throwIfAborted();
 
         while (resultQueue.length > 0) {
           const { iterator, result, failed, error } = resultQueue.shift()!;
@@ -1881,6 +1972,7 @@ Your updated recommendation incorporating insights from the facilitator summary.
    */
   public cancelSession(panelId?: string): void {
     const sessionId = panelId || 'default';
+    this._activeRuns.get(sessionId)?.abort();
     const session = this._panelSessions.get(sessionId);
     if (session) {
       console.log('[Mysti] Brainstorm: Cancelling session for panel', sessionId);
@@ -1939,7 +2031,11 @@ Your updated recommendation incorporating insights from the facilitator summary.
    */
   public clearSession(panelId?: string): void {
     const sessionId = panelId || 'default';
-    this.disposeChildSessions(sessionId);
+    if (this._activeRuns.has(sessionId)) {
+      this.cancelSession(sessionId);
+    } else {
+      this.disposeChildSessions(sessionId);
+    }
     this._panelSessions.delete(sessionId);
   }
 }

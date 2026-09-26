@@ -15,6 +15,10 @@
  *
  *  - an id renamed in the shell while `app.ts` still looked it up → a control
  *    that silently does nothing (`#btn-apply-device` was missing outright);
+ *    NOTE that button is now deliberately absent — a format is a property of an
+ *    artboard, so `#device-select` writes it directly and there is nothing left
+ *    to apply. `assertNoDeadControls` below is what keeps that honest: every id
+ *    the shell ships must still be looked up by a module, and vice versa;
  *  - a dark literal as a `--vscode-*` fallback → unreadable under a light or
  *    high-contrast theme, which is what the 23 hard-coded colours did;
  *  - an icon-only button with no accessible name;
@@ -39,12 +43,40 @@ const REQUIRED_IDS = [
   'btn-zoom-in', 'btn-zoom-out', 'btn-zoom-fit', 'zoom-level',
   'pages-rail', 'rail-list', 'scaffold-menu', 'btn-add-page', 'staged-rail',
   'inspector', 'insp-tabs', 'insp-body', 'version-timeline', 'history-toolbar',
-  'artifact-name', 'agent-status', 'agent-activity', 'agent-elapsed', 'btn-agent-cancel',
-  'agent-comment', 'board-error',
-  'device-select', 'btn-apply-device', 'theme-select', 'capability-chips',
+  'artifact-name', 'page-chip', 'agent-status', 'agent-activity', 'agent-elapsed',
+  'btn-agent-cancel', 'agent-comment', 'board-error',
+  'device-select', 'theme-select', 'capability-chips',
+  // The dock's two tabs and their panels.
+  'tab-inspector', 'tab-activity', 'activity-badge',
+  'insp-panel-inspector', 'artboard-props', 'activity-body',
   'btn-present', 'btn-export',
   'rail-hidden', 'rail-shown', 'inspector-hidden', 'inspector-shown',
 ];
+
+/**
+ * The other half of the contract: a control the shell ships that NO module
+ * looks up is a button that silently does nothing — the exact defect the
+ * missing `#btn-apply-device` produced, in reverse. This is what stops the
+ * top bar drifting back into a junk drawer.
+ */
+describe('the shell ships no control no module drives', () => {
+  const modules = fs.readdirSync(path.join(repoRoot, 'src', 'webview', 'canvas'))
+    .filter(f => f.endsWith('.ts'))
+    .map(f => fs.readFileSync(path.join(repoRoot, 'src', 'webview', 'canvas', f), 'utf8'))
+    .join('\n');
+
+  it('every button and select in the shell is reachable from a webview module', () => {
+    const ids = [...html.matchAll(/<(?:button|select)\b[^>]*\bid="([^"]+)"/g)].map(m => m[1]);
+    expect(ids.length).toBeGreaterThan(5);
+    const orphans = ids.filter(id => !modules.includes(`'${id}'`) && !modules.includes(`"${id}"`));
+    expect(orphans, `shell controls no module looks up: ${orphans.join(', ')}`).toEqual([]);
+  });
+
+  it('no longer ships the Apply button the format control made redundant', () => {
+    expect(html).not.toContain('btn-apply-device');
+    expect(modules).not.toContain('btn-apply-device');
+  });
+});
 
 describe('the shell provides every id its modules look up', () => {
   it.each(REQUIRED_IDS)('#%s', id => {
@@ -202,9 +234,9 @@ describe('professional finish', () => {
 
   it('styles every class the webview modules actually emit', () => {
     const emitted = [
-      'artboard', 'artboard-label', 'artboard-surface', 'artboard-preview', 'artboard-frame',
+      'artboard', 'artboard-label', 'artboard-format', 'artboard-surface', 'artboard-preview', 'artboard-frame',
       'sel-box', 'sel-marquee',
-      'thumb', 'thumb-preview', 'thumb-frame', 'thumb-meta', 'thumb-title', 'thumb-badge',
+      'thumb', 'thumb-slot', 'thumb-preview', 'thumb-frame', 'thumb-meta', 'thumb-title', 'thumb-badge',
       'thumb-actions', 'thumb-action',
       'ghost-artboard', 'ghost-shimmer', 'ghost-meta', 'ghost-label', 'ghost-elapsed', 'ghost-cancel',
       'agent-cursor', 'agent-cursor-label',

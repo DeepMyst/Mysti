@@ -34,6 +34,42 @@ import {
   type NativeCommandSpec,
 } from '../providers/base/NativeCommands';
 import type { NativeCommandDiscovery } from '../services/NativeCommandDiscovery';
+import { SESSION_SHAPES, sessionCommandId, shapeFromCommandId } from './sessionShapes';
+
+/** What the webview picker needs to price a session and gate its Run button. */
+export interface SessionMenuEntry {
+  id: string;
+  commandId: string;
+  command: string;
+  description: string;
+  minAgents: number;
+  maxAgents: number;
+  rounds: number;
+  costRate: number;
+}
+
+/** The catalog as the picker needs it. One builder, every consumer. */
+export function sessionMenuEntries(): SessionMenuEntry[] {
+  return SESSION_SHAPES.map(shape => ({
+    id: shape.id,
+    commandId: sessionCommandId(shape.id),
+    command: shape.command,
+    description: shape.description,
+    minAgents: shape.minAgents,
+    maxAgents: shape.maxAgents,
+    rounds: shape.rounds,
+    costRate: shape.costRate,
+  }));
+}
+
+/** Codicon per session shape, for the menu's icon column. */
+const SESSION_ICONS: Record<string, string> = {
+  review: 'checklist',
+  panel: 'organization',
+  critique: 'debug-alt',
+  race: 'run-all',
+  brainstorm: 'lightbulb',
+};
 
 interface SlashCommandManagerDeps {
   providerManager: ProviderManager;
@@ -112,6 +148,9 @@ export class SlashCommandManager {
   private _nativeCommandDiscovery?: NativeCommandDiscovery;
 
   private static readonly _sections: SlashCommandSectionInfo[] = [
+    // Plan 29 — first, because a session is a decision about who answers, and
+    // that comes before anything you would tune about one agent's turn.
+    { id: 'sessions',  label: 'Sessions',  order: 0 },
     { id: 'context',   label: 'Context',   order: 1 },
     { id: 'model',     label: 'Model',     order: 2 },
     { id: 'customize', label: 'Customize', order: 3 },
@@ -132,7 +171,14 @@ export class SlashCommandManager {
     'mode': 'settings:mode',
     'model': 'model:switch',
     'agent': 'provider:switch',
-    'brainstorm': 'cmd:brainstorm',
+    // Plan 29: /brainstorm is a SESSION now, so a typed one opens the agent
+    // picker like the other four rather than flipping the old two-agent mode.
+    // Its strategies survive as presets — the setting is untouched.
+    'brainstorm': 'session:brainstorm',
+    'review': 'session:review',
+    'panel': 'session:panel',
+    'critique': 'session:critique',
+    'race': 'session:race',
     'exit-plan-mode': 'cmd:exit-plan',
     'exit-plan': 'cmd:exit-plan',
     // C7: /compact is provider-neutral — CompactionManager branches on the
@@ -146,6 +192,8 @@ export class SlashCommandManager {
     'memory': 'cmd:memory',
     'rules': 'cmd:rules',
     'visual-test': 'cmd:visual-test',
+    'update': 'cmd:update-clis',
+    'update-clis': 'cmd:update-clis',
     'canvas': 'cmd:canvas',
   };
 
@@ -209,7 +257,11 @@ export class SlashCommandManager {
     activeProvider: ProviderType,
     callbacks: SlashCommandCallbacks,
     _query?: string
-  ): { sections: SlashCommandSectionInfo[]; commands: SlashCommandDefinition[] } {
+  ): {
+    sections: SlashCommandSectionInfo[];
+    commands: SlashCommandDefinition[];
+    sessions: SessionMenuEntry[];
+  } {
     // 1. Collect universal commands
     const universalCmds = this._getUniversalCommands(panelId, activeProvider, callbacks);
 
@@ -245,7 +297,10 @@ export class SlashCommandManager {
         ? { ...s, label: `${this._getProviderDisplayName(activeProvider)} commands` }
         : s);
 
-    return { sections, commands: allCmds };
+    // Plan 29: the shape catalog rides along so the picker can enforce the
+    // minimum and price the run WITHOUT a second round trip — the webview has
+    // to decide whether Run is live as the user ticks boxes.
+    return { sections, commands: allCmds, sessions: sessionMenuEntries() };
   }
 
   /**
@@ -253,9 +308,20 @@ export class SlashCommandManager {
    *
    * Three sources, in precedence order — a name found earlier wins, so a repo
    * cannot shadow a curated built-in with a file of the same name:
-   *   1. NATIVE_COMMANDS   — the CLI's own built-ins Mysti can actually run
-   *   2. the provider      — live list from an ACP agent, when it sends one
+   *   1. NATIVE_COMMANDS   — curated built-ins, and the metadata for a reported
+   *                          name (the reports carry names, not descriptions)
+   *   2. the provider      — what the backend says it has (Claude Code's init
+   *                          event, an ACP agent's available_commands_update)
    *   3. discovery         — `.claude/commands`, `.gemini/commands`, skills, …
+   *
+   * Once a backend HAS reported, that report is authoritative and every curated
+   * entry that would be handed to the CLI is filtered down to it. This is what
+   * keeps the catalog honest across CLI releases: Claude Code 2.1.263 dropped
+   * `/review` and does not offer `/effort` or `/rename` in a print session (they
+   * answer "isn't available in this environment"), and a curated list alone
+   * would have gone on advertising all three. Entries that run a MYSTI command
+   * are exempt — they never reach the CLI, so its inventory does not govern
+   * them.
    */
   private _getNativeCommands(
     panelId: string,
@@ -289,13 +355,32 @@ export class SlashCommandManager {
       });
     };
 
+    const reported = this._getDynamicNativeCommands(panelId, activeProvider);
+    const hasReport = this._hasReportedNativeCommands(panelId, activeProvider);
+    const reportedNames = new Set(reported.map(c => c.name));
+
+    const reportedSkills = new Set(reported.filter(c => c.isSkill).map(c => c.name));
+
     for (const spec of NATIVE_COMMANDS[activeProvider] ?? []) {
+      // Metadata-only entries exist to DESCRIBE a reported command, never to
+      // offer one. Without a report naming it, the entry is not a menu row.
+      if (spec.metadataOnly && !reportedNames.has(spec.name)) { continue; }
+      // …and never over a skill: `design` is both a bundled skill and a local
+      // Claude Design command, so a catalog description would rename the skill.
+      if (spec.metadataOnly && reportedSkills.has(spec.name)) { continue; }
+      // A CLI-bound entry the backend did not list does not exist for this
+      // session; advertising it would spend a turn on "unknown command".
+      if (hasReport && spec.execution.kind !== 'mysti' && !reportedNames.has(spec.name)) {
+        continue;
+      }
       add(spec, 'builtin');
     }
 
-    // ACP backends (Hermes, Kimi) are told their command list by the agent at
-    // session start; it is the only accurate source for them.
-    for (const spec of this._getDynamicNativeCommands(panelId, activeProvider)) {
+    // What the backend itself says it has. Anything the catalog already
+    // described was claimed above (keeping its real description and its Mysti
+    // mapping); what is left is genuinely new — bundled skills, plugin
+    // commands, MCP prompts — and passes through under the reported name.
+    for (const spec of reported) {
       add(spec, 'agent');
     }
 
@@ -345,14 +430,25 @@ export class SlashCommandManager {
     activeProvider: ProviderType
   ): string | null {
     if (!name) { return null; }
-    const known =
-      (NATIVE_COMMANDS[activeProvider] ?? []).some(c => c.name === name) ||
-      (this._nativeCommandDiscovery?.getCached(activeProvider) ?? []).some(c => c.name === name) ||
-      this._getDynamicNativeCommands(panelId, activeProvider).some(c => c.name === name);
-    return known ? nativeCommandId(activeProvider, name) : null;
+    // Resolve rather than test membership: the usability rule (a curated entry
+    // the backend never listed is not runnable) lives there, and a typed name
+    // must obey it exactly as a menu pick does.
+    return this.resolveNativeCommand(nativeCommandId(activeProvider, name), panelId, activeProvider, '')
+      ? nativeCommandId(activeProvider, name)
+      : null;
   }
 
-  /** Live command list from an ACP backend; never throws. */
+  /** True once the backend has reported its own command list; never throws. */
+  private _hasReportedNativeCommands(panelId: string, activeProvider: ProviderType): boolean {
+    try {
+      const instance = this._providerManager.getProviderInstance(activeProvider);
+      return instance?.hasReportedNativeCommands?.(panelId) ?? false;
+    } catch {
+      return false;
+    }
+  }
+
+  /** What the backend says it has; never throws. */
   private _getDynamicNativeCommands(
     panelId: string,
     activeProvider: ProviderType
@@ -380,9 +476,22 @@ export class SlashCommandManager {
 
     const trimmedArgs = args.trim();
 
+    const reportedSpecs = this._getDynamicNativeCommands(panelId, activeProvider);
+    const hasReport = this._hasReportedNativeCommands(panelId, activeProvider);
+
     const builtin = (NATIVE_COMMANDS[activeProvider] ?? [])
       .find(c => c.name === parsed.name);
-    if (builtin) {
+    // Same rule as the menu build: a CLI-bound curated entry the backend has not
+    // listed is not runnable, so fall through rather than send it.
+    const reportedHere = reportedSpecs.find(c => c.name === parsed.name);
+    const builtinUsable = builtin
+      // A metadata-only entry is only ever reachable through a report, and a
+      // reported SKILL keeps its own identity rather than the catalog's.
+      && (!builtin.metadataOnly || (!!reportedHere && !reportedHere.isSkill))
+      && (!hasReport
+        || builtin.execution.kind === 'mysti'
+        || !!reportedHere);
+    if (builtin && builtinUsable) {
       if (builtin.execution.kind === 'mysti') {
         return { kind: 'mysti', commandId: builtin.execution.commandId };
       }
@@ -398,10 +507,9 @@ export class SlashCommandManager {
       };
     }
 
-    // Live ACP command — the agent owns the vocabulary, so it is passed
+    // A command the backend reported — it owns the vocabulary, so it is passed
     // through verbatim.
-    const live = this._getDynamicNativeCommands(panelId, activeProvider)
-      .find(c => c.name === parsed.name);
+    const live = reportedSpecs.find(c => c.name === parsed.name);
     if (live) {
       if (requiresArguments(live.argumentHint) && !trimmedArgs) {
         return { kind: 'prefill', text: `/${live.name} ` };
@@ -443,6 +551,28 @@ export class SlashCommandManager {
     callbacks: SlashCommandCallbacks
   ): Promise<string | void> {
     const trimmedArgs = args.trim();
+
+    // Plan 29: a session command is a REQUEST FOR THE PICKER, not a run — who
+    // answers is the decision it exists to make. Handled BEFORE the switch
+    // because it can arrive typed as well as clicked: `/review the auth diff`
+    // matches no menu row (the args are part of the query), so it fell through
+    // to sendMessage, reached this switch, matched nothing, and did nothing at
+    // all. The webview intercepts a CLICK on its own; this covers every other
+    // way the id can get here.
+    const sessionShape = shapeFromCommandId(commandId);
+    if (sessionShape) {
+      callbacks.postToPanel(panelId, {
+        type: 'openSessionPicker',
+        payload: {
+          commandId,
+          // Whatever followed the command is the brief; the composer has
+          // already been cleared by the time this arrives.
+          brief: trimmedArgs,
+          sessions: sessionMenuEntries(),
+        },
+      });
+      return;
+    }
 
     switch (commandId) {
       // ---- Context ----
@@ -626,6 +756,14 @@ export class SlashCommandManager {
       case 'cmd:memory': {
         // Open project MEMORY.md for viewing/editing
         callbacks.postToPanel(panelId, { type: 'triggerOpenMemory' });
+        return;
+      }
+
+      case 'cmd:update-clis': {
+        // Invoke the registered command directly rather than round-tripping
+        // through a webview that has no part to play — same pattern as
+        // cmd:canvas and the settings entry.
+        await vscode.commands.executeCommand('mysti.updateClis');
         return;
       }
 
@@ -869,6 +1007,23 @@ export class SlashCommandManager {
         keywords: ['provider', 'agent', 'switch', 'claude', 'codex', 'gemini', 'copilot'],
       },
 
+      // -- Sessions (Plan 29) --
+      // Derived from SESSION_SHAPES so the menu can never offer a shape the
+      // dispatcher does not know, or hide one it does.
+      ...SESSION_SHAPES.map(shape => ({
+        id: sessionCommandId(shape.id),
+        label: shape.command,
+        description: shape.description,
+        section: 'sessions' as SlashCommandSection,
+        icon: SESSION_ICONS[shape.id],
+        provider: 'all' as const,
+        // 'submenu': picking one opens the agent list rather than running
+        // anything. Who answers is the decision the command exists to make, so
+        // it is never assumed.
+        action: 'submenu' as const,
+        keywords: ['session', 'agents', 'multi', shape.id],
+      })),
+
       // -- Commands --
       {
         id: 'cmd:clear',
@@ -889,17 +1044,6 @@ export class SlashCommandManager {
         provider: 'all',
         action: 'execute',
         keywords: ['help', 'commands', 'list'],
-      },
-      {
-        id: 'cmd:brainstorm',
-        label: '/brainstorm',
-        description: 'Toggle brainstorm mode',
-        section: 'commands',
-        icon: 'organization',
-        provider: 'all',
-        action: 'execute',
-        isToggle: true,
-        keywords: ['brainstorm', 'multi', 'agent', 'collaborate'],
       },
       {
         id: 'cmd:exit-plan',
@@ -993,6 +1137,17 @@ export class SlashCommandManager {
       },
 
       // -- Collaboration (Plan 14): call other agents in a named role --
+      //
+      // Plan 29 retired this family's Review, Critique and Panel entries from
+      // the MENU: each composed an `@agent:role` mention for the user to send,
+      // and each now has a session of the same name that dispatches directly,
+      // merges the answers and can be stopped a lane at a time. Two "Review"
+      // rows doing different things is the duplication sessions exist to end.
+      //
+      // Nothing is taken away — the `@agent:role` grammar they composed is
+      // unchanged and still works typed, and their handlers below still run for
+      // any caller that already holds the id. Consult stays: "ask the others
+      // about this thread" is advice, not a session shape.
       {
         id: 'cmd:consult',
         label: 'Consult',
@@ -1002,36 +1157,6 @@ export class SlashCommandManager {
         provider: 'all',
         action: 'execute' as const,
         keywords: ['consult', 'advisor', 'advice', 'second-opinion', 'ask'],
-      },
-      {
-        id: 'cmd:review',
-        label: 'Review',
-        description: 'Have other agents review the current diff or files',
-        section: 'commands' as SlashCommandSection,
-        icon: 'git-pull-request',
-        provider: 'all',
-        action: 'execute' as const,
-        keywords: ['review', 'code review', 'diff', 'pr'],
-      },
-      {
-        id: 'cmd:critique',
-        label: 'Critique',
-        description: 'Have other agents poke holes in the latest plan or answer',
-        section: 'commands' as SlashCommandSection,
-        icon: 'feedback',
-        provider: 'all',
-        action: 'execute' as const,
-        keywords: ['critique', 'red team', 'poke holes', 'challenge'],
-      },
-      {
-        id: 'cmd:panel',
-        label: 'Panel',
-        description: 'Convene a multi-agent panel on the current question',
-        section: 'commands' as SlashCommandSection,
-        icon: 'organization',
-        provider: 'all',
-        action: 'execute' as const,
-        keywords: ['panel', 'collaborate', 'multi-agent', 'advisors'],
       },
 
       // -- Settings --
@@ -1064,6 +1189,16 @@ export class SlashCommandManager {
         provider: 'all',
         action: 'execute',
         keywords: ['access', 'permission', 'read', 'write'],
+      },
+      {
+        id: 'cmd:update-clis',
+        label: 'Update CLI backends',
+        description: 'Check for and install newer versions of the installed CLIs',
+        section: 'settings',
+        icon: 'cloud-download',
+        provider: 'all',
+        action: 'execute',
+        keywords: ['update', 'upgrade', 'cli', 'version', 'latest', 'npm'],
       },
       {
         id: 'settings:open',

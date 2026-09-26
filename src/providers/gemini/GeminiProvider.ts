@@ -142,8 +142,10 @@ export class GeminiProvider extends BaseCliProvider {
     thinkingLevelEffective: false,
     planMode: 'detected',
     sessionKind: 'cli-resume',
+    nativeInstructionFile: 'GEMINI.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'none',   // Gemini CLI's result stats carry no cache split.
     modelSelection: 'full'
   };
 
@@ -333,6 +335,17 @@ export class GeminiProvider extends BaseCliProvider {
 
     console.log('[Mysti] Gemini: Built CLI args:', args.join(' '));
     return args;
+  }
+
+  /**
+   * Gemini CLI refuses a headless run in a folder it has not been told to trust
+   * ("Gemini CLI is not running in a trusted directory"), and its trust also
+   * gates loading the project's `.gemini/` settings. Forward VS Code's workspace
+   * trust — the user's decision for the same folder — and nothing more. The env
+   * var rather than `--skip-trust`, so older CLIs without the flag still spawn.
+   */
+  protected override getExtraSpawnEnv(_settings: Settings): Record<string, string> {
+    return vscode.workspace.isTrusted ? { GEMINI_CLI_TRUST_WORKSPACE: 'true' } : {};
   }
 
   /**
@@ -565,8 +578,10 @@ export class GeminiProvider extends BaseCliProvider {
         case 'result':
           if (data.stats) {
             geminiSession.lastUsageStats = {
-              input_tokens: data.stats.input_tokens || data.stats.total_tokens || 0,
-              output_tokens: data.stats.output_tokens || 0
+              // NOT `|| data.stats.total_tokens`: total includes the completion,
+              // so the old fallback booked output tokens as context fill.
+              input_tokens: Number(data.stats.input_tokens ?? 0),
+              output_tokens: Number(data.stats.output_tokens ?? 0)
             };
             console.log('[Mysti] Gemini: Captured usage stats:', geminiSession.lastUsageStats);
           }

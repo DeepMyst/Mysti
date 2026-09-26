@@ -179,10 +179,65 @@ describe('SetupManager wizard status (Plan 03 Phase 3a)', () => {
     service = h.service;
 
     await service.getStatus('claude-code');
-    expect(service.peekStatus('claude-code')).toBeDefined();
+    expect(service.getCachedStatus('claude-code')).toBeDefined();
 
     h.setupManager.resetNpmCache();
-    expect(service.peekStatus('claude-code')).toBeUndefined();
+    expect(service.getCachedStatus('claude-code')).toBeUndefined();
+  });
+
+  it('an invalidated cache still reports installed CLIs as installed while it re-probes', async () => {
+    // Picking an agent writes mysti.defaultProvider, which invalidates. The
+    // Mysti sign-in card's agent list reads this cached status right after —
+    // it must not claim nothing else is installed.
+    const claude = fakeProvider('claude-code');
+    const h = buildHarness([claude]);
+    service = h.service;
+
+    await service.getStatus('claude-code');
+    service.invalidate();
+
+    const cached = h.setupManager.getWizardStatusCached();
+    expect(cached.complete).toBe(false);
+    expect(cached.providers.find((p) => p.providerId === 'claude-code')).toMatchObject({ installed: true });
+  });
+
+  it('tells the panels when a CLI becomes installed, without waiting for a background refresh', async () => {
+    const cursor = fakeProvider('cursor', { found: false });
+    const h = buildHarness([cursor]);
+    service = h.service;
+    await service.getStatus('cursor');
+
+    const updates: WizardStatusResult[] = [];
+    h.setupManager.onWizardStatusUpdated((s) => updates.push(s));
+
+    cursor.discoverCli.mockResolvedValue({ found: true, path: '/usr/local/bin/cursor-agent' });
+    await (h.setupManager as any)._recordInstall('cursor');
+
+    expect(updates[0]?.providers.find((p) => p.providerId === 'cursor')).toMatchObject({ installed: true });
+  });
+
+  it('watchForInstall re-probes a terminal install until the CLI appears, then stops', async () => {
+    vi.useFakeTimers();
+    try {
+      const cursor = fakeProvider('cursor', { found: false });
+      const h = buildHarness([cursor]);
+      service = h.service;
+      await service.getStatus('cursor');
+      cursor.discoverCli.mockClear();
+
+      h.setupManager.watchForInstall('cursor', undefined, 1000, 60_000);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(cursor.discoverCli).toHaveBeenCalledTimes(1);   // still missing: keep looking
+
+      cursor.discoverCli.mockResolvedValue({ found: true, path: '/usr/local/bin/cursor-agent' });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(service.peekStatus('cursor')).toMatchObject({ found: true });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(cursor.discoverCli).toHaveBeenCalledTimes(2);   // found: the poll stopped
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refreshWizardStatus force-probes every provider', async () => {

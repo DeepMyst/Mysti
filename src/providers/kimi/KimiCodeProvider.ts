@@ -38,7 +38,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
-import { parseAcpAvailableCommands, type NativeCommandSpec } from '../base/NativeCommands';
+import { respondToAcpApproval } from '../base/AcpApproval';
+import {
+  parseAcpAvailableCommands,
+  type NativeCommandSpec,
+  type ReportedNativeCommands,
+} from '../base/NativeCommands';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -107,16 +112,14 @@ export interface KimiCodeSessionState extends PanelSessionState {
    * agent's own, arrives after the handshake, and can be re-sent mid-session,
    * so it is session state rather than anything Mysti can hard-code.
    */
-  availableCommands: NativeCommandSpec[];
+  availableCommands: ReportedNativeCommands;
+  /** ACP `usage_update.size` — the window the agent reports working in, until taken. */
+  reportedContextWindow?: number;
   activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
 }
 
-interface AcpPermissionOption {
-  optionId?: string;
-  option_id?: string;
-  kind?: string;
-}
+
 
 export class KimiCodeProvider extends BaseCliProvider {
   readonly id = 'kimi-code';
@@ -165,6 +168,7 @@ export class KimiCodeProvider extends BaseCliProvider {
     // Kimi's coding models reason; ACP surfaces it as agent_thought_chunk.
     supportsThinking: true,
     supportsToolUse: true,
+    supportsNativeApproval: true,
     supportsSessions: true,
     supportsPersistentProcess: true,
     // Plan 27 Phase 5: attachments are written to a temp file and referenced
@@ -181,6 +185,7 @@ export class KimiCodeProvider extends BaseCliProvider {
     sessionKind: 'cli-resume',
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'none',   // ACP usage carries flat input/output only.
     // ACP has no per-prompt model override; a custom model is passed via the
     // ANTHROPIC_MODEL env at spawn (best-effort) — expose it as custom-only.
     modelSelection: 'custom-only'
@@ -206,7 +211,7 @@ export class KimiCodeProvider extends BaseCliProvider {
       acpMode: 'default',
       fallbackDiagnostics: false,
       fallbackErrorEmitted: false,
-      availableCommands: [],
+      availableCommands: null,
       activeToolCalls: new Map(),
       lastUsageStats: null,
     };
@@ -223,6 +228,13 @@ export class KimiCodeProvider extends BaseCliProvider {
     if (!panelId) { return []; }
     const session = this._panelSessions.get(panelId) as KimiCodeSessionState | undefined;
     return session?.availableCommands ?? [];
+  }
+
+  /** True once the agent has sent an `available_commands_update` for this panel. */
+  public override hasReportedNativeCommands(panelId?: string): boolean {
+    if (!panelId) { return false; }
+    const session = this._panelSessions.get(panelId) as KimiCodeSessionState | undefined;
+    return Array.isArray(session?.availableCommands);
   }
 
   async discoverCli(): Promise<CliDiscoveryResult> {
@@ -701,8 +713,13 @@ export class KimiCodeProvider extends BaseCliProvider {
         kimi.availableCommands = parseAcpAvailableCommands(update);
         return null;
 
-      // Context-window telemetry, plan entries, echoes — no Mysti rendering yet
+      // The agent's own context window — authoritative over any catalog
+      // (the model is configured in its own config, outside Mysti).
       case 'usage_update':
+        if (typeof update.size === 'number' && update.size > 0) { kimi.reportedContextWindow = update.size; }
+        return null;
+
+      // Plan entries, echoes — no Mysti rendering yet
       case 'plan':
       case 'user_message_chunk':
       case 'session_info_update':
@@ -713,81 +730,15 @@ export class KimiCodeProvider extends BaseCliProvider {
     }
   }
 
-  /**
-   * Answer Kimi Code's blocking `session/request_permission` request.
-   *
-   * ACP is a blocking permission protocol — Kimi waits for allow/deny before
-   * executing a tool — and this response is written SYNCHRONOUSLY, before the
-   * corresponding tool_use chunk can reach Mysti's async stream-level gate. So
-   * the gate cannot enforce for Kimi; THIS is the enforcement point, and it
-   * FAILS CLOSED: it auto-allows only when the user's settings mean "don't ask
-   * me". In any mode that would otherwise prompt, and whenever the decision is
-   * uncertain, it DENIES — never silently auto-approves a dangerous tool a
-   * prompt-injected agent requested.
-   */
+  /** Route the native blocking request through its process/turn-owned approval scope. */
   private _respondToPermissionRequest(id: number | string, params: Record<string, unknown> | undefined, kimi: KimiCodeSessionState): void {
-    const options = (params?.options ?? []) as AcpPermissionOption[];
-    const optionIdOf = (o: AcpPermissionOption) => String(o.optionId ?? o.option_id ?? '');
-
-    const toolCall = (params?.toolCall ?? params?.tool_call) as Record<string, unknown> | undefined;
-    const kind = String(toolCall?.kind ?? '').toLowerCase();
-    const allow = this._acpPermissionAllows(kind, kimi);
-
-    const ALLOW_IDS = ['allow_once', 'allow_session', 'allow_always'];
-    const DENY_IDS = ['deny', 'deny_always', 'reject_once', 'reject_always'];
-    const pick = (wanted: string[]): string | null => {
-      for (const w of wanted) {
-        const match = options.find(o => optionIdOf(o) === w || o.kind === w);
-        if (match) { return optionIdOf(match); }
-      }
-      return null;
-    };
-
-    let chosen: string | null;
-    if (allow) {
-      // If we mean to allow but find no allow option, fail closed (deny).
-      chosen = pick(ALLOW_IDS) ?? pick(DENY_IDS);
-    } else {
-      // Denying: ONLY ever select a real deny option. If none is offered, leave
-      // chosen=null so the `cancelled` outcome fires — never fall back to an
-      // arbitrary option (a last/only option could be an allow ⇒ fail open).
-      chosen = pick(DENY_IDS);
-    }
-
-    this._writeToAcp(kimi, {
-      jsonrpc: '2.0',
-      id,
-      result: chosen
-        ? { outcome: { outcome: 'selected', optionId: chosen } }
-        : { outcome: { outcome: 'cancelled' } }
+    respondToAcpApproval({
+      id, params,
+      settings: { mode: kimi.acpMode, accessLevel: kimi.acpAccessLevel },
+      process: kimi.persistentProcess, sessionId: kimi.acpSessionId,
+      trackedTools: kimi.activeToolCalls,
+      requests: this._nativeApprovalRequests(kimi),
     });
-  }
-
-  /**
-   * Whether an ACP tool of the given semantic `kind` may auto-run under the
-   * snapshotted settings. Mirrors Mysti's shouldGateToolUse predicate (but
-   * inverted — "wouldn't gate" ⇒ allow): read-only kinds always run; the
-   * autonomous Full-access tier runs everything; the accept-edits tier runs
-   * edits/moves only; every "ask" mode denies. Unknown kinds fail closed.
-   */
-  private _acpPermissionAllows(kind: string, kimi: KimiCodeSessionState): boolean {
-    if (kind === 'read' || kind === 'search' || kind === 'think') {
-      return true;
-    }
-    const { acpMode: mode, acpAccessLevel: access } = kimi;
-    if (access === 'read-only' || mode === 'quick-plan' || mode === 'detailed-plan') {
-      return false;
-    }
-    // Full access (autonomous) — Mysti would not gate.
-    if (access === 'full-access') {
-      return true;
-    }
-    // Accept-edits tier: edits/moves auto-apply; commands/deletes/fetch ask.
-    if (mode === 'edit-automatically' && access === 'ask-permission') {
-      return kind === 'edit' || kind === 'move';
-    }
-    // ask-before-edit / default ask-permission / unknown kind → deny.
-    return false;
   }
 
   /** Extract text from an ACP content block (or block array). */
@@ -846,6 +797,13 @@ export class KimiCodeProvider extends BaseCliProvider {
   // ==========================================================================
   // Usage + lifecycle
   // ==========================================================================
+
+  protected override takeReportedContextWindow(panelId?: string): number | undefined {
+    const session = this._getSession(panelId) as KimiCodeSessionState;
+    const window = session.reportedContextWindow;
+    session.reportedContextWindow = undefined;
+    return window;
+  }
 
   getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number } | null {
     const session = this._getSession(panelId) as KimiCodeSessionState;

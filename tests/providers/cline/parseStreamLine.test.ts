@@ -11,6 +11,41 @@ describe('ClineProvider.parseStreamLine', () => {
     session = createClineSession();
   });
 
+  describe('malformed provider payloads', () => {
+    it.each([
+      { type: 'say', say: 'completion_result', text: { injected: true } },
+      { type: 'thinking', content: ['invalid'] },
+      { type: 'text', content: 42 },
+      { type: 'tool_use', toolCall: ['invalid'] },
+      { type: 'tool_result', toolCall: 'invalid' },
+      { type: 'ask', ask: 'followup', text: '{"question":42}' },
+      { type: 'agent_event', event: null },
+    ])('ignores invalid event fields: %j', (payload) => {
+      expect(provider.parseStreamLine(JSON.stringify(payload), session)).toBeNull();
+    });
+
+    it('drops malformed question options while retaining strings and labelled options', () => {
+      const payload = { type: 'ask', ask: 'followup', text: JSON.stringify({
+        question: 'Continue?', options: [null, 42, {}, 'Yes', { label: 'No', description: 'Stop' }],
+      }) };
+      const result = provider.parseStreamLine(JSON.stringify(payload), session);
+      expect(result?.askUserQuestion?.questions[0].options).toEqual([
+        { label: 'Yes', description: '' }, { label: 'No', description: 'Stop' },
+      ]);
+    });
+
+    it('bounds malformed usage and preserves explicit zero over fallback aliases', () => {
+      provider.parseStreamLine(JSON.stringify({ type: 'usage', tokens: {
+        input_tokens: 0, inputTokens: 100, output_tokens: -3,
+        cache_creation_input_tokens: 'bad', cache_read_input_tokens: {},
+      } }), session);
+      expect(session.lastUsageStats).toEqual({
+        input_tokens: 0, output_tokens: 0,
+        cache_creation_input_tokens: undefined, cache_read_input_tokens: undefined,
+      });
+    });
+  });
+
   describe('text streaming', () => {
     it('should parse completion_result as text', () => {
       const line = JSON.stringify({ type: 'say', say: 'completion_result', text: 'Here is the answer' });

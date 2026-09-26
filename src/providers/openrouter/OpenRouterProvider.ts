@@ -67,7 +67,6 @@ export class OpenRouterProvider extends BaseCliProvider {
       // A small free-leaning starter set; users can type ANY OpenRouter slug via
       // `mysti.openrouterModel` (MODEL_NAME_PATTERN accepts `owner/model:free`).
       { id: 'openrouter/free', name: 'Free (auto-routed)', description: 'Auto-routes to an available free model', contextWindow: 200000 },
-      { id: 'openai/gpt-oss-120b:free', name: 'GPT-OSS 120B (free)', description: 'Open-weight MoE, tool-capable', contextWindow: 131000 },
       { id: 'anthropic/claude-sonnet-5', name: 'Claude Sonnet 5 (paid)', description: 'Anthropic, via OpenRouter credits', contextWindow: 1000000 },
       { id: 'openai/gpt-6-astra', name: 'GPT-6 Astra (paid)', description: 'OpenAI flagship, via OpenRouter credits', contextWindow: 1050000 },
       { id: 'moonshotai/kimi-k3', name: 'Kimi K3 (paid)', description: 'Moonshot open-weight 2.8T MoE', contextWindow: 1048576 },
@@ -94,6 +93,7 @@ export class OpenRouterProvider extends BaseCliProvider {
     sessionKind: 'none',
     emitsToolResults: false,
     emitsUsage: true,
+    usageConvention: 'auto',   // OpenRouter fronts every vendor; Anthropic models there report disjoint buckets.
     modelSelection: 'full',
   };
 
@@ -141,6 +141,23 @@ export class OpenRouterProvider extends BaseCliProvider {
    * Returns null on any failure so the registry keeps its curated/cached list.
    * Never throws.
    */
+  /**
+   * `context_length` of the model that answered (a router like
+   * `openrouter/free` serves one of many), else of the one requested — from
+   * the full catalog, which discovery deliberately does not load into the
+   * dropdown, so a paid or typed-in slug was otherwise measured against 200k.
+   * The catalog is cached by the client; never throws.
+   */
+  private async _contextWindowOf(served: string | undefined, requested: string): Promise<number | undefined> {
+    try {
+      const all = await this._client.listAllModels();
+      const find = (id: string | undefined) => (id ? all.find(m => m.id === id)?.contextLength : undefined);
+      return find(served) ?? find(requested);
+    } catch {
+      return undefined;
+    }
+  }
+
   async discoverModels(_timeoutMs: number): Promise<ModelInfo[] | null> {
     try {
       const free = await this._client.listFreeModels();
@@ -253,6 +270,7 @@ export class OpenRouterProvider extends BaseCliProvider {
     session.abortController = new AbortController();
     let sawText = false;
     let errored = false;
+    let servedModel: string | undefined;
 
     // Reasoning effort → OpenRouter `reasoning.effort` (solid tier set is
     // low/medium/high; xhigh/max clamp to high).
@@ -276,6 +294,7 @@ export class OpenRouterProvider extends BaseCliProvider {
           yield { type: 'error', content: `OpenRouter: ${ev.error}` };
           break;
         }
+        if (ev.model) { servedModel = ev.model; }
         if (ev.text) {
           sawText = true;
           yield { type: 'text', content: ev.text };
@@ -300,10 +319,14 @@ export class OpenRouterProvider extends BaseCliProvider {
     }
 
     if (!errored) {
-      // Exactly-one-done stream contract; attach usage when OpenRouter reported it.
-      yield session.lastUsage
-        ? { type: 'done', usage: session.lastUsage }
-        : { type: 'done' };
+      // Exactly-one-done stream contract; attach usage when OpenRouter reported
+      // it, and the window of the model that answered.
+      const contextWindow = await this._contextWindowOf(servedModel, model);
+      yield {
+        type: 'done',
+        ...(session.lastUsage ? { usage: session.lastUsage } : {}),
+        ...(contextWindow ? { contextWindow } : {}),
+      };
       // A blank response (no text, no error) — surface a hint rather than silence.
       if (!sawText) {
         console.warn('[Mysti] OpenRouter: model returned no text (possibly rate-limited or an unsupported model).');

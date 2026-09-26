@@ -160,4 +160,18 @@ describe('QwenCodeProvider.parseStreamLine', () => {
       expect(session.lastUsageStats).toEqual({ input_tokens: 200, output_tokens: 100 });
     });
   });
+
+  describe('reported model → context window', () => {
+    it('measures against the model the CLI resolved, not the one asked for (Qwen OAuth runs coder-model)', () => {
+      (provider as any)._panelSessions.set(session.panelId, session);
+      provider.parseStreamLine(JSON.stringify({ type: 'system', subtype: 'init', model: 'coder-model', session_id: 'q1' }), session);
+      expect((provider as any).takeReportedContextWindow(session.panelId)).toBe(1000000);
+    });
+
+    it('reports nothing for a model its catalog does not know (the lookup keeps its fallback)', () => {
+      (provider as any)._panelSessions.set(session.panelId, session);
+      provider.parseStreamLine(JSON.stringify({ type: 'system', subtype: 'init', model: 'qwen9-unknown' }), session);
+      expect((provider as any).takeReportedContextWindow(session.panelId)).toBeUndefined();
+    });
+  });
 });

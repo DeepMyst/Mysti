@@ -14,9 +14,11 @@ Thank you for your interest in contributing to Mysti! We welcome contributions f
 
 ### Prerequisites
 
-- Node.js 18+
-- VS Code 1.85+
-- At least one CLI tool installed:
+- Node.js from `.nvmrc` (`nvm install && nvm use` if using nvm). The supported
+  engine range is declared in `package.json`.
+- VS Code satisfying `engines.vscode` in `package.json`.
+- A provider CLI/account is needed for live provider testing. Unit tests do not
+  require credentials. For example:
   - `npm install -g @anthropic-ai/claude-code`
   - `npm install -g @google/gemini-cli`
   - `npm install -g @github/copilot`
@@ -31,7 +33,7 @@ Thank you for your interest in contributing to Mysti! We welcome contributions f
 
 2. **Install dependencies**
    ```bash
-   npm install
+   npm ci
    ```
 
 3. **Start development build**
@@ -48,6 +50,13 @@ Thank you for your interest in contributing to Mysti! We welcome contributions f
    - Set breakpoints and debug in the original window; filter the Debug Console
      by `[Mysti]` for the extension's own logs
 
+Install the browser used by the webview suites with `npx playwright install
+chromium`. Run `npm run typecheck`, `npm run lint`, `npm test`, and
+`npm run compile:release` before requesting review. CI requires Chromium and
+blocks on lint, test, build and package-shape failures. See
+[maintenance and releases](docs/MAINTENANCE.md) for the complete verification
+workflow and [architecture](docs/ARCHITECTURE.md) for module boundaries.
+
 ### Project Structure
 
 ```
@@ -61,8 +70,14 @@ Mysti/
 │   │   ├── copilot/           # GitHub Copilot provider
 │   │   └── gemini/            # Google Gemini provider
 │   ├── managers/              # Business logic managers
-│   ├── webview/               # Chat UI (webviewContent.ts)
+│   ├── chat/                  # Panel identity and interaction ownership
+│   ├── services/              # Transport, storage and integration services
+│   ├── canvas/                # Document model, operations and typed protocol
+│   ├── webview/               # HTML loaders and Canvas browser source
 │   └── types.ts               # TypeScript type definitions
+├── media/chat/                # Chat browser scripts and styles
+├── tests/                     # Vitest and Chromium suites
+├── tests-vscode/              # Real extension-host integration tests
 ├── resources/                 # Icons, logos, agent definitions
 └── package.json               # Extension manifest
 ```
@@ -80,8 +95,15 @@ Mysti/
    - Use `[Mysti]` prefix for console logs
 
 3. **Test your changes**
+   - Run `npm run typecheck`, `npm run lint`, `npm test`, and
+     `npm run compile:release`. Treat every failing check as a failure to resolve;
+     do not retry until green or lower rule severity.
    - Press `F5` to launch Extension Development Host
    - Test with multiple providers if applicable
+   - Add regression tests for behavioral changes: malformed inputs, cancellation,
+     isolation between panels, and cleanup matter more than implementation details.
+   - For packaged/runtime changes, run `npm run package` and check the resulting
+     VSIX with `node scripts/check-package-shape.js mysti-<version>.vsix`.
    - Check the Debug Console for errors
 
 4. **Commit with clear messages**
@@ -107,7 +129,13 @@ Mysti/
 - **TypeScript**: Use strict types, avoid `any`
 - **Naming**: Private members use `_` prefix (`_currentProcess`)
 - **Logging**: Use `console.log('[Mysti] ProviderName: message')`
-- **Error handling**: Always catch and log errors
+- **Error handling**: Handle errors at the boundary that can recover or report
+  them. Preserve cancellation, release owned resources, and avoid logging secrets.
+- **External data**: Parse as `unknown` and validate fields before using them.
+- **Modularity**: Keep new stateful behavior behind a small API with explicit
+  ownership and disposal. Do not add unrelated behavior to the main chat controller.
+- **Dependencies**: Commit manifest and lockfile updates together; use `npm ci`
+  to verify the new lock. See the maintenance guide before changing engine ranges.
 
 ## Adding a New Provider
 

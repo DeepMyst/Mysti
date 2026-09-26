@@ -35,3 +35,28 @@ describe('OllamaProvider stream conformance', () => {
     expect(provider.capabilities.emitsToolResults).toBe(false);
   });
 });
+
+describe('OllamaProvider context window', () => {
+  it('reports the num_ctx Ollama LOADED (/api/ps), not the trained maximum', async () => {
+    const provider = new OllamaProvider(createMockContext());
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      if (String(url).endsWith('/api/ps')) {
+        return new Response(JSON.stringify({ models: [{ name: 'deepseek-r1:latest', model: 'deepseek-r1:latest', context_length: 4096 }] }));
+      }
+      const body = JSON.stringify({ message: { content: 'hi' }, done: false }) + '\n'
+        + JSON.stringify({ done: true, prompt_eval_count: 3000, eval_count: 5 }) + '\n';
+      return new Response(body);
+    }) as typeof fetch;
+    try {
+      const settings = { provider: 'ollama', model: 'deepseek-r1', mode: 'default', accessLevel: 'ask-permission', thinkingLevel: 'none', contextMode: 'auto' } as never;
+      const chunks = [];
+      for await (const c of provider.sendMessage('hi', [], settings, null, undefined, 'p1')) { chunks.push(c); }
+      const done = chunks.find(c => c.type === 'done');
+      expect(done?.contextWindow).toBe(4096);
+      expect(done?.usage).toMatchObject({ input_tokens: 3000 });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});

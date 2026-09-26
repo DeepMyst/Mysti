@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { clearMockConfig, setMockConfig } from '../helpers/mockVscode';
 import { CanvasManager } from '../../src/managers/CanvasManager';
+import { DesignSpecManager } from '../../src/managers/DesignSpecManager';
 import type { CanvasStreamChunk } from '../../src/types';
 
 // Mock extension context with minimal globalState
@@ -480,6 +481,28 @@ describe('CanvasManager', () => {
   // Snapshot building
   // =========================================================================
   describe('buildSnapshot', () => {
+    it.each([null, 42, 'canvas', { objects: {} }])('handles a malformed canvas document: %j', value => {
+      expect(manager.buildSnapshot(value, 'image').objects).toEqual([]);
+    });
+
+    it('filters malformed objects, metadata and coordinates before building a scene', () => {
+      const snapshot = manager.buildSnapshot({ objects: [null, 42, {
+        id: 'shape', type: 'group', left: '10', top: Infinity, width: 100, height: NaN,
+        text: {}, label: [], metadata: { engine: 'stitch', malformed: {} },
+        objects: [null, 42, { id: 'child' }],
+      }] }, 'image');
+      expect(snapshot.objects).toEqual([{
+        id: 'shape', type: 'group', position: { left: 0, top: 0 }, size: { width: 100, height: 0 },
+        metadata: { engine: 'stitch' }, children: ['child'],
+      }]);
+    });
+
+    it.each(['null', '[]', '42', '{"objects":null}', '{"objects":[null,42,{}]}'])(
+      'rehydrates malformed legacy canvas JSON without throwing: %s', async value => {
+        await expect(manager.rehydrateAssets(value)).resolves.toBe(value);
+      },
+    );
+
     it('should build snapshot from empty canvas', () => {
       const snapshot = manager.buildSnapshot(
         { version: '6.0.0', objects: [] },
@@ -561,6 +584,20 @@ describe('CanvasManager', () => {
       expect(snapshot.objects[0].children).toEqual(['child-1', 'child-2']);
       expect(snapshot.sceneDescription).toContain('2 children');
     });
+  });
+});
+
+describe('design theme token lookup', () => {
+  it('resolves known and custom tokens while leaving prototype property names as literals', () => {
+    const manager = new DesignSpecManager();
+    const theme = DesignSpecManager.getDefaultTheme();
+    theme.colors.brand = '#123456';
+    expect(manager.resolveToken('brand', theme)).toBe('#123456');
+    expect(manager.resolveToken('sm', theme)).toBe(theme.shadows.sm);
+    expect(manager.resolveToken('full', theme)).toBe('9999px');
+    for (const name of ['toString', '__proto__', 'constructor']) {
+      expect(manager.resolveToken(name, theme)).toBe(name);
+    }
   });
 });
 

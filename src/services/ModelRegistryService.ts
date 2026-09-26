@@ -185,7 +185,11 @@ export class ModelRegistryService {
     if (cached) {
       for (const m of cached.models) {
         const existing = merged.get(m.id);
-        merged.set(m.id, { ...existing, ...m, source: 'discovered' });
+        // Only what discovery actually KNOWS overrides: several adapters emit
+        // `contextWindow: undefined` when the API omits it, and spreading that
+        // erased the curated window (every lookup then fell back to 200k).
+        const known = Object.fromEntries(Object.entries(m).filter(([, v]) => v !== undefined)) as ModelEntry;
+        merged.set(m.id, { ...existing, ...known, source: 'discovered' });
       }
     }
 

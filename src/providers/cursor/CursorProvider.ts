@@ -121,8 +121,10 @@ export class CursorProvider extends BaseCliProvider {
 		thinkingLevelEffective: false,
 		planMode: 'detected',
 		sessionKind: 'none',  // stateless: history discarded, fabricated session IDs (F7/B8)
+		sendsNoHistory: true,  // prompts are built without history (sendMessage), so nothing to compact
 		emitsToolResults: true,
 		emitsUsage: true,
+		usageConvention: 'none',   // cursor-agent reports flat input/output only.
 		modelSelection: 'full',
 	};
 

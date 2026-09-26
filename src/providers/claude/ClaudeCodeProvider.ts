@@ -34,6 +34,11 @@ import type {
   SlashCommandDefinition,
   ModelInfo
 } from '../../types';
+import {
+  parseClaudeInitCommands,
+  type NativeCommandSpec,
+  type ReportedNativeCommands,
+} from '../base/NativeCommands';
 import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
@@ -45,11 +50,51 @@ import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
  * Extended per-panel session state for Claude Code provider.
  * Adds tool call accumulation and usage stats tracking per panel.
  */
+/**
+ * The CLI's post-compaction continuation message, trimmed to what a PERSON
+ * should read: the summary alone — no "This session is being continued…"
+ * preamble, no Analysis scratchpad, and none of the tail addressed to the
+ * model ("read the full transcript at…", "Continue … do not acknowledge the
+ * summary"). Unknown wording is left in rather than guessed at.
+ */
+export function userFacingCompactSummary(content: string): string {
+  const start = content.indexOf('Summary:');
+  let text = start >= 0
+    ? content.slice(start + 'Summary:'.length)
+    : content.replace(/^This session is being continued[^\n]*\n+/, '');
+  const tail = text.search(/\n\s*(?:If you need specific details from before compaction|Continue the conversation from where it left off)/);
+  if (tail >= 0) { text = text.slice(0, tail); }
+  return text.trim();
+}
+
+/**
+ * The window the CLI resolved for the model that ran the turn, from the
+ * `result` event's `modelUsage`. That map also lists helper models (a Haiku
+ * title or summary call), so take the entry `system/init` named, else the one
+ * that read the most prompt.
+ */
+export function reportedContextWindow(modelUsage: unknown, model?: string): number | undefined {
+  if (!modelUsage || typeof modelUsage !== 'object') { return undefined; }
+  type Usage = { contextWindow?: unknown; inputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number };
+  const entries = Object.entries(modelUsage as Record<string, Usage>);
+  const prompt = (u: Usage): number => (u?.inputTokens || 0) + (u?.cacheReadInputTokens || 0) + (u?.cacheCreationInputTokens || 0);
+  const main = (model ? entries.find(([id]) => id === model) : undefined)
+    ?? [...entries].sort((a, b) => prompt(b[1]) - prompt(a[1]))[0];
+  const window = main?.[1]?.contextWindow;
+  return typeof window === 'number' && window > 0 ? window : undefined;
+}
+
 export interface ClaudeSessionState extends PanelSessionState {
   activeToolCalls: Map<number, { id: string; name: string; inputJson: string }>;
   lastUsageStats: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null;
   hasStreamedText: boolean;
   awaitingCompactSummary: boolean;
+  /** `pre_tokens` from the last compact_boundary, reported with its summary. */
+  compactPreTokens?: number;
+  /** The model `system/init` says this process runs (aliases resolved by the CLI). */
+  reportedModel?: string;
+  /** `result.modelUsage[model].contextWindow` for the last turn, until taken. */
+  reportedContextWindow?: number;
   /**
    * Overflow queue for lines that decode to MORE than one chunk (e.g. a `user`
    * message carrying multiple parallel tool_result blocks). parseStreamLine
@@ -59,6 +104,16 @@ export interface ClaudeSessionState extends PanelSessionState {
    * Optional so pre-existing session fixtures stay type-valid.
    */
   pendingChunks?: StreamChunk[];
+  /**
+   * The command list the CLI reported for THIS session in its `system`/`init`
+   * event. `null` until that event arrives — an empty array would mean "this
+   * session genuinely has no commands", which is a different claim.
+   *
+   * This is the only accurate source for Claude Code: the set depends on the
+   * installed version, the enabled plugins, the bundled skills (which are
+   * compiled into the binary and cannot be found on disk) and MCP prompts.
+   */
+  reportedCommands?: ReportedNativeCommands;
 }
 
 /**
@@ -74,7 +129,10 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     // Curated fallback list (bundled). Live discovery (discoverModels) refreshes
     // this from the Anthropic Models API when an ANTHROPIC_API_KEY is present;
     // otherwise the evergreen aliases (opus/sonnet/haiku) keep the UX current
-    // across model releases without an extension update. Verified 2026-06.
+    // across model releases without an extension update. Windows verified
+    // 2026-09-25 against Claude Code 2.1.282's own catalog (runtime
+    // max_input_tokens); the CLI may still cap an account at 200k, which the
+    // per-turn `modelUsage.contextWindow` report corrects.
     models: [
       {
         id: 'claude-fable-5-1',
@@ -82,6 +140,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         description: "Anthropic's most capable model — demanding reasoning, long-horizon agents, coding",
         contextWindow: 1000000,
         releasedAt: '2026-09-01'
+      },
+      {
+        id: 'claude-opus-5-5',
+        name: 'Claude Opus 5.5',
+        description: 'Most capable Opus for ambitious work (Claude Code ≥ 2.1.280)',
+        contextWindow: 1000000
       },
       {
         id: 'claude-fable-5',
@@ -165,13 +229,15 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         id: 'opus',
         name: 'Opus (latest)',
         description: 'Always the latest Opus model the CLI supports',
-        contextWindow: 200000
+        // Claude Code 2.1.282 resolves this to claude-opus-5-5 (1M).
+        contextWindow: 1000000
       },
       {
         id: 'sonnet',
         name: 'Sonnet (latest)',
         description: 'Always the latest Sonnet model the CLI supports',
-        contextWindow: 200000
+        // Claude Code 2.1.282 resolves this to claude-sonnet-5 (1M).
+        contextWindow: 1000000
       },
       {
         id: 'haiku',
@@ -201,8 +267,10 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     effortDefault: 'high',
     planMode: 'native',            // sole emitter of exit_plan_mode
     sessionKind: 'cli-resume',     // --resume with CLI-issued session IDs
+    nativeInstructionFile: 'CLAUDE.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,
     emitsUsage: true,
+    usageConvention: 'anthropic',   // Claude Code emits Anthropic message_delta usage: the three buckets are disjoint.
     modelSelection: 'full'
   };
 
@@ -326,6 +394,25 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     ];
   }
 
+  /**
+   * What the CLI said it has, for this panel.
+   *
+   * `null` before the panel's first turn, so the menu falls back to the curated
+   * catalog rather than showing nothing.
+   */
+  public override getDynamicNativeCommands(panelId?: string): NativeCommandSpec[] {
+    if (!panelId) { return []; }
+    const session = this._panelSessions.get(panelId) as ClaudeSessionState | undefined;
+    return session?.reportedCommands ?? [];
+  }
+
+  /** True once the CLI has reported — the caller then trusts it over the catalog. */
+  public override hasReportedNativeCommands(panelId?: string): boolean {
+    if (!panelId) { return false; }
+    const session = this._panelSessions.get(panelId) as ClaudeSessionState | undefined;
+    return Array.isArray(session?.reportedCommands);
+  }
+
   // ============================================================================
   // Per-panel session creation (override for Claude-specific state)
   // ============================================================================
@@ -345,6 +432,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       hasStreamedText: false,
       awaitingCompactSummary: false,
       pendingChunks: [],
+      reportedCommands: null,
     };
   }
 
@@ -794,6 +882,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       // For normal messages, text was already streamed via text_delta chunks — skip to avoid duplication.
       // For CLI internal commands like /compact, no text_delta events are emitted, so emit the result text.
       if (data.type === 'result') {
+        const window = reportedContextWindow(data.modelUsage, claudeSession.reportedModel);
+        if (window) { claudeSession.reportedContextWindow = window; }
         if (!claudeSession.hasStreamedText && data.result && typeof data.result === 'string') {
           return { type: 'text', content: data.result };
         }
@@ -803,6 +893,18 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       // Handle system events (session init, etc.)
       if (data.type === 'system') {
         if (data.subtype === 'init') {
+          // The CLI tells us exactly which `/commands` this session has —
+          // built-ins, bundled skills (`/design` and friends, which live inside
+          // the binary and appear in NO directory), plugin commands and MCP
+          // prompts. Mysti used to read `session_id` off this event and drop
+          // the rest, which is why the slash menu could only ever show a
+          // hard-coded guess that went stale with every CLI release.
+          const reported = parseClaudeInitCommands(data.slash_commands, data.skills);
+          if (reported) {
+            claudeSession.reportedCommands = reported;
+            console.log(`[Mysti] Claude: ${reported.length} native command(s) reported by the CLI`);
+          }
+          if (typeof data.model === 'string' && data.model) { claudeSession.reportedModel = data.model; }
           const sessionId = data.session_id || data.sessionId;
           if (sessionId && !session.sessionId) {
             session.sessionId = sessionId;
@@ -811,11 +913,13 @@ export class ClaudeCodeProvider extends BaseCliProvider {
           }
         }
         // Handle compact_boundary — emitted by CLI when /compact completes
+        // Nothing is emitted yet: the summary follows as a `user` event, and the
+        // two go out together as ONE `compaction` chunk.
         if (data.subtype === 'compact_boundary' && data.compact_metadata) {
           claudeSession.awaitingCompactSummary = true;
-          const preTokens = data.compact_metadata.pre_tokens || 0;
-          console.log(`[Mysti] Claude: Compact boundary - pre_tokens: ${preTokens}`);
-          return { type: 'text', content: `Conversation compacted (was ~${Math.round(preTokens / 1000)}k tokens)` };
+          claudeSession.compactPreTokens = data.compact_metadata.pre_tokens || 0;
+          console.log(`[Mysti] Claude: Compact boundary - pre_tokens: ${claudeSession.compactPreTokens}`);
+          return null;
         }
         return null;
       }
@@ -846,10 +950,16 @@ export class ClaudeCodeProvider extends BaseCliProvider {
           const content = data.message.content;
           if (content.includes('session is being continued')) {
             claudeSession.awaitingCompactSummary = false;
-            // Extract just the Summary section (skip the verbose Analysis section)
-            const summaryIdx = content.indexOf('Summary:');
-            const summaryText = summaryIdx >= 0 ? content.substring(summaryIdx) : content;
-            return { type: 'text', content: summaryText };
+            // A `compaction` chunk, not `text`: as text it streamed into the
+            // answer (or the /compact notice) verbatim, instructions to the
+            // model included.
+            return {
+              type: 'compaction',
+              compactionEvent: {
+                beforeTokens: claudeSession.compactPreTokens || 0,
+                summary: userFacingCompactSummary(content),
+              },
+            };
           }
           return null; // skip "Compacted" echo and other noise
         }
@@ -965,6 +1075,13 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    * Get stored usage stats from the last message and clear them
    * Called by sendMessage after stream processing to include in final done chunk
    */
+  protected override takeReportedContextWindow(panelId?: string): number | undefined {
+    const session = this._getSession(panelId) as ClaudeSessionState;
+    const window = session.reportedContextWindow;
+    session.reportedContextWindow = undefined;
+    return window;
+  }
+
   getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null {
     const session = this._getSession(panelId) as ClaudeSessionState;
     const usage = session.lastUsageStats;

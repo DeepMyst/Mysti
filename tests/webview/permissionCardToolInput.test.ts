@@ -62,6 +62,8 @@ interface RequestLike {
   description: string;
   expiresAt: number;
   semiAutonomous?: boolean;
+  forceInteractive?: boolean;
+  remoteOrigin?: boolean;
   details: Record<string, unknown>;
 }
 
@@ -411,6 +413,14 @@ describe('H-1 (4): every value on the card is escaped', () => {
 });
 
 describe('H-1 (5): the card keyboard model is intact', () => {
+  it.each(['forceInteractive', 'remoteOrigin'] as const)('omits a session grant when %s requires an individual decision', flag => {
+    const request = { ...wire('Edit', REALISTIC_EDIT), [flag]: true };
+    const html = rig.renderPermissionCard(request).innerHTML;
+    expect(html).toContain('data-action="approve"');
+    expect(html).toContain('data-action="deny"');
+    expect(html).not.toContain('data-action="always-allow"');
+  });
+
   it('numbered options match their labels, in order', () => {
     const card = rig.renderPermissionCard(wire('Edit', REALISTIC_EDIT));
     const html = card.innerHTML;

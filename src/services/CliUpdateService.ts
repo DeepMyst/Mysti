@@ -13,7 +13,7 @@
 
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
-import { getProviderNpmPackage } from '../providers/base/ProviderManifest';
+import { getProviderNpmPackage, getProviderSelfUpdateCommand } from '../providers/base/ProviderManifest';
 import {
   CLI_UPDATE_CHECK_TTL_MS,
   CLI_UPDATE_PROBE_TIMEOUT_MS,
@@ -27,6 +27,20 @@ export interface CliUpdateInfo {
   packageName: string;
   installed: string;
   latest: string;
+  /**
+   * The newest version this machine can actually INSTALL — equal to `latest`
+   * unless the latest release's `engines.node` excludes the running Node, in
+   * which case it is the newest release that does not.
+   *
+   * The two really do diverge: openclaw 2026.9.2 requires Node >=22.22.3, and
+   * on a Node 22.20.0 machine `npm i -g openclaw@latest` fails in a preinstall
+   * hook. Offering `@latest` there is offering a command that cannot work.
+   */
+  installable: string;
+  /** True when `installable` is behind `latest` because of the Node engine. */
+  blockedByNodeEngine: boolean;
+  /** The engine range that excluded `latest`, for explaining the gap. */
+  requiredNode?: string;
   /** Epoch ms of the check that produced this entry. */
   checkedAt: number;
 }
@@ -35,6 +49,10 @@ export interface CliUpdateInfo {
 interface CachedCheck {
   latest: string;
   checkedAt: number;
+  /** Newest installable on THIS Node; absent means "same as latest". */
+  installable?: string;
+  /** `engines.node` of `latest`, when it excludes the running Node. */
+  requiredNode?: string;
 }
 
 /** Minimal view of CliDiscoveryService — just the installed-version lookup. */
@@ -57,6 +75,109 @@ export const CLI_UPDATE_CACHE_KEY = 'mysti.cliUpdates.v1';
  */
 const SEMVER_ANCHORED = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:-([0-9A-Za-z.-]{1,64}))?(?:\+[0-9A-Za-z.-]{1,64})?$/;
 const SEMVER_LOOSE = /(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:-([0-9A-Za-z.-]{1,64}))?/;
+
+/** One `npm view … --json` row: a version and the Node range it declares. */
+export interface NpmViewEntry {
+  version: string;
+  engines?: string;
+}
+
+/**
+ * Parse `npm view <spec> version engines.node --json`, oldest-first.
+ *
+ * npm's shape depends on how many things matched and how many fields were
+ * asked for, and all of these turn up in practice:
+ *   - one match, one field   -> `"1.2.3"`
+ *   - one match, two fields  -> `{ "version": "1.2.3", "engines.node": ">=20" }`
+ *   - many matches           -> an array of those objects
+ * A package with no `engines` simply omits the key.
+ *
+ * Everything here is UNTRUSTED registry output: rows without a usable version
+ * string are dropped, and nothing is interpolated anywhere until it has passed
+ * the strict semver check.
+ */
+export function parseNpmViewEntries(stdout: string): NpmViewEntry[] {
+  let data: unknown;
+  try {
+    data = JSON.parse(stdout);
+  } catch {
+    // Not JSON: an older npm asked for a single field prints a bare string.
+    const bare = stdout.trim().replace(/^v/i, '');
+    return bare ? [{ version: bare }] : [];
+  }
+
+  const rows = Array.isArray(data) ? data : [data];
+  const out: NpmViewEntry[] = [];
+  for (const row of rows) {
+    if (typeof row === 'string') {
+      out.push({ version: row.trim().replace(/^v/i, '') });
+      continue;
+    }
+    if (!row || typeof row !== 'object') { continue; }
+    const obj = row as Record<string, unknown>;
+    const version = typeof obj['version'] === 'string' ? obj['version'].trim().replace(/^v/i, '') : '';
+    if (!version) { continue; }
+    const engines = obj['engines.node'];
+    out.push({ version, engines: typeof engines === 'string' ? engines : undefined });
+  }
+  return out;
+}
+
+/**
+ * Does `nodeVersion` satisfy an `engines.node` range?
+ *
+ * A deliberately small matcher for what package authors actually write:
+ * `||`-separated alternatives, space-separated comparators within one
+ * alternative (AND), and `>=`, `>`, `<=`, `<`, `=` against `x`, `x.y` or
+ * `x.y.z`. `*` and an empty range mean "anything".
+ *
+ * UNPARSEABLE RANGES RETURN TRUE. This function only ever DOWNGRADES what
+ * Mysti offers, so being unsure has to mean "offer the latest and let npm
+ * speak" — the alternative would silently hide a perfectly good update because
+ * of a range syntax nobody here anticipated.
+ */
+export function satisfiesNodeRange(nodeVersion: string, range: string | undefined): boolean {
+  if (!range || !range.trim() || range.trim() === '*') { return true; }
+  const current = parseVersion(nodeVersion.replace(/^v/i, ''));
+  if (!current) { return true; }
+
+  const cmp = (a: ParsedVersion, b: ParsedVersion): number =>
+    a.major !== b.major ? a.major - b.major
+      : a.minor !== b.minor ? a.minor - b.minor
+        : a.patch - b.patch;
+
+  const COMPARATOR = /^(>=|<=|>|<|=)?\s*v?(\d{1,6})(?:\.(\d{1,6}))?(?:\.(\d{1,6}))?/;
+
+  for (const alternative of range.split('||')) {
+    const clauses = alternative.trim().split(/\s+/).filter(Boolean);
+    if (clauses.length === 0) { continue; }
+
+    let understood = true;
+    let matched = true;
+    for (const clause of clauses) {
+      const m = COMPARATOR.exec(clause.trim());
+      if (!m) { understood = false; break; }
+      const op = m[1] || '=';
+      const bound: ParsedVersion = {
+        major: Number(m[2]),
+        minor: m[3] === undefined ? 0 : Number(m[3]),
+        patch: m[4] === undefined ? 0 : Number(m[4]),
+      };
+      const c = cmp(current, bound);
+      const ok =
+        op === '>=' ? c >= 0 :
+          op === '>' ? c > 0 :
+            op === '<=' ? c <= 0 :
+              op === '<' ? c < 0 :
+                c === 0;
+      if (!ok) { matched = false; break; }
+    }
+    // A clause we could not read means we cannot disprove compatibility.
+    if (!understood) { return true; }
+    if (matched) { return true; }
+  }
+  return false;
+}
 
 interface ParsedVersion {
   major: number;
@@ -199,11 +320,23 @@ export class CliUpdateService implements vscode.Disposable {
         continue;
       }
       if (compareVersions(installed, latest) < 0) {
+        // `installable` is what an update would actually fetch. When the newest
+        // release excludes this machine's Node, it is an older one — and when
+        // even that is not ahead of what is installed, there is nothing to
+        // offer and the provider is skipped rather than nagged about.
+        const installable = cached.installable ?? cached.latest;
+        const installableParsed = parseVersion(installable, true);
+        if (!installableParsed || compareVersions(installed, installableParsed) >= 0) {
+          continue;
+        }
         out.push({
           providerId: status.providerId,
           packageName,
           installed: `${installed.major}.${installed.minor}.${installed.patch}${installed.prerelease ? '-' + installed.prerelease : ''}`,
           latest: cached.latest,
+          installable,
+          blockedByNodeEngine: installable !== cached.latest,
+          requiredNode: cached.requiredNode,
           checkedAt: cached.checkedAt,
         });
       }
@@ -217,8 +350,28 @@ export class CliUpdateService implements vscode.Disposable {
    * no registry response and no user/model text reaches this string.
    */
   public getUpdateCommand(providerId: string): string | undefined {
+    // A provider with its own updater uses it: for Claude Code the npm package
+    // and the binary on PATH can be two different installs, so `npm i -g` there
+    // updates a copy nothing runs.
+    const selfUpdate = getProviderSelfUpdateCommand(providerId);
+    if (selfUpdate) { return selfUpdate; }
+
     const packageName = getProviderNpmPackage(providerId);
-    return packageName ? `npm install -g ${packageName}@latest` : undefined;
+    if (!packageName) { return undefined; }
+
+    // Pin to the newest version this Node can install. `@latest` is wrong the
+    // moment the newest release raises its Node floor: npm aborts in a
+    // preinstall hook, and — if several packages share one `npm i -g` — takes
+    // the whole batch down with it.
+    //
+    // The version is registry-supplied, so it is re-validated as a strict
+    // semver here before it is allowed anywhere near a command string.
+    const cached = this._cache.get(providerId);
+    const pin = cached?.installable;
+    if (pin && parseVersion(pin, true)) {
+      return `npm install -g ${packageName}@${pin}`;
+    }
+    return `npm install -g ${packageName}@latest`;
   }
 
   // ---------------------------------------------------------------------------
@@ -249,7 +402,7 @@ export class CliUpdateService implements vscode.Disposable {
     const npmPath = this._npm.getNpmPath() || 'npm';
     let stdout: string;
     try {
-      stdout = await this._execNpmView(npmPath, packageName);
+      stdout = await this._execNpmView(npmPath, packageName, ['version', 'engines.node']);
     } catch (err) {
       // Offline, private registry, package renamed — all non-events. Keep the
       // previous answer (if any) and stay silent.
@@ -257,16 +410,70 @@ export class CliUpdateService implements vscode.Disposable {
       return;
     }
 
+    const head = parseNpmViewEntries(stdout).pop();
     // The registry answer is UNTRUSTED input. It is accepted only if it is
     // exactly a semver, and it is never interpolated into a command.
-    const parsed = parseVersion(stdout, true);
-    if (!parsed) {
-      console.warn(`[Mysti] CliUpdate: unparseable version for ${packageName}: ${JSON.stringify(stdout.slice(0, 40))}`);
+    const parsed = head && parseVersion(head.version, true);
+    if (!head || !parsed) {
+      console.warn(`[Mysti] CliUpdate: unparseable version for ${packageName}: ${JSON.stringify(stdout.slice(0, 60))}`);
       return;
     }
 
-    this._cache.set(providerId, { latest: stdout.trim().replace(/^v/i, ''), checkedAt: Date.now() });
+    const latest = head.version.trim().replace(/^v/i, '');
+    const entry: CachedCheck = { latest, checkedAt: Date.now() };
+
+    // If the newest release excludes this machine's Node, find the newest one
+    // that does not — otherwise Mysti offers an update that cannot be installed.
+    if (!satisfiesNodeRange(process.versions.node, head.engines)) {
+      entry.requiredNode = head.engines;
+      const fallback = await this._findInstallableVersion(npmPath, packageName, latest);
+      if (fallback) {
+        entry.installable = fallback;
+        console.log(
+          `[Mysti] CliUpdate: ${packageName}@${latest} needs Node ${head.engines} `
+          + `(have ${process.versions.node}); offering ${fallback} instead`
+        );
+      } else {
+        // Nothing installable found: say so by pinning to what is installed,
+        // i.e. offer nothing, rather than offering a command that fails.
+        entry.installable = '';
+      }
+    }
+
+    this._cache.set(providerId, entry);
     await this._persistCache();
+  }
+
+  /**
+   * Newest published version whose `engines.node` accepts the running Node.
+   *
+   * One extra registry call, made only when the latest release is already known
+   * to be incompatible — the common path stays a single `npm view`.
+   */
+  private async _findInstallableVersion(
+    npmPath: string,
+    packageName: string,
+    latest: string
+  ): Promise<string | undefined> {
+    let stdout: string;
+    try {
+      // `<pkg>@<0.0.0` would be empty; bound BELOW the latest instead, which is
+      // the range whose newest member we want.
+      stdout = await this._execNpmView(npmPath, packageName, ['version', 'engines.node'], `<${latest}`);
+    } catch {
+      return undefined;
+    }
+    const entries = parseNpmViewEntries(stdout);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const candidate = entries[i];
+      if (!parseVersion(candidate.version, true)) { continue; }
+      // Prereleases are not something to silently steer a user onto.
+      if (candidate.version.includes('-')) { continue; }
+      if (satisfiesNodeRange(process.versions.node, candidate.engines)) {
+        return candidate.version;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -274,12 +481,20 @@ export class CliUpdateService implements vscode.Disposable {
    * the package name is an in-repo literal, running it shell-free removes the
    * question entirely.
    */
-  private _execNpmView(npmPath: string, packageName: string): Promise<string> {
+  private _execNpmView(
+    npmPath: string,
+    packageName: string,
+    fields: string[] = ['version'],
+    range?: string
+  ): Promise<string> {
+    // `range` is built here from a registry-supplied version that has already
+    // passed the strict semver check; the package name is an in-repo literal.
+    const spec = range ? `${packageName}@${range}` : packageName;
     return new Promise((resolve, reject) => {
       const child = execFile(
         npmPath,
-        ['view', packageName, 'version'],
-        { timeout: CLI_UPDATE_PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 64 },
+        ['view', spec, ...fields, '--json'],
+        { timeout: CLI_UPDATE_PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 512 },
         (error, out) => {
           if (error) {
             reject(error);

@@ -4,7 +4,7 @@
  * OK); an explicit OpenRouter key opts into OpenRouter instead.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { CoordinatorModelClient, MYSTI_SIGNIN_MESSAGE, type CoordinatorConfig } from '../../src/services/CoordinatorModelClient';
+import { CoordinatorModelClient, MYSTI_SIGNIN_MESSAGE, MYSTI_MODELS_UNAVAILABLE, classifyCoordinatorFailure, type CoordinatorConfig } from '../../src/services/CoordinatorModelClient';
 import type { OpenRouterClient } from '../../src/services/OpenRouterClient';
 import type { DeepMystGatewayClient } from '../../src/services/DeepMystGatewayClient';
 
@@ -24,6 +24,8 @@ function stubOpenRouter(over: Partial<Record<keyof OpenRouterClient, any>> = {})
     getDefaultFreeModel: async () => 'discovered/model:free',
     chatCompletion: async () => ({ text: 'openrouter result', failed: false, costUsd: 0 }),
     streamChat: () => mkStream([{ text: 'openrouter stream' }, { done: true }]),
+    cachedModel: () => undefined,
+    listAllModels: async () => [],
     ...over,
   } as unknown as OpenRouterClient;
 }
@@ -462,5 +464,155 @@ describe('CoordinatorModelClient — native tool-calling (Plan 19 P4)', () => {
     for await (const _ of client.stream([], { tools })) { /* drain */ }
     expect(seen['openrouter/openai/gpt-oss-120b:free']).toEqual(tools); // capable → tools
     expect(seen['noncapable/mystery-model']).toBeUndefined();            // non-capable → no tools
+  });
+});
+
+describe('CoordinatorModelClient — direct-key auto (Plan 30 §1.4)', () => {
+  it('resolves auto to the first configured free model the catalog still lists', async () => {
+    const or = stubOpenRouter({
+      isConfigured: () => true,
+      listAllModels: async () => [{ id: 'openai/gpt-oss-120b:free', supportsTools: true, free: true }],
+    });
+    const client = make({ or, config: cfg({ freeModels: ['openrouter/stealth/space-bunny-alpha', 'openrouter/openai/gpt-oss-120b:free'] }) });
+    expect(await client.resolveCoordinatorModel()).toBe('openai/gpt-oss-120b:free');
+  });
+
+  it('skips a configured model the catalog now lists as paid (T3)', async () => {
+    const or = stubOpenRouter({
+      isConfigured: () => true,
+      listAllModels: async () => [
+        { id: 'stealth/space-bunny-alpha', supportsTools: true, free: false },
+        { id: 'openai/gpt-oss-120b:free', supportsTools: true, free: true },
+      ],
+    });
+    const client = make({ or, config: cfg({ freeModels: ['openrouter/stealth/space-bunny-alpha', 'openrouter/openai/gpt-oss-120b:free'] }) });
+    expect(await client.resolveCoordinatorModel()).toBe('openai/gpt-oss-120b:free');
+  });
+
+  it('falls back to discovery when no configured model is listed', async () => {
+    const or = stubOpenRouter({ isConfigured: () => true, listAllModels: async () => [] });
+    const client = make({ or });
+    expect(await client.resolveCoordinatorModel()).toBe('discovered/model:free');
+  });
+});
+
+describe('contextWindowOf', () => {
+  it("reads the coordinator model's window from the OpenRouter catalog, gateway prefix or not", async () => {
+    const client = make({ or: stubOpenRouter({
+      listAllModels: async () => [{ id: 'nvidia/nemotron-3-super-120b-a12b:free', contextLength: 262144 }],
+    }) });
+    expect(await client.contextWindowOf('openrouter/nvidia/nemotron-3-super-120b-a12b:free')).toBe(262144);
+    expect(await client.contextWindowOf('nvidia/nemotron-3-super-120b-a12b:free')).toBe(262144);
+  });
+
+  it('says "unknown" for a bare gateway id or a catalog outage — never a guess', async () => {
+    expect(await make({ or: stubOpenRouter({ listAllModels: async () => [] }) }).contextWindowOf('claude-haiku-4-5')).toBeUndefined();
+    expect(await make({ or: stubOpenRouter({ listAllModels: async () => { throw new Error('offline'); } }) })
+      .contextWindowOf('openrouter/x')).toBeUndefined();
+  });
+});
+
+describe('CoordinatorModelClient — tool support (Plan 30 §1.5)', () => {
+  const bunny = { id: 'stealth/space-bunny-alpha', supportsTools: true, free: true };
+
+  it('offers tools to a catalog-listed tool model with an unknown name', async () => {
+    const or = stubOpenRouter({ listAllModels: async () => [bunny], cachedModel: (id: string) => (id === bunny.id ? bunny : undefined) });
+    const client = make({ or });
+    expect(await client.supportsToolCalls('openrouter/stealth/space-bunny-alpha')).toBe(true);
+  });
+
+  it('attaches tools on the gateway stream for that model', async () => {
+    const seen: any[] = [];
+    const gw = stubGateway({ streamChat: (p: any) => { seen.push(p); return mkStream([{ text: 'ok' }, { done: true }]); } });
+    const or = stubOpenRouter({ cachedModel: (id: string) => (id === bunny.id ? bunny : undefined) });
+    const client = make({ gw, or, config: cfg({ freeModels: ['openrouter/stealth/space-bunny-alpha'] }) });
+    for await (const _ of client.stream([], { tools: [{ type: 'function' }] })) { /* drain */ }
+    expect(seen[0].tools).toEqual([{ type: 'function' }]);
+  });
+
+  it('gives up on a hung catalog after 3s and falls back to the name list', async () => {
+    vi.useFakeTimers();
+    try {
+      const or = stubOpenRouter({ listAllModels: () => new Promise(() => {}) });
+      const client = make({ or });
+      const pending = client.supportsToolCalls('stealth/space-bunny-alpha');
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await pending).toBe(false);
+      const known = client.supportsToolCalls('openai/gpt-oss-120b:free');
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await known).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('CoordinatorModelClient — model override (Plan 30 §2)', () => {
+  it('streams exactly the requested model on the gateway, with the openrouter/ prefix', async () => {
+    const models: string[] = [];
+    const gw = stubGateway({ streamChat: (p: any) => { models.push(p.model); return mkStream([{ error: '429 rate limit' }]); } });
+    const client = make({ gw, config: cfg({ freeModels: ['a', 'b'] }) });
+    for await (const _ of client.stream([], { model: 'anthropic/claude-opus-5.5' })) { /* drain */ }
+    expect(models).toEqual(['openrouter/anthropic/claude-opus-5.5']);
+  });
+
+  it('uses the bare slug on the direct-key path', async () => {
+    const seen: string[] = [];
+    const or = stubOpenRouter({ isConfigured: () => true, streamChat: (p: any) => { seen.push(p.model); return mkStream([{ text: 'x' }, { done: true }]); } });
+    const client = make({ or });
+    for await (const _ of client.stream([], { model: 'openrouter/stealth/space-bunny-alpha' })) { /* drain */ }
+    expect(seen).toEqual(['stealth/space-bunny-alpha']);
+  });
+
+  it('does not disturb the main chain position', async () => {
+    const models: string[] = [];
+    const gw = stubGateway({
+      streamChat: (p: any) => { models.push(p.model); return p.model === 'b' ? mkStream([{ text: 'ok' }, { done: true }]) : mkStream([{ error: '429' }]); },
+    });
+    const client = make({ gw, config: cfg({ freeModels: ['a', 'b'], gatewayFallbackModel: '' }) });
+    for await (const _ of client.stream([])) { /* a fails, b answers → sticky = 1 */ }
+    for await (const _ of client.stream([], { model: 'x/child' })) { /* override */ }
+    models.length = 0;
+    for await (const _ of client.stream([])) { /* resumes at b */ }
+    expect(models).toEqual(['b']);
+  });
+
+  it('completes with an override too, and finds catalog entries by either spelling', async () => {
+    const seen: string[] = [];
+    const gw = stubGateway({ chatCompletion: async (p: any) => { seen.push(p.model); return { text: 'v', failed: false }; } });
+    const or = stubOpenRouter({ listAllModels: async () => [{ id: 'anthropic/claude-opus-5.5', supportsTools: true, free: false }] });
+    const client = make({ gw, or });
+    await client.complete([], { model: 'anthropic/claude-opus-5.5' });
+    expect(seen).toEqual(['openrouter/anthropic/claude-opus-5.5']);
+    expect((await client.catalogModel('openrouter/anthropic/claude-opus-5.5'))?.id).toBe('anthropic/claude-opus-5.5');
+  });
+});
+
+describe('CoordinatorModelClient — every model down (Plan 30 §1.2)', () => {
+  const creds = { hasDeepMystKey: true, usingOpenRouter: false };
+
+  it('says so, in a classifiable way, when the whole chain is rate-limited', async () => {
+    const gw = stubGateway({ streamChat: () => mkStream([{ error: '429 temporarily rate-limited' }]) });
+    const client = make({ gw, config: cfg({ freeModels: ['a', 'b'], gatewayFallbackModel: '' }) });
+    const out: any[] = [];
+    for await (const ev of client.stream([])) { out.push(ev); }
+    const err = out.find(e => e.error)?.error as string;
+    expect(err.startsWith(MYSTI_MODELS_UNAVAILABLE)).toBe(true);
+    expect(classifyCoordinatorFailure(err, creds)).toBe('models-unavailable');
+  });
+
+  it('does the same for complete()', async () => {
+    const gw = stubGateway({ chatCompletion: async () => ({ text: '', failed: true, error: '503 overloaded' }) });
+    const client = make({ gw, config: cfg({ freeModels: ['a'], gatewayFallbackModel: '' }) });
+    const res = await client.complete([]);
+    expect(res.error?.startsWith(MYSTI_MODELS_UNAVAILABLE)).toBe(true);
+  });
+
+  it('leaves hard stops alone', async () => {
+    const gw = stubGateway({ streamChat: () => mkStream([{ error: '401 unauthorized' }]) });
+    const client = make({ gw, config: cfg({ freeModels: ['a'], gatewayFallbackModel: '' }) });
+    const out: any[] = [];
+    for await (const ev of client.stream([])) { out.push(ev); }
+    expect(out.find(e => e.error)?.error).toBe('401 unauthorized');
   });
 });

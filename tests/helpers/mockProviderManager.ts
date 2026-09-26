@@ -3,7 +3,7 @@
  * without spawning real CLI processes.
  */
 import type { StreamChunk, ContextItem, Settings, Conversation, ProviderConfig, AgentType } from '../../src/types';
-import type { PersonaConfig } from '../../src/providers/base/IProvider';
+import type { NativeApprovalHandler, PersonaConfig } from '../../src/providers/base/IProvider';
 
 export interface MockStreamOptions {
   /** Delay (ms) between each chunk yield */
@@ -83,6 +83,23 @@ export class MockProviderManager {
 
   /** Context window sizes */
   public contextWindows: Map<string, number> = new Map();
+
+  public nativeApprovalHandler?: NativeApprovalHandler;
+  public nativeApprovalPanels = new Map<string, NativeApprovalHandler>();
+  public capturedApprovalPanels: string[] = [];
+
+  captureNativeApprovalHandler(panelId: string, signal?: AbortSignal): NativeApprovalHandler | undefined {
+    this.capturedApprovalPanels.push(panelId);
+    const handler = this.nativeApprovalHandler;
+    return handler ? request => signal?.aborted ? Promise.resolve('cancelled') : handler(request) : undefined;
+  }
+
+  setNativeApprovalHandlerForPanel(panelId: string, handler: NativeApprovalHandler): { dispose(): void } {
+    this.nativeApprovalPanels.set(panelId, handler);
+    return { dispose: () => {
+      if (this.nativeApprovalPanels.get(panelId) === handler) { this.nativeApprovalPanels.delete(panelId); }
+    } };
+  }
 
   // ProviderManager interface methods
 
@@ -170,6 +187,9 @@ export class MockProviderManager {
     this.disposedChildren = [];
     this.defaultModels.clear();
     this.contextWindows.clear();
+    this.nativeApprovalHandler = undefined;
+    this.nativeApprovalPanels.clear();
+    this.capturedApprovalPanels = [];
   }
 
   // Stubs for methods that may be called but aren't relevant to tests

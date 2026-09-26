@@ -38,6 +38,7 @@ import { screenBashCommand, isRemoteEffectCommand } from '../managers/SafetyClas
 import { parsePatchEnvelope } from './mystiPatch';
 import { validateCapabilityArgs } from './CapabilityManifest';
 import { randomUUID } from 'crypto';
+import { clampHeadTail } from '../coordinator/promptBudget';
 
 export type LocalExecKind = 'write' | 'edit' | 'bash' | 'patch';
 
@@ -497,7 +498,10 @@ export class MystiLocalExec {
     if (out) { parts.push(out); }
     if (err) { parts.push(`stderr:\n${err}`); }
     if (!out && !err && !res.timedOut) { parts.push('(no output)'); }
-    return parts.join('\n');
+    // Plan 30 §4.4: stdout and stderr were each capped at 30k, so one command
+    // could put 60k chars into every later round-trip. Head + tail keeps the
+    // command line and the final error.
+    return clampHeadTail(parts.join('\n'), 20_000, 10_000, 'output clamped');
   }
 
   /** Fail closed unless enabled AND the workspace is trusted. */

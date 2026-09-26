@@ -37,6 +37,7 @@
  */
 
 import type { DeskVerb } from '../../types';
+import { hasControlCharacters } from '../../utils/controlCharacters';
 
 /** Result of validating one field or one argument object. */
 export type Validated<T> =
@@ -51,14 +52,6 @@ function pass<T>(value: T): Validated<T> { return { ok: true, value }; }
 // ---------------------------------------------------------------------------
 
 /**
- * C0/C1 controls except none — tab, newline and carriage return are INCLUDED
- * in the rejection set on purpose. A newline in an attribution field is the
- * fence-header escape that CANVAS-LANE-03 documents; a tab is enough to forge
- * alignment in a rendered card.
- */
-const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F-\u009F]/;
-
-/**
  * Bidirectional overrides and isolates. These reorder rendered text without
  * changing its bytes, so a path can display as one thing and resolve as
  * another ("trojan source"). The webview renders peer-supplied paths.
@@ -68,9 +61,12 @@ const BIDI_RE = /[\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/;
 /** Zero-width characters, which can hide a discriminator inside a token. */
 const ZERO_WIDTH_RE = /[\u200B-\u200D\uFEFF]/;
 
-/** True when a string carries any character class the contract refuses. */
+/**
+ * Reject C0/C1 controls, bidi and zero-width characters. Tabs and newlines are
+ * included: attribution fields must not escape a fence header or forge alignment.
+ */
 export function hasUnsafeChars(s: string): boolean {
-  return CONTROL_CHAR_RE.test(s) || BIDI_RE.test(s) || ZERO_WIDTH_RE.test(s);
+  return hasControlCharacters(s) || BIDI_RE.test(s) || ZERO_WIDTH_RE.test(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +149,7 @@ export function validateText(v: unknown, max: number, field = 'text'): Validated
   }
   // Newlines are legitimate inside a question or a proposal body, so only the
   // non-whitespace controls are refused here.
-  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(trimmed)) {
+  if (hasControlCharacters(trimmed, { allowTextWhitespace: true, includeC1: false })) {
     return fail(`${field} contains control characters`);
   }
   return pass(trimmed);

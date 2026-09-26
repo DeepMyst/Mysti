@@ -97,10 +97,10 @@ describe('ConversationManager — unreadable store never breaks activation (D-1)
       // Usable: the constructor fell back to a fresh conversation.
       expect(manager.getCurrentConversation()).not.toBeNull();
       expect(manager.getLoadDiagnostic()).not.toBeNull();
-      expect(warn).toHaveBeenCalledTimes(1);
 
       // Nothing was destroyed: the original bytes are parked verbatim.
-      await Promise.resolve();
+      await manager['_saveConversations']();
+      expect(warn).toHaveBeenCalledTimes(1);
       const parked = parkedKeys(store);
       expect(parked).toHaveLength(1);
       // A DEEP snapshot taken before construction. `expect(store[parked[0]])
@@ -351,7 +351,7 @@ describe('Plan 27 gate — partial corruption is neither silent nor self-multipl
     };
   }
 
-  it('a dropped MESSAGE is reported and parked, not silently deleted', () => {
+  it('a dropped MESSAGE is reported and parked, not silently deleted', async () => {
     // These elements used to vanish with no park, getLoadDiagnostic() === null,
     // zero warnings — and the next save wrote the deletion through. The loader
     // this replaced kept and re-persisted them.
@@ -364,6 +364,7 @@ describe('Plan 27 gate — partial corruption is neither silent nor self-multipl
 
     expect(mgr.getConversation('a')!.messages).toHaveLength(1);
     expect(mgr.getLoadDiagnostic()).toContain('2 stored messages were not readable');
+    await mgr['_saveConversations']();
     expect(warn).toHaveBeenCalled();
     const parked = parkedKeys(store);
     expect(parked).toHaveLength(1);
@@ -380,7 +381,7 @@ describe('Plan 27 gate — partial corruption is neither silent nor self-multipl
     expect(JSON.stringify(store[parked[0]])).toContain('SCALAR-MESSAGE');
   });
 
-  it('repairs the live key so a later activation does not park another copy', () => {
+  it('repairs the live key so a later activation does not park another copy', async () => {
     // With survivors present the constructor does not mint a fresh conversation,
     // so nothing rewrote the malformed live value and every activation parked a
     // full duplicate under a new timestamped key that nothing ever deletes.
@@ -388,7 +389,8 @@ describe('Plan 27 gate — partial corruption is neither silent nor self-multipl
       [STORAGE_KEY]: storeWith([good.messages[0], 'CORRUPTED-DATA']),
     });
 
-    new ConversationManager(context);
+    const manager = new ConversationManager(context);
+    await manager['_saveConversations']();
     expect(parkedKeys(store)).toHaveLength(1);
 
     for (let i = 0; i < 4; i++) { new ConversationManager(context); }
@@ -405,5 +407,152 @@ describe('Plan 27 gate — partial corruption is neither silent nor self-multipl
     new ConversationManager(context);
 
     expect((blob.conversations[0][1] as { messages: unknown[] }).messages).toHaveLength(2);
+  });
+});
+
+describe('ConversationManager — recovery must finish before history is replaced', () => {
+  beforeEach(() => { clearMockConfig(); vi.restoreAllMocks(); });
+
+  function corruptHistory(partial = true) {
+    return {
+      schemaVersion: CONVERSATIONS_SCHEMA_VERSION,
+      conversations: partial ? [
+        ['keep', legacyConversation('keep')],
+        ['damaged', { messages: 'ORIGINAL DAMAGED TRANSCRIPT' }],
+      ] : 'ORIGINAL DAMAGED TRANSCRIPT',
+      currentId: 'keep',
+    };
+  }
+
+  it.each([
+    ['synchronous throw', true], ['asynchronous rejection', true],
+    ['synchronous throw', false], ['asynchronous rejection', false],
+  ] as const)('preserves the original on backup %s (partial: %s)', async (failure, partial) => {
+    const original = corruptHistory(partial);
+    const { store, context } = createMockContext({ [STORAGE_KEY]: original });
+    const update = vi.fn((key: string, value: unknown): Promise<void> => {
+      if (key.startsWith(CORRUPT_PREFIX)) {
+        if (failure === 'synchronous throw') { throw new Error('backup write failed'); }
+        return Promise.reject(new Error('backup write failed'));
+      }
+      // Ordinary writes WOULD succeed, so the manager must never issue one.
+      store[key] = value;
+      return Promise.resolve();
+    });
+    context.globalState.update = update;
+    const warn = vi.spyOn(window, 'showWarningMessage');
+    const manager = new ConversationManager(context);
+    manager.createNewConversation();
+    manager.addMessage('user', 'new in-memory message');
+    expect(await manager['_saveConversations']()).toBe(false);
+
+    expect(manager.isPersistenceDisabled()).toBe(true);
+    expect(manager.getCurrentConversation()!.messages[0].content).toBe('new in-memory message');
+    expect(store[STORAGE_KEY]).toEqual(original);
+    expect(parkedKeys(store)).toEqual([]);
+    expect(update.mock.calls.every(([key]) => key.startsWith(CORRUPT_PREFIX))).toBe(true);
+    expect(manager.getLoadDiagnostic()).toContain('recovery copy could not be saved');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('New messages in this session will not be saved');
+    expect(warn.mock.calls[0][0]).not.toContain('was kept under the storage key');
+
+    manager.createNewConversation();
+    expect(await manager['_saveConversations']()).toBe(false);
+    expect(store[STORAGE_KEY]).toEqual(original);
+  });
+
+  it('waits for backup acknowledgement and then saves messages written during recovery', async () => {
+    const original = corruptHistory(false);
+    const { store, context } = createMockContext({ [STORAGE_KEY]: original });
+    let acknowledgeBackup!: () => void;
+    const update = vi.fn((key: string, value: unknown): Promise<void> => {
+      if (key.startsWith(CORRUPT_PREFIX)) {
+        return new Promise<void>(resolve => {
+          acknowledgeBackup = () => {
+            store[key] = JSON.parse(JSON.stringify(value));
+            resolve();
+          };
+        });
+      }
+      store[key] = JSON.parse(JSON.stringify(value));
+      return Promise.resolve();
+    });
+    context.globalState.update = update;
+    const warn = vi.spyOn(window, 'showWarningMessage');
+    const manager = new ConversationManager(context);
+    manager.addMessage('user', 'typed while backup was pending');
+    const save = manager['_saveConversations']();
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(store[STORAGE_KEY]).toEqual(original);
+    expect(warn).not.toHaveBeenCalled();
+
+    acknowledgeBackup();
+    expect(await save).toBe(true);
+    expect(store[parkedKeys(store)[0]]).toEqual(original);
+    expect(JSON.stringify(store[STORAGE_KEY])).toContain('typed while backup was pending');
+    expect(manager.isPersistenceDisabled()).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('was kept under the storage key');
+
+    manager.addMessage('assistant', 'saved after recovery');
+    expect(await manager['_saveConversations']()).toBe(true);
+    expect(JSON.stringify(store[STORAGE_KEY])).toContain('saved after recovery');
+    expect(parkedKeys(store)).toHaveLength(1);
+    const reloaded = new ConversationManager(context);
+    expect(reloaded.getLoadDiagnostic()).toBeNull();
+    expect(reloaded.getCurrentConversation()!.messages).toHaveLength(2);
+  });
+
+  it('keeps restored message edits isolated from the memento after recovery failure', async () => {
+    const original = corruptHistory();
+    const before = JSON.parse(JSON.stringify(original));
+    const { store, context } = createMockContext({ [STORAGE_KEY]: original });
+    context.globalState.update = vi.fn(() => Promise.reject(new Error('backup failed')));
+    const manager = new ConversationManager(context);
+    expect(await manager['_saveConversations']()).toBe(false);
+    expect(manager.updateMessageInConversation('keep', 'keep-m1', { content: 'edited locally' })).toBe(true);
+    expect(manager.getConversation('keep')!.messages[0].content).toBe('edited locally');
+    expect(store[STORAGE_KEY]).toEqual(before);
+    expect(original).toEqual(before);
+  });
+
+  it('keeps both duplicate-key transcripts in recovery and reports the collision', async () => {
+    const first = legacyConversation('shared');
+    const second = { ...legacyConversation('shared'), messages: [{
+      id: 'other-message', role: 'user', content: 'SECOND UNIQUE TRANSCRIPT', timestamp: 2000,
+    }] };
+    const original = {
+      schemaVersion: CONVERSATIONS_SCHEMA_VERSION,
+      conversations: [['shared', first], ['shared', second]],
+      currentId: 'shared',
+    };
+    const { store, context } = createMockContext({ [STORAGE_KEY]: original });
+    const manager = new ConversationManager(context);
+    expect(manager.getConversation('shared')!.messages).toEqual(first.messages);
+    expect(manager.getLoadDiagnostic()).toContain('reused an ID');
+    expect(await manager['_saveConversations']()).toBe(true);
+    expect(parkedKeys(store)).toHaveLength(1);
+    expect(store[parkedKeys(store)[0]]).toEqual(original);
+    expect((store[STORAGE_KEY] as { conversations: unknown[] }).conversations).toHaveLength(1);
+    manager.createNewConversation();
+    await manager['_saveConversations']();
+    expect(store[parkedKeys(store)[0]]).toEqual(original);
+  });
+
+  it('does not attempt recovery or overwrite a newer schema even with duplicate keys', async () => {
+    const conversation = legacyConversation('future');
+    const original = {
+      schemaVersion: CONVERSATIONS_SCHEMA_VERSION + 1,
+      conversations: [['future', conversation], ['future', conversation]],
+      currentId: 'future',
+    };
+    const { store, context } = createMockContext({ [STORAGE_KEY]: original });
+    const update = vi.spyOn(context.globalState, 'update');
+    const manager = new ConversationManager(context);
+    manager.addMessage('user', 'new transient message');
+    expect(await manager['_saveConversations']()).toBe(false);
+    expect(manager.isPersistenceDisabled()).toBe(true);
+    expect(store[STORAGE_KEY]).toEqual(original);
+    expect(update).not.toHaveBeenCalled();
   });
 });

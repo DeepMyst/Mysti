@@ -25,7 +25,8 @@
 import type { GatewayChatMessage, DeepMystGatewayClient } from './DeepMystGatewayClient';
 import type { AccumulatedToolCall } from '../utils/toolCallAccumulator';
 import { modelSupportsToolCalls } from './coordinatorTools';
-import type { OpenRouterClient } from './OpenRouterClient';
+import { normalizeUsage } from './TokenAccounting';
+import type { OpenRouterClient, OpenRouterModel } from './OpenRouterClient';
 
 export interface CoordinatorConfig {
   /**
@@ -36,8 +37,9 @@ export interface CoordinatorConfig {
    */
   freeModels: string[];
   /**
-   * Cheap PAID gateway model tried after every free model is rate-limited.
-   * Covered by a free DeepMyst account's monthly credits. Empty ⇒ free-only.
+   * PAID gateway model tried after every free model failed. Empty (the default
+   * since Plan 30) ⇒ free-only: the run ends with "no model available" instead
+   * of spending.
    */
   gatewayFallbackModel: string;
   /** OpenRouter model when the user opts in with a key ('auto' ⇒ discover a free model). */
@@ -62,7 +64,11 @@ export interface CoordinatorConfig {
  * `openrouter/free` mis-parses as model=`free` → 502 "Invalid URL").
  */
 export const MYSTI_DEFAULT_FREE_MODELS: string[] = [
-  'openrouter/openai/gpt-oss-120b:free',             // primary — 117B MoE, reasoning + function calling (strong, proven)
+  // Plan 30: free, 1M context, native tools + reasoning effort. A STEALTH model
+  // (published 2026-09-23): temporary by nature. When OpenRouter withdraws it
+  // the 404 is retryable, so the chain falls through to the entries below.
+  'openrouter/stealth/space-bunny-alpha',
+  'openrouter/openai/gpt-oss-120b:free',             // 117B MoE, reasoning + function calling (strong, proven)
   'openrouter/nvidia/nemotron-3-super-120b-a12b:free', // 120B MoE, RL-trained, agentic
   'openrouter/google/gemma-4-31b-it:free',           // 30.7B dense, function calling, fast
 ];
@@ -80,11 +86,58 @@ export interface CoordinatorCompletion {
   model?: string;
 }
 
+/** Raw usage as the OpenRouter/gateway clients report it. */
+interface ClientUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  /** SUBSET of inputTokens (OpenAI convention) — see PromptCache.readCacheTokens. */
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+}
+
+/**
+ * Convert a client's raw usage into the canonical disjoint shape.
+ *
+ * The clients speak the OpenAI convention, where cached tokens are a SUBSET of
+ * the prompt count; `normalizeUsage` subtracts them out so that
+ * input + cache_creation + cache_read is the round-trip's prompt with nothing
+ * counted twice. Everything downstream (the run's fill, the Boost record, the
+ * savings ledger) assumes that shape.
+ */
+function coordinatorUsage(u: ClientUsage): NonNullable<CoordinatorStreamEvent['usage']> {
+  const normalized = normalizeUsage(
+    {
+      input_tokens: u.inputTokens ?? 0,
+      output_tokens: u.outputTokens ?? 0,
+      ...(u.cacheReadTokens ? { cache_read_input_tokens: u.cacheReadTokens } : {}),
+      ...(u.cacheCreationTokens ? { cache_creation_input_tokens: u.cacheCreationTokens } : {}),
+    },
+    'openai',
+  );
+  return {
+    input_tokens: normalized.input_tokens,
+    output_tokens: normalized.output_tokens,
+    ...(normalized.cache_read_input_tokens ? { cache_read_input_tokens: normalized.cache_read_input_tokens } : {}),
+    ...(normalized.cache_creation_input_tokens ? { cache_creation_input_tokens: normalized.cache_creation_input_tokens } : {}),
+  };
+}
+
 /** One streamed delta from the coordinator model. */
 export interface CoordinatorStreamEvent {
   text?: string;
   reasoning?: string;
-  usage?: { input_tokens: number; output_tokens: number };
+  /**
+   * Prompt/completion tokens for ONE round-trip, in the canonical disjoint shape
+   * (see src/services/TokenAccounting.ts). `cache_read_input_tokens` has already
+   * been split OUT of `input_tokens` here, so the three add up to the round-trip's
+   * prompt — the caller must not re-derive that split.
+   */
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
   done?: boolean;
   error?: string;
   /** The model that actually answered (the concrete model behind a router id, or
@@ -103,6 +156,13 @@ export const MYSTI_SIGNIN_MESSAGE =
   'Sign in to DeepMyst to use the Mysti agent — it runs on your DeepMyst account (free works). No local API key needed.';
 
 /**
+ * Prefix of the error a coordinator call ends with when EVERY model it tried
+ * failed transiently (rate limit, provider down, withdrawn model). The chat maps
+ * it to a card with "Choose model" instead of a bare red sentence.
+ */
+export const MYSTI_MODELS_UNAVAILABLE = 'Every model Mysti tried is unavailable right now (rate-limited or offline).';
+
+/**
  * Why a coordinator turn could not run (Plan 25). Each reason maps to a set of
  * BUTTONS in the chat, not to a sentence — a credential failure the user cannot
  * act on from where they are reading it is a dead end.
@@ -116,6 +176,8 @@ export type CoordinatorFailureReason =
   | 'openrouter-rejected'
   /** 402 / out of credits — top up, or switch to a local agent. */
   | 'credits'
+  /** Every model in the chain failed transiently — pick another model or wait. */
+  | 'models-unavailable'
   /** Anything else: shown as an ordinary error. */
   | 'other';
 
@@ -141,6 +203,7 @@ export function classifyCoordinatorFailure(
   credentials: CoordinatorCredentialState,
 ): CoordinatorFailureReason {
   const err = raw || '';
+  if (err.startsWith(MYSTI_MODELS_UNAVAILABLE)) { return 'models-unavailable'; }
   // Payment first: a 402 body often ALSO mentions the key/account, and
   // "out of credits" is a different action from "signed out".
   if (/\b402\b|insufficient[_ ]?(credit|funds|quota|balance)|out of credit|payment required|top[_ ]?up/i.test(err)) {
@@ -166,6 +229,8 @@ export class CoordinatorModelClient {
   private static readonly _STICKY_TTL_MS = 10 * 60 * 1000;
   /** Per-turn stream ceiling — long agentic turns on slow free models need more than the 120s default. */
   private static readonly _STREAM_TIMEOUT_MS = 300_000;
+  /** How long a run waits for the catalog before deciding tool support without it. */
+  private static readonly _CATALOG_WAIT_MS = 3_000;
 
   constructor(
     private readonly _gateway: DeepMystGatewayClient,
@@ -177,6 +242,57 @@ export class CoordinatorModelClient {
   /** OpenRouter is used ONLY when the user explicitly configured a key (opt-in). */
   private _useOpenRouter(): boolean {
     return this._openRouter.isConfigured();
+  }
+
+  /** Gateway spelling: OpenRouter slugs ride litellm's `openrouter/` prefix; bare gateway ids pass through. */
+  private static _gatewayId(id: string): string {
+    const t = id.trim();
+    return t.startsWith('openrouter/') || !t.includes('/') ? t : `openrouter/${t}`;
+  }
+
+  /** Direct-key spelling: the bare OpenRouter slug. */
+  private static _directId(id: string): string {
+    return id.trim().replace(/^openrouter\//, '');
+  }
+
+  /** The OpenRouter catalog entry for a model id (either spelling), or undefined. */
+  public async catalogModel(id: string): Promise<OpenRouterModel | undefined> {
+    const slug = CoordinatorModelClient._directId(id);
+    const all = await this._openRouter.listAllModels().catch(() => []);
+    return all.find(m => m.id === slug);
+  }
+
+  /**
+   * The context window of a model the coordinator ran, from OpenRouter's
+   * public catalog (`openrouter/<slug>` gateway ids and direct slugs alike).
+   * Undefined for anything the catalog does not list — a bare gateway id such
+   * as `claude-haiku-4-5` — so the caller shows "n/a" rather than a guess.
+   */
+  public async contextWindowOf(model: string): Promise<number | undefined> {
+    const slug = model.replace(/^openrouter\//, '');
+    const all = await this._openRouter.listAllModels().catch(() => []);
+    return all.find(m => m.id === slug)?.contextLength;
+  }
+
+  /**
+   * Whether `model` should be offered native tools: the name allowlist, or the
+   * OpenRouter catalog listing `tools` for it. Waits at most _CATALOG_WAIT_MS
+   * for the (cached, 10-minute) catalog so an offline catalog never stalls a run.
+   */
+  public async supportsToolCalls(model: string | undefined): Promise<boolean> {
+    if (!model) { return false; }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      this._openRouter.listAllModels().catch(() => []),
+      new Promise<void>(resolve => { timer = setTimeout(resolve, CoordinatorModelClient._CATALOG_WAIT_MS); }),
+    ]);
+    if (timer) { clearTimeout(timer); }
+    return this._toolCapable(model);
+  }
+
+  /** Synchronous twin of supportsToolCalls over whatever catalog is already cached. */
+  private _toolCapable(model: string): boolean {
+    return modelSupportsToolCalls(model, this._openRouter.cachedModel(model.replace(/^openrouter\//, ''))?.supportsTools);
   }
 
   /**
@@ -201,10 +317,26 @@ export class CoordinatorModelClient {
   public async resolveCoordinatorModel(): Promise<string> {
     if (this._useOpenRouter()) {
       const m = (this._getConfig().openRouterModel || 'auto').trim();
-      return m && m.toLowerCase() !== 'auto' ? m : this._openRouter.getDefaultFreeModel();
+      if (m && m.toLowerCase() !== 'auto') { return m; }
+      return (await this._firstConfiguredInCatalog()) ?? this._openRouter.getDefaultFreeModel();
     }
     const chain = this._gatewayChain(this._getConfig());
     return chain[0] ?? this._getConfig().gatewayFallbackModel;
+  }
+
+  /**
+   * Direct-key `auto` (Plan 30): the first configured model the live catalog
+   * still lists AS FREE, so the key path gets the same curated default as the
+   * gateway. Undefined ⇒ the caller falls back to catalog discovery.
+   */
+  private async _firstConfiguredInCatalog(): Promise<string | undefined> {
+    const all = await this._openRouter.listAllModels().catch(() => []);
+    for (const raw of this._getConfig().freeModels ?? []) {
+      const slug = (raw || '').trim().replace(/^openrouter\//, '');
+      // Still free: a stealth listing can turn paid, and `auto` promises no spend.
+      if (slug && all.some(m => m.id === slug && m.free)) { return slug; }
+    }
+    return undefined;
   }
 
   /**
@@ -261,10 +393,10 @@ export class CoordinatorModelClient {
   /** Non-streaming completion (decompose/synthesize). */
   public async complete(
     messages: GatewayChatMessage[],
-    opts: { maxTokens?: number; signal?: AbortSignal } = {},
+    opts: { maxTokens?: number; signal?: AbortSignal; model?: string } = {},
   ): Promise<CoordinatorCompletion> {
     if (this._useOpenRouter()) {
-      const model = await this.resolveCoordinatorModel();
+      const model = opts.model ? CoordinatorModelClient._directId(opts.model) : await this.resolveCoordinatorModel();
       const r = await this._openRouter.chatCompletion({ model, messages, maxTokens: opts.maxTokens, signal: opts.signal });
       return r.failed
         ? { text: '', failed: true, viaFallback: false, error: r.error || 'OpenRouter failed' }
@@ -274,35 +406,39 @@ export class CoordinatorModelClient {
       return { text: '', failed: true, viaFallback: false, error: MYSTI_SIGNIN_MESSAGE };
     }
     const cfg = this._getConfig();
-    const chain = this._gatewayChain(cfg);
+    const chain = opts.model ? [CoordinatorModelClient._gatewayId(opts.model)] : this._gatewayChain(cfg);
     if (chain.length === 0) {
       return { text: '', failed: true, viaFallback: false, error: 'No coordinator model configured' };
     }
     // Start from the same sticky index the streaming path learned (P0.5) so
     // decompose/synthesize don't re-probe a model the stream already found
-    // rate-limited. Fresh/expired stickiness ⇒ index 0.
-    const sticky = this._stickyStart(chain.length);
+    // rate-limited. Fresh/expired stickiness ⇒ index 0. A caller-chosen model
+    // (Plan 30) never reads or writes the sticky position.
+    const sticky = opts.model ? 0 : this._stickyStart(chain.length);
     // Walk the free→paid chain: on a transient failure (rpm cap, provider drop,
     // 5xx, mid-stream fallback) advance to the next model; a hard error stops.
     let last: Awaited<ReturnType<DeepMystGatewayClient['chatCompletion']>> | undefined;
     for (let i = sticky; i < chain.length; i++) {
       last = await this._gateway.chatCompletion({ model: chain[i], messages, maxTokens: opts.maxTokens, signal: opts.signal });
       if (!last.failed) {
-        this._stampSticky(i);
+        if (!opts.model) { this._stampSticky(i); }
         return { text: last.text, failed: false, viaFallback: i > 0, costUsd: last.costUsd, model: last.model || chain[i] };
       }
       if (i < chain.length - 1 && this._isRetryable(last.error || '')) { continue; }
       break;
     }
     // Failed walk that skipped the prefix → retry from the cheapest entry next time.
-    this._resetStickyIfSkipped(sticky);
-    return { text: '', failed: true, viaFallback: false, error: last?.error || 'DeepMyst gateway failed' };
+    if (!opts.model) { this._resetStickyIfSkipped(sticky); }
+    const lastErr = last?.error || '';
+    // The loop only runs off the end of the chain on a RETRYABLE error; a hard
+    // stop breaks out earlier and keeps its own message.
+    return { text: '', failed: true, viaFallback: false, error: lastErr && this._isRetryable(lastErr) ? `${MYSTI_MODELS_UNAVAILABLE} Last error: ${lastErr}` : (lastErr || 'DeepMyst gateway failed') };
   }
 
   /** Stream a completion token-by-token (Mysti's default answer + delegation loop). */
   public async *stream(
     messages: GatewayChatMessage[],
-    opts: { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal; tools?: unknown[] } = {},
+    opts: { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal; tools?: unknown[]; model?: string } = {},
   ): AsyncGenerator<CoordinatorStreamEvent> {
     if (this._useOpenRouter()) {
       // Match the gateway path's generous ceiling (was OpenRouterClient's 120s
@@ -313,15 +449,19 @@ export class CoordinatorModelClient {
       // from the primary, but only attach them when THIS model is tool-capable
       // so a non-capable model never 400s on an unsupported `tools` field
       // (review round-5 #5/#9).
-      const orModel = await this.resolveCoordinatorModel();
-      yield* this._drain(this._openRouter.streamChat({ model: orModel, messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: modelSupportsToolCalls(orModel) ? opts.tools : undefined }));
+      const orModel = opts.model ? CoordinatorModelClient._directId(opts.model) : await this.resolveCoordinatorModel();
+      yield* this._drain(this._openRouter.streamChat({ model: orModel, messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: this._toolCapable(orModel) ? opts.tools : undefined }));
       return;
     }
     if (!this._isSignedIn()) {
       yield { error: MYSTI_SIGNIN_MESSAGE };
       return;
     }
-    yield* this._streamGatewayChain(this._gatewayChain(this._getConfig()), messages, opts);
+    // Plan 30: a caller-chosen model (a subagent or the advisor) runs exactly
+    // that model — no free-chain walk, and no effect on the main chain's sticky
+    // position.
+    const chain = opts.model ? [CoordinatorModelClient._gatewayId(opts.model)] : this._gatewayChain(this._getConfig());
+    yield* this._streamGatewayChain(chain, messages, opts);
   }
 
   /**
@@ -335,15 +475,19 @@ export class CoordinatorModelClient {
   private async *_streamGatewayChain(
     models: string[],
     messages: GatewayChatMessage[],
-    opts: { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal; tools?: unknown[] },
+    opts: { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal; tools?: unknown[]; model?: string },
   ): AsyncGenerator<CoordinatorStreamEvent> {
     // Empty-chain guard, symmetric with complete() (review [19]) — otherwise a
     // fresh sticky computes Math.min(0, -1) = -1 ⇒ models[-1] undefined ⇒ a
     // model-less POST ⇒ raw HTTP 400 instead of this friendly message.
     if (models.length === 0) { yield { error: 'No coordinator model configured' }; return; }
     // Sticky start (P0.5): resume from the entry that last answered while the
-    // stickiness is fresh; expired ⇒ back to the cheapest entry.
-    const sticky = this._stickyStart(models.length);
+    // stickiness is fresh; expired ⇒ back to the cheapest entry. A caller-chosen
+    // model (Plan 30) never reads or writes the sticky position.
+    const useSticky = !opts.model;
+    const sticky = useSticky ? this._stickyStart(models.length) : 0;
+    const stamp = (i: number) => { if (useSticky) { this._stampSticky(i); } };
+    const resetSticky = () => { if (useSticky) { this._resetStickyIfSkipped(sticky); } };
     for (let i = sticky; i < models.length; i++) {
       const isLast = i === models.length - 1;
       let sawText = false;
@@ -359,7 +503,7 @@ export class CoordinatorModelClient {
       // the PRIMARY, but the chain walks free→paid — attach `tools` only to a
       // model that actually supports them so a non-capable fallback can't 400 on
       // an unsupported field and break a run the text protocol would've survived.
-      const modelTools = modelSupportsToolCalls(models[i]) ? opts.tools : undefined;
+      const modelTools = this._toolCapable(models[i]) ? opts.tools : undefined;
       for await (const ev of this._gateway.streamChat({ model: models[i], messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: modelTools })) {
         if (ev.error) { streamErr = ev.error; break; }
         if (ev.model) { resolvedModel = ev.model; yield { model: ev.model }; }
@@ -368,13 +512,13 @@ export class CoordinatorModelClient {
         if (ev.text) {
           if (!sawText) {
             sawText = true;
-            this._stampSticky(i);
+            stamp(i);
             if (!resolvedModel) { yield { model: models[i] }; }
             if (attemptCost !== undefined) { yield { costUsd: attemptCost }; attemptCost = undefined; }
           }
           yield { text: ev.text };
         }
-        if (ev.usage) { yield { usage: { input_tokens: ev.usage.inputTokens ?? 0, output_tokens: ev.usage.outputTokens ?? 0 } }; }
+        if (ev.usage) { yield { usage: coordinatorUsage(ev.usage) }; }
         if (ev.toolCalls && ev.toolCalls.length) {
           // A finalized tool_call set means THIS attempt OWNS the turn (mirrors
           // first-text ownership at L297): stamp sticky + surface the held cost,
@@ -385,7 +529,7 @@ export class CoordinatorModelClient {
           // the consumer and get dispatched (review round-5 #4/#6).
           if (!sawText) {
             sawText = true;
-            this._stampSticky(i);
+            stamp(i);
             if (!resolvedModel) { yield { model: models[i] }; }
             if (attemptCost !== undefined) { yield { costUsd: attemptCost }; attemptCost = undefined; }
           }
@@ -408,16 +552,17 @@ export class CoordinatorModelClient {
       if (streamErr && !isLast && this._isRetryable(streamErr)) { continue; }
       // Failed walk that skipped the chain prefix: drop stickiness so the next
       // call retries from the cheapest entry (it may have recovered).
-      this._resetStickyIfSkipped(sticky);
-      yield { error: streamErr || 'No response from the coordinator model' };
+      resetSticky();
+      // Reaching here with a retryable error means it was the LAST model.
+      yield { error: streamErr && this._isRetryable(streamErr) ? `${MYSTI_MODELS_UNAVAILABLE} Last error: ${streamErr}` : (streamErr || 'No response from the coordinator model') };
       return;
     }
-    this._resetStickyIfSkipped(sticky);
+    resetSticky();
     yield { error: 'No coordinator model configured' };
   }
 
   /** Normalize an OpenRouter/gateway stream into CoordinatorStreamEvents. */
-  private async *_drain(source: AsyncGenerator<{ text?: string; reasoning?: string; usage?: { inputTokens?: number; outputTokens?: number }; done?: boolean; error?: string; finishReason?: string; costUsd?: number; toolCalls?: AccumulatedToolCall[] }>): AsyncGenerator<CoordinatorStreamEvent> {
+  private async *_drain(source: AsyncGenerator<{ text?: string; reasoning?: string; usage?: ClientUsage; done?: boolean; error?: string; finishReason?: string; costUsd?: number; toolCalls?: AccumulatedToolCall[] }>): AsyncGenerator<CoordinatorStreamEvent> {
     let sawText = false;
     let sawToolCalls = false;
     let streamErr: string | undefined;
@@ -425,7 +570,7 @@ export class CoordinatorModelClient {
       if (ev.error) { streamErr = ev.error; break; }
       if (ev.reasoning) { yield { reasoning: ev.reasoning }; }
       if (ev.text) { sawText = true; yield { text: ev.text }; }
-      if (ev.usage) { yield { usage: { input_tokens: ev.usage.inputTokens ?? 0, output_tokens: ev.usage.outputTokens ?? 0 } }; }
+      if (ev.usage) { yield { usage: coordinatorUsage(ev.usage) }; }
       if (ev.toolCalls) { sawToolCalls = true; yield { toolCalls: ev.toolCalls }; }
       // [8]: forward finish_reason so the OpenRouter-key path also auto-continues
       // on a length truncation (was gateway-path-only).

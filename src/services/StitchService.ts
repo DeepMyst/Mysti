@@ -13,27 +13,43 @@
 
 import * as vscode from 'vscode';
 import * as https from 'https';
+import type { Stitch, StitchToolClient } from '@google/stitch-sdk';
+import { asRecord, asRecords, asString, errorMessage } from '../utils/valueGuards';
 import type { StitchScreenRef, StitchDeviceType, StitchModel, StitchCreativeRange, StitchVariantAspect, DesignTheme } from '../types';
 import { STITCH_API_TIMEOUT_MS } from '../constants';
 
-// SDK types — resolved at runtime via dynamic import() since the package is ESM-only
-type StitchSdk = any;
-type StitchToolClientType = any;
+// Keep the SDK import visible to webpack so it ships inside the extension.
+type StitchSdkModule = typeof import('@google/stitch-sdk');
+
+type ScreenLocation = Pick<StitchScreenRef, 'screenId' | 'htmlUrl' | 'imageUrl'>;
+
+function screenLocation(value: unknown): ScreenLocation | undefined {
+  const screen = asRecord(value);
+  if (!screen) { return undefined; }
+  const screenId = asString(screen.screenId) || asString(screen.id)
+    || asString(screen.name)?.split('/screens/')[1];
+  if (!screenId) { return undefined; }
+  return {
+    screenId,
+    htmlUrl: asString(asRecord(screen.htmlCode)?.downloadUrl),
+    imageUrl: asString(asRecord(screen.screenshot)?.downloadUrl),
+  };
+}
 
 /**
  * Service wrapping the Google Stitch SDK for UI screen generation.
  * Handles authentication, project management, screen generation/editing/variants,
  * and Design DNA extraction.
  *
- * The SDK is ESM-only, so we use dynamic import() to load it at runtime.
+ * The ESM SDK is bundled and loaded lazily when a Stitch operation needs it.
  */
 export class StitchService {
   /** F-24: maximum redirects the download helper follows before erroring. */
   private static readonly _maxDownloadRedirects = 5;
 
-  private _client: StitchToolClientType | null = null;
-  private _stitch: StitchSdk | null = null;
-  private _sdkModule: any = null;
+  private _client: StitchToolClient | null = null;
+  private _stitch: Stitch | null = null;
+  private _sdkModule: StitchSdkModule | null = null;
 
   // Key injected by the caller (resolved from CanvasSecrets). The service no
   // longer reads `mysti.canvas.stitchApiKey` or `process.env` for the key,
@@ -103,8 +119,8 @@ export class StitchService {
           try {
             await persistKey(trimmed);
             console.log('[Mysti] Stitch API key saved to SecretStorage.');
-          } catch (err: any) {
-            console.warn(`[Mysti] Stitch API key persistence failed: ${err?.message}`);
+          } catch (err: unknown) {
+            console.warn(`[Mysti] Stitch API key persistence failed: ${errorMessage(err)}`);
           }
         }
         return;
@@ -121,16 +137,12 @@ export class StitchService {
   }
 
   /**
-   * Dynamically import the ESM-only @google/stitch-sdk package.
-   * Uses Function-based import() to bypass webpack's static analysis,
-   * since webpack would otherwise transform import() into require()
-   * which fails for ESM-only packages.
+   * Load the bundled SDK lazily. A hidden runtime import would require an SDK
+   * installation in node_modules, which the VSIX deliberately does not ship.
    */
-  private async _loadSdk(): Promise<any> {
+  private async _loadSdk(): Promise<StitchSdkModule> {
     if (this._sdkModule) { return this._sdkModule; }
-    // eslint-disable-next-line no-new-func
-    const dynamicImport = new Function('specifier', 'return import(specifier)');
-    this._sdkModule = await dynamicImport('@google/stitch-sdk');
+    this._sdkModule = await import('@google/stitch-sdk');
     return this._sdkModule;
   }
 
@@ -143,7 +155,7 @@ export class StitchService {
    * client carries the explicit `{ apiKey }` — no env mutation, and a key
    * change (via setApiKey) is picked up because the cache is reset there.
    */
-  private async _getStitch(): Promise<StitchSdk> {
+  private async _getStitch(): Promise<Stitch> {
     if (this._stitch) { return this._stitch; }
 
     const sdk = await this._loadSdk();
@@ -152,7 +164,7 @@ export class StitchService {
     return this._stitch!;
   }
 
-  private async _getToolClient(): Promise<StitchToolClientType> {
+  private async _getToolClient(): Promise<StitchToolClient> {
     if (this._client) { return this._client; }
     const apiKey = this._getApiKey();
     const sdk = await this._loadSdk();
@@ -162,37 +174,38 @@ export class StitchService {
 
   // ── Project Management ──
 
-  async createProject(title: string): Promise<{ id: string; [key: string]: any }> {
+  async createProject(title: string): Promise<{ id: string; [key: string]: unknown }> {
     await this.ensureAuth();
     const client = await this._getToolClient();
-    const raw = await client.callTool('create_project', { title });
+    const raw = asRecord(await client.callTool('create_project', { title }));
 
     // Extract project ID — may be in .name (e.g. "projects/abc"), .projectId, or .id
-    let id = raw?.projectId || raw?.id;
-    if (!id && raw?.name) {
-      id = raw.name.startsWith('projects/') ? raw.name.slice(9) : raw.name;
+    let id = asString(raw?.projectId) || asString(raw?.id);
+    const name = asString(raw?.name);
+    if (!id && name) {
+      id = name.startsWith('projects/') ? name.slice(9) : name;
     }
     if (!id) {
-      console.error('[Mysti] Stitch: Unexpected createProject response:', JSON.stringify(raw).substring(0, 500));
+      console.error('[Mysti] Stitch: Unexpected createProject response:', String(JSON.stringify(raw)).substring(0, 500));
       throw new Error('Stitch did not return a project ID');
     }
 
     console.log(`[Mysti] Stitch: Created project "${title}" (${id})`);
-    return { id, ...raw };
+    return { ...raw, id };
   }
 
-  async listProjects(): Promise<any[]> {
+  async listProjects(): Promise<Record<string, unknown>[]> {
     await this.ensureAuth();
     const client = await this._getToolClient();
     const raw = await client.callTool('list_projects', {});
-    return raw?.projects || [];
+    return asRecords(asRecord(raw)?.projects);
   }
 
-  async listScreens(projectId: string): Promise<any[]> {
+  async listScreens(projectId: string): Promise<Record<string, unknown>[]> {
     await this.ensureAuth();
     const client = await this._getToolClient();
     const raw = await client.callTool('list_screens', { projectId });
-    return raw?.screens || [];
+    return asRecords(asRecord(raw)?.screens);
   }
 
   // ── Screen Generation ──
@@ -201,54 +214,22 @@ export class StitchService {
    * Extract a screen's ID from the raw API response.
    * The response shape varies — handle multiple formats robustly.
    */
-  private _extractScreenFromRaw(raw: any, projectId: string): { screenId: string; htmlUrl?: string; imageUrl?: string } {
-    // Search ALL outputComponents — the first may be a designSystem, the screen is often in a later entry
-    const components = raw?.outputComponents || [];
-    for (const oc of components) {
-      const screens = oc?.design?.screens;
-      if (screens && screens.length > 0) {
-        const s = screens[0];
-        const id = s.id || s.screenId || (s.name?.split('/screens/')?.[1]);
-        if (id) {
-          return {
-            screenId: id,
-            htmlUrl: s.htmlCode?.downloadUrl,
-            imageUrl: s.screenshot?.downloadUrl,
-          };
-        }
-      }
+  private _extractScreenFromRaw(raw: unknown, _projectId: string): ScreenLocation {
+    const payload = asRecord(raw);
+    // A design system may precede the screen, and malformed entries must not
+    // prevent a later valid output component from being discovered.
+    const components = asRecords(payload?.outputComponents);
+    const candidates: unknown[] = [
+      ...components.flatMap(component => asRecords(asRecord(component.design)?.screens)),
+      payload,
+      ...asRecords(asRecord(payload?.design)?.screens),
+      ...asRecords(payload?.screens),
+    ];
+    for (const candidate of candidates) {
+      const location = screenLocation(candidate);
+      if (location) { return location; }
     }
-    // Flat screen object with id/screenId
-    if (raw?.id || raw?.screenId) {
-      return {
-        screenId: raw.screenId || raw.id,
-        htmlUrl: raw.htmlCode?.downloadUrl,
-        imageUrl: raw.screenshot?.downloadUrl,
-      };
-    }
-    // Nested under design directly
-    if (raw?.design?.screens?.[0]) {
-      const s = raw.design.screens[0];
-      return {
-        screenId: s.id || s.screenId || (s.name?.split('/screens/')?.[1]),
-        htmlUrl: s.htmlCode?.downloadUrl,
-        imageUrl: s.screenshot?.downloadUrl,
-      };
-    }
-    // Screens array at top level
-    if (raw?.screens?.[0]) {
-      const s = raw.screens[0];
-      return {
-        screenId: s.id || s.screenId || (s.name?.split('/screens/')?.[1]),
-        htmlUrl: s.htmlCode?.downloadUrl,
-        imageUrl: s.screenshot?.downloadUrl,
-      };
-    }
-
-    // Log all top-level keys and outputComponents structure for debugging
-    const ocKeys = components.map((c: any, i: number) => `[${i}]: ${Object.keys(c || {}).join(', ')}`).join('; ');
-    console.error(`[Mysti] Stitch: Could not find screen in response. outputComponents: ${ocKeys}`);
-    console.error('[Mysti] Stitch: Full response (first 1000 chars):', JSON.stringify(raw).substring(0, 1000));
+    console.error('[Mysti] Stitch: Could not find a screen ID in the response.');
     throw new Error('Stitch returned an unexpected response — could not extract screen ID');
   }
 
@@ -275,7 +256,7 @@ export class StitchService {
         screenId: ref.screenId,
         name: `projects/${ref.projectId}/screens/${ref.screenId}`,
       });
-      htmlUrl = raw?.htmlCode?.downloadUrl;
+      htmlUrl = asString(asRecord(asRecord(raw)?.htmlCode)?.downloadUrl);
     }
 
     if (!htmlUrl) { throw new Error('Stitch did not return an HTML URL'); }
@@ -294,7 +275,7 @@ export class StitchService {
         screenId: ref.screenId,
         name: `projects/${ref.projectId}/screens/${ref.screenId}`,
       });
-      imageUrl = raw?.screenshot?.downloadUrl;
+      imageUrl = asString(asRecord(asRecord(raw)?.screenshot)?.downloadUrl);
     }
 
     if (!imageUrl) { throw new Error('Stitch did not return an image URL'); }
@@ -363,26 +344,17 @@ export class StitchService {
       modelId: modelId || undefined,
     });
 
-    // Extract all screens from all output components
+    // Extract all valid screens from all output components.
     const screens: StitchScreenRef[] = [];
-    const components = raw?.outputComponents || [];
-    for (const comp of components) {
-      const compScreens = comp?.design?.screens || [];
-      for (const s of compScreens) {
-        const id = s.id || s.screenId || (s.name?.split('/screens/')?.[1]);
-        if (id) {
-          screens.push({
-            projectId: ref.projectId,
-            screenId: id,
-            htmlUrl: s.htmlCode?.downloadUrl,
-            imageUrl: s.screenshot?.downloadUrl,
-          });
-        }
+    for (const component of asRecords(asRecord(raw)?.outputComponents)) {
+      for (const candidate of asRecords(asRecord(component.design)?.screens)) {
+        const location = screenLocation(candidate);
+        if (location) { screens.push({ projectId: ref.projectId, ...location }); }
       }
     }
 
     if (screens.length === 0) {
-      console.warn('[Mysti] Stitch: No variants returned, raw:', JSON.stringify(raw).substring(0, 500));
+      console.warn('[Mysti] Stitch: No variants returned, raw:', String(JSON.stringify(raw)).substring(0, 500));
     }
 
     return screens;
@@ -401,9 +373,9 @@ export class StitchService {
         projectId: ref.projectId,
         screenId: ref.screenId,
       });
-      return result;
-    } catch (err: any) {
-      console.warn(`[Mysti] Stitch: Design DNA extraction failed: ${err.message}`);
+      return asRecord(result) ?? {};
+    } catch (err: unknown) {
+      console.warn(`[Mysti] Stitch: Design DNA extraction failed: ${errorMessage(err)}`);
       return {};
     }
   }
@@ -414,19 +386,19 @@ export class StitchService {
    * Extract the designSystem block from a raw Stitch API response.
    * The generate/edit responses include designSystem data in outputComponents.
    */
-  extractDesignSystemFromRaw(raw: any): { displayName?: string; designMd?: string; colorMode?: string; customColor?: string; bodyFont?: string } | null {
-    const components = raw?.outputComponents || [];
-    for (const oc of components) {
-      const ds = oc?.designSystem?.designSystem || oc?.designSystem;
-      if (ds) {
-        return {
-          displayName: ds.displayName,
-          designMd: ds.theme?.designMd || ds.designMd,
-          colorMode: ds.theme?.colorMode || ds.colorMode,
-          customColor: ds.theme?.customColor || ds.customColor,
-          bodyFont: ds.theme?.bodyFont || ds.bodyFont,
-        };
-      }
+  extractDesignSystemFromRaw(raw: unknown): { displayName?: string; designMd?: string; colorMode?: string; customColor?: string; bodyFont?: string } | null {
+    for (const component of asRecords(asRecord(raw)?.outputComponents)) {
+      const wrapper = asRecord(component.designSystem);
+      const design = asRecord(wrapper?.designSystem) ?? wrapper;
+      if (!design) { continue; }
+      const theme = asRecord(design.theme);
+      return {
+        displayName: asString(design.displayName),
+        designMd: asString(theme?.designMd) || asString(design.designMd),
+        colorMode: asString(theme?.colorMode) || asString(design.colorMode),
+        customColor: asString(theme?.customColor) || asString(design.customColor),
+        bodyFont: asString(theme?.bodyFont) || asString(design.bodyFont),
+      };
     }
     return null;
   }
@@ -440,7 +412,7 @@ export class StitchService {
     prompt: string,
     deviceType?: StitchDeviceType,
     modelId?: StitchModel
-  ): Promise<{ ref: StitchScreenRef; raw: any }> {
+  ): Promise<{ ref: StitchScreenRef; raw: unknown }> {
     await this.ensureAuth();
     const client = await this._getToolClient();
 

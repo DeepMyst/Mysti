@@ -64,6 +64,8 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
   };
   const chatCssUri = assetUri(['media', 'chat', 'chat.css']);
   const chatJsUri = assetUri(['media', 'chat', 'chat.js']);
+  const markdownRendererJsUri = assetUri(['media', 'chat', 'markdownRenderer.js']);
+  const subAgentCardsJsUri = assetUri(['media', 'chat', 'subAgentCards.js']);
   const deskCssUri = assetUri(['media', 'chat', 'desk.css']);
   const deskJsUri = assetUri(['media', 'chat', 'desk.js']);
 
@@ -136,6 +138,8 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
     resourceBase,
     chatCssUri,
     chatJsUri,
+    markdownRendererJsUri,
+    subAgentCardsJsUri,
     deskCssUri,
     deskJsUri,
     bootJson,

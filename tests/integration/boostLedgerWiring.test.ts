@@ -97,7 +97,7 @@ function createHarness(): Harness {
   } as any;
 
   const providerManager = {
-    setAgentContextManager: () => undefined,
+    setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProvider: () => undefined,
     getProviderInstance: () => ({ capabilities: { supportsImages: true, thinkingStyle: 'streamed' } }),
     getModelContextWindow: () => 200000,
@@ -109,11 +109,19 @@ function createHarness(): Harness {
   } as any;
 
   const compactionManager = {
-    shouldCompact: () => false,
+    // Claude (cliOwnsHistory below) takes the plain threshold, so it follows
+    // the same switch as evaluateCompaction.
+    shouldCompact: () => compactionActs,
+    retrieveContext: vi.fn(async () => ''),
+    keepsNoHistory: () => false,
     recordUsage: () => undefined,
     appendHistory: () => undefined,
     isSmartActive: () => false,
     evaluateCompaction: () => ({ act: compactionActs, smart: false }),
+    // Claude Code: native /compact, and the CLI owns its history.
+    canAutoCompact: () => true,
+    cliOwnsHistory: () => true,
+    mystiSendsFullHistory: () => false,
     getThreshold: () => 75,
     // Reached only in the compaction-acts case below; 'native-cli' with a
     // provider that reports no compact support makes _executeCompaction a
@@ -134,16 +142,16 @@ function createHarness(): Harness {
   } as any;
 
   const noop = {} as any;
-  const provider = new ChatViewProvider(
+  const provider = new ChatViewProvider({
     extensionUri,
     extensionContext,
-    { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
+    contextManager: { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
     conversationManager,
     providerManager,
-    { generateSuggestions: async () => [] } as any,
-    noop,                                                          // brainstormManager
+    suggestionManager: { generateSuggestions: async () => [] } as any,
+    brainstormManager: noop,
     permissionManager,
-    {
+    setupManager: {
       getWizardStatus: async () => ({ anyReady: true, npmAvailable: true, nodeVersion: 'v20.0.0', providers: [] }),
       getWizardStatusCached: () => ({ anyReady: true, complete: true, npmAvailable: true, nodeVersion: 'v20.0.0', providers: [] }),
       ensureProviderStatusFresh: async () => undefined,
@@ -151,34 +159,33 @@ function createHarness(): Harness {
       invalidateProviderStatus: () => undefined,
       onWizardStatusUpdated: () => ({ dispose: () => {} }),
     } as any,
-    noop,                                                          // telemetryManager
-    { isActive: () => false } as any,
-    {
+    telemetryManager: noop,
+    autonomousManager: { isActive: () => false } as any,
+    memoryManager: {
       learnFromPermissionDecision: () => undefined,
       getProjectMemoryContent: () => '',
       recordProjectLearning: () => undefined,
     } as any,
     compactionManager,
-    {
+    lifecycleManager: {
       onLifecycleEvent: () => undefined, touchSession: () => undefined,
       markBusy: () => undefined, markIdle: () => undefined, registerSession: () => undefined,
     } as any,
-    noop,                                                          // slashCommandManager
-    {
+    slashCommandManager: noop,
+    activeModeManager: {
       onStatusChanged: () => undefined, onChannelChanged: () => undefined, onActivity: () => undefined,
       subscribeToChannelEvents: () => () => undefined, isConnected: () => false,
       isInstalled: () => false, isIntegrationEnabled: () => false,
     } as any,
-    {
+    engagementManager: {
       trackCustomPersonaCreated: () => undefined, trackCustomSkillCreated: () => undefined,
       trackMessageSent: () => [], trackSuccessfulResponse: () => undefined,
     } as any,
-    { readRules: () => '', getMystiMdContent: () => '', getCrossVendorInstructions: () => [] } as any,
-    noop,                                                          // visualTestManager
-    noop,                                                          // canvasManager
-    createModelRegistryStub() as any,                              // modelRegistry
-    { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any,
-  );
+    projectContextManager: { readRules: () => '', getMystiMdContent: () => '', getCrossVendorInstructions: () => [] } as any,
+    visualTestManager: noop,
+    modelRegistry: createModelRegistryStub() as any,
+    checkpointManager: { snapshot: async () => null, isAvailable: async () => false, rewindTo: async () => null } as any
+  });
 
   // Record every ledger call while still exercising the REAL BoostManager, so a
   // signature drift between the call site and the manager fails here.
@@ -220,7 +227,7 @@ describe('Boost ledger wiring on the CLI path (Plan 24 Phase 1)', () => {
   beforeEach(() => { clearMockConfig(); h = createHarness(); });
   afterEach(() => { h.dispose(); });
 
-  it('records exactly one turn per done chunk, with context = input + cache-read', async () => {
+  it('records exactly one turn per done chunk, with context = every prompt bucket', async () => {
     h.setStream([
       { type: 'text', content: 'ok' },
       {
@@ -238,8 +245,12 @@ describe('Boost ledger wiring on the CLI path (Plan 24 Phase 1)', () => {
     expect(r.kind).toBe('cli');
     expect(r.provider).toBe('claude-code');
     expect(r.model).toBe('claude-opus-4-6');
-    // The CompactionManager fill convention — NOT input_tokens alone.
-    expect(r.contextTokens).toBe(100_000);
+    // The CompactionManager fill convention: for an Anthropic-convention backend
+    // the three prompt buckets are DISJOINT, so fill is the sum of all three —
+    // 1_000 uncached + 99_000 cache-read + 4_000 cache-CREATION. This used to
+    // assert 100_000, dropping cache-creation, which is the bug that made a cold
+    // turn (where the whole prefix lands in cache-creation) look nearly empty.
+    expect(r.contextTokens).toBe(104_000);
     expect(r.outputTokens).toBe(250);
     expect(r.cacheReadTokens).toBe(99_000);
     expect(r.cacheCreationTokens).toBe(4_000);
@@ -367,6 +378,16 @@ describe('Boost cold-resume interception (Plan 24 Phase 5)', () => {
     expect(h.nativeCompactions()).toBe(1);
   });
 
+  it('leaves a backend that compacts itself alone, however cold the resume', async () => {
+    setMockConfig('boost.enabled', true);
+    (h.provider as any)._compactionManager.canAutoCompact = () => false;
+    await bigTurn();
+    clock += 2 * HOUR;
+    await bigTurn();
+    expect(h.nativeCompactions()).toBe(0);
+    expect(h.records.every(r => !r.coldResumeIntercepted)).toBe(true);
+  });
+
   it('leaves a warm session alone', async () => {
     setMockConfig('boost.enabled', true);
     await bigTurn();
@@ -395,5 +416,105 @@ describe('Boost cold-resume interception (Plan 24 Phase 5)', () => {
     spy.mockRestore();
     const last = h.records[h.records.length - 1];
     expect(last.coldResumeIntercepted).toBeUndefined();
+  });
+});
+
+// A new sendMessage cancels the session's in-flight request (BaseCliProvider),
+// so a send that raced the un-awaited post-turn /compact used to cancel it.
+describe('one compaction per panel, and sends wait for it', () => {
+  let h: Harness;
+  beforeEach(() => { clearMockConfig(); h = createHarness(); });
+  afterEach(() => h.dispose());
+
+  it('holds a send until the in-flight compaction finishes, and never starts a second one', async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const cm = (h.provider as any)._compactionManager;
+    const nativeCalls = vi.fn(() => (async function* () {
+      order.push('compact-start');
+      await gate;
+      order.push('compact-end');
+      yield { type: 'done' };
+    })());
+    cm.executeNativeCompaction = nativeCalls;
+    const pm = (h.provider as any)._providerManager;
+    const realSend = pm.sendMessage;
+    pm.sendMessage = vi.fn((...args: unknown[]) => { order.push('send'); return realSend(...args); });
+
+    const usage = { input_tokens: 150_000, output_tokens: 0 };
+    const first = (h.provider as any)._executeCompaction('sidebar', { ...SETTINGS }, null, usage, 200_000);
+    const second = (h.provider as any)._executeCompaction('sidebar', { ...SETTINGS }, null, usage, 200_000);
+    const sending = send(h);
+    await new Promise(r => setTimeout(r, 25));
+    expect(order).toEqual(['compact-start']);   // the send has not reached the CLI
+
+    release();
+    await Promise.all([first, second, sending]);
+    expect(order).toEqual(['compact-start', 'compact-end', 'send']);
+    expect(nativeCalls).toHaveBeenCalledTimes(1);
+    expect((h.provider as any)._panelCompactions.size).toBe(0);
+  });
+});
+
+describe('Mysti compacts only where it may, and Stop still means stop', () => {
+  let h: Harness;
+  beforeEach(() => { clearMockConfig(); h = createHarness(); });
+  afterEach(() => h.dispose());
+  const cm = () => (h.provider as any)._compactionManager;
+  const settle = () => new Promise(r => setTimeout(r, 15));
+  const bigTurn = () => {
+    h.setStream([{ type: 'done', usage: { input_tokens: 190_000, output_tokens: 10 } }]);
+    return send(h);
+  };
+
+  it('auto-compacts only where canAutoCompact allows it, even over the threshold', async () => {
+    h.setCompactionActs(true);
+    await bigTurn(); await settle();
+    expect(h.nativeCompactions()).toBe(1);          // control: the trigger does fire
+
+    cm().canAutoCompact = () => false;              // e.g. Gemini, Codex
+    await bigTurn(); await settle();
+    expect(h.nativeCompactions()).toBe(1);          // ...and is skipped here
+  });
+
+  it('skips retrieval injection for a CLI that owns its history', async () => {
+    await send(h);                                  // stub: cliOwnsHistory -> true
+    expect(cm().retrieveContext).not.toHaveBeenCalled();
+
+    cm().cliOwnsHistory = () => false;              // control
+    await send(h);
+    expect(cm().retrieveContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Stop pressed while a send waits on a compaction drops that send', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    cm().executeNativeCompaction = () => (async function* () { await gate; yield { type: 'done' }; })();
+    const pm = (h.provider as any)._providerManager;
+    const usage = { input_tokens: 150_000, output_tokens: 0 };
+
+    const posted: string[] = [];
+    const post = vi.spyOn(h.provider as any, '_postToPanel').mockImplementation((...a: unknown[]) => {
+      posted.push((a[1] as { type: string }).type);
+    });
+
+    const compaction = (h.provider as any)._executeCompaction('sidebar', { ...SETTINGS }, null, usage, 200_000);
+    const sending = send(h);
+    await settle();
+    // What the webview's Stop button does to the panel.
+    (h.provider as any)._cancelQueuedChannelTurn('sidebar');
+    (h.provider as any)._cancelledPanels.add('sidebar');
+    posted.length = 0;
+    release();
+    await Promise.all([compaction, sending]);
+    post.mockRestore();
+
+    // The stopped turn is not revived: its message is never shown or
+    // persisted, no reply starts (a spinner nobody clears), and nothing
+    // reaches the CLI.
+    expect(posted).not.toContain('messageAdded');
+    expect(posted).not.toContain('responseStarted');
+    expect(pm.sendMessage).not.toHaveBeenCalled();
   });
 });

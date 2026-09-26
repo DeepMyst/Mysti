@@ -53,6 +53,7 @@ describe('Continue buildCliArgs', () => {
       s({ mode: 'ask-before-edit', accessLevel: 'ask-permission' }),
       s({ mode: 'default', accessLevel: 'ask-permission' }),
       s({ mode: 'ask-before-edit', accessLevel: 'full-access' }), // full-access but still ask-before-edit
+      s({ mode: 'edit-automatically', accessLevel: 'ask-permission' }), // commands still require approval
     ]) {
       const args = provider.buildCliArgs(settings, createContinueSession());
       expect(args, JSON.stringify(settings)).toContain('--readonly');
@@ -63,7 +64,6 @@ describe('Continue buildCliArgs', () => {
   it('uses --auto only where the gate is intentionally off (autonomous tiers)', () => {
     for (const settings of [
       s({ mode: 'edit-automatically', accessLevel: 'full-access' }),
-      s({ mode: 'edit-automatically', accessLevel: 'ask-permission' }),
       s({ mode: 'default', accessLevel: 'full-access' }),
     ]) {
       const args = provider.buildCliArgs(settings, createContinueSession());
