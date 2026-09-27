@@ -909,8 +909,10 @@
       }
 
       // Plan 32: a view over the messages below. It never answers a card or a
-      // question; it only needs to hear that one was answered here.
-      const agentMap = window.MystiAgentMap ? window.MystiAgentMap.create({
+      // question; it only needs to hear that one was answered here. The Mysti
+      // tab (body.view-hub) is this same page but hears no chat traffic, so it
+      // gets no map.
+      const agentMap = window.MystiAgentMap && !document.body.classList.contains('view-hub') ? window.MystiAgentMap.create({
         document,
         postMessage: postMessageWithPanelId,
         getAgentDisplay,

@@ -65,6 +65,7 @@ function composeHtml(view: 'chat' | 'hub'): string {
   return html
     .replace('<script nonce="n" src="{{markdownRendererJsUri}}"></script>', () => `<script>${read('media/chat/markdownRenderer.js')}</script>`)
     .replace('<script nonce="n" src="{{subAgentCardsJsUri}}"></script>', () => `<script>${read('media/chat/subAgentCards.js')}</script>`)
+    .replace('<script nonce="n" src="{{agentMapJsUri}}"></script>', () => `<script>${read('media/chat/agentMap.js')}</script>`)
     .replace('<script nonce="n" src="{{chatJsUri}}"></script>', () => `<script>${read('media/chat/chat.js')}</script>`)
     .replace('<script nonce="n" src="{{deskJsUri}}"></script>', () => `<script>${read('media/chat/desk.js')}</script>`);
 }
@@ -361,6 +362,20 @@ describe('Plan 31 — the Mysti tab', () => {
       expect((await posted(pg)).map((m) => m.type)).toContain('getBadgeShareText');
     } finally { await pg.context().close(); }
   }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the agent map lives in the chat only, never in the tab', async () => {
+    const delegation = { type: 'toolUse', payload: { id: 'd1', name: 'delegate', input: { agent: 'openai-codex', task: 'Fix it' } } };
+    const pillShown = (pg: Page) => pg.$eval('#agent-map-pill', (e) => getComputedStyle(e).display !== 'none');
+    const chat = await openPage('chat');
+    await send(chat, { type: 'responseStarted', payload: { provider: 'mysti' } });
+    await send(chat, delegation);
+    expect(await pillShown(chat)).toBe(true);
+    const hub = await openPage('hub');
+    await send(hub, { type: 'responseStarted', payload: { provider: 'mysti' } });
+    await send(hub, delegation);
+    expect(await pillShown(hub)).toBe(false);
+    expect((await posted(hub)).some((m) => m.type === 'requestJobs')).toBe(false);
+  });
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('boots both views without throwing', async () => {
     expect(pageErrors).toEqual([]);
