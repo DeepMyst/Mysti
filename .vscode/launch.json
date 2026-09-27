@@ -10,7 +10,8 @@
       ],
       "outFiles": [
         "${workspaceFolder}/dist/**/*.js"
-      ]
+      ],
+      "preLaunchTask": "compile-dev"
     }
   ]
 }
