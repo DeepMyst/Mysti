@@ -15,13 +15,17 @@
  * its own panel page, because tips are once-per-session by design and a
  * shared page would make every later test depend on the order they ran in.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
 import { composeChatHtml, INITIAL_STATE } from './chatPageHtml';
+
+// Each test boots its own multi-MB panel page; under a full parallel run that
+// alone can pass the 5 s default, which is load, not a defect.
+vi.setConfig({ testTimeout: 30000 });
 
 let browser: Browser | undefined;
 const dirs: string[] = [];
