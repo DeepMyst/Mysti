@@ -137,4 +137,34 @@ describe('coordinator run output', () => {
     expect(receipt.tokensPartial).toBe(true);
     expect(receipt.roundTrips).toBe(3);
   });
+
+  // Plan 32 H4: the agent map reads who ran a card from `meta`. It must stay
+  // out of `input`, which is persisted and folded back into later prompts.
+  it('posts card meta beside the tool, for foreground and background runs, and never records it', () => {
+    const fg = harness(), bg = harness('job-b');
+    const tool = { id: 'd1', name: 'delegate', input: { agent: 'openai-codex', task: 'fix' } };
+    const result = { id: 'd1', name: 'delegate', output: 'done', status: 'completed' };
+    const useMeta = { kind: 'delegate' as const, backend: 'openai-codex', access: 'gated-write' as const, model: 'gpt-6' };
+    const resultMeta = { usage: { input_tokens: 10, output_tokens: 2, normalized: true }, costUsd: 0.01, costApprox: true };
+    for (const h of [fg, bg]) {
+      h.output.postToolUse(tool, useMeta);
+      h.output.postToolResult(result, resultMeta);
+      h.output.recordDelegation('d1', 'openai-codex', 'fix', 'done', false);
+    }
+    expect(fg.messages).toEqual([
+      { type: 'toolUse', payload: { ...tool, meta: useMeta } },
+      { type: 'toolResult', payload: { ...result, meta: resultMeta } },
+    ]);
+    expect(bg.messages).toEqual([
+      { type: 'jobToolUse', payload: { jobId: 'job-b', toolCall: tool, meta: useMeta } },
+      { type: 'jobToolResult', payload: { jobId: 'job-b', toolCall: result, meta: resultMeta } },
+    ]);
+    expect(tool.input).toEqual({ agent: 'openai-codex', task: 'fix' });
+    expect(JSON.stringify(fg.output.snapshot('m'))).not.toContain('meta');
+    expect(JSON.stringify(bg.output.snapshot('m'))).not.toContain('gpt-6');
+
+    const plain = harness();
+    plain.output.postToolUse(tool);
+    expect('meta' in (plain.messages[0].payload as object)).toBe(false);
+  });
 });

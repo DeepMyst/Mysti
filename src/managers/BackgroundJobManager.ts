@@ -260,6 +260,15 @@ export class BackgroundJobManager {
   }
 
   /**
+   * True only while THIS window is executing the job. Records are shared
+   * through globalState and the sidebar's panel id is the same in every window,
+   * so a matching panelId does not prove the job runs here.
+   */
+  isExecutingHere(id: string): boolean {
+    return this._executing.has(id);
+  }
+
+  /**
    * Number of jobs THIS host is currently running (for the concurrency cap,
    * P1.5). Scoped to own-host (review [5] re-review): another VSCode window's
    * running jobs share globalState but run in that window's processes, so they

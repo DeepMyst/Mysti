@@ -109,7 +109,7 @@ export class MystiOrchestratorManager {
     const depth = input.depth ?? 0;
 
     if (depth >= ORCH_MAX_DEPTH) {
-      yield { type: 'orch_error', error: `orchestration depth cap (${ORCH_MAX_DEPTH}) reached` };
+      yield { runId, type: 'orch_error', error: `orchestration depth cap (${ORCH_MAX_DEPTH}) reached` };
       return { runId, outcomes: [], synthesis: '' };
     }
 
@@ -121,14 +121,14 @@ export class MystiOrchestratorManager {
     try {
 
     // --- 1. Decompose into a DAG (on the free coordinator model) ---
-    yield { type: 'orch_status', phase: 'decompose', content: 'Planning the task…' };
+    yield { runId, type: 'orch_status', phase: 'decompose', content: 'Planning the task…' };
     const backends = this._availableBackends();
     let plan = await this._decompose(input.brief, backends, input.context);
     if (!plan) {
       // Fallback: run the whole brief as a single node on the active backend.
       plan = { nodes: [{ id: 'task', task: input.brief.trim(), backend: input.settings.provider, dependsOn: [] }] };
     }
-    yield { type: 'orch_plan', plan: { nodes: plan.nodes.map(n => ({ ...n })) } };
+    yield { runId, type: 'orch_plan', plan: { nodes: plan.nodes.map(n => ({ ...n })) } };
 
     // Plan 24 Phase 4: refuse a single-lane "DAG". Serial delegation measured
     // 0.98x — slower than the coordinator answering inline — so spawning one
@@ -137,6 +137,7 @@ export class MystiOrchestratorManager {
     // still far cheaper than the agent spawn this avoids.)
     if (plan.nodes.length === 1 && this._fanout().refuseSingleLane) {
       yield {
+        runId,
         type: 'orch_status',
         phase: 'execute',
         content: 'One step only — answering directly instead of delegating.',
@@ -145,7 +146,7 @@ export class MystiOrchestratorManager {
     }
 
     // --- 2. Execute frontier-by-frontier via the pool ---
-    yield { type: 'orch_status', phase: 'execute', content: `Running ${plan.nodes.length} step(s)…` };
+    yield { runId, type: 'orch_status', phase: 'execute', content: `Running ${plan.nodes.length} step(s)…` };
     const outcomes = new Map<string, OrchestratorNodeOutcome>();
     const frontiers = topologicalFrontiers(plan);
     void chainLength; // (available for a depth-based governor extension)
@@ -176,7 +177,7 @@ export class MystiOrchestratorManager {
         // Seed outcomes so a mid-run failure still surfaces the node.
         for (const spec of specs) {
           const node = plan.nodes.find(n => n.id === spec.collaboratorId)!;
-          yield { type: 'orch_node_start', nodeId: node.id, nodeBackend: spec.agentId, content: node.task };
+          yield { runId, type: 'orch_node_start', nodeId: node.id, nodeBackend: spec.agentId, content: node.task };
           outcomes.set(node.id, { nodeId: node.id, task: node.task, backend: spec.agentId, text: '', hasError: false });
         }
 
@@ -208,9 +209,9 @@ export class MystiOrchestratorManager {
               outcome.failure = chunk.failure;
             }
           }
-          yield { type: 'orch_collab', nodeId: chunk.collaboratorId, collab: chunk };
+          yield { runId, type: 'orch_collab', nodeId: chunk.collaboratorId, collab: chunk };
           if (chunk.type === 'collab_complete') {
-            yield { type: 'orch_node_done', nodeId: chunk.collaboratorId, hasError: Boolean(chunk.hasError) };
+            yield { runId, type: 'orch_node_done', nodeId: chunk.collaboratorId, hasError: Boolean(chunk.hasError) };
           }
         }
       }
@@ -228,7 +229,7 @@ export class MystiOrchestratorManager {
     let list = Array.from(outcomes.values());
     const succeeded = list.filter(o => !o.hasError && o.text.trim());
     if (widestGroup > 1 && succeeded.length > 1 && this._fanout().verifyParallelLanes) {
-      yield { type: 'orch_status', phase: 'execute', content: 'Checking the parallel results for conflicts…' };
+      yield { runId, type: 'orch_status', phase: 'verify', content: 'Checking the parallel results for conflicts…' };
       const verifyRunId = `${runId}-verify`;
       try {
         const note = await this._runVerify(verifyRunId, succeeded, input);
@@ -242,7 +243,7 @@ export class MystiOrchestratorManager {
             text: note,
             hasError: false,
           }];
-          yield { type: 'orch_node_done', nodeId: 'verify', hasError: false };
+          yield { runId, type: 'orch_node_done', nodeId: 'verify', hasError: false };
         }
       } catch (err) {
         console.warn('[Mysti] @mysti: verify gate failed (continuing to synthesis)', err);
@@ -252,10 +253,10 @@ export class MystiOrchestratorManager {
     }
 
     // --- 3. Synthesize the final answer (on the coordinator model) ---
-    yield { type: 'orch_status', phase: 'synthesize', content: 'Synthesizing the result…' };
+    yield { runId, type: 'orch_status', phase: 'synthesize', content: 'Synthesizing the result…' };
     const synthesis = await this._synthesize(input.brief, list);
-    yield { type: 'orch_synthesis', content: synthesis };
-    yield { type: 'orch_done' };
+    yield { runId, type: 'orch_synthesis', content: synthesis };
+    yield { runId, type: 'orch_done' };
 
     return { runId, outcomes: list, synthesis };
     } finally {

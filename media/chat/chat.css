@@ -9781,3 +9781,289 @@
       body.view-hub #app > .hub-binding { grid-row: 2; grid-column: 1; }
       body.view-hub #app > .hub-active { grid-row: 3; grid-column: 1; }
     }
+
+    /* ── Plan 32 — agent map ───────────────────────────────────────────────
+       The overlay sits above the palette (10002). Every rule is prefixed and
+       every hidden rule is local: there is no global .hidden in this sheet. */
+    .agent-map.hidden,
+    .agent-map-pill.hidden { display: none; }
+    .agent-map {
+      position: fixed;
+      inset: 0;
+      z-index: 10003;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      padding: 24px;
+      color: var(--mysti-fg);
+      font-size: 12px;
+    }
+    .agent-map--narrow { padding: 0; }
+    .agent-map-backdrop {
+      position: absolute;
+      inset: 0;
+      background: var(--mysti-surface);
+      opacity: .72;
+    }
+    .agent-map-panel {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 1400px;
+      min-height: 0;
+      border: 1px solid var(--mysti-border);
+      border-radius: 8px;
+      background: var(--mysti-surface);
+      box-shadow: 0 16px 44px rgba(0, 0, 0, .45);
+      overflow: hidden;
+    }
+    .agent-map--narrow .agent-map-panel { border-radius: 0; border: none; }
+    .agent-map-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      position: relative;
+      padding: 10px 44px 10px 14px;
+      border-bottom: 1px solid var(--mysti-border);
+      flex: none;
+    }
+    /* Pinned to the corner: the chips may wrap to a second row at sidebar width. */
+    .agent-map-header > .agent-map-close { position: absolute; top: 8px; right: 10px; }
+    .agent-map-titles { flex: 1 1 200px; min-width: 0; }
+    .agent-map-heading { margin: 0; font-size: 13px; font-weight: 600; }
+    .agent-map-summary { margin: 2px 0 0; color: var(--mysti-dim); }
+    .agent-map-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+    .agent-map-chip,
+    .agent-map-action,
+    .agent-map-close,
+    .agent-map-back,
+    .agent-map-ask-item {
+      font: inherit;
+      color: var(--mysti-fg);
+      background: transparent;
+      border: 1px solid var(--mysti-border);
+      border-radius: 4px;
+      padding: 2px 8px;
+      cursor: pointer;
+    }
+    .agent-map-chip { display: inline-flex; gap: 6px; border-radius: 10px; }
+    .agent-map-chip-count { color: var(--mysti-dim); }
+    .agent-map-chip[aria-pressed="true"] { border-color: var(--mysti-accent); background: var(--mysti-surface-2); }
+    .agent-map-close { border: none; font-size: 16px; line-height: 1; padding: 2px 6px; }
+    .agent-map-chip:hover,
+    .agent-map-action:hover,
+    .agent-map-close:hover,
+    .agent-map-back:hover,
+    .agent-map-ask-item:hover { background: var(--mysti-surface-2); }
+    .agent-map :focus-visible { outline: 1px solid var(--mysti-accent); outline-offset: 1px; }
+    .agent-map-body { display: flex; flex: 1 1 auto; min-height: 0; }
+    .agent-map-main { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 12px 14px; }
+    .agent-map-inspector {
+      flex: 0 0 380px;
+      overflow: auto;
+      padding: 12px 14px;
+      border-left: 1px solid var(--mysti-border);
+      background: var(--mysti-surface-2);
+    }
+    .agent-map--outline .agent-map-inspector { flex-basis: 320px; }
+    .agent-map--narrow .agent-map-inspector { flex: 1 1 auto; border-left: none; }
+    .agent-map-empty, .agent-map-hint { color: var(--mysti-dim); }
+    .agent-map-section {
+      margin: 14px 0 6px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      color: var(--mysti-dim);
+    }
+
+    /* Tree: one markup, three layouts. */
+    .agent-map-tree, .agent-map-group { list-style: none; margin: 0; padding: 0; }
+    /* --mysti-border is nearly the panel colour in dark themes; the lines carry the structure. */
+    .agent-map { --agent-map-line: color-mix(in srgb, var(--mysti-fg) 35%, transparent); }
+    .agent-map-group { position: relative; margin-left: 14px; padding-left: 12px; border-left: 1px solid var(--agent-map-line); }
+    .agent-map-item { margin: 3px 0; }
+    .agent-map-node {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr);
+      column-gap: 6px;
+      width: 100%;
+      max-width: 340px;
+      text-align: left;
+      font: inherit;
+      color: var(--mysti-fg);
+      background: var(--mysti-surface);
+      border: 1px solid var(--mysti-border);
+      border-radius: 6px;
+      padding: 5px 8px;
+      cursor: pointer;
+    }
+    .agent-map--outline .agent-map-node,
+    .agent-map--narrow .agent-map-node { max-width: none; }
+    .agent-map-node[aria-selected="true"] { border-color: var(--mysti-accent); }
+    .agent-map-node:hover { background: var(--mysti-surface-2); }
+    .agent-map-node--dim { opacity: .4; }
+    .agent-map-node > .agent-map-glyph { grid-row: 1 / span 3; }
+    .agent-map-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .agent-map-after, .agent-map-meta { grid-column: 2; color: var(--mysti-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .agent-map-after { font-style: italic; }
+    .agent-map-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .agent-map-kind--workflow, .agent-map-kind--session, .agent-map-kind--debate, .agent-map-kind--collab { font-weight: 600; }
+
+    /* Wide: children sit in a column to the right with connector lines. */
+    .agent-map--graph .agent-map-item { display: flex; align-items: flex-start; gap: 0; }
+    .agent-map--graph .agent-map-item > .agent-map-node { flex: 0 0 240px; }
+    .agent-map--graph .agent-map-group { margin-left: 0; padding-left: 24px; border-left: none; }
+    .agent-map--graph .agent-map-group > .agent-map-item { position: relative; }
+    .agent-map--graph .agent-map-group > .agent-map-item::before {
+      content: '';
+      position: absolute;
+      left: -12px;
+      top: -3px;
+      bottom: -3px;
+      border-left: 1px solid var(--agent-map-line);
+    }
+    .agent-map--graph .agent-map-group > .agent-map-item:first-child::before { top: 16px; }
+    .agent-map--graph .agent-map-group > .agent-map-item:last-child::before { bottom: auto; height: 19px; }
+    .agent-map--graph .agent-map-group > .agent-map-item::after {
+      content: '';
+      position: absolute;
+      left: -12px;
+      top: 16px;
+      width: 12px;
+      border-top: 1px solid var(--agent-map-line);
+    }
+    .agent-map--graph .agent-map-group > .agent-map-item:only-child::before { display: none; }
+    .agent-map--graph .agent-map-group > .agent-map-item:only-child::after { left: -24px; width: 24px; }
+    /* The parent's stub out to the trunk; the first child's stub sits 3px (its margin) lower. */
+    .agent-map--graph .agent-map-item > .agent-map-group::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 19px;
+      width: 12px;
+      border-top: 1px solid var(--agent-map-line);
+    }
+
+    /* Workflow block: phase labels over plan | levels | verify | synthesize. */
+    .agent-map-workflow { flex-direction: column; }
+    .agent-map--graph .agent-map-workflow { display: block; }
+    .agent-map-wf {
+      margin: 6px 0 4px;
+      padding: 8px 10px;
+      border: 1px dashed var(--mysti-border);
+      border-radius: 8px;
+    }
+    .agent-map-wf-phases { display: flex; gap: 6px; margin: 0 0 8px; padding: 0; list-style: none; color: var(--mysti-dim); font-size: 11px; }
+    .agent-map-wf-phase + .agent-map-wf-phase::before { content: '·'; margin-right: 6px; color: var(--mysti-dim); }
+    .agent-map-wf-phase.is-done { color: var(--mysti-fg); }
+    .agent-map-wf-phase.is-current { color: var(--mysti-accent); font-weight: 600; }
+    .agent-map-wf-columns { display: flex; flex-direction: column; gap: 6px; }
+    .agent-map--graph .agent-map-wf-columns { flex-direction: row; align-items: flex-start; gap: 22px; }
+    .agent-map-wf-col { position: relative; min-width: 0; }
+    /* A readable floor per column; a wide workflow scrolls the tree pane sideways instead. */
+    .agent-map--graph .agent-map-wf-col { flex: 0 0 160px; }
+    /* A lane card fills its column; the 240px tree basis would cover the next '→'. */
+    .agent-map--graph .agent-map-wf .agent-map-item > .agent-map-node { flex: 1 1 auto; min-width: 0; }
+    /* Lane columns are narrow in the graph, so a task gets two lines before it is cut. */
+    .agent-map--graph .agent-map-wf .agent-map-title {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      white-space: normal;
+      overflow-wrap: break-word;
+    }
+    .agent-map--graph .agent-map-wf-col + .agent-map-wf-col::before {
+      content: '→';
+      position: absolute;
+      left: -17px;
+      top: 22px;
+      color: var(--mysti-dim);
+    }
+    .agent-map-wf-col-label { font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--mysti-dim); margin-bottom: 2px; }
+    .agent-map-wf .agent-map-group { margin-left: 0; padding-left: 0; border-left: none; }
+    .agent-map-wf .agent-map-item::before, .agent-map-wf .agent-map-item::after { display: none; }
+
+    /* Status glyphs: shape carries the meaning, colour only reinforces it. */
+    .agent-map-glyph { display: inline-block; width: 14px; text-align: center; font-weight: 700; }
+    .agent-map-node--waiting .agent-map-glyph, .agent-map-status--waiting .agent-map-glyph { color: var(--mysti-dim); }
+    .agent-map-node--working .agent-map-glyph, .agent-map-status--working .agent-map-glyph,
+    .agent-map-tool--running .agent-map-glyph { color: var(--mysti-accent); animation: agent-map-spin 1.6s linear infinite; }
+    .agent-map-node--needs .agent-map-glyph, .agent-map-status--needs .agent-map-glyph { color: var(--mysti-warn); }
+    .agent-map-node--needs { border-color: var(--mysti-warn); }
+    .agent-map-node--stalled .agent-map-glyph, .agent-map-status--stalled .agent-map-glyph { color: var(--mysti-warn); }
+    .agent-map-node--done .agent-map-glyph, .agent-map-status--done .agent-map-glyph,
+    .agent-map-tool--done .agent-map-glyph { color: var(--mysti-ok); }
+    .agent-map-node--failed .agent-map-glyph, .agent-map-status--failed .agent-map-glyph,
+    .agent-map-tool--failed .agent-map-glyph { color: var(--mysti-err); }
+    .agent-map-node--interrupted .agent-map-glyph, .agent-map-status--interrupted .agent-map-glyph { color: var(--mysti-dim); }
+    @keyframes agent-map-spin { to { transform: rotate(360deg); } }
+
+    /* Inspector. */
+    .agent-map-back { margin-bottom: 10px; }
+    .agent-map-kind { font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--mysti-dim); }
+    .agent-map-inspector-title { margin: 2px 0 4px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+    .agent-map-status { margin: 0 0 10px; }
+    .agent-map-need {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 6px 0;
+      padding: 8px;
+      border: 1px solid var(--mysti-warn);
+      border-radius: 6px;
+    }
+    .agent-map-need-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+    .agent-map-need-detail { color: var(--mysti-dim); margin-top: 2px; }
+    .agent-map-stall { color: var(--mysti-warn); }
+    .agent-map-failure { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin: 8px 0; color: var(--mysti-err); overflow-wrap: anywhere; }
+    .agent-map-chip-code {
+      font-family: ui-monospace, Menlo, monospace;
+      font-size: 10px;
+      padding: 0 5px;
+      border: 1px solid var(--mysti-err);
+      border-radius: 3px;
+    }
+    .agent-map-note { color: var(--mysti-dim); overflow-wrap: anywhere; }
+    .agent-map-result {
+      max-height: 180px;
+      overflow: auto;
+      margin: 8px 0;
+      padding: 8px;
+      border: 1px solid var(--mysti-border);
+      border-radius: 4px;
+      background: var(--mysti-surface);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, Menlo, monospace;
+      font-size: 11px;
+    }
+    .agent-map-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 10px; margin: 10px 0; }
+    .agent-map-facts dt { color: var(--mysti-dim); }
+    .agent-map-facts dd { margin: 0; overflow-wrap: anywhere; }
+    .agent-map-activity, .agent-map-handoffs { list-style: none; margin: 0; padding: 0; }
+    .agent-map-tool { display: flex; gap: 6px; padding: 2px 0; min-width: 0; }
+    .agent-map-tool-name { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .agent-map-tool-summary { color: var(--mysti-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .agent-map-bar-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 8px; margin: 3px 0; }
+    .agent-map-bar-label .agent-map-glyph { margin-right: 2px; }
+    .agent-map-bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mysti-dim); }
+    .agent-map-bar-track { position: relative; height: 8px; border-radius: 4px; background: var(--mysti-surface); border: 1px solid var(--mysti-border); }
+    .agent-map-bar { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--mysti-accent); }
+    .agent-map-bar--done { background: var(--mysti-ok); }
+    .agent-map-bar--failed { background: var(--mysti-err); }
+    .agent-map-bar--needs, .agent-map-bar--stalled { background: var(--mysti-warn); }
+    .agent-map-bar--interrupted { background: var(--mysti-dim); }
+    .agent-map-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+    .agent-map-action--primary { border-color: var(--mysti-accent); color: var(--mysti-accent); }
+    .agent-map-action--danger { border-color: var(--mysti-err); color: var(--mysti-err); }
+    .agent-map-ask-menu { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+
+    .input-status-line .agent-map-pill { white-space: nowrap; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .agent-map .agent-map-glyph { animation: none; }
+    }
+    /* ── end Plan 32 agent map ─────────────────────────────────────────── */

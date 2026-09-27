@@ -117,6 +117,7 @@ function composeHtml(): string {
   html = html
     .replace('<script nonce="n" src="{{markdownRendererJsUri}}"></script>', () => `<script>${read('media/chat/markdownRenderer.js')}</script>`)
     .replace('<script nonce="n" src="{{subAgentCardsJsUri}}"></script>', () => `<script>${read('media/chat/subAgentCards.js')}</script>`)
+    .replace('<script nonce="n" src="{{agentMapJsUri}}"></script>', () => `<script>${read('media/chat/agentMap.js')}</script>`)
     .replace('<script nonce="n" src="{{chatJsUri}}"></script>', () => `<script>${read('media/chat/chat.js')}</script>`)
     .replace('<script nonce="n" src="{{deskJsUri}}"></script>', () => `<script>${read('media/chat/desk.js')}</script>`);
 
@@ -587,8 +588,12 @@ describe('Plan 28 Phase 5 — the chrome diet and the palette', () => {
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('shows four segments under the composer, not ten', async () => {
     // Four SLOTS: agent · model, trust, context, spend. Spend is correctly
-    // absent until there is a saving to report, so three show at rest.
-    expect(await visible('.input-status-line > *:not(.status-spacer)')).toBe(3);
+    // absent until there is a saving to report, so three show at rest. The
+    // agent map pill is not at rest on this page: the Runs dock tests above
+    // left a background job and an @openai-codex sub-agent in this chat, which
+    // it rightly counts. A quiet chat, and one where the main agent works
+    // alone, keep it hidden; Plan 32's block asserts that on its own page.
+    expect(await visible('.input-status-line > *:not(.status-spacer):not(#agent-map-pill)')).toBe(3);
     for (const id of ['agent-select-btn', 'context-usage', 'behavior-indicator']) {
       expect(await page!.$eval(`#${id}`, (e) => getComputedStyle(e).display), id).not.toBe('none');
     }
@@ -1622,4 +1627,339 @@ describe('sub-agent cards through the shipped chat message boundary', () => {
       expect(errors).toEqual([]);
     } finally { await pg.context().close(); }
   });
+});
+
+describe('Plan 32 — the agent map', () => {
+  /*
+   * Its own page: the shared one already holds a background job and a
+   * sub-agent from the Runs dock tests, and "hidden at rest" is a statement
+   * about a chat where the main agent is alone.
+   */
+  let pg: import('playwright').Page | undefined;
+  const errors: string[] = [];
+  const receive = (m: Record<string, unknown>) => pg!.evaluate((msg) => {
+    window.dispatchEvent(new MessageEvent('message', { data: msg }));
+  }, m);
+  const pill = () => pg!.$eval('#agent-map-pill',
+    (e) => ({ display: getComputedStyle(e).display, text: e.textContent ?? '' }));
+  const mapOpen = () => pg!.$eval('#agent-map', (e) => !e.classList.contains('hidden'));
+  const postedTypes = () => pg!.evaluate(() =>
+    (window as unknown as { __posted: Array<{ type: string }> }).__posted.map((m) => m.type));
+
+  beforeAll(async () => {
+    if (CHROMIUM_UNAVAILABLE) { return; }
+    pg = await newPanelPage();
+    pg.on('pageerror', (e) => errors.push(String(e)));
+    await pg.waitForSelector('#init-loading-overlay.hidden', { state: 'attached' });
+  }, 60000);
+
+  afterAll(async () => { await pg?.context().close(); });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the pill hidden at rest and through a plain turn, so the status line keeps three segments', async () => {
+    const segments = () => pg!.$$eval('.input-status-line > *:not(.status-spacer)',
+      (els) => els.filter((e) => getComputedStyle(e).display !== 'none').length);
+    expect((await pill()).display).toBe('none');
+    expect(await segments()).toBe(3);
+    // The main agent alone is an ordinary chat, working or done.
+    await receive({ type: 'responseStarted', payload: { provider: 'claude-code' } });
+    expect((await pill()).display).toBe('none');
+    await receive({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'ok' } } });
+    expect((await pill()).display).toBe('none');
+    expect(await segments()).toBe(3);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows the pill after a delegation, and the pill opens the map', async () => {
+    await receive({ type: 'responseStarted', payload: { provider: 'claude-code' } });
+    await receive({ type: 'toolUse', payload: {
+      id: 'toolu_1', name: 'delegate', input: { agent: 'openai-codex', task: 'Fix the flaky test' } } });
+    const shown = await pill();
+    expect(shown.display).not.toBe('none');
+    expect(shown.text).toContain('agents');
+    await pg!.click('#agent-map-pill');
+    expect(await mapOpen()).toBe(true);
+    expect(await pg!.locator('#agent-map .agent-map-node', { hasText: 'Fix the flaky test' }).count()).toBe(1);
+    // Opening moved focus into the map.
+    expect(await pg!.evaluate(() => !!document.activeElement?.closest('#agent-map'))).toBe(true);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('lays out as a sidebar list at 420px and as a graph at 1280px', async () => {
+    // The layout follows `resize`, which lands after the viewport change resolves.
+    const layoutIs = (cls: string) => pg!.waitForFunction(
+      (c) => document.getElementById('agent-map')!.classList.contains(c), cls, { timeout: 5000 });
+    await pg!.setViewportSize({ width: 420, height: 900 });
+    await layoutIs('agent-map--narrow');
+    await pg!.setViewportSize({ width: 1280, height: 900 });
+    await layoutIs('agent-map--graph');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('Escape inside the map closes it and never answers a pending card', async () => {
+    await pg!.keyboard.press('Escape');
+    await receive({ type: 'permissionRequest', payload: {
+      id: 'perm_map', toolName: 'Bash', expiresAt: 0, details: { command: 'rm -rf build' } } });
+    expect((await pill()).text).toContain('needs you');
+    await pg!.click('#agent-map-pill');
+    expect(await mapOpen()).toBe(true);
+    await pg!.evaluate(() => { (window as unknown as { __posted: unknown[] }).__posted.length = 0; });
+    // Escape is also the permission card's deny key and the composer's stop key.
+    await pg!.keyboard.press('Escape');
+    expect(await mapOpen()).toBe(false);
+    expect(await pg!.$eval('.permission-card[data-id="perm_map"]', (e) => e.classList.contains('pending'))).toBe(true);
+    const types = await postedTypes();
+    expect(types).not.toContain('permissionResponse');
+    expect(types).not.toContain('cancelRequest');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('clears a need when the card itself is answered', async () => {
+    await pg!.click('.permission-card[data-id="perm_map"] .permission-option[data-action="deny"]');
+    expect((await pill()).text).not.toContain('needs you');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('clears a sub-agent question when it is answered in its card', async () => {
+    await receive({ type: 'subAgentStarted', payload: { agentId: 'openai-codex' } });
+    await receive({ type: 'subAgentAskUserQuestion', payload: { agentId: 'openai-codex', questionData: {
+      toolCallId: 'q_map', questions: [{ question: 'Continue?', header: 'Choice', options: [{ label: 'Yes' }, { label: 'No' }] }],
+    } } });
+    expect((await pill()).text).toContain('needs you');
+    await pg!.locator('.subagent-card .auq-skip-btn').click();
+    expect((await pill()).text).not.toContain('needs you');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the workflow stepper on Execute through the verify phase', async () => {
+    await receive({ type: 'mystiStarted', payload: { sessionId: 'wf-map' } });
+    await receive({ type: 'mystiEvent', payload: { type: 'orch_status', phase: 'execute', content: 'Running' } });
+    await receive({ type: 'mystiEvent', payload: { type: 'orch_status', phase: 'verify', content: 'Checking' } });
+    expect(await pg!.$eval('#mysti-stepper .brainstorm-step.active', (e) => e.getAttribute('data-phase'))).toBe('execute');
+    await receive({ type: 'mystiEvent', payload: { type: 'orch_status', phase: 'synthesize', content: 'Writing' } });
+    expect(await pg!.$eval('#mysti-stepper .brainstorm-step.active', (e) => e.getAttribute('data-phase'))).toBe('synthesize');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('refreshes jobs silently: the map\'s own jobsList adds no system message', async () => {
+    const systemMessages = () => pg!.locator('#messages .message.system').count();
+    const before = await systemMessages();
+    await receive({ type: 'jobsList', payload: { jobs: [], source: 'agentMap' } });
+    expect(await systemMessages()).toBe(before);
+    // The user's own /jobs still answers.
+    await receive({ type: 'jobsList', payload: { jobs: [] } });
+    expect(await systemMessages()).toBe(before + 1);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('asks another installed agent through the mention path the composer parses', async () => {
+    await receive({ type: 'initialState', payload: {
+      settings: { provider: 'claude-code', model: '', mode: 'ask-before-edit', thinkingLevel: 'none',
+        effortLevel: 'high', accessLevel: 'ask-permission', contextMode: 'auto', autonomousMode: false },
+      messages: [], context: [], conversations: [],
+      providerManifest: { schemaVersion: 1, providers: [
+        { id: 'claude-code', shortId: 'claude', displayName: 'Claude Code', color: '#d97757', capabilities: {} },
+        { id: 'openai-codex', shortId: 'codex', displayName: 'Codex', color: '#a1a1a1', capabilities: {} },
+        { id: 'google-gemini', shortId: 'gemini', displayName: 'Gemini', color: '#4285f4', capabilities: {} },
+      ] },
+    } });
+    await receive({ type: 'providerAvailability', payload: {
+      providerAvailability: { 'google-gemini': { available: false } } } });
+    await receive({ type: 'toolResult', payload: { id: 'toolu_1', status: 'success', output: 'Fixed.' } });
+    await pg!.click('#agent-map-pill');
+    await pg!.locator('#agent-map .agent-map-node', { hasText: 'Fix the flaky test' }).click();
+    await pg!.locator('#agent-map .agent-map-action', { hasText: 'Ask another agent' }).click();
+    // Not the backend that did it, and not one that is not installed.
+    expect(await pg!.locator('#agent-map .agent-map-ask-item').allTextContents()).toEqual(['Claude Code']);
+    await pg!.locator('#agent-map .agent-map-ask-item').click();
+    expect(await mapOpen()).toBe(false);
+    expect(await pg!.$eval('#message-input', (e) => (e as HTMLTextAreaElement).value)).toBe('@claude Fix the flaky test');
+    expect(await pg!.evaluate(() => document.activeElement?.id)).toBe('message-input');
+  }, 20000);
+
+  describe('no key typed at the open map answers a card behind it', () => {
+    const permissionResponses = () => pg!.evaluate(() =>
+      (window as unknown as { __posted: Array<{ type: string }> }).__posted.filter((m) => m.type === 'permissionResponse'));
+    const focusInMap = () => pg!.evaluate(() => !!document.activeElement?.closest('#agent-map'));
+    const permission = (id: string) => receive({ type: 'permissionRequest', payload: {
+      id, toolName: 'Bash', expiresAt: 0, details: { command: 'rm -rf /tmp/x' } } });
+
+    it.skipIf(CHROMIUM_UNAVAILABLE)('a card that arrives while the map is open does not take focus, and Escape only closes', async () => {
+      await permission('perm_k1');
+      await pg!.click('#agent-map-pill');
+      expect(await mapOpen()).toBe(true);
+      await permission('perm_k2');
+      expect(await focusInMap()).toBe(true);
+      await pg!.evaluate(() => { (window as unknown as { __posted: unknown[] }).__posted.length = 0; });
+      await pg!.keyboard.press('Escape');
+      expect(await mapOpen()).toBe(false);
+      expect(await permissionResponses()).toEqual([]);
+      expect(await pg!.$$eval('.permission-card.pending', (els) => els.length)).toBeGreaterThanOrEqual(2);
+    }, 20000);
+
+    it.skipIf(CHROMIUM_UNAVAILABLE)('a click on plain text keeps focus in the map, and Enter there approves nothing', async () => {
+      await pg!.click('#agent-map-pill');
+      await pg!.locator('#agent-map .agent-map-node', { hasText: 'Main agent' }).click();
+      await pg!.click('#agent-map .agent-map-inspector-title');
+      expect(await focusInMap()).toBe(true);
+      await pg!.evaluate(() => { (window as unknown as { __posted: unknown[] }).__posted.length = 0; });
+      await pg!.keyboard.press('Enter');
+      await pg!.keyboard.press('1');
+      expect(await permissionResponses()).toEqual([]);
+      expect(await mapOpen()).toBe(true);
+      await pg!.keyboard.press('Escape');
+    }, 20000);
+
+    it.skipIf(CHROMIUM_UNAVAILABLE)('a host message that fills the composer leaves focus in the open map', async () => {
+      await pg!.click('#agent-map-pill');
+      for (const m of [{ type: 'insertPrompt', payload: 'x' }, { type: 'setInputValue', payload: { value: 'y' } },
+        { type: 'promptEnhanced', payload: { prompt: 'z', changed: true, fallback: false, enhancedBy: '' } }]) {
+        await receive(m);
+        expect(await focusInMap()).toBe(true);
+      }
+      await pg!.keyboard.press('Escape');
+      expect(await mapOpen()).toBe(false);
+    }, 20000);
+
+    it.skipIf(CHROMIUM_UNAVAILABLE)('Enter on the pill opens the map instead of approving', async () => {
+      await pg!.focus('#agent-map-pill');
+      await pg!.evaluate(() => { (window as unknown as { __posted: unknown[] }).__posted.length = 0; });
+      await pg!.keyboard.press('Enter');
+      expect(await mapOpen()).toBe(true);
+      expect(await permissionResponses()).toEqual([]);
+      await pg!.keyboard.press('Escape');
+      expect(await mapOpen()).toBe(false);
+    }, 20000);
+
+    it.skipIf(CHROMIUM_UNAVAILABLE)('on the pill with the map closed, 3 still answers the waiting card', async () => {
+      await pg!.focus('#agent-map-pill');
+      await pg!.evaluate(() => { (window as unknown as { __posted: unknown[] }).__posted.length = 0; });
+      await pg!.keyboard.press('3');
+      expect(await mapOpen()).toBe(false);
+      expect((await permissionResponses()).map((m) => (m as { payload: { decision: string } }).payload.decision)).toEqual(['deny']);
+    }, 20000);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a delegate progress ping draws nothing in the chat', async () => {
+    await receive({ type: 'mystiDelegateTrace', payload: { parentId: 'toolu_1', chunk: { type: 'progress' } } });
+    expect(await pg!.$$eval('.tool-call[data-id="toolu_1"] .mysti-node-activity', (els) => els.length)).toBe(0);
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('stopping the agent session keeps the map; clearing the session resets it', async () => {
+    expect((await pill()).display).not.toBe('none');
+    await receive({ type: 'sessionCleared', payload: { message: 'Agent session shut down', reason: 'shutdown' } });
+    expect((await pill()).display).not.toBe('none');
+    await receive({ type: 'sessionCleared', payload: { message: 'Session cleared' } });
+    expect((await pill()).display).toBe('none');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('lane cards stay inside their columns and a long tool name leaves room for its summary', async () => {
+    await receive({ type: 'responseStarted', payload: { provider: 'mysti' } });
+    await receive({ type: 'toolUse', payload: { id: 'mcp_1', name: 'mcp__trello-composio__COMPOSIO_MULTI_EXECUTE_TOOL', input: { query: 'open cards' } } });
+    await receive({ type: 'toolUse', payload: { id: 'dg_1', name: 'delegate', input: { agent: 'openai-codex', task: 'Fix the flaky login test' } } });
+    await receive({ type: 'toolUse', payload: { id: 'dg_2', name: 'delegate', input: { agent: 'google-gemini', task: 'Review the migration plan' } } });
+    await receive({ type: 'toolResult', payload: { id: 'dg_2', status: 'failed', output: '(failed: crashed — exit 1)' } });
+    await receive({ type: 'mentionTaskStarted', payload: { agentId: 'claude-code', task: 'Write the release notes' } });
+    await receive({ type: 'subAgentStarted', payload: { agentId: 'claude-code' } });
+    await receive({ type: 'mystiStarted', payload: { brief: 'Ship the settings page' } });
+    const ev = (e: Record<string, unknown>) => receive({ type: 'mystiEvent', payload: { runId: 'wf1', ...e } });
+    await ev({ type: 'orch_status', phase: 'decompose' });
+    await ev({ type: 'orch_plan', plan: { nodes: [
+      { id: 'schema', task: 'Design the settings schema', dependsOn: [] },
+      { id: 'api', task: 'Build the settings API endpoints', dependsOn: ['schema'] },
+      { id: 'ui', task: 'Build the settings UI against the API', dependsOn: ['schema', 'api'] }] } });
+    await ev({ type: 'orch_status', phase: 'execute' });
+    await ev({ type: 'orch_node_start', nodeId: 'schema', nodeBackend: 'claude-code' });
+    await ev({ type: 'orch_node_done', nodeId: 'schema', hasError: false });
+    await ev({ type: 'orch_node_start', nodeId: 'api', nodeBackend: 'openai-codex' });
+    await receive({ type: 'permissionRequest', payload: {
+      id: 'perm_layout', toolName: 'Bash', expiresAt: 0, toolCallId: 'dg_1', details: { command: 'npm test' } } });
+    await pg!.setViewportSize({ width: 1280, height: 900 });
+    await pg!.click('#agent-map-pill');
+    await pg!.waitForFunction(() => document.getElementById('agent-map')!.classList.contains('agent-map--graph'));
+    const overflow = await pg!.$$eval('#agent-map .agent-map-wf-col', (cols) => cols.map((col) => {
+      const right = col.getBoundingClientRect().right;
+      return Math.max(0, ...[...col.querySelectorAll('.agent-map-node')].map((n) => n.getBoundingClientRect().right - right));
+    }));
+    expect(overflow.length).toBe(4);
+    expect(Math.max(...overflow)).toBeLessThanOrEqual(0.5);
+    // The main agent's row is joined to its children's trunk, and a lane's task wraps before it is cut.
+    expect(await pg!.$eval('#agent-map .agent-map-tree > .agent-map-item > .agent-map-group',
+      (e) => getComputedStyle(e, '::before').width)).toBe('12px');
+    const title = await pg!.locator('#agent-map .agent-map-wf .agent-map-title', { hasText: 'Design the settings schema' })
+      .evaluate((e) => ({ height: e.getBoundingClientRect().height, line: parseFloat(getComputedStyle(e).lineHeight) || 15 }));
+    expect(title.height).toBeGreaterThan(title.line * 1.5);
+    // A rebuild keeps the tree's scroll even though the focused row is now scrolled out of view.
+    await pg!.setViewportSize({ width: 1280, height: 360 });
+    await pg!.locator('#agent-map .agent-map-node', { hasText: 'Main agent' }).focus();
+    // One round-trip per read: $eval queries and evaluates in two, and a rebuild
+    // in between would hand it a detached pane that always reads 0.
+    const treeScroll = () => pg!.evaluate(() => document.querySelector('#agent-map .agent-map-main')!.scrollTop);
+    const scrolled = await pg!.evaluate(() => {
+      const e = document.querySelector('#agent-map .agent-map-main')!;
+      e.scrollTop = e.scrollHeight;
+      return e.scrollTop;
+    });
+    expect(scrolled).toBeGreaterThan(40);
+    await receive({ type: 'toolUse', payload: { id: 'read_1', name: 'Read', input: { file_path: 'src/settings.ts' } } });
+    expect(await treeScroll()).toBe(scrolled);
+    expect(await pg!.evaluate(() => document.activeElement?.textContent ?? '')).toContain('Main agent');
+    await pg!.setViewportSize({ width: 800, height: 900 });
+    await pg!.waitForFunction(() => document.getElementById('agent-map')!.classList.contains('agent-map--outline'));
+    await pg!.locator('#agent-map .agent-map-node', { hasText: 'Main agent' }).click();
+    const inspector = await pg!.$eval('#agent-map .agent-map-inspector', (e) => ({
+      spill: e.scrollWidth - e.clientWidth,
+      summary: e.querySelector('.agent-map-tool-summary')!.getBoundingClientRect().width,
+    }));
+    expect(inspector.spill).toBeLessThanOrEqual(0);
+    expect(inspector.summary).toBeGreaterThan(20);
+    await pg!.keyboard.press('Escape');
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a wide workflow keeps readable columns, visible connectors and the close button in its corner', async () => {
+    // Dark Modern's panel border and foreground; the harness defines no theme otherwise.
+    await pg!.evaluate(() => {
+      document.documentElement.style.setProperty('--vscode-panel-border', '#2b2b2b');
+      document.documentElement.style.setProperty('--vscode-foreground', '#cccccc');
+    });
+    // A failure here must not leave the map open over the next test on this shared page.
+    try {
+      await pg!.setViewportSize({ width: 1100, height: 900 });
+      await pg!.click('#agent-map-pill');
+      await pg!.waitForFunction(() => document.getElementById('agent-map')!.classList.contains('agent-map--graph'));
+      // Columns keep a floor and the tree pane scrolls sideways rather than squeezing words apart.
+      const widths = await pg!.$$eval('#agent-map .agent-map-wf-col', (cols) => cols.map((c) => c.getBoundingClientRect().width));
+      expect(Math.min(...widths)).toBeGreaterThanOrEqual(150);
+      // Connector lines are drawn in a colour that differs from the panel border (nearly the surface in dark themes).
+      // In the graph the lines are the items' ::before trunks, not the group's own border.
+      const lines = await pg!.$eval('#agent-map .agent-map-group > .agent-map-item', (item) => ({
+        line: getComputedStyle(item, '::before').borderLeftColor,
+        border: getComputedStyle(document.querySelector('#agent-map .agent-map-header')!).borderBottomColor,
+      }));
+      expect(lines.line).not.toBe(lines.border);
+      await pg!.keyboard.press('Escape');
+      // At sidebar width the chips may wrap, but the close button stays in the top-right corner.
+      await pg!.setViewportSize({ width: 420, height: 900 });
+      await pg!.click('#agent-map-pill');
+      await pg!.waitForFunction(() => document.getElementById('agent-map')!.classList.contains('agent-map--narrow'));
+      const corner = await pg!.$eval('#agent-map .agent-map-close', (b) => {
+        const box = b.getBoundingClientRect();
+        const head = b.closest('.agent-map-header')!.getBoundingClientRect();
+        return { right: head.right - box.right, top: box.top - head.top };
+      });
+      expect(corner.right).toBeLessThanOrEqual(16);
+      expect(corner.top).toBeLessThanOrEqual(12);
+    } finally {
+      if (await pg!.evaluate(() => !document.getElementById('agent-map')!.classList.contains('hidden'))) {
+        await pg!.keyboard.press('Escape');
+      }
+    }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('names the pseudo agents the way the agent button does', async () => {
+    const rootTitle = () => pg!.$eval('#agent-map .agent-map-kind--root .agent-map-title', (e) => e.textContent);
+    await receive({ type: 'responseStarted', payload: { provider: 'mysti' } });
+    await pg!.click('#agent-map-pill');
+    expect(await rootTitle()).toBe('Mysti');
+    await receive({ type: 'responseStarted', payload: { provider: 'brainstorm' } });
+    expect(await rootTitle()).toBe('Brainstorm');
+    await receive({ type: 'responseStarted', payload: { provider: 'claude-code' } });
+    expect(await rootTitle()).toBe('Claude Code');
+    await pg!.keyboard.press('Escape');
+  }, 20000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
+    expect(errors).toEqual([]);
+  }, 20000);
 });

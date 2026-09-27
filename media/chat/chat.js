@@ -272,6 +272,10 @@
         if (entry) {
           return { name: entry.displayName, shortId: entry.shortId, color: entry.color, logo: getEntryLogo(entry) };
         }
+        // The pseudo-agents are not providers, so the manifest never names them.
+        if (agentId === 'mysti' || agentId === 'brainstorm') {
+          return { name: agentId === 'mysti' ? 'Mysti' : 'Brainstorm', shortId: agentId, color: '#888', logo: MYSTI_LOGO };
+        }
         return { name: agentId, shortId: agentId, color: '#888', logo: '' };
       }
 
@@ -904,6 +908,28 @@
         return mentions;
       }
 
+      // Plan 32: a view over the messages below. It never answers a card or a
+      // question; it only needs to hear that one was answered here.
+      const agentMap = window.MystiAgentMap ? window.MystiAgentMap.create({
+        document,
+        postMessage: postMessageWithPanelId,
+        getAgentDisplay,
+        listAgents: () => sessionAgentChoices()
+          .filter(agent => agent.available && agent.id !== 'mysti' && agent.id !== 'brainstorm')
+          .map(agent => ({ id: agent.id, name: agent.name })),
+        prefillComposer: text => {
+          // The composer's mention parser only knows short ids (`@claude`).
+          inputEl.value = String(text).replace(/^@(\S+)/, (_m, id) => '@' + getAgentShortId(id));
+          autoResizeTextarea();
+          inputEl.focus();
+          inputEl.dispatchEvent(new Event('input'));
+        },
+        now: () => Date.now(),
+        setInterval: (fn, ms) => window.setInterval(fn, ms),
+        clearInterval: id => window.clearInterval(id),
+      }) : null;
+      const mapIsOpen = () => !!(agentMap && agentMap.isOpen());
+
       // Cards own their render buffers, pending questions and attempt timers.
       const subAgentCards = window.MystiSubAgentCards.create({
         document,
@@ -915,7 +941,12 @@
           if (typeof Prism !== 'undefined') { Prism.highlightAllUnder(element); }
         },
         renderQuestion: renderAskUserQuestionTabs,
-        postMessage: postMessageWithPanelId,
+        postMessage: msg => {
+          if (agentMap && (msg.type === 'subAgentQuestionResponse' || msg.type === 'subAgentQuestionSkipped')) {
+            agentMap.questionAnswered(msg.payload.toolCallId);
+          }
+          postMessageWithPanelId(msg);
+        },
       });
       window.addEventListener('pagehide', event => {
         if (!event.persisted) { subAgentCards.dispose(); }
@@ -1872,6 +1903,13 @@
       document.addEventListener('keydown', function(e) {
         // Skip if typing in an input/textarea
         if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+          return;
+        }
+        // Plan 32: the map never answers a card. On its pill only the keys that
+        // work the pill are exempt; 1/2/3 there still answer the pending card.
+        var onPill = e.target && e.target.closest && e.target.closest('#agent-map-pill');
+        if (mapIsOpen() || (e.target && e.target.closest && e.target.closest('#agent-map')) ||
+            (onPill && (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape'))) {
           return;
         }
 
@@ -3505,11 +3543,15 @@
         // Plan 28 Phase 3 — Runs dock wiring.
         var runsBtn = document.getElementById('runs-btn');
         if (runsBtn) { runsBtn.addEventListener('click', function() { toggleRunsDock(); }); }
+        var agentMapPill = document.getElementById('agent-map-pill');
+        if (agentMapPill && agentMap) { agentMapPill.addEventListener('click', function() { agentMap.toggle(); }); }
         document.addEventListener('click', function(e) {
           var tab = e.target && e.target.closest ? e.target.closest('.runs-tab') : null;
           if (tab) { e.preventDefault(); setRunsTab(tab.getAttribute('data-runs-tab')); }
         });
         document.addEventListener('keydown', function(e) {
+          // The open map lets chords through for VS Code's own keybindings.
+          if (mapIsOpen()) { return; }
           // Ctrl/Cmd+Shift+R opens the dock on whatever most deserves attention.
           if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'R' || e.key === 'r')) {
             e.preventDefault();
@@ -4392,6 +4434,9 @@
         // switch and outside it, so adding a run kind never means editing the
         // producer that draws it.
         try { observeRun(message); } catch (err) { console.warn('[Mysti Webview] runs observer:', err); }
+        if (agentMap) {
+          try { agentMap.observe(message); } catch (err) { console.warn('[Mysti Webview] agent map observer:', err); }
+        }
         switch (message.type) {
           case 'hubShow':
             handleHubShow(message.payload);
@@ -4720,6 +4765,7 @@
             });
             var questionsContainers = document.querySelectorAll('.ask-user-question-container');
             questionsContainers.forEach(function(container) {
+              if (agentMap) { agentMap.questionAnswered(container.getAttribute('data-tool-call-id')); }
               container.remove();
             });
             console.log('[Mysti] Cleared all plan options and questions from UI');
@@ -4816,6 +4862,7 @@
           case 'conversationChanged':
             clearMessages();
             resetContextUsage();
+            if (agentMap) { agentMap.reset(); }
             // Keep the conversation for legacy attribution fallback —
             // messages without a per-message provider/model stamp fall back
             // to the conversation's values (Plan 02 Phase 3.4).
@@ -4889,7 +4936,7 @@
             break;
           case 'insertPrompt':
             inputEl.value = message.payload;
-            inputEl.focus();
+            if (!mapIsOpen()) { inputEl.focus(); }
             break;
           case 'setInputValue': {
             // Two senders, two shapes: SlashCommandManager posts a bare string
@@ -4902,7 +4949,7 @@
               : (incoming === undefined || incoming === null ? '' : String(incoming));
             inputEl.value = text;
             autoResizeTextarea();
-            inputEl.focus();
+            if (!mapIsOpen()) { inputEl.focus(); }
             // Trigger input event to activate @-mention or slash menu detection
             inputEl.dispatchEvent(new Event('input'));
             break;
@@ -4943,7 +4990,7 @@
               }
             }
             updateEnhanceAffordance();
-            inputEl.focus();
+            if (!mapIsOpen()) { inputEl.focus(); }
             autoResizeTextarea();
             break;
 
@@ -5011,6 +5058,8 @@
           case 'sessionCleared':
             sessionIndicator.style.display = 'none';
             sessionIndicator.className = 'session-indicator';
+            // Stopping the agent session leaves the transcript, and its agents, on screen.
+            if (agentMap && !(message.payload && message.payload.reason === 'shutdown')) { agentMap.reset(); }
             break;
           case 'sessionActive':
             sessionIndicator.style.display = 'flex';
@@ -7582,7 +7631,8 @@
       // so a delegation is a live activity feed instead of a blank spinner.
       // ==================================================================
       function handleMystiDelegateTrace(payload) {
-        if (!payload || !payload.parentId || !payload.chunk) return;
+        // 'progress' only tells the agent map the child is alive.
+        if (!payload || !payload.parentId || !payload.chunk || payload.chunk.type === 'progress') return;
         var pid = (window.CSS && CSS.escape) ? CSS.escape(String(payload.parentId)) : String(payload.parentId);
         var card = messagesEl.querySelector('.tool-call[data-id="' + pid + '"]');
         if (!card) return;
@@ -7852,6 +7902,8 @@
 
       function handleJobsList(payload) {
         payload = payload || {};
+        // The agent map's own refresh; the user did not ask to see a list.
+        if (payload.source === 'agentMap') { return; }
         var jobs = payload.jobs || [];
         if (!jobs.length) { addSystemMessage('No background jobs.'); return; }
         var lines = jobs.map(function(j) {
@@ -9506,6 +9558,9 @@
 
         out.push({ group: 'Do', label: 'Runs \u2014 everything in flight', hint: 'Ctrl/Cmd+Shift+R',
                    run: function() { toggleRunsDock(true); } });
+        if (agentMap) {
+          out.push({ group: 'Do', label: 'Agent map \u2014 every agent in this chat', run: function() { agentMap.open(); } });
+        }
         out.push({ group: 'Do', label: 'Changes \u2014 every edit this session', hint: 'Ctrl/Cmd+Shift+A',
                    run: function() { toggleChangesDock(true); } });
         [['New conversation', 'new-conversation-btn'], ['Open in a tab', 'new-tab-btn'],
@@ -10856,8 +10911,9 @@
           startPermissionTimer(request.id, request.expiresAt);
         }
 
-        // Focus for keyboard navigation
-        card.focus();
+        // Focus for keyboard navigation, but never behind the open agent map:
+        // the next key would answer a card the user cannot see.
+        if (!mapIsOpen()) { card.focus(); }
         state.focusedPermissionId = request.id;
 
         scrollToBottom();
@@ -11310,6 +11366,7 @@
         // actually known — otherwise "Needs you" keeps counting a question the
         // user has already answered.
         runDrop('perm:' + requestId);
+        if (agentMap) { agentMap.permissionResolved(requestId); }
 
         // Update visual state
         card.classList.remove('pending');
@@ -11922,6 +11979,7 @@
             type: 'askUserQuestionSkipped',
             payload: { toolCallId: toolCallId }
           });
+          if (agentMap) { agentMap.questionAnswered(toolCallId); }
           container.remove();
         };
 
@@ -12153,6 +12211,7 @@
             answers: container._answers
           }
         });
+        if (agentMap) { agentMap.questionAnswered(toolCallId); }
 
         // Replace with confirmation
         container.innerHTML = '<div class="auq-submitted"><span class="auq-check">✓</span> Answers submitted</div>';

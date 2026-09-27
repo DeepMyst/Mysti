@@ -64,6 +64,7 @@ const ALLOW_LINE = 'mysti:provider-literals:allow-line';
 const TARGET_FILES = [
   path.join(__dirname, '..', 'media', 'chat', 'index.html'),
   path.join(__dirname, '..', 'media', 'chat', 'chat.js'),
+  path.join(__dirname, '..', 'media', 'chat', 'agentMap.js'),
   path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'),
 ];
 

@@ -21,7 +21,7 @@ import { bindIncomingMessage } from '../chat/incomingMessage';
 import {
   HUB_CHAT_ONLY_SETTINGS, HUB_INBOUND_TYPES, HUB_MIRROR_TYPES, HUB_UNBOUND_TYPES, isHubSection, type HubSection,
 } from '../chat/settingsHub';
-import { CoordinatorRunOutput } from '../chat/CoordinatorRunOutput';
+import { CoordinatorRunOutput, type ToolResultMeta } from '../chat/CoordinatorRunOutput';
 import { settleWithin } from '../utils/settleWithin';
 import { clampEffort } from '../utils/effort';
 import { MystiTagScanner, type MystiDirective, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_SKILL_KINDS, MYSTI_CAPABILITY_KINDS, MYSTI_CONNECT_KINDS, MYSTI_VISUAL_KINDS, MYSTI_VISUAL_ACT_KINDS, MYSTI_CANVAS_KINDS } from '../utils/mystiDelegateParser';
@@ -173,15 +173,32 @@ import { PerfTracker } from '../utils/PerfTracker';
 import { replaceAsciiControlCharacters } from '../utils/controlCharacters';
 import { isRecord } from '../utils/valueGuards';
 
-type MystiDelegationResult = { text: string; hasError: boolean; failure?: CollaboratorFailure; errorDetail?: string; wrote: boolean };
+type MystiDelegationResult = {
+  text: string; hasError: boolean; failure?: CollaboratorFailure; errorDetail?: string; wrote: boolean;
+  /** The child's own measured usage (Plan 32 H5); absent when it measured nothing. */
+  usage?: UsageStats; costUsd?: number; costApprox?: boolean;
+};
+
 type MystiDelegationRequest = {
   agentId: AgentType; task: string; collaboratorId: string;
   model?: string; effort?: Settings['effortLevel'];
   readOnly: boolean; reviewOnly?: boolean; fold: boolean;
   /** Appended to the task; defaults to SUMMARY_INSTRUCTIONS. '' for reviews. */
   suffix?: string;
-  trace?: (chunk: { type: 'tool_use' | 'tool_result' | 'thinking' | 'retry'; toolCall?: unknown; content?: string }) => void;
+  /** The coordinator card this delegation renders on, named on its permission cards. */
+  parentToolId?: string;
+  trace?: (chunk: { type: 'tool_use' | 'tool_result' | 'thinking' | 'retry' | 'progress'; toolCall?: unknown; content?: string }) => void;
 };
+
+/** A delegate card's result meta: only what the host actually knows. Never enters a prompt. */
+function delegateResultMeta(r: Omit<MystiDelegationResult, 'text' | 'wrote'>, extra?: ToolResultMeta): ToolResultMeta {
+  return {
+    ...(r.hasError && r.failure ? { failure: r.failure } : {}),
+    ...(r.usage ? { usage: r.usage } : {}),
+    ...(r.costUsd !== undefined ? { costUsd: r.costUsd, ...(r.costApprox ? { costApprox: true } : {}) } : {}),
+    ...extra,
+  };
+}
 
 /**
  * Extended message type that includes the panelId field sent by the webview
@@ -204,6 +221,8 @@ const EXIT_PLAN_FILE_MAX_CHARS = 20000;
  * past that (plus margin) and only warn if the record is STILL interrupted.
  */
 const INTERRUPT_NOTIFY_GRACE_MS = 70_000;
+/** Minimum gap between a delegate card's liveness pings (well under the map's stall window). */
+const PROGRESS_PING_MS = 5_000;
 
 interface PanelState {
   id: string;
@@ -554,7 +573,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             riskLevel: PermissionManager.classifyRisk(action),
             ...this._permissionToolDetails(request.toolCall),
           },
-          request.panelId, request.id, request.panelId, true,
+          request.panelId, request.id, request.panelId, true, false, undefined,
+          { kind: 'native-approval', agentId: request.providerId },
         );
       },
       cancelCard: requestId => this._cancelPermissionForTool(requestId),
@@ -1686,7 +1706,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'cancelJob':
         {
           const jobId = (msg.payload as { jobId?: string })?.jobId;
-          if (jobId) { this._abortMystiJob(jobId); }
+          if (!jobId) { break; }
+          // A job id is not a capability: only the panel that started the job
+          // may stop it, whatever id another panel's webview posts. Another
+          // window's sidebar shares this panel id, so the job must also run here.
+          if (this._backgroundJobManager.get(jobId)?.panelId !== msg.panelId
+            || !this._backgroundJobManager.isExecutingHere(jobId)) {
+            console.log('[Mysti] cancelJob ignored: job not owned by this panel', jobId);
+            break;
+          }
+          this._abortMystiJob(jobId);
         }
         break;
 
@@ -1737,9 +1766,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         {
           const panelId = msg.panelId;
           if (panelId) {
+            // Echoed so the chat can tell the agent map's silent refresh apart
+            // from a user asking to see the list.
+            const fromMap = isRecord(msg.payload) && msg.payload.source === 'agentMap';
+            const jobs = this._backgroundJobManager.listForPanel(panelId);
             this._postToPanel(panelId, {
               type: 'jobsList',
-              payload: { jobs: this._backgroundJobManager.listForPanel(panelId) }
+              // The map offers Stop on running jobs; one another window runs
+              // could never be stopped from here, so it is left off the map.
+              payload: fromMap
+                ? { jobs: jobs.filter(j => j.status !== 'running' || this._backgroundJobManager.isExecutingHere(j.id)), source: 'agentMap' }
+                : { jobs }
             });
           }
         }
@@ -2248,7 +2285,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this._providerManager.clearSession(panelId);
             this._postToPanel(panelId, {
               type: 'sessionCleared',
-              payload: { message: 'Agent session shut down' }
+              // The conversation stays on screen, so the agent map must not reset.
+              payload: { message: 'Agent session shut down', reason: 'shutdown' }
             });
           }
         }
@@ -3711,9 +3749,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const onGate: CollaboratorGateCallback = (spec, toolCall, nativeRequest) =>
       this._requestCollaboratorPermission(spec, toolCall, panelId, panelId, nativeRequest);
 
+    // A new send does not stop this run, so its late chunks must not land in
+    // the next turn's group: every post names the run it belongs to.
+    const runId = crypto.randomUUID();
     this._postToPanel(panelId, {
       type: 'collaborationStarted',
-      payload: { collaborators: collaborators.map(c => ({ agentId: c.agentId, roleId: c.roleId })) }
+      payload: { runId, collaborators: collaborators.map(c => ({ agentId: c.agentId, roleId: c.roleId })) }
     });
 
     let result: { contextBlock: string } = { contextBlock: '' };
@@ -3736,7 +3777,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         // Post each collaborator chunk for live cards (webview rendering is the
         // remaining F5-gated piece; the synthesized main answer renders today).
-        this._postToPanel(panelId, { type: 'collaborator', payload: next.value });
+        this._postToPanel(panelId, { type: 'collaborator', payload: { ...next.value, runId } });
         next = await gen.next();
       }
       if (next.done && next.value) {
@@ -3746,11 +3787,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       console.error('[Mysti] Collaboration run failed:', error);
       this._postToPanel(panelId, {
         type: 'collaborationError',
-        payload: { message: error instanceof Error ? error.message : 'Collaboration failed' }
+        payload: { runId, message: error instanceof Error ? error.message : 'Collaboration failed' }
       });
     }
 
-    this._postToPanel(panelId, { type: 'collaborationComplete' });
+    this._postToPanel(panelId, { type: 'collaborationComplete', payload: { runId } });
     return result.contextBlock;
   }
 
@@ -3884,7 +3925,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ...this._permissionToolDetails(chunk.toolCall)
       },
       panelId,
-      chunk.toolCall.id
+      chunk.toolCall.id,
+      undefined, false, false, undefined,
+      { kind: 'mention', agentId: chunk.agentId },
     );
 
     if (approved) {
@@ -4009,7 +4052,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'The session failed.';
-      this._postToPanel(panelId, { type: 'sessionError', payload: { message } });
+      this._postToPanel(panelId, { type: 'sessionError', payload: { runId, message } });
     } finally {
       this._lifecycleManager.markIdle(panelId);
     }
@@ -7226,6 +7269,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     forceInteractive = false,
     remoteOrigin = false,
     signal?: AbortSignal,
+    origin?: import('../types').PermissionOrigin,
   ): Promise<boolean> {
     // Plan 21 Phase 0 (I14): fold remote origin into forceInteractive at the
     // FIRST gate, before the autonomous branch below can auto-decide. Folding
@@ -7295,7 +7339,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // This also scopes session grants, so one panel cannot authorize another.
         ownerKey ?? panelId,
         forceInteractive,
-        remoteOrigin
+        remoteOrigin,
+        origin,
       );
       return !signal?.aborted && approved;
     } finally {
@@ -7321,6 +7366,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     panelId: string,
     ownerKey: string,
     nativeRequest?: Parameters<CollaboratorGateCallback>[2],
+    parentToolId?: string,
   ): Promise<boolean> {
     const action = this._classifyToolAction(toolCall.name);
     return this.requestPermissionInline(
@@ -7331,6 +7377,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ...this._permissionToolDetails(toolCall),
       },
       panelId, nativeRequest?.id ?? toolCall.id, ownerKey, !!nativeRequest, false, nativeRequest?.signal,
+      {
+        kind: 'collaborator', agentId: spec.agentId, collaboratorId: spec.collaboratorId,
+        ...(spec.role ? { role: spec.role } : {}), ...(spec.label ? { label: spec.label } : {}),
+        ...(parentToolId ? { parentToolId } : {}),
+      },
     );
   }
 
@@ -10255,7 +10306,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           : call.approximate ? ` (estimated ~$${call.estimateUsd.toFixed(2)} — a multi-round subagent can cost more)`
           : ` (up to ~$${call.estimateUsd.toFixed(2)})`}. This spends credits on your account.`,
         { command: `${call.label} → ${call.model}`, riskLevel: 'medium' },
-        panelId, undefined, cancelKey, /* forceInteractive */ true,
+        panelId, undefined, cancelKey, /* forceInteractive */ true, false, undefined,
+        { kind: 'paid', label: call.label },
       ),
     );
     let advisorCalls = 0;
@@ -10851,12 +10903,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             continue;
           }
           advisorCalls++;
-          runOutput.postToolUse({ id: toolId, name: 'delegate', input: { agent: 'advisor', task: directive.task } });
-          const trace = bg ? undefined : (chunk: { type: string; toolCall?: unknown; content?: string }) => {
-            this._postToPanel(panelId, { type: 'mystiDelegateTrace', payload: { parentId: toolId, chunk } });
-          };
+          runOutput.postToolUse({ id: toolId, name: 'delegate', input: { agent: 'advisor', task: directive.task } }, { kind: 'advisor', access: 'read-only' });
+          const trace = bg ? undefined : this._delegateTracer(panelId, toolId);
           const r = await this._runMystiAdvisor(directive, {
-            settings, context, panelId, runId, cancelKey, isCancelled, registerAbort, liveBackends, paidGuard, trace,
+            settings, context, panelId, runId, cancelKey, isCancelled, registerAbort, liveBackends, paidGuard, trace, toolId,
           });
           delegations++;
           if (bg) { this._backgroundJobManager.incrementDelegations(jobId!); }
@@ -10867,7 +10917,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           const output = r.text.trim() || (r.hasError ? `(${r.errorDetail || r.failure || 'failed'})` : '(no advice)');
-          runOutput.postToolResult({ id: toolId, name: 'delegate', output, status: r.hasError ? 'failed' : 'completed' });
+          runOutput.postToolResult({ id: toolId, name: 'delegate', output, status: r.hasError ? 'failed' : 'completed' }, delegateResultMeta(r, { via: r.via }));
           runOutput.recordDelegation(toolId, `advisor:${r.via}`, directive.task, output, r.hasError);
           messages.push({ role: 'assistant', content: turnText });
           messages.push({ role: 'user', content: this._fenceDelegateResult(`advisor (${r.via})`, r, nonce, delegateNonce) });
@@ -10918,12 +10968,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           let lastTierApplied = false;
           const dispatchTo = async (agent: AgentType | 'mysti', cardId: string) => {
             const routing = await this._resolveDelegateRouting(agent, directive!);
-            const trace = bg ? undefined : (chunk: { type: string; toolCall?: unknown; content?: string }) => {
-              this._postToPanel(panelId, { type: 'mystiDelegateTrace', payload: { parentId: cardId, chunk } });
-            };
+            const trace = bg ? undefined : this._delegateTracer(panelId, cardId);
             if (agent === 'mysti') {
               lastTierApplied = false;
-              runOutput.postToolUse({ id: cardId, name: 'delegate', input: { agent, task: directive!.task, ...(routing.model ? { model: routing.model } : {}) } });
+              runOutput.postToolUse({ id: cardId, name: 'delegate', input: { agent, task: directive!.task, ...(routing.model ? { model: routing.model } : {}) } }, {
+                kind: 'native', backend: 'mysti',
+                // The same test _runMystiSubagent applies before handing a child write tools.
+                access: directive!.access !== 'read-only' && execEnabled ? 'gated-write' : 'read-only',
+                ...(routing.model ? { model: routing.model } : {}),
+              });
               const r = await this._runMystiSubagent(directive!, {
                 settings, context, panelId, cancelKey, toolId: cardId, isCancelled, registerAbort,
                 readOnly: directive!.access === 'read-only', execEnabled, model: routing.model, effort: routing.effort, trace,
@@ -10946,12 +10999,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // An exact, VALIDATED model beats the tier's keyword pick.
             const model = routing.model ?? (tierApplied ? tierModel : undefined);
             const effort = routing.effort ?? (tierApplied ? this._boostManager?.delegationEffort(effectiveTier, settings.effortLevel) : undefined);
-            runOutput.postToolUse({ id: cardId, name: 'delegate', input: { agent, task: directive!.task, ...(tierApplied ? { tier: effectiveTier } : {}), ...(routing.model ? { model: routing.model } : {}) } });
+            runOutput.postToolUse({ id: cardId, name: 'delegate', input: { agent, task: directive!.task, ...(tierApplied ? { tier: effectiveTier } : {}), ...(routing.model ? { model: routing.model } : {}) } }, {
+              kind: 'delegate', backend: agent, access: this._delegationAccess(settings, directive!.access === 'read-only'),
+              ...(model ? { model } : {}),
+            });
             const fold = !foldedFor.has(agent);
             foldedFor.add(agent);
             // Stable dispatch runId so delegation N+1 to the same agent resumes
             // its session (P0.2e) instead of cold-starting.
-            const r = await this._runMystiDelegation(agent, directive!.task, settings, conversation, panelId, runId, cancelKey, isCancelled, trace, context, fold, false, model, effort, directive!.access === 'read-only');
+            const r = await this._runMystiDelegation(agent, directive!.task, settings, conversation, panelId, runId, cancelKey, isCancelled, trace, context, fold, false, model, effort, directive!.access === 'read-only', cardId);
             // Environment failures (nothing ran) don't consume the delegation
             // budget — only real dispatches do (P0.5). A failed env agent is
             // dropped so the model can't burn the run re-delegating to it ([7]).
@@ -10981,7 +11037,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const alt = (writer === 'mysti' ? null : pickCrossVendorReviewer(writer, liveBackends)) ?? liveBackends.find(b => b !== writer) ?? null;
             if (alt) {
               const note = `(failed: ${result.failure}${result.errorDetail ? ` — ${result.errorDetail}` : ''}) — rerouting to ${alt}`;
-              runOutput.postToolResult({ id: toolId, name: 'delegate', output: note, status: 'failed' });
+              runOutput.postToolResult({ id: toolId, name: 'delegate', output: note, status: 'failed' }, delegateResultMeta(result));
               // self-review: persist the SAME tier the live first card showed so
               // reload doesn't drop the badge (lastTierApplied is still the first
               // writer's here — the reroute dispatchTo hasn't run yet).
@@ -11006,7 +11062,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const failLabel = `(failed: ${result.failure || 'error'}${result.errorDetail ? ` — ${result.errorDetail}` : ''})`;
           const output = result.text.trim()
             || (result.hasError ? failLabel : '(no output)');
-          runOutput.postToolResult({ id: toolId, name: 'delegate', output, status: result.hasError ? 'failed' : 'completed' });
+          runOutput.postToolResult({ id: toolId, name: 'delegate', output, status: result.hasError ? 'failed' : 'completed' }, delegateResultMeta(result));
           runOutput.recordDelegation(toolId, writer, directive.task, output, result.hasError, lastTierApplied ? effectiveTier : undefined);
 
           // P1.2 verification loop: after a delegation that MODIFIED the
@@ -11060,18 +11116,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               crossReviewRuns++;
               const reviewId = `mysti-review-${runId}-${delegId++}`;
               const reviewTask = `You are REVIEWING a change another AI ("${writer}") just made for this task:\n"${directive.task}"\n\nRead the affected files yourself and report bugs, security issues, missed edge cases, regressions, and correctness problems. Be specific (file:line). Do NOT edit anything — findings only. If the change looks correct, say so briefly.`;
-              runOutput.postToolUse({ id: reviewId, name: 'review', input: { reviewer, of: writer } });
-              const reviewTrace = bg ? undefined : (chunk: { type: string; toolCall?: unknown; content?: string }) => {
-                this._postToPanel(panelId, { type: 'mystiDelegateTrace', payload: { parentId: reviewId, chunk } });
-              };
-              const review = await this._runMystiDelegation(reviewer, reviewTask, settings, conversation, panelId, runId, cancelKey, isCancelled, reviewTrace, undefined, false, true);
+              runOutput.postToolUse({ id: reviewId, name: 'review', input: { reviewer, of: writer } }, { kind: 'review', backend: reviewer, access: 'read-only' });
+              const reviewTrace = bg ? undefined : this._delegateTracer(panelId, reviewId);
+              const review = await this._runMystiDelegation(reviewer, reviewTask, settings, conversation, panelId, runId, cancelKey, isCancelled, reviewTrace, undefined, false, true, undefined, undefined, false, reviewId);
               if (isCancelled()) {
                 runOutput.postToolResult({ id: reviewId, name: 'review', output: 'Stopped by user', status: 'failed' });
                 runOutput.recordReview(reviewId, reviewer, writer, 'Stopped by user', true);
                 break;
               }
               const reviewOut = review.text.trim() || (review.hasError ? `(review failed: ${review.failure || 'error'})` : '(no findings)');
-              runOutput.postToolResult({ id: reviewId, name: 'review', output: reviewOut, status: review.hasError ? 'failed' : 'completed' });
+              runOutput.postToolResult({ id: reviewId, name: 'review', output: reviewOut, status: review.hasError ? 'failed' : 'completed' }, delegateResultMeta(review));
               runOutput.recordReview(reviewId, reviewer, writer, reviewOut, review.hasError);
               if (!review.hasError && review.text.trim()) {
                 // review[1]: APPEND to the delegate-result user message (pushed
@@ -11576,6 +11630,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     else { void vscode.window.showWarningMessage(`Mysti background task failed: "${label}"${job.error ? ` — ${job.error}` : ''}`); }
   }
 
+  /**
+   * The live trace for one delegate card. Prose is not traced, so a delegate
+   * writing a long answer would look stalled on the agent map; a content-free
+   * `progress` ping, at most one per PROGRESS_PING_MS, says it is still alive.
+   */
+  private _delegateTracer(panelId: string, parentId: string): (chunk: { type: string; toolCall?: unknown; content?: string }) => void {
+    let lastPing = 0;
+    return chunk => {
+      if (chunk.type === 'progress') {
+        const now = Date.now();
+        if (now - lastPing < PROGRESS_PING_MS) { return; }
+        lastPing = now;
+      }
+      this._postToPanel(panelId, { type: 'mystiDelegateTrace', payload: { parentId, chunk } });
+    };
+  }
+
   private _abortMystiJob(jobId: string): void {
     this._jobCancelled.add(jobId);
     this._jobAbortControllers.get(jobId)?.abort();
@@ -11717,9 +11788,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (!nativeRequest && !this._shouldGateToolUse(settings, toolCall.name)) {
         return true;
       }
-      return this._requestCollaboratorPermission(spec, toolCall, panelId, cancelKey, nativeRequest);
+      const parentToolId = requests.find(r => r.collaboratorId === spec.collaboratorId)?.parentToolId;
+      return this._requestCollaboratorPermission(spec, toolCall, panelId, cancelKey, nativeRequest, parentToolId);
     };
-    const planOrReadOnly = settings.mode === 'quick-plan' || settings.mode === 'detailed-plan' || settings.accessLevel === 'read-only';
     const specs: CollaboratorSpec[] = requests.map(r => ({
       collaboratorId: r.collaboratorId,
       agentId: r.agentId,
@@ -11730,7 +11801,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       prompt: this._buildDelegationPrompt(r.task + (r.suffix ?? SUMMARY_INSTRUCTIONS), r.reviewOnly ? undefined : context, r.reviewOnly ? false : r.fold),
       // Read-only when asked, when reviewing (P2.1), in a plan mode (P1.3), or
       // at read-only access (Plan 18 F6) — the pool hard-denies writes.
-      access: (r.readOnly || r.reviewOnly || planOrReadOnly) ? 'read-only' : 'gated-write',
+      access: this._delegationAccess(settings, r.readOnly || !!r.reviewOnly),
       // P2.3 tier routing wins; else P0.2b: when the user's active provider IS
       // the delegated backend, honor their selected model over the default.
       model: r.model ?? (settings.provider === r.agentId ? settings.model : undefined),
@@ -11756,10 +11827,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const trace = traces.get(chunk.collaboratorId);
         if (chunk.type === 'collab_text' && chunk.content) {
           res.text += chunk.content;
+          trace?.({ type: 'progress' });
         } else if (chunk.type === 'collab_complete') {
           if (chunk.responseText) { res.text = chunk.responseText; }
           res.hasError = Boolean(chunk.hasError);
           res.failure = chunk.failure;
+          if (chunk.usage) { res.usage = chunk.usage; }
         } else if (chunk.type === 'collab_tool_use' && chunk.toolCall) {
           // Live trace (Plan 17 P0.3): the pool already emits the sub-agent's
           // inner tool activity — surface it instead of a blank spinner.
@@ -11797,6 +11870,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return requests.map(r => results.get(r.collaboratorId)!);
   }
 
+  /** Read-only when asked, in a plan mode (P1.3), or at read-only access (Plan 18 F6). */
+  private _delegationAccess(settings: Settings, readOnly: boolean): 'read-only' | 'gated-write' {
+    return readOnly || settings.mode === 'quick-plan' || settings.mode === 'detailed-plan' || settings.accessLevel === 'read-only'
+      ? 'read-only' : 'gated-write';
+  }
+
   /**
    * Run ONE delegation through the gated pool; collect its output. `cancelKey`
    * (panelId foreground / jobId background) keys the active-run map so the right
@@ -11811,14 +11890,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     runId: string,
     cancelKey: string,
     isCancelled: () => boolean,
-    trace?: (chunk: { type: 'tool_use' | 'tool_result' | 'thinking' | 'retry'; toolCall?: unknown; content?: string }) => void,
+    trace?: (chunk: { type: 'tool_use' | 'tool_result' | 'thinking' | 'retry' | 'progress'; toolCall?: unknown; content?: string }) => void,
     context?: ContextItem[],
     foldFiles = true,
     reviewOnly = false,
     modelOverride?: string,
     effortOverride?: Settings['effortLevel'],
     forceReadOnly = false,
-  ): Promise<{ text: string; hasError: boolean; failure?: CollaboratorFailure; errorDetail?: string; wrote?: boolean }> {
+    parentToolId?: string,
+  ): Promise<MystiDelegationResult> {
     const [result] = await this._runMystiDelegations([{
       agentId, task,
       // P0.2e: STABLE id per (run, agent) — delegation N+1 to the same agent
@@ -11827,7 +11907,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       model: modelOverride, effort: effortOverride,
       readOnly: forceReadOnly, reviewOnly, fold: foldFiles,
       ...(reviewOnly ? { suffix: '' } : {}),
-      trace,
+      trace, parentToolId,
     }], settings, panelId, runId, cancelKey, isCancelled, context);
     return result;
   }
@@ -11849,7 +11929,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       model?: string; effort?: EffortLevel; trace?: (chunk: SubagentTrace) => void;
       paidGuard?: PaidSpendGuard;
     },
-  ): Promise<{ text: string; hasError: boolean; failure?: CollaboratorFailure; errorDetail?: string; wrote: boolean; costUsd?: number; exhausted: boolean }> {
+  ): Promise<{ text: string; hasError: boolean; failure?: CollaboratorFailure; errorDetail?: string; wrote: boolean; costUsd?: number; costApprox?: boolean; exhausted: boolean }> {
     const coordinator = this._mystiCoordinator;
     if (!coordinator) { return { text: '', hasError: true, failure: 'crashed', errorDetail: 'The Mysti agent is not initialized.', wrote: false, exhausted: false }; }
     const nonce = crypto.randomUUID();
@@ -11907,7 +11987,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (paidModel) { run.paidGuard?.settle(estimate, r.costUsd); }
     return {
       text: r.text, hasError: r.hasError, wrote: r.wrote, exhausted: r.exhausted,
-      ...(r.costUsd !== undefined ? { costUsd: r.costUsd } : {}),
+      ...(r.costUsd !== undefined ? { costUsd: r.costUsd }
+        // Unreported paid spend is what the guard just charged: the estimate.
+        : paidModel && estimate !== undefined ? { costUsd: estimate, costApprox: true } : {}),
       ...(r.hasError ? { failure: 'stream-error' as CollaboratorFailure, errorDetail: r.error } : {}),
     };
   }
@@ -11935,10 +12017,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       batchAbort.signal.addEventListener('abort', () => c.abort(), { once: true });
     };
     const jobs = batch.map(d => ({ d, id: run.nextId() }));
-    const traceFor = (id: string) => run.bg ? undefined : (chunk: { type: string; toolCall?: unknown; content?: string }) => {
-      this._postToPanel(run.panelId, { type: 'mystiDelegateTrace', payload: { parentId: id, chunk } });
-    };
-    for (const j of jobs) { run.runOutput.postToolUse({ id: j.id, name: 'delegate', input: { agent: j.d.agent, task: j.d.task, access: 'read-only' } }); }
+    const traceFor = (id: string) => run.bg ? undefined : this._delegateTracer(run.panelId, id);
+    for (const j of jobs) {
+      run.runOutput.postToolUse({ id: j.id, name: 'delegate', input: { agent: j.d.agent, task: j.d.task, access: 'read-only' } },
+        { kind: j.d.agent === 'mysti' ? 'native' : 'delegate', backend: j.d.agent, access: 'read-only' });
+    }
 
     const results = new Map<string, MystiDelegationResult & { notes?: string[] }>();
     const native = jobs.filter(j => j.d.agent === 'mysti');
@@ -11960,6 +12043,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
         results.set(j.id, {
           text: r.text, hasError: r.hasError, failure: r.failure, errorDetail: r.errorDetail, wrote: r.wrote,
+          ...(r.costUsd !== undefined ? { costUsd: r.costUsd, ...(r.costApprox ? { costApprox: true } : {}) } : {}),
           notes: r.exhausted ? [...routing.notes, 'the mysti subagent hit its turn limit; its report may be incomplete'] : routing.notes,
         });
       }),
@@ -11971,7 +12055,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const agent = j.d.agent as AgentType;
           const routing = await this._resolveDelegateRouting(agent, j.d);
           notes.push(routing.notes);
-          reqs.push({ agentId: agent, task: j.d.task, collaboratorId: `deleg-${run.cancelKey}-${agent}-p${i}`, model: routing.model, effort: routing.effort, readOnly: true, fold: true, trace: traceFor(j.id) });
+          reqs.push({ agentId: agent, task: j.d.task, collaboratorId: `deleg-${run.cancelKey}-${agent}-p${i}`, model: routing.model, effort: routing.effort, readOnly: true, fold: true, trace: traceFor(j.id), parentToolId: j.id });
         }
         const rs = await this._runMystiDelegations(reqs, run.settings, run.panelId, run.runId, run.cancelKey, run.isCancelled, run.context);
         rs.forEach((r, i) => results.set(known[i].id, { ...r, notes: notes[i] }));
@@ -11986,7 +12070,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const output = stopped ? 'Stopped by user'
         : r.text.trim() || (r.hasError ? `(failed: ${r.failure || 'error'}${r.errorDetail ? ` — ${r.errorDetail}` : ''})` : '(no output)');
       const failed = stopped || r.hasError;
-      run.runOutput.postToolResult({ id: j.id, name: 'delegate', output, status: failed ? 'failed' : 'completed' });
+      run.runOutput.postToolResult({ id: j.id, name: 'delegate', output, status: failed ? 'failed' : 'completed' }, stopped ? undefined : delegateResultMeta(r));
       run.runOutput.recordDelegation(j.id, j.d.agent, j.d.task, output, failed);
       const routingNote = r.notes?.length ? `\n\n(Routing: ${r.notes.join('; ')}.)` : '';
       return this._fenceDelegateResult(j.d.agent, r, run.nonce, run.delegateNonce) + routingNote;
@@ -12004,8 +12088,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     run: {
       settings: Settings; context: ContextItem[]; panelId: string; runId: string; cancelKey: string;
       isCancelled: () => boolean; registerAbort: (c: AbortController) => void; liveBackends: AgentType[];
-      paidGuard: PaidSpendGuard;
-      trace?: (chunk: { type: 'tool_use' | 'tool_result' | 'thinking' | 'retry'; toolCall?: unknown; content?: string }) => void;
+      paidGuard: PaidSpendGuard; toolId: string;
+      trace?: (chunk: { type: 'tool_use' | 'tool_result' | 'thinking' | 'retry' | 'progress'; toolCall?: unknown; content?: string }) => void;
     },
   ): Promise<MystiDelegationResult & { via: string }> {
     const cfg = vscode.workspace.getConfiguration('mysti');
@@ -12021,7 +12105,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const [r] = await this._runMystiDelegations([{
         agentId: agent, task: d.task + ADVISOR_INSTRUCTIONS, collaboratorId: `advisor-${run.cancelKey}-${agent}`,
         model: routing.model ?? this._resolveTierModel(agent, 'strong'), effort: routing.effort ?? 'high',
-        readOnly: true, fold: true, suffix: '', trace: run.trace,
+        readOnly: true, fold: true, suffix: '', trace: run.trace, parentToolId: run.toolId,
       }], run.settings, run.panelId, run.runId, run.cancelKey, run.isCancelled, run.context);
       if (!(r.failure === 'not-installed' || r.failure === 'not-authenticated')) { return { ...r, via: agent }; }
       failures.push(`${agent} is ${r.failure === 'not-installed' ? 'not installed' : 'not signed in'}`);
@@ -12053,7 +12137,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     run.registerAbort(abort);
     const r = await coordinator.complete(messages, { model, maxTokens: 4096, signal: abort.signal });
     run.paidGuard.settle(estimate, r.costUsd);
-    return { text: r.text, hasError: r.failed, ...(r.failed ? { failure: 'stream-error' as CollaboratorFailure, errorDetail: r.error } : {}), wrote: false, via: model };
+    const cost = r.costUsd !== undefined ? { costUsd: r.costUsd } : estimate !== undefined ? { costUsd: estimate, costApprox: true } : {};
+    return { text: r.text, hasError: r.failed, ...(r.failed ? { failure: 'stream-error' as CollaboratorFailure, errorDetail: r.error } : {}), wrote: false, via: model, ...cost };
   }
 
   private _mystiAgenticSystemPrompt(

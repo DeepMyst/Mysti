@@ -97,6 +97,7 @@ describe('chat webview provider-literal invariant', () => {
   const files = [
     path.join(__dirname, '..', '..', 'media', 'chat', 'index.html'),
     path.join(__dirname, '..', '..', 'media', 'chat', 'chat.js'),
+    path.join(__dirname, '..', '..', 'media', 'chat', 'agentMap.js'),
     path.join(__dirname, '..', '..', 'src', 'webview', 'webviewContent.ts'),
   ];
 
