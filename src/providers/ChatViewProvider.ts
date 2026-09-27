@@ -1101,6 +1101,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * model chip named it, and so did the Boost ledger, which prices turns by
    * model.
    */
+  /**
+   * The per-provider custom model (`mysti.<provider>Model`), but only when that
+   * provider actually runs it. Claude, Codex and Gemini let it outrank the
+   * picker; Ollama and LocalAI use it only without a picker model; Cline,
+   * OpenClaw and Hermes never read theirs. Sending it regardless made the
+   * picker name a model that does not run.
+   */
+  private _honouredCustomModel(providerId: string, model: string, customModel: string): string {
+    if (!customModel) { return ''; }
+    const instance = this._providerManager.getProviderInstance(providerId);
+    if (!instance) { return customModel; }
+    try {
+      const runs = instance.getEffectiveModelForSettings({ provider: providerId, model } as unknown as Settings);
+      return runs === customModel ? customModel : '';
+    } catch {
+      return customModel;
+    }
+  }
+
   private _attributionModel(settings: Settings): string {
     const providerId = settings.provider as unknown as string;
     const instance = this._providerManager.getProviderInstance(providerId);
@@ -1359,7 +1378,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // source replacing the duplicated providerModelKeys maps, C1).
     const customModelKey = getCustomModelSettingKey(selectedProvider);
     const providerSettings = {
-      customModel: customModelKey ? config.get<string>(customModelKey, '') : '',
+      customModel: this._honouredCustomModel(selectedProvider, settings.model,
+        customModelKey ? config.get<string>(customModelKey, '') : ''),
       codexProfile: config.get<string>('codexProfile', '')
     };
 
@@ -6633,9 +6653,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // through a fresh configuration handle: `config` was captured before the
       // custom-model write above and would answer with the pre-update value.
       const customModelKey = getCustomModelSettingKey(activeProvider);
-      const customModel = customModelKey
+      const customModel = this._honouredCustomModel(activeProvider, effectiveModel, customModelKey
         ? vscode.workspace.getConfiguration('mysti').get<string>(customModelKey, '')
-        : '';
+        : '');
       const message: WebviewMessage = {
         type: 'modelChanged',
         payload: { model: effectiveModel, provider: activeProvider, customModel }

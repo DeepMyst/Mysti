@@ -3877,7 +3877,8 @@
         if (listed) {
           modelSelect.value = customModel;
           if (customModelSection) { customModelSection.classList.add('hidden'); }
-          if (customModelInput) { customModelInput.value = ''; }
+          // Kept, so choosing "Custom…" shows the override that is in force.
+          if (customModelInput) { customModelInput.value = customModel; }
           return;
         }
         if (customModel) {

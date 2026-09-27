@@ -234,6 +234,8 @@ describe('webview: a per-provider custom model owns the picker', () => {
     h.applyCustomModelState('gpt-6-astra');
     expect(h.modelSelect.value).toBe('gpt-6-astra');
     expect(h.customModelSection.classes.has('hidden')).toBe(true);
+    // Kept, so choosing "Custom…" shows the override in force.
+    expect(h.customModelInput.value).toBe('gpt-6-astra');
     expect(h.state.providerSettings.customModel).toBe('gpt-6-astra');
     h.applyCustomModelState('my-org/finetune-7');
     expect(h.modelSelect.value).toBe('__custom__');
