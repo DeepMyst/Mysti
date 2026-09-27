@@ -193,15 +193,9 @@ export function getCommonSearchPaths(config: CliSearchConfig): string[] {
     addPath(configuredPath);
   }
 
-  // 2. Provider-specific additional paths, then fallbacks (this whole list is
-  //    consulted only after PATH, so a fallback never beats the user's install).
+  // 2. Provider-specific additional paths
   if (additionalPaths) {
     for (const p of additionalPaths) {
-      addPath(p);
-    }
-  }
-  if (fallbackPaths) {
-    for (const p of fallbackPaths) {
       addPath(p);
     }
   }
@@ -250,7 +244,16 @@ export function getCommonSearchPaths(config: CliSearchConfig): string[] {
     addPath(path.join(homeDir, 'node_modules', '.bin', commandName));
   }
 
-  // 7. Bare command fallback (relies on PATH)
+  // 7. Another extension's private copy, after every place the user's own
+  //    install could be: the synchronous spawn-path walk (getCliPath with a
+  //    cold cache — any mysti.* change clears it) consults no PATH at all.
+  if (fallbackPaths) {
+    for (const p of fallbackPaths) {
+      addPath(p);
+    }
+  }
+
+  // 8. Bare command fallback (relies on PATH)
   addPath(commandName);
 
   return paths;

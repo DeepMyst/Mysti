@@ -211,13 +211,21 @@ export abstract class BaseCliProvider implements ICliProvider {
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
 
-    // Invalidate cached CLI path when provider path settings change
+    // Invalidate the cached CLI path when THIS provider's path setting changes.
+    // Clearing it on every mysti.* write (a model pick, an effort change) sent
+    // the next spawn down the synchronous guess walk, which consults no PATH:
+    // /usr/local/bin's stale npm copy, or another extension's bundled binary,
+    // then ran instead of the CLI discovery had found.
+    let configuredPath: string | undefined;
+    try { configuredPath = this._getConfiguredCliPath(); } catch { /* unknown: the first change clears */ }
     context.subscriptions.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('mysti')) {
-          this._cachedCliPath = null;
-          this._cachedCliVersion = null;
-        }
+        if (!e.affectsConfiguration('mysti')) { return; }
+        const next = this._getConfiguredCliPath();
+        if (configuredPath !== undefined && next === configuredPath) { return; }
+        configuredPath = next;
+        this._cachedCliPath = null;
+        this._cachedCliVersion = null;
       })
     );
   }
