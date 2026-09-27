@@ -189,6 +189,29 @@ describe('DeepMystAuthManager', () => {
     mgr.dispose();
   });
 
+  it('an ?error= link-back ends the waiting sign-in at once, without a manual-entry prompt', async () => {
+    const openSpy = vi.spyOn(mockEnv, 'openExternal').mockResolvedValue(true);
+    const inputSpy = vi.spyOn(mockWindow, 'showInputBox');
+    const errorSpy = vi.spyOn(mockWindow, 'showErrorMessage');
+    const { context } = makeContext();
+    const mgr = new DeepMystAuthManager(context);
+    await mgr.initialize();
+
+    const signInPromise = mgr.signIn();
+    await new Promise((r) => setTimeout(r, 0));
+    const opened = String((openSpy.mock.calls[0][0] as any).toString());
+    const state = new URLSearchParams(opened.split('?')[1]).get('state')!;
+
+    // Before: the toast showed but "Waiting…" spun for 5 minutes, then asked
+    // for a key the same account could not mint either.
+    mgr.failSignIn('You do not have permission to create API keys.', state);
+
+    expect(await signInPromise).toBe(false);
+    expect(inputSpy).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('DeepMyst sign-in failed: You do not have permission to create API keys.');
+    mgr.dispose();
+  });
+
   it('rejects a link-back whose state does not match the in-flight sign-in', async () => {
     const openSpy = vi.spyOn(mockEnv, 'openExternal').mockResolvedValue(true);
     const { context } = makeContext();

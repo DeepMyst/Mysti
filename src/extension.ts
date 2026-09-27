@@ -1042,7 +1042,7 @@ export async function activate(context: vscode.ExtensionContext) {
           const error = params.get('error');
           console.log(`[Mysti] DeepMyst link-back: hasKey=${!!key} hasState=${!!state} hasError=${!!error}`);
           if (error) {
-            vscode.window.showErrorMessage(`DeepMyst sign-in failed: ${error}`);
+            deepMystAuthManager.failSignIn(error, state);
           } else if (key) {
             deepMystAuthManager.completeSignIn(key, state).then(ok => {
               if (ok) {
