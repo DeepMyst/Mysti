@@ -254,7 +254,7 @@ manager/service cluster and has a design doc in `plans/`:
   realized savings (`SavingsLedger`). `BoostManager` layers measured-better
   defaults (compaction threshold, smart on, delegation tier/effort routing) over
   a single machine-scoped switch that never touches mode/access/autonomy.
-- **Onboarding** (`plans/32`) — the setup wizard is three steps (connect →
+- **Onboarding** (`plans/33`) — the setup wizard is three steps (connect →
   mode → first task); step 1 MOVES the existing provider cards into Found /
   Or install one / See all, so install and sign-in logic is reused. Host state
   (tips seen, Getting-started visibility, @-mention flag) lives in

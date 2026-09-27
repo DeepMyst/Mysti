@@ -1484,7 +1484,7 @@ describe('the Get Started walkthrough', () => {
 ### Task 11: Full gate and docs
 
 **Files:**
-- Modify: `CLAUDE.md` — VSCode Integration Points: add `mysti.getStarted` to Commands; Major subsystems: one bullet "**Onboarding** (`plans/32`) — …".
+- Modify: `CLAUDE.md` — VSCode Integration Points: add `mysti.getStarted` to Commands; Major subsystems: one bullet "**Onboarding** (`plans/33`) — …".
 - Modify: `plans/33-onboarding.md` — Status: IMPLEMENTED with the commit range.
 
 - [ ] **Step 1:** `npm run lint` — expect 0 errors (provider literals, core manifest, eslint).
