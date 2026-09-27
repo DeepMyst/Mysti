@@ -891,6 +891,17 @@ describe('the composer shows model, effort and prompt cache the way Claude does'
     expect(await pg!.$eval('#mysti-model-btn', (e) => getComputedStyle(e).display)).toBe('none');
   }, 30000);
 
+  it.skipIf(CHROMIUM_UNAVAILABLE)('names a listed model saved as the custom model, and says Custom… only for an unlisted one', async () => {
+    const shown = () => pg!.$eval('#model-select-inline', (e) => (e as HTMLSelectElement).selectedOptions[0]?.text);
+    // mysti.claudeCodeModel = claude-opus-5-5 outranks the picker, and it is a listed model.
+    await fire({ type: 'modelChanged', payload: { model: 'claude-sonnet-5', customModel: 'claude-opus-5-5' } });
+    expect(await shown()).toBe('Opus 5.5');
+    await fire({ type: 'modelChanged', payload: { model: 'claude-sonnet-5', customModel: 'my-org/finetune-7' } });
+    expect(await shown()).toBe('Custom…');
+    await fire({ type: 'modelChanged', payload: { model: 'claude-opus-5-5', customModel: '' } });
+    expect(await shown()).toBe('Opus 5.5');
+  }, 30000);
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('says nothing about the cache until a turn touches it', async () => {
     await turn();
     expect((await chip()).shown).toBe(false);

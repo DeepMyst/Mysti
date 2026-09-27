@@ -3868,6 +3868,18 @@
       function applyCustomModelState(customModel) {
         if (!state.providerSettings) { state.providerSettings = {}; }
         state.providerSettings.customModel = customModel || '';
+        // A listed model saved as the custom model (mysti.claudeCodeModel =
+        // claude-opus-5-5) is that model: name it rather than "Custom…". Picking
+        // another entry still clears the override, so the picker stays truthful.
+        var listed = customModel && modelSelect && Array.prototype.some.call(modelSelect.options, function(o) {
+          return o.value === customModel && o.value !== '__custom__';
+        });
+        if (listed) {
+          modelSelect.value = customModel;
+          if (customModelSection) { customModelSection.classList.add('hidden'); }
+          if (customModelInput) { customModelInput.value = ''; }
+          return;
+        }
         if (customModel) {
           if (modelSelect) modelSelect.value = '__custom__';
           if (customModelSection) customModelSection.classList.remove('hidden');

@@ -227,14 +227,19 @@ describe('webview: a per-provider custom model owns the picker', () => {
     };
   }
 
-  it('switching onto a backend with mysti.<provider>Model shows Custom…', () => {
+  it('switching onto a backend with mysti.<provider>Model names the model that runs', () => {
     // Picker would otherwise name gpt-5-codex while the CLI runs gpt-6-astra.
+    // A listed custom model is named; only an unlisted one reads "Custom…".
     const h = makeCustomHarness('gpt-5-codex', ['gpt-5-codex', 'gpt-6-astra', '__custom__']);
     h.applyCustomModelState('gpt-6-astra');
-    expect(h.modelSelect.value).toBe('__custom__');
-    expect(h.customModelInput.value).toBe('gpt-6-astra');
-    expect(h.customModelSection.classes.has('hidden')).toBe(false);
+    expect(h.modelSelect.value).toBe('gpt-6-astra');
+    expect(h.customModelSection.classes.has('hidden')).toBe(true);
     expect(h.state.providerSettings.customModel).toBe('gpt-6-astra');
+    h.applyCustomModelState('my-org/finetune-7');
+    expect(h.modelSelect.value).toBe('__custom__');
+    expect(h.customModelInput.value).toBe('my-org/finetune-7');
+    expect(h.customModelSection.classes.has('hidden')).toBe(false);
+    expect(h.state.providerSettings.customModel).toBe('my-org/finetune-7');
   });
 
   it('switching off one clears it and returns to the settled model', () => {
