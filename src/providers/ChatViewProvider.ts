@@ -267,7 +267,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _panelStates: Map<string, PanelState> = new Map();
   private readonly _sidebarId = 'sidebar';
-  /** Plan 32: a Get Started request that arrived before the sidebar view existed. */
+  /** Plan 33: a Get Started request that arrived before the sidebar view existed. */
   private _pendingOnboardingStep?: WizardStep;
   private _extensionUri: vscode.Uri;
   private _extensionContext: vscode.ExtensionContext;
@@ -1400,7 +1400,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     const providerAvailability = this._buildProviderAvailability(wizardStatus);
 
-    // Plan 32: "ready" means SIGNED IN — `anyReady` only says a CLI is
+    // Plan 33: "ready" means SIGNED IN — `anyReady` only says a CLI is
     // installed. The walkthrough's Connect step completes when any agent is
     // ready; the Getting-started card asks whether THIS chat's agent is.
     // The settings tab (Plan 31) shows none of the onboarding surfaces.
@@ -1501,7 +1501,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // they arrive (never blocks the render; no-op when signed out).
     void this._pushInAppMessages(panelId);
 
-    // Plan 32: a Get Started request that arrived while the sidebar was still
+    // Plan 33: a Get Started request that arrived while the sidebar was still
     // resolving is delivered now that its chat exists underneath the wizard.
     if (panelId === this._sidebarId && this._pendingOnboardingStep) {
       const step = this._pendingOnboardingStep;
@@ -4244,7 +4244,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Track engagement: message sent
     const badgeEvents = this._engagementManager.trackMessageSent(settings.provider);
     this._emitBadgeUnlocks(panelId, badgeEvents);
-    // Plan 32: ticks "Mention another agent" on the Getting-started card.
+    // Plan 33: ticks "Mention another agent" on the Getting-started card.
     if (mentions?.some(m => m.type === 'agent')) {
       void recordAgentMention(this._extensionContext.globalState);
     }
@@ -8875,7 +8875,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // A sign-in/out invalidates any cached connection list.
     auth.onDidChangeAuth(() => {
       this._connectionsCache = undefined; this._mcpToolsCache = undefined;
-      // Plan 32: an open wizard enables Continue the moment sign-in lands.
+      // Plan 33: an open wizard enables Continue the moment sign-in lands.
       const ready = this._mystiCoordinator?.status().ready === true;
       this._broadcastToAll({ type: 'mystiReadyChanged', payload: { ready } });
       if (ready) { void vscode.commands.executeCommand('setContext', 'mysti.agentReady', true); }
@@ -14886,7 +14886,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Plan 32: `Mysti: Get Started`, the walkthrough's buttons and the
+   * Plan 33: `Mysti: Get Started`, the walkthrough's buttons and the
    * Getting-started card. Always opens the wizard — deliberately ignores
    * `mysti.setupWizardDismissed`, which only stops the wizard raising ITSELF
    * on panel load.

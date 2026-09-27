@@ -206,7 +206,7 @@
           anyReady: false,
           activeSetup: null,
           currentAuthProviderId: null,
-          // Plan 32
+          // Plan 33
           step: 'connect',
           selected: null,
           mystiReady: false
@@ -660,7 +660,7 @@
         if (state.mentionItems.length > 0) {
           mentionMenu.classList.remove('hidden');
           state.mentionMenuVisible = true;
-          // Plan 32: say once what an agent pick vs a file pick does.
+          // Plan 33: say once what an agent pick vs a file pick does.
           if (!mentionMenu.querySelector('.mysti-tip') && claimTip('mention')) {
             mentionMenu.insertBefore(buildTip('mention',
               '<strong>Pick an agent</strong> to send it just this message \u2014 your chat stays where it is. ' +
@@ -3450,7 +3450,7 @@
         document.addEventListener('keydown', function(e) {
           if (e.key !== 'Escape') { return; }
           var wizard = document.getElementById('setup-wizard');
-          // Plan 32: Escape in a wizard field clears or leaves the field; it
+          // Plan 33: Escape in a wizard field clears or leaves the field; it
           // must not persist a dismissal of the whole wizard.
           var field = e.target && e.target.closest && e.target.closest('#setup-wizard input, #setup-wizard textarea, #setup-wizard select');
           if (field) { return; }
@@ -4460,7 +4460,7 @@
                 var sp = card.querySelector('.subagent-tool-spinner');
                 if (sp) { sp.outerHTML = '<span class="subagent-tool-icon completed">&#10003;</span>'; }
               });
-              // Plan 32: the first turn that edited files learns it can be undone.
+              // Plan 33: the first turn that edited files learns it can be undone.
               // ponytail: keyed on .edit-report-card, so only FILE_EDIT_TOOLS backends trigger it.
               if (finalizedEl.querySelector('.edit-report-card') && state.checkpointsAvailable !== false && claimTip('rewind')) {
                 finalizedEl.insertAdjacentElement('afterend', buildTip('rewind',
@@ -5139,7 +5139,7 @@
             break;
           case 'modeChanged':
             // Update mode when a plan is executed, or when /mode or /access
-            // changed it on the host (Plan 32) — the next turn sends THESE.
+            // changed it on the host (Plan 33) — the next turn sends THESE.
             if (message.payload.mode) { state.settings.mode = message.payload.mode; }
             if (message.payload.accessLevel) { state.settings.accessLevel = message.payload.accessLevel; }
             // Same stand-down as applyChatMode: unattended running is a
@@ -5899,7 +5899,7 @@
       }
 
       function handleSetupComplete(payload) {
-        // Plan 32: an OAuth/browser sign-in ends here with no wizardStatus of
+        // Plan 33: an OAuth/browser sign-in ends here with no wizardStatus of
         // its own; ask for one so the wizard's cards and Continue catch up.
         if (state.wizard.visible) { postMessageWithPanelId({ type: 'requestWizardStatus' }); }
         reviveSetupRetry();   // terminal
@@ -6122,7 +6122,7 @@
 
         renderWizard();
         initWizardEventListeners();
-        // Plan 32: Get Started names a step; a re-show of an open wizard keeps its place.
+        // Plan 33: Get Started names a step; a re-show of an open wizard keeps its place.
         showWizardStep(payload.step || (wasVisible ? state.wizard.step : 'connect'));
       }
 
@@ -6184,7 +6184,7 @@
       }
 
       function handleWizardComplete(payload) {
-        // Plan 32 (D4): choosing an agent no longer closes the wizard — it
+        // Plan 33 (D4): choosing an agent no longer closes the wizard — it
         // marks the choice, and Continue moves on to the mode step.
         state.wizard.selected = (payload && payload.providerId) || null;
         updateWizardProviderCards();
@@ -6667,7 +6667,7 @@
       }
 
       function initWizardEventListeners() {
-        // Plan 32: the wizard can be re-shown (Mysti: Get Started) while open;
+        // Plan 33: the wizard can be re-shown (Mysti: Get Started) while open;
         // a second binding would make one click post every action twice.
         if (state.wizard.listenersBound) { return; }
         state.wizard.listenersBound = true;
@@ -7129,7 +7129,7 @@
       }
 
       // ========================================
-      // Plan 32 — three-step wizard
+      // Plan 33 — three-step wizard
       // ========================================
 
       var WIZARD_STEPS = ['connect', 'mode', 'task'];
@@ -7151,7 +7151,7 @@
       }
 
       /**
-       * Plan 32 (D4 as amended): Continue never leaves the chat on an agent
+       * Plan 33 (D4 as amended): Continue never leaves the chat on an agent
        * that cannot answer. If neither "Use This" nor the chat's current agent
        * is ready, switch to the Mysti agent when signed in, else the first
        * signed-in CLI.
@@ -7291,7 +7291,7 @@
               (m.id === 'ask' ? ' <span class="wizard-chip">Recommended</span>' : '') + '</span>' +
               '<span class="wizard-mode-desc">' + escapeHtml(m.desc) + '</span></span>';
             label.querySelector('input').addEventListener('change', function() {
-              // The same pair the mode pill writes (Plan 32 D5).
+              // The same pair the mode pill writes (Plan 33 D5).
               applyChatMode(m.id);
               renderWizardCaps(m.id);
             });
@@ -7334,7 +7334,7 @@
       }
 
       /**
-       * Plan 32 — the Getting-started card at the top of an EMPTY chat. The
+       * Plan 33 — the Getting-started card at the top of an EMPTY chat. The
        * host decides whether it renders (`state.onboarding.gettingStarted`,
        * null once hidden or all done); it is rebuilt with the welcome screen
        * and never updates mid-conversation.
@@ -9091,7 +9091,7 @@
         // Initialize sticky progress observer for scroll-aware sticking
         initStickyProgressObserver();
 
-        // Plan 32: initialState is authoritative for the transcript. It can now
+        // Plan 33: initialState is authoritative for the transcript. It can now
         // reach a LIVE panel (Get Started opened the wizard over a chat, which
         // re-sends initialState on close), and appending duplicated every message.
         if (messagesEl.querySelector('.message')) { clearMessages(); }
@@ -11114,7 +11114,7 @@
       // ========================================
 
       // ========================================
-      // Plan 32 — once-only tips
+      // Plan 33 — once-only tips
       // ========================================
       // Each tip is marked seen the moment it SHOWS (not when dismissed) and at
       // most one appears per webview session, so a tip can never nag. All tip
@@ -11192,7 +11192,7 @@
         // Store in state
         state.pendingPermissions.set(request.id, request);
 
-        // Plan 32: explain the very first approval, once.
+        // Plan 33: explain the very first approval, once.
         if (claimTip('permission')) {
           var pm = chatModeById(deriveChatMode()) || chatModeById('ask');
           var forced = request.forceInteractive || request.remoteOrigin;
@@ -12523,7 +12523,7 @@
       // every terminal path (complete/error/cancel). Idempotent.
       /**
        * Plan 28 Phase 2: the placeholder tells you the queue exists.
-       * Plan 32: at rest it teaches the two keys that make Mysti different.
+       * Plan 33: at rest it teaches the two keys that make Mysti different.
        */
       var COMPOSER_PLACEHOLDER = 'Ask anything \u2014 @ to mention an agent or file, / for commands';
       function syncComposerAffordance() {
@@ -12959,7 +12959,7 @@
       }
 
       /**
-       * Plan 32 — `/help` as a searchable card. The host only says "show it";
+       * Plan 33 — `/help` as a searchable card. The host only says "show it";
        * the list is static so it can never drift from what the host thinks
        * the webview can render. Copy only — nothing here is user text.
        */

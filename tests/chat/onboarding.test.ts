@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 32 — the host-side onboarding state: once-only tips, the
+ * Plan 33 — the host-side onboarding state: once-only tips, the
  * Getting-started card's visibility, and the "used an @-mention" flag.
  */
 import { describe, it, expect } from 'vitest';

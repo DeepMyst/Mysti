@@ -341,9 +341,9 @@ describe('ChatViewProvider message routing', () => {
   });
 
   // =========================================================================
-  // Plan 32 — onboarding wiring
+  // Plan 33 — onboarding wiring
   // =========================================================================
-  describe('Plan 32 onboarding wiring', () => {
+  describe('Plan 33 onboarding wiring', () => {
     function useStore(): Map<string, unknown> {
       const m = new Map<string, unknown>();
       (h.provider as any)._extensionContext.globalState = {

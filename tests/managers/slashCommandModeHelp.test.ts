@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 32 — `/mode` speaks the four names the mode pill uses, and `/help`
+ * Plan 33 — `/mode` speaks the four names the mode pill uses, and `/help`
  * opens the help card instead of printing a stale command list.
  */
 import { describe, it, expect, beforeEach } from 'vitest';

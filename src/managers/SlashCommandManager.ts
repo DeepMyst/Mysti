@@ -655,7 +655,7 @@ export class SlashCommandManager {
         return 'Conversation and session cleared';
 
       case 'cmd:help':
-        // Plan 32: the webview renders a searchable help card.
+        // Plan 33: the webview renders a searchable help card.
         callbacks.postToPanel(panelId, { type: 'showHelp' });
         return;
 
@@ -800,7 +800,7 @@ export class SlashCommandManager {
 
       // ---- Settings ----
       case 'settings:mode': {
-        // Plan 32: every branch also tells the PANEL. The webview sends its
+        // Plan 33: every branch also tells the PANEL. The webview sends its
         // own copy of mode/access with each turn, so a config-only write left
         // the next turn running at the old authority under a reply saying
         // otherwise.

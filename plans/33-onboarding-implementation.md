@@ -1,14 +1,14 @@
-# Onboarding (Plan 32) Implementation Plan
+# Onboarding (Plan 33) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship the Plan 32 onboarding: a three-step first-run wizard built on the existing setup wizard, a Getting-started card, five once-only hints, a searchable `/help` card, `/mode plan|ask|auto|full`, and a rewritten VS Code walkthrough.
+**Goal:** Ship the Plan 33 onboarding: a three-step first-run wizard built on the existing setup wizard, a Getting-started card, five once-only hints, a searchable `/help` card, `/mode plan|ask|auto|full`, and a rewritten VS Code walkthrough.
 
 **Architecture:** Host state lives in one pure module, `src/chat/onboarding.ts` (tips seen, Getting-started visibility, mention flag), wired into `ChatViewProvider` through `initialState.onboarding` and five small webview messages. Everything visual is in the existing chat webview (`media/chat/index.html`/`chat.js`/`chat.css`); the wizard keeps its provider cards and their install/auth logic and only MOVES them between sections. The walkthrough is package.json + six SVGs.
 
 **Tech Stack:** TypeScript (host), ES5-style browser JS (webview, no build step), Vitest + Playwright Chromium browser suites, VS Code walkthrough contribution.
 
-**Spec:** `plans/32-onboarding.md` (decisions D1–D9) + the design canvas linked there.
+**Spec:** `plans/33-onboarding.md` (decisions D1–D9) + the design canvas linked there.
 
 ## Global Constraints
 
@@ -144,7 +144,7 @@ Run: `npx vitest run tests/chat/onboarding.test.ts`
 /**
  * (Apache-2.0 header as in src/chat/incomingMessage.ts)
  *
- * Plan 32 — the onboarding state the host owns: which first-time tips this
+ * Plan 33 — the onboarding state the host owns: which first-time tips this
  * user has already seen, whether the Getting-started card still renders, and
  * whether they have ever sent a message to another agent with @. Pure over a
  * Memento so it tests without a VS Code host.
@@ -251,7 +251,7 @@ export async function onboardingSnapshot(i: OnboardingInputs): Promise<Onboardin
 - [ ] **Step 1: Failing tests** — append to `tests/integration/chatViewWizardRouting.test.ts` inside the top-level `describe`:
 
 ```ts
-  describe('Plan 32 onboarding wiring', () => {
+  describe('Plan 33 onboarding wiring', () => {
     function useStore(): Map<string, unknown> {
       const m = new Map<string, unknown>();
       (h.provider as any)._extensionContext.globalState = {
@@ -330,7 +330,7 @@ this._postToPanel(panelId, { type: 'showWizard', payload: { ...fullStatus, panel
 Right after `const providerAvailability = this._buildProviderAvailability(wizardStatus);`:
 
 ```ts
-    // Plan 32: the walkthrough's "Connect an agent" step completes on this key.
+    // Plan 33: the walkthrough's "Connect an agent" step completes on this key.
     const agentReady = wizardStatus.anyReady || mystiReady;
     void vscode.commands.executeCommand('setContext', 'mysti.agentReady', agentReady);
     const onboarding = await onboardingSnapshot({
@@ -359,7 +359,7 @@ New methods (after `_handleDismissWizard`):
 
 ```ts
   /**
-   * Plan 32: `Mysti: Get Started` and the walkthrough's buttons. Always opens
+   * Plan 33: `Mysti: Get Started` and the walkthrough's buttons. Always opens
    * the wizard — deliberately ignores `mysti.setupWizardDismissed`, which only
    * stops the wizard from raising ITSELF on panel load.
    */
@@ -419,7 +419,7 @@ New methods (after `_handleDismissWizard`):
 ```ts
     auth.onDidChangeAuth(() => {
       this._connectionsCache = undefined; this._mcpToolsCache = undefined;
-      // Plan 32: an open wizard enables Continue the moment sign-in lands.
+      // Plan 33: an open wizard enables Continue the moment sign-in lands.
       const ready = this._mystiCoordinator?.status().ready === true;
       this._broadcastToAll({ type: 'mystiReadyChanged', payload: { ready } });
       if (ready) { void vscode.commands.executeCommand('setContext', 'mysti.agentReady', true); }
@@ -536,7 +536,7 @@ describe('/help opens the help card', () => {
       case 'settings:mode': {
         if (trimmedArgs) {
           if (isTrustStop(trimmedArgs)) {
-            // Plan 32: the same pair the mode pill writes — a mode-only write
+            // Plan 33: the same pair the mode pill writes — a mode-only write
             // would leave access on whatever tier it was on before.
             const current = vscode.workspace.getConfiguration('mysti').get<OperationMode>('defaultMode');
             await callbacks.updateSettings({ ...authorityForTrust(trimmedArgs, current) });
@@ -649,7 +649,7 @@ chat.js:
         return !!(state.wizard.anyReady || state.wizard.mystiReady);
       }
 
-      /** Plan 32: move each existing card into Found / Or install one; the rest stay grouped. */
+      /** Plan 33: move each existing card into Found / Or install one; the rest stay grouped. */
       function placeWizardCards() {
         var found = document.getElementById('wizard-found-list');
         var rec = document.getElementById('wizard-recommended');
@@ -737,7 +737,7 @@ chat.js:
 
 ```js
       function handleWizardComplete(payload) {
-        // Plan 32 (D4): choosing an agent no longer closes the wizard.
+        // Plan 33 (D4): choosing an agent no longer closes the wizard.
         state.wizard.selected = payload && payload.providerId || null;
         updateWizardProviderCards();
         updateWizardNav();
@@ -1170,7 +1170,7 @@ describe('getting started card', () => {
         return !!t && t.enabled && (t.seen || []).indexOf(id) === -1 && !state.tipShownThisSession;
       }
 
-      /** Seen on SHOW, one per session (Plan 32 D6). */
+      /** Seen on SHOW, one per session (Plan 33 D6). */
       function claimTip(id) {
         if (!canShowTip(id)) { return false; }
         state.tipShownThisSession = true;
@@ -1485,7 +1485,7 @@ describe('the Get Started walkthrough', () => {
 
 **Files:**
 - Modify: `CLAUDE.md` — VSCode Integration Points: add `mysti.getStarted` to Commands; Major subsystems: one bullet "**Onboarding** (`plans/32`) — …".
-- Modify: `plans/32-onboarding.md` — Status: IMPLEMENTED with the commit range.
+- Modify: `plans/33-onboarding.md` — Status: IMPLEMENTED with the commit range.
 
 - [ ] **Step 1:** `npm run lint` — expect 0 errors (provider literals, core manifest, eslint).
 - [ ] **Step 2:** `npm run typecheck` — expect 0.

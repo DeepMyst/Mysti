@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 32 — the onboarding state the host owns: which first-time tips this
+ * Plan 33 — the onboarding state the host owns: which first-time tips this
  * user has already seen, whether the Getting-started card still renders, and
  * whether they have ever sent a message to another agent with @. Pure over a
  * Memento so it tests without a VS Code host.

@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 32 — the Get Started walkthrough. The old one sent "Set up a provider"
+ * Plan 33 — the Get Started walkthrough. The old one sent "Set up a provider"
  * to Settings, and its "Send your first message" step completed on the same
  * event as "Open the panel", so it ticked itself.
  */

@@ -1,7 +1,7 @@
-# Plan 32 — Onboarding: first-run wizard, Getting started, hints, /help, walkthrough
+# Plan 33 — Onboarding: first-run wizard, Getting started, hints, /help, walkthrough
 
 - **Date:** 2026-09-26
-- **Status:** IMPLEMENTED 2026-09-26 on `feat/plan-32-onboarding` (6ce7c4c..HEAD) — implementation plan: `plans/32-onboarding-implementation.md`. F5 smoke not yet run.
+- **Status:** IMPLEMENTED 2026-09-26 on `feat/plan-32-onboarding` (6ce7c4c..HEAD) — implementation plan: `plans/33-onboarding-implementation.md`. F5 smoke not yet run.
 - **Design:** canvas artifact https://claude.ai/artifact/WezeUNyhz58r434DH7fKVi (private) — Flow, Wizard 1/1b/2/3, Chat · Getting-started card, Walkthrough, /help card, five hint boards, "Hint rules" sticky.
 - **Trigger:** "add an onboarding wizard and information to Mysti such that new users can get up and running with Mysti quickly."
 

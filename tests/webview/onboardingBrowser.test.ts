@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 32 — onboarding, driven in a real browser: the three-step wizard, the
+ * Plan 33 — onboarding, driven in a real browser: the three-step wizard, the
  * Getting-started card, the once-only tips and the /help card. Each test gets
  * its own panel page, because tips are once-per-session by design and a
  * shared page would make every later test depend on the order they ran in.

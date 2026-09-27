@@ -672,7 +672,7 @@ export async function activate(context: vscode.ExtensionContext) {
   // Plan 04: DeepMyst sign-in / sign-out + Connections panel
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.deepmyst.signIn', () => deepMystAuthManager.signIn()),
-    // Plan 32: the walkthrough passes a step (`mysti.getStarted?["mode"]`); anything else opens step 1.
+    // Plan 33: the walkthrough passes a step (`mysti.getStarted?["mode"]`); anything else opens step 1.
     vscode.commands.registerCommand('mysti.getStarted', (step?: unknown) =>
       chatViewProvider.showOnboarding(isWizardStep(step) ? step : undefined)),
     vscode.commands.registerCommand('mysti.deepmyst.signOut', () => deepMystAuthManager.signOut()),
