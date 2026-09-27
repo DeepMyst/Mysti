@@ -29,6 +29,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { getPriorityCliPaths, getCommonSearchPaths, resolveCommandOnPath, getResolutionEnv, getEnrichedEnv } from '../../src/utils/platform';
+import { TestableClaudeProvider } from '../helpers/providerFactory';
 
 describe('getPriorityCliPaths', () => {
   /**
@@ -65,6 +66,41 @@ describe('getPriorityCliPaths', () => {
       // Documents the ordering that caused the bug: without the PATH probe in
       // front, a stale /usr/local copy beats a current ~/.local one.
       expect(usrLocal).toBeLessThan(dotLocal);
+    }
+  });
+});
+
+describe('fallback locations', () => {
+  /**
+   * Another extension's private copy of a CLI is not the user's install. The
+   * Claude Code VS Code extension auto-updated its bundled binary to 2.1.283,
+   * which crashed in Bun, while the user's own 2.1.278 was first on PATH.
+   */
+  it('never outrank PATH, and are still tried when PATH finds nothing', () => {
+    const config = { commandName: 'claude', fallbackPaths: ['/ext/native-binary/claude'] };
+    expect(getPriorityCliPaths(config)).toEqual([]);
+    expect(getCommonSearchPaths(config)).toContain('/ext/native-binary/claude');
+  });
+
+  it('Claude Code runs the claude on PATH, not the extension\'s bundled copy', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-claude-'));
+    const onPath = path.join(dir, 'bin', 'claude');
+    const bundled = path.join(dir, 'ext', 'claude');
+    for (const [file, version] of [[onPath, '2.1.278'], [bundled, '2.1.283']] as const) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `#!/bin/sh\necho "${version} (Claude Code)"\n`);
+      fs.chmodSync(file, 0o755);
+    }
+    const saved = process.env.PATH;
+    process.env.PATH = `${path.dirname(onPath)}:${saved ?? ''}`;
+    try {
+      const provider = new TestableClaudeProvider();
+      (provider as unknown as { _findVSCodeExtensionCli(): string | null })._findVSCodeExtensionCli = () => bundled;
+      const found = await provider.discoverCli();
+      expect(found.path).toBe(onPath);
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

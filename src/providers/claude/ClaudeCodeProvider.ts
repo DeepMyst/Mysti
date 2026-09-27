@@ -291,7 +291,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     return config.get<string>('claudeCodePath', 'claude');
   }
 
-  protected _getAdditionalSearchPaths(): string[] {
+  // The Claude Code VS Code extension's bundled binary is that extension's
+  // private copy: it auto-updates on its own schedule (2.1.283 crashed in Bun
+  // while the user's own 2.1.278 was on PATH), so it is only a fallback for a
+  // machine with no `claude` on PATH.
+  protected _getFallbackSearchPaths(): string[] {
     const paths: string[] = [];
     const extensionCli = this._findVSCodeExtensionCli();
     if (extensionCli) {

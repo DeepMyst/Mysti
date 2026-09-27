@@ -1225,6 +1225,11 @@ export abstract class BaseCliProvider implements ICliProvider {
     return [];
   }
 
+  /** Locations tried only after PATH (see CliSearchConfig.fallbackPaths). */
+  protected _getFallbackSearchPaths(): string[] {
+    return [];
+  }
+
   /**
    * Pick the best install command for the CURRENT OS from this provider's
    * getInstallMethods() (filtered to the platform, lowest priority first).
@@ -1251,6 +1256,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       configuredPath: configuredPath !== commandName ? configuredPath : undefined,
       windowsCmd: `${commandName}.cmd`,
       additionalPaths: this._getAdditionalSearchPaths(),
+      fallbackPaths: this._getFallbackSearchPaths(),
     };
 
     // 1. Paths that outrank PATH: an explicitly configured one, and any
@@ -1369,6 +1375,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     const searchConfig: CliSearchConfig = {
       commandName,
       additionalPaths: this._getAdditionalSearchPaths(),
+      fallbackPaths: this._getFallbackSearchPaths(),
     };
 
     const paths = getCommonSearchPaths(searchConfig);
