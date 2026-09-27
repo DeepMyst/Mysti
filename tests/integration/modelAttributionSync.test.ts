@@ -93,7 +93,7 @@ function createHarness(): Harness {
     getProvider: vi.fn((name: string) => providerConfigs.find(p => p.name === name)),
     getProviderInstance: vi.fn((name: string) =>
       effectiveModels[name]
-        ? { getEffectiveModelForSettings: (s: Settings) => effectiveModels[name](s) }
+        ? { capabilities: {}, getEffectiveModelForSettings: (s: Settings) => effectiveModels[name](s) }
         : undefined
     ),
     getAllProviders: () => [],
@@ -327,6 +327,20 @@ describe('the model a panel reports is the model it runs', () => {
 
       const changed = h.messages.filter(m => m.type === 'modelChanged');
       expect(changed[0].payload.customModel).toBe('gpt-6-astra');
+    });
+
+    it('does not report a custom model the provider never runs', async () => {
+      // Ollama uses mysti.ollamaModel only when no picker model is set, so with one
+      // set the picker must keep naming the model that runs, not the setting.
+      setMockConfig('ollamaModel', 'deepseek-r1');
+      h.effectiveModels['ollama'] = (s) => s.model || 'deepseek-r1';
+      selectAgent(h, 'qwen-code');
+      h.messages.length = 0;
+
+      await (h.provider as any)._handleUpdateSettings({ provider: 'ollama', model: 'qwen3-coder' }, 'sidebar');
+
+      const changed = h.messages.filter(m => m.type === 'modelChanged');
+      expect(changed[0].payload.customModel).toBe('');
     });
 
     it('stays quiet when neither provider nor model was part of the update', async () => {

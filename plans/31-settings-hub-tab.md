@@ -1,7 +1,7 @@
 # Plan 31 — Settings Hub Tab
 
 - **Date:** 2026-09-26
-- **Status:** APPROVED 2026-09-26 — implementation plan: `plans/31-settings-hub-tab-implementation.md`
+- **Status:** IMPLEMENTED 2026-09-26 — F5 smoke: pending: steps 1-8 (manual, not run headless) — implementation plan: `plans/31-settings-hub-tab-implementation.md`
 - **Trigger:** User report: clicking a ⋯ menu item opens an inline panel above the chat; with several things open the sidebar gets crowded and unreadable. Wanted: menu items open in a new tab, and a menu that is easier to work with.
 
 Symbols are the stable reference; line numbers drift.
@@ -118,3 +118,22 @@ Run `npm test` and `npm run typecheck` before and after.
 
 - **`chat.js` boots in a view it was not written for.** Contained by: the inbound allowlist (boot side effects like `autonomyLevelChanged`/`uiReady` are dropped), the stripped conversation in the hub's initial state, and the hub not being in `_panelStates`.
 - **Allowlist drift:** a new control added to a panel that sends a new type silently does nothing in the hub. The settingsHub test pins the list; the browser test exercises one control per section.
+
+## Implementation notes (as shipped, 2026-09-26)
+
+Reviewed deviations from the design above, from the Task 1–6 review rounds (`git log dae9bd3..`):
+
+- **Inbound list:** `openSettingKey` is NOT in `HUB_INBOUND_TYPES` (its only sender is the chat-output refusal card, which the tab never renders); it is pinned on the test's never-includes list. The list is the 10 types in Current state.
+- **Tab lifecycle:** `_hub` also holds the last requested `section` and the in-flight state `loading`. The last click wins; a reveal waits for that load so `hubShow` never precedes `initialState`; a load overtaken by a rebind, unbind or close posts nothing. `dispose()` closes the tab before the chats. The tab's `initialState` carries `context: []` (settings, not the chat's attached files).
+- **Routing:** a tab-originated `settingsSync` goes to the chat the edit was applied to, even if the tab was rebound or closed while it applied. A synchronous throw from the tab's `postMessage` is caught so it never stops delivery to the chat.
+- **Applied values only:** `_handleUpdateSettings` deletes the keys it refuses (invalid custom model or Codex profile, out-of-range semi-auto timeout, unknown timeout behavior or strategy, a brainstorm pair that is not 2 valid ids) from its payload; a pair with extra invalid ids is replaced by the filtered pair it saved, and `settingsSync` relays that payload, so neither side shows or re-sends a value config does not hold.
+- **Sync merge:** besides the dotted keys, `settingsSync` merges provider-declared keys the chat already holds in `state.providerSettings` (e.g. `codexProfile`). Controls that can hold an uncommitted edit (model picker incl. an in-progress custom model, provider fields, brainstorm boxes, token budget, semi-auto timeout) are repainted only when the sync carries their keys; a settled off-catalog model is re-appended (`applyCustomModelState`). The timeout-behavior select, semi-auto timeout input and token-limit toggle now keep `state` current, so an unrelated sync cannot repaint them to boot values.
+- **Autonomy level in the tab:** the tab never hears `autonomyLevelChanged`. Its `initialState` carries its chat's own level (`_panelAutonomyLevel`), and a synced `permission.timeoutBehavior` moves it live. Known limit: semi-autonomous or manual only — `autonomous` is not reported on the Ctrl+Shift+A and deactivation paths and may be stale.
+- **Unbound tab:** `inert` + `pointer-events:none` sit on the children of `#settings-panel` / `#agent-config-panel`, not the panels, so the sections still scroll. Unbound Badges with no cached data says to open the tab from a chat instead of spinning. `#hub-binding` starts empty (not "No chat selected") until the first `hubShow`.
+- **Webview polish:** the tab shows mirrored toasts (`settingsError`, `badgeShareCopied`); the active nav item gets `aria-current="page"`; the unused `settingsPanel` / `aboutPanel` / `badgesPanel` / `agentConfigPanel` variables were removed from `chat.js`.
+- **Final review (2026-09-26):**
+  - **Trust level:** the tab never changes its chat's mode, access or context mode. In the tab, the Shift+Tab rung cycle and `applyChatMode` do nothing, and the host strips `HUB_CHAT_ONLY_SETTINGS` (`mode`, `accessLevel`, `contextMode`) from any `updateSettings` the tab sends.
+  - **The tab acts only for what it shows:** `_hub.loadedFor` records the chat and conversation whose state the tab last received. While a rebind or conversation-follow load is still in flight, the host drops edits from the tab; links still open. A generated title for the bound chat re-posts `hubShow`, so the header updates.
+  - **Personas & skills:** when an `initialState` carries no `agentConfig`, `initializeState` resets persona and skills to empty. The key is dropped by JSON for a conversation that was never configured. Before this fix, a rebound tab kept the previous conversation's persona and skills.
+  - **Keyboard:** persona cards, skills and unlocked badges have `role="button"` and `tabindex="0"`, and Enter or Space activates them. Persona cards and skills also carry `aria-pressed`.
+- **F5 smoke:** not yet run (headless implementation). Automated coverage: `tests/chat/settingsHub.test.ts`, `tests/integration/settingsHubTab.test.ts`, `tests/webview/settingsHubBrowser.test.ts` and `tests/webview/webviewContentHubView.test.ts`.

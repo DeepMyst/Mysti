@@ -28,6 +28,30 @@
       "group": { "kind": "build", "isDefault": true }
     },
     {
+      // One-shot development build that F5 runs first (launch.json). One-shot,
+      // not `watch`: a background task gives the launch no signal that the
+      // build settled, and a stale dist/ pairs the old host with the current
+      // media/ webview, which is read from disk.
+      "label": "compile-dev",
+      "type": "npm",
+      "script": "compile:dev",
+      "problemMatcher": {
+        "owner": "webpack",
+        "source": "webpack",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^\\s*(ERROR|WARNING) in (.*?)(?::(\\d+):(\\d+))?$",
+          "severity": 1,
+          "file": 2,
+          "line": 3,
+          "column": 4,
+          "message": 0
+        }
+      },
+      "presentation": { "reveal": "silent" },
+      "group": "build"
+    },
+    {
       // One-shot production build — what `vscode:prepublish` runs.
       "label": "compile",
       "type": "npm",

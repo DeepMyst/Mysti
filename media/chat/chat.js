@@ -276,6 +276,10 @@
         if (entry) {
           return { name: entry.displayName, shortId: entry.shortId, color: entry.color, logo: getEntryLogo(entry) };
         }
+        // The pseudo-agents are not providers, so the manifest never names them.
+        if (agentId === 'mysti' || agentId === 'brainstorm') {
+          return { name: agentId === 'mysti' ? 'Mysti' : 'Brainstorm', shortId: agentId, color: '#888', logo: MYSTI_LOGO };
+        }
         return { name: agentId, shortId: agentId, color: '#888', logo: '' };
       }
 
@@ -916,6 +920,30 @@
         return mentions;
       }
 
+      // Plan 32: a view over the messages below. It never answers a card or a
+      // question; it only needs to hear that one was answered here. The Mysti
+      // tab (body.view-hub) is this same page but hears no chat traffic, so it
+      // gets no map.
+      const agentMap = window.MystiAgentMap && !document.body.classList.contains('view-hub') ? window.MystiAgentMap.create({
+        document,
+        postMessage: postMessageWithPanelId,
+        getAgentDisplay,
+        listAgents: () => sessionAgentChoices()
+          .filter(agent => agent.available && agent.id !== 'mysti' && agent.id !== 'brainstorm')
+          .map(agent => ({ id: agent.id, name: agent.name })),
+        prefillComposer: text => {
+          // The composer's mention parser only knows short ids (`@claude`).
+          inputEl.value = String(text).replace(/^@(\S+)/, (_m, id) => '@' + getAgentShortId(id));
+          autoResizeTextarea();
+          inputEl.focus();
+          inputEl.dispatchEvent(new Event('input'));
+        },
+        now: () => Date.now(),
+        setInterval: (fn, ms) => window.setInterval(fn, ms),
+        clearInterval: id => window.clearInterval(id),
+      }) : null;
+      const mapIsOpen = () => !!(agentMap && agentMap.isOpen());
+
       // Cards own their render buffers, pending questions and attempt timers.
       const subAgentCards = window.MystiSubAgentCards.create({
         document,
@@ -927,7 +955,12 @@
           if (typeof Prism !== 'undefined') { Prism.highlightAllUnder(element); }
         },
         renderQuestion: renderAskUserQuestionTabs,
-        postMessage: postMessageWithPanelId,
+        postMessage: msg => {
+          if (agentMap && (msg.type === 'subAgentQuestionResponse' || msg.type === 'subAgentQuestionSkipped')) {
+            agentMap.questionAnswered(msg.payload.toolCallId);
+          }
+          postMessageWithPanelId(msg);
+        },
       });
       window.addEventListener('pagehide', event => {
         if (!event.persisted) { subAgentCards.dispose(); }
@@ -1888,6 +1921,13 @@
         if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
           return;
         }
+        // Plan 32: the map never answers a card. On its pill only the keys that
+        // work the pill are exempt; 1/2/3 there still answer the pending card.
+        var onPill = e.target && e.target.closest && e.target.closest('#agent-map-pill');
+        if (mapIsOpen() || (e.target && e.target.closest && e.target.closest('#agent-map')) ||
+            (onPill && (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape'))) {
+          return;
+        }
 
         // Permission card shortcuts (1/2/3, Enter, Esc)
         if (handlePermissionKeyboard(e)) {
@@ -2237,6 +2277,12 @@
                escapeHtml(label + warn) + '</span>';
       }
 
+      /** Class and aria-pressed together, so what a screen reader hears matches what shows. */
+      function setPressed(el, cls, on) {
+        el.classList.toggle(cls, on);
+        el.setAttribute('aria-pressed', String(on));
+      }
+
       function renderAgentConfigPanel() {
         var personaGrid = document.getElementById('persona-grid');
         var skillsList = document.getElementById('skills-list');
@@ -2247,8 +2293,11 @@
         personaGrid.innerHTML = '';
         state.availablePersonas.forEach(function(p) {
           var card = document.createElement('div');
-          card.className = 'persona-card' + (state.agentConfig.personaId === p.id ? ' selected' : '');
+          card.className = 'persona-card';
           card.dataset.persona = p.id;
+          card.setAttribute('role', 'button');
+          card.tabIndex = 0;
+          setPressed(card, 'selected', state.agentConfig.personaId === p.id);
           card.title = p.description;
           card.innerHTML =
             '<span class="persona-card-icon">' + personaIconHtml(p) + '</span>' +
@@ -2267,8 +2316,11 @@
         state.availableSkills.forEach(function(s) {
           var isActive = state.agentConfig.enabledSkills.indexOf(s.id) !== -1;
           var item = document.createElement('div');
-          item.className = 'skill-item' + (isActive ? ' active' : '');
+          item.className = 'skill-item';
           item.dataset.skill = s.id;
+          item.setAttribute('role', 'button');
+          item.tabIndex = 0;
+          setPressed(item, 'active', isActive);
           item.title = s.description;
           item.innerHTML =
             '<div class="skill-toggle"></div>' +
@@ -2284,6 +2336,20 @@
 
         updateConfigSummary();
       }
+
+      // Plan 31: persona cards, skills and badges are <div role="button">s, and
+      // in the Mysti tab they are the page — Enter/Space press them.
+      ['persona-grid', 'skills-list', 'badges-grid'].forEach(function(id) {
+        var list = document.getElementById(id);
+        if (!list) { return; }
+        list.addEventListener('keydown', function(e) {
+          var t = e.target;
+          if ((e.key === 'Enter' || e.key === ' ') && t.parentNode === list && t.getAttribute('role') === 'button') {
+            e.preventDefault();
+            t.click();
+          }
+        });
+      });
 
       // Render agent recommendations from auto-suggest (compact inline widget)
       function renderRecommendations(payload) {
@@ -2425,7 +2491,7 @@
 
             // Update UI
             document.querySelectorAll('.persona-card').forEach(function(card) {
-              card.classList.remove('selected');
+              setPressed(card, 'selected', false);
             });
 
             // Hide inline suggestions if visible
@@ -2449,7 +2515,7 @@
 
         // Update UI
         document.querySelectorAll('.persona-card').forEach(function(card) {
-          card.classList.toggle('selected', card.dataset.persona === state.agentConfig.personaId);
+          setPressed(card, 'selected', card.dataset.persona === state.agentConfig.personaId);
         });
 
         updateConfigSummary();
@@ -2463,7 +2529,7 @@
 
         // Update persona cards UI
         document.querySelectorAll('.persona-card').forEach(function(card) {
-          card.classList.toggle('selected', card.dataset.persona === personaId);
+          setPressed(card, 'selected', card.dataset.persona === personaId);
         });
 
         updateConfigSummary();
@@ -2481,8 +2547,7 @@
 
         // Update UI
         document.querySelectorAll('.skill-item').forEach(function(item) {
-          var isActive = state.agentConfig.enabledSkills.indexOf(item.dataset.skill) !== -1;
-          item.classList.toggle('active', isActive);
+          setPressed(item, 'active', state.agentConfig.enabledSkills.indexOf(item.dataset.skill) !== -1);
         });
 
         updateConfigSummary();
@@ -2800,6 +2865,7 @@
           customModelError.style.display = 'none';
           customModelInput.style.borderColor = '';
           state.settings.model = modelSelect.value;
+          state.providerSettings = Object.assign({}, state.providerSettings, { customModel: '' });
           postMessageWithPanelId({ type: 'updateSettings', payload: { model: modelSelect.value, customModel: '' } });
         }
         syncInlineSelectors();
@@ -2826,6 +2892,8 @@
       customModelInput.addEventListener('change', function() {
         var val = customModelInput.value.trim();
         if (val && /^[a-zA-Z0-9][a-zA-Z0-9._\-:/[\]]*$/.test(val) && val.length <= 128) {
+          // Plan 31: a later settingsSync repaints from this, so keep it current.
+          state.providerSettings = Object.assign({}, state.providerSettings, { customModel: val });
           postMessageWithPanelId({ type: 'updateSettings', payload: { customModel: val } });
         }
       });
@@ -2858,13 +2926,17 @@
           if (state.agentSettings.tokenLimitEnabled) {
             tokenLimitToggle.classList.add('active');
             if (tokenBudgetSection) tokenBudgetSection.classList.remove('hidden');
-            // Restore budget value when enabled
-            var budgetValue = state.agentSettings.maxTokenBudget || 2000;
+            // Restore budget value when enabled (the input keeps the last one)
+            var budgetValue = state.agentSettings.maxTokenBudget
+              || parseInt(tokenBudgetInput && tokenBudgetInput.value, 10) || 2000;
+            // Plan 31: a later settingsSync repaints from state, so keep it current.
+            state.agentSettings.maxTokenBudget = budgetValue;
             postMessageWithPanelId({ type: 'updateSettings', payload: { 'agents.maxTokenBudget': budgetValue } });
           } else {
             tokenLimitToggle.classList.remove('active');
             if (tokenBudgetSection) tokenBudgetSection.classList.add('hidden');
             // Set to 0 (unlimited) when disabled
+            state.agentSettings.maxTokenBudget = 0;
             postMessageWithPanelId({ type: 'updateSettings', payload: { 'agents.maxTokenBudget': 0 } });
           }
         });
@@ -3012,6 +3084,8 @@
       if (timeoutBehaviorSelect) {
         timeoutBehaviorSelect.addEventListener('change', function() {
           var value = timeoutBehaviorSelect.value;
+          // Plan 31: a later settingsSync repaints from state, so keep it current.
+          state.permissionSettings = Object.assign({}, state.permissionSettings, { timeoutBehavior: value });
           postMessageWithPanelId({ type: 'updateSettings', payload: { 'permission.timeoutBehavior': value } });
         });
       }
@@ -3023,6 +3097,7 @@
         semiAutoTimeoutInput.addEventListener('change', function() {
           var val = parseInt(semiAutoTimeoutInput.value, 10);
           if (val >= 10 && val <= 300) {
+            state.permissionSettings = Object.assign({}, state.permissionSettings, { semiAutonomousTimeout: val });
             postMessageWithPanelId({ type: 'updateSettings', payload: { 'semiAutonomous.timeout': val } });
           }
         });
@@ -3490,11 +3565,15 @@
         // Plan 28 Phase 3 — Runs dock wiring.
         var runsBtn = document.getElementById('runs-btn');
         if (runsBtn) { runsBtn.addEventListener('click', function() { toggleRunsDock(); }); }
+        var agentMapPill = document.getElementById('agent-map-pill');
+        if (agentMapPill && agentMap) { agentMapPill.addEventListener('click', function() { agentMap.toggle(); }); }
         document.addEventListener('click', function(e) {
           var tab = e.target && e.target.closest ? e.target.closest('.runs-tab') : null;
           if (tab) { e.preventDefault(); setRunsTab(tab.getAttribute('data-runs-tab')); }
         });
         document.addEventListener('keydown', function(e) {
+          // The open map lets chords through for VS Code's own keybindings.
+          if (mapIsOpen()) { return; }
           // Ctrl/Cmd+Shift+R opens the dock on whatever most deserves attention.
           if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'R' || e.key === 'r')) {
             e.preventDefault();
@@ -3526,6 +3605,9 @@
         // Scoped to the composer and the panel background so ordinary reverse-
         // tab navigation still works inside the settings panel and the popup.
         document.addEventListener('keydown', function(e) {
+          // Plan 31: the Mysti tab has no trust pill, so the rung never moves
+          // from there, and Shift+Tab stays ordinary reverse focus navigation.
+          if (IS_HUB) { return; }
           if (e.key !== 'Tab' || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) { return; }
           var el = document.activeElement;
           var onComposer = el && el.id === 'message-input';
@@ -3806,6 +3888,19 @@
       function applyCustomModelState(customModel) {
         if (!state.providerSettings) { state.providerSettings = {}; }
         state.providerSettings.customModel = customModel || '';
+        // A listed model saved as the custom model (mysti.claudeCodeModel =
+        // claude-opus-5-5) is that model: name it rather than "Custom…". Picking
+        // another entry still clears the override, so the picker stays truthful.
+        var listed = customModel && modelSelect && Array.prototype.some.call(modelSelect.options, function(o) {
+          return o.value === customModel && o.value !== '__custom__';
+        });
+        if (listed) {
+          modelSelect.value = customModel;
+          if (customModelSection) { customModelSection.classList.add('hidden'); }
+          // Kept, so choosing "Custom…" shows the override that is in force.
+          if (customModelInput) { customModelInput.value = customModel; }
+          return;
+        }
         if (customModel) {
           if (modelSelect) modelSelect.value = '__custom__';
           if (customModelSection) customModelSection.classList.remove('hidden');
@@ -4374,9 +4469,15 @@
         // switch and outside it, so adding a run kind never means editing the
         // producer that draws it.
         try { observeRun(message); } catch (err) { console.warn('[Mysti Webview] runs observer:', err); }
+        if (agentMap) {
+          try { agentMap.observe(message); } catch (err) { console.warn('[Mysti Webview] agent map observer:', err); }
+        }
         switch (message.type) {
           case 'hubShow':
             handleHubShow(message.payload);
+            break;
+          case 'settingsSync':
+            applySettingsSync(message.payload);
             break;
           case 'initialState':
             initializeState(message.payload);
@@ -4706,6 +4807,7 @@
             });
             var questionsContainers = document.querySelectorAll('.ask-user-question-container');
             questionsContainers.forEach(function(container) {
+              if (agentMap) { agentMap.questionAnswered(container.getAttribute('data-tool-call-id')); }
               container.remove();
             });
             console.log('[Mysti] Cleared all plan options and questions from UI');
@@ -4802,6 +4904,7 @@
           case 'conversationChanged':
             clearMessages();
             resetContextUsage();
+            if (agentMap) { agentMap.reset(); }
             // Keep the conversation for legacy attribution fallback —
             // messages without a per-message provider/model stamp fall back
             // to the conversation's values (Plan 02 Phase 3.4).
@@ -4875,7 +4978,7 @@
             break;
           case 'insertPrompt':
             inputEl.value = message.payload;
-            inputEl.focus();
+            if (!mapIsOpen()) { inputEl.focus(); }
             break;
           case 'setInputValue': {
             // Two senders, two shapes: SlashCommandManager posts a bare string
@@ -4888,7 +4991,7 @@
               : (incoming === undefined || incoming === null ? '' : String(incoming));
             inputEl.value = text;
             autoResizeTextarea();
-            inputEl.focus();
+            if (!mapIsOpen()) { inputEl.focus(); }
             // Trigger input event to activate @-mention or slash menu detection
             inputEl.dispatchEvent(new Event('input'));
             break;
@@ -4929,7 +5032,7 @@
               }
             }
             updateEnhanceAffordance();
-            inputEl.focus();
+            if (!mapIsOpen()) { inputEl.focus(); }
             autoResizeTextarea();
             break;
 
@@ -4948,7 +5051,7 @@
             enhanceBtn.disabled = true;
             enhanceBtn.title = (message.payload && message.payload.reason) || 'Prompt enhancement is not available';
             showToast(enhanceBtn.title, 'warning');
-            inputEl.focus();
+            if (!mapIsOpen()) { inputEl.focus(); }
             break;
           case 'promptEnhanceError':
             // Clear safety timeout
@@ -4968,7 +5071,7 @@
             setTimeout(function() {
               inputEl.placeholder = originalPlaceholder;
             }, 3000);
-            inputEl.focus();
+            if (!mapIsOpen()) { inputEl.focus(); }
             break;
           case 'slashCommandMenu':
             renderSlashMenu(message.payload);
@@ -5000,6 +5103,8 @@
           case 'sessionCleared':
             sessionIndicator.style.display = 'none';
             sessionIndicator.className = 'session-indicator';
+            // Stopping the agent session leaves the transcript, and its agents, on screen.
+            if (agentMap && !(message.payload && message.payload.reason === 'shutdown')) { agentMap.reset(); }
             break;
           case 'sessionActive':
             sessionIndicator.style.display = 'flex';
@@ -5229,7 +5334,7 @@
               var goalInput = document.getElementById('autonomous-goal-input');
               if (overlay) overlay.classList.remove('hidden');
               if (goalInput) goalInput.value = '';
-              if (goalInput) goalInput.focus();
+              if (goalInput && !mapIsOpen()) { goalInput.focus(); }
             }
             break;
 
@@ -5735,6 +5840,8 @@
 
           // Share button for unlocked badges
           if (b.unlocked) {
+            item.setAttribute('role', 'button');
+            item.tabIndex = 0;
             (function(badgeId) {
               item.addEventListener('click', function() {
                 if (document.body.classList.contains('hub-unbound')) { showToast('Open this tab from a chat to share a badge', 'info'); return; }
@@ -7921,7 +8028,8 @@
       // so a delegation is a live activity feed instead of a blank spinner.
       // ==================================================================
       function handleMystiDelegateTrace(payload) {
-        if (!payload || !payload.parentId || !payload.chunk) return;
+        // 'progress' only tells the agent map the child is alive.
+        if (!payload || !payload.parentId || !payload.chunk || payload.chunk.type === 'progress') return;
         var pid = (window.CSS && CSS.escape) ? CSS.escape(String(payload.parentId)) : String(payload.parentId);
         var card = messagesEl.querySelector('.tool-call[data-id="' + pid + '"]');
         if (!card) return;
@@ -8191,6 +8299,8 @@
 
       function handleJobsList(payload) {
         payload = payload || {};
+        // The agent map's own refresh; the user did not ask to see a list.
+        if (payload.source === 'agentMap') { return; }
         var jobs = payload.jobs || [];
         if (!jobs.length) { addSystemMessage('No background jobs.'); return; }
         var lines = jobs.map(function(j) {
@@ -8962,27 +9072,66 @@
         });
       }
 
-      function initializeState(payload) {
-        dismissInitLoading();
-        // Perf: the mysti.debug.performanceLogging flag rides the
-        // initialState payload (starts/stops heap sampling + chunk timing).
-        perfSetEnabled(!!payload.performanceLogging);
-        var savedAgentSettings = state.agentSettings;
-        state = Object.assign({}, state, payload);
-        if (payload.agentSettings) {
-          state.agentSettings = Object.assign({}, savedAgentSettings, payload.agentSettings);
+      /**
+       * Plan 31: a setting changed on the other side of the chat/Mysti-tab pair.
+       * The chat posts `state.settings` with every message, so a change it never
+       * heard about would be silently undone by its next send. `p` is exactly
+       * the `updateSettings` payload the other side sent.
+       */
+      function applySettingsSync(p) {
+        if (!p || typeof p !== 'object') { return; }
+        ['provider', 'model', 'thinkingLevel', 'effortLevel', 'mode', 'accessLevel', 'contextMode'].forEach(function(k) {
+          if (p[k] !== undefined) { state.settings[k] = p[k]; }
+        });
+        // customModel, plus any provider-declared key the chat already holds
+        // (codexProfile, ...), which the provider's settings section repaints.
+        Object.keys(p).forEach(function(k) {
+          if (k === 'customModel' || (state.providerSettings && Object.prototype.hasOwnProperty.call(state.providerSettings, k))) {
+            var patch = {};
+            patch[k] = p[k];
+            state.providerSettings = Object.assign({}, state.providerSettings, patch);
+          }
+        });
+        var nested = {
+          'agents.autoSuggest': ['agentSettings', 'autoSuggest'],
+          'agents.maxTokenBudget': ['agentSettings', 'maxTokenBudget'],
+          'showSuggestions': ['agentSettings', 'showSuggestions'],
+          'permission.timeoutBehavior': ['permissionSettings', 'timeoutBehavior'],
+          'semiAutonomous.timeout': ['permissionSettings', 'semiAutonomousTimeout']
+        };
+        Object.keys(nested).forEach(function(k) {
+          if (p[k] === undefined) { return; }
+          var patch = {};
+          patch[nested[k][1]] = p[k];
+          state[nested[k][0]] = Object.assign({}, state[nested[k][0]], patch);
+        });
+        if (p['brainstorm.agents'] !== undefined) { state.brainstormAgents = p['brainstorm.agents']; }
+        if (p['brainstorm.strategy'] !== undefined) { state.brainstormStrategy = p['brainstorm.strategy']; }
+        // The tab never hears autonomyLevelChanged; its chat posts this key on
+        // every move into or out of semi-autonomous (boot level: initialState).
+        if (IS_HUB && p['permission.timeoutBehavior'] !== undefined) {
+          state.autonomyLevel = p['permission.timeoutBehavior'] === 'semi-autonomous' ? 'semi-autonomous' : 'manual';
         }
-
-        // Plan 02 Phase 2: only trust a manifest whose schema matches the
-        // one this webview build was generated against.
-        if (state.providerManifest && state.providerManifest.schemaVersion !== EXPECTED_MANIFEST_SCHEMA_VERSION) {
-          console.warn('[Mysti Webview] Ignoring provider manifest with unexpected schemaVersion:', state.providerManifest.schemaVersion);
-          state.providerManifest = null;
+        applySettingsToControls(p);
+        // Mode/access also drive the composer's trust pill.
+        if (p.mode !== undefined || p.accessLevel !== undefined) {
+          renderModeOptions();
+          syncUnattendedAvailability();
         }
-        // Build every manifest-derived surface (provider dropdown, brainstorm
-        // options, mention short-id map) before values are applied below.
-        applyProviderManifest();
+      }
 
+      /**
+       * Plan 31: paint every settings control from `state`. Shared by
+       * initializeState and settingsSync. Posts NOTHING — the autonomy-level
+       * report stays in initializeState, where it belongs to panel boot.
+       * `p` (a settingsSync payload) limits the controls a user can have an
+       * uncommitted edit in — the model picker, provider fields, brainstorm
+       * boxes, number inputs — to the keys it carries, so the edit survives.
+       */
+      function applySettingsToControls(p) {
+        function carries(keys) {
+          return !p || keys.some(function(k) { return p[k] !== undefined; });
+        }
         thinkingSelect.value = state.settings.thinkingLevel;
         if (contextModeLabel) {
           contextModeLabel.textContent = state.settings.contextMode === 'auto' ? 'Auto' : 'Manual';
@@ -9003,27 +9152,30 @@
         }
 
         // Populate model dropdown based on selected provider
-        if (state.providers && state.providers.length > 0) {
+        var modelKeys = ['provider', 'model', 'customModel'];
+        if (carries(modelKeys) && state.providers && state.providers.length > 0) {
           var provider = state.providers.find(function(p) { return p.name === state.settings.provider; });
           if (provider) {
             modelSelect.innerHTML = provider.models.map(function(m) {
-              return '<option value="' + m.id + '"' + (m.id === state.settings.model ? ' selected' : '') + '>' + m.name + '</option>';
+              return '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(m.name || m.id) + '</option>';
             }).join('');
             // Append "Custom..." option
             modelSelect.innerHTML += '<option value="__custom__">Custom...</option>';
           }
         }
 
-        // Restore custom model if set in provider settings
-        if (state.providerSettings && state.providerSettings.customModel) {
-          modelSelect.value = '__custom__';
-          customModelSection.classList.remove('hidden');
-          customModelInput.value = state.providerSettings.customModel;
+        // Custom model if set in provider settings, else the active model —
+        // re-appended when the catalog does not list it (settingsSync re-runs
+        // this rebuild, and a settled off-catalog model must survive it).
+        if (carries(modelKeys)) {
+          applyCustomModelState(state.providerSettings && state.providerSettings.customModel);
         }
 
         // W4: render the selected provider's declarative settings sections
         // (values restored from state.providerSettings by settingKey)
-        renderProviderSettingsSections(state.settings.provider);
+        if (carries(['provider'].concat(Object.keys(state.providerSettings || {})))) {
+          renderProviderSettingsSections(state.settings.provider);
+        }
 
         // Mirror model + effort into the prompt-box quick pickers now that both
         // the model list and the effort selector have been populated.
@@ -9036,8 +9188,6 @@
         // Update provider availability (disable unavailable providers)
         updateProviderAvailability();
 
-        updateContext(state.context);
-
         // Initialize agent configuration
         if (state.availablePersonas && state.availableSkills) {
           // Set agentConfig from conversation or use default
@@ -9048,12 +9198,12 @@
         }
 
         // Initialize agent settings UI
-        if (state.agentSettings) {
+        if (state.agentSettings && carries(['agents.autoSuggest', 'agents.maxTokenBudget', 'showSuggestions'])) {
           updateAgentSettingsUI();
         }
 
         // Initialize brainstorm agents UI
-        if (state.brainstormAgents) {
+        if (state.brainstormAgents && carries(['brainstorm.agents'])) {
           updateBrainstormAgentsUI();
         }
         // Initialize brainstorm strategy dropdown
@@ -9074,13 +9224,47 @@
             tbSelect.value = (tbValue === 'semi-autonomous') ? 'auto-reject' : (tbValue || 'auto-reject');
           }
           var saTimeoutInput = document.getElementById('semi-auto-timeout-input');
-          if (saTimeoutInput) {
+          if (saTimeoutInput && carries(['semiAutonomous.timeout'])) {
             saTimeoutInput.value = state.permissionSettings.semiAutonomousTimeout || 60;
           }
           // Autonomy sub-settings visibility depends on current autonomy level
           showAutonomySubSettings(state.autonomyLevel);
           updateAutonomyIndicator();
+        }
+      }
 
+      function initializeState(payload) {
+        dismissInitLoading();
+        // Perf: the mysti.debug.performanceLogging flag rides the
+        // initialState payload (starts/stops heap sampling + chunk timing).
+        perfSetEnabled(!!payload.performanceLogging);
+        var savedAgentSettings = state.agentSettings;
+        state = Object.assign({}, state, payload);
+        // An unconfigured conversation's `agentConfig: undefined` does not
+        // survive JSON — without this, a rebound (or followed) Mysti tab kept
+        // the previous conversation's persona and skills, and saved them there.
+        if (!payload.agentConfig) {
+          state.agentConfig = { personaId: null, enabledSkills: [] };
+        }
+        if (payload.agentSettings) {
+          state.agentSettings = Object.assign({}, savedAgentSettings, payload.agentSettings);
+        }
+
+        // Plan 02 Phase 2: only trust a manifest whose schema matches the
+        // one this webview build was generated against.
+        if (state.providerManifest && state.providerManifest.schemaVersion !== EXPECTED_MANIFEST_SCHEMA_VERSION) {
+          console.warn('[Mysti Webview] Ignoring provider manifest with unexpected schemaVersion:', state.providerManifest.schemaVersion);
+          state.providerManifest = null;
+        }
+        // Build every manifest-derived surface (provider dropdown, brainstorm
+        // options, mention short-id map) before values are applied below.
+        applyProviderManifest();
+
+        applySettingsToControls();
+
+        updateContext(state.context);
+
+        if (state.permissionSettings) {
           // Send authoritative autonomy level to backend (prevents stale config issues)
           postMessageWithPanelId({
             type: 'autonomyLevelChanged',
@@ -9776,6 +9960,9 @@
 
         out.push({ group: 'Do', label: 'Runs \u2014 everything in flight', hint: 'Ctrl/Cmd+Shift+R',
                    run: function() { toggleRunsDock(true); } });
+        if (agentMap) {
+          out.push({ group: 'Do', label: 'Agent map \u2014 every agent in this chat', run: function() { agentMap.open(); } });
+        }
         out.push({ group: 'Do', label: 'Changes \u2014 every edit this session', hint: 'Ctrl/Cmd+Shift+A',
                    run: function() { toggleChangesDock(true); } });
         [['New conversation', 'new-conversation-btn'], ['Open in a tab', 'new-tab-btn'],
@@ -11213,8 +11400,9 @@
           startPermissionTimer(request.id, request.expiresAt);
         }
 
-        // Focus for keyboard navigation
-        card.focus();
+        // Focus for keyboard navigation, but never behind the open agent map:
+        // the next key would answer a card the user cannot see.
+        if (!mapIsOpen()) { card.focus(); }
         state.focusedPermissionId = request.id;
 
         scrollToBottom();
@@ -11667,6 +11855,7 @@
         // actually known — otherwise "Needs you" keeps counting a question the
         // user has already answered.
         runDrop('perm:' + requestId);
+        if (agentMap) { agentMap.permissionResolved(requestId); }
 
         // Update visual state
         card.classList.remove('pending');
@@ -12183,7 +12372,11 @@
         if (messageEl) {
           // Remove any existing AskUserQuestion container
           var existing = messageEl.querySelector('.ask-user-question-container');
-          if (existing) existing.remove();
+          if (existing) {
+            // The replaced question is gone from the chat, so it no longer needs you.
+            if (agentMap) { agentMap.questionAnswered(existing.getAttribute('data-tool-call-id')); }
+            existing.remove();
+          }
 
           // For detected questions, hide the matching question text in the response body
           // so it doesn't appear both as text and as an interactive card
@@ -12279,6 +12472,7 @@
             type: 'askUserQuestionSkipped',
             payload: { toolCallId: toolCallId }
           });
+          if (agentMap) { agentMap.questionAnswered(toolCallId); }
           container.remove();
         };
 
@@ -12510,6 +12704,7 @@
             answers: container._answers
           }
         });
+        if (agentMap) { agentMap.questionAnswered(toolCallId); }
 
         // Replace with confirmation
         container.innerHTML = '<div class="auq-submitted"><span class="auq-check">✓</span> Answers submitted</div>';
@@ -13152,7 +13347,7 @@
       }
       function applyChatMode(id) {
         var def = chatModeById(id);
-        if (!def) return;
+        if (!def || IS_HUB) return;
         // Mirrors `authorityForTrust(stop, current)`: a user already on
         // detailed-plan keeps it when they land on Plan, rather than being
         // silently downgraded to quick-plan by a round trip through the pill.

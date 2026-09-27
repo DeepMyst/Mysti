@@ -18,6 +18,7 @@ import type {
   PermissionActionType,
   PermissionConfig,
   PermissionDetails,
+  PermissionOrigin,
   PermissionRequest,
   PermissionResponse,
   PermissionRiskLevel,
@@ -203,7 +204,8 @@ export class PermissionManager {
     toolCallId?: string,
     ownerKey?: string,
     forceInteractive = false,
-    remoteOrigin = false
+    remoteOrigin = false,
+    origin?: PermissionOrigin
   ): Promise<boolean> {
     if (this._disposed) { return false; }
     // Plan 21 Phase 0 (I14): a run whose root input contains bytes authored off
@@ -271,6 +273,7 @@ export class PermissionManager {
       ownerKey,
       forceInteractive,
       remoteOrigin,
+      ...(origin ? { origin } : {}),
     };
 
     this._pendingRequests.set(request.id, request);

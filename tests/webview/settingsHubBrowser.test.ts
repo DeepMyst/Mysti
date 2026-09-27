@@ -65,6 +65,7 @@ function composeHtml(view: 'chat' | 'hub'): string {
   return html
     .replace('<script nonce="n" src="{{markdownRendererJsUri}}"></script>', () => `<script>${read('media/chat/markdownRenderer.js')}</script>`)
     .replace('<script nonce="n" src="{{subAgentCardsJsUri}}"></script>', () => `<script>${read('media/chat/subAgentCards.js')}</script>`)
+    .replace('<script nonce="n" src="{{agentMapJsUri}}"></script>', () => `<script>${read('media/chat/agentMap.js')}</script>`)
     .replace('<script nonce="n" src="{{chatJsUri}}"></script>', () => `<script>${read('media/chat/chat.js')}</script>`)
     .replace('<script nonce="n" src="{{deskJsUri}}"></script>', () => `<script>${read('media/chat/desk.js')}</script>`);
 }
@@ -98,6 +99,10 @@ async function openPage(view: 'chat' | 'hub', extra: Record<string, unknown> = {
   await pg.setViewportSize({ width: 900, height: 700 });
   await pg.goto(`file://${file}`, { waitUntil: 'load' });
   await send(pg, { type: 'initialState', payload: { settings: { ...INITIAL_SETTINGS }, messages: [], context: [], conversations: [], ...extra } });
+  // Boot ends with uiReady, posted in the NEXT animation frame. Under load that
+  // frame can land after a test's clearPosted and read as a post of its own.
+  await pg.waitForFunction(() => (window as unknown as { __posted: Array<{ type: string }> }).__posted
+    .some((m) => m.type === 'uiReady'));
   return pg;
 }
 
@@ -297,7 +302,328 @@ describe('Plan 31 — the Mysti tab', () => {
     } finally { await pg.context().close(); }
   }, 30000);
 
+  it.skipIf(CHROMIUM_UNAVAILABLE)("Shift+Tab never changes its chat's trust level", async () => {
+    // The tab has no trust pill: the chat's Shift+Tab rung cycle would change
+    // mode/access (up to full-access) with nothing on screen to show it.
+    const pg = await openPage('hub', { settings: { ...INITIAL_SETTINGS, mode: 'edit-automatically' } });
+    try {
+      await send(pg, { type: 'hubShow', payload: { section: 'settings', chatTitle: 'Fix login' } });
+      await pg.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); });
+      await clearPosted(pg);
+      await pg.keyboard.press('Shift+Tab');
+      expect(await posted(pg)).toEqual([]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a chat with no personas or skills configured clears the previous chat’s', async () => {
+    const lists = {
+      availablePersonas: [{ id: 'architect', name: 'Architect', description: '' }],
+      availableSkills: [{ id: 'tdd', name: 'TDD', description: '' }],
+    };
+    const pg = await openPage('hub', { ...lists, agentConfig: { personaId: 'architect', enabledSkills: ['tdd'] } });
+    try {
+      const shown = () => pg.$$eval('#persona-grid .persona-card.selected, #skills-list .skill-item.active',
+        (els) => els.map((e) => (e as HTMLElement).dataset.persona || (e as HTMLElement).dataset.skill));
+      expect(await shown()).toEqual(['architect', 'tdd']);
+      // Rebound (or followed) to a conversation never configured: the host's
+      // `agentConfig: undefined` does not survive JSON, so the key is absent.
+      await send(pg, { type: 'initialState', payload: { settings: { ...INITIAL_SETTINGS }, context: [], ...lists } });
+      expect(await shown()).toEqual([]);
+      await send(pg, { type: 'hubShow', payload: { section: 'agents', chatTitle: 'Refactor' } });
+      await clearPosted(pg);
+      await pg.click('#skills-list .skill-item');
+      expect((await posted(pg)).filter((m) => m.type === 'updateAgentConfig')).toEqual([
+        expect.objectContaining({ payload: { personaId: null, enabledSkills: ['tdd'] } }),
+      ]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('personas, skills and badges work from the keyboard', async () => {
+    const pg = await openPage('hub', {
+      availablePersonas: [{ id: 'architect', name: 'Architect', description: '' }],
+      availableSkills: [{ id: 'tdd', name: 'TDD', description: '' }],
+    });
+    try {
+      await send(pg, { type: 'hubShow', payload: { section: 'agents', chatTitle: 'Fix login' } });
+      const card = '#persona-grid .persona-card';
+      const skill = '#skills-list .skill-item';
+      expect(await pg.$eval(card, (el) => [el.getAttribute('role'), el.getAttribute('aria-pressed')])).toEqual(['button', 'false']);
+      await pg.focus(card);
+      await pg.keyboard.press('Enter');
+      expect(await pg.$eval(card, (el) => el.getAttribute('aria-pressed'))).toBe('true');
+      await pg.focus(skill);
+      await pg.keyboard.press(' ');
+      expect(await pg.$eval(skill, (el) => el.getAttribute('aria-pressed'))).toBe('true');
+      await send(pg, { type: 'hubShow', payload: { section: 'badges', chatTitle: 'Fix login' } });
+      await send(pg, { type: 'badgesUpdate', payload: { badges: [{ id: 'b1', name: 'First', icon: '*', tier: 'bronze', unlocked: true, unlockedAt: 0 }], counts: { unlocked: 1, total: 1 } } });
+      await clearPosted(pg);
+      await pg.focus('#badges-grid .badge-item');
+      await pg.keyboard.press('Enter');
+      expect((await posted(pg)).map((m) => m.type)).toContain('getBadgeShareText');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the agent map lives in the chat only, never in the tab', async () => {
+    const delegation = { type: 'toolUse', payload: { id: 'd1', name: 'delegate', input: { agent: 'openai-codex', task: 'Fix it' } } };
+    const pillShown = (pg: Page) => pg.$eval('#agent-map-pill', (e) => getComputedStyle(e).display !== 'none');
+    const chat = await openPage('chat');
+    await send(chat, { type: 'responseStarted', payload: { provider: 'mysti' } });
+    await send(chat, delegation);
+    expect(await pillShown(chat)).toBe(true);
+    const hub = await openPage('hub');
+    await send(hub, { type: 'responseStarted', payload: { provider: 'mysti' } });
+    await send(hub, delegation);
+    expect(await pillShown(hub)).toBe(false);
+    expect((await posted(hub)).some((m) => m.type === 'requestJobs')).toBe(false);
+  });
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('boots both views without throwing', async () => {
+    expect(pageErrors).toEqual([]);
+  });
+});
+
+describe('Plan 31 — settingsSync keeps the chat and the tab in step', () => {
+  async function sendFromComposer(pg: Page, text: string): Promise<Record<string, unknown>> {
+    await clearPosted(pg);
+    await pg.fill('#message-input', text);
+    await pg.keyboard.press('Enter');
+    const sends = (await posted(pg)).filter((m) => m.type === 'sendMessage');
+    expect(sends).toHaveLength(1);
+    return (sends[0].payload as { settings: Record<string, unknown> }).settings;
+  }
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)("a change made in the tab rides the chat's next send", async () => {
+    const pg = await openPage('chat');
+    try {
+      await send(pg, { type: 'settingsSync', payload: {
+        thinkingLevel: 'high', mode: 'default', accessLevel: 'full-access', effortLevel: 'low', contextMode: 'manual',
+      } });
+      expect(await pg.$eval('#thinking-select', (el) => (el as HTMLSelectElement).value)).toBe('high');
+      const settings = await sendFromComposer(pg, 'hello');
+      expect(settings).toMatchObject({
+        thinkingLevel: 'high', mode: 'default', accessLevel: 'full-access', effortLevel: 'low', contextMode: 'manual',
+      });
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('an agent chosen in the tab becomes the chat agent', async () => {
+    const pg = await openPage('chat');
+    try {
+      await send(pg, { type: 'settingsSync', payload: { provider: 'openai-codex' } });
+      const settings = await sendFromComposer(pg, 'hello');
+      expect(settings.provider).toBe('openai-codex');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('updates the nested rows, and applying it posts nothing back', async () => {
+    const pg = await openPage('hub', {
+      permissionSettings: { timeoutBehavior: 'auto-reject', semiAutonomousTimeout: 60 },
+      brainstormStrategy: 'quick',
+    });
+    try {
+      await clearPosted(pg);
+      await send(pg, { type: 'settingsSync', payload: {
+        'permission.timeoutBehavior': 'auto-accept', 'semiAutonomous.timeout': 90, 'brainstorm.strategy': 'debate',
+      } });
+      expect(await pg.$eval('#timeout-behavior-select', (el) => (el as HTMLSelectElement).value)).toBe('auto-accept');
+      expect(await pg.$eval('#semi-auto-timeout-input', (el) => (el as HTMLInputElement).value)).toBe('90');
+      expect(await pg.$eval('#brainstorm-strategy-select', (el) => (el as HTMLSelectElement).value)).toBe('debate');
+      expect(await posted(pg)).toEqual([]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('initialState still reports the autonomy level exactly once', async () => {
+    const pg = await openPage('chat', { permissionSettings: { timeoutBehavior: 'auto-reject', semiAutonomousTimeout: 60 } });
+    try {
+      expect((await posted(pg)).filter((m) => m.type === 'autonomyLevelChanged')).toHaveLength(1);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('ignores a malformed payload', async () => {
+    const pg = await openPage('chat');
+    try {
+      await send(pg, { type: 'settingsSync', payload: null });
+      await send(pg, { type: 'settingsSync', payload: 'thinkingLevel' });
+      const settings = await sendFromComposer(pg, 'hello');
+      expect(settings.thinkingLevel).toBe('none');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  const CATALOG = { providers: [{ name: 'claude-code', models: [{ id: 'sonnet', name: 'Sonnet' }, { id: 'opus', name: 'Opus' }] }] };
+  const pickers = (pg: Page): Promise<string[]> => pg.$$eval(['#model-select', '#model-select-inline'].join(','),
+    (els) => els.map((el) => (el as HTMLSelectElement).value));
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)("a model picked on the other side is the one the chat's next send carries", async () => {
+    const pg = await openPage('chat', { ...CATALOG, settings: { ...INITIAL_SETTINGS, model: 'sonnet' } });
+    try {
+      await send(pg, { type: 'settingsSync', payload: { model: 'opus', customModel: '' } });
+      expect(await pickers(pg)).toEqual(['opus', 'opus']);
+      expect((await sendFromComposer(pg, 'hello')).model).toBe('opus');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('an unrelated sync keeps a settled model that is not in the catalog', async () => {
+    const pg = await openPage('chat', { ...CATALOG, settings: { ...INITIAL_SETTINGS, model: 'sonnet' } });
+    try {
+      await send(pg, { type: 'modelChanged', payload: { model: 'claude-special-1' } });
+      expect(await pickers(pg)).toEqual(['claude-special-1', 'claude-special-1']);
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pickers(pg)).toEqual(['claude-special-1', 'claude-special-1']);
+      expect((await sendFromComposer(pg, 'hello')).model).toBe('claude-special-1');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a custom model cleared on the other side leaves Custom…', async () => {
+    const pg = await openPage('chat', { ...CATALOG, settings: { ...INITIAL_SETTINGS, model: 'opus' },
+      providerSettings: { customModel: 'bar', codexProfile: '' } });
+    try {
+      expect(await pg.$eval('#model-select', (el) => (el as HTMLSelectElement).value)).toBe('__custom__');
+      await send(pg, { type: 'settingsSync', payload: { customModel: '' } });
+      expect(await pg.$eval('#model-select', (el) => (el as HTMLSelectElement).value)).toBe('opus');
+      expect(await pg.$eval('#custom-model-section', (el) => el.classList.contains('hidden'))).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a custom model typed here is not repainted back by a later sync', async () => {
+    const pg = await openPage('chat', { ...CATALOG, providerSettings: { customModel: 'bar', codexProfile: '' } });
+    try {
+      await pg.$eval('#custom-model-input', (el) => {
+        (el as HTMLInputElement).value = 'foo';
+        el.dispatchEvent(new Event('change'));
+      });
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pg.$eval('#custom-model-input', (el) => (el as HTMLInputElement).value)).toBe('foo');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a stock model picked here is not flipped back to Custom… by a later sync', async () => {
+    const pg = await openPage('chat', { ...CATALOG, providerSettings: { customModel: 'bar', codexProfile: '' } });
+    try {
+      await pg.$eval('#model-select', (el) => {
+        (el as HTMLSelectElement).value = 'opus';
+        el.dispatchEvent(new Event('change'));
+      });
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pickers(pg)).toEqual(['opus', 'opus']);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)("a provider setting changed on the other side repaints the provider's section", async () => {
+    const pg = await openPage('chat', {
+      settings: { ...INITIAL_SETTINGS, provider: 'openai-codex' },
+      providerManifest: { schemaVersion: 1, providers: [{ id: 'openai-codex',
+        settingsSections: [{ id: 'profile', label: 'Profile', type: 'text', settingKey: 'codexProfile' }] }] },
+      providerSettings: { customModel: '', codexProfile: 'old' },
+    });
+    try {
+      expect(await pg.$eval('#provider-settings-sections input', (el) => (el as HTMLInputElement).value)).toBe('old');
+      await send(pg, { type: 'settingsSync', payload: { codexProfile: 'work' } });
+      expect(await pg.$eval('#provider-settings-sections input', (el) => (el as HTMLInputElement).value)).toBe('work');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('timeout, semi-auto timeout and token limit changed here survive an unrelated sync', async () => {
+    const pg = await openPage('hub', {
+      permissionSettings: { timeoutBehavior: 'auto-reject', semiAutonomousTimeout: 60 },
+      agentSettings: { autoSuggest: true, maxTokenBudget: 4000, showSuggestions: true },
+    });
+    try {
+      await pg.$eval('#timeout-behavior-select', (el) => {
+        (el as HTMLSelectElement).value = 'auto-accept';
+        el.dispatchEvent(new Event('change'));
+      });
+      await pg.$eval('#semi-auto-timeout-input', (el) => {
+        (el as HTMLInputElement).value = '120';
+        el.dispatchEvent(new Event('change'));
+      });
+      await clearPosted(pg);
+      await pg.click('#token-limit-toggle');
+      expect(await posted(pg)).toEqual([expect.objectContaining({ payload: { 'agents.maxTokenBudget': 0 } })]);
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pg.$eval('#timeout-behavior-select', (el) => (el as HTMLSelectElement).value)).toBe('auto-accept');
+      expect(await pg.$eval('#semi-auto-timeout-input', (el) => (el as HTMLInputElement).value)).toBe('120');
+      expect(await pg.$eval('#token-limit-toggle', (el) => el.classList.contains('active'))).toBe(false);
+      // Turning the limit back on still restores the budget it had.
+      await clearPosted(pg);
+      await pg.click('#token-limit-toggle');
+      expect(await posted(pg)).toEqual([expect.objectContaining({ payload: { 'agents.maxTokenBudget': 4000 } })]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  const autonomyRows = (pg: Page): Promise<boolean[]> => pg.$$eval(['#manual-timeout-section', '#semi-auto-settings'].join(','),
+    (els) => els.map((el) => !el.classList.contains('hidden')));
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('the tab offers the semi-autonomous row, not the manual one, while the chat runs semi-autonomous', async () => {
+    const visible = autonomyRows;
+    const pg = await openPage('hub', {
+      permissionSettings: { timeoutBehavior: 'semi-autonomous', semiAutonomousTimeout: 60 }, autonomyLevel: 'semi-autonomous',
+    });
+    try {
+      expect(await visible(pg)).toEqual([false, true]);
+      await send(pg, { type: 'settingsSync', payload: { 'permission.timeoutBehavior': 'auto-reject' } });
+      expect(await visible(pg)).toEqual([true, false]);
+      await send(pg, { type: 'settingsSync', payload: { 'permission.timeoutBehavior': 'semi-autonomous' } });
+      expect(await visible(pg)).toEqual([false, true]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a half-finished custom model edit survives an unrelated sync', async () => {
+    const pg = await openPage('hub', { ...CATALOG, settings: { ...INITIAL_SETTINGS, model: 'sonnet' } });
+    try {
+      await pg.$eval('#model-select', (el) => {
+        (el as HTMLSelectElement).value = '__custom__';
+        el.dispatchEvent(new Event('change'));
+      });
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pg.$eval('#model-select', (el) => (el as HTMLSelectElement).value)).toBe('__custom__');
+      expect(await pg.$eval('#custom-model-section', (el) => el.classList.contains('hidden'))).toBe(false);
+      await pg.fill('#custom-model-input', 'my-mod');
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'low' } });
+      expect(await pg.$eval('#custom-model-input', (el) => (el as HTMLInputElement).value)).toBe('my-mod');
+      expect(await pg.evaluate(() => document.activeElement && document.activeElement.id)).toBe('custom-model-input');
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)("the tab shows its chat's own autonomy level, not the global config's", async () => {
+    // Config still says semi-autonomous (set by another chat, or before a
+    // reload), but the chat this tab acts for boots manual.
+    const pg = await openPage('hub', {
+      permissionSettings: { timeoutBehavior: 'semi-autonomous', semiAutonomousTimeout: 60 }, autonomyLevel: 'manual',
+    });
+    try {
+      expect(await autonomyRows(pg)).toEqual([true, false]);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('an unrelated sync keeps edits not yet committed here', async () => {
+    const pg = await openPage('hub', {
+      settings: { ...INITIAL_SETTINGS, provider: 'openai-codex' },
+      providerManifest: { schemaVersion: 1, providers: [
+        { id: 'claude-code', displayName: 'Claude Code', color: '#000' },
+        { id: 'openai-codex', displayName: 'Codex', color: '#000',
+          settingsSections: [{ id: 'profile', label: 'Profile', type: 'text', settingKey: 'codexProfile' }] },
+      ] },
+      providerSettings: { customModel: '', codexProfile: 'old' },
+      brainstormAgents: ['claude-code', 'openai-codex'],
+      permissionSettings: { timeoutBehavior: 'semi-autonomous', semiAutonomousTimeout: 60 }, autonomyLevel: 'semi-autonomous',
+    });
+    try {
+      // Typed but not committed: no change event yet (a second fill would blur, and commit, the first).
+      await pg.$eval('#provider-settings-sections input', (el) => { (el as HTMLInputElement).value = 'half'; });
+      await pg.$eval('#semi-auto-timeout-input', (el) => { (el as HTMLInputElement).value = '12'; });
+      // One box unticked on the way to picking another — not posted until two are ticked.
+      await pg.$eval('input[name="brainstorm-agent"][value="claude-code"]', (el) => {
+        (el as HTMLInputElement).checked = false;
+        el.dispatchEvent(new Event('change'));
+      });
+      await send(pg, { type: 'settingsSync', payload: { thinkingLevel: 'high' } });
+      expect(await pg.$eval('#provider-settings-sections input', (el) => (el as HTMLInputElement).value)).toBe('half');
+      expect(await pg.$eval('#semi-auto-timeout-input', (el) => (el as HTMLInputElement).value)).toBe('12');
+      expect(await pg.$eval('input[name="brainstorm-agent"][value="claude-code"]', (el) => (el as HTMLInputElement).checked)).toBe(false);
+    } finally { await pg.context().close(); }
+  }, 30000);
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('still boots both views without throwing', async () => {
     expect(pageErrors).toEqual([]);
   });
 });

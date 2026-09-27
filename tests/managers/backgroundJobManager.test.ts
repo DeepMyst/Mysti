@@ -127,6 +127,20 @@ describe('BackgroundJobManager durability', () => {
     expect(c.get('b1')).toBeDefined();
   });
 
+  it('isExecutingHere is true only in the window running the job, and only until it settles', () => {
+    const mem = memento();
+    const a = new BackgroundJobManager();
+    a.attachStore(mem, 1000, 'hostA');
+    a.create('j', 'sidebar', 'c', 't', 1000);
+    const b = new BackgroundJobManager();
+    b.attachStore(mem, 1100, 'hostB');
+    expect(b.get('j')?.panelId).toBe('sidebar');
+    expect(a.isExecutingHere('j')).toBe(true);
+    expect(b.isExecutingHere('j')).toBe(false);
+    a.markDone('j', 'r', 1200);
+    expect(a.isExecutingHere('j')).toBe(false);
+  });
+
   it('runningCount is scoped to this host — another window\'s jobs don\'t trip the cap', () => {
     const mem = memento();
     const a = new BackgroundJobManager();

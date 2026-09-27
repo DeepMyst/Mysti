@@ -1302,7 +1302,7 @@ export interface OrchestratorPlanNode {
 /** A streaming event from the @mysti orchestrator run. */
 export interface OrchestratorEvent {
   type:
-    | 'orch_status'      // phase transition (decompose/execute/synthesize)
+    | 'orch_status'      // phase transition (decompose/execute/verify/synthesize)
     | 'orch_plan'        // the decomposed DAG (surfaced once)
     | 'orch_node_start'  // a node began executing on its backend
     | 'orch_node_done'   // a node finished (text/error)
@@ -1310,7 +1310,9 @@ export interface OrchestratorEvent {
     | 'orch_synthesis'   // final synthesized text (streamed or whole)
     | 'orch_error'       // a run-level error
     | 'orch_done';       // the run completed
-  phase?: 'decompose' | 'execute' | 'synthesize';
+  /** The run this event belongs to, so a view can tell two runs in one turn apart. */
+  runId: string;
+  phase?: 'decompose' | 'execute' | 'verify' | 'synthesize';
   content?: string;
   plan?: { nodes: OrchestratorPlanNode[] };
   nodeId?: string;
@@ -1471,6 +1473,21 @@ export interface PermissionRequest {
    * of timeoutBehavior, and is never handed to the semi-autonomous approver).
    */
   forceInteractive?: boolean;
+  /**
+   * Plan 32: which agent raised this card, so a view can attach the need to
+   * that agent. Descriptive only — never consulted by any approval decision.
+   */
+  origin?: PermissionOrigin;
+}
+
+export interface PermissionOrigin {
+  kind: 'collaborator' | 'mention' | 'native-approval' | 'paid';
+  agentId?: string;
+  collaboratorId?: string;
+  role?: string;
+  label?: string;
+  /** The coordinator delegate card this dispatch came from. */
+  parentToolId?: string;
 }
 
 export interface PermissionResponse {

@@ -71,6 +71,7 @@ export function getWebviewContent(
   const chatJsUri = assetUri(['media', 'chat', 'chat.js']);
   const markdownRendererJsUri = assetUri(['media', 'chat', 'markdownRenderer.js']);
   const subAgentCardsJsUri = assetUri(['media', 'chat', 'subAgentCards.js']);
+  const agentMapJsUri = assetUri(['media', 'chat', 'agentMap.js']);
   const deskCssUri = assetUri(['media', 'chat', 'desk.css']);
   const deskJsUri = assetUri(['media', 'chat', 'desk.js']);
 
@@ -145,6 +146,7 @@ export function getWebviewContent(
     chatJsUri,
     markdownRendererJsUri,
     subAgentCardsJsUri,
+    agentMapJsUri,
     deskCssUri,
     deskJsUri,
     bootJson,

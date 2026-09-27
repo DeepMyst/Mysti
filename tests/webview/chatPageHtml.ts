@@ -91,6 +91,7 @@ export function composeChatHtml(): string {
   html = html
     .replace('<script nonce="n" src="{{markdownRendererJsUri}}"></script>', () => `<script>${read('media/chat/markdownRenderer.js')}</script>`)
     .replace('<script nonce="n" src="{{subAgentCardsJsUri}}"></script>', () => `<script>${read('media/chat/subAgentCards.js')}</script>`)
+    .replace('<script nonce="n" src="{{agentMapJsUri}}"></script>', () => `<script>${read('media/chat/agentMap.js')}</script>`)
     .replace('<script nonce="n" src="{{chatJsUri}}"></script>', () => `<script>${read('media/chat/chat.js')}</script>`)
     .replace('<script nonce="n" src="{{deskJsUri}}"></script>', () => `<script>${read('media/chat/desk.js')}</script>`);
   return html;

@@ -4,9 +4,29 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { MessageSegment, ToolCall, UsageStats, WebviewMessage } from '../types';
+import type { CollaboratorFailure, MessageSegment, ToolCall, UsageStats, WebviewMessage } from '../types';
 import type { CoordinatorStreamEvent } from '../services/CoordinatorModelClient';
 import { addUsage, contextFillTokens, normalizeUsage } from '../services/TokenAccounting';
+
+/** Who ran a coordinator card (Plan 32 agent map). */
+export interface ToolUseMeta {
+  kind: 'delegate' | 'native' | 'advisor' | 'review';
+  backend?: string;
+  access?: 'read-only' | 'gated-write';
+  model?: string;
+}
+
+/** How a coordinator card ended; each field only when the host measured it. */
+export interface ToolResultMeta {
+  failure?: CollaboratorFailure;
+  model?: string;
+  /** The advisor's actual route: a backend id, or the paid model. */
+  via?: string;
+  usage?: UsageStats;
+  costUsd?: number;
+  /** `costUsd` is the spend guard's estimate; no actual cost came back. */
+  costApprox?: boolean;
+}
 
 /** One run's streamed UI output, replay record and usage receipt. No host state. */
 export class CoordinatorRunOutput {
@@ -92,16 +112,22 @@ export class CoordinatorRunOutput {
       : { type: 'responseChunk', payload: { type: 'thinking', content: text } });
   }
 
-  public postToolUse(tool: Pick<ToolCall, 'id' | 'name' | 'input'>): void {
+  /**
+   * `meta` rides beside the tool, never inside `input`: input is persisted and
+   * folded back into later prompts, and meta is display-only host knowledge.
+   */
+  public postToolUse(tool: Pick<ToolCall, 'id' | 'name' | 'input'>, meta?: ToolUseMeta): void {
+    const extra = meta ? { meta } : {};
     this._post(this._jobId
-      ? { type: 'jobToolUse', payload: { jobId: this._jobId, toolCall: tool } }
-      : { type: 'toolUse', payload: tool });
+      ? { type: 'jobToolUse', payload: { jobId: this._jobId, toolCall: tool, ...extra } }
+      : { type: 'toolUse', payload: { ...tool, ...extra } });
   }
 
-  public postToolResult(tool: { id: string; name: string; output: string; status: string }): void {
+  public postToolResult(tool: { id: string; name: string; output: string; status: string }, meta?: ToolResultMeta): void {
+    const extra = meta ? { meta } : {};
     this._post(this._jobId
-      ? { type: 'jobToolResult', payload: { jobId: this._jobId, toolCall: tool } }
-      : { type: 'toolResult', payload: tool });
+      ? { type: 'jobToolResult', payload: { jobId: this._jobId, toolCall: tool, ...extra } }
+      : { type: 'toolResult', payload: { ...tool, ...extra } });
   }
 
   public recordTool(id: string, name: string, input: Record<string, unknown>, output: string, failed: boolean): void {

@@ -441,3 +441,41 @@ describe('MystiOrchestratorManager — cancel targets the live frontier set', ()
     expect(cancelled).toHaveLength(0);
   }, 20000);
 });
+
+// Plan 32 H1: the agent map keys a workflow on its runId, and draws the verify
+// gate as its own step, so both must be on the wire.
+describe('MystiOrchestratorManager — run identity and the verify phase', () => {
+  it('stamps every event with the run id and reports verify as its own phase', async () => {
+    clearMockConfig();
+    const pm = new MockProviderManager();
+    pm.setProviderAvailable('claude-code');
+    pm.setProviderAvailable('google-gemini');
+    pm.setProviderChunks('claude-code', textChunks(['CONFLICT: both edited a.ts']));
+    pm.setProviderChunks('google-gemini', textChunks(['gemini lane']));
+    const mgr = new MystiOrchestratorManager(
+      new CollaboratorPool(pm as any),
+      stubCoordinator({ nodes: [
+        { id: 'a', task: 'lane a', backend: 'claude-code', dependsOn: [] },
+        { id: 'b', task: 'lane b', backend: 'google-gemini', dependsOn: [] },
+      ] }),
+      stubProviders(['claude-code', 'google-gemini']),
+      () => 3,
+      () => ({ maxLanes: 3, refuseSingleLane: false, verifyParallelLanes: true }),
+    );
+
+    const { events, result } = await drain(mgr.run({ brief: 'two lanes', context: [], settings: collabSettings({ provider: 'claude-code' as any }), panelId: 'p1' }));
+
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every(e => e.runId === result.runId)).toBe(true);
+    const verify = events.find(e => e.type === 'orch_status' && e.phase === 'verify');
+    expect(verify?.content).toContain('Checking the parallel results');
+    expect(events.some(e => e.type === 'orch_status' && e.phase === 'execute' && /Checking/.test(e.content || ''))).toBe(false);
+  });
+
+  it('stamps the depth-cap error too', async () => {
+    const mgr = makeManager(new MockProviderManager(), stubCoordinator({ nodes: [] }));
+    const { events, result } = await drain(mgr.run({ brief: 'x', context: [], settings: collabSettings(), panelId: 'p1', depth: ORCH_MAX_DEPTH }));
+    expect(events).toHaveLength(1);
+    expect(events[0].runId).toBe(result.runId);
+  });
+});

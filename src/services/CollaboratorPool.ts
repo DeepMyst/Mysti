@@ -14,6 +14,7 @@
 import { classifyToolAction, shouldGateToolUse } from '../utils/permissionClassifier';
 import { SUBAGENT_TIMEOUT_MS, SUBAGENT_MAX_RETRIES, SUBAGENT_QUESTION_TIMEOUT_MS } from '../constants';
 import type { NativeApprovalHandler, NativeApprovalRequest } from '../providers/base/IProvider';
+import { hasUsageSignal, normalizeUsage, type UsageConvention } from './TokenAccounting';
 import type {
   ContextItem,
   Settings,
@@ -23,7 +24,11 @@ import type {
   CollaboratorChunk,
   CollaboratorFailure,
   CollaboratorDispatchOptions,
+  UsageStats,
 } from '../types';
+
+/** One dispatch attempt; `usage` only when the child measured something. */
+type AttemptOutcome = { responseText: string; hasError: boolean; failure?: CollaboratorFailure; usage?: UsageStats };
 
 /**
  * Default max collaborators dispatched at once. Overridable per-run via
@@ -59,7 +64,9 @@ export interface PoolProviderManager {
     installCommand?: string;
   } | null>;
   getProviderDefaultModel(providerId: string): string;
-  getProviderInstance?(providerId: string): { capabilities: { supportsNativeApproval?: boolean } } | undefined;
+  getProviderInstance?(providerId: string): {
+    capabilities: { supportsNativeApproval?: boolean; emitsUsage?: boolean; usageConvention?: UsageConvention };
+  } | undefined;
   setNativeApprovalHandlerForPanel?(panelId: string, handler: NativeApprovalHandler): { dispose(): void };
 }
 
@@ -340,7 +347,7 @@ export class CollaboratorPool {
     }
 
     // --- Dispatch with timeout + retry ---
-    const { responseText, hasError, failure } = yield* this._dispatchWithRetry(spec, options, base);
+    const { responseText, hasError, failure, usage } = yield* this._dispatchWithRetry(spec, options, base);
 
     yield {
       ...base,
@@ -348,6 +355,7 @@ export class CollaboratorPool {
       responseText,
       hasError,
       failure,
+      ...(usage ? { usage } : {}),
     };
   }
 
@@ -355,7 +363,7 @@ export class CollaboratorPool {
     spec: CollaboratorSpec,
     options: CollaboratorDispatchOptions,
     base: Pick<CollaboratorChunk, 'collaboratorId' | 'agentId' | 'role' | 'label'>
-  ): AsyncGenerator<CollaboratorChunk, { responseText: string; hasError: boolean; failure?: CollaboratorFailure }> {
+  ): AsyncGenerator<CollaboratorChunk, AttemptOutcome> {
     let attempt = 0;
     let lastFailure: CollaboratorFailure | undefined;
 
@@ -455,10 +463,11 @@ export class CollaboratorPool {
     base: Pick<CollaboratorChunk, 'collaboratorId' | 'agentId' | 'role' | 'label'>,
     childPanelId: string,
     childSettings: Settings
-  ): AsyncGenerator<CollaboratorChunk, { responseText: string; hasError: boolean; failure?: CollaboratorFailure }> {
+  ): AsyncGenerator<CollaboratorChunk, AttemptOutcome> {
     let responseText = '';
     let hasError = false;
     let failure: CollaboratorFailure | undefined;
+    let usage: UsageStats | undefined;
     let timedOut = false;
     let nativeApprovals: NativeChildApprovalScope | undefined;
 
@@ -511,8 +520,8 @@ export class CollaboratorPool {
             failure = followUp.failure;
           }
           // The question path spawns its own follow-up process and fully
-          // handles this attempt.
-          return { responseText, hasError, failure };
+          // handles this attempt, so its usage is the attempt's.
+          return { responseText, hasError, failure, ...(followUp.usage ? { usage: followUp.usage } : {}) };
         } else if (chunk.type === 'auth_error') {
           hasError = true;
           failure = 'not-authenticated';
@@ -523,6 +532,8 @@ export class CollaboratorPool {
           failure = 'stream-error';
           yield { ...base, type: 'collab_error', failure, content: chunk.content, hasError: true };
           break;
+        } else if (chunk.type === 'done' && chunk.usage) {
+          usage = this._childUsage(spec.agentId, childSettings.model, chunk.usage);
         }
         // 'done' / 'session_active' / other transport chunks: completion is the
         // stream ending, not a keyword — just let the loop finish.
@@ -560,7 +571,18 @@ export class CollaboratorPool {
       yield { ...base, type: 'collab_error', failure, content: 'Collaborator returned no output', hasError: true };
     }
 
-    return { responseText, hasError, failure };
+    return { responseText, hasError, failure, ...(usage ? { usage } : {}) };
+  }
+
+  /**
+   * The child's own convention decides what its numbers mean (TokenAccounting);
+   * an all-zero or undeclared record is unknown, not free, so it is dropped.
+   */
+  private _childUsage(agentId: string, model: string | undefined, raw: UsageStats): UsageStats | undefined {
+    const capabilities = this._providerManager.getProviderInstance?.(agentId)?.capabilities;
+    if (capabilities?.emitsUsage === false) { return undefined; }
+    const usage = normalizeUsage(raw, capabilities?.usageConvention ?? 'none', model);
+    return hasUsageSignal(usage) ? usage : undefined;
   }
 
   /**
@@ -814,7 +836,7 @@ export class CollaboratorPool {
     childSettings: Settings,
     questionChunk: StreamChunk,
     priorText: string
-  ): AsyncGenerator<CollaboratorChunk, { responseText: string; hasError: boolean; failure?: CollaboratorFailure }> {
+  ): AsyncGenerator<CollaboratorChunk, AttemptOutcome> {
     let responseText = priorText;
 
     if (!options.onQuestion || !questionChunk.askUserQuestion) {
@@ -862,6 +884,7 @@ export class CollaboratorPool {
 
     let hasError = false;
     let failure: CollaboratorFailure | undefined;
+    let usage: UsageStats | undefined;
     let nativeApprovals: NativeChildApprovalScope | undefined;
     let followUpTimedOut = false;
     try {
@@ -898,6 +921,8 @@ export class CollaboratorPool {
           hasError = true; failure = 'stream-error';
           yield { ...base, type: 'collab_error', failure, content: chunk.content, hasError: true };
           break;
+        } else if (chunk.type === 'done' && chunk.usage) {
+          usage = this._childUsage(spec.agentId, childSettings.model, chunk.usage);
         }
       }
       if (followUpTimedOut) {
@@ -924,7 +949,7 @@ export class CollaboratorPool {
       failure = 'cancelled';
     }
 
-    return { responseText, hasError, failure };
+    return { responseText, hasError, failure, ...(usage ? { usage } : {}) };
   }
 
   // ===========================================================================

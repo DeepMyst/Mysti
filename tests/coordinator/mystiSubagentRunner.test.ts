@@ -36,6 +36,12 @@ describe('runMystiSubagent', () => {
     expect(r.toolCalls).toBe(1);
   });
 
+  it('pings the trace while the child writes prose, carrying none of it', async () => {
+    const h = ports([[{ text: REPORT }]]);
+    await runMystiSubagent(cfg, h.p);
+    expect(h.p.trace).toHaveBeenCalledWith({ type: 'progress' });
+  });
+
   it('runs native tool calls through the same path', async () => {
     const h = ports([[{ toolCalls: [{ id: 't1', name: 'grep', arguments: '{"pattern":"auth"}' }] }], [{ text: REPORT }]]);
     await runMystiSubagent(cfg, h.p);

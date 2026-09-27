@@ -41,7 +41,10 @@ export interface CliSearchConfig {
   commandName: string;         // e.g. 'claude', 'codex', 'gemini'
   configuredPath?: string;     // from VSCode settings (if non-default)
   windowsCmd?: string;         // e.g. 'claude.cmd' for Windows npm installs
-  additionalPaths?: string[];  // provider-specific extra locations
+  additionalPaths?: string[];  // provider-specific extra locations (outrank PATH)
+  // Used only when PATH finds nothing: another extension's private copy of a
+  // CLI is not the user's install, and it updates on that extension's schedule.
+  fallbackPaths?: string[];
 }
 
 let _cachedPlatformInfo: PlatformInfo | null = null;
@@ -173,7 +176,7 @@ export function resetPlatformInfoCache(): void {
  * 8. Bare command fallback (relies on PATH)
  */
 export function getCommonSearchPaths(config: CliSearchConfig): string[] {
-  const { commandName, configuredPath, windowsCmd, additionalPaths } = config;
+  const { commandName, configuredPath, windowsCmd, additionalPaths, fallbackPaths } = config;
   const homeDir = os.homedir();
   const seen = new Set<string>();
   const paths: string[] = [];
@@ -241,7 +244,16 @@ export function getCommonSearchPaths(config: CliSearchConfig): string[] {
     addPath(path.join(homeDir, 'node_modules', '.bin', commandName));
   }
 
-  // 7. Bare command fallback (relies on PATH)
+  // 7. Another extension's private copy, after every place the user's own
+  //    install could be: the synchronous spawn-path walk (getCliPath with a
+  //    cold cache — any mysti.* change clears it) consults no PATH at all.
+  if (fallbackPaths) {
+    for (const p of fallbackPaths) {
+      addPath(p);
+    }
+  }
+
+  // 8. Bare command fallback (relies on PATH)
   addPath(commandName);
 
   return paths;

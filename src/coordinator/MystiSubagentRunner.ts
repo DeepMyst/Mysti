@@ -36,7 +36,8 @@ export type SubagentReadDirective = Extract<MystiDirective, { kind: 'read' | 'ls
 export type SubagentExecDirective = Extract<MystiDirective, { kind: 'write' | 'edit' | 'bash' | 'patch' }>;
 
 export interface SubagentTrace {
-  type: 'tool_use' | 'tool_result' | 'thinking';
+  /** `progress` carries nothing: it only says the child is still writing prose. */
+  type: 'tool_use' | 'tool_result' | 'thinking' | 'progress';
   toolCall?: { id: string; name: string; input?: Record<string, unknown>; output?: string; status?: string };
   content?: string;
 }
@@ -104,7 +105,7 @@ export function subagentSystemPrompt(N: string, write: boolean, maxTools: number
   ].join('\n');
 }
 
-/** Accumulates the child's prose and cost; forwards reasoning to the trace. */
+/** Accumulates the child's prose and cost; forwards reasoning, and a liveness ping for prose, to the trace. */
 class SubagentOutput implements CoordinatorTurnOutput {
   public text = '';
   public costUsd = 0;
@@ -119,7 +120,10 @@ class SubagentOutput implements CoordinatorTurnOutput {
       this.costUsd += event.costUsd;
     }
   }
-  emitText(text: string): void { this.text += text; }
+  emitText(text: string): void {
+    this.text += text;
+    this._trace({ type: 'progress' });
+  }
   estimateInterruptedTurn(): void { /* estimates belong to the parent's receipt */ }
 }
 

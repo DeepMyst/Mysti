@@ -29,6 +29,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { getPriorityCliPaths, getCommonSearchPaths, resolveCommandOnPath, getResolutionEnv, getEnrichedEnv } from '../../src/utils/platform';
+import { TestableClaudeProvider } from '../helpers/providerFactory';
+import { setMockConfig, clearMockConfig, fireConfigurationChange, clearConfigurationListeners } from '../helpers/mockVscode';
 
 describe('getPriorityCliPaths', () => {
   /**
@@ -66,6 +68,71 @@ describe('getPriorityCliPaths', () => {
       // front, a stale /usr/local copy beats a current ~/.local one.
       expect(usrLocal).toBeLessThan(dotLocal);
     }
+  });
+});
+
+describe('fallback locations', () => {
+  /**
+   * Another extension's private copy of a CLI is not the user's install. The
+   * Claude Code VS Code extension auto-updated its bundled binary to 2.1.283,
+   * which crashed in Bun, while the user's own 2.1.278 was first on PATH.
+   */
+  it('never outrank PATH or any guessed user install, and are still tried when those miss', () => {
+    const config = { commandName: 'claude', fallbackPaths: ['/ext/native-binary/claude'] };
+    expect(getPriorityCliPaths(config)).toEqual([]);
+    const all = getCommonSearchPaths(config);
+    const at = all.indexOf('/ext/native-binary/claude');
+    expect(at).toBeGreaterThan(-1);
+    // The synchronous spawn-path walk has no PATH step, so the order here is all it has.
+    if (process.platform !== 'win32') {
+      expect(at).toBeGreaterThan(all.indexOf(path.join(os.homedir(), '.local', 'bin', 'claude')));
+      expect(at).toBeGreaterThan(all.indexOf('/usr/local/bin/claude'));
+    }
+    expect(all[all.length - 1]).toBe('claude');
+  });
+
+  // A POSIX shell script on a ':'-joined PATH; Windows resolves .cmd shims instead.
+  it.skipIf(process.platform === 'win32')('Claude Code runs the claude on PATH, not the extension\'s bundled copy', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-claude-'));
+    const onPath = path.join(dir, 'bin', 'claude');
+    const bundled = path.join(dir, 'ext', 'claude');
+    for (const [file, version] of [[onPath, '2.1.278'], [bundled, '2.1.283']] as const) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `#!/bin/sh\necho "${version} (Claude Code)"\n`);
+      fs.chmodSync(file, 0o755);
+    }
+    const saved = process.env.PATH;
+    process.env.PATH = `${path.dirname(onPath)}:${saved ?? ''}`;
+    try {
+      const provider = new TestableClaudeProvider();
+      (provider as unknown as { _findVSCodeExtensionCli(): string | null })._findVSCodeExtensionCli = () => bundled;
+      const found = await provider.discoverCli();
+      expect(found.path).toBe(onPath);
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the discovered CLI survives unrelated settings changes', () => {
+  /**
+   * Every mysti.* write (a model pick) used to clear the cache, and the next
+   * spawn walked the guess list, which has no PATH step: the stale npm copy in
+   * /usr/local/bin, or the Claude extension's bundled binary, ran instead.
+   */
+  afterEach(() => { clearMockConfig(); clearConfigurationListeners(); });
+
+  it('keeps the path on a model change and drops it when the path setting changes', () => {
+    const provider = new TestableClaudeProvider();
+    const cache = provider as unknown as { _cachedCliPath: string | null };
+    cache._cachedCliPath = '/found/by/discovery/claude';
+    setMockConfig('claudeCodeModel', 'claude-opus-5-5');
+    fireConfigurationChange('mysti.claudeCodeModel');
+    expect(provider.getCliPath()).toBe('/found/by/discovery/claude');
+    setMockConfig('claudeCodePath', '/opt/mine/claude');
+    fireConfigurationChange('mysti.claudeCodePath');
+    expect(provider.getCliPath()).toBe('/opt/mine/claude');
   });
 });
 

@@ -410,7 +410,13 @@ and "the CLI we run" are the same statement:
    with it resolved `claude` to a stale 2.0.71 while the shell ran 2.1.263,
    making this whole step a no-op)
 3. the hard-coded guess list (`getCommonSearchPaths`) — still needed when a GUI
-   host has a minimal PATH
+   host has a minimal PATH. It includes `_getFallbackSearchPaths()`: another
+   extension's PRIVATE copy of a CLI (the Claude Code VS Code extension's bundled
+   `native-binary/claude`) is a fallback, never step 1. It auto-updates on that
+   extension's schedule: its 2.1.283 crashed in Bun (SIGSEGV) while the user's
+   own 2.1.278 was first on PATH, and Mysti had silently followed the update.
+   Step 1's provider-declared locations are for the user's own installs
+   (Codex.app).
 
 Step 2 used to come LAST. The guess list is headed by `/usr/local/bin`, so a
 stale `npm i -g` copy there beat a current install in `~/.local/bin`: `claude` in
@@ -544,6 +550,7 @@ The chat webview is one of several embedded-HTML panels (each built by a
 assets under `media/chat/`):
 
 - `src/webview/webviewContent.ts` / `media/chat/` — the main chat interface (built by `ChatViewProvider`)
+- The **Mysti tab** (Plan 31) is that same page with `body.view-hub` (`getWebviewContent(..., { view: 'hub' })`): Settings / Personas & skills / Badges / About beside a nav, bound to the chat that opened it. It is NOT in `_panelStates`; what it may send and hear is `src/chat/settingsHub.ts`, and `settingsSync` keeps the chat's own `state.settings` copy current
 - `src/webview/canvasContent.ts` + `src/webview/canvas/` — Canvas design workspace (webpack-bundled renderer, `dist/canvasWebview.js`)
 - `src/webview/connectionsContent.ts` — DeepMyst Connections (brokered MCP tools)
 - `src/webview/visualTestDashboardContent.ts` — `look`/`act` visual test dashboard

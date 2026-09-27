@@ -766,6 +766,8 @@
         <button id="slash-cmd-btn" class="status-seg status-seg-glyph" title="Slash commands (or type /)">/</button>
         <button id="tools-menu-btn" class="status-seg status-seg-glyph" title="Tools — enhance, visual test, canvas, persona">&#8943;</button>
         <span id="strategy-indicator" class="strategy-indicator status-seg hidden" title="Click to cycle brainstorm strategy">Quick</span>
+        <!-- Plan 32: hidden until a second agent or a need exists, so a chat where the main agent works alone keeps its three segments. -->
+        <button id="agent-map-pill" class="status-seg agent-map-pill hidden" type="button" title="Agent map" aria-controls="agent-map" aria-expanded="false"></button>
         <span class="status-spacer"></span>
         <button id="agent-select-btn" class="status-seg agent-btn" title="Select AI agent">
           <span id="agent-icon" class="agent-icon"><img src="{{resourceBase}}/icons/Claude.png" alt="" /></span>
@@ -817,6 +819,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Plan 32: the agent map. agentMap.js renders inside this shell. -->
+    <div id="agent-map" class="agent-map hidden" role="dialog" aria-modal="true" aria-labelledby="agent-map-title"></div>
 
     <!-- Slash commands menu (dynamically populated) -->
     <div id="slash-menu" class="slash-menu hidden" role="listbox" aria-label="Slash commands">
@@ -1430,6 +1435,7 @@
   <script nonce="{{nonce}}">window.__MYSTI_BOOT__ = {{bootJson}};</script>
   <script nonce="{{nonce}}" src="{{markdownRendererJsUri}}"></script>
   <script nonce="{{nonce}}" src="{{subAgentCardsJsUri}}"></script>
+  <script nonce="{{nonce}}" src="{{agentMapJsUri}}"></script>
   <script nonce="{{nonce}}" src="{{chatJsUri}}"></script>
   <script nonce="{{nonce}}" src="{{deskJsUri}}"></script>
 </body>

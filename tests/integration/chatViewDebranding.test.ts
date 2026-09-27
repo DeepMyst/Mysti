@@ -371,6 +371,16 @@ describe('ChatViewProvider de-branding (Plan 02 Phase 2)', () => {
       expect(evt).toBeDefined();
       expect(evt!.payload.providerId).toBe('openai-codex');
     });
+
+    it('tags a completed shutdown so the agent map keeps the conversation it still shows', async () => {
+      h.lifecycleManager.requestShutdown.mockResolvedValueOnce({ success: true });
+      (h.providerManager as any).clearSession = vi.fn();
+
+      await (h.provider as any)._handleMessage({ type: 'shutdownAgent', panelId: 'sidebar' });
+
+      const cleared = h.sidebarMessages.find(m => m.type === 'sessionCleared');
+      expect(cleared!.payload).toEqual({ message: 'Agent session shut down', reason: 'shutdown' });
+    });
   });
 
   // =========================================================================
