@@ -48,10 +48,11 @@ export interface DeepMystAuthState {
 
 /**
  * Outcome handed to an in-flight `signIn()` waiter: the `dm_` key from the
- * link-back, `null` (cancelled / timed out), or `'superseded'` when a different
- * tab/attempt completed the sign-in first (yield silently, no manual fallback).
+ * link-back, `null` (cancelled / timed out), `'superseded'` when a different
+ * tab/attempt completed the sign-in first, or `'failed'` when the page reported
+ * an error (both yield silently, no manual fallback).
  */
-type SignInResult = string | null | 'superseded';
+type SignInResult = string | null | 'superseded' | 'failed';
 
 export class DeepMystAuthManager implements vscode.Disposable {
   private readonly _onDidChangeAuth = new vscode.EventEmitter<DeepMystAuthState>();
@@ -283,9 +284,10 @@ export class DeepMystAuthManager implements vscode.Disposable {
     if (timeoutTimer) { clearTimeout(timeoutTimer); }
     this._pending.delete(state);
 
-    if (key === 'superseded') {
-      // Another tab/attempt completed sign-in; close this notification silently.
-      console.log(`[Mysti] DeepMyst sign-in: attempt state=${state.slice(0, 8)}… superseded by another tab.`);
+    if (key === 'superseded' || key === 'failed') {
+      // Another tab completed sign-in, or failSignIn already told the user why;
+      // close this notification silently.
+      console.log(`[Mysti] DeepMyst sign-in: attempt state=${state.slice(0, 8)}… ${key}.`);
       return this.isSignedIn();
     }
     if (!key) {
@@ -329,6 +331,17 @@ export class DeepMystAuthManager implements vscode.Disposable {
     // No active flow (e.g. a manual/unsolicited deep link) — validate + store.
     console.log('[Mysti] DeepMyst callback with no in-flight attempt — validating directly.');
     return this._storeValidatedKey(key.trim());
+  }
+
+  /**
+   * The browser page reported a failure (`?error=...&state=...`). Show it and
+   * end the matching attempt now — otherwise "Waiting…" spins for 5 minutes and
+   * then asks for a key the same account could not mint either. An unmatched
+   * state only shows the message (CSRF guard, as in completeSignIn).
+   */
+  failSignIn(error: string, state?: string): void {
+    vscode.window.showErrorMessage(`DeepMyst sign-in failed: ${error}`);
+    if (state) { this._pending.get(state)?.('failed'); }
   }
 
   /** Manual key entry (the "enter a key manually" affordance). */
