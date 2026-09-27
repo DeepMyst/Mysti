@@ -1815,12 +1815,38 @@ describe('Plan 32 — the agent map', () => {
     it.skipIf(CHROMIUM_UNAVAILABLE)('a host message that fills the composer leaves focus in the open map', async () => {
       await pg!.click('#agent-map-pill');
       for (const m of [{ type: 'insertPrompt', payload: 'x' }, { type: 'setInputValue', payload: { value: 'y' } },
-        { type: 'promptEnhanced', payload: { prompt: 'z', changed: true, fallback: false, enhancedBy: '' } }]) {
+        { type: 'promptEnhanced', payload: { prompt: 'z', changed: true, fallback: false, enhancedBy: '' } },
+        { type: 'promptEnhanceUnavailable', payload: { reason: 'nothing installed' } },
+        { type: 'promptEnhanceError', payload: { error: 'x' } },
+        { type: 'showAutonomousConfirm', payload: {} }]) {
         await receive(m);
         expect(await focusInMap()).toBe(true);
       }
       await pg!.keyboard.press('Escape');
       expect(await mapOpen()).toBe(false);
+      // The autonomous confirm opened behind the map; dismiss it for the tests that follow.
+      await pg!.click('#autonomous-cancel-btn');
+    }, 20000);
+
+    it.skipIf(CHROMIUM_UNAVAILABLE)('a question the chat replaces no longer counts as needing you', async () => {
+      const pending = () => pg!.evaluate(() => document.querySelectorAll('.ask-user-question-container').length);
+      await receive({ type: 'responseStarted', payload: { provider: 'claude-code' } });
+      await receive({ type: 'responseChunk', payload: { type: 'text', content: 'Two questions.' } });
+      const ask = (id: string) => receive({ type: 'askUserQuestion', payload: { toolCallId: id,
+        questions: [{ question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'A' }, { label: 'B' }] }] } });
+      await ask('q-first');
+      await ask('q-second');
+      expect(await pending()).toBe(1);
+      // The main agent lists one question to review, not a second one whose card is gone.
+      await pg!.click('#agent-map-pill');
+      await pg!.locator('#agent-map .agent-map-kind--root').first().click();
+      // Approvals left pending by earlier tests on this page are needs too; count questions.
+      expect(await pg!.$$eval('#agent-map .agent-map-need',
+        (els) => els.filter((e) => (e.textContent || '').startsWith('Question')).length)).toBe(1);
+      await pg!.keyboard.press('Escape');
+      // Leave the shared page as it was: an open question captures Enter and digits.
+      await receive({ type: 'clearPlanOptions' });
+      expect(await pending()).toBe(0);
     }, 20000);
 
     it.skipIf(CHROMIUM_UNAVAILABLE)('Enter on the pill opens the map instead of approving', async () => {

@@ -5024,7 +5024,7 @@
             enhanceBtn.disabled = true;
             enhanceBtn.title = (message.payload && message.payload.reason) || 'Prompt enhancement is not available';
             showToast(enhanceBtn.title, 'warning');
-            inputEl.focus();
+            if (!mapIsOpen()) { inputEl.focus(); }
             break;
           case 'promptEnhanceError':
             // Clear safety timeout
@@ -5044,7 +5044,7 @@
             setTimeout(function() {
               inputEl.placeholder = originalPlaceholder;
             }, 3000);
-            inputEl.focus();
+            if (!mapIsOpen()) { inputEl.focus(); }
             break;
           case 'slashCommandMenu':
             renderSlashMenu(message.payload);
@@ -5293,7 +5293,7 @@
               var goalInput = document.getElementById('autonomous-goal-input');
               if (overlay) overlay.classList.remove('hidden');
               if (goalInput) goalInput.value = '';
-              if (goalInput) goalInput.focus();
+              if (goalInput && !mapIsOpen()) { goalInput.focus(); }
             }
             break;
 
@@ -11898,7 +11898,11 @@
         if (messageEl) {
           // Remove any existing AskUserQuestion container
           var existing = messageEl.querySelector('.ask-user-question-container');
-          if (existing) existing.remove();
+          if (existing) {
+            // The replaced question is gone from the chat, so it no longer needs you.
+            if (agentMap) { agentMap.questionAnswered(existing.getAttribute('data-tool-call-id')); }
+            existing.remove();
+          }
 
           // For detected questions, hide the matching question text in the response body
           // so it doesn't appear both as text and as an interactive card
