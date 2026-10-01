@@ -16,7 +16,23 @@
  * spawn-settings match — the existing pre-turn check then respawns it (with
  * --resume) on the next message, never mid-turn.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
+
+// A spawned CLI that never exits; nothing real is started.
+const spawned: unknown[] = [];
+vi.mock('child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('child_process')>()),
+  spawn: vi.fn(() => {
+    const proc = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      pid: undefined, exitCode: null, signalCode: null, killed: false, kill: () => true,
+    });
+    spawned.push(proc);
+    return proc;
+  }),
+}));
 import { clearMockConfig } from '../helpers/mockVscode';
 import { TestableClaudeProvider, TestableHermesProvider } from '../helpers/providerFactory';
 import type { Settings } from '../../src/types';
@@ -75,5 +91,29 @@ describe('plugin changes respawn persistent processes (Plan 39)', () => {
     provider.markPluginsChanged();
     expect(p._persistentSettingsMatch(session, s)).toBe(false);
     expect(before).toBe(true);
+  });
+});
+
+describe('a respawned process records the generation it was spawned at (Plan 39 review C1)', () => {
+  beforeEach(() => { clearMockConfig(); spawned.length = 0; });
+
+  it('after a plugin change, ONE respawn — the next turn reuses it', async () => {
+    const provider = new TestableClaudeProvider();
+    const p = provider as any;
+    const s = settings();
+    const session = p._getSession('panel-c1');
+    await p._getOrSpawnPersistentProcess(session, s);
+    expect(p._persistentSettingsMatch(session, s)).toBe(true);
+
+    provider.markPluginsChanged();
+    expect(p._persistentSettingsMatch(session, s)).toBe(false);
+    // What disposePersistentProcess leaves behind on the send path's mismatch.
+    session.persistentProcess = null;
+    session.persistentReady = false;
+    await p._getOrSpawnPersistentProcess(session, s);
+
+    expect(spawned).toHaveLength(2);
+    // Stale snapshot here would respawn the CLI on EVERY later message.
+    expect(p._persistentSettingsMatch(session, s)).toBe(true);
   });
 });

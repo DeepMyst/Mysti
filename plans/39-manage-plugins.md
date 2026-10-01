@@ -126,7 +126,9 @@ A plugin is not just prompt text:
 
 ### 4.1 Install gate: confirm when a plugin runs code, and fail closed
 
-`needsConfirmation(c) = c === 'unknown' || c.hooks > 0 || c.mcpServers > 0 || c.lspServers > 0`.
+`needsConfirmation(c) = c === 'unknown' || c.hooks > 0 || c.mcpServers > 0 || c.lspServers > 0 || c.monitors > 0 || c.other > 0`.
+
+**Amended after the final review (2026-10-01):** Claude plugins also ship `monitors/monitors.json` ("unsandboxed, same trust tier as hooks"), and the CLI loads default paths Mysti may not know. So any top-level entry outside a known prompt-only set (`.claude-plugin`, `commands`, `agents`, `skills`, `output-styles`, docs, licences, images) counts as "Other content", and a plugin with ONLY unrecognised content is `'unknown'`. Only `./`-relative sources are inspected (a bare name may resolve under `metadata.pluginRoot`). `inspect` first runs `plugin marketplace update <mkt>`, because the install refreshes the marketplace too, and the inspect, the confirmation and the install run as ONE queued job.
 
 - **Hermes, OpenClaw and Gemini** report capabilities in their catalog.
 - **Claude, Copilot and Codex** don't report components before install. `components()` reads the plugin's manifest **read-only** from the marketplace copy already on disk (the `installLocation` from `marketplace list --json`):

@@ -92,13 +92,29 @@ describe('Claude Code plugin adapter (Plan 39)', () => {
     await expect(claude.install(run, ID, 'user')).rejects.toThrow('boom');
   });
 
-  it('surfaces a marketplace-declared command so the user can approve it (shape unverified)', async () => {
+  it('surfaces a marketplace-declared command from its shownCommand, as the CLI reports it', async () => {
     const sha = 'b'.repeat(64);
-    const body = JSON.stringify({ outcome: 'failed', failureCode: 'command_requires_acceptance', message: 'needs approval', command: 'install', declaredCommand: 'npm run setup', commandSha256: sha });
+    const body = JSON.stringify({ command: 'install', outcome: 'failed', message: 'needs approval',
+      shownCommand: { kind: 'install', pluginId: ID, command: ['npm', 'run', 'setup'], archiveUrl: 'https://example.com/a.tgz', sha256: sha } });
     const run = fakeRun({ [`plugin install ${ID} -s user --json`]: ok(body, 1) });
     const err = await claude.install(run, ID, 'user').catch((e) => e);
     expect(err).toBeInstanceOf(PluginCliError);
-    expect(err.acceptCommand).toEqual({ command: 'npm run setup', sha });
+    expect(err.acceptCommand).toEqual({ command: 'npm run setup', sha, archiveUrl: 'https://example.com/a.tgz' });
+  });
+
+  it('never mistakes a hash for the command when the keys are flat', async () => {
+    const body = JSON.stringify({ outcome: 'failed', message: 'needs approval', commandSha256: 'b'.repeat(64), declaredCommand: 'npm run setup' });
+    const run = fakeRun({ [`plugin install ${ID} -s user --json`]: ok(body, 1) });
+    const err = await claude.install(run, ID, 'user').catch((e) => e);
+    expect(err.acceptCommand).toBeUndefined();
+  });
+
+  it('updates with an approved command pinned, like install', async () => {
+    const sha = 'd'.repeat(64);
+    const p = { id: ID, name: 'commit-commands', scope: 'user' as const };
+    const run = fakeRun({ [`plugin update ${ID} -s user --json --accept-command ${sha}`]: ok('{"outcome":"ok"}') });
+    await claude.update!(run, p, { acceptCommandSha: sha });
+    expect(run.calls[0].slice(-2)).toEqual(['--accept-command', sha]);
   });
 
   it('uninstalls, enables and updates in the plugin\'s own scope', async () => {
@@ -137,7 +153,10 @@ describe('Claude Code plugin adapter (Plan 39)', () => {
   describe('inspect: what runs code, read from the marketplace copy on disk', () => {
     let dir: string;
     const entry = (name: string): CatalogPlugin => ({ id: `${name}@mk`, name, marketplace: 'mk' });
-    const listRun = () => fakeRun({ 'plugin marketplace list --json': ok(JSON.stringify([{ name: 'mk', installLocation: dir }])) });
+    const listRun = () => fakeRun({
+      'plugin marketplace update mk': ok(''),
+      'plugin marketplace list --json': ok(JSON.stringify([{ name: 'mk', installLocation: dir }])),
+    });
 
     function write(rel: string, body = '{}'): void {
       const f = path.join(dir, rel);
@@ -187,12 +206,52 @@ describe('Claude Code plugin adapter (Plan 39)', () => {
       expect(await claude.inspect(listRun(), entry('escape'))).toBe('unknown');
     });
     it('treats a manifest key it does not recognise as unknown, not as safe', async () => {
-      write('.claude-plugin/marketplace.json', JSON.stringify({ plugins: [{ name: 'novel', source: './plugins/plain', monitors: ['x'] }] }));
+      write('.claude-plugin/marketplace.json', JSON.stringify({ plugins: [{ name: 'novel', source: './plugins/plain', backgroundJobs: ['x'] }] }));
       expect(await claude.inspect(listRun(), entry('novel'))).toBe('unknown');
+    });
+    it('finds monitors declared in the manifest', async () => {
+      write('.claude-plugin/marketplace.json', JSON.stringify({ plugins: [{ name: 'watched', source: './plugins/plain', monitors: ['x'] }] }));
+      expect(await claude.inspect(listRun(), entry('watched'))).toEqual(['Monitors']);
     });
     it('treats a plugin directory that is not on disk as unknown', async () => {
       write('.claude-plugin/marketplace.json', JSON.stringify({ plugins: [{ name: 'gone', source: './plugins/gone' }] }));
       expect(await claude.inspect(listRun(), entry('gone'))).toBe('unknown');
+    });
+    it('finds monitors in monitors/monitors.json (same trust tier as hooks)', async () => {
+      write('.claude-plugin/marketplace.json', JSON.stringify({ plugins: [{ name: 'watchy', source: './plugins/watchy' }] }));
+      write('plugins/watchy/monitors/monitors.json');
+      write('plugins/watchy/commands/go.md', '# go');
+      expect(await claude.inspect(listRun(), entry('watchy'))).toEqual(['Monitors']);
+    });
+    it('treats a top-level entry it does not recognise as unknown, not as safe', async () => {
+      write('.claude-plugin/marketplace.json', JSON.stringify({ plugins: [{ name: 'flowy', source: './plugins/flowy' }] }));
+      write('plugins/flowy/workflows/run.js', 'x');
+      write('plugins/flowy/commands/go.md', '# go');
+      expect(await claude.inspect(listRun(), entry('flowy'))).toBe('unknown');
+    });
+    it('still names what it does recognise next to something it does not', async () => {
+      write('.claude-plugin/marketplace.json', JSON.stringify({ plugins: [{ name: 'mixed', source: './plugins/mixed' }] }));
+      write('plugins/mixed/hooks/hooks.json');
+      write('plugins/mixed/hooks-handlers/run.sh', 'x');
+      expect(await claude.inspect(listRun(), entry('mixed'))).toEqual(['Hooks', 'Other content']);
+    });
+    it('treats a bare source name as unknown (it may resolve under pluginRoot)', async () => {
+      write('.claude-plugin/marketplace.json', JSON.stringify({ metadata: { pluginRoot: './real' }, plugins: [{ name: 'decoy', source: 'decoy' }] }));
+      write('decoy/commands/go.md', '# go');
+      write('real/decoy/hooks/hooks.json');
+      expect(await claude.inspect(listRun(), entry('decoy'))).toBe('unknown');
+    });
+    it('refreshes the marketplace before looking, so it inspects what the install will use', async () => {
+      const run = listRun();
+      await claude.inspect(run, entry('plain'));
+      expect(run.calls[0]).toEqual(['plugin', 'marketplace', 'update', 'mk']);
+    });
+    it('treats a marketplace it could not refresh as unknown', async () => {
+      const run = fakeRun({
+        'plugin marketplace update mk': { code: 1, stdout: '', stderr: 'offline', timedOut: false },
+        'plugin marketplace list --json': ok(JSON.stringify([{ name: 'mk', installLocation: dir }])),
+      });
+      expect(await claude.inspect(run, entry('plain'))).toBe('unknown');
     });
     it('treats a plugin missing from the manifest as unknown', async () => {
       expect(await claude.inspect(listRun(), entry('ghost'))).toBe('unknown');

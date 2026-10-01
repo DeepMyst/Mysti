@@ -943,15 +943,16 @@ export abstract class BaseCliProvider implements ICliProvider {
     // like mysti.claudeCodeModel), not the raw dropdown value — otherwise a
     // custom model set while a persistent process is already running would never
     // trigger a respawn and would be silently ignored (issue #39).
-    if (!session.persistentSettings) {
-      session.persistentSettings = {
-        model: this._getEffectiveModel(settings),
-        permissionMode: this._derivePermissionMode(settings),
-        thinkingLevel: settings.thinkingLevel || 'none',
-        effortLevel: settings.effortLevel || '',
-        pluginGeneration: this._pluginGeneration,
-      };
-    }
+    // ALWAYS, not only when absent: this process was just spawned with these
+    // settings. A snapshot left by a disposed predecessor would otherwise make
+    // the pre-send check respawn on EVERY later turn (Plan 39 review C1).
+    session.persistentSettings = {
+      model: this._getEffectiveModel(settings),
+      permissionMode: this._derivePermissionMode(settings),
+      thinkingLevel: settings.thinkingLevel || 'none',
+      effortLevel: settings.effortLevel || '',
+      pluginGeneration: this._pluginGeneration,
+    };
 
     console.log(`[Mysti] ${this.displayName}: Persistent process ready for panel: ${session.panelId}`);
 

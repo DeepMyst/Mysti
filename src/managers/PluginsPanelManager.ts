@@ -24,7 +24,7 @@ import type { ICliProvider } from '../providers/base/IProvider';
 import type { ProviderType } from '../types';
 import { PLUGIN_ADAPTERS, PluginCliError, isAdapter, runCli } from '../services/plugins/PluginAdapters';
 import type {
-  Approval, CatalogPlugin, CodeParts, Marketplace, PluginAdapter, PluginBackend,
+  Approval, CatalogPlugin, CodeParts, DeclaredCommand, Marketplace, PluginAdapter, PluginBackend,
   PluginListing, PluginScope, Run, RunResult,
 } from '../services/plugins/PluginAdapters';
 import { getPluginsContent } from '../webview/pluginsContent';
@@ -61,6 +61,19 @@ const SCOPE_PHRASE: Record<PluginScope, string> = { user: 'for you', project: 'f
 
 const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+/** An argument that would reach the CLI as an option instead of a value. */
+const flagLike = (v: string): boolean => v.startsWith('-');
+/** Untrusted catalog text for a native modal: one line, no control characters, capped. */
+function oneLine(v: string | undefined, max = 80): string {
+  // eslint-disable-next-line no-control-regex -- control characters are exactly what this removes
+  const flat = String(v ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+/** A command shown for approval: line breaks stay visible instead of hiding a second line. */
+function visibleCommand(v: string): string {
+  // eslint-disable-next-line no-control-regex -- making control characters visible is the point
+  return v.replace(/\r?\n/g, ' ⏎ ').replace(/[\u0000-\u001f\u007f]/g, '�');
+}
 
 export class PluginsPanelManager implements vscode.Disposable {
   /** Every posted state also goes here (tests read it). */
@@ -76,7 +89,12 @@ export class PluginsPanelManager implements vscode.Disposable {
   private readonly _listing = new Map<string, PluginListing>();
   private readonly _markets = new Map<string, Marketplace[]>();
   private readonly _search = new Map<string, { query: string; results: CatalogPlugin[] }>();
+  /** The last action's error; cleared by the next message. */
   private readonly _errors = new Map<string, string>();
+  /** What the last re-list could not read; set and cleared only by _relist. */
+  private readonly _listErrors = new Map<string, string>();
+  /** The query whose results the panel should show; older results are dropped. */
+  private readonly _searchLatest = new Map<string, string>();
   private readonly _missing = new Set<string>();
   private readonly _loading = new Set<string>();
   /** One mutation at a time per backend: two installs write the same state files. */
@@ -96,9 +114,9 @@ export class PluginsPanelManager implements vscode.Disposable {
     this._runCli = deps.run ?? runCli;
   }
 
-  /** Open (or reveal) the tab, on `backend` when it has plugins Mysti can manage. */
+  /** Open (or reveal) the tab on `backend`: a chat's own backend, even one that only has a note. */
   open(backend?: string): void {
-    if (backend && this._adapterFor(backend)) { this._selected = backend; }
+    if (backend && this._ids().includes(backend)) { this._selected = backend; }
     if (this._panel) {
       this._panel.reveal(vscode.ViewColumn.Active);
       void this.handleMessage({ type: 'refresh' });
@@ -126,7 +144,7 @@ export class PluginsPanelManager implements vscode.Disposable {
     const type = text(msg?.type);
     this._ensureSelected();
     const backend = this._selected;
-    if (type !== 'ready' && type !== 'refresh') { this._errors.delete(backend); }
+    this._errors.delete(backend);
     try {
       switch (type) {
         case 'ready':
@@ -181,15 +199,22 @@ export class PluginsPanelManager implements vscode.Disposable {
   /** Re-read everything from the CLI. A failure is an error, never an empty list. */
   private async _relist(backend: string, adapter: PluginAdapter): Promise<void> {
     const run = this._runFor(backend);
+    const problems: string[] = [];
     try {
       this._listing.set(backend, await adapter.list(run));
     } catch (e) {
       this._listing.delete(backend);
-      this._errors.set(backend, errorText(e));
+      problems.push(errorText(e));
     }
     if (adapter.marketplaces) {
-      try { this._markets.set(backend, await adapter.marketplaces.list(run)); } catch { this._markets.delete(backend); }
+      try {
+        this._markets.set(backend, await adapter.marketplaces.list(run));
+      } catch (e) {
+        this._markets.delete(backend);
+        problems.push(`Couldn't read the marketplaces: ${errorText(e)}`);
+      }
     }
+    if (problems.length) { this._listErrors.set(backend, problems.join('\n')); } else { this._listErrors.delete(backend); }
     this._loading.delete(backend);
     this._post();
   }
@@ -197,9 +222,12 @@ export class PluginsPanelManager implements vscode.Disposable {
   private async _searchCatalog(backend: string, query: string): Promise<void> {
     const adapter = this._adapterFor(backend);
     if (!adapter?.search) { return; }
+    this._searchLatest.set(backend, query);
     if (!query) { this._search.delete(backend); this._post(); return; }
-    if (query.length > 100 || query.startsWith('-')) { this._fail(backend, 'Search for a plugin name or word.'); return; }
+    if (query.length > 100 || flagLike(query)) { this._fail(backend, 'Search for a plugin name or word.'); return; }
     const results = await adapter.search(this._runFor(backend), query);
+    // Typing fast sends several searches; only the latest one's answer counts.
+    if (this._searchLatest.get(backend) !== query) { return; }
     this._search.set(backend, { query, results });
     this._post();
   }
@@ -211,55 +239,67 @@ export class PluginsPanelManager implements vscode.Disposable {
     if (!adapter) { return; }
     const entry = this._catalog(backend).find((e) => e.id === id);
     if (!entry) { this._fail(backend, 'That plugin is no longer in the list. Refresh and try again.'); return; }
+    if (flagLike(entry.id)) { this._fail(backend, `${oneLine(entry.name)} can't be installed from here: its id reads as a command-line option.`); return; }
     if (!adapter.scopes.includes(scope as PluginScope)) { this._fail(backend, `${this._name(backend)} can't install plugins for that scope.`); return; }
     const where = scope as PluginScope;
     if (where !== 'user' && vscode.workspace.isTrusted !== true) {
       this._fail(backend, 'Installing for this project needs a trusted workspace.');
       return;
     }
+    // A second click while this row is busy is the same request.
+    if (this._busy.has(`${backend}\n${entry.id}`)) { return; }
     const run = this._runFor(backend);
-    const parts: CodeParts = entry.codeParts ?? await adapter.inspect(run, entry).catch(() => 'unknown' as const);
-    if ((parts === 'unknown' || parts.length > 0) && !(await this._confirmInstall(backend, entry, parts, where))) { return; }
-
-    await this._mutate(backend, entry.id, 'Installing…', true, `Installed ${entry.name} ${SCOPE_PHRASE[where]}.`, async () => {
-      let approval: Approval | undefined;
-      for (;;) {
-        try {
-          await adapter.install(run, entry.id, where, approval);
-          return;
-        } catch (e) {
-          if (!approval && e instanceof PluginCliError && e.acceptCommand && await this._confirmCommand(backend, entry, e.acceptCommand)) {
-            approval = { acceptCommandSha: e.acceptCommand.sha };
-            continue;
-          }
-          throw e;
-        }
-      }
+    // Inspect, confirm and install in ONE queued job, so what was inspected is
+    // what gets installed — no other action on this backend runs in between.
+    await this._mutate(backend, entry.id, 'Checking…', true, `Installed ${oneLine(entry.name)} ${SCOPE_PHRASE[where]}.`, async (setBusy) => {
+      const parts: CodeParts = entry.codeParts ?? await adapter.inspect(run, entry).catch(() => 'unknown' as const);
+      if ((parts === 'unknown' || parts.length > 0) && !(await this._confirmInstall(backend, entry, parts, where))) { return false; }
+      setBusy('Installing…');
+      await this._withApproval(backend, entry, (approval) => adapter.install(run, entry.id, where, approval));
+      return true;
     });
+  }
+
+  /**
+   * Run a mutation; when the CLI refuses because a marketplace declares a
+   * command, show that exact command and, on approval, rerun pinned to its hash.
+   */
+  private async _withApproval(backend: string, what: { id: string; name: string; marketplace?: string }, fn: (approval?: Approval) => Promise<void>): Promise<void> {
+    try {
+      await fn(undefined);
+    } catch (e) {
+      if (e instanceof PluginCliError && e.acceptCommand && await this._confirmCommand(backend, what, e.acceptCommand)) {
+        await fn({ acceptCommandSha: e.acceptCommand.sha });
+        return;
+      }
+      throw e;
+    }
   }
 
   private async _confirmInstall(backend: string, entry: CatalogPlugin, parts: CodeParts, scope: PluginScope): Promise<boolean> {
     const name = this._name(backend);
-    const from = `From ${entry.marketplace ?? name}. Installs ${SCOPE_PHRASE[scope]}.`;
+    const plugin = oneLine(entry.name);
+    const from = `Plugin id: ${oneLine(entry.id, 120)}. From ${oneLine(entry.marketplace) || name}. Installs ${SCOPE_PHRASE[scope]}.`;
     const outside = `run inside ${name}, outside Mysti's per-tool approval, even in read-only mode.`;
     const [message, detail, button] = parts === 'unknown'
       ? [
-        `Install ${entry.name}?`,
-        `Mysti can't see what ${entry.name} contains until it is installed. It may add hooks or servers, which ${outside}\n\n${from}`,
+        `Install ${plugin}?`,
+        `Mysti can't see what this plugin contains until it is installed. It may add hooks or servers, which ${outside}\n\n${from}`,
         'Install anyway',
       ]
       : [
-        `Install ${entry.name}? It runs code on your machine.`,
-        `${entry.name} adds: ${parts.join(', ')}. These ${outside}\n\n${from}`,
+        `Install ${plugin}? It runs code on your machine.`,
+        `It adds: ${parts.join(', ')}. These ${outside}\n\n${from}`,
         'Install',
       ];
     return (await vscode.window.showWarningMessage(message, { modal: true, detail }, button)) === button;
   }
 
-  private async _confirmCommand(backend: string, entry: CatalogPlugin, cmd: { command: string; sha: string }): Promise<boolean> {
-    const button = 'Run it and install';
-    const detail = `${cmd.command}\n\nSHA-256 ${cmd.sha}\n\nApproving pins this exact command. If the marketplace changes it, the install stops and asks again.`;
-    const message = `${entry.marketplace ?? this._name(backend)} runs a command to install ${entry.name}. Approve it?`;
+  private async _confirmCommand(backend: string, what: { id: string; name: string; marketplace?: string }, cmd: DeclaredCommand): Promise<boolean> {
+    const button = 'Run it and continue';
+    const archive = cmd.archiveUrl ? `\n\nDownloads ${oneLine(cmd.archiveUrl, 300)}` : '';
+    const detail = `${visibleCommand(cmd.command)}${archive}\n\nSHA-256 ${cmd.sha}\n\nPlugin id: ${oneLine(what.id, 120)}. Approving pins this exact command; if the marketplace changes it, ${this._name(backend)} stops and asks again.`;
+    const message = `${oneLine(what.marketplace) || this._name(backend)} runs a command for ${oneLine(what.name)}. Approve it?`;
     return (await vscode.window.showWarningMessage(message, { modal: true, detail }, button)) === button;
   }
 
@@ -269,6 +309,12 @@ export class PluginsPanelManager implements vscode.Disposable {
     const adapter = this._adapterFor(backend);
     const p = this._listing.get(backend)?.installed.find((x) => x.id === text(msg.id) && x.scope === text(msg.scope));
     if (!adapter || !p) { this._fail(backend, 'That plugin is no longer in the list. Refresh and try again.'); return; }
+    if (flagLike(p.id)) { this._fail(backend, `${oneLine(p.name)} can't be changed from here: its id reads as a command-line option.`); return; }
+    if (op !== 'details' && (p.scope === 'project' || p.scope === 'local') && vscode.workspace.isTrusted !== true) {
+      this._fail(backend, 'Changing a plugin installed for this project needs a trusted workspace.');
+      return;
+    }
+    if (this._busy.has(`${backend}\n${p.id}`)) { return; }
     const run = this._runFor(backend);
     if (op === 'details') {
       if (!adapter.details) { return; }
@@ -285,7 +331,7 @@ export class PluginsPanelManager implements vscode.Disposable {
       await this._mutate(backend, p.id, on ? 'Turning on…' : 'Turning off…', true, `Turned ${on ? 'on' : 'off'} ${p.name}.`, () => adapter.setEnabled!(run, p, on));
     } else {
       if (!adapter.update) { return; }
-      await this._mutate(backend, p.id, 'Updating…', true, `Updated ${p.name}.`, () => adapter.update!(run, p));
+      await this._mutate(backend, p.id, 'Updating…', true, `Updated ${p.name}.`, () => this._withApproval(backend, p, (approval) => adapter.update!(run, p, approval)));
     }
   }
 
@@ -312,6 +358,7 @@ export class PluginsPanelManager implements vscode.Disposable {
     const m = this._adapterFor(backend)?.marketplaces;
     const market = this._markets.get(backend)?.find((x) => x.name === name);
     if (!m || !market) { this._fail(backend, 'That marketplace is no longer in the list. Refresh and try again.'); return; }
+    if (flagLike(name)) { this._fail(backend, `${oneLine(name)} can't be changed from here: its name reads as a command-line option.`); return; }
     const run = this._runFor(backend);
     if (op === 'refresh') {
       await this._mutate(backend, `mkt:${name}`, 'Refreshing…', false, `Refreshed ${name}.`, () => m.refresh(run, name));
@@ -335,25 +382,32 @@ export class PluginsPanelManager implements vscode.Disposable {
   /**
    * Run one mutation in the backend's queue, show it on its row, re-list from
    * the CLI afterwards, and on success tell the provider so open chats pick up
-   * the change on their next message.
+   * the change on their next message. `fn` returning false means the user
+   * declined: nothing changed, so nothing is announced or re-listed.
    */
-  private _mutate(backend: string, rowKey: string, busyText: string, changesPlugins: boolean, done: string, fn: () => Promise<void>): Promise<void> {
+  private _mutate(
+    backend: string, rowKey: string, busyText: string, changesPlugins: boolean, done: string,
+    fn: (setBusy: (text: string) => void) => Promise<boolean | void>,
+  ): Promise<void> {
     const key = `${backend}\n${rowKey}`;
-    this._busy.set(key, busyText);
+    const setBusy = (t: string) => { this._busy.set(key, t); this._post(); };
     this._rowErrors.delete(key);
-    this._post();
+    setBusy(busyText);
     return this._enqueue(backend, async () => {
+      let declined = false;
       try {
-        await fn();
-        if (changesPlugins) { this._providers.getProviderInstance(backend)?.markPluginsChanged?.(); }
-        this._banner = changesPlugins ? `${done} It applies from your next message in ${this._name(backend)} chats.` : done;
+        declined = (await fn(setBusy)) === false;
+        if (!declined) {
+          if (changesPlugins) { this._providers.getProviderInstance(backend)?.markPluginsChanged?.(); }
+          this._banner = changesPlugins ? `${done} It applies from your next message in ${this._name(backend)} chats.` : done;
+        }
       } catch (e) {
         this._rowErrors.set(key, errorText(e));
       } finally {
         this._busy.delete(key);
       }
       const adapter = this._adapterFor(backend);
-      if (adapter) { await this._relist(backend, adapter); }
+      if (!declined && adapter) { await this._relist(backend, adapter); } else { this._post(); }
     });
   }
 
@@ -435,7 +489,11 @@ export class PluginsPanelManager implements vscode.Disposable {
       busy: this._rows(this._busy, b),
       rowErrors: this._rows(this._rowErrors, b),
       banner: this._banner,
-      error: this._errors.get(b) ?? (this._missing.has(b) ? `${this._name(b)}'s CLI wasn't found. Install it from the setup screen, then refresh.` : undefined),
+      error: [
+        this._missing.has(b) ? `${this._name(b)}'s CLI wasn't found. Install it from the setup screen, then refresh.` : undefined,
+        this._listErrors.get(b),
+        this._errors.get(b),
+      ].filter(Boolean).join('\n') || undefined,
       details: this._details?.backend === b ? { id: this._details.id, text: this._details.text } : undefined,
     };
     this.onState?.(state);

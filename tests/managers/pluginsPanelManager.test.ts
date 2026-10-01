@@ -237,4 +237,138 @@ describe('PluginsPanelManager (Plan 39)', () => {
     expect(providers['claude-code'].markPluginsChanged).not.toHaveBeenCalled();
     expect(run.mock.calls.every(([cli]) => cli === '/bin/claude-code')).toBe(true);
   });
+
+  // ── Final review fixes ────────────────────────────────────────────────────
+
+  it('inspects inside the backend queue, after work already queued (review I1)', async () => {
+    const log: string[] = [];
+    let release!: () => void;
+    (adapter.install as any).mockImplementation(async (_r: unknown, id: string) => {
+      log.push(`install ${id}`);
+      if (id === 'plain@m') { await new Promise<void>((r) => { release = r; }); }
+    });
+    (adapter.inspect as any).mockImplementation(async (_r: unknown, e: { id: string; name: string }) => { log.push(`inspect ${e.id}`); return []; });
+    const first = manager.handleMessage({ type: 'install', id: 'plain@m', scope: 'user' });
+    const second = manager.handleMessage({ type: 'install', id: 'plain2@m', scope: 'user' });
+    for (let i = 0; i < 5; i++) { await tick(); }
+    expect(log).toEqual(['inspect plain@m', 'install plain@m']);
+    release();
+    await Promise.all([first, second]);
+    expect(log).toEqual(['inspect plain@m', 'install plain@m', 'inspect plain2@m', 'install plain2@m']);
+  });
+
+  it('ignores a second click on a row that is already busy (review M6)', async () => {
+    let release!: () => void;
+    (adapter.install as any).mockImplementation(() => new Promise<void>((r) => { release = r; }));
+    const first = manager.handleMessage({ type: 'install', id: 'plain@m', scope: 'user' });
+    const again = manager.handleMessage({ type: 'install', id: 'plain@m', scope: 'user' });
+    for (let i = 0; i < 5; i++) { await tick(); }
+    release();
+    await Promise.all([first, again]);
+    expect(adapter.install).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks again before an update that runs a declared command, and pins it (review I3)', async () => {
+    const sha = 'e'.repeat(64);
+    const update = vi.fn()
+      .mockRejectedValueOnce(new PluginCliError('needs approval', { command: 'npm run postupdate', sha, archiveUrl: 'https://x/y.tgz' }))
+      .mockResolvedValueOnce(undefined);
+    build({ 'claude-code': testAdapter({ update }), 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+    await manager.handleMessage({ type: 'update', id: 'on@m', scope: 'user' });
+    expect(String(modal.mock.calls[0][1].detail)).toContain('npm run postupdate');
+    expect(String(modal.mock.calls[0][1].detail)).toContain('https://x/y.tgz');
+    expect(update).toHaveBeenLastCalledWith(expect.any(Function), expect.objectContaining({ id: 'on@m' }), { acceptCommandSha: sha });
+  });
+
+  it('clears a list error once a refresh succeeds, and keeps it through other actions (review I4)', async () => {
+    (adapter.list as any).mockRejectedValueOnce(new PluginCliError("Couldn't read Claude Code's plugin list."));
+    await manager.handleMessage({ type: 'refresh' });
+    await manager.handleMessage({ type: 'details', id: 'nope', scope: 'user' });
+    expect(state!.error).toMatch(/Couldn't read Claude Code's plugin list/);
+    await manager.handleMessage({ type: 'refresh' });
+    expect(state!.listing).toBeDefined();
+    expect(state!.error).toBeUndefined();
+  });
+
+  it('shows a marketplace list failure as an error, not as no marketplaces (review M8)', async () => {
+    (adapter.marketplaces!.list as any).mockRejectedValueOnce(new PluginCliError('offline'));
+    await manager.handleMessage({ type: 'refresh' });
+    expect(state!.markets).toBeUndefined();
+    expect(state!.error).toMatch(/offline/);
+  });
+
+  it('refuses a catalog id that would read as a flag (review M1)', async () => {
+    adapter = testAdapter({
+      list: vi.fn(async () => ({ installed: [], available: [{ id: '--help@mk', name: '--help' }] })),
+    });
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    await manager.handleMessage({ type: 'install', id: '--help@mk', scope: 'user' });
+    expect(adapter.install).not.toHaveBeenCalled();
+    expect(state!.error).toBeTruthy();
+  });
+
+  it('keeps only the latest search when results arrive out of order (review M2)', async () => {
+    const resolvers: Record<string, () => void> = {};
+    const search = vi.fn((_r: unknown, q: string) => new Promise((res) => {
+      resolvers[q] = () => res([{ id: `hit-${q}`, name: q }]);
+    }));
+    build({ 'claude-code': testAdapter({ search: search as any }), 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    const older = manager.handleMessage({ type: 'search', query: 'ab' });
+    const newer = manager.handleMessage({ type: 'search', query: 'abc' });
+    await tick();
+    resolvers.abc();
+    await newer;
+    resolvers.ab();
+    await older;
+    expect(state!.search).toEqual({ query: 'abc', results: [{ id: 'hit-abc', name: 'abc' }] });
+  });
+
+  it('puts catalog text in the modal on one line, with the id (review M7)', async () => {
+    adapter = testAdapter({
+      list: vi.fn(async () => ({ installed: [], available: [{ id: 'x@m', name: 'Helper\n\nVerified safe by Mysti', marketplace: 'm' }] })),
+      inspect: vi.fn(async () => 'unknown' as const),
+    });
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    await manager.handleMessage({ type: 'install', id: 'x@m', scope: 'user' });
+    const [message, opts] = modal.mock.calls[0];
+    expect(message).not.toMatch(/\n/);
+    expect(String(opts.detail)).toContain('x@m');
+    expect(String(opts.detail).split('\n')[0]).not.toMatch(/^Verified/);
+  });
+
+  it('refuses to change a project plugin in an untrusted workspace (review M13)', async () => {
+    adapter = testAdapter({
+      list: vi.fn(async () => ({ installed: [{ id: 'team@m', name: 'team', scope: 'project' as const, enabled: true }], available: [] })),
+    });
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    (workspace as any).isTrusted = false;
+    await manager.handleMessage({ type: 'setEnabled', id: 'team@m', scope: 'project', on: false });
+    await manager.handleMessage({ type: 'uninstall', id: 'team@m', scope: 'project' });
+    expect(adapter.setEnabled).not.toHaveBeenCalled();
+    expect(adapter.uninstall).not.toHaveBeenCalled();
+    expect(state!.error).toMatch(/trusted/i);
+  });
+
+  it('opens on a backend that only has a note, so /plugins from a Codex chat shows Codex (review M10)', async () => {
+    const panel = {
+      webview: { html: '', cspSource: '', asWebviewUri: (u: unknown) => u, onDidReceiveMessage: () => ({ dispose() {} }), postMessage: async () => true },
+      onDidDispose: () => ({ dispose() {} }), reveal() {}, dispose() {},
+    };
+    const original = (window as any).createWebviewPanel;
+    (window as any).createWebviewPanel = () => panel;
+    try {
+      manager.open('openai-codex');
+      await manager.handleMessage({ type: 'ready' });
+      expect(state!.selected).toBe('openai-codex');
+      expect(state!.note).toMatch(/Codex/);
+    } finally {
+      (window as any).createWebviewPanel = original;
+    }
+  });
 });

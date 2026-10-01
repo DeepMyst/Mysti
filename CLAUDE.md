@@ -271,8 +271,8 @@ manager/service cluster and has a design doc in `plans/`:
   shell — Mysti never writes another tool's plugin config. Claude Code's exit
   code lies (a failed install exits 0), so its `--json` `outcome` decides.
   `PluginsPanelManager` checks every webview id/scope/source against the last
-  listing, confirms anything that runs code (hooks, MCP/LSP servers, or
-  contents it can't see) in a NATIVE modal, and on success calls
+  listing, confirms anything that runs code (hooks, MCP/LSP servers, monitors,
+  unrecognised plugin content, or contents it can't see) in a NATIVE modal, and on success calls
   `markPluginsChanged()`, which respawns persistent CLI processes on their
   next message. Phase 1 drives Claude Code, Copilot, OpenClaw and Hermes.
 - **Agent catalog & quarantine** (`plans/20`) — the coordinator's `search`/

@@ -201,7 +201,8 @@
       empty = !listing ? '' : query ? 'Nothing available matches “' + query + '”.' : 'No catalog plugins to show.';
       $('available-h').textContent = 'Available' + (listing ? ' · ' + all.length.toLocaleString('en-US') : '');
     }
-    available = available.filter(function (p) { return !installedIds[p.id]; });
+    // OpenClaw installs a ClawHub package under its runtime id.
+    available = available.filter(function (p) { return !installedIds[p.id] && !(p.installedAs && installedIds[p.installedAs]); });
     fill($('available'), available, function (p) { return availableRow(p, s); });
     show($('available-empty'), available.length ? '' : empty);
     const more = installed.length > CAP || available.length > CAP;
@@ -308,8 +309,9 @@
 
   function renderMarkets(s) {
     const list = s.markets || [];
-    $('count-markets').textContent = String(list.length);
-    $('markets-empty').hidden = list.length > 0;
+    $('count-markets').textContent = s.markets ? String(list.length) : '';
+    // Unread is not empty: when they couldn't be read, the error says so.
+    $('markets-empty').hidden = !s.markets || list.length > 0;
     fill($('markets'), list, function (m) {
       const li = el('li', 'row');
       li.dataset.name = m.name;

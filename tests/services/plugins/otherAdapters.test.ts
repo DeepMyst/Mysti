@@ -50,7 +50,8 @@ describe('Copilot adapter (Plan 39)', () => {
       'plugin marketplace browse awesome-copilot --json': ok(fx('copilot-browse-awesome-copilot.json')),
     });
     const listing = await copilot.list(run);
-    expect(listing.installed).toEqual([expect.objectContaining({ id: 'workiq', name: 'workiq', marketplace: 'copilot-plugins', enabled: false, scope: 'user' })]);
+    // Same id as its catalog entry, so it is never also offered for install.
+    expect(listing.installed).toEqual([expect.objectContaining({ id: 'workiq@copilot-plugins', name: 'workiq', marketplace: 'copilot-plugins', enabled: false, scope: 'user' })]);
     const ids = listing.available!.map((p) => p.id);
     expect(ids).toContain('microsoft-365-agents-toolkit@copilot-plugins');
     expect(ids).toContain('accessibility-kanban@awesome-copilot');
@@ -109,6 +110,8 @@ describe('OpenClaw adapter (Plan 39)', () => {
     const results = await openclaw.search!(run, 'memory');
     expect(results[0]).toMatchObject({ id: 'clawhub:memory-lancedb-dreaming', name: 'Memory LanceDB Dreaming', version: '0.3.17', marketplace: 'ClawHub' });
     expect(results[1].id).toBe('clawhub:@openclaw/memory-lancedb');
+    // Installed under its runtime id, which is how the panel knows it's already there.
+    expect(results[1].installedAs).toBe('memory-lancedb');
     const install = fakeRun({ 'plugins install clawhub:@openclaw/memory-lancedb': ok('') });
     await openclaw.install(install, 'clawhub:@openclaw/memory-lancedb', 'user');
     expect(install.calls[0]).not.toContain('--force');

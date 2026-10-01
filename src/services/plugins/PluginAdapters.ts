@@ -51,6 +51,8 @@ export interface CatalogPlugin {
   version?: string;
   /** Executable components the catalog itself reports (Hermes); otherwise inspect() decides. */
   codeParts?: CodeParts;
+  /** The id it will have once installed, when that differs from `id` (OpenClaw's runtime id). */
+  installedAs?: string;
 }
 
 export interface PluginListing {
@@ -73,8 +75,10 @@ export type Run = (args: string[], opts?: { timeoutMs?: number }) => Promise<Run
 /** Executable component kinds (`[]` = none), or `'unknown'` when they cannot be seen before install. */
 export type CodeParts = string[] | 'unknown';
 
+export interface DeclaredCommand { command: string; sha: string; archiveUrl?: string }
+
 export class PluginCliError extends Error {
-  constructor(message: string, readonly acceptCommand?: { command: string; sha: string }) {
+  constructor(message: string, readonly acceptCommand?: DeclaredCommand) {
     super(message);
     this.name = 'PluginCliError';
   }
@@ -89,7 +93,7 @@ export interface PluginAdapter {
   install(run: Run, id: string, scope: PluginScope, approval?: Approval): Promise<void>;
   uninstall?(run: Run, p: InstalledPlugin): Promise<void>;
   setEnabled?(run: Run, p: InstalledPlugin, on: boolean): Promise<void>;
-  update?(run: Run, p: InstalledPlugin): Promise<void>;
+  update?(run: Run, p: InstalledPlugin, approval?: Approval): Promise<void>;
   details?(run: Run, p: InstalledPlugin): Promise<string>;
   marketplaces?: {
     list(run: Run): Promise<Marketplace[]>;
@@ -214,38 +218,40 @@ function claudeOutcome(r: RunResult): void {
 }
 
 /**
- * The marketplace-declared install command Claude wants approved. Its JSON
- * shape is unverified, so this offers approval only when BOTH a 64-hex hash
- * and the command text are present; otherwise the plain error shows.
+ * The marketplace-declared command Claude wants approved, from the failure's
+ * `shownCommand` object (`--accept-command`'s help: "reported as
+ * shownCommand.sha256"). Offered only when both a 64-hex hash and the command
+ * itself are present, so the user always sees what they approve.
  */
-function claudeAcceptCommand(j: Record<string, unknown>): { command: string; sha: string } | undefined {
-  let sha: string | undefined;
-  let command: string | undefined;
-  for (const [k, v] of Object.entries(j)) {
-    if (typeof v !== 'string') { continue; }
-    if (!sha && /sha/i.test(k) && /^[0-9a-f]{64}$/i.test(v)) { sha = v.toLowerCase(); }
-    // `command` alone is the subcommand name ("install"), not the declared command.
-    if (!command && k !== 'command' && /command/i.test(k)) { command = v; }
-  }
-  return sha && command ? { command, sha } : undefined;
+function claudeAcceptCommand(j: Obj): DeclaredCommand | undefined {
+  const shown = obj(j.shownCommand);
+  const sha = str(shown.sha256);
+  const command = Array.isArray(shown.command)
+    ? shown.command.filter((x): x is string => typeof x === 'string').join(' ')
+    : str(shown.command);
+  if (!sha || !/^[0-9a-f]{64}$/i.test(sha) || !command) { return undefined; }
+  return { command, sha: sha.toLowerCase(), archiveUrl: str(shown.archiveUrl) };
 }
 
 /** Manifest keys that declare something which RUNS (vs. prompt content). */
-const CLAUDE_CODE_KEYS: Record<string, string> = { hooks: 'Hooks', mcpServers: 'MCP servers', lspServers: 'LSP servers' };
-const CLAUDE_PART_ORDER = ['Hooks', 'MCP servers', 'LSP servers'];
+const CLAUDE_CODE_KEYS: Record<string, string> = { hooks: 'Hooks', mcpServers: 'MCP servers', lspServers: 'LSP servers', monitors: 'Monitors' };
+/** Top-level entries Claude loads as code by default. */
+const CLAUDE_CODE_ENTRIES: Record<string, string> = { 'hooks': 'Hooks', '.mcp.json': 'MCP servers', '.lsp.json': 'LSP servers', 'monitors': 'Monitors' };
+/** Top-level entries that are prompt content or inert files. Anything else is "Other content". */
+const CLAUDE_INERT_ENTRY = /^(\.claude-plugin|commands|agents|skills|output-styles|assets|docs|images|\.gitignore|\.gitattributes|(README|LICENSE|NOTICE|CHANGELOG|SECURITY)(\..*)?|.*\.(md|txt|png|jpe?g|gif|svg|webp))$/i;
+const OTHER_CONTENT = 'Other content';
+const CLAUDE_PART_ORDER = ['Hooks', 'MCP servers', 'LSP servers', 'Monitors', OTHER_CONTENT];
 /** Every key seen in real marketplace entries and plugin.json files that declares no code. */
 const CLAUDE_SAFE_KEYS = new Set([
   '$schema', 'name', 'displayName', 'description', 'version', 'author', 'homepage', 'repository', 'license',
   'keywords', 'category', 'tags', 'source', 'strict', 'commands', 'agents', 'skills', 'outputStyles', 'userConfig',
 ]);
 
-/** Adds the code parts an object declares; false when it has a key we don't know. */
-function claudeKeys(o: unknown, parts: Set<string>): boolean {
-  if (!o || typeof o !== 'object') { return true; }
-  for (const k of Object.keys(o)) {
-    if (CLAUDE_CODE_KEYS[k]) { parts.add(CLAUDE_CODE_KEYS[k]); } else if (!CLAUDE_SAFE_KEYS.has(k)) { return false; }
+/** Adds the code parts an object declares; a key we don't know is "Other content". */
+function claudeKeys(o: unknown, parts: Set<string>): void {
+  for (const k of Object.keys(obj(o))) {
+    if (CLAUDE_CODE_KEYS[k]) { parts.add(CLAUDE_CODE_KEYS[k]); } else if (!CLAUDE_SAFE_KEYS.has(k)) { parts.add(OTHER_CONTENT); }
   }
-  return true;
 }
 
 function readJson(file: string): unknown {
@@ -284,24 +290,32 @@ const CLAUDE_ADAPTER: PluginAdapter = {
   },
 
   /**
-   * What the plugin RUNS, read from the marketplace copy already on disk. Fails
-   * closed: a remote source, a missing directory, a path outside the
-   * marketplace or an unrecognised manifest key is `'unknown'`.
+   * What the plugin RUNS, read from the marketplace copy on disk after
+   * refreshing it — the install refreshes too, so this looks at what it will
+   * use. Fails closed: a remote source, a bare or escaping path, a missing
+   * directory, or ONLY unrecognised content is `'unknown'`; unrecognised
+   * content beside known code is listed as "Other content".
    */
   async inspect(run, entry) {
+    if (!entry.marketplace || entry.marketplace.startsWith('-')) { return 'unknown'; }
+    if ((await run(['plugin', 'marketplace', 'update', entry.marketplace], MUTATE)).code !== 0) { return 'unknown'; }
     const markets = parseJson(await run(['plugin', 'marketplace', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "Claude Code's marketplaces");
     const location = str(objs(markets).find((m) => m.name === entry.marketplace)?.installLocation);
     if (!location) { return 'unknown'; }
     const root = path.resolve(location);
     const e = objs(obj(readJson(path.join(root, '.claude-plugin', 'marketplace.json'))).plugins).find((p) => p.name === entry.name);
-    if (!e || typeof e.source !== 'string') { return 'unknown'; }
+    // Only an explicit relative path: a bare name may resolve under the
+    // marketplace's metadata.pluginRoot instead, so this copy may not be it.
+    if (!e || typeof e.source !== 'string' || !e.source.startsWith('./')) { return 'unknown'; }
     const dir = path.resolve(root, e.source);
     if ((dir !== root && !dir.startsWith(root + path.sep)) || !fs.existsSync(dir)) { return 'unknown'; }
     const parts = new Set<string>();
-    if (!claudeKeys(e, parts) || !claudeKeys(readJson(path.join(dir, '.claude-plugin', 'plugin.json')), parts)) { return 'unknown'; }
-    if (fs.existsSync(path.join(dir, 'hooks', 'hooks.json'))) { parts.add('Hooks'); }
-    if (fs.existsSync(path.join(dir, '.mcp.json'))) { parts.add('MCP servers'); }
-    if (fs.existsSync(path.join(dir, '.lsp.json'))) { parts.add('LSP servers'); }
+    claudeKeys(e, parts);
+    claudeKeys(readJson(path.join(dir, '.claude-plugin', 'plugin.json')), parts);
+    for (const name of fs.readdirSync(dir)) {
+      if (CLAUDE_CODE_ENTRIES[name]) { parts.add(CLAUDE_CODE_ENTRIES[name]); } else if (!CLAUDE_INERT_ENTRY.test(name)) { parts.add(OTHER_CONTENT); }
+    }
+    if (parts.size === 1 && parts.has(OTHER_CONTENT)) { return 'unknown'; }
     return CLAUDE_PART_ORDER.filter((p) => parts.has(p));
   },
 
@@ -312,7 +326,11 @@ const CLAUDE_ADAPTER: PluginAdapter = {
   },
   async uninstall(run, p) { claudeOutcome(await run(['plugin', 'uninstall', p.id, ...claudeScope(p), '--json'], MUTATE)); },
   async setEnabled(run, p, on) { claudeOutcome(await run(['plugin', on ? 'enable' : 'disable', p.id, ...claudeScope(p), '--json'], MUTATE)); },
-  async update(run, p) { claudeOutcome(await run(['plugin', 'update', p.id, ...claudeScope(p), '--json'], MUTATE)); },
+  async update(run, p, approval) {
+    const args = ['plugin', 'update', p.id, ...claudeScope(p), '--json'];
+    if (approval?.acceptCommandSha) { args.push('--accept-command', approval.acceptCommandSha); }
+    claudeOutcome(await run(args, MUTATE));
+  },
   async details(run, p) {
     const r = await run(['plugin', 'details', p.id], { timeoutMs: LIST_TIMEOUT_MS });
     expectExit0(r, 'Details');
@@ -354,7 +372,9 @@ const COPILOT_ADAPTER: PluginAdapter = {
     }
     return {
       installed: objs(installed).filter((p) => str(p.name)).map((p): InstalledPlugin => ({
-        id: String(p.name), name: String(p.name), marketplace: str(p.marketplace), version: str(p.version), scope: 'user', enabled: p.enabled !== false,
+        // name@marketplace, the same id its catalog entry has (Copilot accepts both forms).
+        id: str(p.marketplace) ? `${String(p.name)}@${String(p.marketplace)}` : String(p.name),
+        name: String(p.name), marketplace: str(p.marketplace), version: str(p.version), scope: 'user', enabled: p.enabled !== false,
       })),
       available,
       warning: failed.length ? `Couldn't load the ${failed.join(', ')} catalog. Refresh to try again.` : undefined,
@@ -405,7 +425,7 @@ const OPENCLAW_ADAPTER: PluginAdapter = {
     const j = parseJson(await run(['plugins', 'search', query, '--json', '--limit', '25'], { timeoutMs: LIST_TIMEOUT_MS }), 'ClawHub results');
     return objs(obj(j).results).map((r) => obj(r.package)).filter((p) => str(p.name)).map((p): CatalogPlugin => ({
       id: `clawhub:${String(p.name)}`, name: str(p.displayName) ?? String(p.name), marketplace: 'ClawHub', description: str(p.summary),
-      version: str(p.latestVersion), installCount: num(obj(p.stats).installs),
+      version: str(p.latestVersion), installCount: num(obj(p.stats).installs), installedAs: str(p.runtimeId),
     }));
   },
 

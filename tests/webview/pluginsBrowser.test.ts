@@ -225,4 +225,19 @@ describe('Plan 39 — Manage Plugins tab', () => {
     await pg.click('#installed > li[data-id="playwright@claude-plugins-official"] [data-action="details"]');
     expect((await posted(pg)).pop()).toEqual({ type: 'details', id: 'playwright@claude-plugins-official', scope: 'user' });
   });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('does not offer a search result that is already installed under its runtime id (review M5)', async () => {
+    const listing = { installed: [{ id: 'memory-lancedb', name: 'Memory LanceDB', scope: 'user', enabled: true }] };
+    const results = [{ id: 'clawhub:@openclaw/memory-lancedb', name: 'Memory LanceDB', installedAs: 'memory-lancedb' }, { id: 'clawhub:other', name: 'Other' }];
+    const pg = await openPage(state({ can: { toggle: true, search: true }, listing, search: { query: 'memory', results } }));
+    await pg.fill('#search', 'memory');
+    expect(await ids(pg, 'available')).toEqual(['clawhub:other']);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('does not claim there are no marketplaces when they could not be read (review M8)', async () => {
+    const pg = await openPage(state({ markets: undefined, error: "Couldn't read the marketplaces: offline" }));
+    await pg.click('[role="tab"][data-tab="marketplaces"]');
+    expect(await pg.$eval('#markets-empty', (e) => (e as HTMLElement).hidden)).toBe(true);
+    expect(await pg.$eval('#error', (e) => e.textContent)).toContain('offline');
+  });
 });
