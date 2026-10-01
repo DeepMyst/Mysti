@@ -18,6 +18,7 @@
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import { randomBytes } from 'crypto';
 
 let _cachedTemplate: string | null = null;
 
@@ -40,11 +41,7 @@ export function getPluginsContent(webview: vscode.Webview, extensionUri: vscode.
   return _cachedTemplate.replace(/\{\{(\w+)\}\}/g, (m, key: string) => values[key] ?? m);
 }
 
+/** CSP nonce from a CSPRNG: 18 random bytes, base64. */
 function getNonce(): string {
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let text = '';
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
+  return randomBytes(18).toString('base64');
 }
