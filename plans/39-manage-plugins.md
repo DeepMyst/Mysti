@@ -1,4 +1,4 @@
-# Plan 29 — Manage Plugins
+# Plan 39 — Manage Plugins
 
 - **Date:** 2026-09-25
 - **Status:** DRAFT — design approved in chat, no code written

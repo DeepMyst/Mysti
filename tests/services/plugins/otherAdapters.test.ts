@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 29: the Copilot, OpenClaw and Hermes adapters, the backends that are
+ * Plan 39: the Copilot, OpenClaw and Hermes adapters, the backends that are
  * notes only, and the runner itself. Copilot and OpenClaw fixtures are real
  * output (Copilot 1.0.89, OpenClaw 2026.6.34), trimmed. Copilot's installed
  * list and all of Hermes come from their documented JSON (nothing installed /
@@ -38,7 +38,7 @@ function fakeRun(answers: Record<string, RunResult>): Run & { calls: string[][] 
   return run;
 }
 
-describe('Copilot adapter (Plan 29)', () => {
+describe('Copilot adapter (Plan 39)', () => {
   const copilot = PLUGIN_ADAPTERS['github-copilot'] as PluginAdapter;
   const markets = '[{"name":"copilot-plugins","source":"GitHub: github/copilot-plugins","isDefault":true},{"name":"awesome-copilot","source":"GitHub: github/awesome-copilot","isDefault":true}]';
 
@@ -87,7 +87,7 @@ describe('Copilot adapter (Plan 29)', () => {
   });
 });
 
-describe('OpenClaw adapter (Plan 29)', () => {
+describe('OpenClaw adapter (Plan 39)', () => {
   const openclaw = PLUGIN_ADAPTERS['openclaw'] as PluginAdapter;
 
   it('lists bundled plugins as bundled, with their on/off state', async () => {
@@ -127,7 +127,7 @@ describe('OpenClaw adapter (Plan 29)', () => {
   });
 });
 
-describe('Hermes adapter (Plan 29)', () => {
+describe('Hermes adapter (Plan 39)', () => {
   const hermes = PLUGIN_ADAPTERS['hermes'] as PluginAdapter;
 
   it('lists plugins from its JSON, skipping removed ones', async () => {
@@ -160,7 +160,7 @@ describe('Hermes adapter (Plan 29)', () => {
   });
 });
 
-describe('the backend table (Plan 29)', () => {
+describe('the backend table (Plan 39)', () => {
   it('drives Claude Code, Copilot, OpenClaw and Hermes; notes the rest that have plugins; nothing for the HTTP backends', () => {
     const kind = (id: keyof typeof PLUGIN_ADAPTERS) => {
       const b = PLUGIN_ADAPTERS[id];
@@ -172,7 +172,7 @@ describe('the backend table (Plan 29)', () => {
   });
 });
 
-describe('runCli (Plan 29)', () => {
+describe('runCli (Plan 39)', () => {
   it('passes arguments verbatim with no shell', async () => {
     const r = await runCli(process.execPath, ['-e', 'process.stdout.write(process.argv[1])', '$(echo pwned);x']);
     expect(r).toMatchObject({ code: 0, stdout: '$(echo pwned);x', timedOut: false });

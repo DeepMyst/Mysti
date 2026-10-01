@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 29 — the Manage Plugins tab. The markup, styles and script are static
+ * Plan 39 — the Manage Plugins tab. The markup, styles and script are static
  * assets in media/plugins/ (index.html, plugins.css, plugins.js); this module
  * reads the template once and fills the per-load placeholders, the same way
  * connectionsContent.ts does for the Connections tab.

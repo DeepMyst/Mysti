@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 29: a plugin installed, toggled or removed must reach a chat whose CLI
+ * Plan 39: a plugin installed, toggled or removed must reach a chat whose CLI
  * is already running. Claude Code, Hermes and Kimi keep a persistent process
  * that loaded its plugins at spawn, so the change has to break the
  * spawn-settings match — the existing pre-turn check then respawns it (with
@@ -38,7 +38,7 @@ function snapshot(provider: unknown, s: Settings) {
   };
 }
 
-describe('plugin changes respawn persistent processes (Plan 29)', () => {
+describe('plugin changes respawn persistent processes (Plan 39)', () => {
   beforeEach(() => clearMockConfig());
 
   it('a snapshot taken before any plugin change still matches', () => {

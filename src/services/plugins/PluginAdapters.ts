@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 29 — Manage Plugins: one adapter per backend that has a plugin system.
+ * Plan 39 — Manage Plugins: one adapter per backend that has a plugin system.
  *
  * Every adapter drives that backend's OWN CLI (execFile, no shell) and never
  * writes another tool's config. An operation is supported iff its method

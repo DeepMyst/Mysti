@@ -595,7 +595,7 @@ export interface ICliProvider {
   // Persistent process management
   preSpawnPersistentProcess?(panelId: string, settings: Settings): Promise<void>;
   disposePersistentProcess?(panelId?: string): void;
-  /** Plan 29: plugins changed through this backend's CLI; respawn persistent processes on their next turn. */
+  /** Plan 39: plugins changed through this backend's CLI; respawn persistent processes on their next turn. */
   markPluginsChanged?(): void;
 }
 

@@ -155,7 +155,7 @@ export interface PanelSessionState {
     /** Plan 18 (4.1): --effort is baked into spawn args — a mid-session change
      * must respawn, same bug class as the issue-#39 custom-model fix. */
     effortLevel: string;
-    /** Plan 29: the provider's plugin generation at spawn. Absent on snapshots
+    /** Plan 39: the provider's plugin generation at spawn. Absent on snapshots
      * taken before any plugin change, which reads as 0. */
     pluginGeneration?: number;
   };
@@ -1192,7 +1192,7 @@ export abstract class BaseCliProvider implements ICliProvider {
   }
 
   /**
-   * Plan 29: a plugin was installed, removed, toggled or updated through this
+   * Plan 39: a plugin was installed, removed, toggled or updated through this
    * backend's CLI. A persistent process loaded its plugins at spawn, so this
    * breaks the spawn-settings match and the pre-turn check respawns it on the
    * NEXT message (resuming the session) — never in the middle of a turn.
@@ -1348,7 +1348,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     return { found: true, path: cliPath, version };
   }
 
-  /** Plan 29: bumped by markPluginsChanged(); see _persistentSettingsMatch. */
+  /** Plan 39: bumped by markPluginsChanged(); see _persistentSettingsMatch. */
   private _pluginGeneration = 0;
 
   /**

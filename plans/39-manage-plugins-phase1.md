@@ -11,7 +11,7 @@
 
 **Tech stack:** TypeScript (strict, ES2022), `child_process.execFile` (no shell), VS Code webview (CSP + nonce), Vitest plus the Chromium browser suite (Playwright).
 
-**Spec:** `plans/29-manage-plugins.md` (approved 2026-10-01) and the design canvas <https://claude.ai/artifact/MWZ1Fv29Zq5fYmWZra1b1t>.
+**Spec:** `plans/39-manage-plugins.md` (approved 2026-10-01) and the design canvas <https://claude.ai/artifact/MWZ1Fv29Zq5fYmWZra1b1t>.
 
 ## Global Constraints
 
@@ -217,7 +217,7 @@ The page uses VS Code theme variables (`--vscode-*`) so light, dark and high-con
   - `media/chat/index.html` + `media/chat/chat.js` (a hub nav "Plugins" button, `data-hub-plugins`, posting `openPlugins`);
   - `src/chat/settingsHub.ts` (`openPlugins` in `HUB_INBOUND_TYPES` and `HUB_UNBOUND_TYPES`);
   - `src/providers/ChatViewProvider.ts` (`case 'openPlugins'` runs `mysti.managePlugins`);
-  - `CLAUDE.md` (Integration Points), `plans/29-manage-plugins.md` (status).
+  - `CLAUDE.md` (Integration Points), `plans/39-manage-plugins.md` (status).
 - Test: extend `tests/chat/settingsHub.test.ts` (the type is unbound), and the slash command test file that covers `cmd:update-clis`.
 
 - [ ] Write failing tests:
