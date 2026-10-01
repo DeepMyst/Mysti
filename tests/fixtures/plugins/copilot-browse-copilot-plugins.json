@@ -1,0 +1,12 @@
+[
+ {
+  "name": "workiq",
+  "description": "Query Microsoft 365 data with natural language \u2014 emails, meetings, documents, Teams messages, and more.",
+  "marketplace": "copilot-plugins"
+ },
+ {
+  "name": "microsoft-365-agents-toolkit",
+  "description": "Toolkit for building Microsoft 365 Copilot declarative agents \u2014 scaffolding, JSON manifest development, and capability configuration.",
+  "marketplace": "copilot-plugins"
+ }
+]

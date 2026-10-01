@@ -1,0 +1,40 @@
+{
+ "results": [
+  {
+   "score": 410,
+   "package": {
+    "displayName": "Memory LanceDB Dreaming",
+    "family": "code-plugin",
+    "isOfficial": false,
+    "latestVersion": "0.3.17",
+    "name": "memory-lancedb-dreaming",
+    "runtimeId": "memory-lancedb-dreaming",
+    "stats": {
+     "downloads": 1015,
+     "installs": 10,
+     "stars": 0,
+     "versions": 26
+    },
+    "summary": "Dreaming plugin for memory-lancedb \u2014 Light/REM/Deep phases, DREAMS.md, daily report with optional channel push (Feishu/WeCom/etc.)."
+   }
+  },
+  {
+   "score": 370,
+   "package": {
+    "displayName": "Memory LanceDB",
+    "family": "code-plugin",
+    "isOfficial": true,
+    "latestVersion": "2026.9.7",
+    "name": "@openclaw/memory-lancedb",
+    "runtimeId": "memory-lancedb",
+    "stats": {
+     "downloads": 14132,
+     "installs": 88,
+     "stars": 0,
+     "versions": 103
+    },
+    "summary": "OpenClaw LanceDB-backed long-term memory plugin with auto-recall, auto-capture, and vector search."
+   }
+  }
+ ]
+}

@@ -119,7 +119,7 @@ export function runCli(cliPath: string, args: string[], opts: { timeoutMs?: numb
     return Promise.resolve({ code: null, stdout: '', stderr: `Manage Plugins can't run ${path.basename(cliPath)} on Windows yet. Use the CLI's own plugin command in a terminal.`, timedOut: false });
   }
   return new Promise((resolve) => {
-    execFile(cliPath, args, {
+    const child = execFile(cliPath, args, {
       cwd: opts.cwd,
       timeout: opts.timeoutMs ?? LIST_TIMEOUT_MS,
       killSignal: 'SIGKILL',
@@ -136,6 +136,10 @@ export function runCli(cliPath: string, args: string[], opts: { timeoutMs?: numb
         timedOut: !!e && e.killed === true && e.signal === 'SIGKILL',
       });
     });
+    // No TTY and nothing to say: a CLI that stops to ask a question gets EOF
+    // (and its default) instead of hanging until the timeout.
+    child.stdin?.on('error', () => { /* already exited */ });
+    child.stdin?.end();
   });
 }
 
@@ -161,10 +165,15 @@ function parseJson(r: RunResult, what: string): any {
   if (r.timedOut) { throw new PluginCliError(TIMED_OUT); }
   try {
     return JSON.parse(r.stdout);
-  } catch {
-    const why = cleanCliText(r.stderr);
-    throw new PluginCliError(`Couldn't read ${what}${why ? `: ${why}` : '.'}`);
+  } catch { /* maybe a banner first */ }
+  // Some CLIs print a warning banner before the JSON (OpenClaw's config box).
+  const lines = r.stdout.split(/\r?\n/);
+  const start = lines.findIndex((l) => /^\s*[[{]/.test(l));
+  if (start > 0) {
+    try { return JSON.parse(lines.slice(start).join('\n')); } catch { /* fall through */ }
   }
+  const why = cleanCliText(r.stderr);
+  throw new PluginCliError(`Couldn't read ${what}${why ? `: ${why}` : '.'}`);
 }
 
 function splitId(id: string): { name: string; marketplace?: string } {
@@ -310,6 +319,130 @@ const CLAUDE_ADAPTER: PluginAdapter = {
   },
 };
 
+// ── GitHub Copilot ──────────────────────────────────────────────────────────
+
+const COPILOT_ADAPTER: PluginAdapter = {
+  scopes: ['user'],
+
+  async list(run) {
+    const installed = parseJson(await run(['plugin', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "Copilot's plugin list");
+    if (!Array.isArray(installed)) { throw new PluginCliError("Couldn't read Copilot's plugin list."); }
+    const markets = await COPILOT_ADAPTER.marketplaces!.list(run);
+    const available: CatalogPlugin[] = [];
+    const failed: string[] = [];
+    for (const m of markets) {
+      try {
+        const entries = parseJson(await run(['plugin', 'marketplace', 'browse', m.name, '--json'], { timeoutMs: LIST_TIMEOUT_MS }), m.name);
+        for (const e of Array.isArray(entries) ? entries : []) {
+          if (str(e?.name)) { available.push({ id: `${e.name}@${m.name}`, name: e.name, marketplace: m.name, description: str(e.description) }); }
+        }
+      } catch {
+        failed.push(m.name);
+      }
+    }
+    return {
+      installed: installed.map((p: any): InstalledPlugin => ({
+        id: p.name, name: p.name, marketplace: str(p.marketplace), version: str(p.version), scope: 'user', enabled: p.enabled !== false,
+      })),
+      available,
+      warning: failed.length ? `Couldn't load the ${failed.join(', ')} catalog. Refresh to try again.` : undefined,
+    };
+  },
+
+  // Copilot keeps no local copy of a marketplace's plugins, so nothing is visible before install.
+  async inspect() { return 'unknown'; },
+
+  async install(run, id) { expectExit0(await run(['plugin', 'install', id], MUTATE), 'Install'); },
+  async uninstall(run, p) { expectExit0(await run(['plugin', 'uninstall', p.id], MUTATE), 'Uninstall'); },
+  async setEnabled(run, p, on) { expectExit0(await run(['plugin', on ? 'enable' : 'disable', p.id], MUTATE), on ? 'Enable' : 'Disable'); },
+  async update(run, p) { expectExit0(await run(['plugin', 'update', p.id], MUTATE), 'Update'); },
+
+  marketplaces: {
+    async list(run) {
+      const j = parseJson(await run(['plugin', 'marketplace', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "Copilot's marketplaces");
+      return (Array.isArray(j) ? j : []).map((m: any): Marketplace => ({
+        name: m.name, source: String(m.source ?? '').replace(/^GitHub:\s*/, ''), builtin: m.isDefault === true,
+      }));
+    },
+    async add(run, source) { expectExit0(await run(['plugin', 'marketplace', 'add', source], MUTATE), 'Adding the marketplace'); },
+    async remove(run, name) { expectExit0(await run(['plugin', 'marketplace', 'remove', name], MUTATE), 'Removing the marketplace'); },
+    async refresh(run, name) { expectExit0(await run(['plugin', 'marketplace', 'update', name], MUTATE), 'Refreshing the marketplace'); },
+  },
+};
+
+// ── OpenClaw ────────────────────────────────────────────────────────────────
+
+const OPENCLAW_ADAPTER: PluginAdapter = {
+  scopes: ['user'],
+
+  async list(run) {
+    const j = parseJson(await run(['plugins', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "OpenClaw's plugin list");
+    if (!j || !Array.isArray(j.plugins)) { throw new PluginCliError("Couldn't read OpenClaw's plugin list."); }
+    return {
+      installed: j.plugins.map((p: any): InstalledPlugin => ({
+        id: p.id, name: str(p.name) ?? p.id, version: str(p.version), description: str(p.description),
+        scope: p.origin === 'bundled' ? 'bundled' : 'user',
+        enabled: p.enabled !== false,
+        error: p.status === 'error' || p.status === 'failed' ? `OpenClaw reports this plugin as ${p.status}.` : undefined,
+      })),
+    };
+  },
+
+  // ClawHub only answers a query.
+  async search(run, query) {
+    const j = parseJson(await run(['plugins', 'search', query, '--json', '--limit', '25'], { timeoutMs: LIST_TIMEOUT_MS }), 'ClawHub results');
+    return (Array.isArray(j?.results) ? j.results : []).map((r: any) => r?.package).filter((p: any) => str(p?.name)).map((p: any): CatalogPlugin => ({
+      id: `clawhub:${p.name}`, name: str(p.displayName) ?? p.name, marketplace: 'ClawHub', description: str(p.summary),
+      version: str(p.latestVersion), installCount: typeof p.stats?.installs === 'number' ? p.stats.installs : undefined,
+    }));
+  },
+
+  // An OpenClaw plugin is code that runs in its gateway; the registry doesn't list what it does.
+  async inspect() { return 'unknown'; },
+
+  async install(run, id) { expectExit0(await run(['plugins', 'install', id], MUTATE), 'Install'); },
+  // --force only skips the "are you sure" prompt it shows on a terminal; the user already clicked Uninstall.
+  async uninstall(run, p) { expectExit0(await run(['plugins', 'uninstall', p.id, '--force'], MUTATE), 'Uninstall'); },
+  async setEnabled(run, p, on) { expectExit0(await run(['plugins', on ? 'enable' : 'disable', p.id], MUTATE), on ? 'Enable' : 'Disable'); },
+  async update(run, p) { expectExit0(await run(['plugins', 'update', p.id], MUTATE), 'Update'); },
+};
+
+// ── Hermes ──────────────────────────────────────────────────────────────────
+// From Hermes's documented `--json` output; not exercised against a live CLI.
+
+const HERMES_CAPABILITIES: [string, string][] = [['provides_hooks', 'Hooks'], ['provides_tools', 'Tools'], ['provides_middleware', 'Middleware']];
+
+const HERMES_ADAPTER: PluginAdapter = {
+  scopes: ['user'],
+
+  async list(run) {
+    const j = parseJson(await run(['plugins', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "Hermes's plugin list");
+    if (!Array.isArray(j)) { throw new PluginCliError("Couldn't read Hermes's plugin list."); }
+    return {
+      installed: j.filter((p: any) => str(p?.name) && p.removed !== true).map((p: any): InstalledPlugin => ({
+        id: p.name, name: p.name, version: str(p.version), description: str(p.description), scope: 'user', enabled: p.status === 'enabled',
+      })),
+    };
+  },
+
+  async search(run, query) {
+    const j = parseJson(await run(['plugins', 'search', query, '--json'], { timeoutMs: LIST_TIMEOUT_MS }), 'Hermes catalog results');
+    return (Array.isArray(j?.results) ? j.results : []).filter((p: any) => str(p?.name)).map((p: any): CatalogPlugin => {
+      const parts = HERMES_CAPABILITIES.filter(([k]) => p.capabilities?.[k] === true).map(([, label]) => label);
+      // A Hermes plugin is Python that runs inside the agent, whatever it declares.
+      return { id: p.name, name: p.name, marketplace: 'Hermes catalog', description: str(p.description), version: str(p.version), codeParts: parts.length ? parts : ['Python code'] };
+    });
+  },
+
+  async inspect(_run, entry) { return entry.codeParts ?? 'unknown'; },
+
+  // --enable answers its "Enable now?" question up front.
+  async install(run, id) { expectExit0(await run(['plugins', 'install', id, '--enable'], MUTATE), 'Install'); },
+  async uninstall(run, p) { expectExit0(await run(['plugins', 'remove', p.id], MUTATE), 'Uninstall'); },
+  async setEnabled(run, p, on) { expectExit0(await run(['plugins', on ? 'enable' : 'disable', p.id], MUTATE), on ? 'Enable' : 'Disable'); },
+  async update(run, p) { expectExit0(await run(['plugins', 'update', p.id], MUTATE), 'Update'); },
+};
+
 // ── The table ───────────────────────────────────────────────────────────────
 
 /**
@@ -319,9 +452,9 @@ const CLAUDE_ADAPTER: PluginAdapter = {
  */
 export const PLUGIN_ADAPTERS: Record<ProviderType, PluginBackend> = {
   'claude-code': CLAUDE_ADAPTER,
-  'github-copilot': null,
-  'openclaw': null,
-  'hermes': null,
+  'github-copilot': COPILOT_ADAPTER,
+  'openclaw': OPENCLAW_ADAPTER,
+  'hermes': HERMES_ADAPTER,
   'openai-codex': { note: 'Manage Codex plugins with /plugins inside Codex.' },
   'google-gemini': { note: 'Manage Gemini extensions with `gemini extensions` in a terminal.' },
   'qwen-code': { note: 'Manage Qwen extensions with /extensions inside Qwen Code.' },
