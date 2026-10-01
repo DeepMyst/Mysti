@@ -763,6 +763,12 @@ export class SlashCommandManager {
         return;
       }
 
+      case 'cmd:plugins': {
+        // Plan 39: opens the Manage Plugins tab on this chat's backend. Only
+        // opens it; nothing typed in a chat installs anything.
+        await vscode.commands.executeCommand('mysti.managePlugins', callbacks.getPanelProvider(panelId));
+        return;
+      }
       case 'cmd:update-clis': {
         // Invoke the registered command directly rather than round-tripping
         // through a webview that has no part to play — same pattern as
@@ -1211,6 +1217,16 @@ export class SlashCommandManager {
         provider: 'all',
         action: 'execute',
         keywords: ['access', 'permission', 'read', 'write'],
+      },
+      {
+        id: 'cmd:plugins',
+        label: 'Manage plugins',
+        description: 'Install, turn on or off, and remove plugins for each backend',
+        section: 'settings',
+        icon: 'extensions',
+        provider: 'all',
+        action: 'execute',
+        keywords: ['plugins', 'plugin', 'extensions', 'marketplace', 'install', 'skills', 'hooks', 'mcp'],
       },
       {
         id: 'cmd:update-clis',

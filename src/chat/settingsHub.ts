@@ -24,7 +24,7 @@ const HUB_SECTIONS: ReadonlySet<string> = new Set<HubSection>(['settings', 'agen
 export const HUB_INBOUND_TYPES: ReadonlySet<string> = new Set([
   'updateSettings', 'requestModels', 'updateAgentConfig', 'requestAgentLists',
   'createAgent', 'importSkills', 'requestBadges', 'getBadgeShareText',
-  'openExternal', 'openConnections',
+  'openExternal', 'openConnections', 'openPlugins',
 ]);
 
 /**
@@ -35,7 +35,7 @@ export const HUB_INBOUND_TYPES: ReadonlySet<string> = new Set([
 export const HUB_CHAT_ONLY_SETTINGS: readonly string[] = ['mode', 'accessLevel', 'contextMode'];
 
 /** The subset that needs no chat, still honoured after the origin chat closes. */
-export const HUB_UNBOUND_TYPES: ReadonlySet<string> = new Set(['openExternal', 'openConnections']);
+export const HUB_UNBOUND_TYPES: ReadonlySet<string> = new Set(['openExternal', 'openConnections', 'openPlugins']);
 
 /** Host → origin-chat types the tab also receives. Chat output never is. */
 export const HUB_MIRROR_TYPES: ReadonlySet<string> = new Set([

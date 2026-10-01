@@ -1,7 +1,7 @@
 # Plan 39 — Manage Plugins
 
 - **Date:** 2026-09-25
-- **Status:** DRAFT — design approved in chat, no code written
+- **Status:** Phase 1 IMPLEMENTED 2026-10-01 on `feat/plan-39-manage-plugins` (plan: `plans/39-manage-plugins-phase1.md`). Phase 2 not started.
 - **Inputs:** Local `--help` / read-only `list` runs of every installed CLI; a latest-release survey of all 15 backends (npm, PyPI, GitHub releases, official docs); Claude Code's VS Code docs (<https://code.claude.com/docs/en/vs-code.md>, "Manage plugins").
 - **Trigger:** User request for the Claude Code VS Code extension's "Manage plugins" functionality in Mysti, extended to every backend that has a plugin system.
 

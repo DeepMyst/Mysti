@@ -2164,6 +2164,11 @@
               postMessageWithPanelId({ type: 'openConnections' });
               return;
             }
+            // Plan 39: Manage Plugins is its own tab, like Connections.
+            if (item.hasAttribute('data-hub-plugins')) {
+              postMessageWithPanelId({ type: 'openPlugins' });
+              return;
+            }
             showHubSection(item.getAttribute('data-hub-section'));
           });
         }

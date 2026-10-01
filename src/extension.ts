@@ -53,6 +53,7 @@ import { CliUpdateService } from './services/CliUpdateService';
 import { DeepMystAuthManager } from './managers/DeepMystAuthManager';
 import { AnnouncementManager } from './managers/AnnouncementManager';
 import { ConnectionsPanelManager } from './managers/ConnectionsPanelManager';
+import { PluginsPanelManager } from './managers/PluginsPanelManager';
 import { McpConfigManager } from './services/McpConfigManager';
 import { PerfTracker } from './utils/PerfTracker';
 import { randomUUID } from 'crypto';
@@ -677,6 +678,16 @@ export async function activate(context: vscode.ExtensionContext) {
       chatViewProvider.showOnboarding(isWizardStep(step) ? step : undefined)),
     vscode.commands.registerCommand('mysti.deepmyst.signOut', () => deepMystAuthManager.signOut()),
     vscode.commands.registerCommand('mysti.openConnections', () => connectionsPanelManager.open()),
+  );
+
+  // Plan 39: Manage Plugins — opens on the backend it is given (a chat's, from
+  // /plugins or the Mysti tab), else the default provider.
+  const pluginsPanelManager = new PluginsPanelManager(context.extensionUri, providerManager);
+  context.subscriptions.push(
+    pluginsPanelManager,
+    vscode.commands.registerCommand('mysti.managePlugins', (backend?: unknown) => pluginsPanelManager.open(
+      typeof backend === 'string' ? backend : vscode.workspace.getConfiguration('mysti').get<string>('defaultProvider'),
+    )),
   );
 
   // Agent authoring: create/import/reload personas and skills
