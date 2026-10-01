@@ -147,6 +147,7 @@ export function runCli(cliPath: string, args: string[], opts: { timeoutMs?: numb
 export function cleanCliText(text: string): string {
   return text
     .split(/\r?\n/)
+    // eslint-disable-next-line no-control-regex -- stripping ANSI color escapes is the point
     .map((l) => l.replace(/\x1b\[[0-9;]*m/g, '').trim())
     .filter((l) => l && !/^[│┃◇◆●○╭╮╰╯─━┌┐└┘├┤|]/.test(l))
     .slice(-6)
@@ -161,7 +162,7 @@ function expectExit0(r: RunResult, what: string): void {
   }
 }
 
-function parseJson(r: RunResult, what: string): any {
+function parseJson(r: RunResult, what: string): unknown {
   if (r.timedOut) { throw new PluginCliError(TIMED_OUT); }
   try {
     return JSON.parse(r.stdout);
@@ -185,6 +186,12 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
 }
 
+/** Parsed CLI JSON, read field by field. */
+type Obj = Record<string, unknown>;
+const obj = (v: unknown): Obj => (v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {});
+const objs = (v: unknown): Obj[] => (Array.isArray(v) ? v.filter((x) => x && typeof x === 'object').map(obj) : []);
+const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
+
 // ── Claude Code ─────────────────────────────────────────────────────────────
 
 /**
@@ -194,11 +201,12 @@ function str(v: unknown): string | undefined {
 function claudeOutcome(r: RunResult): void {
   if (r.timedOut) { throw new PluginCliError(TIMED_OUT); }
   const line = r.stdout.split(/\r?\n/).map((l) => l.trim()).find((l) => l.startsWith('{'));
-  let j: any;
-  try { j = line ? JSON.parse(line) : undefined; } catch { j = undefined; }
-  if (!j || typeof j !== 'object') {
+  let parsed: unknown;
+  try { parsed = line ? JSON.parse(line) : undefined; } catch { parsed = undefined; }
+  if (!parsed || typeof parsed !== 'object') {
     throw new PluginCliError(cleanCliText(r.stderr) || cleanCliText(r.stdout) || `Claude Code returned no result (exit ${r.code})`);
   }
+  const j = obj(parsed);
   if (j.alreadyInGoalState === true) { return; }
   if (j.outcome === 'failed' || r.code !== 0) {
     throw new PluginCliError(str(j.message) ?? str(j.failureCode) ?? 'Claude Code reported a failure.', claudeAcceptCommand(j));
@@ -250,23 +258,27 @@ const CLAUDE_ADAPTER: PluginAdapter = {
   scopes: ['user', 'project', 'local'],
 
   async list(run) {
-    const j = parseJson(await run(['plugin', 'list', '--json', '--available'], { timeoutMs: LIST_TIMEOUT_MS }), "Claude Code's plugin list");
-    if (!j || !Array.isArray(j.installed)) { throw new PluginCliError("Couldn't read Claude Code's plugin list."); }
+    const j = obj(parseJson(await run(['plugin', 'list', '--json', '--available'], { timeoutMs: LIST_TIMEOUT_MS }), "Claude Code's plugin list"));
+    if (!Array.isArray(j.installed)) { throw new PluginCliError("Couldn't read Claude Code's plugin list."); }
     return {
-      installed: j.installed.map((p: any): InstalledPlugin => ({
-        id: p.id,
-        ...splitId(p.id),
-        version: str(p.version),
-        scope: ['user', 'project', 'local'].includes(p.scope) ? p.scope : 'managed',
-        enabled: p.enabled !== false,
-        error: p.errorDetails ? (typeof p.errorDetails === 'string' ? p.errorDetails : str(p.errorDetails?.message) ?? JSON.stringify(p.errorDetails)) : undefined,
-      })),
-      available: (Array.isArray(j.available) ? j.available : []).map((p: any): CatalogPlugin => ({
-        id: p.pluginId,
-        name: p.name,
+      installed: objs(j.installed).filter((p) => str(p.id)).map((p): InstalledPlugin => {
+        const id = String(p.id);
+        const scope = str(p.scope);
+        return {
+          id,
+          ...splitId(id),
+          version: str(p.version),
+          scope: scope === 'user' || scope === 'project' || scope === 'local' ? scope : 'managed',
+          enabled: p.enabled !== false,
+          error: p.errorDetails ? str(p.errorDetails) ?? str(obj(p.errorDetails).message) ?? JSON.stringify(p.errorDetails) : undefined,
+        };
+      }),
+      available: objs(j.available).filter((p) => str(p.pluginId) && str(p.name)).map((p): CatalogPlugin => ({
+        id: String(p.pluginId),
+        name: String(p.name),
         marketplace: str(p.marketplaceName),
         description: str(p.description),
-        installCount: typeof p.installCount === 'number' ? p.installCount : undefined,
+        installCount: num(p.installCount),
       })),
     };
   },
@@ -278,11 +290,10 @@ const CLAUDE_ADAPTER: PluginAdapter = {
    */
   async inspect(run, entry) {
     const markets = parseJson(await run(['plugin', 'marketplace', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "Claude Code's marketplaces");
-    const market = Array.isArray(markets) ? markets.find((m: any) => m?.name === entry.marketplace) : undefined;
-    if (!str(market?.installLocation)) { return 'unknown'; }
-    const root = path.resolve(market.installLocation);
-    const manifest = readJson(path.join(root, '.claude-plugin', 'marketplace.json')) as { plugins?: any[] } | undefined;
-    const e = manifest?.plugins?.find((p) => p?.name === entry.name);
+    const location = str(objs(markets).find((m) => m.name === entry.marketplace)?.installLocation);
+    if (!location) { return 'unknown'; }
+    const root = path.resolve(location);
+    const e = objs(obj(readJson(path.join(root, '.claude-plugin', 'marketplace.json'))).plugins).find((p) => p.name === entry.name);
     if (!e || typeof e.source !== 'string') { return 'unknown'; }
     const dir = path.resolve(root, e.source);
     if ((dir !== root && !dir.startsWith(root + path.sep)) || !fs.existsSync(dir)) { return 'unknown'; }
@@ -311,7 +322,7 @@ const CLAUDE_ADAPTER: PluginAdapter = {
   marketplaces: {
     async list(run) {
       const j = parseJson(await run(['plugin', 'marketplace', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "Claude Code's marketplaces");
-      return (Array.isArray(j) ? j : []).map((m: any): Marketplace => ({ name: m.name, source: str(m.repo) ?? str(m.url) ?? str(m.path) ?? str(m.source) ?? '' }));
+      return objs(j).filter((m) => str(m.name)).map((m): Marketplace => ({ name: String(m.name), source: str(m.repo) ?? str(m.url) ?? str(m.path) ?? str(m.source) ?? '' }));
     },
     async add(run, source) { expectExit0(await run(['plugin', 'marketplace', 'add', source], MUTATE), 'Adding the marketplace'); },
     async remove(run, name) { expectExit0(await run(['plugin', 'marketplace', 'remove', name], MUTATE), 'Removing the marketplace'); },
@@ -333,16 +344,17 @@ const COPILOT_ADAPTER: PluginAdapter = {
     for (const m of markets) {
       try {
         const entries = parseJson(await run(['plugin', 'marketplace', 'browse', m.name, '--json'], { timeoutMs: LIST_TIMEOUT_MS }), m.name);
-        for (const e of Array.isArray(entries) ? entries : []) {
-          if (str(e?.name)) { available.push({ id: `${e.name}@${m.name}`, name: e.name, marketplace: m.name, description: str(e.description) }); }
+        for (const e of objs(entries)) {
+          const name = str(e.name);
+          if (name) { available.push({ id: `${name}@${m.name}`, name, marketplace: m.name, description: str(e.description) }); }
         }
       } catch {
         failed.push(m.name);
       }
     }
     return {
-      installed: installed.map((p: any): InstalledPlugin => ({
-        id: p.name, name: p.name, marketplace: str(p.marketplace), version: str(p.version), scope: 'user', enabled: p.enabled !== false,
+      installed: objs(installed).filter((p) => str(p.name)).map((p): InstalledPlugin => ({
+        id: String(p.name), name: String(p.name), marketplace: str(p.marketplace), version: str(p.version), scope: 'user', enabled: p.enabled !== false,
       })),
       available,
       warning: failed.length ? `Couldn't load the ${failed.join(', ')} catalog. Refresh to try again.` : undefined,
@@ -360,8 +372,8 @@ const COPILOT_ADAPTER: PluginAdapter = {
   marketplaces: {
     async list(run) {
       const j = parseJson(await run(['plugin', 'marketplace', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "Copilot's marketplaces");
-      return (Array.isArray(j) ? j : []).map((m: any): Marketplace => ({
-        name: m.name, source: String(m.source ?? '').replace(/^GitHub:\s*/, ''), builtin: m.isDefault === true,
+      return objs(j).filter((m) => str(m.name)).map((m): Marketplace => ({
+        name: String(m.name), source: (str(m.source) ?? '').replace(/^GitHub:\s*/, ''), builtin: m.isDefault === true,
       }));
     },
     async add(run, source) { expectExit0(await run(['plugin', 'marketplace', 'add', source], MUTATE), 'Adding the marketplace'); },
@@ -376,11 +388,11 @@ const OPENCLAW_ADAPTER: PluginAdapter = {
   scopes: ['user'],
 
   async list(run) {
-    const j = parseJson(await run(['plugins', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "OpenClaw's plugin list");
-    if (!j || !Array.isArray(j.plugins)) { throw new PluginCliError("Couldn't read OpenClaw's plugin list."); }
+    const j = obj(parseJson(await run(['plugins', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "OpenClaw's plugin list"));
+    if (!Array.isArray(j.plugins)) { throw new PluginCliError("Couldn't read OpenClaw's plugin list."); }
     return {
-      installed: j.plugins.map((p: any): InstalledPlugin => ({
-        id: p.id, name: str(p.name) ?? p.id, version: str(p.version), description: str(p.description),
+      installed: objs(j.plugins).filter((p) => str(p.id)).map((p): InstalledPlugin => ({
+        id: String(p.id), name: str(p.name) ?? String(p.id), version: str(p.version), description: str(p.description),
         scope: p.origin === 'bundled' ? 'bundled' : 'user',
         enabled: p.enabled !== false,
         error: p.status === 'error' || p.status === 'failed' ? `OpenClaw reports this plugin as ${p.status}.` : undefined,
@@ -391,9 +403,9 @@ const OPENCLAW_ADAPTER: PluginAdapter = {
   // ClawHub only answers a query.
   async search(run, query) {
     const j = parseJson(await run(['plugins', 'search', query, '--json', '--limit', '25'], { timeoutMs: LIST_TIMEOUT_MS }), 'ClawHub results');
-    return (Array.isArray(j?.results) ? j.results : []).map((r: any) => r?.package).filter((p: any) => str(p?.name)).map((p: any): CatalogPlugin => ({
-      id: `clawhub:${p.name}`, name: str(p.displayName) ?? p.name, marketplace: 'ClawHub', description: str(p.summary),
-      version: str(p.latestVersion), installCount: typeof p.stats?.installs === 'number' ? p.stats.installs : undefined,
+    return objs(obj(j).results).map((r) => obj(r.package)).filter((p) => str(p.name)).map((p): CatalogPlugin => ({
+      id: `clawhub:${String(p.name)}`, name: str(p.displayName) ?? String(p.name), marketplace: 'ClawHub', description: str(p.summary),
+      version: str(p.latestVersion), installCount: num(obj(p.stats).installs),
     }));
   },
 
@@ -419,18 +431,18 @@ const HERMES_ADAPTER: PluginAdapter = {
     const j = parseJson(await run(['plugins', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "Hermes's plugin list");
     if (!Array.isArray(j)) { throw new PluginCliError("Couldn't read Hermes's plugin list."); }
     return {
-      installed: j.filter((p: any) => str(p?.name) && p.removed !== true).map((p: any): InstalledPlugin => ({
-        id: p.name, name: p.name, version: str(p.version), description: str(p.description), scope: 'user', enabled: p.status === 'enabled',
+      installed: objs(j).filter((p) => str(p.name) && p.removed !== true).map((p): InstalledPlugin => ({
+        id: String(p.name), name: String(p.name), version: str(p.version), description: str(p.description), scope: 'user', enabled: p.status === 'enabled',
       })),
     };
   },
 
   async search(run, query) {
     const j = parseJson(await run(['plugins', 'search', query, '--json'], { timeoutMs: LIST_TIMEOUT_MS }), 'Hermes catalog results');
-    return (Array.isArray(j?.results) ? j.results : []).filter((p: any) => str(p?.name)).map((p: any): CatalogPlugin => {
-      const parts = HERMES_CAPABILITIES.filter(([k]) => p.capabilities?.[k] === true).map(([, label]) => label);
+    return objs(obj(j).results).filter((p) => str(p.name)).map((p): CatalogPlugin => {
+      const parts = HERMES_CAPABILITIES.filter(([k]) => obj(p.capabilities)[k] === true).map(([, label]) => label);
       // A Hermes plugin is Python that runs inside the agent, whatever it declares.
-      return { id: p.name, name: p.name, marketplace: 'Hermes catalog', description: str(p.description), version: str(p.version), codeParts: parts.length ? parts : ['Python code'] };
+      return { id: String(p.name), name: String(p.name), marketplace: 'Hermes catalog', description: str(p.description), version: str(p.version), codeParts: parts.length ? parts : ['Python code'] };
     });
   },
 

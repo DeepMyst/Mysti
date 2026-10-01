@@ -1348,6 +1348,9 @@ export abstract class BaseCliProvider implements ICliProvider {
     return { found: true, path: cliPath, version };
   }
 
+  /** Plan 29: bumped by markPluginsChanged(); see _persistentSettingsMatch. */
+  private _pluginGeneration = 0;
+
   /**
    * `--version` of the discovered CLI, once discovery has run.
    *
@@ -1355,9 +1358,6 @@ export abstract class BaseCliProvider implements ICliProvider {
    * this; it is deliberately the RAW string, because each CLI decorates it
    * differently and only the caller knows what it needs out of it.
    */
-  /** Plan 29: bumped by markPluginsChanged(); see _persistentSettingsMatch. */
-  private _pluginGeneration = 0;
-
   public getCachedCliVersion(): string | null {
     return this._cachedCliVersion;
   }
