@@ -25,7 +25,7 @@ One editor tab where the user browses, installs, toggles, updates and removes pl
 
 | Backend | Latest checked | JSON installed | JSON catalog | Enable/disable | Marketplaces | Quirks the adapter owns |
 |---|---|---|---|---|---|---|
-| Claude Code | 2.1.282 | `plugin list --json` | `list --json --available` → `{installed, available}` | CLI, user/project/local | `marketplace add/list --json/remove/update` | Refuses to install non-interactively when the marketplace declares a command, unless `-y` or `--accept-command <sha256>` is passed. `details <id>` works only once a plugin is on disk. |
+| Claude Code | 2.1.282 | `plugin list --json` | `list --json --available` → `{installed, available}` | CLI, user/project/local | `marketplace add/list --json/remove/update` | Refuses to install non-interactively when the marketplace declares a command, unless `-y` or `--accept-command <sha256>` is passed. `details <id>` works only once a plugin is on disk. **A failed `install` exits 0** (verified 2026-10-01: `✘ Failed to install plugin …`, exit 0); with `--json` it returns `{"outcome":"failed","failureCode":"not_found","message":…}`, so the adapter reads `outcome`, never the exit code. |
 | Copilot | 1.0.89 | `plugin list --json` (shape from docs) | `marketplace browse <m> --json` | CLI | Claude-compatible; defaults `copilot-plugins`, `awesome-copilot` | User scope only. |
 | OpenClaw | 2026.9.6 | `plugins list --json` | `plugins search --json` (ClawHub), `marketplace entries --json` | CLI | Reads Claude marketplaces | Arbitrary sources and non-TTY uninstall need `--force`. |
 | Hermes | 2026.9.24 | `plugins list --json` | `plugins search --json` with `capabilities.provides_hooks` … | CLI | Curated catalog, no add | Pass `--enable`/`--no-enable` to avoid the "Enable now?" prompt. |
@@ -71,6 +71,7 @@ interface PluginAdapter {
   scopes: PluginScope[];
   minVersion?: string;                  // compared against the CLI version Mysti already caches
   list(run: Run): Promise<PluginListing>;
+  search?(run: Run, query: string): Promise<CatalogPlugin[]>;  // query-only catalogs: OpenClaw (ClawHub), Hermes
   install?(run: Run, id: string, scope: PluginScope, approved?: Approval): Promise<void>;
   uninstall?(run: Run, id: string, scope: PluginScope): Promise<void>;
   setEnabled?(run: Run, id: string, on: boolean, scope: PluginScope): Promise<void>;
@@ -160,7 +161,7 @@ A plugin is not just prompt text:
 
 | Situation | Behaviour |
 |---|---|
-| Non-zero exit | stderr inline under the row; the row re-enables; the panel re-lists |
+| Non-zero exit, or a JSON `outcome` other than success | The CLI's message inline under the row; the row re-enables; the panel re-lists. Exit 0 is never taken as success on its own (Claude exits 0 on a failed install). |
 | Output doesn't parse | "Couldn't read Codex's plugin list (0.157.0)" plus a link to the raw output in the Mysti output channel. **Never** rendered as an empty list. |
 | Codex catalog failure (`installed: []` + stderr warning) | `listing.warning`: "Codex couldn't reach its catalog; the installed list may be incomplete" |
 | Gemini writes JSON to stderr | The adapter parses stderr |

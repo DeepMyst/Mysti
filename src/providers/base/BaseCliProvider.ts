@@ -155,6 +155,9 @@ export interface PanelSessionState {
     /** Plan 18 (4.1): --effort is baked into spawn args — a mid-session change
      * must respawn, same bug class as the issue-#39 custom-model fix. */
     effortLevel: string;
+    /** Plan 29: the provider's plugin generation at spawn. Absent on snapshots
+     * taken before any plugin change, which reads as 0. */
+    pluginGeneration?: number;
   };
   /** Buffered stdout data received during persistent process initialization */
   _initBuffer?: string;
@@ -946,6 +949,7 @@ export abstract class BaseCliProvider implements ICliProvider {
         permissionMode: this._derivePermissionMode(settings),
         thinkingLevel: settings.thinkingLevel || 'none',
         effortLevel: settings.effortLevel || '',
+        pluginGeneration: this._pluginGeneration,
       };
     }
 
@@ -1183,7 +1187,18 @@ export abstract class BaseCliProvider implements ICliProvider {
     return ps.model === this._getEffectiveModel(settings)
       && ps.permissionMode === this._derivePermissionMode(settings)
       && ps.thinkingLevel === (settings.thinkingLevel || 'none')
-      && (!effortRelevant || ps.effortLevel === (settings.effortLevel || ''));
+      && (!effortRelevant || ps.effortLevel === (settings.effortLevel || ''))
+      && (ps.pluginGeneration ?? 0) === this._pluginGeneration;
+  }
+
+  /**
+   * Plan 29: a plugin was installed, removed, toggled or updated through this
+   * backend's CLI. A persistent process loaded its plugins at spawn, so this
+   * breaks the spawn-settings match and the pre-turn check respawns it on the
+   * NEXT message (resuming the session) — never in the middle of a turn.
+   */
+  public markPluginsChanged(): void {
+    this._pluginGeneration++;
   }
 
   /**
@@ -1212,6 +1227,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       permissionMode: this._derivePermissionMode(settings),
       thinkingLevel: settings.thinkingLevel || 'none',
       effortLevel: settings.effortLevel || '',
+      pluginGeneration: this._pluginGeneration,
     };
 
     await this._getOrSpawnPersistentProcess(session, settings);
@@ -1339,6 +1355,9 @@ export abstract class BaseCliProvider implements ICliProvider {
    * this; it is deliberately the RAW string, because each CLI decorates it
    * differently and only the caller knows what it needs out of it.
    */
+  /** Plan 29: bumped by markPluginsChanged(); see _persistentSettingsMatch. */
+  private _pluginGeneration = 0;
+
   public getCachedCliVersion(): string | null {
     return this._cachedCliVersion;
   }
