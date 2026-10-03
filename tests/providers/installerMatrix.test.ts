@@ -9,6 +9,12 @@ describe.each(['darwin', 'linux', 'win32'] as const)('installer catalog on %s', 
   for (const provider of registry.getAll()) {
     it(`${provider.id} has an applicable install route and matching shell`, () => {
       const methods = filterInstallMethodsForOS(provider.getInstallMethods?.() ?? [{ command: provider.getInstallCommand(), platform: 'all' as const }], platform);
+      if (methods.length === 0 && provider.configureAuthentication) {
+        // API adapters use a native secret-entry dialog, never a shell installer.
+        expect(provider.capabilities.supportsAutoInstall).toBe(false);
+        expect(PROVIDER_NPM_PACKAGES[provider.id]).toBeNull();
+        return;
+      }
       expect(methods.length).toBeGreaterThan(0);
       for (const method of methods) {
         expect(method.command.trim()).not.toBe('');

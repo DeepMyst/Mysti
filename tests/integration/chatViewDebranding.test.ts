@@ -48,7 +48,7 @@ import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 
 const ALL_PROVIDER_IDS = [
   'claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot',
-  'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code', 'hermes', 'continue', 'openrouter', 'kimi-code',
+  'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code', 'hermes', 'continue', 'openrouter', 'kimi-code', 'minimax',
 ];
 
 // ---------------------------------------------------------------------------

@@ -2077,9 +2077,9 @@
         "mysti.minimaxTemperature": {
           "type": "number",
           "default": 1.0,
-          "minimum": 0.01,
-          "maximum": 1.0,
-          "description": "Sampling temperature for MiniMax (0.01-1.0). MiniMax does not accept 0; default is 1.0."
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature for MiniMax (0\u20132)."
         },
         "mysti.minimaxMaxTokens": {
           "type": "number",
@@ -2092,6 +2092,27 @@
           "default": 120000,
           "minimum": 5000,
           "description": "Request timeout in milliseconds for MiniMax."
+        },
+        "mysti.agents.minimaxPersona": {
+          "type": "string",
+          "enum": [
+            "neutral",
+            "architect",
+            "pragmatist",
+            "engineer",
+            "reviewer",
+            "designer",
+            "custom"
+          ],
+          "default": "neutral",
+          "description": "Persona for MiniMax in Brainstorm.",
+          "scope": "machine"
+        },
+        "mysti.agents.minimaxCustomPrompt": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Custom MiniMax persona instructions."
         }
       }
     },

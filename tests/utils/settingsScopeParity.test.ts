@@ -436,6 +436,7 @@ describe('authority-shaped namespaces are machine-scoped OR clamped (structural,
     'mysti.localaiModel': MODEL_SELECTOR_REASON,
     'mysti.hermesModel': MODEL_SELECTOR_REASON,
     'mysti.continueModel': MODEL_SELECTOR_REASON,
+    'mysti.minimaxModel': MODEL_SELECTOR_REASON,
     'mysti.openrouterModel': MODEL_SELECTOR_REASON,
     'mysti.kimiCodeModel': MODEL_SELECTOR_REASON,
     'mysti.compaction.smart.cheapModel':

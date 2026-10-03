@@ -122,3 +122,6 @@ by, or endorsement from those owners is implied. The files are:
 
 "Mysti", the Mysti logo (resources/Mysti-Logo.png, resources/icon.svg) and
 "DeepMyst" belong to DeepMyst Inc.
+
+resources/icons/minimax.svg is a Mysti-authored lettermark for the MiniMax adapter,
+licensed under Apache-2.0. It is not an official MiniMax logo or endorsement.

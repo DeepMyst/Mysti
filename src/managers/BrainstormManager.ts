@@ -49,6 +49,7 @@ const AGENT_BRAINSTORM_ICONS: Record<AgentType, string> = {
   'qwen-code': '🟪',
   'hermes': '🟤',
   'continue': '⏩',
+  'minimax': '🟠',
   'openrouter': '🔀',
   'kimi-code': '🌙'
 };
@@ -127,6 +128,7 @@ export class BrainstormManager {
       'qwen-code': 'qwenCode',
       'hermes': 'hermes',
       'continue': 'continue',
+      'minimax': 'minimax',
       'openrouter': 'openrouter',
       'kimi-code': 'kimiCode'
     };
