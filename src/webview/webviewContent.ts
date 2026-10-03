@@ -23,6 +23,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getWebviewLocalizationScript } from '../localization';
 import { PROVIDER_MANIFEST_SCHEMA_VERSION } from '../providers/base/ProviderManifest';
 
 /** Module-level template cache — read once per extension-host process. */
@@ -150,6 +151,7 @@ export function getWebviewContent(
     deskCssUri,
     deskJsUri,
     bootJson,
+    localizationScript: getWebviewLocalizationScript(),
     version
   };
 

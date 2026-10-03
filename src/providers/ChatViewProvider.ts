@@ -2344,7 +2344,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           });
           this._postToPanel(panelId, {
             type: 'sessionCleared',
-            payload: { message: 'Session cleared' }
+            payload: { message: vscode.l10n.t('Session cleared') }
           });
         }
         break;
@@ -2367,7 +2367,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (panelId) {
             this._postToPanel(panelId, {
               type: 'sessionCleared',
-              payload: { message: 'Session cleared' }
+              payload: { message: vscode.l10n.t('Session cleared') }
             });
           }
         }
@@ -2659,7 +2659,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Handle both object payload (providerId + command) and string payload (auth command)
           const terminalPayload = msg.payload;
           if (typeof terminalPayload === 'string') {
-            const terminal = vscode.window.createTerminal('Authenticate Provider');
+            const terminal = vscode.window.createTerminal(vscode.l10n.t('Authenticate Provider'));
             terminal.show();
             terminal.sendText(terminalPayload);
           } else {
@@ -3121,7 +3121,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             } else {
               this._postToPanel(copyMsgPanelId, {
                 type: 'exportResult',
-                payload: { success: false, error: 'Message not found' }
+                payload: { success: false, error: vscode.l10n.t('Message not found') }
               });
             }
           }
@@ -3144,8 +3144,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (content) {
               const uri = await vscode.window.showSaveDialog({
                 filters: isMarkdown
-                  ? { 'Markdown': ['md'] }
-                  : { 'Mysti JSON': ['mysti.json'], 'JSON': ['json'] },
+                  ? { [vscode.l10n.t('Markdown')]: ['md'] }
+                  : { [vscode.l10n.t('Mysti JSON')]: ['mysti.json'], [vscode.l10n.t('JSON')]: ['json'] },
                 defaultUri: vscode.Uri.file(`conversation.${isMarkdown ? 'md' : 'mysti.json'}`)
               });
               if (uri) {
@@ -3169,7 +3169,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             canSelectFiles: true,
             canSelectMany: false,
             filters: {
-              'Conversation Files': ['mysti.json', 'json', 'jsonl', 'md']
+              [vscode.l10n.t('Conversation Files')]: ['mysti.json', 'json', 'jsonl', 'md']
             }
           });
           if (uris && uris.length > 0) {
@@ -3188,7 +3188,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               });
               console.log(`[Mysti] Conversation imported from: ${fileName}`);
             } else {
-              vscode.window.showErrorMessage('Failed to import conversation: unrecognized format');
+              vscode.window.showErrorMessage(vscode.l10n.t('Failed to import conversation: unrecognized format'));
             }
           }
         }
@@ -3207,10 +3207,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // Too long for a URI — fall back to clipboard with JSON
                 const json = this._conversationManager.exportToJson(shareConvId);
                 await vscode.env.clipboard.writeText(json);
-                vscode.window.showInformationMessage('Conversation too long for a deep link — full JSON copied to clipboard instead.');
+                vscode.window.showInformationMessage(vscode.l10n.t('Conversation too long for a deep link — full JSON copied to clipboard instead.'));
               } else {
                 await vscode.env.clipboard.writeText(uri);
-                vscode.window.showInformationMessage('Share link copied to clipboard!');
+                vscode.window.showInformationMessage(vscode.l10n.t('Share link copied to clipboard!'));
               }
               this._emitBadgeUnlocks(sharePanelId, this._engagementManager.trackConversationShared());
               console.log('[Mysti] Share link generated');
@@ -3382,7 +3382,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _initTeamWorkspace(_panelId: string): Promise<void> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
-      vscode.window.showWarningMessage('No workspace folder open. Open a project first.');
+      vscode.window.showWarningMessage(vscode.l10n.t('No workspace folder open. Open a project first.'));
       return;
     }
 
@@ -3476,7 +3476,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._emitBadgeUnlocks(_panelId, this._engagementManager.trackWorkspaceRecommendation());
     this._emitBadgeUnlocks(_panelId, this._engagementManager.trackTeamInitialized());
     vscode.window.showInformationMessage(
-      'Project configured for Mysti. Created .mysti/, mysti.md, and rules/ — commit these so collaborators can discover Mysti.'
+      vscode.l10n.t('Project configured for Mysti. Created .mysti/, mysti.md, and rules/ — commit these so collaborators can discover Mysti.')
     );
     console.log('[Mysti] Team workspace initialized with mysti.md + rules');
   }
@@ -3494,7 +3494,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       const retryPath = this._memoryManager.getProjectMemoryPath();
       if (!retryPath) {
-        vscode.window.showWarningMessage('No workspace folder open.');
+        vscode.window.showWarningMessage(vscode.l10n.t('No workspace folder open.'));
         return;
       }
       // Create default MEMORY.md
@@ -3523,7 +3523,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _openProjectRules(): Promise<void> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
-      vscode.window.showWarningMessage('No workspace folder open.');
+      vscode.window.showWarningMessage(vscode.l10n.t('No workspace folder open.'));
       return;
     }
 
@@ -3626,7 +3626,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (event.isNew) {
         this._postToPanel(panelId, {
           type: 'badgeUnlocked',
-          payload: event.badge
+          payload: {
+            ...event.badge,
+            name: vscode.l10n.t(event.badge.name),
+            description: vscode.l10n.t(event.badge.description)
+          }
         });
       }
     }
@@ -3724,7 +3728,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
 
-      vscode.window.showInformationMessage(`Reverted changes to ${payload.path}`);
+      vscode.window.showInformationMessage(vscode.l10n.t('Reverted changes to {0}', payload.path));
     } catch (error) {
       if (panelId) {
         this._postToPanel(panelId, {
@@ -3737,7 +3741,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
 
-      vscode.window.showErrorMessage(`Failed to revert ${payload.path}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      vscode.window.showErrorMessage(vscode.l10n.t('Failed to revert {0}: {1}', payload.path, error instanceof Error ? error.message : vscode.l10n.t('Unknown error')));
     }
   }
 
@@ -4623,7 +4627,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           });
           this._postToPanel(panelId, {
             type: 'mentionWarning',
-            payload: { message: `Too many @-mentions (${agentMentionCount}). Only the first ${MAX_MENTIONS_PER_MESSAGE} agent mentions will be processed.` }
+            payload: { message: vscode.l10n.t('Too many @-mentions ({0}). Only the first {1} agent mentions will be processed.', agentMentionCount, MAX_MENTIONS_PER_MESSAGE) }
           });
         }
         PerfTracker.measure('send.mentionStart', _sendStartMark);
@@ -6901,8 +6905,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _handleRequestFileAttachment(panelId?: string) {
     const fileUris = await vscode.window.showOpenDialog({
       canSelectMany: true,
-      openLabel: 'Attach',
-      title: 'Select files to attach'
+      openLabel: vscode.l10n.t('Attach'),
+      title: vscode.l10n.t('Select files to attach')
     });
 
     if (!fileUris || fileUris.length === 0) {
@@ -7284,16 +7288,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     payload: { action: string; details: string },
     panelId?: string
   ) {
+    const allow = vscode.l10n.t('Allow');
     const result = await vscode.window.showInformationMessage(
-      `Mysti wants to ${payload.action}: ${payload.details}`,
+      vscode.l10n.t('Mysti wants to {0}: {1}', payload.action, payload.details),
       { modal: true },
-      'Allow',
-      'Deny'
+      allow,
+      vscode.l10n.t('Deny')
     );
     if (panelId) {
       this._postToPanel(panelId, {
         type: 'permissionResult',
-        payload: { action: payload.action, allowed: result === 'Allow' }
+        payload: { action: payload.action, allowed: result === allow }
       });
     }
   }
@@ -8422,37 +8427,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return [
       {
         id: 'explain',
-        label: 'Explain this code',
+        label: vscode.l10n.t('Explain this code'),
         prompt: 'Explain the selected code in detail',
         icon: 'info'
       },
       {
         id: 'refactor',
-        label: 'Refactor',
+        label: vscode.l10n.t('Refactor'),
         prompt: 'Suggest refactoring improvements for this code',
         icon: 'wrench'
       },
       {
         id: 'fix-bugs',
-        label: 'Find bugs',
+        label: vscode.l10n.t('Find bugs'),
         prompt: 'Find potential bugs in this code',
         icon: 'bug'
       },
       {
         id: 'add-tests',
-        label: 'Add tests',
+        label: vscode.l10n.t('Add tests'),
         prompt: 'Generate unit tests for this code',
         icon: 'beaker'
       },
       {
         id: 'optimize',
-        label: 'Optimize',
+        label: vscode.l10n.t('Optimize'),
         prompt: 'Suggest performance optimizations',
         icon: 'zap'
       },
       {
         id: 'document',
-        label: 'Add docs',
+        label: vscode.l10n.t('Add docs'),
         prompt: 'Add documentation and comments to this code',
         icon: 'book'
       }
@@ -12506,8 +12511,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'You can change files directly — no backend needed. Emit EXACTLY ONE tag on its own line, then STOP — I apply it (the user approves each change unless they turned approvals off) and reply with the result:',
       `<write:${N} path="rel/path.ts">FULL NEW FILE CONTENT</write> — create a new file or overwrite an existing one with the entire content.`,
       `<edit:${N} path="rel/path.ts"><old>EXACT existing snippet — copy it verbatim incl. whitespace; must be UNIQUE in the file</old><new>the replacement</new></edit> — a targeted edit. To replace every occurrence add replace="all": <edit:${N} path="…" replace="all"><old>…</old><new>…</new></edit>.`,
-      `<patch:${N}>*** Add: new/file.ts\\n<full content>\\n*** Update: existing.ts\\n<<<<<<< SEARCH\\nexact old (unique)\\n=======\\nnew\\n>>>>>>> REPLACE\\n*** Delete: gone.ts\\n*** Move: a.ts >>> b.ts\\n*** End</patch> — ONE ATOMIC multi-file change (all-or-nothing: if any hunk can't apply, nothing is written). Use this instead of several <write>/<edit> when a change spans files. Do NOT patch a file whose content itself contains lines starting with "*** " or the conflict markers "=======" / ">>>>>>> REPLACE" — use <write:${N}> for that file instead (the patch grammar would mis-split it).`,
-      `ALWAYS <read:${N}> a file right before you <edit:${N}>/patch it so the SEARCH/old text matches exactly. Every write/edit/patch is checkpointed (undoable) and workspace-scoped; secret files are blocked. Budget: ${gov.maxLocalExec ?? 12} writes/edits/patches+commands per run.`,
+      `<patch:${N}>*** Add: new/file.ts\\n<full content>\\n*** Update: existing.ts\\n      `ALWAYS <read:${N}> a file right before you <edit:${N}>/patch it so the SEARCH/old text matches exactly. Every write/edit/patch is checkpointed (undoable) and workspace-scoped; secret files are blocked. Budget: ${gov.maxLocalExec ?? 12} writes/edits/patches+commands per run.`,
       '',
       '## Running commands YOURSELF (gated, SANDBOXED shell)',
       `<bash:${N}>a single shell command</bash> — run tests, builds, linters, formatters, git status/diff, etc. Runs in an OS sandbox: NO network and writes limited to the workspace. Use it to VERIFY your edits (e.g. run the tests, then read failures and fix).`,
@@ -13821,1061 +13825,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._canvasJobRouter?.emit('chat-' + panelId, { type: 'op_error', error });
   }
 
-  // ========================================================================
-  // Plan 22 §3.4 — the typed protocol seam
-  // ========================================================================
-
-  /** Post one typed host message to the open canvas panel. */
-  private _postCanvasHostMessage(message: CanvasHostMessage): void {
-    if (!this._canvasPanelId) { return; }
-    // Stamp the per-view token on EVERY host message, not just `canvas/hello`.
-    //
-    // The client used to authenticate host traffic by inspecting `ev.source`,
-    // which cannot be made sound: an artboard is a sandboxed opaque-origin
-    // frame, and a frame nested inside it can post to `window.top`, so neither
-    // an allowlist of windows nor a denylist of known frames covers it. That
-    // heuristic has now caused a silent, total failure twice — first dropping
-    // every host message because VS Code relays from the parent, then leaving
-    // the panel stuck on "Loading your designs…" when a source did not match.
-    //
-    // The token is the sound control and it already exists: the page cannot
-    // read this document (opaque origin), so it cannot learn the token, and a
-    // forged `canvas/ops` is rejected on content rather than on provenance.
-    const stamped = { ...message, viewToken: this._canvasViewToken } as unknown as WebviewMessage;
-    this._postToPanel(this._canvasPanelId, stamped);
-  }
-
-  /**
-   * The bridge's view of the live canvas, or `null` while the artifact is still
-   * loading. Fails CLOSED: with no artifact there is no session, and every
-   * client message that needs one is a no-op rather than a guess.
-   */
-  private _canvasSession(): CanvasBridgeSession | null {
-    if (!this._canvasArtifact || !this._canvasStore || !this._canvasExecutor
-      || !this._canvasHistory || !this._canvasJobRouter) {
-      return null;
-    }
-    return {
-      artifact: this._canvasArtifact,
-      store: this._canvasStore,
-      executor: this._canvasExecutor,
-      history: this._canvasHistory,
-      jobRouter: this._canvasJobRouter,
-      ...(this._canvasLiveness ? { liveness: this._canvasLiveness } : {}),
-    };
-  }
-
-  /** Wire one {@link CanvasBridge} to this provider's canvas state. */
-  private _createCanvasBridge(panelId: string): CanvasBridge {
-    return new CanvasBridge({
-      post: (message) => this._postCanvasHostMessage(message),
-      session: () => this._canvasSession(),
-      viewToken: () => this._canvasViewToken,
-      approvalMode: () => resolveCanvasApproval(
-        this._getSettingsForPanel(this._canvasChatOrigin ?? 'default'),
-      ),
-      caps: () => this._canvasCaps,
-      scheduleSave: () => this._scheduleCanvasSave(),
-      steeringRunIds: () => [...this._canvasSteeringRuns],
-      steeringReachable: () => this._canvasSteeringReachable(),
-      onCancelJob: (jobId) => this._cancelCanvasTurnJob(jobId),
-      onExport: () => this._exportCanvas(),
-      onPresent: (pageId) => this._presentCanvas(pageId),
-      onAddScaffold: (scaffold) => { this._addCanvasScaffold(scaffold); },
-      onClientRendered: (info) => { this._canvasRendered = { ...info, at: Date.now() }; },
-      listArtifacts: async () => {
-        const store = this._canvasStore;
-        if (!store) { return []; }
-        const summaries = await store.list();
-        return summaries.map(s => ({
-          id: s.id, name: s.name, kind: s.kind, pageCount: s.pageCount, updatedAt: s.updatedAt,
-        }));
-      },
-      onOpenArtifact: (artifactId) => this._switchCanvasArtifact(panelId, artifactId),
-      onNewArtifact: (opts) => this._switchCanvasArtifact(panelId, null, opts.name),
-      log: (message) => console.log(`[Mysti] ${message}`),
-    });
-  }
-
-  /**
-   * Take everything queued for a coordinator run from the canvas steering
-   * inbox, as ONE body.
-   *
-   * Drains the run's own queue AND the pending slot — a comment typed before
-   * the human had a run in flight must not evaporate, and folding both into one
-   * body keeps the transcript to a single user turn (N adjacent user turns is
-   * both malformed and an invitation to answer each one separately).
-   *
-   * The body is NOT fenced here: fencing is the caller's, at the one place that
-   * knows the run's nonce.
-   */
-  private _drainCanvasSteering(runId: string): string | null {
-    const liveness = this._canvasLiveness;
-    if (!liveness) { return null; }
-    const parts = [liveness.drain(CANVAS_PENDING_RUN), liveness.drain(runId)]
-      .filter((p): p is string => typeof p === 'string' && p.length > 0);
-    return parts.length ? parts.join('\n\n') : null;
-  }
-
-  /**
-   * Push whatever the view is missing after a mutation this provider made
-   * directly (a coordinator tool call, a fenced op, a scaffold).
-   *
-   * Deltas, not snapshots: `pushOps` sends only the journal records the view
-   * has not seen. It falls back to a full `canvas/resync` on its own when the
-   * artifact version and the journal disagree — which is the ONLY case that
-   * still warrants shipping the whole design.
-   */
-  private _pushCanvasUpdate(): void {
-    this._canvasBridge?.pushOps();
-    this._canvasBridge?.pushHistory();
-  }
-
-  /**
-   * Webview URI prefix for an artifact's content-addressed `assets/` dir, so
-   * `asset://<name>` resolves in the board. `null` when the artifact has no
-   * on-disk home yet (no workspace open).
-   */
-  private _canvasAssetBaseUri(
-    webview: vscode.Webview,
-    store: ArtifactStore,
-    artifactId: string,
-  ): string | undefined {
-    const dir = store.artifactDir(artifactId);
-    if (!dir) { return undefined; }
-    return webview.asWebviewUri(vscode.Uri.file(path.join(dir, 'assets'))).toString();
-  }
-
-  /**
-   * Swap the open canvas onto another design (or a brand-new one).
-   *
-   * Single-session: this provider holds one artifact at a time, so switching is
-   * a replacement rather than a second panel. `CanvasWorkspace` is the module
-   * that makes N designs open side by side; it is not the live owner yet.
-   */
-  /**
-   * Mint a canvas MCP server BOUND to one design (CANVAS-SEC-2).
-   *
-   * `CanvasMcpHttpServer` was built so the bearer token handed to a linked CLI
-   * dies with the design it was minted for — `_bindingHolds()` is re-checked on
-   * every request and answers `410 Gone` once the host moved on. The sole
-   * production call site constructed it with **no options at all**, so
-   * `_artifactId` was `null`, `_bindingHolds()` short-circuited to `true`
-   * forever, the 410 path was unreachable, and the constructor's own
-   * "no artifactId bound" warning fired on every canvas open. `CanvasToolServer`
-   * resolves its context lazily from live provider state, so that token kept
-   * operating against whatever design happened to be open next.
-   *
-   * The `currentArtifactId` probe deliberately reads `this._canvasArtifact` at
-   * call time rather than capturing an id: that is what makes it a *binding*
-   * and not a snapshot.
-   */
-  private _createCanvasMcpServer(artifactId: string): CanvasMcpHttpServer {
-    const toolServer = this._canvasToolServer;
-    if (!toolServer) { throw new Error('canvas tool server is not constructed'); }
-    return new CanvasMcpHttpServer(toolServer, {
-      artifactId,
-      currentArtifactId: () => this._canvasArtifact?.id ?? null,
-    });
-  }
-
-  /**
-   * Stop the previous canvas MCP server, mint a fresh one bound to `artifactId`,
-   * and re-link the origin chat panel to the NEW token.
-   *
-   * Called on canvas open and on every design switch — a switch used to leave
-   * the old server (and its token) running, which is precisely the "token
-   * follows the user into their next design" failure the binding exists to
-   * prevent.
-   */
-  private async _linkCanvasMcpServer(artifactId: string): Promise<void> {
-    if (!this._canvasToolServer) { return; }
-    const previous = this._canvasMcpHttp;
-    this._canvasMcpHttp = null;
-    if (previous) { await previous.stop().catch(() => {}); }
-
-    let server: CanvasMcpHttpServer;
-    try {
-      server = this._createCanvasMcpServer(artifactId);
-    } catch {
-      return;
-    }
-    this._canvasMcpHttp = server;
-    try {
-      const handle = await server.start();
-      // A newer switch (or a panel dispose) won while we were starting.
-      if (this._canvasMcpHttp !== server) { await server.stop().catch(() => {}); return; }
-      const origin = this._canvasChatOrigin;
-      if (origin) {
-        const cfg = this._canvasLinker.link(origin, { url: handle.url, token: handle.token });
-        this._providerManager.setCanvasMcpConfig(origin, cfg);
-        console.log('[Mysti] Canvas MCP server at', handle.url, '→ linked to panel', origin, 'for design', artifactId);
-      }
-    } catch (err) {
-      console.warn('[Mysti] Canvas MCP server failed to start:', err);
-    }
-  }
-
-  private async _switchCanvasArtifact(panelId: string, artifactId: string | null, name?: string): Promise<void> {
-    const store = this._canvasStore;
-    const executor = this._canvasExecutor;
-    if (!store || !executor || this._canvasPanelId !== panelId) { return; }
-    let next: CanvasArtifact | null = null;
-    if (artifactId) {
-      next = await store.load(artifactId).catch(() => null);
-    } else {
-      const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
-      next = buildEmptyCanvasArtifact(name || (workspaceName ? `${workspaceName} designs` : undefined));
-    }
-    if (!next || this._canvasPanelId !== panelId) { return; }
-    // Flush the outgoing design before letting go of it.
-    if (this._canvasSaveTimer) { clearTimeout(this._canvasSaveTimer); this._canvasSaveTimer = null; }
-    if (this._canvasArtifact) { await store.save(this._canvasArtifact).catch(() => {}); }
-    this._canvasArtifact = next;
-    this._canvasHistory = new CanvasHistory(next, executor, { jobId: `canvas-${panelId}` });
-    // R4-4: `assetBaseUri` is baked into the shell ONCE, for whichever design
-    // was open when the panel rendered, and the webview binds its `asset://`
-    // resolver from it at construction (`makeAssetResolver` validates the
-    // artifact-id segment and then DROPS it). Without re-rendering, every image
-    // in the new design resolves into the PREVIOUS design's assets directory,
-    // where it does not exist — silently, in previews and live frames alike,
-    // and a panel reload "fixes" it, which makes the bug look intermittent.
-    //
-    // The shell is re-rendered rather than the base being re-sent over
-    // `canvas/hello` because the base is read once at boot; a switch replaces
-    // every artboard anyway (different pages, different ports), so no live
-    // state that survives the switch is lost. The reloaded view asks for
-    // `canvas/hello` itself, so the state transfer below is belt-and-braces.
-    //
-    // Guarded and non-fatal on purpose: the relink below is the control that
-    // revokes the previous design's MCP bearer token (CANVAS-SEC-2), so a
-    // rendering failure must never be able to skip it.
-    const webview = this._panelStates.get(panelId)?.panel?.webview;
-    if (webview) {
-      try {
-        const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
-        // Caps ride `canvas/hello` (and the later `canvas/caps` push), exactly
-        // as they do on a cold open — the shell renders with none.
-        webview.html = getCanvasContent(
-          webview, this._extensionUri, version, next, [],
-          {
-            viewToken: this._canvasViewToken,
-            assetBaseUri: this._canvasAssetBaseUri(webview, store, next.id),
-          },
-        );
-      } catch (err) {
-        console.warn('[Mysti] Canvas: could not re-render the shell for the new design:', err);
-      }
-    }
-    // CANVAS-SEC-2: a new design means a new token. Without this the CLI's
-    // existing bearer keeps working against a design it was never issued for.
-    await this._linkCanvasMcpServer(next.id);
-    this._canvasBridge?.hello();
-  }
-
-  /**
-   * Read the bytes behind every `asset://` ref this design's artboards point
-   * at, base64-encoded for {@link makeDataUriAssetResolver}.
-   *
-   * R4-3: the export bundle, Present and the PNG/PDF capture all shipped the
-   * literal `asset://<id>/assets/<sha>.png`. The frame harness refuses that
-   * scheme, the exported page CSP allows only `data:`/`blob:` images, and the
-   * bundle writer copies no `assets/` directory — so every generated image and
-   * every imported Figma frame was absent from the one artifact a colleague
-   * ever sees, with the layout box still sized for it.
-   *
-   * Reads go through `ArtifactStore.readAssetBytes`, i.e. through
-   * `resolveAssetPath`'s containment guard: a model-authored ref cannot turn
-   * this into a workspace file reader. Anything unreadable or past the inline
-   * cap is skipped, which leaves the raw ref in place — the pre-existing
-   * missing-image behaviour, not a new failure mode.
-   */
-  private async _canvasInlineAssets(artifact: CanvasArtifact): Promise<InlineAsset[]> {
-    const store = this._canvasStore;
-    if (!store) { return []; }
-    const out: InlineAsset[] = [];
-    for (const ref of collectArtifactAssetRefs(artifact)) {
-      const bytes = await store.readAssetBytes(ref).catch(() => null);
-      if (!bytes) {
-        console.log('[Mysti] Canvas handoff: asset is not readable, it will be missing from the document:', ref);
-        continue;
-      }
-      if (bytes.length > MAX_INLINE_ASSET_BYTES) {
-        console.log(`[Mysti] Canvas handoff: ${ref} is ${bytes.length} bytes — past the inline cap, it will be missing from the document.`);
-        continue;
-      }
-      out.push({ ref, base64: bytes.toString('base64') });
-    }
-    return out;
-  }
-
-  /** Open the current design full-bleed in a Present viewer panel. */
-  private async _presentCanvas(pageId?: string): Promise<void> {
-    const artifact = this._canvasArtifact;
-    if (!artifact || artifact.pages.length === 0) {
-      void vscode.window.showInformationMessage('Nothing to present — this design has no artboards yet.');
-      return;
-    }
-    const { buildPresentDocument } = await import('../canvas/CanvasPresent');
-    // Read the design's images BEFORE the panel exists: Present has no files on
-    // disk to point a frame at, so an `asset://` ref that is not inlined is an
-    // image the viewer simply does not have (R4-3).
-    const resolveAsset = makeDataUriAssetResolver(await this._canvasInlineAssets(artifact));
-    const panel = vscode.window.createWebviewPanel(
-      'mysti.canvasPresent',
-      `Present — ${artifact.name}`,
-      vscode.ViewColumn.Active,
-      { enableScripts: true, localResourceRoots: [this._extensionUri], retainContextWhenHidden: true },
-    );
-    panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
-    const sandbox = (f: string) => vscode.Uri.joinPath(this._extensionUri, 'resources', 'canvas-sandbox', f).fsPath;
-    const read = (f: string) => ({ name: f, content: fs.readFileSync(sandbox(f), 'utf8') });
-    // Babel only when a `legacy` artboard still needs a JSX compiler — the
-    // harness interprets a DocNode tree, so its 2.98 MB is dead weight otherwise.
-    const needsBabel = artifact.pages.some(p => !!p.legacy);
-    panel.webview.html = buildPresentDocument({
-      artifact,
-      startPageId: pageId,
-      runtime: {
-        headRuntime: [
-          read('react.production.min.js'),
-          read('react-dom.production.min.js'),
-          read('ui-primitives.js'),
-        ],
-        harness: read('harness.js'),
-        resolveAsset,
-        // Its own slot, NOT `headRuntime`: that is what keeps 2,983,904 bytes
-        // out of every artboard document when nothing legacy needs a compiler.
-        ...(needsBabel ? { babel: read('babel.min.js') } : {}),
-      },
-    });
-  }
-
-  /** Debounced persist of the canvas artifact to .mysti/canvas/<id>/artifact.json. */
-  private _scheduleCanvasSave(): void {
-    if (this._canvasSaveTimer) { clearTimeout(this._canvasSaveTimer); }
-    this._canvasSaveTimer = setTimeout(() => {
-      if (this._canvasStore && this._canvasArtifact) {
-        this._canvasStore.save(this._canvasArtifact).catch(err => console.log('[Mysti] Canvas save failed:', err));
-      }
-    }, 800);
-  }
-
-  /**
-   * Apply a scaffold template chosen in the canvas (the + menu / empty state).
-   *
-   * E2E-2: the approval mode was resolved from `mysti.accessLevel`, whose
-   * shipped default (`ask-permission`) maps to `staged` — so on a cold open the
-   * empty state's one working button parked the human's own template behind an
-   * Accept card in a rail that is `display:none` below 640px, and the board did
-   * not change at all. It is `'auto'` here for the same reason
-   * `CanvasBridge._onSubmit` hardcodes it: this is a HUMAN gesture, and its one
-   * producer is the `canvas/addScaffold` message, which the bridge has already
-   * authenticated against the per-view token — a model-authored page inside a
-   * sandboxed artboard cannot forge it. Nothing about the AGENT lane changes:
-   * `_runMystiCanvasTool` and the MCP transport still resolve their approval
-   * from settings.
-   */
-  private _addCanvasScaffold(scaffold: string): void {
-    const ctx = this._canvasToolContext({ approvalMode: 'auto' });
-    if (!ctx || !scaffold) { return; }
-    // Routes through the executor → op_applied event → re-render + save (router sink).
-    const res = dispatchCanvasTool('scaffold_page', { scaffold }, ctx);
-    // …and a refusal is reported on the same `canvas/job` seam the fenced lane
-    // uses, rather than being pure silence in front of an unchanged board.
-    if (!res.ok) {
-      this._reportCanvasOpProblem(this._canvasChatOrigin ?? 'canvas', res.error ?? `template "${scaffold}" could not be added`);
-    }
-  }
-
-  /** Export the current canvas to a self-contained HTML bundle in a chosen folder. */
-  private async _exportCanvas(): Promise<void> {
-    if (!this._canvasArtifact) { return; }
-    const pick = await vscode.window.showOpenDialog({
-      canSelectFolders: true, canSelectFiles: false, canSelectMany: false, openLabel: 'Export design here',
-    });
-    if (!pick || !pick[0]) { return; }
-    const sandbox = (f: string) => vscode.Uri.joinPath(this._extensionUri, 'resources', 'canvas-sandbox', f).fsPath;
-    const read = (f: string) => ({ name: f, content: fs.readFileSync(sandbox(f), 'utf8') });
-    // Plan 22 Phase 2: the harness interprets a DocNode tree, so Babel is only
-    // needed by `legacy` pages (source we could not compile). Shipping its
-    // 2,983,904 bytes into every export when nothing uses them made a two-page
-    // design a 3 MB download.
-    const needsBabel = this._canvasArtifact.pages.some(p => !!p.legacy);
-    const files = exportHtmlBundle(this._canvasArtifact, {
-      headRuntime: [
-        read('react.production.min.js'),
-        read('react-dom.production.min.js'),
-        read('ui-primitives.js'),
-      ],
-      harness: read('harness.js'),
-      // Assets are inlined for the same reason the runtime is: a sandboxed page
-      // document has an opaque origin and may not load sibling files, and the
-      // exported CSP allows `data:` images and nothing else. Without this the
-      // bundle a user hands to a colleague has every image missing (R4-3).
-      resolveAsset: makeDataUriAssetResolver(await this._canvasInlineAssets(this._canvasArtifact)),
-      // Babel rides its OWN slot so it reaches only the legacy artboards that
-      // need a compiler; inside `headRuntime` it lands in every page document.
-      ...(needsBabel ? { babel: read('babel.min.js') } : {}),
-    });
-    const root = pick[0].fsPath;
-    for (const file of files) {
-      const dest = path.join(root, file.path);
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.writeFileSync(dest, file.content, file.encoding === 'base64' ? { encoding: 'base64' } : { encoding: 'utf8' });
-    }
-    const indexUri = vscode.Uri.file(path.join(root, 'index.html'));
-    void vscode.window.showInformationMessage(`Canvas exported to ${root}`, 'Open').then(choice => {
-      if (choice === 'Open') { void vscode.env.openExternal(indexUri); }
-    });
-  }
-
-  /**
-   * Handle messages from the Canvas webview — the typed front door (§3.4).
-   *
-   * This used to be a 900-line `switch (msg.type)` over legacy strings
-   * (`canvasReady`, `canvasSave`, `canvasPrompt`, `canvasUnifiedPrompt`, …) that
-   * no shipped webview has sent since the shell was rebuilt on
-   * `src/canvas/protocol.ts`: 3 of its 14 cases were reachable, and the ones
-   * the rebuilt board actually sends (`canvas/submit`, `canvas/undo`,
-   * `canvas/comment`, …) had no handler at all. The editor surface existed and
-   * was not connected to anything.
-   *
-   * Everything now goes through {@link CanvasBridge}:
-   *
-   * - `acceptCanvasClientMessage` authenticates the message against the
-   *   per-view token minted in {@link openCanvas} and fails **closed**;
-   * - the dispatch is an exhaustive `switch` over `CanvasClientMessage` ending
-   *   in `assertNeverCanvasMessage`, so a future protocol variant with no
-   *   handler is a `tsc` failure rather than a silent drop;
-   * - `author` is stamped host-side from the arriving channel and is never read
-   *   from the payload.
-   *
-   * The deleted `CanvasManager` flows (Stitch, freeform prompt bar, image/video
-   * generation, code gen) are Plan 22 Phase 0 deletions: their producers are
-   * gone from the webview, and a salvaged capability returns as a *tool*, not
-   * as a transport (`protocol.ts` module docs).
-   */
-  private async _handleCanvasMessage(msg: unknown, canvasPanelId: string): Promise<void> {
-    if (this._canvasPanelId !== canvasPanelId) { return; }
-    const bridge = this._canvasBridge;
-    if (!bridge) {
-      console.log('[Mysti] canvas: message arrived with no bridge; dropped');
-      return;
-    }
-    await bridge.handle(msg);
-  }
-
-  /**
-   * Open Mysti in a new editor tab (detached panel)
-   */
-  public openInNewTab(): void {
-    const panelId = `panel_${Date.now()}`;
-    const panel = vscode.window.createWebviewPanel(
-      'mysti.detachedChat',
-      'Mysti',
-      vscode.ViewColumn.Beside,
-      {
-        enableScripts: true,
-        localResourceRoots: [this._extensionUri],
-        retainContextWhenHidden: true
-      }
-    );
-
-    // Set the tab icon to Mysti logo
-    panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
-
-    const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
-    panel.webview.html = getWebviewContent(panel.webview, this._extensionUri, version);
-
-    // Create a new conversation for this panel
-    const newConversation = this._conversationManager.createNewConversation();
-
-    // Register panel state
-    this._panelStates.set(panelId, {
-      id: panelId,
-      webview: panel.webview,
-      panel: panel,
-      currentConversationId: newConversation.id,
-      isSidebar: false
-    });
-
-    // Handle messages from detached panel
-    panel.webview.onDidReceiveMessage(
-      async (message: unknown) => {
-        await this._receivePanelMessage(message, panelId, panel.webview);
-      }
-    );
-
-    // Cleanup on dispose
-    panel.onDidDispose(() => {
-      void this._dictationManager?.cancelPanel(panelId);
-      this._panelStates.delete(panelId);
-      this._stopAuthPolling(panelId);
-      for (const [id, offer] of this._modelCliUpgrades) {
-        if (offer.panelId === panelId) { this._modelCliUpgrades.delete(id); }
-      }
-      this._unbindHubFrom(panelId);
-      this._cancelQueuedChannelTurn(panelId);
-      this._cancelPendingSubAgentQuestions(panelId);
-      this._lastUserMessage.delete(panelId);
-      this._lastSendSettings.delete(panelId);
-      this._lastMentionContext.delete(panelId);
-      this._cancelledPanels.delete(panelId);
-      // Cancel any running processes for this panel
-      this._providerManager.cancelRequest(panelId);
-      // P1.5: background jobs SURVIVE panel dispose (they are detached, session-
-      // scoped runs — killing them on a tab close was the review [8] defect).
-      // _postToPanel safely no-ops for the gone panel; the result is persisted
-      // and surfaced via a completion notification / the jobs list.
-      // review[4]: but a surviving job may be PARKED at a write-permission gate
-      // whose card was posted to THIS (now-gone) webview — unblock those pending
-      // gates (auto-DENY) so the job isn't deadlocked forever. Any NEW gate it
-      // raises after this also auto-denies (requestPermissionInline's panel-gone
-      // guard). The job itself keeps running; only its writes are refused.
-      for (const job of this._backgroundJobManager.listRunning(panelId)) {
-        this._permissionManager.cancelRequestsByOwner(job.id);
-      }
-      // review[4]: a FOREGROUND Mysti run for this tab may itself be parked at a
-      // SIGSTOP write gate whose card lived in the now-gone webview. Under
-      // 'require-action'/timeout=0 that gate never resolves, orphaning the
-      // SIGSTOPped child process forever and pinning the run. Mirror the Stop
-      // path — resolve the panel-owned gate (deny) and tear down the pool run so
-      // the run unwinds to its finally (disposeRun) and the frozen child is killed.
-      this._abortMystiDirect(panelId);
-      // Clean up per-panel context
-      this._contextManager.clearPanelContext(panelId);
-      // Clean up per-panel channel bridge state
-      this._channelBridge.clearPanel(panelId);
-      this._runningPanels.delete(panelId);
-      // S1/S7: cancel + fully clear any brainstorm session (its children run
-      // under composite `-brainstorm-` panel keys the plain-panelId loop
-      // below never reaches).
-      this._brainstormManager.cancelSession(panelId);
-      this._brainstormManager.clearSession(panelId);
-      // Plan 18 (1.3): stop any live collab/orchestrate children for this tab.
-      this._collaborationManager.cancelPanel(panelId);
-      this._mystiOrchestrator?.cancelPanel(panelId);
-      // Close this tab's warm visual session (browser + any dev server IT
-      // started) and drop its look nonce/scanner — a closed tab must never
-      // leave a Chromium and a `npm run dev` running.
-      this._vtNonces.delete(panelId);
-      this._vtScanners.delete(panelId);
-      void this._visualTestManager.disposePanel(panelId);
-      void this._visualSessions?.close(`dash:${panelId}`);
-      // S7: drop the panel's compaction usage (sweeps -brainstorm- child keys
-      // too) — these outlived closed tabs before.
-      this._compactionManager.resetUsage(panelId);
-      // Clean up per-panel provider sessions (including persistent processes)
-      for (const provider of this._providerManager.getAllProviders()) {
-        provider.cancelCurrentRequest(panelId);
-        if (typeof provider.disposePersistentProcess === 'function') {
-          provider.disposePersistentProcess(panelId);
-        }
-      }
-      // Clean up pending plan selections
-      this._pendingPlanSelections.delete(panelId);
-      this._pendingPlans.clearPanel(panelId);
-      // Clean up autonomy level tracking
-      this._panelAutonomyLevel.delete(panelId);
-      // Mysti run tracking (re-review low — per-panelId maps were never evicted).
-      this._mystiRunGen.delete(panelId);
-      this._mystiAbortControllers.delete(panelId);
-    });
-
-    // Send initial state with the new conversation
-    this._sendInitialState(panelId);
-
-    // Pre-spawn persistent process so first message is instant
-    this._tryPreSpawnPersistentProcess(panelId);
-  }
-
-  /**
-   * Plan 31: open (or reveal) the Mysti tab on `section`, acting for the chat
-   * `originPanelId`. There is one tab; opening it from another chat rebinds it.
-   * `_hub` is assigned BEFORE the first await, so a second click that lands
-   * while the first is still loading reveals the same tab — and waits for that
-   * load, so the LAST click's section is what shows, after the state it needs.
-   */
-  public async openSettingsHub(section: HubSection, originPanelId: string): Promise<void> {
-    if (!this._panelStates.has(originPanelId)) { return; }
-    let rebind = true;
-    if (this._hub) {
-      rebind = this._hub.originPanelId !== originPanelId;
-      this._hub.originPanelId = originPanelId;
-      this._hub.panel.reveal();
-    } else {
-      const panel = vscode.window.createWebviewPanel('mysti.settingsHub', 'Mysti', vscode.ViewColumn.Beside, {
-        enableScripts: true,
-        localResourceRoots: [this._extensionUri],
-        retainContextWhenHidden: true,
-      });
-      panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
-      const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
-      panel.webview.html = getWebviewContent(panel.webview, this._extensionUri, version, { view: 'hub' });
-      panel.webview.onDidReceiveMessage((message: unknown) => this._receiveHubMessage(message, panel.webview));
-      panel.onDidDispose(() => {
-        if (this._hub?.panel === panel) { this._hub = null; }
-      });
-      this._hub = { panel, originPanelId, section, loading: Promise.resolve(), loadedFor: null };
-    }
-    const hub = this._hub;
-    hub.section = section;
-    if (rebind) {
-      hub.loading = this._sendInitialState(originPanelId, true).catch((error) => {
-        console.error('[Mysti] Mysti tab state failed:', error instanceof Error ? error.name : 'Unknown error');
-      });
-    }
-    await hub.loading;
-    // Rebound, unbound or closed while loading: that newer event owns the tab.
-    if (this._hub !== hub || hub.originPanelId !== originPanelId) { return; }
-    this._postHubShow(hub.section);
-  }
-
-  /** Plan 31: tell the tab which section to show and which chat it acts for (`chatTitle: null` = none). */
-  private _postHubShow(section: HubSection | null): void {
-    if (!this._hub) { return; }
-    const origin = this._hub.originPanelId;
-    const conversationId = origin ? this._panelStates.get(origin)?.currentConversationId : null;
-    const chatTitle = origin
-      ? (conversationId ? this._conversationManager.getConversation(conversationId)?.title : undefined) || 'Untitled chat'
-      : null;
-    void Promise.resolve(this._hub.panel.webview.postMessage({ type: 'hubShow', payload: { section, chatTitle } }))
-      .catch(() => false);
-  }
-
-  /**
-   * Plan 31: the chat the tab may act for — only once the tab holds that chat's
-   * CURRENT conversation. Right after a rebind or conversation switch the tab
-   * still shows the previous state and title, so an edit made then (a model
-   * from the other provider's list, the old conversation's personas) is not
-   * applied anywhere.
-   */
-  private _hubActingFor(): string | null {
-    const origin = this._hub?.originPanelId;
-    const state = origin ? this._panelStates.get(origin) : undefined;
-    const loaded = this._hub?.loadedFor;
-    return origin && state && loaded?.panelId === origin && loaded.conversationId === (state.currentConversationId ?? null)
-      ? origin : null;
-  }
-
-  /** Plan 31: the chat the tab acts for is gone — the tab stays, read-only. */
-  private _unbindHubFrom(panelId: string): void {
-    if (!this._hub || this._hub.originPanelId !== panelId) { return; }
-    this._hub.originPanelId = null;
-    this._postHubShow(null);
-  }
-
-  /**
-   * Plan 31: a message from the Mysti tab. Applied AS the chat it acts for —
-   * `bindIncomingMessage` stamps the origin's id, whatever the tab claimed —
-   * and only for HUB_INBOUND_TYPES; with no live chat, only HUB_UNBOUND_TYPES
-   * (links), so an edit is never applied to some other chat by default.
-   */
-  private async _receiveHubMessage(message: unknown, sender: vscode.Webview): Promise<void> {
-    if (!this._hub || this._hub.panel.webview !== sender) { return; }
-    const type = message && typeof message === 'object' ? (message as { type?: unknown }).type : undefined;
-    if (typeof type !== 'string' || !HUB_INBOUND_TYPES.has(type)) { return; }
-    const live = this._hubActingFor();
-    const target = live ?? (HUB_UNBOUND_TYPES.has(type) ? this._sidebarId : null);
-    if (!target) { return; }
-    const bound = bindIncomingMessage(message, target);
-    if (!bound) { return; }
-    if (bound.type === 'updateSettings' && bound.payload && typeof bound.payload === 'object') {
-      const payload = { ...(bound.payload as Record<string, unknown>) };
-      for (const key of HUB_CHAT_ONLY_SETTINGS) { delete payload[key]; }
-      bound.payload = payload;
-    }
-    try {
-      await this._handleMessage(bound as unknown as WebviewMessage);
-      if (live && bound.type === 'updateSettings') { this._syncHubSettings(live, bound.payload, true); }
-    } catch (error) {
-      console.error('[Mysti] Mysti tab action failed:', bound.type, error instanceof Error ? error.name : 'Unknown error');
-    }
-  }
-
-  /**
-   * Plan 31: the chat posts its OWN copy of `state.settings` with every
-   * message, so a change made on one side of the chat/tab pair must reach the
-   * other or the chat's next send silently undoes it. Posted directly, not via
-   * `_postToPanel`, so it is never mirrored back to the side that made it.
-   * From the tab it goes to the chat the edit was APPLIED to, even if the tab
-   * was rebound or closed while it applied.
-   */
-  private _syncHubSettings(originPanelId: string, payload: unknown, fromHub: boolean): void {
-    const target = fromHub
-      ? this._panelStates.get(originPanelId)?.webview
-      : this._hub?.originPanelId === originPanelId ? this._hub.panel.webview : undefined;
-    if (!target) { return; }
-    void Promise.resolve(target.postMessage({ type: 'settingsSync', payload })).catch(() => false);
-  }
-
-  /** Plan 31: keep the Mysti tab in step with what its chat just did. */
-  private async _syncHubAfterChatMessage(
-    panelId: string,
-    bound: { type: string; payload?: unknown },
-    conversationBefore: string | null | undefined,
-  ): Promise<void> {
-    if (!this._hub || this._hub.originPanelId !== panelId) { return; }
-    if (bound.type === 'updateSettings') { this._syncHubSettings(panelId, bound.payload, false); }
-    // New / switch / delete / fork / import all land here as a changed id —
-    // no list of message types to drift.
-    if (this._panelStates.get(panelId)?.currentConversationId !== conversationBefore) {
-      // Through `loading`, as openSettingsHub does: a click meanwhile waits for
-      // this state, and a rebind, unbind or close that overtakes it wins.
-      const hub = this._hub;
-      hub.loading = this._sendInitialState(panelId, true).catch((error) => {
-        console.error('[Mysti] Mysti tab state failed:', error instanceof Error ? error.name : 'Unknown error');
-      });
-      await hub.loading;
-      if (this._hub !== hub || hub.originPanelId !== panelId) { return; }
-      this._postHubShow(null);
-    }
-  }
-
-  /** Plan 31: the tab hears what its chat hears — HUB_MIRROR_TYPES only, plus a title change as hubShow. `null` = a broadcast. */
-  private _mirrorToHub(panelId: string | null, message: WebviewMessage): void {
-    if (!this._hub) { return; }
-    if (panelId !== null && this._hub.originPanelId !== panelId) { return; }
-    try {
-      if (message.type === 'titleUpdated') {
-        // A generated title renames the conversation the header names (its
-        // id is unchanged, so the conversation follow never sees it).
-        if (this._hubActingFor()) { this._postHubShow(null); }
-      } else if (HUB_MIRROR_TYPES.has(message.type)) {
-        void Promise.resolve(this._hub.panel.webview.postMessage(message)).catch(() => false);
-      }
-    } catch { /* The tab never blocks delivery to its chat. */ }
-  }
-
-  /**
-   * Send message to a specific panel
-   */
-  private _postToPanel(panelId: string, message: WebviewMessage) {
-    this._mirrorToHub(panelId, message);
-    const state = this._panelStates.get(panelId);
-    try {
-      return state ? Promise.resolve(state.webview.postMessage(message)).catch(() => false) : Promise.resolve(false);
-    } catch {
-      return Promise.resolve(false);
-    }
-  }
-
-  /**
-   * Broadcast message to all panels
-   */
-  /**
-   * Plan 01 Phase 4: build the modelsUpdated payload for a provider from the
-   * registry's merged view (curated + discovered + custom). Synchronous and
-   * non-throwing — getModels() always answers.
-   */
-  private _buildModelsUpdatedPayload(providerId: string): ModelsUpdatedPayload {
-    const state = this._modelRegistry.getModels(providerId);
-    return {
-      provider: providerId,
-      models: state.models,
-      defaultModel: state.defaultModel,
-      discoveryStatus: state.discoveryStatus,
-      fetchedAt: state.fetchedAt
-    };
-  }
-
-  /** Push a provider's model list to every open panel (panels filter by their own provider). */
-  private _broadcastModelsUpdated(providerId: string): void {
-    this._broadcastToAll({
-      type: 'modelsUpdated',
-      payload: this._buildModelsUpdatedPayload(providerId)
-    });
-  }
-
-  /** Push a provider's model list to one panel (answer to requestModels). */
-  private _postModelsUpdated(panelId: string | undefined, providerId: string): void {
-    const message: WebviewMessage = {
-      type: 'modelsUpdated',
-      payload: this._buildModelsUpdatedPayload(providerId)
-    };
-    if (panelId) {
-      this._postToPanel(panelId, message);
-    } else {
-      this._broadcastToAll(message);
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Update surfacing (new models / stale CLIs)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Inject the update-surfacing services and start pushing their results to
-   * panels. Called once from activate(); safe to call before any panel exists
-   * (broadcasts to zero panels are no-ops, and the webview asks again on open).
-   */
-  public setUpdateServices(
-    announcements: ModelAnnouncementService,
-    cliUpdates: CliUpdateService
-  ): void {
-    this._modelAnnouncements = announcements;
-    this._cliUpdates = cliUpdates;
-
-    this._extensionContext.subscriptions.push(
-      announcements.onDidChangePending(() => this._broadcastNewModels()),
-      cliUpdates.onDidFindUpdates(() => this._broadcastCliUpdates())
-    );
-  }
-
-  /**
-   * Build the announcement cards. Model metadata (description, context window)
-   * is re-read from the registry rather than stored on the announcement, so a
-   * card always shows the CURRENT description even if it was raised days ago.
-   */
-  private _buildNewModelsPayload(panelId?: string): AnnouncedModelPayload[] {
-    const pending: AnnouncedModel[] = this._modelAnnouncements?.getPending() ?? [];
-    if (pending.length === 0) {
-      return [];
-    }
-    const activeProvider = panelId ? this._getPanelProvider(panelId) : undefined;
-
-    return pending.reduce<AnnouncedModelPayload[]>((acc, a) => {
-      const settingKey = getCustomModelSettingKey(a.providerId);
-      // No per-agent model setting => no quick-select target => no card. This
-      // drops pseudo-agents and any id that has fallen out of the manifest.
-      if (!settingKey) {
-        return acc;
-      }
-      const entry = this._modelRegistry
-        .getModels(a.providerId, { revalidate: false })
-        .models.find(m => m.id === a.modelId);
-
-      acc.push({
-        providerId: a.providerId,
-        providerLabel: getProviderDisplayName(a.providerId) || a.providerId,
-        modelId: a.modelId,
-        name: entry?.name || a.name,
-        description: entry?.description,
-        contextWindow: entry?.contextWindow,
-        announcedAt: a.announcedAt,
-        settingKey,
-        isActiveProvider: a.providerId === activeProvider
-      });
-      return acc;
-    }, []);
-  }
-
-  /** Push announcement cards to every open panel. */
-  private _broadcastNewModels(): void {
-    this._panelStates.forEach((state, panelId) => {
-      state.webview.postMessage({
-        type: 'newModelsAvailable',
-        payload: { models: this._buildNewModelsPayload(panelId) }
-      } as WebviewMessage);
-    });
-  }
-
-  /**
-   * Build the stale-CLI cards. The update COMMAND is taken from
-   * CliUpdateService (an in-repo package literal), never from the webview and
-   * never from the npm registry response.
-   */
-  private _buildCliUpdatesPayload(): CliUpdatePayload[] {
-    const updates = this._cliUpdates?.getUpdates() ?? [];
-    return updates.reduce<CliUpdatePayload[]>((acc, u) => {
-      const command = this._cliUpdates?.getUpdateCommand(u.providerId);
-      if (!command) {
-        return acc;
-      }
-      acc.push({
-        providerId: u.providerId,
-        providerLabel: getProviderDisplayName(u.providerId) || u.providerId,
-        packageName: u.packageName,
-        installed: u.installed,
-        latest: u.latest,
-        command
-      });
-      return acc;
-    }, []);
-  }
-
-  /** Push stale-CLI cards to every open panel. */
-  private _broadcastCliUpdates(): void {
-    const payload = { updates: this._buildCliUpdatesPayload() };
-    this._broadcastToAll({ type: 'cliUpdatesAvailable', payload });
-  }
-
-  /**
-   * Apply a "use this model" click: write the per-agent model override for that
-   * provider and retire the card.
-   *
-   * The model id is re-validated with validateModelName even though it came
-   * from our own announcement — the webview is the one sending it back, so it
-   * is treated as untrusted input on the way in, exactly like the customModel
-   * path in _handleUpdateSettings.
-   */
-  private async _applyAnnouncedModel(providerId: string, modelId: string): Promise<void> {
-    const settingKey = getCustomModelSettingKey(providerId);
-    if (!settingKey) {
-      return;
-    }
-    const validation = validateModelName(modelId);
-    if (!validation.valid) {
-      console.warn(`[Mysti] Announced model rejected: ${validation.error}`);
-      return;
-    }
-
-    await vscode.workspace
-      .getConfiguration('mysti')
-      .update(settingKey, modelId, vscode.ConfigurationTarget.Global);
-    console.log(`[Mysti] Selected announced model for ${providerId}: ${modelId}`);
-
-    await this._modelAnnouncements?.dismiss(providerId, modelId);
-    this._postModelsUpdated(undefined, providerId);
-  }
-
-  private _broadcastToAll(message: WebviewMessage) {
-    this._mirrorToHub(null, message);
-    this._panelStates.forEach(state => {
-      state.webview.postMessage(message);
-    });
-  }
-
-  /**
-   * Smart message routing - broadcast global changes, target panel-specific
-   */
-  public postMessage(message: WebviewMessage, panelId?: string) {
-    // Types that should broadcast to all panels
-    const broadcastTypes = [
-      'settingsChanged',
-      'providerChanged',
-      'contextUpdated',
-      'conversationHistory'
-    ];
-
-    if (panelId && !broadcastTypes.includes(message.type)) {
-      this._postToPanel(panelId, message);
-    } else {
-      this._broadcastToAll(message);
-    }
-  }
-
-  // ============================================================================
-  // Setup Management Methods
-  // ============================================================================
-
-  /**
-   * Handle check setup request from webview
-   */
-  private async _handleCheckSetup(panelId: string): Promise<void> {
-    const statuses = await this._setupManager.getSetupStatus();
-    const npmAvailable = await this._setupManager.checkNpmAvailable();
-    const anyReady = statuses.some(s => s.installed && s.authenticated);
-
-    this._postToPanel(panelId, {
-      type: 'setupStatus',
-      payload: {
-        providers: statuses,
-        npmAvailable,
-        anyReady
-      }
-    });
-
-    // If no provider is ready, try auto-setup for the default provider
-    if (!anyReady) {
-      const config = vscode.workspace.getConfiguration('mysti');
-      const defaultProvider = config.get<string>('defaultProvider', DEFAULT_PROVIDER);
-      await this._runAutoSetup(defaultProvider, panelId);
-    }
-  }
-
-  /**
-   * Run auto-setup flow for a provider
-   */
-  private async _runAutoSetup(providerId: string, panelId: string): Promise<void> {
-    const result = await this._setupManager.setupProvider(
-      providerId,
-      (step, message, progress) => {
-        this._postToPanel(panelId, {
-          type: 'setupProgress',
-          payload: { step, providerId, message, progress }
-        });
-      }
-    );
-
-    if (result.success) {
-      this._postToPanel(panelId, {
-        type: 'setupComplete',
-        payload: { providerId }
-      });
-    } else if (result.requiresManualStep === 'auth') {
-      // CLI installed but needs auth - prompt user
-      const provider = this._providerManager.getProvider(providerId);
-      this._postToPanel(panelId, {
-        type: 'authPrompt',
-        payload: {
-          providerId,
-          displayName: provider?.displayName || providerId,
-          message: `To use ${provider?.displayName || providerId}, you need to sign in. This will open your browser.`
-        }
-      });
-    } else {
-      // Installation failed - show manual instructions
-      this._postToPanel(panelId, {
-        type: 'setupFailed',
-        payload: {
-          providerId,
-          error: result.error || 'Setup failed',
-          canRetry: true,
-          requiresManual: result.requiresManualStep === 'install'
-        }
-      });
-    }
-  }
-
-  /**
-   * Handle retry setup request
-   */
-  private async _handleRetrySetup(providerId: string, panelId: string): Promise<void> {
-    // Plan 28 Phase 7. Neither this nor `SetupManager.setupProvider` had a
-    // try/catch, so a rejection out of discoverCli / autoInstallCli /
-    // checkAuthentication posted NOTHING back — the panel's Retry button, which
-    // disables itself on click to stop two `npm install -g` runs racing, then
-    // had no terminal message to revive it and stayed dead until the webview
-    // was reloaded. A setup run that fails must always say so.
-    try {
-      await this._runAutoSetup(providerId, panelId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error('[Mysti] Setup retry failed:', message);
-      this._postToPanel(panelId, {
-        type: 'setupFailed',
-        payload: {
-          providerId,
-          error: `Setup failed: ${message}`,
-          canRetry: true,
-          requiresManual: false
-        }
-      });
-    }
-  }
-
-  /**
-   * Handle user confirming authentication
-   */
-  private async _handleAuthConfirm(providerId: string, panelId: string): Promise<void> {
-    this._stopAuthPolling(panelId);
-    try {
-      // Verify CLI is actually installed before attempting auth
-      const provider = this._providerManager.getProviderInstance(providerId);
-      if (!provider) {
-        this._postToPanel(panelId, {
-          type: 'setupFailed',
-          payload: {
-            providerId,
-            error: `Provider "${providerId}" not found`,
-            canRetry: true,
-            requiresManual: true
-          }
-        });
-        return;
-      }
+  // =================================================================      }
 
       const discovery = await provider.discoverCli();
       if (!discovery.found) {
@@ -14978,7 +13928,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'setupFailed',
         payload: {
           providerId,
-          error: 'Authentication skipped. You can configure providers manually in settings.',
+          error: vscode.l10n.t('Authentication skipped. You can configure providers manually in settings.'),
           canRetry: true,
           requiresManual: true
         }
@@ -15475,7 +14425,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       payload: {
         step: 'checking',
         providerId: 'claude-code',
-        message: 'DEBUG: Simulating setup flow...',
+        message: vscode.l10n.t('DEBUG: Simulating setup flow...'),
         progress: 10
       }
     });
@@ -15487,7 +14437,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: {
           step: 'installing',
           providerId: 'claude-code',
-          message: 'DEBUG: Simulating installation...',
+          message: vscode.l10n.t('DEBUG: Simulating installation...'),
           progress: 40
         }
       });
@@ -15499,7 +14449,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: {
           providerId: 'claude-code',
           displayName: 'Claude Code',
-          message: 'DEBUG: This is a test auth prompt. Click Sign In or Later to test the flow.'
+          message: vscode.l10n.t('DEBUG: This is a test auth prompt. Click Sign In or Later to test the flow.')
         }
       });
     }, 2500);
@@ -15516,7 +14466,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: 'setupFailed',
       payload: {
         providerId: 'claude-code',
-        error: 'DEBUG: Simulated failure - npm not available on your system.',
+        error: vscode.l10n.t('DEBUG: Simulated failure - npm not available on your system.'),
         canRetry: true,
         requiresManual: true
       }
