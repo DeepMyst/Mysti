@@ -36,7 +36,12 @@ async function caption(page, text) {
 }
 const asset = (file, mime='image/png') => 'data:'+mime+';base64,'+fs.readFileSync(file).toString('base64');
 async function chat(page) {
-  const html=composeChatHtml().replace(/\{\{logoUri\}\}/g,()=>asset('resources/Mysti-Logo.png')).replace(/window\.__MYSTI_BOOT__ = (.*?);/, (_match, json) => {
+  const html=composeChatHtml().replace(/src="\/([^"]+)"/g, (match, relative) => {
+    const file=path.join('resources',relative);
+    if (!/\.(png|svg|webp|jpg|gif)$/i.test(file) || !fs.existsSync(file)) return match;
+    const ext=path.extname(file).slice(1);
+    return 'src="'+asset(file,ext==='svg'?'image/svg+xml':'image/'+ext)+'"';
+  }).replace(/window\.__MYSTI_BOOT__ = (.*?);/, (_match, json) => {
     const boot=JSON.parse(json);boot.version='2.0.0';boot.logoUri=asset('resources/Mysti-Logo.png');
     for(const name of fs.readdirSync('resources/icons').filter(n=>n.endsWith('.png'))) {
       boot.iconUris[name.slice(0,-4)]=asset('resources/icons/'+name);
@@ -53,7 +58,7 @@ async function record(browser, name, action) {
   const context = await browser.newContext({viewport:{width:1000,height:760},recordVideo:{dir:scratch,size:{width:1000,height:760}}});
   const page = await context.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
   const video = page.video();
-  try { await action(page); await pause(page,1500); await page.screenshot({path:path.join(output,name+'.png')}); console.log('Caption: '+await page.locator('#release-caption').textContent()); }
+  try { await action(page); await pause(page,1500); const broken=await page.evaluate(()=>Array.from(document.images).filter(img=>img.getBoundingClientRect().width>0 && img.getBoundingClientRect().height>0 && !img.naturalWidth).map(img=>img.getAttribute('src'))); if(broken.length) throw new Error('Visible images failed to load: '+JSON.stringify(broken)); await page.screenshot({path:path.join(output,name+'.png')}); }
   finally { await context.close(); }
   if(errors.length) throw new Error(errors.join('\n'));
   const source=await video.path();
